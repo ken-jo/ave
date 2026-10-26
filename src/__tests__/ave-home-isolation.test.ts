@@ -1,15 +1,7 @@
-/**
- * The test runner keeps every test out of the developer's real `~/.ave`.
- *
- * Every case here stands a scratch account in for the person's: the account
- * database's home (`os.userInfo()`) is mocked to a temporary directory, so a
- * guard that stopped working would let these resolve a scratch directory and
- * nothing of the developer's. `aveHome()` and the guard only name paths; none
- * of these creates anything under the stand-in home.
- */
-import { mkdirSync } from "node:fs";
+/** Mock the account home so a broken isolation guard can only resolve scratch paths. */
+import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -19,7 +11,6 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 import { defaultAveHome, aveHome } from "../shared/ave-home.js";
-// The app's seam, which the test configuration resolves to the guard.
 import { checkSandboxSweepRoot, AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { AVE_HOME_AT_IMPORT } from "./fixtures/import-time-ave-home.js";
 import { canonicalPath } from "./support/ave-home-isolation-guard.js";
@@ -43,14 +34,12 @@ afterEach(() => {
   }
 });
 
-/** A scratch account standing in for the person's; `ave` is its `~/.ave`. */
 function account(home: string = scratch()): { home: string; ave: string } {
   mkdirSync(join(home, ".ave"), { recursive: true });
   vi.mocked(userInfo).mockReturnValue({ ...actualOs.userInfo(), homedir: home });
   return { home, ave: join(home, ".ave") };
 }
 
-/** HOME (and its Windows reading) for this test; `homedir()` follows it. */
 function pointHome(home: string): void {
   process.env.HOME = home;
   process.env.USERPROFILE = home;
@@ -82,8 +71,6 @@ describe("the test process's Ave home", () => {
   });
 
   it("is what a module resolving it at import captures, or that import is refused", async () => {
-    // Loaded with this file's other imports, after the setup file named this
-    // file's home.
     expect(AVE_HOME_AT_IMPORT).toBe(fileEnv.AVE_HOME);
 
     const { home } = account();
@@ -172,6 +159,52 @@ describe("the test process's Ave home", () => {
 });
 
 describe("canonicalPath", () => {
+  it.skipIf(process.platform !== "win32")("normalizes an unreachable network path when realpath fails", () => {
+    const path = "\\\\unreachable\\profiles\\tester\\work\\..\\locked";
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw Object.assign(new Error("unreachable share"), { code: "UNKNOWN" });
+    });
+    try {
+      expect(canonicalPath(path)).toBe(resolve(path));
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("normalizes an unreachable extended network path when realpath fails", () => {
+    const path = "\\\\?\\UNC\\unreachable\\profiles\\tester\\locked";
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw Object.assign(new Error("unreachable share"), { code: "EACCES" });
+    });
+    try {
+      expect(canonicalPath(path)).toBe(resolve(path));
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it("preserves local realpath permission failures", () => {
+    const path = join(scratch(), "locked");
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => { throw error; });
+    try {
+      expect(() => canonicalPath(path)).toThrow(error);
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("preserves extended local realpath failures", () => {
+    const path = `\\\\?\\${join(scratch(), "locked")}`;
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => { throw error; });
+    try {
+      expect(() => canonicalPath(path)).toThrow(error);
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
   it("resolves the nearest existing ancestor and keeps the parts not created yet", () => {
     const real = scratch();
     const via = link(real, join(scratch(), "via"));

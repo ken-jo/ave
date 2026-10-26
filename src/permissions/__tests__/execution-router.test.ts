@@ -8,7 +8,7 @@ import {
   getSandboxGeneration,
   getHostShellExecutionPlan,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionRoute,
@@ -176,20 +176,20 @@ function issuedBrokeredWorkloadCapability(
 
 function issuedPlain() {
   resetSandbox();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
   return getHostShellExecutionPlan();
 }
 
 function issuedAsrt(executionMode: "default" | "host" = "default") {
   resetSandbox();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(fullAsrt);
   return getHostShellExecutionPlan(executionMode);
 }
 
 function issuedUnavailableFallback() {
   resetSandbox();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
 }
 
@@ -243,9 +243,9 @@ describe("execution router", () => {
     expect(JSON.stringify(plan)).not.toContain("disposable-container");
   });
 
-  it("does not call an ASRT plan workspace-confined unless both dimensions are explicit", () => {
+  it("does not call a sandbox plan workspace-confined unless all confinement dimensions are explicit", () => {
     resetSandbox();
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -253,7 +253,7 @@ describe("execution router", () => {
       reason: "legacy fixture without declared confinement",
     });
     const legacyPlan = getHostShellExecutionPlan();
-    expect(legacyPlan.mode).toBe("asrt");
+    expect(legacyPlan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "active-sandbox-not-shell-contained" });
     expect(executionRouteForHostShellPlan(legacyPlan)).toBeNull();
 
     expect(buildHostShellExecutionRouteProjection({
@@ -266,7 +266,7 @@ describe("execution router", () => {
     })).toMatchObject({
       decision: "blocked",
       route: null,
-      fallback: "route-unavailable",
+      fallback: "active-sandbox-not-shell-contained",
     });
   });
 
@@ -618,8 +618,8 @@ describe("execution router", () => {
 
     operatorCapabilities.current = disposableCapability;
     const stale = makeGrant();
-    setSandboxRequestedAtBoot(true);
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(false);
     expect(consumeExecutionGrantForShellInvocation({ grant: stale, ...exact })).toBeNull();
   });
 
@@ -745,8 +745,8 @@ describe("execution router", () => {
     expect(isIssuedExecutionGrant(grant)).toBe(true);
     expect(Object.isFrozen(grant)).toBe(true);
 
-    setSandboxRequestedAtBoot(true);
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(false);
     const nextPlain = getHostShellExecutionPlan();
     const nextCapability = capability(["host"]);
     const changedGeneration = buildExecutionPlan({
@@ -792,14 +792,24 @@ describe("execution router", () => {
   });
 
   it("does not issue a grant for approval, analysis, or blocked decisions", () => {
-    const fallback = issuedUnavailableFallback();
+    const explicitHost = issuedAsrt("host");
     const approvalPlan = buildExecutionPlan({
-      legacyPlan: fallback,
+      legacyPlan: explicitHost,
       effect: effect(),
       capability: capability(["host"], getSandboxGeneration()),
     });
     expect(approvalPlan.decision).toBe("approval-required");
     expect(() => issueExecutionGrant(approvalPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("requires another decision");
+  });
+
+  it("selects the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
+    // An unavailable sandbox runs plain under the exact-rule policy (owner 2026-10-25, unsandboxed shell exact-rule requirement); the route records why it is uncontained.
+    const fallback = issuedUnavailableFallback();
+    expect(buildExecutionPlan({
+      legacyPlan: fallback,
+      effect: effect(),
+      capability: capability(["host"], getSandboxGeneration()),
+    })).toMatchObject({ decision: "selected", route: "host", fallback: "requested-sandbox-unavailable" });
   });
 
   it.each([

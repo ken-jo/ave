@@ -33,7 +33,6 @@ import { cn } from "../../lib/utils.js";
  */
 
 const Dialog = DialogPrimitive.Root;
-const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
 
@@ -75,7 +74,7 @@ const dialogContentVariants = cva(
   },
 );
 
-export interface DialogContentProps
+interface DialogContentProps
   extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>,
     VariantProps<typeof dialogContentVariants> {}
 
@@ -144,9 +143,7 @@ DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
 export {
   Dialog,
-  DialogPortal,
   DialogClose,
-  DialogTrigger,
   DialogContent,
   DialogHeader,
   DialogFooter,

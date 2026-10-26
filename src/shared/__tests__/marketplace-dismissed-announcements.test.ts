@@ -1,15 +1,4 @@
-/**
- * `normalizeDismissedAnnouncementIds` — the single definition of "what counts
- * as a valid dismissed announcement id", shared by the renderer (which WRITES
- * `settings.marketplace.dismissedAnnouncementIds`) and main (which FILTERS every
- * announcement push against it).
- *
- * Each assertion below reds when the corresponding clause is dropped from the
- * normalizer; the integration consequences are pinned by
- * `src/boot/__tests__/announcement-check.test.ts` and
- * `src/ui/renderer/hooks/__tests__/use-marketplace-announcements.test.ts`,
- * which now go red on the same single edit.
- */
+/** Use one dismissed-id normalizer for renderer writes and main-process filtering. */
 import { describe, it, expect } from "vitest";
 import { normalizeDismissedAnnouncementIds } from "../marketplace-announcements.js";
 

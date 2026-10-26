@@ -17,7 +17,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-/** The app's shutdown hooks, run by the test instead of `before-quit`. */
 const shutdownHooks = new Map<string, () => void>();
 vi.mock("../../../main/app-shutdown.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../main/app-shutdown.js")>()),
@@ -57,7 +56,7 @@ describe("git runtime IPC boundary", () => {
   });
 
   it("scrubs the status and install answers and a failed step's progress, as every marketplace string (§18.8)", async () => {
-    // A real token shape, assembled here so no whole token sits in the source.
+    // Assemble credential-shaped fixtures at runtime so no complete token appears in source.
     const token = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
     const service = await setup();
     const leaky: GitRuntimeStatus = {
@@ -116,7 +115,7 @@ describe("git runtime IPC boundary", () => {
   });
 
   it("sends install progress to every live window until the marketplace's shutdown hook runs, and nothing after", async () => {
-    const { mkdtempSync } = await import("node:fs");
+    const { mkdtempSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { getMarketplaceLifetime } = await import("../../../main/app-state.js");
@@ -125,16 +124,20 @@ describe("git runtime IPC boundary", () => {
     const send = vi.fn();
     const window = { isDestroyed: () => false, webContents: { send } };
     const deps = { auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window], settingsService: { get: () => ({}) } };
-    // The marketplace domain as the app registers it: with the app's shared lifetime, which the runtime's sender reads.
-    registerGitMarketplaceHandlers(deps as never, async () => null, async () => ({ service: {} as never, close: async () => {} }), async () => {}, mkdtempSync(join(tmpdir(), "ave-git-runtime-ipc-")));
-    const progress = gitRuntimeProgressSender(deps as never, getMarketplaceLifetime().signal);
-    const event = { phase: "downloading", bytes: 1, total: 2 } as never;
+    const home = mkdtempSync(join(tmpdir(), "ave-git-runtime-ipc-"));
+    try {
+      registerGitMarketplaceHandlers(deps as never, async () => null, async () => ({ service: {} as never, close: async () => {} }), async () => {}, home);
+      const progress = gitRuntimeProgressSender(deps as never, getMarketplaceLifetime().signal);
+      const event = { phase: "downloading", bytes: 1, total: 2 } as never;
 
-    progress(event);
-    expect(send).toHaveBeenCalledWith(CHANNELS.gitRuntime.progress, event);
-    await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
-    shutdownHooks.get("git-marketplace-events")!();
-    progress(event);
-    expect(send).toHaveBeenCalledTimes(1);
+      progress(event);
+      expect(send).toHaveBeenCalledWith(CHANNELS.gitRuntime.progress, event);
+      await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
+      shutdownHooks.get("git-marketplace-events")!();
+      progress(event);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

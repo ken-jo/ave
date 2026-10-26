@@ -1,17 +1,7 @@
 import type { BootHost } from "../boot/host-runtime.js";
-/**
- * App shutdown cleanup pipeline.
- *
- * Runs the ordered teardown (persist window state → plugin shutdown handlers →
- * v2 shutdown routines → services shutdown → broker-shell cleanup barrier →
- * plugin runtime stopAll) under a hard timeout so `app.quit()` can never hang
- * indefinitely on a wedged subsystem. Invoked from the `before-quit`
- * orchestration that stays in `src/main.ts`.
- *
- * It also owns the shutdown-hook registry that same orchestration drains
- * first: teardown with no ordering requirement, collected here so no subsystem
- * needs a `before-quit` listener of its own. See {@link registerShutdownHook}.
- */
+import { browserTabRegistry } from "./browser/browser-tab-registry.js";
+// Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
+// separate before-quit listeners.
 import { createLogger, closeFileLogSink } from "../lib/logger.js";
 import { logger as rootPinoLogger } from "../lib/logger.js";
 import { runShutdownRoutines } from "./shutdown-routines.js";
@@ -40,22 +30,16 @@ import { errorMessage } from "../shared/error-message.js";
 import { interruptRunningTurnsForExit } from "../engine/turn/turn-journal.js";
 import { disposeBrowserUploads } from "./browser/browser-upload.js";
 
-/**
- * How long a quit waits for running turns to record themselves as interrupted.
- * Their rows are already on disk as they happen (the turn journal), so this
- * buys the clean interrupted record, not the data, and stays short.
- */
+// How long a quit waits for running turns to record themselves as interrupted. Their rows are already on disk as they happen (the turn journal), so this
+// buys the clean interrupted record, not the data, and stays short.
 const RUNNING_TURN_EXIT_WAIT_MS = 3_000;
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
-/**
- * The plugin side of stopping an interrupted bootstrap, in the order the
- * normal shutdown uses: plugin shutdown handlers first, the runtime last.
- */
+// The plugin side of stopping an interrupted bootstrap, in the order the normal shutdown uses: plugin shutdown handlers first, the runtime last.
 export interface BootPluginShutdown {
   runShutdownHandlers(): Promise<void>;
-  /** Close plugin admission without stopping anything (before MCP disconnects). */
+  // Close plugin admission without stopping anything (before MCP disconnects).
   closeAdmission(): void;
   stopRuntime(signal: AbortSignal): Promise<unknown>;
 }
@@ -64,7 +48,7 @@ let bootMcpDisconnect: (() => Promise<void>) | undefined;
 export function registerBootPluginShutdown(shutdown: BootPluginShutdown): void {
   bootPluginShutdown = shutdown;
 }
-/** Registered once the bootstrap has an MCP manager to disconnect. */
+// Registered once the bootstrap has an MCP manager to disconnect.
 export function registerBootMcpDisconnect(disconnect: () => Promise<void>): void {
   bootMcpDisconnect = disconnect;
 }
@@ -72,24 +56,7 @@ export function configureAppShutdownHost(host: BootHost): void {
   shutdownHost = host;
 }
 
-
-/**
- * Teardown that needs nothing from the ordered pipeline below.
- *
- * A poller's `clearInterval`, a watcher's `stop()`, a batch exporter's final
- * flush: each is independent of the others and of every ordered stage, and
- * each used to take an Electron `before-quit` listener of its own. Node warns
- * once an emitter passes ten listeners for one event, so a boot that wired
- * enough subsystems printed `MaxListenersExceededWarning` on stderr — which a
- * one-shot run hands straight to its caller as if something had leaked. They
- * share the single listener `src/main.ts` owns instead, so the count no longer
- * grows with the number of subsystems.
- *
- * Hooks are synchronous and run in registration order: nothing registered here
- * may depend on anything else registered here. Ordered teardown — anything
- * whose position relative to plugin shutdown, service disposal or the log sink
- * matters — belongs in {@link runAppShutdownCleanup}, not here.
- */
+// Hooks are synchronous, independent, and share one before-quit listener; ordered dependencies belong in runAppShutdownCleanup.
 interface ShutdownHook {
   readonly name: string;
   readonly stop: () => void;
@@ -98,7 +65,6 @@ interface ShutdownHook {
 const shutdownHooks: ShutdownHook[] = [];
 let shutdownHooksRan = false;
 
-/** Run one hook, containing its failure so it cannot take the others with it. */
 function runShutdownHook(hook: ShutdownHook): void {
   try {
     hook.stop();
@@ -107,17 +73,7 @@ function runShutdownHook(hook: ShutdownHook): void {
   }
 }
 
-/**
- * Register teardown to run when the app quits, or immediately if it already
- * has.
- *
- * A quit can arrive while boot is still running: the registry drains, the
- * ordered cleanup declines because no `AppServices` exists yet, the plugin
- * runtime defers the quit to await its shutdown handlers, and the rest of boot
- * keeps registering. Anything registered in that window belongs to a quit that
- * has already passed its drain, so it runs on the spot rather than waiting for
- * a second drain that never comes. Each hook still runs exactly once.
- */
+// Run late-registered hooks immediately after the drain; a quit deferred during boot may never drain again.
 export function registerShutdownHook(name: string, stop: () => void): void {
   const hook: ShutdownHook = { name, stop };
   if (shutdownHooksRan) {
@@ -127,29 +83,14 @@ export function registerShutdownHook(name: string, stop: () => void): void {
   shutdownHooks.push(hook);
 }
 
-/**
- * Run every registered hook once, before the ordered cleanup starts.
- *
- * Called from the one `before-quit` listener ahead of its own guards, because
- * these hooks held their own listeners before — mostly prepended ones, which
- * fired ahead of that handler, and all of them fired on quits where the guards
- * return early. A throwing hook is contained so the hooks after it still run
- * and the ordered cleanup still starts.
- */
+// Drain once before ordered-cleanup guards; contain throwing hooks so remaining cleanup still runs.
 export function runShutdownHooks(): void {
   if (shutdownHooksRan) return;
   shutdownHooksRan = true;
   for (const hook of shutdownHooks) runShutdownHook(hook);
 }
 
-/**
- * Drain the pino transport queue before `app.exit(0)` hard-terminates.
- *
- * Without this the final "shutdown cleanup timed out" diagnostic — the
- * exact line audit needs to explain a force-kill — gets buffered and
- * dropped when the Electron process tears down. We give the flush a tiny
- * deadline so a wedged transport cannot itself defeat the timeout.
- */
+// Flush the final timeout diagnostic before hard exit, with its own short deadline so logging cannot defeat shutdown.
 async function flushLogger(): Promise<void> {
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -176,7 +117,7 @@ async function flushLogger(): Promise<void> {
 export type AppShutdownCleanupOutcome = "completed" | "skipped" | "timed-out" | "failed";
 let appShutdownCleanupPromise: Promise<AppShutdownCleanupOutcome> | null = null;
 
-/** Stop a rejected or interrupted bootstrap before AppServices is published. */
+// Stop a rejected or interrupted bootstrap before AppServices is published.
 export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShutdownCleanupOutcome> {
   const reason = "host bootstrap interrupted or failed";
   setAppShutdownStarted(true);
@@ -186,11 +127,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
     const failures: unknown[] = [];
     const stages = [
       () => bootPluginShutdown?.runShutdownHandlers(),
-      // As on the normal path: plugin admission closes, so no post-commit MCP
-      // publication opens a connection once MCP is gone; then MCP disconnects
-      // before the plugin runtime stops, so no bundled MCP call is still in
-      // flight into a generation the runtime is retiring (shutdown does not
-      // cancel those calls).
+      // Close plugin admission before MCP disconnects, then stop the runtime only after in-flight MCP calls finish.
       () => bootPluginShutdown?.closeAdmission(),
       () => bootMcpDisconnect?.(),
       () => bootPluginShutdown?.stopRuntime(signal),
@@ -208,8 +145,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
   }, resolveShutdownCleanupTimeoutMs(undefined));
   if (result.status !== "completed") {
     forceKillManagedChildProcesses(reason);
-    // PTYs use a separate native owner. Signal them even if an earlier stage
-    // exhausted the deadline; a zero wait budget does not extend that deadline.
+    // PTYs use a separate native owner. Signal them even if an earlier stage exhausted the deadline; a zero wait budget does not extend that deadline.
     await forceKillAllTerminalsForShutdown(0);
     log.error({ status: result.status }, "incomplete host bootstrap cleanup did not complete");
   }
@@ -234,28 +170,16 @@ export async function runAppShutdownCleanup(options: {
   );
   appShutdownCleanupPromise = (async () => {
     const result = await runCleanupWithHardTimeout(async (signal) => {
-      // A subscription runtime owns long-lived child processes. Keep it alive
-      // through plugin/routine teardown in the normal path, but do not leave
-      // it behind when an earlier shutdown stage throws or observes the hard
-      // timeout signal. The fallback stop failure is deliberately contained so
-      // it cannot mask the stage failure that caused this cleanup to fail.
+      // Keep runtime children through normal plugin teardown, but stop them on earlier failure or timeout without masking the original error.
       let subscriptionRuntimesStopped = false;
       try {
-      // E4 — release OS-level global shortcuts FIRST (fast, synchronous, cannot
-      // throw past its own internal try/catch) so a wedged or throwing later
-      // step can't leave accelerators bound after quit.
+      // Release global shortcuts before async shutdown steps can hang or throw.
       shutdownHost?.desktop?.beforeShutdown();
-      // Same reasoning, same position: the floating dock is an always-on-top
-      // window that outlives the app window by design. If a later stage wedges
-      // or the hard timeout fires, a dock left up is a window floating over
-      // everything with no process behind it. Synchronous, idempotent, and a
-      // no-op when nothing ever attached — `peekFloatingDock` does not build
-      // one just to tear it down.
+      // Dispose the always-on-top dock before later stages can wedge; peek without creating a dock solely for teardown.
 
       if (signal.aborted) return;
-      // Running turns first, before any stage that can stall: each is aborted
-      // as `host-exit` and given a bounded moment to write its interrupted
-      // row, so the session reopens with the partial answer and Continue.
+      // Running turns first, before any stage that can stall: each is aborted as `host-exit` and given a bounded moment to write its interrupted row, so the
+      // session reopens with the partial answer and Continue.
       const interrupted = await interruptRunningTurnsForExit(RUNNING_TURN_EXIT_WAIT_MS);
       if (interrupted.turns > 0) {
         log.info(
@@ -265,56 +189,43 @@ export async function runAppShutdownCleanup(options: {
       }
       if (signal.aborted) return;
       await disposeBrowserUploads();
+      await browserTabRegistry.flushBindingWrites().catch((error: unknown) => {
+        log.error({ error }, "shutdown: tab bindings could not be persisted");
+      });
       if (signal.aborted) return;
-      // Stop the opt-in local API server EARLY — it's fast (destroys idle
-      // sockets + ends live SSE streams) and blanks its on-disk discovery file
-      // so a stale secret + port never lingers after quit. Idempotent + a no-op
-      // when the gate was off this boot.
+      // Close local API streams and blank discovery early so stale bearer credentials and ports cannot survive shutdown.
       await stopLocalApiServer();
       if (signal.aborted) return;
-      // Tailnet observer is a separate listener over the shared projection.
-      // Close its SSE streams before the host conversation runtime is disposed.
+      // Tailnet observer is a separate listener over the shared projection. Close its SSE streams before the host conversation runtime is disposed.
       await stopTailnetObserverServer();
       if (signal.aborted) return;
 
-      // Telegram is a distinct external-platform ingress/egress adapter. Its
-      // runtime guard is revoked before the shared conversation services go
-      // down, so a late webhook or queued delivery cannot outlive shutdown.
+      // Telegram is a distinct external-platform ingress/egress adapter. Its runtime guard is revoked before the shared conversation services go down, so a
+      // late webhook or queued delivery cannot outlive shutdown.
       await stopTelegramBridgeServer();
       if (signal.aborted) return;
 
-      // Independent P4-5 listener: close it before the owning remote runtime
-      // is disposed by services.shutdown(). This is a no-op when its gate was
-      // OFF and is idempotent on repeated cleanup attempts.
+      // Independent P4-5 listener: close it before the owning remote runtime is disposed by services.shutdown(). This is a no-op when its gate was OFF and is
+      // idempotent on repeated cleanup attempts.
       await stopRemoteA2AReceiverServer();
       if (signal.aborted) return;
       await svc.runPluginShutdownHandlers?.();
       if (signal.aborted) return;
-      // v2 shutdown routines — fire all active shutdown-trigger routines with a
-      // 5s timeout so a hung LLM call cannot block app.quit() indefinitely.
+      // v2 shutdown routines — fire all active shutdown-trigger routines with a 5s timeout so a hung LLM call cannot block app.quit() indefinitely.
       await runShutdownRoutines(svc);
       if (signal.aborted) return;
-      // Plugin shutdown handlers and shutdown-trigger routines may make normal
-      // host LLM calls. Keep the subscription runtime live for both, then stop
-      // it immediately at the service-shutdown boundary so no later teardown
-      // can create a new text session.
+      // Plugin shutdown handlers and shutdown-trigger routines may make normal host LLM calls. Keep the subscription runtime live for both, then stop it
+      // immediately at the service-shutdown boundary so no later teardown can create a new text session.
       await stopSubscriptionRuntimes();
       subscriptionRuntimesStopped = true;
       if (signal.aborted) return;
-      // Plugin admission closes before services shut down — MCP disconnects
-      // there — so no post-commit MCP publication or new plugin dispatch can
-      // open after it. Calls already admitted keep running; the runtime
-      // itself stops further below.
+      // Plugin admission closes before services shut down — MCP disconnects there — so no post-commit MCP publication or new plugin dispatch can open after
+      // it. Calls already admitted keep running; the runtime itself stops further below.
       svc.pluginRuntime.beginShutdown();
       await svc.shutdown?.();
       if (signal.aborted) return;
-      // Service shutdown aborts active turns, after which no new background
-      // shell may be admitted. Broker shells are not local child processes,
-      // so the managed-child drain below cannot prove their termination. Start
-      // cleanup for every remaining broker handle, then hold this stage, which
-      // already has a hard deadline, until each broker returns terminal
-      // ownership evidence. A capability/transport failure is an explicit
-      // failed shutdown, so external workload release remains the final backstop.
+      // After service shutdown, admit no broker shells and await terminal ownership evidence for every remote handle.
+      // Local child drain cannot prove remote termination; transport failure is explicit and external workload release remains the backstop.
       const { backgroundShellManager } = await import("../tools/shell-tools.js");
       backgroundShellManager.disposeAllBrokerShells(signal);
       const brokerCleanupReports = await backgroundShellManager.waitForAllBrokerCleanup();
@@ -328,25 +239,21 @@ export async function runAppShutdownCleanup(options: {
         );
       }
       if (signal.aborted) return;
-      // Kill any live interactive PTY terminals (#1444). The pty children are
-      // NOT in the managed-child tracker (node-pty's IPty is not a
-      // ChildProcess), so force them down here on the graceful path.
+      // Kill any live interactive PTY terminals (#1444). The pty children are NOT in the managed-child tracker (node-pty's IPty is not a ChildProcess), so
+      // force them down here on the graceful path.
       await forceKillAllTerminalsForShutdown();
-      // Bounded by the same deadline as every other stage: plugin generations
-      // still retiring when it passes are named, and the backstop below ends them.
+      // Bounded by the same deadline as every other stage: plugin generations still retiring when it passes are named, and the backstop below ends them.
       await svc.pluginRuntime.stopAll({ signal });
       if (signal.aborted) return;
-      // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app
-      // alive for a bounded definitive-exit drain so ASRT/HOME finalizers run
-      // before Electron completes an otherwise clean shutdown.
+      // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app alive for a bounded definitive-exit drain so ASRT/HOME finalizers run before
+      // Electron completes an otherwise clean shutdown.
       await forceKillAndDrainManagedChildProcesses(`${options.reason} graceful shutdown`);
       } finally {
         if (!subscriptionRuntimesStopped) {
           try {
             await stopSubscriptionRuntimes();
           } catch {
-            // Preserve the original shutdown-stage failure. The failed branch
-            // below performs a managed-child force-kill as the final fallback.
+            // Preserve the original shutdown-stage failure. The failed branch below performs a managed-child force-kill as the final fallback.
             log.warn("shutdown: subscription runtime fallback stop failed");
           }
         }
@@ -354,8 +261,7 @@ export async function runAppShutdownCleanup(options: {
     }, cleanupTimeoutMs);
 
     if (result.status === "timed-out") {
-      // Force-kill BEFORE the log line so killedChildCount reflects what
-      // actually happened, not an optimistic pre-kill count.
+      // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup timeout`);
       await shutdownHost?.close();
       log.error({
@@ -363,19 +269,13 @@ export async function runAppShutdownCleanup(options: {
         killedChildCount,
         reason: options.reason,
       }, "shutdown cleanup timed out");
-      // Flush the logger so the diagnostic above (and any preceding warn
-      // about which subsystem hung) makes it to disk before the process leaves.
+      // Flush the logger so the diagnostic above (and any preceding warn about which subsystem hung) makes it to disk before the process leaves.
       await flushLogger();
-      // LAST step: close the production log file sink. All shutdown-step
-      // logging (including the timeout diagnostic just flushed) has now been
-      // written, so it is safe to drain + close the file destination. Done
-      // here rather than on a `before-quit` listener so those shutdown lines
-      // are never dropped by an early sink close.
+      // Close the file log sink last so no shutdown or timeout diagnostic is lost.
       closeFileLogSink();
       setAppShutdownCompleted(true);
       if (options.exitOnTimeout) {
-        // A hard exit here never reaches `will-quit`, so the code a headless
-        // run already chose is applied directly; a desktop run chose none.
+        // A hard exit here never reaches `will-quit`, so the code a headless run already chose is applied directly; a desktop run chose none.
         if (!shutdownHost) throw new Error("shutdown-host-unavailable");
         shutdownHost.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
       }
@@ -383,9 +283,8 @@ export async function runAppShutdownCleanup(options: {
     }
 
     if (result.status === "failed") {
-      // A failed lifecycle stage may have prevented a runtime-owned child from
-      // acknowledging its graceful stop. The normal stop ran in the cleanup
-      // finally block; this is only the last-resort descendant-safe backstop.
+      // A failed lifecycle stage may have prevented a runtime-owned child from acknowledging its graceful stop. The normal stop ran in the cleanup finally
+      // block; this is only the last-resort descendant-safe backstop.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup failed`);
       await shutdownHost?.close();
       log.error(
@@ -395,16 +294,14 @@ export async function runAppShutdownCleanup(options: {
         errorMessage(result.error),
       );
       await flushLogger();
-      // LAST step (failed path): close the file sink after the failure
-      // diagnostic has been flushed. See the timed-out branch above.
+      // LAST step (failed path): close the file sink after the failure diagnostic has been flushed. See the timed-out branch above.
       closeFileLogSink();
       setAppShutdownCompleted(true);
       return "failed";
     }
 
     await shutdownHost?.close();
-    // LAST step (happy path): flush any remaining buffered logs, then close
-    // the production log file sink after every shutdown step has logged.
+    // LAST step (happy path): flush any remaining buffered logs, then close the production log file sink after every shutdown step has logged.
     await flushLogger();
     closeFileLogSink();
     setAppShutdownCompleted(true);

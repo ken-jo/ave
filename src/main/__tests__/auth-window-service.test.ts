@@ -1,10 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Cookie, CookiesSetDetails, Session } from "electron";
 
-// auth-window-service imports `electron` at module load time. Vitest's default
-// node environment can't resolve it, so stub the module to just the shapes
-// the service references. The test only exercises pure helpers —
-// BrowserWindow / Session are never constructed.
+// auth-window-service imports `electron` at module load time. Vitest's default node environment can't resolve it, so stub the module to just the shapes
+// the service references. The test only exercises pure helpers — BrowserWindow / Session are never constructed.
 vi.mock("electron", () => ({
   BrowserWindow: vi.fn(),
   shell: { openExternal: vi.fn() },
@@ -109,16 +107,7 @@ describe("filterCookiesByHost", () => {
   });
 });
 
-/**
- * These drive the REAL producer — the exported `openAuthWindow` entry point
- * that `hostApi.openAuthWindow` calls with the plugin's own `opts` object
- * (src/boot/steps/plugin-runtime/host-api-factory.ts spreads `opts` through
- * untouched). Every rejection below is reached before any BrowserWindow or
- * session partition is constructed, so no Electron surface is exercised.
- *
- * Asserting on `filterCookiesByHost` alone would NOT cover this: that helper
- * is handed an already-accepted list. The gate is at intake.
- */
+// Drive openAuthWindow intake: rejection must precede any window or partition creation.
 describe("openAuthWindow — cookieHosts is validated by the host-allow-list SoT", () => {
   const parent = {} as never;
   function call(cookieHosts: unknown) {
@@ -139,11 +128,7 @@ describe("openAuthWindow — cookieHosts is validated by the host-allow-list SoT
   });
 
   it("admits loopback literals — the OAuth loopback-redirect flow declares them", async () => {
-    // Regression lock for the samplemail login outage: `cookieHosts:
-    // ["localhost"]` must get PAST intake validation (same positive-assertion
-    // shape as the well-formed-list case below — the stubbed BrowserWindow
-    // makes anything that passes validation fail later with a non-cookieHosts
-    // error).
+    // localhost cookieHosts must pass intake; the window stub then fails with a later, unrelated error.
     await expect(call(["localhost"])).rejects.not.toThrow(/cookieHosts/);
     await expect(call(["127.0.0.1"])).rejects.not.toThrow(/cookieHosts/);
   });
@@ -171,10 +156,8 @@ describe("openAuthWindow — cookieHosts is validated by the host-allow-list SoT
   });
 
   it("accepts a well-formed list — it gets past validation into window setup", async () => {
-    // The BrowserWindow constructor is a bare `vi.fn()` in this file's electron
-    // stub, so a list that PASSES validation fails later with a different,
-    // non-validation error. That distinction is the positive assertion: the
-    // rejection reason must not be a cookieHosts one.
+    // The BrowserWindow constructor is a bare `vi.fn()` in this file's electron stub, so a list that PASSES validation fails later with a different,
+    // non-validation error. That distinction is the positive assertion: the rejection reason must not be a cookieHosts one.
     await expect(call(["portal.example.com", ".SSO.example.com "])).rejects.not.toThrow(
       /cookieHosts/,
     );
@@ -206,8 +189,7 @@ describe("isCompletionUrl", () => {
   });
 
   it("빈 문자열 패턴은 service 가 trim+filter 후 거부 — 하지만 isCompletionUrl 단독 호출 시 조기 true 위험", () => {
-    // isCompletionUrl 자체는 방어적이지 않음 — 빈 문자열이 있으면 모든 URL 매칭.
-    // (따라서 openAuthWindow 가 호출 전에 normalize 하는 것이 핵심 방어선.)
+    // isCompletionUrl 자체는 방어적이지 않음 — 빈 문자열이 있으면 모든 URL 매칭. (따라서 openAuthWindow 가 호출 전에 normalize 하는 것이 핵심 방어선.)
     expect(isCompletionUrl("https://anywhere.example.com", [""])).toBe(true);
     // normalize 후 빈 배열이 되면 false.
     expect(isCompletionUrl("https://anywhere.example.com", [])).toBe(false);
@@ -314,9 +296,7 @@ describe("buildAuthWindowShellHtml", () => {
     expect(html).not.toContain("id=\"minimize\"");
     expect(html).not.toContain("id=\"maximize\"");
     expect(html).not.toContain("id=\"close\"");
-    // No <button class="titlebar-btn"> elements should be rendered. The CSS
-    // class itself stays in the <style> block (harmless dead rule) — only
-    // the DOM rendering is suppressed.
+    // No <button class="titlebar-btn"> elements should be rendered. The CSS class itself stays in the <style> block (harmless dead rule) — only the DOM rendering is suppressed.
     expect(html).not.toContain("<button class=\"titlebar-btn");
     expect(html).toContain("titlebar-mac");
     expect(html).toContain("<webview");
@@ -332,8 +312,7 @@ describe("buildAuthWindowShellHtml", () => {
       platform: "win32",
       devConsole: true,
     });
-    // eruda is bundled in node_modules; if it's resolvable we should see init.
-    // If absent (CI env quirk) we tolerate empty injection — script must not throw.
+    // eruda is bundled in node_modules; if it's resolvable we should see init. If absent (CI env quirk) we tolerate empty injection — script must not throw.
     if (html.includes("eruda.init")) {
       expect(html).toContain("__ave_eruda_booted");
     }
@@ -361,7 +340,6 @@ describe("seedPluginAuthPartitions", () => {
     const partitions = getTrackedPluginAuthPartitions("seed.plugin");
     expect(partitions).toContain("persist:plugin-auth:seed.plugin");
     expect(partitions).toContain("persist:plugin-auth:seed.plugin:sub");
-    // Cleanup
     await forgetTrackedPluginAuthPartitions("seed.plugin");
   });
 
@@ -373,14 +351,12 @@ describe("seedPluginAuthPartitions", () => {
     const partitions = getTrackedPluginAuthPartitions("merge.plugin");
     expect(partitions).toContain("persist:plugin-auth:merge.plugin:a");
     expect(partitions).toContain("persist:plugin-auth:merge.plugin:b");
-    // Cleanup
     await forgetTrackedPluginAuthPartitions("merge.plugin");
   });
 });
 
 describe("wirePluginAuthPartitionPersistence + rememberPluginAuthPartition", () => {
   beforeEach(() => {
-    // Reset to unwired state between tests by wiring no-op stubs.
     wirePluginAuthPartitionPersistence({
       write: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
@@ -404,7 +380,6 @@ describe("wirePluginAuthPartitionPersistence + rememberPluginAuthPartition", () 
     expect(write).toHaveBeenCalledOnce();
     const [map] = write.mock.calls[0] as [Map<string, Set<string>>];
     expect(map.get("wired.plugin")?.has("persist:plugin-auth:wired.plugin:session")).toBe(true);
-    // Cleanup
     await forgetTrackedPluginAuthPartitions("wired.plugin");
   });
 
@@ -435,7 +410,6 @@ describe("wirePluginAuthPartitionPersistence + rememberPluginAuthPartition", () 
     await new Promise((r) => setTimeout(r, 0));
 
     expect(onError).toHaveBeenCalledWith(expect.stringContaining("disk full"));
-    // Cleanup
     await forgetTrackedPluginAuthPartitions("err.plugin");
   });
 
@@ -505,8 +479,7 @@ describe("retainCookies (session-cookie vault mode)", () => {
       { name: "SMSESSION", value: "", domain: ".example.com", path: "/" },
       { name: "JSESSIONID", value: "", domain: "portal.example.com", path: "/app" },
     ]);
-    // The count and names — what a plugin branches on to decide "logged in" —
-    // survive, so the vault does not change the login-success signal.
+    // The count and names — what a plugin branches on to decide "logged in" — survive, so the vault does not change the login-success signal.
     expect(redacted).toHaveLength(harvested.length);
   });
 
@@ -536,13 +509,7 @@ describe("retainCookies (session-cookie vault mode)", () => {
   });
 });
 
-/**
- * The vault keeps harvested values ONLY in the partition, and Chromium drops a
- * cookie without an expiry at process exit. These pin the write-back that makes
- * a harvested session cookie survive a restart, and the boundaries around it:
- * a cookie the upstream service already bounded is not touched, attributes are
- * preserved, and a failed write is an error the caller sees.
- */
+// Retain host-only session cookies across restart without changing upstream expiry or attributes; propagate write failures.
 describe("retainSessionCookiesAcrossRestart (vault survives a restart)", () => {
   const NOW_MS = 1_700_000_000_000;
   const EXPECTED_EXPIRY = Math.floor(NOW_MS / 1000) + RETAINED_SESSION_COOKIE_TTL_SECONDS;

@@ -1,16 +1,4 @@
-/**
- * The persisted `settings.marketplace.skippedPluginUpdates` contract.
- *
- * The renderer writes this map (`useMarketplaceUpdates.skip`) and main reads it
- * to filter the `marketplace:updates-available` broadcast
- * (the marketplace background step). Both sides now share these functions, so the rules below
- * are pinned once for both — previously main's copy had no test at all.
- *
- * Every assertion reds when the corresponding clause is removed; the renderer's
- * end-to-end consequences are pinned by
- * `src/ui/renderer/hooks/__tests__/use-marketplace-updates.test.ts`, which reds
- * on the same single edit.
- */
+/** Renderer writes and main-process update filtering share the same persisted skip-map contract. */
 import { describe, it, expect } from "vitest";
 import {
   createSkippedPluginUpdateMap,

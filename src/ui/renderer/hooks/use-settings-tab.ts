@@ -6,7 +6,7 @@ import { usePrefersReducedMotion } from "./use-prefers-reduced-motion.js";
 export interface UseSettingsTabResult {
   /** Which settings page the inline panel is on. */
   settingsTab: SettingsTab;
-  /** Set it — persists immediately in `SystemSettings`. */
+  /** Set it — persists immediately, same family as `sidebarActiveTab`. */
   setSettingsTab: (tab: string) => void;
   /**
    * How many times THIS hook has applied the stored page. Monotonic, and read
@@ -30,8 +30,8 @@ export function useSettingsTab(api: AveApi): UseSettingsTabResult {
   const [settingsTab, setSettingsTabState] = useState<SettingsTab>(() =>
     normalizeSettingsTab(undefined),
   );
-  // A ref, not state: this setter stands in for a `useState` setter at call
-  // sites whose dep arrays omit it, so its identity must never change.
+  // A ref, not state: this setter stands in for a `useState` setter at call sites whose dep arrays omit it, so its identity
+  // must never change.
   const hydratedRef = useRef(false);
   const [restoresApplied, setRestoresApplied] = useState(0);
 
@@ -71,31 +71,15 @@ export function useSettingsTab(api: AveApi): UseSettingsTabResult {
   return { settingsTab, setSettingsTab, restoresApplied };
 }
 
-/**
- * How long the arrival ring stays on the section a deep link named.
- *
- * Long enough to be found by an eye that was reading a banner a moment ago,
- * short enough that it cannot be mistaken for a selected state.
- */
+/** How long the arrival ring stays on the section a deep link named. Long enough to be found by an eye that was reading a
+ * banner a moment ago, short enough that it cannot be mistaken for a selected state. */
 const SETTINGS_SECTION_ARRIVAL_MS = 1500;
 
 /** The class `src/styles.css` draws the arrival ring with. */
 export const SETTINGS_SECTION_ARRIVAL_CLASS = "ave-settings-section-arrival";
 
-/**
- * Land on the section a settings deep link named, once.
- *
- * The tab is persisted state; the section deliberately is not. It answers "the
- * user was just sent here", which is true for one arrival and false forever
- * after — persisting it would re-scroll and re-ring the same block every time
- * the panel opened, long after the notice that pointed at it was gone.
- * `onApplied` is how the caller drops the one-shot.
- *
- * Two effects rather than one, because the two lifetimes differ: the lookup
- * belongs to the target, the ring belongs to the node it was put on. Fused, the
- * state update `onApplied` causes would tear the ring off in the tick it was
- * added.
- */
+/** Section arrivals are one-shot events; separate target consumption from ring cleanup so onApplied cannot remove the ring
+ * immediately. */
 export function useSettingsSectionArrival(
   section: string | null,
   onApplied: () => void,
@@ -103,16 +87,15 @@ export function useSettingsSectionArrival(
   const [ringed, setRinged] = useState<HTMLElement | null>(null);
   const reducedMotion = usePrefersReducedMotion();
 
-  // Read through a ref, not a dependency. Arrival is one event: re-running the
-  // effect because the OS toggle flipped would scroll and re-ring a section the
-  // user navigated away from reading minutes ago.
+  // Read through a ref, not a dependency. Arrival is one event: re-running the effect because the OS toggle flipped would
+  // scroll and re-ring a section the user navigated away from reading minutes ago.
   const reducedMotionRef = useRef(reducedMotion);
   reducedMotionRef.current = reducedMotion;
 
   useEffect(() => {
     if (section === null) return;
-    // A frame late: the tab body mounts in the same commit that set the
-    // target, so the anchor does not exist yet when this effect first runs.
+    // A frame late: the tab body mounts in the same commit that set the target, so the anchor does not exist yet when this
+    // effect first runs.
     const frame = requestAnimationFrame(() => {
       const node = document.querySelector<HTMLElement>(
         `[data-settings-section="${section}"]`,
@@ -122,14 +105,13 @@ export function useSettingsSectionArrival(
           block: "start",
           behavior: reducedMotionRef.current ? "auto" : "smooth",
         });
-        // The scroll already put the section where it belongs; focusing with
-        // `preventScroll` moves the keyboard caret there without a second jump.
+        // The scroll already put the section where it belongs; focusing with `preventScroll` moves the keyboard caret there
+        // without a second jump.
         node.focus({ preventScroll: true });
         setRinged(node);
       }
-      // Consumed either way. An anchor this build cannot find is still an
-      // arrival that happened — leaving the target set would retry it on every
-      // later render of the panel.
+      // Consumed either way. An anchor this build cannot find is still an arrival that happened — leaving the target set would
+      // retry it on every later render of the panel.
       onApplied();
     });
     return () => cancelAnimationFrame(frame);

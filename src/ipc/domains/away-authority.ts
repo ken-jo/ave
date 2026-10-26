@@ -1,25 +1,5 @@
-/**
- * Host-renderer-only IPC for arming and disarming the desk-armed away answerer.
- *
- * Arming is the one gesture in this feature that changes who may answer an
- * approval, so it is the most tightly bound: the host-renderer sender guard,
- * then a live local keyboard intent, then the shape guard, and only then the
- * gate. The renderer names a TILE, never a conversation — main reads what that
- * tile is holding at execution, the same rule the Tailnet and Telegram owner
- * surfaces follow — so a caller cannot arm an authority over a conversation the
- * owner is not looking at. A tile the window is not showing is refused rather
- * than resolved to the primary one, which would arm a conversation nobody
- * named.
- *
- * Nothing here decides what a legal grant is. `parseAwayAuthorityGrant` owns
- * every bound (armable categories, lifetime ceiling, budget ceiling, directory
- * sanitization, and the refusal of a write scope with no directories), and a
- * grant it rejects arrives back here as a plain `false`.
- *
- * Handlers register unconditionally so the channel inventory is stable; a build
- * without an approval gate answers `away-authority-disabled` from inside the
- * handler rather than leaving the channel missing.
- */
+// Arming requires a host frame, live keyboard intent, and a main-resolved tile conversation.
+// Register disabled channels too, returning a stable refusal when no approval gate exists.
 import { ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
@@ -52,11 +32,7 @@ const UNAVAILABLE = Object.freeze({
 const NOTHING_ARMED = Object.freeze({ ok: true as const, status: null });
 const ARMED_OK = Object.freeze({ ok: true as const });
 
-/**
- * Preset → milliseconds. The longest entry is the ceiling the grant parser
- * enforces, so this table can only ever ask for something that parser accepts;
- * a longer preset would fail to arm rather than widen anything.
- */
+// Preset durations remain within the grant parser's lifetime ceiling.
 const DURATION_MS: Record<AwayAuthorityDurationPreset, number> = {
   "30m": 30 * 60 * 1000,
   "1h": 60 * 60 * 1000,
@@ -64,15 +40,7 @@ const DURATION_MS: Record<AwayAuthorityDurationPreset, number> = {
   "4h": 4 * 60 * 60 * 1000,
 };
 
-/**
- * Mode → tool categories, and the only place in the arm path that names those
- * literals. `read-write` includes `read` because a turn that writes a file
- * reads one first, and a grant that answered the write but not the read would
- * stall on the read at a desk nobody is at.
- *
- * `parseAwayAuthorityGrant` still decides whether these categories are armable
- * at all; this table proposes, it does not permit.
- */
+// Read-write includes reads to avoid stalling unattended writes; the grant parser still owns armable categories.
 const MODE_CATEGORIES: Record<AwayAuthorityMode, readonly string[]> = {
   "read-only": ["read"],
   "read-write": ["read", "write"],
@@ -89,15 +57,9 @@ export function registerAwayAuthorityHandlers(deps: IpcDeps): void {
     try {
       const snapshot = gate.awayAuthoritySnapshot();
       if (snapshot === null) return NOTHING_ARMED;
-      // `awayAuthoritySnapshot` deliberately does no time check — the answerer
-      // retires an expired grant when it next sees a call, and until then the
-      // object is still there. The desk must not be told "armed" about a grant
-      // that can no longer answer anything, so expiry is resolved here, at the
-      // moment the question is asked. Retiring it instead would write a
-      // `desk-disarm` audit row for something the desk did not do.
+      // Hide expired grants at read time without retiring them as a user-initiated disarm.
       if (Date.now() >= snapshot.expiresAt) return NOTHING_ARMED;
       const status = parseAwayAuthorityStatus({
-        // Projected in main so the category literals stay out of the renderer.
         writable: snapshot.categories.includes("write"),
         directories: [...snapshot.directories],
         expiresAt: snapshot.expiresAt,
@@ -119,8 +81,7 @@ export function registerAwayAuthorityHandlers(deps: IpcDeps): void {
     if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
     if (!isAwayAuthorityArmInput(payload)) return INPUT_INVALID;
     try {
-      // The conversation is read here, never received: the renderer says which
-      // tile, and what that tile holds is main's to answer.
+      // Resolve the tile's conversation in main; the renderer cannot supply it.
       const loop = deps.findChatGroupLoop(payload.chatGroupId);
       if (!loop) return OPERATION_REJECTED;
       const conversationId = loop.getSessionId();
@@ -151,9 +112,7 @@ export function registerAwayAuthorityHandlers(deps: IpcDeps): void {
     if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
     if (!isAwayAuthorityIntentOnlyInput(payload)) return INPUT_INVALID;
     try {
-      // `false` means there was nothing armed, which is the state the caller
-      // asked for. Reporting that as a rejection would tell an owner who
-      // double-clicked disarm that disarming failed.
+      // Disarming an already unarmed authority succeeds idempotently.
       gate.retireAwayAuthority("desk-disarm");
       return ARMED_OK;
     } catch {

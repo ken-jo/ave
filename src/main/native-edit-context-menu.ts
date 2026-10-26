@@ -1,10 +1,7 @@
 import { BrowserWindow, Menu, type MenuItemConstructorOptions, type WebContents } from "electron";
 
-/**
- * Install the OS-native editing menu for trusted BrowserWindow renderers.
- * Domain-specific menus use the allow-listed UI IPC bridge instead; this
- * listener deliberately reacts only to editable controls or selected text.
- */
+// Install the OS-native editing menu for trusted BrowserWindow renderers. Domain-specific menus use the allow-listed UI IPC bridge instead; this
+// listener deliberately reacts only to editable controls or selected text.
 export function installNativeEditContextMenu(contents: WebContents): void {
   contents.on("context-menu", (event, params) => {
     const hasSelection = params.selectionText.trim().length > 0;

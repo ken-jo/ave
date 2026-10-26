@@ -1,9 +1,4 @@
-/**
- * Test fixture: the marketplace service over folder sources only. The
- * registry, gate, syncer and service are the real ones; git is a recorder
- * that fails any call (a folder source never runs git, §18.3 #6), there is
- * no network, and the installers record what they were handed.
- */
+/** Folder-only service fixture: real orchestration, no network, and every git call fails. */
 import AdmZip from "adm-zip";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -26,24 +21,17 @@ import { policySource, type TestPolicySource } from "./policy.js";
 
 export interface FolderServiceHarness {
   service: MarketplaceService;
+  installers: InstallerPorts;
   registry: SourceRegistry;
   syncer: SourceSyncer;
   policy: TestPolicySource;
-  /** Every git command anything asked for; each one failed. */
   gitCalls: string[];
-  /** Every download the gate was asked for; each one failed. */
   fetches: string[];
   plugins: StagedPluginArtifact[];
   content: StagedContent[];
-  /**
-   * The extensions installed, by name: what an install left (its staged
-   * files, receipt fields and the review options it was given). Updates and
-   * their baselines are read from here.
-   */
+  /** Installed files, receipt fields and review options form the update baseline. */
   installed: Map<string, InstalledFixturePlugin>;
-  /** Each installed extension's bundled components and their approvals, as the lifecycle would report them. */
   approvals: Map<string, ComponentApprovalState[]>;
-  /** Called after an extension install lands, as a runtime publishing its generation would. */
   onInstalled: { current: ((name: string) => void) | null };
   /** Awaited inside a plugin uninstall before the plugin is removed. */
   onUninstall: { current: (() => Promise<void>) | null };
@@ -64,7 +52,6 @@ interface InstalledFixturePlugin {
   componentConsents: readonly ExtensionComponentConsent[];
 }
 
-/** The files a staged zip installs. */
 function zipFiles(staged: StagedPluginArtifact): PayloadFile[] {
   return new AdmZip(staged.zipBuffer).getEntries().filter((entry) => !entry.isDirectory).map((entry) => ({ path: entry.entryName, data: entry.getData() }));
 }
@@ -75,11 +62,8 @@ export async function folderService(options: {
   home?: string;
   policy?: TestPolicySource;
   now?: () => Date;
-  /**
-   * Content packages already installed, as the content store lists them: the
-   * service reads this array, and an uninstall removes its entry.
-   */
   installed?: InstalledRecord[];
+  onPackageTransactionsIdle?: () => void;
 }): Promise<FolderServiceHarness> {
   const policy = options.policy ?? policySource();
   const gitCalls: string[] = [];
@@ -116,7 +100,7 @@ export async function folderService(options: {
         const staged = await stage(plan);
         plugins.push(staged);
         const files = zipFiles(staged);
-        // Checkpoint two runs beside the manifest gate, before anything activates (§18.7.3).
+        // Checkpoint two runs beside the manifest gate, before activation.
         assertConsent?.(pluginConsent(staged.manifestDocument, files));
         const previous = installed.get(plan.name);
         installed.set(plan.name, {
@@ -205,6 +189,7 @@ export async function folderService(options: {
     now,
     revocations: { apply: async () => {} },
     log: { warn: () => {} },
+    ...(options.onPackageTransactionsIdle ? { onPackageTransactionsIdle: options.onPackageTransactionsIdle } : {}),
     legacyMigration: {
       markerPath: join(options.root, "legacy-migration.json"),
       plugins: async () => {
@@ -215,5 +200,5 @@ export async function folderService(options: {
       },
     },
   });
-  return { service, registry, syncer, policy, gitCalls, fetches, plugins, content, installed, approvals, onInstalled, onUninstall, root: options.root, workRoot };
+  return { service, installers, registry, syncer, policy, gitCalls, fetches, plugins, content, installed, approvals, onInstalled, onUninstall, root: options.root, workRoot };
 }

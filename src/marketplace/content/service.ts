@@ -1,13 +1,4 @@
-/**
- * Installed content as the app applies it (blueprint P3): the loaded store
- * turned into what the renderer's pickers list, the language catalogs, and
- * the files the `ave-content:` scheme may serve.
- *
- * Two packages may not claim the same locale or font family. Installing a
- * second one is refused; should a ledger hold two anyway, the first in ledger
- * order is applied and the second is listed as broken, so which one wins
- * never depends on load timing.
- */
+/** Duplicate locales or font families fail installation; corrupt ledgers apply the first claimant deterministically. */
 import { join } from "node:path";
 import {
   contentAssetUrl,
@@ -32,14 +23,12 @@ export interface ServedContentFile {
   contentType: string;
 }
 
-/** An installed skill or agent profile: the stores read its entry file from `dir`. */
 export interface InstalledInstruction {
   kind: "skill" | "agent";
   name: string;
   dir: string;
 }
 
-/** A verified package snapshot used to publish inert instructions in main. */
 export interface InstalledAgentPlugin {
   name: string;
   version: string;
@@ -54,24 +43,18 @@ export interface InstalledAgentPluginRuntime extends InstalledAgentPlugin {
 export class InstalledContentService {
   private view: InstalledContentView = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
-  /** `<kind>/<name>/<path>` → the file and its type, for the asset scheme. */
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
   private agentPlugins: InstalledAgentPlugin[] = [];
   private agentPluginRuntime: InstalledAgentPluginRuntime[] = [];
 
-  /**
-   * `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`).
-   * `revoked` answers why the bound source revoked an installed version, or
-   * null (design §10.4): such a package is listed as broken and not applied.
-   */
+  /** Revoked bound versions remain listed as broken and are never applied. */
   constructor(
     private readonly store: ContentStore,
     private readonly assetToken: string,
     private readonly revoked: (kind: ContentKind, name: string, version: string) => string | null,
   ) {}
 
-  /** Re-read the store and rebuild everything derived from it. */
   async reload(): Promise<InstalledContentView> {
     const { loaded, broken } = await this.store.load();
     const themes: InstalledThemeView[] = [];
@@ -166,7 +149,6 @@ export class InstalledContentService {
           })));
         }
       }
-      // Providers and messaging connections take effect through settings (their activation).
     }
     this.view = { themes, languages, fonts, routineTemplates, broken: brokenViews };
     this.catalogs = catalogs;
@@ -181,7 +163,6 @@ export class InstalledContentService {
     return structuredClone(this.view);
   }
 
-  /** Installed skills and agent profiles, for the skill and agent stores in main. */
   installedInstructions(): InstalledInstruction[] {
     return this.instructions.map((item) => ({ ...item }));
   }
@@ -194,18 +175,13 @@ export class InstalledContentService {
     return this.agentPluginRuntime;
   }
 
-  /** The catalog of an installed language; throws for a locale no package provides. */
   languageMessages(locale: string): Record<string, string> {
     const catalog = this.catalogs.get(locale);
     if (!catalog) throw new Error(`no installed language provides ${locale}`);
     return { ...catalog };
   }
 
-  /**
-   * The file behind `ave-content://<kind>/<name>/<path>`: only a theme's
-   * preview image or a listed font face of an applied package. Null for
-   * anything else.
-   */
+  /** Serves only applied theme previews and listed font faces; all other asset paths return null. */
   servedFile(kind: string, name: string, path: string): ServedContentFile | null {
     return this.served.get(`${kind}/${name}/${path}`) ?? null;
   }

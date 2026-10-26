@@ -1,8 +1,3 @@
-/**
- * What an alert says is the kind's declared templates; a raise supplies only
- * slot values, which are checked against their declaration, sanitised, and —
- * in the model-facing prompt — wrapped as data.
- */
 import { describe, expect, it } from "vitest";
 import type { AlertKindDeclaration } from "../../plugins/public-contract.js";
 import { ALERT_KEY_RE, checkSlots, localeText, renderAlert, sanitizeSlotText } from "../render.js";

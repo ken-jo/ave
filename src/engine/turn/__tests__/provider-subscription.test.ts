@@ -209,8 +209,6 @@ describe("buildProvider subscription model overrides", () => {
       usableContext: getModelUsableContext("openai", "gpt-5.5-codex"),
       identity: "subscription:codex/gpt-5.5-codex",
       thresholdSource: "context-window",
-      // gpt-5.5-codex is not in the catalog; the hand-kept table's "gpt-5"
-      // prefix row answered 400,000 until slice 7.
       contextWindowSource: "fallback",
     });
   });
@@ -448,7 +446,7 @@ describe("buildProvider — profile moved off a retired vendor", () => {
           ? {
             activeChatRuntime: { kind: "api" },
             provider: "openai",
-            vendors: freshVendorBlocks(),
+            vendors: { ...freshVendorBlocks(), openai: { ...freshVendorBlocks().openai, model: "saved-model" } },
             fallbackChain: [{ provider: "claude", model: "claude-sonnet-4-6" }],
             ...(retiredProvider ? { retiredProvider } : {}),
           }
@@ -460,8 +458,7 @@ describe("buildProvider — profile moved off a retired vendor", () => {
   }
 
   it.each([undefined, "role-model"])("blocks the API route and fallback keys with model override %s", (modelOverride) => {
-    // The load moved a copilot profile to the default vendor. A key saved for
-    // that vendor must not be used on the user's behalf.
+    // Switching a subscription profile vendor must not authorize use of a stored API key.
     const { deps, getSecret } = apiDeps("copilot");
     deps.modelOverride = modelOverride;
     expect(buildProvider(deps)).toBeNull();

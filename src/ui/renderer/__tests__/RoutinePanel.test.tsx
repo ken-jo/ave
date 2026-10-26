@@ -1,13 +1,4 @@
-/**
- * RoutinePanel button label / payload mapping lock.
- *
- * Asserts the contract surfaced by the panel: when the user clicks the
- * "선택 해제 (익스텐션 사용 안 함)" button or leaves the plugin list empty,
- * the resulting `addRoutine` payload uses `{ mode: "deny-all" }` per
- * spec §3 Layer 4 (RoutinePluginScope discriminated union). Catches a
- * regression the panel already had once: the label said "전체 허용" while the
- * actual semantic is deny-all — copy and behavior must agree.
- */
+/** Empty plugin selection means deny-all; the button label and submitted scope must agree. */
 import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { render, fireEvent, waitFor, act } from "@testing-library/react";
@@ -102,24 +93,20 @@ describe("RoutinePanel scope payload mapping", () => {
       <AddRoutineModal api={api} onClose={onClose} onAdded={onAdded} />,
     );
 
-    // Wait for plugin cards to load.
     await waitFor(() => {
       getByTestId("routine-allowed-plugin-plugin-a");
     });
 
-    // Provide minimal valid form input: prePrompt + atDate.
     fireEvent.change(getByTestId("pre-prompt-input"), { target: { value: "do thing" } });
     // The form tab needs at least an `atDate`. Pick a date input.
     const dateInputs = document.querySelectorAll('input[type="date"]');
     expect(dateInputs.length).toBeGreaterThan(0);
     fireEvent.change(dateInputs[0]!, { target: { value: validFutureDate() } });
 
-    // Toggle plugin on then off — exercising the click path. Final state empty.
     const checkbox = getByTestId("routine-allowed-plugin-plugin-a");
     fireEvent.click(checkbox); // selected
     expect(checkbox.getAttribute("aria-checked")).toBe("true");
 
-    // Click the "선택 해제 (익스텐션 사용 안 함)" button — clears selection.
     const clearBtn = getByTestId("routine-clear-allowed-plugins");
     expect(clearBtn.textContent).toContain("익스텐션 사용 안 함");
     fireEvent.click(clearBtn);

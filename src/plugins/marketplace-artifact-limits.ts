@@ -1,14 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
-/**
- * Resource ceilings for marketplace artifacts.
- *
- * Marketplace payloads are untrusted even after transport authentication:
- * signatures prove provenance, not that a payload is safe to hold in memory
- * or expand on disk. Keep the same contract at download, cache, and extraction
- * boundaries so alternate MarketplaceHttp implementations cannot bypass it.
- */
+/** Authenticated artifacts remain untrusted allocations; enforce one ceiling policy at download, cache and extraction. */
 export interface MarketplaceArtifactLimits {
   /** Maximum wire/cache/zip buffer size before decompression. */
   maxCompressedBytes: number;
@@ -24,8 +17,7 @@ export interface MarketplaceArtifactLimits {
 
 export const DEFAULT_MARKETPLACE_ARTIFACT_LIMITS: Readonly<MarketplaceArtifactLimits> =
   Object.freeze({
-    // Match the public marketplace server defaults. Enterprise deployments
-    // with different ceilings must pass one explicit policy through the fetcher.
+    // Custom deployment ceilings must pass one explicit policy through every fetch path.
     maxCompressedBytes: 50 * 1024 * 1024,
     maxEntryCount: 10_000,
     maxEntryUncompressedBytes: 200 * 1024 * 1024,
@@ -79,14 +71,7 @@ export function assertCompressedArtifactSize(
   }
 }
 
-/**
- * Read at most `limit + 1` bytes from one stable file descriptor.
- *
- * A separate stat followed by readFile has a TOCTOU window where a concurrent
- * writer can grow the file after validation and force an unbounded allocation.
- * This reader keeps the descriptor stable and proves growth with one extra
- * byte before concatenating a bounded result.
- */
+/** Read limit + 1 bytes through one descriptor to bound allocation and detect growth without a stat/read race. */
 export async function readCompressedArtifactFile(
   filePath: string,
   limit: number,

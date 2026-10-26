@@ -1,17 +1,4 @@
-/**
- * chat.ts (handlers) — transport-agnostic PUBLIC chat handler logic (#1409 C10).
- *
- * Pure `handle*` functions holding the logic behind the PUBLIC chat channels
- * (`chat send`, `chat sessions`, `chat get-history`, `chat session-history`).
- * They import NOTHING from the electron transport — the `ipcMain.handle`
- * wrapper + `validateSender` trust boundary stay in `domains/chat.ts`, and turn
- * output flows through an injected semantic event sink.
- *
- * Shared pure helpers (session-id validation, persona-prompt resolution,
- * payload narrowing) also live here so the transport layer (`domains/chat.ts`)
- * and any future in-process api/cli/sdk consume a single definition rather than
- * re-deriving them.
- */
+// Shared chat handlers remain transport-independent; wrappers own sender and gesture validation.
 import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
 import type { ChatInputOrigin, ChatSendPayload, RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import {
@@ -64,19 +51,11 @@ export interface ParentMailboxTurn {
   entryIds: string[];
   initialGuidance: string;
   approvalReasonPrefix: string;
-  /** Sanitized sub-agent title when the whole snapshot came from one child. */
   childTitle?: string;
 }
 
 interface ParentMailboxRunner {
-  /**
-   * Not a pure read. Alongside returning what the parent is still owed, this
-   * WRITES to the durable mailbox: a completion report the parent already
-   * consumed through `agent_status` is acknowledged and dropped here rather
-   * than handed back to be injected as steering a second time. Callers must
-   * therefore treat a peek as a consuming operation on those entries, and must
-   * not peek speculatively on a path that will not run the turn.
-   */
+  // Snapshot also acknowledges reports already consumed through agent_status so they cannot be injected twice.
   peekParentMailbox(parentSessionId: string): Promise<ParentMailboxEntry[]>;
   acknowledgeParentMailbox(parentSessionId: string, entryIds: readonly string[]): Promise<unknown>;
 }
@@ -95,10 +74,7 @@ function mailboxApprovalPrefix(entries: readonly ParentMailboxEntry[]): string {
   return labels.length === 1 ? labels[0]! : "[Sub-Agent: multiple sources]";
 }
 
-/**
- * Snapshot the current main-session mailbox without switching sessions.
- * The snapshot remains durable until a receiving turn acknowledges every id.
- */
+// Snapshot without switching sessions; durable entries remain until the receiving turn acknowledges them.
 export async function prepareParentMailboxTurn(deps: IpcDeps): Promise<ParentMailboxTurn | null> {
   const { conversationLoop } = deps;
   if (conversationLoop.getSessionKind() !== "main") return null;
@@ -135,9 +111,7 @@ export async function prepareParentMailboxTurn(deps: IpcDeps): Promise<ParentMai
   return {
     parentSessionId,
     entryIds: entries.map((entry) => entry.id),
-    // Wrapped HERE, at the drain, and not inside the persisted `formattedText`
-    // — the mid-turn injection path wraps at its own consumption point, so a
-    // given entry is instructed exactly once.
+    // Wrap reports at consumption, never persistence, so each path adds one host instruction.
     initialGuidance: wrapChildReportForParentJudgment(
       entries.map((entry) => entry.formattedText).join("\n\n"),
     ),
@@ -146,7 +120,6 @@ export async function prepareParentMailboxTurn(deps: IpcDeps): Promise<ParentMai
   };
 }
 
-/** Acknowledge only after the snapshotted parent actually consumed the turn. */
 export async function acknowledgeParentMailboxAfterTurn(
   deps: IpcDeps,
   mailboxTurn: ParentMailboxTurn | null,
@@ -196,11 +169,7 @@ export function parseChatSessionProjectPayload(raw: unknown): ChatSessionProject
 
 export function defaultWorkspaceProjectPayload(defaultWorkspaceRoot = process.cwd()): ChatSessionProjectPayload {
   const projectRoot = normalizeProjectString(defaultWorkspaceRoot, MAX_PROJECT_ROOT_CHARS);
-  // Default/base-directory project is labeled "default" (not the workspace
-  // folder basename) so the sidebar + insights never surface a confusing folder
-  // name. The authoritative resolution (resolveAuthorizedWorkspaceProject →
-  // defaultWorkspaceProject) also uses this literal; kept in sync here for the
-  // request-payload path.
+  // Resolve default-project identity centrally so ambient workspace names cannot leak into project labels.
   return {
     ...(projectRoot ? { projectRoot } : {}),
     projectName: "default",
@@ -213,7 +182,7 @@ export function resolveChatNewProjectPayload(raw: unknown, defaultWorkspaceRoot 
   return defaultWorkspaceProjectPayload(defaultWorkspaceRoot);
 }
 
-export function normalizePersonaPromptId(
+function normalizePersonaPromptId(
   inputOrigin: ChatInputOrigin,
   value: unknown,
 ): { ok: true; personaPromptId?: string } | { ok: false; error: string } {
@@ -264,23 +233,7 @@ export async function resolvePersonaRolePrompt(
   }
 }
 
-/**
- * Validate the multimodal content-parts payload that arrives over IPC. The
- * renderer is trusted but the preload bridge is a `unknown[]` boundary, so
- * we type-narrow each entry here to protect the downstream
- * genericToModelMessages mapper (engine/llm/vercel/adapter.ts) from
- * malformed payloads (missing fields, wrong tags, non-string data).
- *
- * Returns the validated array when at least one entry survived narrowing,
- * or `undefined` when nothing valid is present. The `undefined` form lets
- * the caller drop the `attachments` field from the runTurn options spread
- * entirely (the conversation loop treats absent and empty as equivalent
- * "no parts" — emitting an empty array would be technically valid but adds
- * noise to logs and ruins the option-spread shape).
- *
- * Unknown entries are dropped silently rather than rejecting the whole
- * turn — mirrors how `sanitizeOutgoingInput` handles partial PII redaction.
- */
+// Validate and normalize untrusted multipart IPC entries before provider mapping.
 export function validateUserContentParts(
   raw: unknown,
 ): import("../../engine/llm/types.js").UserContentPart[] | undefined {
@@ -290,7 +243,6 @@ export function validateUserContentParts(
 export function parseChatSendPayload(
   payload: unknown,
   options: Readonly<{
-    /** Only a host-minted Tailnet controller may treat a staged-looking body as text. */
     allowStagedEnvelopeAsRawText?: boolean;
   }> = {},
 ): { ok: true; payload: ChatSendPayload } | { ok: false; error: string } {
@@ -313,11 +265,7 @@ export function parseChatSendPayload(
   if (candidate.inputOrigin === "user-keyboard" && candidate.userActivation !== true) {
     return { ok: false, error: "user-keyboard-required" };
   }
-  // Every STAGED origin (plugin overlay trigger, MCP App `ui/message`, MCP server
-  // prompt) carries its provenance in an envelope around the text. This is the one
-  // place a claimed origin is checked against the text, and it is table-driven
-  // (shared/staged-origins.ts) so a newly registered origin is rejected-without-
-  // envelope by default rather than needing its own hand-written branch here.
+  // Bind every claimed staged origin to its canonical envelope before execution.
   const stagedKind = stagedOriginForInput(candidate.inputOrigin);
   if (stagedKind) {
     const enveloped = candidate.input.trimStart().match(stagedKind.envelopePrefixPattern);
@@ -325,19 +273,9 @@ export function parseChatSendPayload(
       return { ok: false, error: stagedKind.missingEnvelopeError };
     }
   } else {
-    // …and the binding holds in REVERSE: a send that carries SOME staged
-    // envelope may not claim a non-staged origin. Without this, a desktop
-    // `user-keyboard` send plus a staged envelope is accepted, which would
-    // strip the force-ask gate, untrusted framing, and transcript marker from
-    // actor-authored text. A host-minted Tailnet controller is the sole
-    // exception: it deliberately submits arbitrary remote text under its
-    // distinct `tailnet-surface` origin. That body still cannot promote itself
-    // to a staged provenance because chat-stream only parses an envelope after
-    // receiving a host-minted staged-origin claim.
+    // Reject staged envelopes claiming keyboard origin or their force-ask and untrusted framing would disappear.
     if (!options.allowStagedEnvelopeAsRawText && parseStagedEnvelope(candidate.input)) {
-      // Its OWN code: "missing envelope" would be the opposite of what happened,
-      // and this rejection also catches an ordinary user typing or pasting text
-      // that happens to start with a provenance header.
+      // Use a distinct unexpected-envelope code; user-pasted provenance headers are not missing envelopes.
       return { ok: false, error: "origin-envelope-mismatch" };
     }
   }
@@ -360,12 +298,7 @@ export interface SanitizedOutgoingTurnContent {
   attachments: UserContentPart[] | undefined;
 }
 
-/**
- * Apply PII redaction immediately before a main chat turn reaches the provider
- * path. The user input and every validated text attachment are distinct DLP
- * spans, so the count-only DLP audit remains attributable without recording
- * raw text. The renderer receives one aggregate notice for the logical turn.
- */
+// Redact input and text attachments as separate DLP spans immediately before provider work.
 export function sanitizeOutgoingTurnContent(
   settingsService: IpcDeps["settingsService"],
   sink: ConversationStreamEventSink,
@@ -407,9 +340,7 @@ export function sanitizeOutgoingTurnContent(
   }
 
   if (totalCount > 0) {
-    // `redactForLLM` writes one count-only audit row per hit-bearing text span.
-    // The stream/UI surface is deliberately turn-level: one notice, no raw text
-    // or resource URI in this warning.
+    // Audit hit counts per span but emit one turn-level notice without raw text or resource URIs.
     sink({
       kind: "privacy.redacted",
       count: totalCount,
@@ -421,10 +352,6 @@ export function sanitizeOutgoingTurnContent(
   return { input: effectiveInput, attachments: effectiveAttachments };
 }
 
-/**
- * Backward-compatible input-only entry point for callers that have no content
- * parts. Main chat sends use `sanitizeOutgoingTurnContent` above.
- */
 export function sanitizeOutgoingInput(
   settingsService: IpcDeps["settingsService"],
   sink: ConversationStreamEventSink,
@@ -433,11 +360,6 @@ export function sanitizeOutgoingInput(
   return sanitizeOutgoingTurnContent(settingsService, sink, input, undefined).input;
 }
 
-/**
- * Post-turn main-session bookkeeping. Extracted so both `chat send` and the
- * internal edit-resend / continue-last-user / retry-effort paths call one
- * definition.
- */
 export async function markMainActiveAfterTurn(
   deps: IpcDeps,
   input: string,
@@ -445,21 +367,10 @@ export async function markMainActiveAfterTurn(
 ): Promise<void> {
   const { conversationLoop, memoryManager } = deps;
   if (conversationLoop.getSessionKind() !== "main") return;
-  // "Main active" is the conversation the next launch resumes, and the
-  // primary tile is the one restore addresses. A turn in another tile would
-  // otherwise make it last-turn-wins across tiles.
+  // Only the primary tile updates next-launch resume state; other tiles must not overwrite it.
   if (deps.chatGroupId !== undefined && deps.chatGroupId !== MAIN_CHAT_GROUP_ID) return;
   if (conversationLoop.getHistory().length > 0) {
-    // "No explicit project" sessions (the default/base-directory binding)
-    // must NOT persist projectRoot/projectName into metadata — null project
-    // fields are the normal state for them (2026-07 "remove Current Project
-    // labeling"). `getSessionProjectIsDefault` is a real, always-present
-    // method on ConversationLoop (called unconditionally elsewhere, e.g.
-    // handleChatGetHistory) — no duck-typing needed here; a prior
-    // duck-typed fallback defaulted to `false` (persist) for test doubles
-    // predating this getter, which is the WRONG safe direction (silently
-    // persisting default-project metadata risks the ghost-project-group
-    // class of bug), so it is removed rather than flipped.
+    // Default-directory sessions retain null project fields; only explicit selections persist project metadata.
     const isDefaultProject = conversationLoop.getSessionProjectIsDefault();
     if (!isDefaultProject) {
       const project = typeof conversationLoop.getSessionProjectContext === "function"
@@ -485,13 +396,9 @@ export async function markMainActiveAfterTurn(
   }
 }
 
-/** Injected stream-turn plumbing shared with the registrar's other turn paths. */
 export interface ChatSendContext {
-  /** Semantic event sink factory bound to the host-owned platform timeline. */
   createStreamEventSink: (streamId: number) => ConversationStreamEventSink;
-  /** Allocates the next host-runtime-owned stream correlation id. */
   allocateStreamId: () => number;
-  /** Tracks the host-runtime-owned active turn for every attached surface. */
   trackStreamTurn: (factory: () => Promise<ChatSendResult>) => Promise<ChatSendResult>;
   /** Host-owned remote-controller authority; external payloads cannot supply it. */
   remoteControllerAuthority?: RemoteControllerAuthority;
@@ -501,7 +408,6 @@ export interface ChatSendContext {
 
 export type ChatSendResult = TurnResult | { ok: false; error: string };
 
-/** PUBLIC `ave:chat:send` — parse + sanitize + stream one conversation turn. */
 export async function handleChatSend(
   deps: IpcDeps,
   payload: unknown,
@@ -518,8 +424,7 @@ export async function handleChatSend(
   if (!parsed.ok) return { ok: false, error: parsed.error };
   const { input, attachments, inputOrigin, userActivation, personaPromptId } = parsed.payload;
   const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId);
-  // Persona resolution is asynchronous. A remote route may be revoked while it
-  // is pending, so do not let a previously-admitted command continue.
+  // Recheck remote authority after asynchronous persona resolution; revocation may race it.
   if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
     return { ok: false, error: "remote-controller-revoked" };
   }
@@ -527,10 +432,7 @@ export async function handleChatSend(
     return { ok: false, error: "session-mismatch" };
   }
   if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
-  // queue-auto inputOrigin is automatic intake from accumulated explicit user input.
-  // It runs outside the user gesture context, triggered by the IPC stream-done event,
-  // so audit telemetry must distinguish it from user-keyboard turns
-  // (critic Round 2 M2), matching the guide path.
+  // Automatic queue intake has no live keyboard gesture; audit it separately from keyboard sends.
   if (inputOrigin === "queue-auto") {
     auditLogger.log({
       timestamp: new Date().toISOString(),
@@ -539,34 +441,24 @@ export async function handleChatSend(
       input: `chat:utterance:queue-auto:start:len=${input.length}`,
     });
   }
-  // IPC payload validation — the renderer is trusted but a corrupt
-  // preload bridge or a stray `unknown[]` cast could deliver malformed
-  // parts. We validate the shape here so the conversation loop never
-  // sees garbage.
   const validated = validateUserContentParts(attachments);
   const streamId = ctx.allocateStreamId();
   const sink = ctx.createStreamEventSink(streamId);
   return ctx.trackStreamTurn(async () => {
-    // `trackStreamTurn` deliberately defers its factory after acquiring the
-    // lease. This is the effect-entry fence for a revoked remote authority.
+    // Check revoked remote authority inside the lease's deferred effect-entry factory.
     if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
       return { ok: false, error: "remote-controller-revoked" };
     }
-    // The mailbox snapshot belongs to the same lease as the receiving turn.
-    // Taking it before trackStreamTurn allowed session mutation (new/resume/
-    // fork) to switch the loop while durable child guidance was being read.
+    // Snapshot the mailbox under the receiving turn's lease so session mutation cannot switch its owner.
     const mailboxTurn = inputOrigin === "user-keyboard" || inputOrigin === "queue-auto"
       ? await prepareParentMailboxTurn(deps)
       : null;
     if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
       return { ok: false, error: "remote-controller-revoked" };
     }
-    // Redaction is inside the accepted turn lease: an overlapping send rejected
-    // as `streaming-active` must not create a notice or DLP audit record for a
-    // turn that never reaches the provider.
+    // Redact only under an accepted lease; refused overlapping sends must not create DLP records or notices.
     const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, validated);
-    // Keep the last guard recheck adjacent to the model/loop effect. There is
-    // intentionally no await between this check and `runStreamedTurn`.
+    // No await may separate the last authority check from the model effect.
     if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
       return { ok: false, error: "remote-controller-revoked" };
     }
@@ -603,16 +495,7 @@ export async function handleChatSend(
   });
 }
 
-/**
- * The families a caller asked for, or `undefined` when it asked for none.
- *
- * `undefined` is the whole existing contract: the request is answered from the
- * main store alone, under its `kind` filter, exactly as before. A caller that
- * names families is asking for the federated list instead. Unknown names are
- * dropped rather than refused — this is a renderer-supplied array crossing a
- * boundary, and the request stays answerable when a newer renderer names a
- * family this host does not have.
- */
+// Omitted families preserves main-store filtering; explicit families request cross-store federation.
 function requestedSessionFamilies(raw: unknown): ReadonlySet<SessionFamily> | undefined {
   if (!Array.isArray(raw)) return undefined;
   const families = new Set<SessionFamily>();
@@ -622,17 +505,7 @@ function requestedSessionFamilies(raw: unknown): ReadonlySet<SessionFamily> | un
   return families.size > 0 ? families : undefined;
 }
 
-/**
- * PUBLIC `ave:chat:sessions` — paginated session list + active session id.
- *
- * `families` federates the stores. A conversation the app keeps lives in one of
- * three separate {@link MemoryManager} instances — the main store, the side-chat
- * store, and the sub-agent store — and a listing of one of them can never see
- * the others. Each store is therefore listed by its own manager, every row is
- * stamped with its family here, and the results are merged into one list
- * ordered by `modifiedAt`. Without `families` the request is answered from the
- * main store alone, which is what every caller but the sidebar wants.
- */
+// Federate requested conversation families across their owning stores with one shared pagination contract.
 export async function handleChatSessions(
   deps: IpcDeps,
   opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown },
@@ -660,25 +533,10 @@ export async function handleChatSessions(
     : undefined;
   const includeUnscoped = resolvedProject?.authorized === true && resolvedProject.project?.isDefault === true;
   const sessions = memoryManager
-    // A federated request reads every kind the main store holds and lets the
-    // family filter below decide, so `main` and `routine` come back in one
-    // scan rather than two passes with two cursors.
     .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), limit, ...(before ? { before } : {}), ...(beforeId ? { beforeId } : {}), ...(after ? { after } : {}) })
     .flatMap((s): SessionListRow[] => {
-      // Scrub legacy default-tagged project metadata at the read chokepoint.
-      // Pre-PR, markMainActiveAfterTurn persisted projectRoot/projectName
-      // (= the default workspace root / "workspace") for EVERY session, no
-      // isDefault guard. Sidebar.tsx's namedProjects excludes the default
-      // root from the known-projects list, so a legacy session's default
-      // root falls into the "unknown project" fallback map and renders as
-      // its own ghost named group (sidebar AND Insights, since both read
-      // through this same handler). Stripping here — rather than patching
-      // every reader — heals both call sites from one chokepoint. Sessions
-      // written post-fix never carry default-root metadata in the first
-      // place, so this is a no-op for them.
+      // Strip legacy default-project tags at the read boundary so they cannot become named sidebar projects.
       const isLegacyDefaultTagged = Boolean(s.projectRoot) && isDefaultWorkspaceRoot(s.projectRoot!);
-      // Scrubbed BEFORE assembly rather than deleted after it, so the row the
-      // renderer gets is the row the assembly produced — one shape, one place.
       const row = toSessionListRow(
         "main",
         isLegacyDefaultTagged ? { ...s, projectRoot: undefined, projectName: undefined } : s,
@@ -704,11 +562,6 @@ export async function handleChatSessions(
   return { current: conversationLoop.getSessionId(), sessions: federated };
 }
 
-/**
- * Sidebar rows for work-board runs: one per item, the item's title, the item's
- * project. The page window is the caller's so a cursor walks both sources the
- * same way; the project rule is the one the main list already applied.
- */
 async function workBoardRunRows(
   deps: IpcDeps,
   window: {
@@ -759,17 +612,7 @@ async function workBoardRunRows(
   return rows;
 }
 
-/**
- * Sidebar rows for the workspace rail's side chats, read from the side-chat
- * store — the one `~/.ave/side-chat/` manager, never the main one.
- *
- * `originSessionId` is the conversation the side chat was started from, which
- * the host recorded as the session's origin at its first turn — the same name
- * the store uses, so the relation is spelled once end to end. The sidebar draws
- * the row under that conversation, so these rows carry no project filter of
- * their own: a side chat is placed by its parent, and filtering it by a project
- * it never records would drop it from under a parent that is shown.
- */
+// Read side chats from their own store and use host-written originSessionId for parent grouping.
 function sideChatRows(
   deps: IpcDeps,
   window: { limit: number; before?: Date; beforeId?: string; after?: Date },
@@ -790,14 +633,7 @@ function sideChatRows(
     });
 }
 
-/**
- * Sub-agent rows for a parent session, serialized for the renderer.
- *
- * Routed through the SubAgentRunner because children are persisted in their own
- * `~/.ave/subagent/` namespace — the main MemoryManager's sessions directory
- * holds none of them, so reading it returns an empty list no matter how many
- * agents the session ran. Returns `[]` when the runner is not wired.
- */
+// Read child sessions through the runner's namespace; the main session directory holds none.
 function restoredSubAgentRows(deps: IpcDeps, originSessionId: string) {
   const runner = deps.getSubAgentRunner?.() as
     | { listPersistedSpawnsForOrigin?: (id: string) => Array<{ modifiedAt: Date }> }
@@ -808,7 +644,6 @@ function restoredSubAgentRows(deps: IpcDeps, originSessionId: string) {
     .map((entry) => ({ ...entry, modifiedAt: entry.modifiedAt.toISOString() }));
 }
 
-/** PUBLIC `ave:chat:get-history` — the active session's serialized history. */
 export function handleChatGetHistory(deps: IpcDeps) {
   const { conversationLoop, memoryManager } = deps;
   const messages = conversationLoop.getHistory().getMessages() as GenericMessage[];
@@ -823,43 +658,21 @@ export function handleChatGetHistory(deps: IpcDeps) {
     ...(conversationLoop.getSessionRoutineTitle() ? { routineTitle: conversationLoop.getSessionRoutineTitle() } : {}),
     ...(conversationLoop.getSessionProjectRoot() ? { projectRoot: conversationLoop.getSessionProjectRoot() } : {}),
     ...(conversationLoop.getSessionProjectName() ? { projectName: conversationLoop.getSessionProjectName() } : {}),
-    // Live in-memory binding: ALWAYS resolved (default included), unlike the
-    // persisted session metadata which now omits project fields entirely for
-    // "no explicit project" sessions. The renderer needs this flag to tell
-    // "user explicitly picked this project" apart from "just the ambient
-    // default directory" when the composer/sidebar want to show the real name
-    // vs a "Select project" placeholder for the ACTIVE (not-yet-persisted)
-    // session.
+    // Live bindings include the default workspace even when persisted explicit-project metadata is absent.
     ...(conversationLoop.getSessionProjectIsDefault() ? { projectIsDefault: true } : {}),
-    // Same restore payload as `session-history`. Both are load paths: startup
-    // hydrates the active session through THIS handler, which is exactly the
-    // app-restart case where the live event stream is empty, so omitting it
-    // here would leave the panel blank in the one scenario that motivated it.
+    // Startup history must restore sub-agent rows because the prior process's live events are gone.
     restoredSubAgents: restoredSubAgentRows(deps, conversationLoop.getSessionId()),
     messages: messages.map(serializeHistoryMessage),
   };
 }
 
-/**
- * PUBLIC `ave:chat:session-history` — load messages for ANY session by id.
- *
- * Session-addressing note (#1409): this is a read that intentionally SUCCEEDS
- * for a non-active `sessionId` — it is the sidebar's preview path and never
- * changes the active session. It therefore does NOT fail closed with the
- * `session-not-active` code; behavior is preserved as-is (it never retargets
- * the active session, so there
- * is no cross-session mutation risk). See the C10 report for the session
- * addressing audit.
- */
+// Session-history previews may read non-active sessions without switching them; missing sessions return the stable empty shape.
 export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
   const { memoryManager } = deps;
   if (!isValidSessionId(sessionId)) {
     return { ok: false, messages: [] };
   }
-  // loadSession() reads the session JSONL via readFileSync; IO/parse errors
-  // propagate as throws. Catch them here so a corrupted session file or
-  // missing path doesn't reject the IPC call (which would surface as a
-  // renderer-side rejection rather than an empty result).
+  // Catch session I/O and parse failures so corrupted files do not reject renderer IPC.
   let loaded: unknown;
   try {
     loaded = memoryManager.loadSession(sessionId);
@@ -871,11 +684,7 @@ export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
     (m): m is GenericMessage =>
       m != null && typeof m === "object" && "role" in m && "content" in m,
   );
-  // Surface the rolling-summary preamble length so the renderer
-  // can prepend a `kind: "session_resume"` marker. We do not return the
-  // preamble text — it is system-prompt material, not chat history, and
-  // returning it would leak it into a UI surface that should only show a
-  // disclosure ("요약 N자 적용") rather than the verbatim summary.
+  // Return resume-preamble length only; its system-prompt text must not enter chat history.
   let preambleChars = 0;
   let sessionKind: SessionKind = "main";
   let sessionTitle: string | undefined;
@@ -897,7 +706,6 @@ export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
       preambleChars = typeof meta.summaryPreamble === "string" ? meta.summaryPreamble.length : 0;
     }
   } catch {
-    // Metadata file missing/corrupt — fall through with empty session-resume hint.
   }
   if (!sessionTitle) {
     sessionTitle = memoryManager
@@ -913,13 +721,7 @@ export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
     ...(routineFiredAt ? { routineFiredAt } : {}),
     ...(projectRoot ? { projectRoot } : {}),
     ...(projectName ? { projectName } : {}),
-    // Sub-agent rows rebuilt from disk. The renderer's panel is fed by the live
-    // `agent_spawn` event stream, which does not survive an app restart — the
-    // process that emitted those events is gone. Riding along with the history
-    // load puts restore on exactly the same trigger as the conversation it
-    // belongs to, rather than a second channel the renderer must remember to
-    // call. Rows only: a child's transcript loads on demand through this same
-    // handler, keyed by its own session id.
+    // Rebuild child rows from disk during history load; live spawn events do not survive restart.
     restoredSubAgents: restoredSubAgentRows(deps, sessionId),
     messages: raw.map(serializeHistoryMessage),
     preambleChars,

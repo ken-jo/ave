@@ -1,30 +1,12 @@
-/**
- * i18n catalog assembler — the pure half.
- *
- * Builds the barrel file contents in memory and returns them. Nothing here
- * touches the working tree, so the same function can answer two different
- * questions: `i18n-build-catalog.mjs` writes the result, and
- * `check-i18n-catalog-barrels.mjs` compares it against the committed bytes.
- * One authority for what a barrel should contain, rather than a writer and a
- * checker that each re-derive it and drift apart.
- *
- * The barrels only re-export and spread the per-surface fragments in this
- * directory; they hold no text of their own. Fragment order is therefore the
- * whole of what this produces, and it comes from `Array.prototype.sort` with
- * no comparator — UTF-16 code-unit order, which is fixed by the language spec
- * and identical on every platform. `readdirSync` order is not, which is
- * exactly why the sort is not optional.
- */
+// Share exact catalog output between the writer and byte-comparison guard.
 import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** Default location of the catalog sources: `src/i18n/messages`. */
 export const MESSAGES_DIR = join(HERE, "..", "src", "i18n", "messages");
 
-/** Fragment name → a safe JS identifier suffix. */
 function sanitize(name) {
   let id = name.replace(/[^A-Za-z0-9_]/g, "_");
   if (/^[0-9]/.test(id)) id = `_${id}`;

@@ -17,10 +17,7 @@ import { t } from "../i18n/index.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { parseResolvedModelPricing, type ModelUsageSegment } from "../shared/model-pricing.js";
 
-export type TokenUsageSegment = ModelUsageSegment<LLMVendor>;
-
-
-
+type TokenUsageSegment = ModelUsageSegment<LLMVendor>;
 
 export type CheckpointTrigger = "auto-compact" | "manual";
 
@@ -29,18 +26,11 @@ export const EMPTY_ASSISTANT_RESPONSE_TEXT = t("be_chatStreamState.emptyAssistan
 export type ChatStreamEvent = {
   type: string;
   streamId?: number;
-  /** Host-owned side-chat identity announced by the turn's user_message prelude. */
   sessionId?: string;
-  /** Correlates a side-chat prelude with the view that submitted its send. */
   sendRequestId?: string;
   text?: string;
-  /** Host-resolved input provenance carried by `user_message` frames. */
   origin?: string;
-  /**
-   * Durable identity of the history row a `user_message` / `assistant_round`
-   * frame is about. The transcript binds it onto the entry so later actions can
-   * name the row instead of counting to it.
-   */
+  /** Bind durable history ids so row actions do not depend on mutable transcript positions. */
   messageId?: string;
   thought?: string;
   name?: string;
@@ -48,7 +38,6 @@ export type ChatStreamEvent = {
   systemNotice?: "context-error" | "stream-error";
   result?: string;
   isError?: boolean;
-  /** Tool call halted by a user stop rather than failing. */
   cancelled?: boolean;
   input?: Record<string, unknown>;
   groupId?: string;
@@ -59,57 +48,37 @@ export type ChatStreamEvent = {
   source?: ToolSource;
   pluginId?: string;
   mcpServerId?: string;
-  /** Renderer-safe host shell substrate projection on tool completion. */
   executionPlan?: HostShellExecutionPlanAuditProjection;
   verdictLevel?: RiskLevel;
   approvalPurpose?: ApprovalPurposeSuggestion;
   roundIndex?: number;
   stopReason?: "end_turn" | "tool_use" | "max_tokens";
-  /** True only when the summarized turn naturally reached `end_turn`. */
   endedByEndTurn?: true;
   hasToolCalls?: boolean;
   removedMessages?: number;
   freedTokens?: number;
-  /** Post-compact actual history token estimate (renderer uses this to
-   *  refresh contextOverflowPct immediately; falls back to (lastKnown -
-   *  freedTokens) when missing). */
+  /** Use actual post-compact tokens when present, otherwise subtract freed tokens from the last estimate. */
   estimatedAfter?: number;
 
 
 
   triggerSource?: "estimate" | "context-tokens" | "manual" | "force-recover" | "rate-limit";
-  /**
-   * `recovery_exhausted` event — emitted when force-recover budget is fully
-   * consumed (#917). Renderer surfaces a persistent banner informing the user
-   * that auto-compact can no longer recover the session (compact cannot reduce
-   * context) and manual intervention is required (model change / new chat).
-   */
+  /** Exhausted recovery requires a persistent manual-action banner; compaction can no longer reduce context. */
   recoveryExhausted?: true;
   estimatedBefore?: number;
   preflight?: number;
-  /** Compact trigger on `compact_notice` — token preflight vs manual command. */
   trigger?: CheckpointTrigger;
-  /** Rolling summary attached to a compact checkpoint (rendered preamble). */
   summary?: string;
-  /** Compact sequence number on `compact_notice` — enables view/branch actions. */
   compactNum?: number;
 
 
 
   compactStatus?: "summarized" | "content_truncated" | "noop" | "reduced_insufficient_forced";
-  /** Truncation archive directory for original messages (CONTENT_TRUNCATED path). */
   truncatedDir?: string;
-  /**
-   * `guidance_injected` provenance — present when the whole injected batch was
-   * a sub-agent report, so the transcript renders the child-report box rather
-   * than the generic queued-message chip.
-   */
+  /** Batch provenance distinguishes child reports from ordinary queued guidance. */
   subAgentReport?: { title?: string };
-  /** Set to "command" on `done` events when the turn was a slash command. */
   route?: "command";
-  /** Permission mode changed by slash command; renderer fans this into the badge event bus. */
   mode?: ExecutionMode;
-  /** LLM call status events emitted before first stream content arrives. */
   phase?: "attempt" | "retry" | "fallback";
   label?: string;
   attempt?: number;
@@ -117,45 +86,25 @@ export type ChatStreamEvent = {
   from?: string;
   to?: string;
   reason?: string;
-  /** Optional MCP Apps UI payload emitted with tool_end events. */
   uiPayload?: McpUiPayload;
-  /**
-   * Wall-clock execution time of a single tool call (ms). Emitted on
-   * `tool_end` for every path (success, error, deny, rate-limit) so the
-   * renderer can show per-tool timing on each ToolGroupCard row.
-   */
+  /** Emit tool duration on every terminal path, including denial and rate limiting. */
   durationMs?: number;
-  /**
-   * Turn aggregate footer — emitted as a single `type: "turn_summary"` event
-   * after `done`. Carries totals computed in the conversation loop so the
-   * renderer never needs to re-aggregate per-tool / per-round numbers.
-   * `cumulativeToolMs` is summed from per-tool `durationMs` once available;
-   * may be 0 in aborted turns. `breakdown` is the optional per-tool
-   * dictionary used by the expand affordance.
-   */
+  /** Emit one aggregate footer after done; cumulative tool time may be zero on aborted turns. */
   turnDurationMs?: number;
   toolCount?: number;
   cumulativeToolMs?: number;
   tokensIn?: number;
   tokensOut?: number;
-  /**
-   * Turn-aggregate fresh input tokens (sum of per-round
-   * `inputTokens − cacheRead − cacheWrite`). Used by TokenCostBadge for the
-   * billing-weight headline + cost calc. Distinct from `tokensIn`, which is
-   * the engine-projected next request input SOT.
-   */
+  /** Fresh input sums input minus cache reads/writes; projected next-request input remains a separate context value. */
   freshInputTokens?: number;
 
 
 
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-  /** Provider/model that actually served the turn, after fallback resolution. */
   vendorProvider?: LLMVendor;
   vendorModel?: string;
-  /** Per provider request usage segments for request-granular cost math. */
   usageByModel?: TokenUsageSegment[];
-  /** Non-billable subscription-runtime usage, kept separate from API pricing. */
   subscriptionUsage?: SubscriptionUsageTelemetry[];
   breakdown?: Record<string, { count: number; ms: number }>;
 };
@@ -164,12 +113,7 @@ export type ToolEntryItem = {
   toolUseId: string;
   name: string;
   displayOrder: number;
-  /**
-   * `cancelled` is its own state rather than a flag beside `error` on purpose:
-   * every existing `status === "error"` check (badge, row styling, the group's
-   * hasError roll-up) then stops matching a user stop for free, instead of each
-   * one needing to remember to exclude it.
-   */
+  /** Cancelled is distinct from error so user stops cannot inherit failure styling or group error state. */
   status: "running" | "done" | "error" | "cancelled";
   input?: Record<string, unknown>;
   result?: string;
@@ -177,37 +121,18 @@ export type ToolEntryItem = {
   category?: ToolCategory;
   pluginId?: string;
   mcpServerId?: string;
-  /** Renderer-safe host shell substrate projection on tool completion. */
   executionPlan?: HostShellExecutionPlanAuditProjection;
-  /** Optional MCP Apps UI payload from MCP tool response. */
   uiPayload?: McpUiPayload;
-  /**
-   * Wall-clock execution duration in milliseconds. Set on tool completion
-   * (success or error). Used by ToolGroupCard to render `⏱ 1.4s` next to
-   * the tool name. Optional because running tools don't yet have a
-   * duration; once `status` flips to "done"/"error" this is populated.
-   */
+  /** Duration is absent while running and populated on completion. */
   durationMs?: number;
-  /**
-   * Wall-clock timestamp (Date.now()) captured when this tool transitions
-   * to "running" via applyToolStart. Read by ToolGroupCard to render a
-   * live ticking elapsed counter (`⏱ 0.3s`, `⏱ 1.4s`, ...) while the
-   * tool is in flight — so users can tell a long-running call is making
-   * progress vs. hung. Cleared by applyToolEnd in favor of `durationMs`.
-   */
+  /** Use start time for live elapsed display, then replace it with final duration. */
   startedAt?: number;
-  /**
-   * Tail of the live output a running host shell tool has printed so far,
-   * bounded by {@link LIVE_TOOL_OUTPUT_TAIL_CHARS}. Display state only:
-   * applyToolEnd clears it in favor of the bounded `result`.
-   */
+  /** Keep only a bounded live output tail; completion replaces it with the final result. */
   liveOutput?: string;
 };
 
-/** Characters of live tool output a transcript row keeps while running. */
 export const LIVE_TOOL_OUTPUT_TAIL_CHARS = 16 * 1024;
 
-/** Append live output to the running tool it belongs to; any other frame is ignored. */
 function applyToolOutput(
   entries: ChatEntry[],
   payload: { groupId: string; toolUseId: string; text: string },
@@ -242,66 +167,25 @@ export type ChatEntry =
   | {
       kind: "user";
       text: string;
-      /**
-       * External-surface provenance for a turn the desktop did not submit
-       * (loopback API, Tailnet controller, chat-platform bridge). Set only by
-       * `applyExternalUserMessage` from the live stream; the bubble itself
-       * persists through normal history, the badge is live-stream display
-       * state.
-       */
+      /** External-origin badges are live display state; message bodies still persist normally. */
       origin?: string;
-      /** `sub-agent` is a child's A2A report, not anything the user typed. */
       injectHint?: "queue" | "interrupt" | "sub-agent";
-      /** Sanitized child title shown on the sub-agent report box. */
       subAgentTitle?: string;
       createdAt?: number;
-      /**
-       * Durable identity of the history row this bubble was built from. It is
-       * how every action that addresses a past message (rewind, edit-and-resend,
-       * fork) names its target — a position would be rewritten by the next
-       * compaction while the entry kept pointing at the old number. Absent only
-       * for entries that have no row behind them.
-       */
+      /** Use durable row ids for rewind, edit, and fork; compaction invalidates positions. Only non-history entries lack ids. */
       messageId?: string;
-      /**
-       * This bubble is the optimistic echo of a send whose row the host has not
-       * announced yet, and it is the ONE entry the next `user.message` frame is
-       * allowed to claim.
-       *
-       * Explicit because "the oldest user entry without an id" is not the same
-       * set: queued and sub-agent guidance bubbles arrive mid-turn without one,
-       * a session written before ids existed loads without one, and an imported
-       * session has its metadata stripped. Any of those sitting earlier in the
-       * transcript would absorb the id meant for the message the user just
-       * sent, and the actions that name a row would then act on a different
-       * message than the one clicked.
-       *
-       * Renderer-local display state: nothing writes it to disk, and
-       * `historyToEntries` never sets it, so a reloaded transcript has none.
-       */
+      /** Only explicitly pending optimistic echoes may claim announced row ids; guidance and restored rows must never absorb them. This renderer-local marker is never persisted. */
       awaitingHostId?: true;
-      /**
-       * Rebuilt from persisted history (`historyToEntries`), not typed or
-       * announced in this renderer's lifetime. A restored question with nothing
-       * after it is a turn the previous app run never answered. Display state
-       * only — never persisted.
-       */
+      /** Restored unanswered questions belong to interrupted prior runs; this marker is display-only. */
       restored?: true;
     }
   | {
       kind: "reasoning";
       text: string;
       streaming?: boolean;
-      /** Wall clock of the first live delta (or the persisted creation time). */
       createdAt?: number;
-      /** Wall clock of the latest live delta: where the thinking stopped. */
       lastDeltaAt?: number;
-      /**
-       * How long the model thought: first live delta to the last one. Not to
-       * finalization, which only happens once the answer after the thinking
-       * has streamed too. Live turns only — a transcript loaded from disk has
-       * no reliable end time.
-       */
+      /** Measure thinking from first to last thinking delta, not answer finalization; replay has no reliable end time. */
       durationMs?: number;
     }
   | {
@@ -310,29 +194,16 @@ export type ChatEntry =
       streaming?: boolean;
       route?: "command";
       phase?: "status" | "work" | "final";
-      /** Durable identity of the assistant row this card was built from. */
       messageId?: string;
       createdAt?: number;
       systemNotice?: "context-error" | "stream-error";
-      /** The renderer settled because the turn failed, not because it completed. */
       terminalError?: true;
       interrupted?: boolean;
-      /** The interruption was the app exiting mid-turn (see MessageMeta.interruptedBy). */
       interruptedBy?: "host-exit";
-      /**
-       * Entry was rebuilt from persisted history rather than produced by the
-       * live stream. Stamped ONLY by the disk-replay path (historyToEntries);
-       * live streaming callers never set it. The renderer uses it at the
-       * single banner render point (AssistantCard) to soften a replayed
-       * systemNotice so an old error does not re-present as a fresh one
-       * (Issue #2113). Display state only — never persisted.
-       */
+      /** Only disk replay marks restored entries so old system notices do not appear as fresh errors; never persist this display state. */
       restored?: boolean;
     }
-  // Permission review verdict for one tool call. The entry is never removed
-  // once created — it is the audit trail of what the reviewer decided, and the
-  // renderer attaches it to the matching tool row (standalone only while no
-  // tool row exists for its toolUseId).
+  // Keep reviewer entries as audit history; attach them to matching tools and render standalone only until the tool exists.
   | {
       kind: "permission_review";
       status: PermissionReviewStatus;
@@ -355,113 +226,64 @@ export type ChatEntry =
       rows: Array<{ label: string; value: string }>;
     }
   | { kind: "system"; text: string }
-  // Structured compact checkpoint marker. The trigger distinguishes
-  // token-preflight compaction from manual `/compact`; sessionId remains
-  // unchanged unless the user explicitly branches from the checkpoint.
+  // Compaction checkpoints retain session identity unless the user explicitly branches.
   | {
       kind: "checkpoint";
       trigger?: CheckpointTrigger;
       removedMessages: number;
       freedTokens: number;
       summary?: string;
-      /** Compact sequence number — enables view/branch actions on CheckpointDivider. */
       compactNum?: number;
 
 
 
       compactStatus?: "summarized" | "content_truncated" | "noop" | "reduced_insufficient_forced";
-      /** Truncation archive directory for original messages (CONTENT_TRUNCATED path). */
       truncatedDir?: string;
     }
-  // Marker placed at the head of a resumed session when a rolling
 
-
-  // builder. `preambleChars` is the actual character count after the
-  // 8 000-char cap; renderer formats the label.
   | {
       kind: "session_resume";
       preambleChars: number;
     }
-  // Hidden carrier for post-compact context usage. Unlike turn_summary,
-  // this is a compact-result estimate, not provider-reported per-turn billing
-  // data. Session replay does not synthesize this carrier.
+  // Post-compact context estimates are not provider billing usage; replay must not synthesize them.
   | {
       kind: "context_usage";
       tokensIn: number;
       source: "compact-estimate";
     }
 
-  // trigger session ran in an isolated ConversationLoop; once imported,
-  // its prompt enters the main chat loop, but the visible entry is only
-  // an input provenance marker. Assistant output, tool groups, and
-  // turn_summary entries continue through the normal chat renderer.
-  // Rendering the prompt as a user-message bubble would be wrong on two axes:
+  // Keep imported trigger prompts as provenance markers; normal chat entries carry assistant output and usage.
 
-  //      a synthetic routing prefix misattributes authorship.
-  //   2. The trigger session is intentionally distinct from chat —
-  //      flattening it to user→assistant pair erases the overlay-trigger
-  //      provenance the user needs to triage what just happened.
+  // Do not flatten isolated trigger prompts into user-authored messages or erase their origin.
   | {
       kind: "imported_trigger";
-      /** Trigger session id (from the isolated loop). */
       sessionId: string;
-      /** Origin tag, e.g. "overlay:meeting-detection". */
       source: string;
-      /** Plugin-authored templated prompt — shown collapsed by default. */
       prompt: string;
-      /** Overlay prompt summary (toast preview). */
       summary: string;
-      /** Number of tool calls the trigger session made (0+). */
       toolCallCount: number;
-      /** Wall-clock timestamp the import landed. */
       importedAt: string;
     }
-  // Turn aggregate footer — appended after the final assistant entry of a
-  // turn. Carries the totals shown by `TurnSummaryFooter` (step count,
-  // wall-clock duration, token usage from the LLM provider, optional
-  // per-tool breakdown). Persisted alongside other history entries so the
-  // footer survives chat reloads and historical session rendering.
+  // Persist aggregate footers so turn totals survive reload.
   | {
       kind: "turn_summary";
-      /** True only for a natural `end_turn`, never inferred from usage. */
       endedByEndTurn?: true;
       turnDurationMs: number;
       toolCount: number;
-      /**
-       * Cumulative per-tool wall-clock ms summed across the turn. May be 0
-       * when the executor has not yet been instrumented with durationMs; the
-       * renderer treats 0 as "per-tool slice unavailable" and elides it
-       * from the footer summary line.
-       */
+      /** Zero cumulative tool time means unavailable; hide that footer slice. */
       cumulativeToolMs: number;
-      /**
-       * Turn-end projected context input. TokenProgressRing and the footer use
-       * this same value so the user sees one context-fill SOT.
-       */
+      /** Use the same projected context input for the footer and progress ring. */
       tokensIn: number;
-      /**
-       * Turn-aggregate fresh input tokens (excludes cache reads/writes).
-       * TokenCostBadge uses this for the billing-weight headline and cost
-       * calculation. Required at emit time — engine always computes it now.
-       */
+      /** Fresh billing input excludes cache reads and writes and is required at emit time. */
       freshInputTokens: number;
       tokensOut: number;
-      /**
-       * Anthropic prompt cache breakdown. Optional — only set when the
-       * provider reported non-zero cache read/write for this turn. Required
-       * for the AssistantCard cost badge tooltip to show fresh vs cached
-       * split + correct billable equivalent.
-       */
+      /** Optional cache breakdown is present only when nonzero usage was reported. */
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
-      /** Provider/model that actually served the turn, after fallback resolution. */
       vendorProvider?: LLMVendor;
       vendorModel?: string;
-      /** Per provider request usage segments for request-granular cost math. */
       usageByModel?: TokenUsageSegment[];
-      /** Non-billable subscription-runtime usage, with its explicit provenance. */
       subscriptionUsage?: SubscriptionUsageTelemetry[];
-      /** Per-tool aggregate (`{ count, ms }` per tool name). Omitted when no tools ran. */
       breakdown?: Record<string, { count: number; ms: number }>;
     };
 
@@ -471,11 +293,7 @@ type UserEntry = Extract<ChatEntry, { kind: "user" }>;
 type ToolGroupEntry = Extract<ChatEntry, { kind: "tool_group" }>;
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
 
-/**
- * Copies only renderer-safe subscription telemetry from an IPC or persisted
- * payload. Individual malformed segments are discarded rather than exposing
- * raw runtime data through the transcript.
- */
+/** Copy only safe subscription telemetry and discard malformed segments. */
 export function normalizeSubscriptionUsageList(
   value: unknown,
 ): SubscriptionUsageTelemetry[] | undefined {
@@ -491,18 +309,7 @@ function isTurnStartEntry(entry: ChatEntry | undefined): boolean {
   return entry?.kind === "user" || entry?.kind === "imported_trigger";
 }
 
-/**
- * The assistant entry of the turn currently at the end of the transcript —
- * the one an abort or an interrupting send cuts short. Walking back from the
- * end, the first assistant entry wins; crossing a turn start first means the
- * current turn has produced no assistant entry yet (a tool round), and the
- * previous turn's answer is not touched.
- *
- * An injected user line (queued guidance, a sub-agent report) lands inside a
- * running turn as well as at the start of a drained one. Crossing one, the
- * answer before it is still this turn's only while it is streaming; a
- * finished answer behind an injected line belongs to the turn before.
- */
+/** Stop at a turn boundary before touching older answers; injected guidance belongs to this turn only while the preceding answer is streaming. */
 function currentTurnAssistantIdx(entries: readonly ChatEntry[]): number {
   let crossedInjectedLine = false;
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -527,13 +334,11 @@ export function markTurnAssistantInterrupted(entries: ChatEntry[]): ChatEntry[] 
   const entry = entries[idx] as AssistantEntry;
   if (entry.interrupted) return entries;
   const next = [...entries];
-  // `streaming` is left to the turn's own closing frame; the finalizer finds
-  // the entry to close by that flag.
+  // Leave streaming set until the turn's closing frame can locate the entry.
   next[idx] = { ...entry, interrupted: true };
   return next;
 }
 
-/** Undo `markTurnAssistantInterrupted` for a send the host then refused. */
 export function clearTurnAssistantInterrupted(entries: ChatEntry[]): ChatEntry[] {
   const idx = currentTurnAssistantIdx(entries);
   if (idx < 0) return entries;
@@ -550,51 +355,25 @@ export function appendUserEntry(
   text: string,
   injectHint?: "queue" | "interrupt",
 ): ChatEntry[] {
-  // Stamp createdAt at construction so the live UI shows the original send
-  // time (and the calendar's per-day jump indexer sees the entry) before
-  // the next session reload pulls it through historyToEntries.
-  // Without this, the engine's ConversationHistory.append() stamp lives on
-  // a parallel array the renderer doesn't share — the UI would show no
-  // timestamp on fresh turns until the user reopens the session.
+  // Stamp optimistic entries immediately so live timestamps and day indexing match later history replay.
   return [
     ...entries,
     {
       kind: "user",
       text,
       createdAt: Date.now(),
-      // Marks THIS bubble as the one the host is about to announce a row for.
       awaitingHostId: true,
       ...(injectHint ? { injectHint } : {}),
     },
   ];
 }
 
-/**
- * Apply a `user_message` stream frame — the timeline's record of the input that
- * started a turn, and of the history row the host minted for it. Every turn
- * emits exactly one regardless of origin ("one stream, two origins"), and this
- * is the desktop transcript's single normalization point for it.
- *
- * Two shapes of the same job, because a turn reaches this transcript one of two
- * ways and both end with the frame's row bound to the entry that stands for it:
- *
- *   - an EXTERNAL surface submitted it (bridge / Tailnet / loopback), so no
- *     bubble exists yet and the frame appends one;
- *   - THIS surface submitted it and already echoed a bubble optimistically at
- *     send time, so the frame binds its id to that bubble.
- *
- * The optimistic echoes are matched in arrival order — the oldest bubble still
- * missing an id belongs to the oldest turn still waiting to be announced, which
- * is the order the host announces them in.
- */
+/** Append external inputs and reconcile local optimistic echoes in arrival order, binding the host's durable row id. */
 export function applyUserMessageFrame(
   entries: ChatEntry[],
   frame: { text?: string; origin?: string; messageId?: string; hostSubmitted?: boolean },
 ): ChatEntry[] {
-  // `hostSubmitted` is the host saying it started this turn itself (a session
-  // goal reviving), so there is no optimistic bubble waiting for it here. The
-  // origin cannot answer that: it says where the TEXT came from, not who
-  // pressed send, and the same origin is used by turns this surface did echo.
+  // Host-submitted turns have no local echo; text origin alone cannot identify who initiated a turn.
   if (frame.hostSubmitted === true || isExternalSurfaceInputOrigin(frame.origin)) {
     const text = typeof frame.text === "string" ? frame.text : "";
     if (text.length === 0) return entries;
@@ -610,10 +389,7 @@ export function applyUserMessageFrame(
     ];
   }
   if (frame.messageId === undefined) return entries;
-  // Only a bubble that explicitly declared itself the pending echo may be
-  // claimed, and it is claimed once. Entries that merely happen to lack an id
-  // — guidance bubbles, a legacy session's rows, an imported session — are not
-  // waiting for anything and must never absorb this turn's identity.
+  // Claim each explicitly pending echo once; missing ids on guidance, imported, or legacy rows do not qualify.
   const pending = entries.findIndex((e) => e.kind === "user" && e.awaitingHostId === true);
   if (pending < 0) return entries;
   const next = [...entries];
@@ -622,30 +398,14 @@ export function applyUserMessageFrame(
   return next;
 }
 
-/**
- * Undo the optimistic user bubble when the send it was appended for was REFUSED.
- *
- * The bubble is appended before the IPC resolves so the turn feels immediate. When the
- * send is rejected — a bound exceeded, a gate refusing the origin — main never recorded
- * that turn, so leaving the bubble puts a message in the transcript that exists only in
- * the renderer: it survives until reload, it is not in any session file, and the user
- * has no way to tell it never went.
- *
- * Removes the LAST entry only if it is still the user bubble. Stream frames for a
- * previous turn can land in between, and dropping whatever happens to be last would
- * delete someone else's content.
- */
+/** Remove only the rejected send's optimistic bubble; delayed prior-turn frames must not cause another entry to be deleted. */
 export function dropOptimisticUserEntry(entries: ChatEntry[], text: string): ChatEntry[] {
   const last = entries[entries.length - 1];
   if (!last || last.kind !== "user" || last.text !== text) return entries;
   return entries.slice(0, -1);
 }
 
-/**
- * Append the consolidated card for an accepted overlay trigger. Idempotent
- * on `sessionId` so a re-emitted import event (renderer reload, IPC
- * retry) doesn't insert two cards for the same trigger.
- */
+/** Deduplicate imported trigger cards by session id across reload and delivery retries. */
 export function appendImportedTriggerEntry(
   entries: ChatEntry[],
   payload: {
@@ -679,30 +439,16 @@ export function upsertStreamingReasoning(
   }
 
   const next = [...entries];
-  const reasoningIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "reasoning" }> =>
-      entry.kind === "reasoning" && !!entry.streaming,
-  );
+  const reasoningIdx = streamingEntryIdx(next, "reasoning");
 
   if (reasoningIdx >= 0) {
-    // Keep the start time of the first delta; the text grows and the end moves.
     next[reasoningIdx] = { ...(next[reasoningIdx] as ReasoningEntry), text, streaming: true, lastDeltaAt: Date.now() };
     return next;
   }
   const now = Date.now();
   const reasoning = { kind: "reasoning" as const, text, streaming: true, createdAt: now, lastDeltaAt: now };
 
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
-  if (assistantIdx >= 0) {
-    next.splice(assistantIdx, 0, reasoning);
-  } else {
-    next.push(reasoning);
-  }
+  insertReasoning(next, reasoning);
   return next;
 }
 
@@ -789,11 +535,7 @@ export function finalizeStreamingReasoning(
   fallbackText: string,
 ): ChatEntry[] {
   const next = [...entries];
-  const reasoningIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "reasoning" }> =>
-      entry.kind === "reasoning" && !!entry.streaming,
-  );
+  const reasoningIdx = streamingEntryIdx(next, "reasoning");
 
   if (reasoningIdx >= 0) {
     const reasoning = next[reasoningIdx] as ReasoningEntry;
@@ -822,16 +564,7 @@ export function finalizeStreamingReasoning(
     text: fallbackText,
     streaming: false,
   };
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
-  if (assistantIdx >= 0) {
-    next.splice(assistantIdx, 0, reasoning);
-  } else {
-    next.push(reasoning);
-  }
+  insertReasoning(next, reasoning);
   return next;
 }
 
@@ -842,123 +575,45 @@ export function finalizeStreamingAssistant(
     route?: "command";
     phase?: "work" | "final";
     overrideText?: string;
-    /**
-     * Durable identity of the assistant row this entry represents. Supplied by
-     * disk replay from the persisted row, and by the live path once the host
-     * announces the row it appended for the round. Sticky on re-finalize: a
-     * later round in the same turn re-points the entry at the row that now
-     * holds the answer, but an omitted id never clears one already learned.
-     */
+    /** Keep learned row ids when omitted on re-finalization; later rounds may explicitly replace them. */
     messageId?: string;
-    /**
-     * Persisted creation timestamp from disk replay. When supplied, overrides
-     * the live `Date.now()` stamp so reloaded sessions show the original turn
-     * time. Live streaming callers omit this — the live path stamps Date.now().
-     */
+    /** Replay timestamps override live construction time so reload preserves original turn dates. */
     createdAt?: number;
-    /**
-     * Issue #911 — when the assistant message is a host-emitted system
-     * notice (context-error, stream-error), pass the marker through so
-     * the renderer can apply destructive styling. Reload path reads this
-     * from `SerializedHistoryMessage.systemNotice`; live path emits it
-     * from `conversation-loop.ts` when stream.kind === "context_error"
-     * / "stream_error".
-     */
+    /** Preserve host system-notice markers on both live and replay paths for error styling. */
     systemNotice?: "context-error" | "stream-error";
-    /**
-     * The turn this assistant message belongs to was aborted. Live streaming
-     * marks the entry through `markStreamingAssistantInterrupted`; the reload
-     * path has no such event and can only learn it from the persisted
-     * `SerializedHistoryMessage.interrupted`, so `historyToEntries` passes it
-     * here. Before it was consumed the flag was passed and silently dropped,
-     * and the "interrupted" badge a user saw live disappeared on reload —
-     * a finished-looking turn that had in fact been cut short.
-     *
-     * Sticky: once an entry carries the marker, a later re-finalize never
-     * clears it (an abort is a fact about the turn, not about the render).
-     */
+    /** Restore persisted interruption markers on replay and never clear them on re-finalization. */
     interrupted?: boolean;
-    /** Sticky like `interrupted`: the app exiting is what cut this turn short. */
     interruptedBy?: "host-exit";
-    /**
-     * Issue #2113 — the entry is being rebuilt from persisted history.
-     * Passed ONLY by the disk-replay caller (historyToEntries); live
-     * streaming callers never set it, so a live systemNotice banner and a
-     * replayed one stay distinguishable at the render point.
-     */
+    /** Only replay marks restored entries so live and historical system notices remain distinguishable. */
     restored?: boolean;
   },
 ): ChatEntry[] {
   const next = [...entries];
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
+  const assistantIdx = streamingEntryIdx(next, "assistant");
 
   if (assistantIdx >= 0) {
     const assistant = { ...(next[assistantIdx] as AssistantEntry) };
     const text = opts?.overrideText !== undefined ? opts.overrideText : assistant.text || fallbackText;
     if (!text) {
-      // Preserve the entry (with empty text) when this turn produced
-      // tool_group or checkpoint siblings — those cards already render the
-      // turn's content and the entry must stay so the history timeline is
-      // intact.  Only splice when the entry is truly orphaned (no siblings
-      // in the current turn).
-      // The turn that owns this entry starts before it and ends where the
-      // next one starts — a question the user sent while this turn was still
-      // closing is not one of its siblings.
+      // Keep empty assistant rows with same-turn tool or checkpoint siblings; splice only orphans without crossing turn boundaries.
       const turnStartIdx = findLastIdx(next.slice(0, assistantIdx), isTurnStartEntry);
       const nextTurnStartIdx = next.findIndex((e, i) => i > assistantIdx && isTurnStartEntry(e));
       const hasTurnSiblings = next
         .slice(turnStartIdx + 1, nextTurnStartIdx === -1 ? next.length : nextTurnStartIdx)
         .some((e) => e.kind === "tool_group" || e.kind === "checkpoint");
-      if (hasTurnSiblings) {
-        next[assistantIdx] = {
-          ...assistant,
-          text: "",
-          streaming: false,
-          route: opts?.route,
-          phase: opts?.phase,
-          createdAt: opts?.createdAt ?? assistant.createdAt ?? Date.now(),
-          ...(opts?.messageId ?? assistant.messageId
-            ? { messageId: opts?.messageId ?? assistant.messageId }
-            : {}),
-          ...(opts?.systemNotice !== undefined
-            ? { systemNotice: opts.systemNotice }
-            : assistant.systemNotice !== undefined
-              ? { systemNotice: assistant.systemNotice }
-              : {}),
-          ...(opts?.interrupted === true || assistant.interrupted === true
-            ? { interrupted: true }
-            : {}),
-          ...(opts?.interruptedBy ?? assistant.interruptedBy
-            ? { interruptedBy: opts?.interruptedBy ?? assistant.interruptedBy }
-            : {}),
-          ...(opts?.restored === true || assistant.restored === true
-            ? { restored: true }
-            : {}),
-        };
+      if (!hasTurnSiblings) {
+        next.splice(assistantIdx, 1);
         return next;
       }
-      next.splice(assistantIdx, 1);
-      return next;
     }
     next[assistantIdx] = {
       ...assistant,
       text,
       streaming: false,
-      // Always write the `route` field (even as `undefined`) so that stale
-      // route values set during streaming intermediate state are explicitly
-      // cleared rather than preserved via the spread. Each finalize call is
-      // a complete state transition — there is no valid case where a
-      // finalized entry should inherit a streaming-era route.
+      // Always assign route, including undefined, so finalization clears stale streaming state.
       route: opts?.route,
       phase: opts?.phase,
-      // Stamp createdAt at first finalization so the live TurnActionBar shows
-      // the original turn time — without this the timestamp prop is undefined
-      // until the next session reload, defeating the PR's user-visible goal.
-      // Preserve existing createdAt on re-finalize (idempotency).
+      // Stamp the first finalization time and preserve it on later finalizations.
       createdAt: opts?.createdAt ?? assistant.createdAt ?? Date.now(),
       ...(opts?.messageId ?? assistant.messageId
         ? { messageId: opts?.messageId ?? assistant.messageId }
@@ -981,23 +636,13 @@ export function finalizeStreamingAssistant(
     return next;
   }
 
-  // A replayed host-exit marker has no text by design — it only says where
-  // the app's exit stopped the turn — and still needs its card: the badge is
-  // the record, and the composer's Continue offer keys off it.
+  // Textless host-exit markers still need cards for interruption badges and Continue actions.
   const isRestoredExitMarker = opts?.restored === true && opts.interruptedBy === "host-exit";
   if (!fallbackText && !isRestoredExitMarker) {
     return next;
   }
 
-  // No streaming assistant in `entries` — this is either the disk-replay
-  // path (historyToEntries) or an edge case where the reasoning-only turn
-  // produced an assistant out of order. On the replay path, persisted
-  // `opts.createdAt` carries the original turn time when available. When
-  // the persisted message has NO createdAt (legacy session written before
-  // per-message stamping shipped), leave the field undefined — the UI
-  // renders nothing rather than fake the load time as the original time
-  // (CLAUDE.md "No Fallback Code"). Live callers (which DO want a stamp)
-  // reach the streaming-entry branch above, not this push branch.
+  // Replay without an original timestamp must leave it absent rather than inventing the load time.
   next.push({
     kind: "assistant",
     text: fallbackText,
@@ -1020,33 +665,19 @@ export function setAssistantError(
   fallbackThought: string = "",
   systemNotice?: "context-error" | "stream-error",
 ): ChatEntry[] {
-  // Issue #911 — live error path. When the caller knows the error is a
-  // host-emitted system notice (context-error / stream-error), stamp the
-  // marker so AssistantCard renders destructive styling immediately,
-  // matching what reload sees from jsonl. Without this, the user sees the
-  // error first as a normal assistant reply and only gets the red banner
-  // after refreshing the session.
+  // Stamp live host-error notices immediately so styling matches replay.
   const next = finalizeStreamingReasoning(entries, fallbackThought);
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
+  const assistantIdx = streamingEntryIdx(next, "assistant");
 
   const current = assistantIdx >= 0 ? (next[assistantIdx] as AssistantEntry) : undefined;
-  // A turn the user cut short keeps whatever it had delivered — possibly
-  // nothing; the closing error is the abort itself, not something to show
-  // in its place.
+  // Aborts retain partial content, even empty; do not replace it with an error message.
   const interrupted = current?.interrupted === true;
   const baseEntry: AssistantEntry = {
     ...current,
     kind: "assistant" as const,
     text: interrupted ? current?.text ?? "" : message,
     streaming: false,
-    // A user-stopped partial response retains its already-stamped lifecycle
-    // phase; terminalError still prevents it from being presented as a clean
-    // completed turn. A provider-status placeholder, by contrast, must lose
-    // its status identity when the terminal error replaces it.
+    // Retain partial-response lifecycle state on abort; remove provider-status identity when a terminal error replaces it.
     phase: interrupted ? current?.phase : undefined,
     terminalError: true,
     ...(systemNotice !== undefined ? { systemNotice } : {}),
@@ -1186,7 +817,6 @@ export function applyToolEnd(
     toolUseId: string;
     result?: string;
     isError?: boolean;
-    /** User stopped the turn mid-call — rendered as halted, not failed. */
     cancelled?: boolean;
     uiPayload?: ToolEntryItem["uiPayload"];
     durationMs?: number;
@@ -1294,15 +924,7 @@ function askUserAnswerEntryFromTool(
   };
 }
 
-/**
- * Render one `ask_user_question` answer as a single line, for the transcript
- * recap row and the card's confirm-step review.
- *
- * Each half is labelled because a picked label and a typed sentence are
- * different kinds of thing: joining them into one comma list reads as a longer
- * selection and loses which part the user wrote. Returns `""` when the answer
- * carries neither, so the caller can drop the row.
- */
+/** Label picked and typed answers separately; return empty when neither exists. */
 export function formatAskUserAnswer(choices: string[], freeText?: string): string {
   const parts: string[] = [];
   if (choices.length > 0) {
@@ -1352,6 +974,15 @@ function findLastIdx<T>(items: T[], predicate: (value: T) => boolean): number {
   return -1;
 }
 
+function streamingEntryIdx(entries: ChatEntry[], kind: "assistant" | "reasoning"): number {
+  return findLastIdx(entries, (entry) => entry.kind === kind && !!entry.streaming);
+}
+
+function insertReasoning(entries: ChatEntry[], reasoning: ReasoningEntry): void {
+  const assistantIdx = streamingEntryIdx(entries, "assistant");
+  entries.splice(assistantIdx < 0 ? entries.length : assistantIdx, 0, reasoning);
+}
+
 function getAdjacentToolGroupIndex(entries: ChatEntry[]): number {
   if (entries[entries.length - 1]?.kind === "tool_group") {
     return entries.length - 1;
@@ -1359,24 +990,11 @@ function getAdjacentToolGroupIndex(entries: ChatEntry[]): number {
   return -1;
 }
 
-// ─── Frame → transcript (shared by the main and the side chat) ───────────
-//
-// The two chat surfaces used to carry their own copies of "what does this
-// stream frame do to the entry list", and the copies drifted: the side chat
-// never dropped the provider-status placeholder, dropped `cancelled` and the
-// MCP UI payload on `tool_end`, and lost the per-tool breakdown on
-// `turn_summary`. Everything below is the one answer; the hooks keep only what
-// is theirs — the streamed-text accumulators, the stream-id guard, and the
-// compact/status flags around a frame.
+// Share transcript frame reduction across chat surfaces; hooks retain only stream-local state.
 
 type TurnSummaryEntry = Extract<ChatEntry, { kind: "turn_summary" }>;
 
-/**
- * The assistant placeholder that carries a provider status line ("retrying
- * 2/5…") while nothing has streamed yet. Any real frame supersedes it — the
- * first reasoning delta, a tool starting, a permission verdict, the turn
- * closing — so the status never lingers above the actual reply.
- */
+/** Any real activity or closing frame supersedes the provider-status placeholder. */
 export function dropPendingLlmStatusAssistant(entries: ChatEntry[]): ChatEntry[] {
   const idx = findLastIdx(
     entries,
@@ -1389,7 +1007,6 @@ export function dropPendingLlmStatusAssistant(entries: ChatEntry[]): ChatEntry[]
   return [...entries.slice(0, idx), ...entries.slice(idx + 1)];
 }
 
-/** A reasoning delta: the accumulated thought replaces any pending status line. */
 export function applyReasoningDelta(entries: ChatEntry[], thought: string): ChatEntry[] {
   return upsertStreamingReasoning(dropPendingLlmStatusAssistant(entries), thought);
 }
@@ -1436,10 +1053,7 @@ function parseUsageByModel(value: unknown): TurnSummaryEntry["usageByModel"] | u
   return parsed.length > 0 ? parsed : undefined;
 }
 
-/**
- * The validated totals of a `turn_summary` frame, or `null` when any required
- * count is missing or not a finite non-negative number.
- */
+/** Reject summary totals missing finite non-negative counts. */
 export function parseTurnSummaryEvent(ev: ChatStreamEvent): Pick<
   TurnSummaryEntry,
   | "endedByEndTurn"
@@ -1492,17 +1106,11 @@ const TRANSCRIPT_FRAME_TYPES: ReadonlySet<ChatStreamEvent["type"]> = new Set<Cha
   "compact_notice",
 ]);
 
-/** Frames whose transcript effect is a function of the frame and the entries alone. */
 export function isTranscriptFrame(ev: ChatStreamEvent): boolean {
   return TRANSCRIPT_FRAME_TYPES.has(ev.type);
 }
 
-/**
- * Apply one {@link isTranscriptFrame} frame to the entry list. A frame that
- * fails its own field guard, or that this reducer does not own, leaves the
- * list untouched — the caller's other branches (text, reasoning, round close,
- * done, error) read hook-local state and stay in the hooks.
- */
+/** Ignore invalid or unowned frames; text and closing branches retain hook-local state. */
 export function applyTranscriptFrame(entries: ChatEntry[], ev: ChatStreamEvent): ChatEntry[] {
   switch (ev.type) {
     case "permission_review": {
@@ -1559,8 +1167,6 @@ export function applyTranscriptFrame(entries: ChatEntry[], ev: ChatStreamEvent):
       });
     }
     case "turn_summary": {
-      // Appended as its own entry so the footer survives session reload and
-      // historical rendering instead of being re-derived from per-tool frames.
       const summary = parseTurnSummaryEvent(ev);
       if (!summary) {
         console.warn("Malformed turn_summary stream event ignored", ev);
@@ -1578,8 +1184,6 @@ export function applyTranscriptFrame(entries: ChatEntry[], ev: ChatStreamEvent):
       ];
     }
     case "compact_notice": {
-      // A structured checkpoint divider (plus the post-compact context estimate
-      // when the engine reports a reliable one) rather than string-matched prose.
       const estimatedAfter = ev.estimatedAfter;
       const checkpointEntry = {
         kind: "checkpoint" as const,

@@ -1,12 +1,4 @@
-/**
- * Cross-navigation chat scroll store.
- *
- * Owns the module-level scroll-position singletons that MUST outlive any
- * ChatView mount so that switching sessions (or remounting the view) restores
- * the reader's prior scroll offset. `use-chat-scroll.ts` is the ONLY consumer;
- * the singletons live here (never duplicated) because a per-mount copy would
- * lose cross-navigation scroll state (the exact regression this module guards).
- */
+/** Scroll positions live outside ChatView mounts so session switches and remounts restore the reader's offset. */
 
 /** Below this bottom gap (px) the viewport counts as "pinned to bottom". */
 export const CHAT_BOTTOM_THRESHOLD_PX = 96;
@@ -59,8 +51,8 @@ export function commitScrollSnapshot(
     return;
   }
   lastSavedChatScrollPosition = snapshot;
-  // Falsy session id ("" before first session resolves, or null) is not keyed
-  // into the per-session map — only `lastSavedChatScrollPosition` tracks it.
+  // Falsy session id ("" before first session resolves, or null) is not keyed into the per-session map — only
+  // `lastSavedChatScrollPosition` tracks it.
   if (!snapshot.sessionId) return;
   savedChatScrollPositions.set(snapshot.sessionId, snapshot);
   pruneSavedChatScrollPositions();

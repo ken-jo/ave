@@ -1,11 +1,6 @@
-/**
- * Rich owner-surface compatibility adapter.
- *
- * The platform timeline is the only producer source. This adapter translates
- * its semantic events into the existing Electron IPC and loopback SSE frame
- * shape while the renderer migrates to the platform contract.
- */
+// Adapt the canonical semantic timeline to legacy IPC and SSE frames.
 import { CHANNELS } from "../contract/app-contract.js";
+import { createStreamBroadcaster } from "./stream-broadcaster.js";
 import type {
   LegacyChatStreamSink,
   PlatformConversationEvent,
@@ -15,16 +10,13 @@ import type {
 } from "../engine/conversation-platform-protocol.js";
 export { createPlatformTurnId } from "../engine/conversation-platform-protocol.js";
 
-/** A legacy `(channel, payload)` stream source, suitable for the existing SSE server. */
 export interface LegacyChatStreamEventSource {
   subscribe(fn: LegacyChatStreamSink): () => void;
   subscriberCount(): number;
 }
 
 export interface LegacyChatStreamProjectionOptions {
-  /** Existing renderer stale-frame correlation id, if the turn owns one. */
   readonly streamId?: number;
-  /** Active side-chat session captured by its host send handler. */
   readonly sessionId?: string;
   readonly sendRequestId?: string;
   readonly streamChannel?: string;
@@ -36,10 +28,7 @@ interface LegacyChatStreamFrame {
   readonly payload: Record<string, unknown>;
 }
 
-/**
- * Translate one semantic event into the old owner-only wire frame. This is the
- * only place where the legacy event names and numeric stream id are known.
- */
+// Keep legacy event names and numeric stream ids confined to this adapter.
 function projectPlatformConversationEventToLegacyChatFrame(
   event: PlatformConversationEvent,
   options: LegacyChatStreamProjectionOptions = {},
@@ -165,9 +154,7 @@ function projectPlatformConversationEventToLegacyChatFrame(
     case "guidance.dropped":
       return streamFrame(streamChannel, withStreamId({ type: "guidance_dropped", text: event.text }));
     case "loop.decision":
-      // The renderer draws conversations, not the loop's control flow, and the
-      // legacy frame vocabulary is the renderer's. Readers that want decisions
-      // read the platform events directly (`--exec --exec-output=stream-json`).
+      // Conversation frames omit loop decisions; decision consumers read platform events directly.
       return undefined;
     case "suggestions.updated":
       return streamFrame(streamChannel, withStreamId({ type: "suggested_replies", reply: event.reply }));
@@ -177,7 +164,6 @@ function projectPlatformConversationEventToLegacyChatFrame(
         ...(event.route === "command" ? { route: "command" } : {}),
       }));
     case "privacy.redacted":
-      // Historical redaction notices were emitted before a stream id was bound.
       return streamFrame(streamChannel, {
         type: "redact_notice",
         count: event.count,
@@ -186,7 +172,6 @@ function projectPlatformConversationEventToLegacyChatFrame(
   }
 }
 
-/** Create a compatibility sink for side chat's deliberately isolated loop. */
 export function createLegacyChatStreamEventSink(
   sink: LegacyChatStreamSink,
   options: LegacyChatStreamProjectionOptions,
@@ -197,27 +182,23 @@ export function createLegacyChatStreamEventSink(
     try {
       sink(frame.channel, frame.payload);
     } catch {
-      // Existing display-side delivery is best effort.
     }
   };
 }
 
-/**
- * Subscribe Electron or the existing loopback SSE endpoint to the common
- * semantic timeline. It cannot publish into that timeline.
- */
+// Display adapters may subscribe to the semantic timeline but cannot publish to it.
 export function createPlatformConversationLegacyStreamAdapter(
   timeline: PlatformConversationTimeline,
 ): LegacyChatStreamEventSource {
-  const subscribers = new Set<LegacyChatStreamSink>();
+  const broadcaster = createStreamBroadcaster();
   let unsubscribeTimeline: (() => void) | undefined;
 
   const attach = () => {
-    if (unsubscribeTimeline || subscribers.size === 0) return;
+    if (unsubscribeTimeline || broadcaster.subscriberCount() === 0) return;
     unsubscribeTimeline = timeline.subscribe(deliver).unsubscribe;
   };
   const detach = () => {
-    if (subscribers.size !== 0 || !unsubscribeTimeline) return;
+    if (broadcaster.subscriberCount() !== 0 || !unsubscribeTimeline) return;
     unsubscribeTimeline();
     unsubscribeTimeline = undefined;
   };
@@ -226,28 +207,22 @@ export function createPlatformConversationLegacyStreamAdapter(
       streamId: readStreamIdFromTurnId(envelope.turnId),
     });
     if (!frame) return;
-    for (const subscriber of [...subscribers]) {
-      try {
-        subscriber(frame.channel, frame.payload);
-      } catch {
-        // A broken display must not block another adapter or the source turn.
-      }
-    }
+    broadcaster.sink(frame.channel, frame.payload);
   };
 
   return {
     subscribe: (subscriber) => {
-      subscribers.add(subscriber);
+      const unsubscribe = broadcaster.subscribe(subscriber);
       attach();
       let active = true;
       return () => {
         if (!active) return;
         active = false;
-        subscribers.delete(subscriber);
+        unsubscribe();
         detach();
       };
     },
-    subscriberCount: () => subscribers.size,
+    subscriberCount: broadcaster.subscriberCount,
   };
 }
 

@@ -11,19 +11,11 @@ import {
 } from "../tour-state-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/**
- * Tutorial-C — `~/.ave/onboarding/tour-state.json` storage tests.
- *
- * Validates the Storage Namespace per Feature contract (project CLAUDE.md):
- *   - File lives under `~/.ave/onboarding/` — not at root.
- *   - Directory mode 0o700, file mode 0o600 (POSIX; mode bits are not
- *     enforced on Windows, so the mode check skips when `process.platform`
- *     is `"win32"`).
- *   - Read-never-throws: corrupt JSON / missing file → DEFAULT_TOUR_STATE.
- *   - `markScenarioComplete` is idempotent.
- *   - `dismissScenario` records `dismissedAt` but does NOT add to
- *     `completedScenarios`.
- */
+function tourState(overrides: Partial<Parameters<typeof writeTourState>[0]> = {}): Parameters<typeof writeTourState>[0] {
+  return { lastSeenScenario: null, completedScenarios: [], dismissedAt: null, ...overrides };
+}
+
+// POSIX mode checks are skipped on Windows, where these mode bits are not enforced.
 describe("tour-state-store", () => {
   let prevAveHome: string | undefined;
   let tempDir: string;
@@ -49,11 +41,7 @@ describe("tour-state-store", () => {
   });
 
   it("round-trips writeTourState → readTourState", async () => {
-    await writeTourState({
-      lastSeenScenario: "first-boot-essentials",
-      completedScenarios: ["first-boot-essentials"],
-      dismissedAt: null,
-    });
+    await writeTourState(tourState({ lastSeenScenario: "first-boot-essentials", completedScenarios: ["first-boot-essentials"] }));
     const state = await readTourState();
     expect(state.lastSeenScenario).toBe("first-boot-essentials");
     expect(state.completedScenarios).toEqual(["first-boot-essentials"]);
@@ -69,28 +57,19 @@ describe("tour-state-store", () => {
   });
 
   it("creates the namespace directory under ~/.ave/onboarding/", async () => {
-    await writeTourState({
-      lastSeenScenario: null,
-      completedScenarios: [],
-      dismissedAt: null,
-    });
+    await writeTourState(tourState());
     const dir = join(tempDir, "onboarding");
     const file = join(dir, "tour-state.json");
     expect(statSync(dir).isDirectory()).toBe(true);
     expect(statSync(file).isFile()).toBe(true);
-    // The file body is the persisted JSON — smoke check that writes
-    // land in the namespace directory and nothing else.
+    // The file body is the persisted JSON — smoke check that writes land in the namespace directory and nothing else.
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
     expect(parsed).toEqual(DEFAULT_TOUR_STATE);
   });
 
   it("enforces 0o700 directory + 0o600 file modes (POSIX only)", async () => {
     if (process.platform === "win32") return;
-    await writeTourState({
-      lastSeenScenario: "x",
-      completedScenarios: [],
-      dismissedAt: null,
-    });
+    await writeTourState(tourState({ lastSeenScenario: "x" }));
     const dir = join(tempDir, "onboarding");
     const file = join(dir, "tour-state.json");
     const dirMode = statSync(dir).mode & 0o777;
@@ -123,11 +102,7 @@ describe("tour-state-store", () => {
     await writeTourState(DEFAULT_TOUR_STATE);
     writeFileSync(
       path,
-      JSON.stringify({
-        lastSeenScenario: null,
-        completedScenarios: ["a", "a", "b", "b", "a"],
-        dismissedAt: null,
-      }),
+      JSON.stringify(tourState({ completedScenarios: ["a", "a", "b", "b", "a"] })),
       "utf-8",
     );
     const state = await readTourState();

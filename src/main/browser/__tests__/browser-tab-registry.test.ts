@@ -1,12 +1,7 @@
-/**
- * The main-side browser tab registry: binding, window scope, provenance,
- * tab operations resolved by observation, user takeover and the active
- * surface hint.
- */
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
-import { BROWSER_FAVICON_DATA_URL } from "../../../__tests__/support/browser-control-fixture.js";
 
 const ACTOR = { sessionId: "conversation" };
 
@@ -41,34 +36,21 @@ function setup() {
   return { registry, ops, control };
 }
 
+function attachTab(
+  registry: BrowserTabRegistry<FakeGuest>,
+  binding: Parameters<BrowserTabRegistry<FakeGuest>["bindTab"]>[1],
+  windowId = 1,
+  url?: string,
+) {
+  registry.guestAttached(new FakeGuest(binding.webContentsId, url), windowId);
+  registry.bindTab(windowId, binding);
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("BrowserTabRegistry", () => {
-  it("publishes bounded favicon metadata only to its window and clears it with the document or guest", () => {
-    const { registry, control } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11 });
-    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
-    expect(control.at(-1)).toMatchObject({ windowId: 1, state: { tabs: [{ faviconDataUrl: BROWSER_FAVICON_DATA_URL }] } });
-    expect(registry.listTabs(1)[0]).not.toHaveProperty("faviconDataUrl");
-    expect(registry.controlState(2).tabs).toEqual([]);
-    registry.guestFaviconChanged(11, "https://a.example/icon.png");
-    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
-    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
-    registry.navigationStarted(11, "https://b.example/");
-    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
-    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
-    registry.documentChanged(11);
-    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
-    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
-    registry.guestDestroyed(11);
-    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
-    registry.guestAttached(new FakeGuest(12), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 12 });
-    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
-  });
   it("binds a tab only to a live guest attached to the sender's own window", () => {
     const { registry } = setup();
     const guest = new FakeGuest(11);
@@ -83,19 +65,16 @@ describe("BrowserTabRegistry", () => {
 
   it("keeps a tab's handle and provenance when it is remounted with a new guest", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11 });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11 });
     registry.guestDestroyed(11);
     expect(registry.listTabs(1)).toEqual([]);
-    registry.guestAttached(new FakeGuest(12, "https://b.example/"), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 12 });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 12 }, 1, "https://b.example/");
     expect(registry.listTabs(1).map((tab) => [tab.tabId, tab.url])).toEqual([["tab-1", "https://b.example/"]]);
   });
 
   it("answers another window's tab exactly like a missing one", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11 });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11 });
     expect(registry.liveTabInWindow("tab-1", 1)?.handle).toBe("tab-1");
     expect(registry.liveTabInWindow("tab-1", 2)).toBeUndefined();
     expect(registry.liveTabInWindow("tab-404", 1)).toBeUndefined();
@@ -105,15 +84,13 @@ describe("BrowserTabRegistry", () => {
   it("marks a tab the agent's only when the bind echoes main's own new-tab request", async () => {
     const { registry, ops, control } = setup();
     // A renderer-invented request id is just a user tab.
-    registry.guestAttached(new FakeGuest(10), 1);
-    registry.bindTab(1, { tabId: "browser:0", webContentsId: 10, requestId: "made-up" });
+    attachTab(registry, { tabId: "browser:0", webContentsId: 10, requestId: "made-up" });
     expect(registry.liveTab("tab-1")?.opener).toBe("user");
 
     const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     expect(ops.at(-1)).toMatchObject({ windowId: 1, request: { op: "new", url: "about:blank" } });
     const requestId = ops.at(-1)!.request.requestId;
-    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11, requestId }, 1, "about:blank");
     await expect(opened).resolves.toEqual({ ok: true, tabId: "tab-2" });
     expect(registry.liveTab("tab-2")?.opener).toBe("agent");
     expect(control.at(-1)).toMatchObject({ windowId: 1, state: { revision: expect.any(Number), tabs: [
@@ -173,8 +150,7 @@ describe("BrowserTabRegistry", () => {
     vi.useFakeTimers();
     const { registry, ops } = setup();
     const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" }, { timeoutMs: 1000 });
-    registry.guestAttached(new FakeGuest(21), 2);
-    registry.bindTab(2, { tabId: "browser:1", webContentsId: 21, requestId: ops.at(-1)!.request.requestId });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 21, requestId: ops.at(-1)!.request.requestId }, 2);
     expect(registry.liveTab("tab-1")?.opener).toBe("user");
     vi.advanceTimersByTime(1000);
     await expect(opened).resolves.toEqual({ ok: false, error: "timeout" });
@@ -182,8 +158,7 @@ describe("BrowserTabRegistry", () => {
 
   it("resolves close when the guest goes away and select when the tab is shown", async () => {
     const { registry, ops } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11 });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11 });
 
     const selected = registry.requestTabOp(1, { op: "select", tabId: "tab-1" });
     expect(ops.at(-1)?.request).toMatchObject({ op: "select", tabId: "browser:1" });
@@ -208,8 +183,7 @@ describe("BrowserTabRegistry", () => {
   it("cancels an agent tab's pending actions on user input, but not on its own injected input", async () => {
     const { registry, ops } = setup();
     const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
-    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
     await opened;
     const tab = registry.liveTab("tab-1")!;
 
@@ -225,15 +199,13 @@ describe("BrowserTabRegistry", () => {
 
   it("cancels user-tab work on input; Stop pauses agent control while preserving its creator", async () => {
     const { registry, ops, control } = setup();
-    registry.guestAttached(new FakeGuest(10), 1);
-    registry.bindTab(1, { tabId: "browser:0", webContentsId: 10 });
+    attachTab(registry, { tabId: "browser:0", webContentsId: 10 });
     const userSignal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(10);
     expect(userSignal.aborted).toBe(true);
 
     const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
-    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
-    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId });
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
     await opened;
     const agentSignal = registry.liveTab("tab-2")!.actions.signal;
     expect(registry.stop(1, "browser:1")).toBe(true);
@@ -262,8 +234,7 @@ describe("BrowserTabRegistry", () => {
 
   it("asks the tab's window to give focus back after an action", async () => {
     const { registry, ops } = setup();
-    registry.guestAttached(new FakeGuest(10), 1);
-    registry.bindTab(1, { tabId: "browser:0", webContentsId: 10 });
+    attachTab(registry, { tabId: "browser:0", webContentsId: 10 });
     registry.releaseFocus(10);
     expect(ops.at(-1)).toMatchObject({ windowId: 1, request: { op: "restore-focus", tabId: "browser:0" } });
     const before = ops.length;
@@ -276,8 +247,7 @@ describe("injected interval intervention", () => {
   it("cancels genuine user input while an injection is pending", async () => {
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
-    registry.guestAttached(new FakeGuest(91, "about:blank"), 1);
-    registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
+    attachTab(registry, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
     await opening;
     const signal = registry.liveTab("tab-1")!.actions.signal;
     await registry.withAgentInput(91, async () => {
@@ -290,8 +260,7 @@ describe("injected interval intervention", () => {
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/redirect" });
     expect(ops.at(-1)?.request).toMatchObject({ op: "new", url: "about:blank" });
-    registry.guestAttached(new FakeGuest(91, "about:blank"), 1);
-    registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
+    attachTab(registry, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
     await opening;
   });
 
@@ -310,8 +279,7 @@ describe("injected interval intervention", () => {
 describe("concrete new-tab attachment", () => {
   it("cancels pending work in a user-owned tab on intervention", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(1), 1);
-    registry.bindTab(1, { tabId: "user", webContentsId: 1 });
+    attachTab(registry, { tabId: "user", webContentsId: 1 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(1);
     expect(signal.aborted).toBe(true);
@@ -336,8 +304,7 @@ describe("concrete new-tab attachment", () => {
 describe("native injected touch attribution", () => {
   it("matches only the marked touch's derived tap sequence", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    attachTab(registry, { tabId: "user", webContentsId: 11 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
     registry.userInput(11, { type: "gestureTapDown", _modifiers: 1 << 25 });
@@ -348,13 +315,11 @@ describe("native injected touch attribution", () => {
     registry.userInput(11, { type: "gestureTap", _modifiers: 1 << 25 });
     expect(signal.aborted).toBe(true);
   });
-  // Measured in the app (Electron on macOS, window in the background): the
-  // gestures derived from an injected touch arrive with no modifiers at all.
+  // Measured in the app (Electron on macOS, window in the background): the gestures derived from an injected touch arrive with no modifiers at all.
   // Treating them as the user's own taps cancelled every agent click and type.
   it("matches the derived tap sequence when it carries no modifiers", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    attachTab(registry, { tabId: "user", webContentsId: 11 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
     registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
@@ -368,16 +333,14 @@ describe("native injected touch attribution", () => {
   });
   it("cancels a tap gesture with no marked touch before it", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    attachTab(registry, { tabId: "user", webContentsId: 11 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
     expect(signal.aborted).toBe(true);
   });
   it("cancels a tap gesture carrying a keyboard modifier during a marked touch sequence", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    attachTab(registry, { tabId: "user", webContentsId: 11 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
     registry.userInput(11, { type: "gestureTapDown", _modifiers: 1 << 1 });
@@ -385,8 +348,7 @@ describe("native injected touch attribution", () => {
   });
   it.each(["mouseDown", "keyDown", "touchStart", "gestureScrollBegin", "gestureTapCancel", "pointerDown"])("cancels unmarked %s during a marked touch sequence", (type) => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    attachTab(registry, { tabId: "user", webContentsId: 11 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
     registry.userInput(11, { type });
@@ -397,10 +359,8 @@ describe("native injected touch attribution", () => {
 describe("a conversation bound to a pane's tab", () => {
   function twoPages() {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "browser:pane", webContentsId: 11 });
-    registry.guestAttached(new FakeGuest(12), 1);
-    registry.bindTab(1, { tabId: "browser:side", webContentsId: 12 });
+    attachTab(registry, { tabId: "browser:pane", webContentsId: 11 });
+    attachTab(registry, { tabId: "browser:side", webContentsId: 12 });
     // The window's active surface is the OTHER page.
     registry.setActiveSurface(1, { kind: "browser", tabId: "browser:side" });
     return registry;
@@ -498,12 +458,9 @@ describe("watching one press's touch input", () => {
   const MARK = 1 << 23;
   function windowWithTwoPages() {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(11), 1);
-    registry.bindTab(1, { tabId: "browser:a", webContentsId: 11 });
-    registry.guestAttached(new FakeGuest(12), 1);
-    registry.bindTab(1, { tabId: "browser:c", webContentsId: 12 });
-    registry.guestAttached(new FakeGuest(13), 2);
-    registry.bindTab(2, { tabId: "browser:other-window", webContentsId: 13 });
+    attachTab(registry, { tabId: "browser:a", webContentsId: 11 });
+    attachTab(registry, { tabId: "browser:c", webContentsId: 12 });
+    attachTab(registry, { tabId: "browser:other-window", webContentsId: 13 }, 2);
     return registry;
   }
   const tap = (registry: BrowserTabRegistry<FakeGuest>, guestId: number) => {
@@ -579,8 +536,7 @@ describe("scoped browser control", () => {
     registry.navigationStarted(71, "https://b.example/");
     expect(() => registry.acquireControl(tab, ACTOR)).toThrow("browser control is paused; ask the user to resume this tab");
     registry.guestDestroyed(71);
-    registry.guestAttached(new FakeGuest(72, "https://b.example/"), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 72 });
+    attachTab(registry, { tabId: "page", webContentsId: 72 }, 1, "https://b.example/");
     expect(tab).toMatchObject({ owner: ACTOR, controlMode: "human-paused", opener: "user", agentOrigin: null });
     expect(registry.resume(2, "page")).toBe(false);
     expect(registry.resume(1, "missing")).toBe(false);
@@ -618,8 +574,7 @@ describe("scoped browser control", () => {
 
   it("retains a borrowed user tab and releases only its caller association on agent close", async () => {
     const { registry, ops } = setup();
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
     const tab = registry.liveTab("tab-1")!;
     const lease = registry.acquireControl(tab, ACTOR);
     expect(lease.lifetime).toBe("borrowed");
@@ -634,8 +589,7 @@ describe("scoped browser control", () => {
 
   it("keeps borrowed pause after lease cleanup and requires a trusted Resume", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
     const tab = registry.liveTab("tab-1")!;
     const lease = registry.acquireControl(tab, ACTOR);
     registry.userInput(71, { type: "mouseDown" });
@@ -648,8 +602,7 @@ describe("scoped browser control", () => {
   it("keeps a human-only tab borrowable after native interaction and manual navigation", () => {
     const { registry } = setup();
     registry.stop(1, "page");
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
     const tab = registry.liveTab("tab-1")!;
     const generation = tab.controlGeneration;
     registry.userInput(71, { type: "keyDown" });
@@ -665,8 +618,7 @@ describe("scoped browser control", () => {
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
     registry.stop(1, "page");
-    registry.guestAttached(new FakeGuest(71, "about:blank"), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71, requestId: ops.at(-1)!.request.requestId });
+    attachTab(registry, { tabId: "page", webContentsId: 71, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
     await expect(opening).resolves.toEqual({ ok: false, error: "aborted" });
     const tab = registry.liveTab("tab-1")!;
     expect(tab).toMatchObject({ controlMode: "human", owner: null });
@@ -796,8 +748,7 @@ describe("scoped browser control", () => {
 
   it("releases window resources without closing another window's tabs", async () => {
     const { registry, tab } = await owned();
-    registry.guestAttached(new FakeGuest(72), 2);
-    registry.bindTab(2, { tabId: "other", webContentsId: 72 });
+    attachTab(registry, { tabId: "other", webContentsId: 72 }, 2);
     registry.acquireControl(tab, ACTOR);
     const signal = tab.actions.signal;
     registry.releaseWindow(1);
@@ -924,10 +875,8 @@ describe("native popup lifecycle", () => {
 
   it("waits for native focus confirmation and discards it after cancellation", async () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
-    let resolveNativeFocus!: (focused: boolean) => void;
-    const focused = new Promise<boolean>((resolve) => { resolveNativeFocus = resolve; });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
+    const { promise: focused, resolve: resolveNativeFocus } = deferred<boolean>();
     const handle = registry.registerPopup(71, new FakeGuest(72), { select: () => focused, close() {} })!;
     const abort = new AbortController();
     const selecting = registry.requestTabOp(1, { op: "select", tabId: handle, actor: ACTOR }, { signal: abort.signal });
@@ -941,8 +890,7 @@ describe("native popup lifecycle", () => {
 
   it("attributes a new popup to the active caller without granting origin provenance", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
     registry.acquireControl(registry.liveTab("tab-1")!, ACTOR);
     const handle = registry.registerPopup(71, new FakeGuest(72, "https://b.example/"), { select: () => true, close() {} })!;
     expect(registry.liveTab(handle)).toMatchObject({ owner: ACTOR, opener: "user", agentOrigin: null });
@@ -975,7 +923,7 @@ describe("strict browser chrome contracts", () => {
   it("rejects mixed-version state, extra fields, duplicate handles, impossible leases and malformed actors", () => {
     expect(parseBrowserTabControlState({ agentControlledTabIds: [] })).toBeNull();
     const tab = {
-      tabId: "tab-1", rendererTabId: "page", url: "about:blank", title: "Page", faviconDataUrl: null, mode: "agent-active",
+      tabId: "tab-1", rendererTabId: "page", url: "about:blank", title: "Page", mode: "agent-active",
       owner: ACTOR, lease: null, generation: 1, kind: "embedded", openerTabId: null,
     };
     const state = { revision: 1, tabs: [tab] };
@@ -1017,8 +965,7 @@ describe("native injected mouse attribution", () => {
 
   it("never hides an extra human press during an armed drag", () => {
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
     const tab = registry.liveTab("tab-1")!;
     registry.acquireControl(tab, ACTOR);
     const watch = registry.watchMouse(71);
@@ -1033,8 +980,7 @@ describe("native injected mouse attribution", () => {
   it.each(["position", "button", "click-count", "order", "modifier", "unarmed", "expired"])("rejects %s mouse receipts and revokes further expectations", (kind) => {
     vi.useFakeTimers();
     const { registry } = setup();
-    registry.guestAttached(new FakeGuest(71), 1);
-    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    attachTab(registry, { tabId: "page", webContentsId: 71 });
     const tab = registry.liveTab("tab-1")!;
     registry.acquireControl(tab, ACTOR);
     const watch = registry.watchMouse(71);
@@ -1110,10 +1056,8 @@ describe("native injected wheel attribution", () => {
 
   it("reports wheel input delivered to another guest in the same window", () => {
     const { registry } = page();
-    registry.guestAttached(new FakeGuest(72), 1);
-    registry.bindTab(1, { tabId: "other", webContentsId: 72 });
-    registry.guestAttached(new FakeGuest(73), 2);
-    registry.bindTab(2, { tabId: "elsewhere", webContentsId: 73 });
+    attachTab(registry, { tabId: "other", webContentsId: 72 });
+    attachTab(registry, { tabId: "elsewhere", webContentsId: 73 }, 2);
     const watch = registry.watchWheel(71);
     registry.userInput(72, { type: "mouseWheel", _modifiers: MARK });
     registry.userInput(73, { type: "mouseWheel", _modifiers: MARK });

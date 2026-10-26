@@ -1,16 +1,8 @@
-/**
- * TelemetrySection — the settings surface for the `telemetry` block.
- *
- * The defect this section exists to fix is covered first: before it, the
- * first-boot consent answer was the only write to `telemetry.enabled` and
- * there was no way to change it afterwards.
- */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { TelemetrySection } from "../TelemetrySection.js";
 import { installMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
-
 
 const BASE_SETTINGS = {
   ...MOCK_DEFAULT_SETTINGS,

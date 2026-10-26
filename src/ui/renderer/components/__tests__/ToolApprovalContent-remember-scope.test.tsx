@@ -1,16 +1,13 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { cleanup, screen } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { ApprovalMemory } from "../../../../shared/permissions-events.js";
 
-/**
- * The "remember" line states the scope the store will actually apply — read
- * from the host-derived `approvalMemory`, one line per memory mode. The
- * renderer test setup runs in the Korean locale.
- */
+/** The "remember" line states the scope the store will actually apply — read from the host-derived `approvalMemory`, one
+ * line per memory mode. The renderer test setup runs in the Korean locale. */
 function request(toolName: string, approvalMemory: ApprovalMemory | undefined): ApprovalRequest {
   return {
     id: `remember-${toolName}`,
@@ -31,7 +28,7 @@ function request(toolName: string, approvalMemory: ApprovalMemory | undefined): 
 }
 
 function scopeLine(req: ApprovalRequest): string {
-  render(<ToolApprovalContent conversationLabel="conversation" open request={req} onDecide={vi.fn()} />);
+  renderApproval(req, vi.fn());
   return screen.getByTestId("allow-always-exact-scope").textContent ?? "";
 }
 
@@ -50,8 +47,8 @@ describe("ToolApprovalContent remember scope", () => {
       kind: "key", key: "k", scope: { kind: "origin", origin: "https://a.example:443" },
     }));
     expect(line).toContain("https://a.example:443에 대한 web_fetch 요청을");
-    // The card promises reuse only after a risk check — true with a reviewer
-    // (fresh review) and without one (rules-only reuse of a rules-only row).
+    // The card promises reuse only after a risk check — true with a reviewer (fresh review) and without one (rules-only reuse
+    // of a rules-only row).
     expect(line).toContain("새 경로나 쿼리는 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다");
     expect(line).not.toContain("동일한 인자만");
   });

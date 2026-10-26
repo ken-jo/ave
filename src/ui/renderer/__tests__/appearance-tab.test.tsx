@@ -1,15 +1,4 @@
-/**
- * AppearanceTab v2 — bundle picker tests.
- *
- * The tab shows one card per compiled bundle and per installed theme package
- * in a single grid.
- * Clicking a card sets the active bundle and writes data-theme-bundle to <html>.
- *
- * followSystem toggle is shown only when the selected theme declares an
- * installed pair of the other shell; hidden otherwise.
- *
- * The external URL (webView) section is unchanged from v1.
- */
+/** Show followSystem only when the selected theme declares an installed opposite-shell pair. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, configure, fireEvent, render, waitFor } from "@testing-library/react";
@@ -71,7 +60,6 @@ function renderWithBundle(initialBundleId: string = DEFAULT_BUNDLE_ID, onOpenMar
 describe("AppearanceTab — bundle card grid", () => {
   it("renders exactly one card per compiled bundle when no theme is installed", () => {
     const { getAllByRole } = renderWithBundle();
-    // All cards have role="radio" with aria-label "테마: <name>"
     const cards = getAllByRole("radio").filter((el) =>
       el.getAttribute("aria-label")?.startsWith("테마:"),
     );
@@ -149,14 +137,12 @@ describe("AppearanceTab — bundle card grid", () => {
     expect(onOpenMarketplace).toHaveBeenLastCalledWith("theme");
   });
 
-  it("recommends the matching system language pack without installing it", async () => {
+  it("lists Korean without installed packages or a marketplace recommendation", async () => {
     const originalLanguage = navigator.language;
     Object.defineProperty(navigator, "language", {
       configurable: true,
       value: "ko-KR",
     });
-    // The renderer suite renders in Korean; a Korean UI has nothing to
-    // recommend, so this scenario runs under the English default.
     const originalLocale = getLocale();
     setLocale("en");
     const onOpenMarketplace = vi.fn();
@@ -167,10 +153,12 @@ describe("AppearanceTab — bundle card grid", () => {
       const { getByTestId, queryByTestId } = renderWithBundle(DEFAULT_BUNDLE_ID, onOpenMarketplace);
       await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
 
-      expect(queryByTestId("language-option-ko")).toBeNull();
-      expect(getByTestId("appearance-tab:language-recommendation"))
-        .toHaveTextContent("Korean language pack matches your system language.");
-      fireEvent.click(getByTestId("appearance-tab:language-recommendation-open:ko"));
+      expect(getByTestId("language-option-ko")).toHaveTextContent("한국어");
+      expect(getByTestId("language-option-ko")).toHaveAttribute("data-marketplace-installed", "false");
+      expect(queryByTestId("appearance-tab:language-recommendation")).toBeNull();
+      fireEvent.click(getByTestId("language-option-ko"));
+      expect(getLocale()).toBe("ko");
+      fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
       expect(onOpenMarketplace).toHaveBeenCalledWith("language");
     } finally {
       setLocale(originalLocale);

@@ -1,8 +1,3 @@
-/**
- * The git marketplace tab (design §15.1–§15.3): browsing by kind, the first
- * sync of a never-read source, the installed view with a package bound to no
- * source, and a package's sheet from detail through review to the result.
- */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +22,12 @@ function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Paramete
 
 const official = source({ id: "ave-official", origin: "official", label: "Ave Official", canRemove: false, canDisable: false });
 const team = source({ id: "team", label: "Team tools" });
+
+async function renderPackageSheet(fake: ReturnType<typeof fakeMarketplace>, cardTestId: string) {
+  renderTab(fake);
+  fireEvent.click(within(await screen.findByTestId(cardTestId)).getByTestId("git-marketplace:card:state"));
+  return screen.findByTestId("git-marketplace:sheet");
+}
 
 describe("GitMarketplaceTab browse", () => {
   it("lists every shown source's packages and filters them by kind", async () => {
@@ -206,9 +207,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item) });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item) });
     fake.market.executeInstall.mockResolvedValue({ ok: false, code: "process-entry-requires-pinned-artifact", message: "This extension runs its own program." });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:process-kit")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:process-kit");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
     expect(await within(sheet).findByText(/이 사본은 거부되었습니다\. 릴리스를 고정한 마켓플레이스에서 설치하세요\./)).toBeInTheDocument();
@@ -227,9 +226,7 @@ describe("GitMarketplaceTab package sheet", () => {
         ],
       }),
     });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:fixturepin")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:fixturepin");
     expect(await within(sheet).findByTestId("git-marketplace:version:0.9.0:legacy-pin")).toHaveTextContent("권한 기록 전용");
     expect(within(within(sheet).getByTestId("git-marketplace:version:0.9.0")).queryByRole("button")).toBeNull();
     expect(within(sheet).queryByTestId("git-marketplace:delivery-help")).toBeNull();
@@ -248,9 +245,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.market.packageDetail.mockReturnValueOnce(pendingDetail.promise);
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components }) });
     fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: item.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null } });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:meeting-kit")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:agent-plugin:meeting-kit");
     // The sheet opens before its detail response makes the install action available.
     expect(within(sheet).queryByTestId("git-marketplace:plan")).toBeNull();
     expect(fake.market.planInstall).not.toHaveBeenCalled();
@@ -271,9 +266,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components }) });
     fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: item.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null } });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:hook-kit")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:agent-plugin:hook-kit");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     const review = await within(sheet).findByTestId("git-marketplace:review");
     expect(review).toHaveTextContent("운영체제 격리가 없습니다");
@@ -290,9 +283,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const fake = fakeMarketplace({ sources: [team], entries: [item] });
     fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components, hookConfinement: "unavailable" }) });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:hook-kit")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:agent-plugin:hook-kit");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     const review = await within(sheet).findByTestId("git-marketplace:review");
     expect(review).toHaveTextContent("Windows 운영체제 샌드박스가 켜져 있는 동안 훅을 실행할 수 없습니다");
@@ -309,9 +300,7 @@ describe("GitMarketplaceTab package sheet", () => {
       authorityDelta: null, componentsDelta: { added: [], removed: [], changed: [{ kind: "skill", name: "draft", digest: "b".repeat(64) }] },
       historyRewritten: null, needsConfirmation: false, consentDelta: [], codeFreeChange: false, reviewComponents: [],
     } });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:writer-plugin")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:agent-plugin:writer-plugin");
     const review = await within(sheet).findByTestId("git-marketplace:review");
     expect(review).toHaveTextContent("스킬 · draft");
     expect(review).toHaveTextContent("변경됨 · 스킬 · draft");
@@ -328,7 +317,7 @@ describe("GitMarketplaceTab package sheet", () => {
       listKinds: async () => [{ pluginId: "calendar", choice: { enabled: true } }],
       onKindsChanged: () => () => {},
     } });
-    api.getSettings.mockResolvedValue({ alerts: { osNotificationsEnabled: false } });
+    api.getSettings.mockResolvedValue({ alerts: { osNotificationsEnabled: false }, system: { turnCompletionSoundEnabled: true } });
 
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
@@ -362,10 +351,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const calendar = entry("team", "plugin", "calendar", { state: { state: "installed-elsewhere", sourceId: "ave-official", version: "0.9.0" } });
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar, { action: { action: "switch", fromSource: "ave-official", from: "0.9.0" } }) });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
     expect(fake.market.planInstall).toHaveBeenCalledWith({ sourceId: "team", kind: "plugin", name: "calendar", switchSource: true });
@@ -383,9 +369,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const authority = { ...detail(item).authority!, filesystem: [{ access: "write" as const, target: "config.workspace", why: "Store project data" }] };
     fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { authority }) });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { authority }) });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     expect(await within(sheet).findByText("파일 접근: write: config.workspace — Store project data")).toBeInTheDocument();
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
@@ -409,10 +393,7 @@ describe("GitMarketplaceTab package sheet", () => {
         reviewComponents: [],
       },
     });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     await within(sheet).findByTestId("git-marketplace:rewritten");
     expect(fake.market.planUpdate).toHaveBeenCalledWith({ sourceId: "team", kind: "plugin", name: "calendar" });
     expect(within(sheet).getByText("+ 네트워크: upload.example.com")).toBeInTheDocument();
@@ -428,10 +409,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const calendar = entry("team", "plugin", "calendar");
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar, { expiresAt: new Date(Date.now() - 1000).toISOString() }) });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     expect(await within(sheet).findByTestId("git-marketplace:confirm")).toBeDisabled();
   });
@@ -443,10 +421,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
     fake.market.executeInstall.mockResolvedValue({ ok: false, code: "PLAN_EXPIRED", message: "plan plan-1 expired" });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
 
@@ -461,10 +436,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const calendar = entry("team", "plugin", "calendar");
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
     fake.market.planInstall.mockResolvedValue({ ok: false, code: "SOURCE_DISABLED", message: "source team is hidden; show it again to install or update from it" });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     expect(await within(sheet).findByTestId("git-marketplace:failed")).toHaveTextContent("이 패키지의 마켓플레이스가 숨겨져 있습니다. 소스에서 다시 표시해야 설치하거나 업데이트할 수 있습니다.");
   });
@@ -472,10 +444,7 @@ describe("GitMarketplaceTab package sheet", () => {
   it("uninstalls an MCP server with its data only when asked", async () => {
     const weather = entry("team", "mcp", "weather", { state: { state: "installed", version: "1.0.0" } });
     const fake = fakeMarketplace({ sources: [team], entries: [weather] });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:mcp:weather")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:mcp:weather");
     fireEvent.click(await within(sheet).findByRole("checkbox"));
     fireEvent.click(within(sheet).getByTestId("git-marketplace:uninstall"));
     await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "team", kind: "mcp", name: "weather", removeData: true }));
@@ -489,10 +458,7 @@ describe("GitMarketplaceTab package sheet", () => {
       ok: true,
       value: { key: weather.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: "Request timeout (10000ms): server/discover" },
     });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:mcp:weather")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:mcp:weather");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
     expect(await within(sheet).findByTestId("git-marketplace:done:connection")).toHaveTextContent("아직 연결되지 않았습니다: Request timeout (10000ms): server/discover");
@@ -742,9 +708,7 @@ describe("GitMarketplaceTab target classes (§18.3, §18.5)", () => {
       { rung: "release", outcome: "skipped", reason: "NOT_DECLARED" },
       { rung: "archive", outcome: "used", unencrypted: true },
     ], connectionWarning: null } });
-    renderTab(fake);
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
     expect(within(sheet).queryByTestId("git-marketplace:rung:archive:unencrypted")).toBeNull();
@@ -760,10 +724,7 @@ describe("GitMarketplaceTab target classes (§18.3, §18.5)", () => {
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
     fake.market.executeInstall.mockResolvedValue({ ok: false, code: "SOURCE_CONFIRMATION_REQUIRED", message: "internal", detail: { reason: "internal-downloads", source: "Team tools", host: "10.0.0.9" } });
     fake.market.acknowledgeSource.mockResolvedValue({ ok: true, value: { ...team, acknowledged: ["internal-downloads"], badges: ["internal-downloads"] } });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
     const failed = await within(sheet).findByTestId("git-marketplace:failed");
@@ -782,10 +743,7 @@ describe("GitMarketplaceTab target classes (§18.3, §18.5)", () => {
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
     fake.market.executeInstall.mockResolvedValue({ ok: false, code: "PLAN_EXPIRED", message: "policy changed", detail: { reason: "policy-changed" } });
-    renderTab(fake);
-
-    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
-    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const sheet = await renderPackageSheet(fake, "git-marketplace:card:team:plugin:calendar");
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
     expect(await within(sheet).findByTestId("git-marketplace:failed")).toHaveTextContent("검토하는 사이 조직 정책이 바뀌었습니다.");

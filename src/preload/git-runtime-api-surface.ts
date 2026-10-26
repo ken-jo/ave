@@ -1,10 +1,4 @@
-/**
- * Narrow host-renderer bridge for the git marketplace's git runtime.
- *
- * A leaf like the Tailnet bridges: plugin frames and public surfaces never
- * receive it, and `install` mints its own live keyboard intent here so a
- * renderer cannot replay or fabricate one.
- */
+/** Keep runtime installation host-only and mint its keyboard intent in preload. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -18,7 +12,6 @@ import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 
 const UNAVAILABLE: GitRuntimeResult = Object.freeze({ ok: false, error: "git-runtime-unavailable" });
 
-/** Build the private `window.aveApi.gitRuntime` namespace. */
 export function buildGitRuntimeApiSurface(): GitRuntimeApi {
   return Object.freeze({
     async status(): Promise<GitRuntimeResult> {

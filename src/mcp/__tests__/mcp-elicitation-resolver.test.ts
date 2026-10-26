@@ -1,8 +1,4 @@
-/**
- * MRTR elicitation resolver (milestone mrtr-input-loop, live-resolver step).
- * The resolver routes elicitation/create to the host approval gate and maps the
- * decision to an MCP ElicitResult; sampling/roots (deprecated upstream) throw.
- */
+/** Routes elicitation through host approval; unsupported sampling and roots requests throw. */
 import { describe, it, expect, vi } from "vitest";
 import {
   createElicitationResolverFactory,
@@ -54,7 +50,6 @@ describe("createElicitationResolverFactory", () => {
       trustOrigin: "plugin-emitted",
       reason: "Pick a date",
     });
-    // server provenance: the schema is forwarded for the (future) form UI.
     expect((calls[0].args as { requestedSchema?: unknown }).requestedSchema).toBeDefined();
   });
 

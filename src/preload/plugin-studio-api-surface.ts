@@ -9,7 +9,7 @@ async function call<T>(channel: string, ...args: unknown[]): Promise<StudioResul
   catch { return { ok: false, code: "unavailable", message: "Studio did not answer" }; }
 }
 
-/** Host-renderer-only bridge; plugin frames receive no Studio namespace. */
+/** Studio is host-renderer-only; plugin frames receive no namespace. */
 export function buildPluginStudioApiSurface(): PluginStudioApi {
   return Object.freeze({
     availableParts: () => call(channels.availableParts),

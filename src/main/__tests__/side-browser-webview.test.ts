@@ -138,8 +138,7 @@ describe("side browser webview attach policy", () => {
       event: attachEvent,
       webPreferences: prefs,
       params: {
-        // A per-server MCP-app partition (#885 b1) — unrelated to the side
-        // browser, so the attach configurer must leave it alone ("ignored").
+        // A per-server MCP-app partition (#885 b1) — unrelated to the side browser, so the attach configurer must leave it alone ("ignored").
         partition: "ave-mcp-app:676974687562",
         src: "data:text/html,ok",
       },

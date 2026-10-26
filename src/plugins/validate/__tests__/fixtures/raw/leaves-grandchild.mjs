@@ -1,8 +1,4 @@
-/**
- * Starts a detached descendant that inherits its stderr and outlives it, then
- * speaks the protocol and exits cleanly on stdin close. The descendant's pid
- * is written to stderr, so the harness can end it.
- */
+/** Exit on stdin closure while a detached descendant retains stderr; report its PID for cleanup. */
 import { spawn } from "node:child_process";
 import { speak } from "./speak.mjs";
 

@@ -1,8 +1,3 @@
-/**
- * The apply queue (design §18.7.4): one package at a time, only while the
- * real conversation activity coordinator is idle, with the 30-minute
- * escalation and *Apply now*; and what an install throws, classified.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
 import { CommittedPluginGenerationPublicationError } from "../../../plugins/committed-generation-publication-error.js";
@@ -39,7 +34,6 @@ function queueOf(options: { busy?: () => boolean; calls?: (item: ApplyItem) => b
   return { activity, queue, applied, outcomes, apply, shutdown };
 }
 
-/** A lease the test holds until it calls the returned release. */
 function hold(track: (factory: () => Promise<void>) => Promise<void> | null): () => Promise<void> {
   let release!: () => void;
   const lease = track(() => new Promise<void>((resolve) => { release = resolve; }));
@@ -100,7 +94,7 @@ describe("the idle gate", () => {
   });
 
   it("reads the gate again once subscribed: idle reached with no notice in between still applies", async () => {
-    // Busy at the first read, idle by the time the queue has subscribed, and no idle notice ever comes.
+    // Recheck after subscribing so an idle transition between the two cannot be missed.
     const isBusy = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
     const applied: string[] = [];
     const queue = new ApplyQueue<ApplyItem>({
@@ -130,7 +124,7 @@ describe("the idle gate", () => {
     expect(queue.state().escalated).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(queue.state().escalated).toBe(true);
-    // Hours later, still waiting: the escalation is not a bound.
+    // Escalation prompts the user; it is not a deadline that bypasses idle.
     await vi.advanceTimersByTimeAsync(5 * ESCALATE_AFTER_MS);
     expect(applied).toEqual([]);
 
@@ -140,7 +134,6 @@ describe("the idle gate", () => {
     expect(queue.state()).toMatchObject({ waitingSince: null, escalated: false });
     await end();
 
-    // The next queue waits for idle again.
     const again = hold((factory) => activity.tryTrackTurn(factory));
     queue.replace([item("later")]);
     await flush();
@@ -156,13 +149,13 @@ describe("Apply now and the waits it does not end", () => {
     let polls = 0;
     const { queue, applied, shutdown } = queueOf({ calls: () => {
       polls += 1;
-      // A polling loop never yields to timers or I/O: stop it here so the test ends and fails instead of hanging.
+      // Bound promise-only polling so a regression fails instead of starving timers indefinitely.
       if (polls >= 20) shutdown.abort();
       return true;
     } });
     queue.replace([item("assist", { kind: "agent-plugin" })]);
     queue.applyNow();
-    // Promise turns only, no time: a polling loop would check the calls on every turn.
+    // Promise turns must not repeatedly poll active calls.
     for (let i = 0; i < 200; i += 1) await Promise.resolve();
     expect(polls).toBe(1);
     expect(applied).toEqual([]);
@@ -181,7 +174,6 @@ describe("Apply now and the waits it does not end", () => {
     });
     queue.replace([item("assist", { kind: "agent-plugin" })]);
     await flush();
-    // The call check is pending; a session transition starts now.
     const admission = activity.beginSessionTransitionAdmission();
     expect(activity.isBusy()).toBe(true);
     finishCheck(false);
@@ -206,7 +198,6 @@ describe("Apply now and the waits it does not end", () => {
 });
 
 describe("changes to what is queued during an agent plugin's call check", () => {
-  /** A queue whose first call check waits for the test; every later one answers at once with `later`. */
   function checkedQueue(later: boolean) {
     let finishCheck!: (value: boolean) => void;
     const first = new Promise<boolean>((resolve) => { finishCheck = resolve; });

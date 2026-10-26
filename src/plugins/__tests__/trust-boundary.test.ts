@@ -1,14 +1,3 @@
-/**
- * Phase 1 — Plugin trust-boundary hardening tests.
- *
- * Covers four orthogonal hardening fixes:
- *
- *   1. (CRITICAL §Step 1) `isTrustedRegistryManifestPath` accepts BOTH
- *      hostRoot and pluginsRoot; rejects symlink escape.
- *   2. (HIGH §Step 2) `installSource` recorded on the registry entry is
- *      authoritative; manifest `installPolicy` is advisory only.
- *   3. (MEDIUM §Step 3) `dev-flags.ts` helpers hard-gate on `app.isPackaged`.
- */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -94,8 +83,6 @@ describe("Phase 1 — plugin trust boundary", () => {
     await writeInstallReceipt(cacheRoot, receipt);
   }
 
-  // ───────────────────────────── §Step 1 ─────────────────────────────
-
   describe("isTrustedRegistryManifestPath single-root containment", () => {
     it("accepts a registry manifest path under pluginsRoot", async () => {
       const manifestPath = await writePluginAt(
@@ -145,24 +132,15 @@ describe("Phase 1 — plugin trust boundary", () => {
       expect(runtime.listPluginIds()).not.toContain("tb-rogue");
     });
 
-    // A directory symlink on Windows needs admin or Developer Mode, but a
-    // directory junction does not, and realpath resolves it the same way, so
-    // the link is a junction there; the type is ignored on POSIX, where it
-    // stays a directory symlink.
+    // Use Windows junctions to exercise realpath escape without requiring symlink privileges.
     it(
       "rejects a symlink under pluginsRoot that points outside the trust root",
       async () => {
-        // Real plugin lives at testDir/outside/p-evil/plugin.json — outside
-        // pluginsRoot.
         const realDir = join(testDir, "outside", "p-evil");
         const realManifest = await writePluginAt(realDir, "tb-evil");
-        // Plant a symlink inside pluginsRoot that points at the real
-        // directory. Without realpath defeat, this would naively pass the
-        // containment check.
         const linkDir = join(pluginsRoot, "p-evil");
         await symlink(realDir, linkDir, "junction");
         const linkedManifest = join(linkDir, "plugin.json");
-        // Sanity check both paths resolve to the same file before runtime.
         expect(realManifest).not.toEqual(linkedManifest);
         await writeTestPluginRegistry({ registryPath }, [{ id: "tb-evil", manifestPath: linkedManifest }]);
 
@@ -176,8 +154,6 @@ describe("Phase 1 — plugin trust boundary", () => {
       },
     );
   });
-
-  // ───────────────────────────── §Step 2 ─────────────────────────────
 
   describe("marketplace install receipt integrity", () => {
     it("loads a registry plugin when its install receipt matches installed files", async () => {
@@ -243,9 +219,7 @@ describe("Phase 1 — plugin trust boundary", () => {
     });
 
     it("loads a plugin despite Python bytecode cache (__pycache__/*.pyc) absent from its receipt", async () => {
-      // A Python-backed plugin's worker compiles `.pyc` into `__pycache__/`
-      // inside its payload on first run — never part of the signed artifact and
-      // absent from the receipt. Those cache files must NOT fail integrity.
+      // Runtime bytecode caches are absent from receipts and must not fail payload integrity.
       const pluginDir = join(pluginsRoot, "p-pyc");
       const manifestPath = await writePluginAt(pluginDir, "tb-receipt-pyc");
       await writeReceipt("tb-receipt-pyc", pluginDir);
@@ -269,9 +243,7 @@ describe("Phase 1 — plugin trust boundary", () => {
     });
 
     it("still rejects a non-bytecode file smuggled into a __pycache__/ directory", async () => {
-      // The exclusion is tight: only `.pyc`/`.pyo` inside `__pycache__/` are
-      // skipped. A non-bytecode executable hidden in `__pycache__/` is still an
-      // unlisted payload file and must be rejected — no evasion hole.
+      // Only bytecode inside __pycache__ is exempt; other unlisted executable files must still fail integrity.
       const pluginDir = join(pluginsRoot, "p-pyc-smuggle");
       const manifestPath = await writePluginAt(pluginDir, "tb-receipt-pyc-smuggle");
       await writeReceipt("tb-receipt-pyc-smuggle", pluginDir);
@@ -333,20 +305,11 @@ describe("Phase 1 — plugin trust boundary", () => {
       expect(runtime.listPluginIds()).toContain(validId);
     });
 
-    // Dev-link receipt-skip removed in 2026-05 dev-link purge: the legacy
-    // `_devLinked: true` registry flag now migrates to `installSource:
-    // "local-dev"` on read, and receipt verification applies unconditionally.
-    // The dev-only skip path no longer exists, so there's nothing to gate.
-    // Tests asserting that bypass have been deleted.
   });
-
-  // ───────────────────────────── §Step 3 ─────────────────────────────
 
   describe("no install record or manifest field locks a plugin (design §10.1)", () => {
     it("lets the user remove a legacy admin entry, whichever signal once marked it", async () => {
-      // installSource="admin", the pre-#430 installedBy="admin" (migrated on
-      // read) and a manifest-only installPolicy="admin" each used to lock the
-      // plugin. Only the machine policy's requiredInstalls can now.
+      // Only requiredInstalls machine policy locks a plugin; install-source and manifest policy fields cannot.
       const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot, requiredInstalls: async () => [] });
       const legacy = [
         { id: "tb-tampered", entry: { installSource: "admin" as const }, installPolicy: "user" as const },
@@ -366,12 +329,7 @@ describe("Phase 1 — plugin trust boundary", () => {
     });
   });
 
-  // ───────────────────────────── §Step 4 ─────────────────────────────
-
   describe("dev-flags helpers hard-gate on app.isPackaged", () => {
-    // Round-3 cleanup: AVE_ALLOW_LINKED_PLUGIN_ENTRY and
-    // AVE_ALLOW_TEST_MARKETPLACE_KEYS were removed — AVE_DEV=1 is the
-    // master dev unlock that already subsumed them.
     const ENV_NAMES = [
       "AVE_DEV",
       "AVE_DEV_RELOAD",
@@ -397,10 +355,9 @@ describe("Phase 1 — plugin trust boundary", () => {
     });
 
     it("returns true when isPackaged=false and the matching flag is set", () => {
-      // Clear all first so each helper sees only its own flag.
       for (const name of ENV_NAMES) delete process.env[name];
       setIsPackaged(false);
-      expect(isDevModeUnlocked()).toBe(false); // no flag set yet
+      expect(isDevModeUnlocked()).toBe(false);
       process.env.AVE_DEV = "1";
       expect(isDevModeUnlocked()).toBe(true);
     });
@@ -412,8 +369,6 @@ describe("Phase 1 — plugin trust boundary", () => {
       expect(isDevModeUnlocked(true)).toBe(false);
     });
   });
-
-  // ───────────────────────────── §Step 5: local-dev installSource guard ─────
 
   describe("local-dev installSource rejected in packaged builds", () => {
     const savedAveDev = process.env.AVE_DEV;
@@ -463,14 +418,12 @@ describe("Phase 1 — plugin trust boundary", () => {
     });
 
     it("packaged build + v1 dev: sentinel receipt → normalised to local-dev → rejected", async () => {
-      // v1 receipts with signerKeyId starting with "dev:" are normalised to
-      // installSource:"local-dev" for backward compat with old installLocal.
+      // Legacy receipts with dev: signer ids normalize to local-dev provenance.
       delete process.env.AVE_DEV;
       setIsPackaged(true);
       const pluginDir = join(pluginsRoot, "p-v1-dev-signer");
       const manifestPath = await writePluginAt(pluginDir, "tb-v1-dev-signer");
 
-      // Write a raw v1 JSON receipt (bypassing writeInstallReceipt which would upgrade)
       const v1Receipt = {
         schemaVersion: 1,
         pluginId: "tb-v1-dev-signer",
@@ -498,8 +451,6 @@ describe("Phase 1 — plugin trust boundary", () => {
     });
 
     it("v1 marketplace receipt (non-dev: signerKeyId) → normalised to marketplace → loads in packaged", async () => {
-      // Verifies the v1→v2 normalisation correctly classifies real marketplace
-      // receipts (signerKeyId that doesn't start with "dev:") as marketplace.
       delete process.env.AVE_DEV;
       setIsPackaged(true);
       const pluginDir = join(pluginsRoot, "p-v1-mkt");
@@ -528,7 +479,6 @@ describe("Phase 1 — plugin trust boundary", () => {
         installReceiptCacheRoot: cacheRoot,
       });
       await runtime.load();
-      // marketplace-normalised v1 receipt should load (hash verification passes)
       expect(runtime.listPluginIds()).toContain("tb-v1-mkt");
     });
 
@@ -583,7 +533,6 @@ describe("Phase 1 — plugin trust boundary", () => {
       await writeInstallReceipt(cacheRoot, devReceipt);
       await writeTestPluginRegistry({ registryPath }, [{ id: "tb-restart-dev-signer", manifestPath, installedBy: "user" }]);
 
-      // Load successfully in dev mode
       const runtime = new PluginRuntime({
         hostRoot,
         registryPath,
@@ -593,8 +542,7 @@ describe("Phase 1 — plugin trust boundary", () => {
       await runtime.startAll();
       expect(runtime.listPluginIds()).toContain("tb-restart-dev-signer");
 
-      // Switch to packaged mode — restart should reject the replacement but
-      // preserve the already-running instance until an explicit unload path.
+      // Packaged mode rejects the replacement while preserving the incumbent until explicit unload.
       delete process.env.AVE_DEV;
       setIsPackaged(true);
       const auditCalls: Array<{ level: string; message: string }> = [];

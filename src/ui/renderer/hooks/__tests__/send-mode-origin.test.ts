@@ -1,12 +1,5 @@
-/**
- * Send mode → turn-entry origin.
- *
- * This map replaced a nested ternary whose fallback was `"user-keyboard"`. That
- * fallback was the single most dangerous fail-open in the staged-origin design:
- * a staged mode nobody remembered to branch on would have sent actor-authored
- * text as a fully trusted, user-typed turn — no force-ask, no untrusted framing,
- * a real user bubble, slash commands enabled. These tests pin the property.
- */
+/** Every staged send mode needs an explicit origin; falling back to user-keyboard would trust actor-authored text and
+ * enable slash commands. */
 import { describe, it, expect } from "vitest";
 
 import { SEND_MODE_ORIGIN, type SendMode } from "../use-send-message.js";

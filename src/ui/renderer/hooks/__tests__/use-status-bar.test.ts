@@ -1,13 +1,5 @@
 // @vitest-environment jsdom
-/**
- * useStatusBar — unit tests for toast TTL eviction, queue cap,
- * persistent item management, and producer lifecycle effects.
- *
- * The CONTROL_CHARS regex in use-status-bar.ts is `/[\x00-\x1f\x7f]/g`
- * (rendered as invisible bytes in the file — verified by reading raw hex).
- * It strips C0 control characters (0x00–0x1F) and DEL (0x7F).
- * Spaces, hyphens, and other visible ASCII are NOT stripped.
- */
+/** Strip C0 and DEL from toast fields while preserving spaces, hyphens and other visible ASCII. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -15,7 +7,6 @@ import { useStatusBar } from "../use-status-bar.js";
 import type { AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
-// ── Minimal API factory ───────────────────────────────────────────────────────
 // Only wire up the methods exercised by each test so that accidental calls to
 // missing methods throw "not a function" rather than silently succeeding.
 
@@ -25,8 +16,8 @@ function noop() {
 
 function statusBarApi(overrides: Partial<AveApi> = {}): AveApi {
   const { api } = makeMockAveApi();
-  // Keep the default status-bar fixture quiet. Individual producer tests opt
-  // into the API methods they exercise through overrides below.
+  // Keep the default status-bar fixture quiet. Individual producer tests opt into the API methods they exercise through
+  // overrides below.
   delete api.getSettings;
   delete api.onSettingsUpdated;
   delete api.pingMarketplace;
@@ -34,7 +25,6 @@ function statusBarApi(overrides: Partial<AveApi> = {}): AveApi {
   return api as unknown as AveApi;
 }
 
-// ── Fake-timer harness ────────────────────────────────────────────────────────
 // shouldAdvanceTime: true is required so that @testing-library/react's
 // internal waitFor polling timers advance alongside our fake clock.
 
@@ -49,9 +39,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Case 1 — Toast TTL eviction
-// ─────────────────────────────────────────────────────────────────────────────
 describe("useStatusBar — toast TTL eviction", () => {
   it("removes a toast after its TTL elapses (default 5 s, checked after 6 s)", async () => {
     const api = statusBarApi();
@@ -66,8 +54,8 @@ describe("useStatusBar — toast TTL eviction", () => {
     // Immediately after push: 1 toast.
     expect(result.current.toasts).toHaveLength(1);
 
-    // Advance 6 s — past the 5 s TTL. The sequential display effect schedules
-    // a setTimeout at exactly the TTL, so the toast is gone after 5 s.
+    // Advance 6 s — past the 5 s TTL. The sequential display effect schedules a setTimeout at exactly the TTL, so the toast is
+    // gone after 5 s.
     await act(async () => {
       vi.advanceTimersByTime(6000);
     });
@@ -130,9 +118,7 @@ describe("useStatusBar — toast TTL eviction", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Case 2 — Toast queue cap at 50
-// ─────────────────────────────────────────────────────────────────────────────
 describe("useStatusBar — toast queue cap", () => {
   it("caps at 50 toasts and keeps the LATEST 50 when 100 are pushed", () => {
     const api = statusBarApi();
@@ -155,9 +141,7 @@ describe("useStatusBar — toast queue cap", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Case 3 — upsertPersistent updates in place
-// ─────────────────────────────────────────────────────────────────────────────
 describe("useStatusBar — upsertPersistent", () => {
   it("updates an existing persistent item in place (no duplicate entries)", () => {
     const api = statusBarApi();
@@ -185,9 +169,7 @@ describe("useStatusBar — upsertPersistent", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Case 4 — removePersistent
-// ─────────────────────────────────────────────────────────────────────────────
 describe("useStatusBar — removePersistent", () => {
   it("removes a previously upserted persistent item by id", () => {
     const api = statusBarApi();
@@ -210,9 +192,7 @@ describe("useStatusBar — removePersistent", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Case 5 — Install lifecycle producer wires onPluginInstallResult
-// ─────────────────────────────────────────────────────────────────────────────
 type InstallResultHandler = (payload: { slug: string; success: boolean; error?: string }) => void;
 
 describe("useStatusBar — install lifecycle producer", () => {
@@ -262,17 +242,6 @@ describe("useStatusBar — install lifecycle producer", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Note: the vendor (provider/model) + combined health producers were removed
-// from useStatusBar — the window status bar is NOTIFICATIONS-ONLY. Those cells
-// now live in the unified InputActionBar status sub-row (see
-// use-input-status-row.ts + InputActionBar.test.tsx). useStatusBar retains only
-// the toast/notification surface plus the install lifecycle producer.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Case 9 — Sequential toast display (visibleToast + pendingCount)
-// ─────────────────────────────────────────────────────────────────────────────
 describe("useStatusBar — sequential toast display", () => {
   it("visibleToast exposes the queue head, pendingCount reflects the rest", () => {
     const api = statusBarApi();

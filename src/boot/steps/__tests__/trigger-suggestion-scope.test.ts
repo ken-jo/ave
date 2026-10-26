@@ -1,12 +1,4 @@
-/**
- * triggerConversation for a plugin on the alert contract.
- *
- * A plugin whose manifest declares `alerts` raises its recurring alerts
- * through the alert pipeline, so the overlay trigger is left with one-time
- * suggestions: only the sources in `alerts.suggestions`, each accepted once per
- * 30 days. A plugin without the block is not on the contract yet and keeps the
- * unscoped path.
- */
+/** Alert-contract plugins get scoped, once-per-30-day suggestions; legacy plugins retain the unscoped path. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,6 +17,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const DECLARED = "overlay:fixturemail-routine";
 
 let dir: string;
+const ledgers: SuggestionLedger[] = [];
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "trigger-suggestion-scope-"));
@@ -32,11 +25,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  // Drain background persistence before cleanup so writes cannot recreate the directory.
+  for (const ledger of ledgers.splice(0)) await ledger.flush();
   await rm(dir, { recursive: true, force: true });
 });
 
 async function loadedLedger(): Promise<SuggestionLedger> {
   const ledger = new SuggestionLedger(() => dir);
+  ledgers.push(ledger);
   await ledger.load();
   return ledger;
 }
@@ -80,7 +76,6 @@ describe("triggerConversation suggestion scoping", () => {
     const rateLimiter = new TriggerConversationRateLimiter(60_000, 1);
     const again = evaluate({ source: DECLARED, declared: [DECLARED], ledger, rateLimiter, now: NOW + 29 * DAY });
     expect(again).toMatchObject({ kind: "deny", result: { accepted: false, reason: "suggestion_limit", source: DECLARED } });
-    // A refusal charges no window.
     expect(rateLimiter.isOverCap("fixturemail", NOW + 29 * DAY)).toBe(false);
 
     expect(evaluate({ source: DECLARED, declared: [DECLARED], ledger, now: NOW + 30 * DAY }).kind).toBe("allow");

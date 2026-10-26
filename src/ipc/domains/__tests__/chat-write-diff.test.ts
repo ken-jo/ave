@@ -1,16 +1,3 @@
-/**
- * Issue #749 — ave:chat:get-write-diff IPC handler unit tests.
- *
- * Strategy: register chat IPC handlers with a minimal mock conversationLoop
- * and a fake readDiffSidecar, then invoke the handler directly to cover:
- *   - valid (sessionId, toolUseId) → { before, after }
- *   - invalid sessionId (not matching active) → null
- *   - unknown / unsafe toolUseId → null
- *   - unsafe ids (path traversal) → null
- *   - sidecar not found → null
- *   - unauthorized sender → null
- */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   foreignFrameEvent,
@@ -20,7 +7,6 @@ import {
 } from "../../../__tests__/test-helpers.js";
 import type { MemoryCaptureService } from "../../../memory/memory-capture-service.js";
 
-// ─── Mock electron ─────────────────────────────────────────────────────────────
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -31,7 +17,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ─── Mock write-diff-cache (readDiffSidecar) ─────────────────────────────────
 const mockReadDiffSidecar = vi.fn<
   (sessionId: string, toolUseId: string) => Promise<{ before: string; after: string } | null>
 >();
@@ -45,7 +30,6 @@ vi.mock("../../../tools/write-diff-cache.js", () => ({
   purgeStaleSessionDiffDirs: vi.fn(),
 }));
 
-// ─── Minimal mocks for chat domain deps ──────────────────────────────────────
 vi.mock("../../../audit/dlp-filter.js", () => ({
   redactForLLM: vi.fn((s: string) => ({ redacted: s, totalCount: 0, counts: {} })),
   redactFsPath: vi.fn((s: string) => s),
@@ -63,8 +47,6 @@ vi.mock("../../../lib/logger.js", () => ({
 vi.mock("../../../shared/chat-history.js", () => ({
   serializeHistoryMessage: vi.fn((m: unknown, i: number) => ({ ...m as object, index: i })),
 }));
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const SESSION_ID = "session-abc";
 const TOOL_USE_ID = "tu-def456";
@@ -158,8 +140,6 @@ async function setupHandlers(loop: ReturnType<typeof makeConversationLoop>) {
   registerChatHandlers(deps as any);
   return deps;
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("ave:chat:get-write-diff", () => {
   beforeEach(() => {
@@ -274,8 +254,6 @@ describe("ave:memory:long-term:refresh", () => {
     const deps = await setupHandlers(loop) as any;
     const refresh = vi.fn(async () => updated);
     deps.memoryConsolidationService = { refresh };
-    // Re-register after injecting the optional service, matching boot's
-    // dependency injection before the app exposes IPC.
     handlers.clear();
     const { registerChatHandlers } = await import("../chat.js");
     registerChatHandlers(deps);
@@ -362,8 +340,7 @@ describe("ave:memory:index:get project options", () => {
     expect(deps.memoryManager.getMemoryIndex).toHaveBeenNthCalledWith(1, {});
     expect(deps.memoryManager.getMemoryIndex).toHaveBeenNthCalledWith(2, {
       projectRoot: process.cwd(),
-      // Default-root identity is resolved centrally; callers cannot override
-      // its display label with a stale or spoofed renderer value.
+      // Default-root labels come from central authority, never renderer input.
       projectName: "default",
       includeUnscoped: true,
     });

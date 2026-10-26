@@ -1,7 +1,3 @@
-/**
- * Unit tests for the shared semver comparator + the plugin↔app minimum-version
- * gate predicate (`appVersionSatisfiesMin`).
- */
 import { describe, it, expect } from "vitest";
 import {
   compareSemver,

@@ -1,12 +1,4 @@
-/**
- * Phase 3.2 safety net — onChatStream event sequencing.
- *
- * Covers the four event kinds most likely to regress during hook extraction:
- *  - text_delta accumulation
- *  - reasoning_delta -> ReasoningCard rendering
- *  - tool_start/tool_end -> ToolGroupCard rendering
- *  - assistant_round / done -> finalize (streaming flag false)
- */
+// Verify stream accumulation, tool grouping and completion through shared chat state.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, waitFor, fireEvent } from "@testing-library/react";
@@ -40,9 +32,7 @@ describe("Chat stream sequencing (Phase 3.2 regression net)", () => {
       emitChatStream({ type: "reasoning_delta", text: "inner reasoning chain" });
     });
     await waitFor(() => {
-      // The reasoning card renders, but its body is COLLAPSED by default — the
-      // live "생각 중..." header shows while the raw chain stays hidden until
-      // the user clicks to expand.
+      // Reasoning starts collapsed even while streaming; the header remains visible.
       expect(container.textContent).toContain("생각 중...");
       expect(container.textContent).not.toContain("inner reasoning chain");
     });
@@ -64,8 +54,7 @@ describe("Chat stream sequencing (Phase 3.2 regression net)", () => {
         input: { query: "hello" },
       });
     });
-    // Single tool renders inline with display name (no group header).
-    // Unknown plugin tool names are rendered generically.
+    // Single tools render inline; unknown plugin names use generic labels.
     await waitFor(() => {
       expect(container.textContent).toContain("index search");
     });
@@ -88,7 +77,6 @@ describe("Chat stream sequencing (Phase 3.2 regression net)", () => {
       emitChatStream({ type: "done" });
     });
     await waitFor(() => {
-      // Content rendered, and the "응답을 작성하는 중..." spinner text is gone.
       expect(container.textContent).toContain("final text");
       expect(container.textContent).not.toContain("응답을 작성하는 중...");
     });

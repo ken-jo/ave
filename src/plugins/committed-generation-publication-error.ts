@@ -1,15 +1,9 @@
 import type { PublishedPluginGenerationTransition } from "./plugin-generation-coordinator.js";
 import type { CommittedPluginGeneration } from "./plugin-host-generation.js";
 
-/**
- * How far in-process publication got once the durable commit succeeded:
- * `published` — the pointer names the generation and a later publication
- * step failed; `withheld` — the pointer never moved (the host was shutting
- * down), so the committed generation is staged and starts on the next launch.
- */
+/** published means the active pointer moved before failure; withheld means durable state waits for next launch. */
 export type CommittedPluginGenerationPublication = "published" | "withheld";
 
-/** A generation committed durably but failed synchronous in-process publication. */
 export class CommittedPluginGenerationPublicationError<T = unknown> extends Error {
   readonly code = "PLUGIN_GENERATION_PUBLICATION_FAILED_AFTER_COMMIT";
   readonly outcome:

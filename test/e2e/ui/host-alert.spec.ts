@@ -46,8 +46,7 @@ test("host deadline cards use built-in presentation and service-owned Settings",
     const page = await app.firstWindow();
     await expect(page.getByTestId("main-toolbar").first()).toBeVisible({ timeout: 60_000 });
     const card = page.getByTestId("routine-card");
-    // An alert card is a suggestion the user did not ask for: it belongs to the
-    // Suggestions conversation, never to the conversation the app resumed into.
+    // Unsolicited alert cards belong to Suggestions, never the resumed conversation.
     const suggestionsRow = page.getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`);
     await expect(suggestionsRow).toBeVisible();
     await suggestionsRow.click();

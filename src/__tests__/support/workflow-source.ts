@@ -1,19 +1,6 @@
-/**
- * Line-based readers for `.github/workflows/*.yml`, shared by the suites that
- * pin workflow structure. This is not a general YAML parser; it covers the
- * shapes `.github/workflows/` actually uses.
- */
+/** Parse only the workflow YAML shapes this repository uses. */
 
-/** The `jobs:` block of a workflow, split into `job id -> raw job body`. Inside
- *  `jobs:` the job ids are the only keys at two-space indentation; everything
- *  belonging to a job is indented further. Throws when a file has no `jobs:`
- *  block, so a renamed key fails loudly instead of yielding an empty map that
- *  every assertion on it would then pass vacuously.
- *
- *  A run of comment and blank lines immediately above a job id belongs to that
- *  job, not to the one that ends above it. Reading them the other way puts the
- *  prose that explains a job — including the sentences that name what the job
- *  must not contain — inside its neighbour's body. */
+/** Require jobs to avoid vacuous success; leading job comments belong to that job. */
 export function workflowJobs(source: string): Map<string, string> {
   const marker = "\njobs:\n";
   const start = source.indexOf(marker);
@@ -44,14 +31,7 @@ export function workflowJobs(source: string): Map<string, string> {
   return jobs;
 }
 
-/** Every shell command a job runs, in order, with block scalars (`run: |`)
- *  folded into one string.
- *
- *  Comments are excluded deliberately. Ordering invariants forbid certain
- *  scripts from sharing a job with the compile and test steps, and the
- *  workflows explain that rule in comments that name those very scripts — a
- *  substring scan over the raw job body would read those sentences as steps and
- *  fail on the explanation. */
+/** Exclude comments from command extraction so explanatory script names cannot satisfy ordering checks. */
 export function jobRunCommands(jobBody: string): string[] {
   const commands: string[] = [];
   const lines = jobBody.split("\n");

@@ -1,26 +1,15 @@
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
-import { claimRunDir, ensureTestTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
+import { claimRunDir, ensureRunTmpRoot, ensureTestTmpRoot, RUN_OWNER_FILE, runTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
 
-// Repository root: this file lives under config/.
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/**
- * Validates all JSON test-fixture files matching the manifest glob pattern
- * against schemas/plugin-manifest.schema.json using the same AJV instance as the
- * production runtime (buildManifestValidator). Collects all failures before
- * throwing so CI surfaces every broken fixture in one pass.
- *
- * This runs BEFORE any test file, catching schema drift introduced alongside
- * a schema change without requiring every test to opt in.
- *
- * Fails closed if the host-owned schema cannot be resolved. Plugins vendor
- * the schema unchanged at an app release tag.
- */
+// Validate every manifest fixture before tests and report all schema failures together.
+// A missing host-owned schema fails closed.
 async function validateJsonFixtures(): Promise<void> {
   const { buildManifestValidator } = await import("../src/plugins/runtime/manifest-validation.js");
   const validate = await buildManifestValidator();
@@ -48,33 +37,19 @@ async function validateJsonFixtures(): Promise<void> {
 interface RunDirs {
   sandboxBase: string;
   aveHomeBase: string;
-  /** This run's bundle of the plugin child entry, which every runtime under test spawns. */
+  tmpBase: string;
   pluginChildEntryPath: string;
-  /** Projects in this run whose setup has not torn down yet. */
   users: number;
 }
 
-/**
- * One set of run directories per vitest process: setup runs once per project
- * (node and jsdom), and a second set would replace the environment the first
- * project's workers already inherited.
- */
+// Share run directories across projects so later setup cannot replace inherited paths.
 const RUN_DIRS = Symbol.for("ave.vitest.runDirs");
 type RunDirsHolder = { [RUN_DIRS]?: RunDirs };
 
-/**
- * Vitest global setup — creates ~/.ave/test-tmp/ before any tests run, and
- * the per-run AVE_HOME and sandbox base inside it.
- *
- * Tests use ~/.ave/test-tmp/ as the base directory for mkdtempSync() to
- * avoid Windows 8.3 short-path (RUNNER~1) issues with os.tmpdir().
- * mkdtempSync() requires the parent directory to already exist.
- */
+// Create test-tmp before mkdtemp; its path avoids short-name failures on Windows.
 export async function setup(project: TestProject): Promise<() => Promise<void>> {
-  // Each test file gets its own Ave home (`src/__tests__/vitest-ave-home.ts`),
-  // which isolates its stores only if their modules load after it is set:
-  // under isolate: false a worker keeps the modules an earlier file loaded.
-  // The vm pools give each file a fresh context whatever isolate says.
+  // Stores must load after each file sets AVE_HOME; reused module graphs break isolation.
+  // VM pools give each file a fresh context regardless of isolate.
   if (project.config.isolate === false && !project.config.pool.startsWith("vm")) {
     throw new Error(
       `${project.name ? `vitest project "${project.name}": ` : ""}isolate: false shares modules between test files, `
@@ -90,32 +65,31 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   }
 
   const testTmp = join(homedir(), ".ave", "test-tmp");
-  // A real directory, never a link: the sweep below removes what is in it.
+  // Reject links before sweeping so cleanup cannot enter another tree.
   ensureTestTmpRoot(testTmp, (path) => mkdirSync(path, { recursive: true }));
-  // The sandbox private roots (every confined process's HOME and temp
-  // directory) for a test that clears AVE_HOME, one directory per run
-  // (`testSandboxPrivateBase` in the isolation guard). Never `~/.ave/sandbox`:
-  // a running app's boot empties that, and a sweep from a test would empty a
-  // running app's. Short, for the socket-path limit some suites run into.
+  // Claim the run temp root first; rejected roots must leave no unowned run directories.
+  // Teardown reports leaks here, and the sweep removes only directories from dead runs.
+  const tmpRoot = runTmpRoot();
+  ensureRunTmpRoot(tmpRoot);
+  const tmpBase = mkdtempSync(join(tmpRoot, "t-"));
+  // Confined test processes need a separate private root; app startup clears the app sandbox.
+  // Keep paths short for socket limits.
   const sandboxBase = mkdtempSync(join(testTmp, "sbx-"));
-  // The run's Ave homes: each test file starts in its own directory inside
-  // this one (`src/__tests__/vitest-ave-home.ts`), so whatever a test does not
-  // point elsewhere — an AuditLogger, a session store, a settings file built
-  // with its defaults — lands there, never in the developer's real ~/.ave.
-  // AVE_HOME is replaced whatever the shell exported, so one left over from
-  // an app session cannot reach the tests. `aveHome()` refuses a path under
-  // the real home that is not test-tmp.
+  // Override inherited AVE_HOME so default stores stay inside this run.
+  // aveHome() rejects real-home paths outside test-tmp.
   const aveHomeBase = mkdtempSync(join(testTmp, "h-"));
   let pluginChildEntryPath: string | undefined;
   process.env.AVE_TEST_SANDBOX_BASE = sandboxBase;
   process.env.AVE_TEST_RUN_HOME = aveHomeBase;
   process.env.AVE_HOME = aveHomeBase;
+  // os.tmpdir() reads TMPDIR on POSIX and TEMP, then TMP, on Windows.
+  for (const name of TMP_ENV) process.env[name] = tmpBase;
   try {
-    // Who made them, so another run's sweep keeps them while this one lives.
+    // Owner records keep live runs out of another run's sweep.
     claimRunDir(sandboxBase);
     claimRunDir(aveHomeBase);
-    // The seam `aveHome()` calls must resolve to the isolation guard here as
-    // in the workers (same configuration), or no check runs and nothing says so.
+    claimRunDir(tmpBase);
+    // Global setup must resolve the same isolation guard as workers.
     const seam = await import("../src/shared/ave-home-test-guard.js");
     if (!seam.AVE_HOME_ISOLATION_GUARD_ACTIVE) {
       throw new Error(
@@ -123,10 +97,9 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
           + "src/shared/ave-home-test-guard.ts to src/__tests__/support/ave-home-isolation-guard.ts",
       );
     }
-    // App modules load only now, after AVE_HOME names this run's home.
-    const { removeOwnedPluginTree } = await import("../src/plugins/installed-entry-fs.js");
-    // What a killed run could not remove; a live run's are kept.
-    const swept = await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
+    // Load app modules only after AVE_HOME is set; sweep dead runs and preserve live ones.
+    const sweeps = [await sweepStaleRunDirs(testTmp, removeRunDir), await sweepStaleRunDirs(tmpRoot, removeRunDir)];
+    const swept = { stranded: sweeps.flatMap((s) => s.stranded), leftAside: sweeps.flatMap((s) => s.leftAside) };
     for (const aside of swept.stranded) {
       console.warn(`[vitest setup] left ${aside} in place: it changed between being judged abandoned and being taken aside`);
     }
@@ -136,15 +109,15 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     await validateJsonFixtures();
     pluginChildEntryPath = await buildRunPluginChildEntry();
   } catch (error) {
-    // Vitest calls no teardown for a setup that threw. Nothing has run in
-    // these yet, so a plain removal takes them.
+    // Failed setup gets no teardown; these unused directories can be removed directly.
     await rm(sandboxBase, { recursive: true, force: true });
     await rm(aveHomeBase, { recursive: true, force: true });
+    await rm(tmpBase, { recursive: true, force: true });
     if (pluginChildEntryPath !== undefined) await rm(dirname(pluginChildEntryPath), { recursive: true, force: true });
     throw error;
   }
   project.provide("pluginChildEntryPath", pluginChildEntryPath);
-  holder[RUN_DIRS] = { sandboxBase, aveHomeBase, pluginChildEntryPath, users: 1 };
+  holder[RUN_DIRS] = { sandboxBase, aveHomeBase, tmpBase, pluginChildEntryPath, users: 1 };
   return () => releaseRunDirs(holder);
 }
 
@@ -154,24 +127,52 @@ async function releaseRunDirs(holder: RunDirsHolder): Promise<void> {
   dirs.users -= 1;
   if (dirs.users > 0) return;
   delete holder[RUN_DIRS];
-  const { removeOwnedPluginTree } = await import("../src/plugins/installed-entry-fs.js");
-  await removeOwnedPluginTree(dirs.sandboxBase);
-  await removeOwnedPluginTree(dirs.aveHomeBase);
+  await removeRunDir(dirs.sandboxBase);
+  await removeRunDir(dirs.aveHomeBase);
+  const leaked = leftInTmpBase(dirs.tmpBase);
+  if (leaked !== "") {
+    console.warn(`[vitest teardown] tests left these in the temp directory without removing them (removed now; fix the test that makes them): ${leaked}`);
+  }
+  await removeRunDir(dirs.tmpBase);
   await rm(dirname(dirs.pluginChildEntryPath), { recursive: true, force: true });
 }
 
-/**
- * Bundle the plugin child entry once for this run.
- *
- * Every `entry` plugin runs in a child (`docs/design/plugin-hostapi-protocol.md`
- * §9.8 A1), and a source checkout has no emitted `plugin-child-main.js`, so a
- * runtime under test is handed this bundle through its required
- * `childEntryPath` option (`src/__tests__/support/plugin-child-entry.ts`). Built
- * by the same helper, with the shipped build's boundary, that the confinement
- * suites use, into a directory of its own under the repository's `.cache/` —
- * where `node_modules` resolves for the externals — so two runs in one
- * checkout never share a file one of them is rewriting.
- */
+// Unlink junctions before recursive removal so cleanup cannot delete their targets.
+// Restore owner access without following links; load app modules only after AVE_HOME is set.
+async function removeRunDir(path: string): Promise<void> {
+  const { removeLinksUnder } = await import("../src/__tests__/support/tmp-dir-teardown.js");
+  const { removeOwnedPluginTree, restoreOwnerAccess } = await import("../src/plugins/installed-entry-fs.js");
+  try {
+    removeLinksUnder(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" && !existsSync(path)) return;
+    if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") throw error;
+    // Restore owner access without following links, then retry the walk.
+    await restoreOwnerAccess(path);
+    removeLinksUnder(path);
+  }
+  await removeOwnedPluginTree(path);
+}
+
+const TMP_ENV = ["TMPDIR", "TEMP", "TMP"] as const;
+
+// Fold mkdtemp suffixes into one entry per leaking test.
+function leftInTmpBase(tmpBase: string): string {
+  const counts = new Map<string, number>();
+  for (const name of readdirSync(tmpBase)) {
+    if (name === RUN_OWNER_FILE) continue;
+    const key = name.replace(/^(.*[-_.])[A-Za-z0-9]{6}$/, "$1*");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, count]) => (count > 1 ? `${key} x${count}` : key))
+    .join(", ");
+}
+
+// Source checkouts need a bundled plugin child entry with the shipped build boundary.
+// Use a per-run repository cache directory so externals resolve without concurrent rewrites.
 async function buildRunPluginChildEntry(): Promise<string> {
   const { buildChildEntry, childBundleDir } = await import("../src/plugins/isolation/__tests__/child-entry-bundle.js");
   const cacheName = "plugin-child-runtime";
@@ -186,7 +187,6 @@ async function buildRunPluginChildEntry(): Promise<string> {
   }
 }
 
-/** Recursively collect JSON files matching manifest/plugin/*-fixture naming under __tests__ dirs. */
 async function collectJsonFixtures(root: string): Promise<string[]> {
   const results: string[] = [];
   async function walk(dir: string): Promise<void> {

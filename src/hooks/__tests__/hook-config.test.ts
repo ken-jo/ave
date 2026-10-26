@@ -1,11 +1,4 @@
-/**
- * Tests for the declarative `hooks.json` parser (#811 command-hooks milestone).
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4. Covers the
- * decisions: glob matcher (string-validated), closed event set, command-type
- * handler with local-script-vs-binary classification + binary-only rejection,
- * and timeoutMs clamp.
- */
+// Config parsing rejects unsafe handlers and matchers, recognizes only closed-set events, and clamps timeouts (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
 import {
   classifyCommand,
@@ -47,7 +40,7 @@ describe("parseHookConfig — valid parse", () => {
       hooks: {
         PreToolUse: [
           {
-            matcher: "mcp__*",
+            matcher: "^mcp__.*$",
             hooks: [
               {
                 type: "command",
@@ -64,7 +57,7 @@ describe("parseHookConfig — valid parse", () => {
     expect(r.entries).toHaveLength(1);
     expect(r.entries[0]).toMatchObject({
       event: "pre",
-      matcher: "mcp__*",
+      matcher: "^mcp__.*$",
       command: ["~/.config/ave/hooks/pre_policy.py"],
       timeoutMs: 3000,
       source: "config",
@@ -118,18 +111,31 @@ describe("parseHookConfig — valid parse", () => {
     expect(r.entries[0].matcher).toBeUndefined();
     expect(r.entries[1].matcher).toBeUndefined();
   });
+
+  it("rejects a block whose matcher is an invalid regular expression", () => {
+    const r = parseHookConfig({
+      hooks: {
+        PreToolUse: [
+          { matcher: "*danger*", hooks: [{ type: "command", command: "./a.sh" }] },
+          { matcher: "Edit|Write", hooks: [{ type: "command", command: "./b.sh" }] },
+        ],
+      },
+    });
+    expect(r.entries.map((e) => e.matcher)).toEqual(["*danger*", "Edit|Write"]);
+    expect(r.entries[0].matcherError).toBeDefined();
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toContain('PreToolUse[0].matcher "*danger*" is not a valid regular expression');
+  });
 });
 
 describe("parseHookConfig — unknown event ignored + warned (decision b)", () => {
   it("ignores an unknown event key and emits a warning", () => {
     const r = parseHookConfig({
       hooks: {
-        // A genuinely unknown key (NOT one of the closed-set lifecycle events).
         TotallyUnknownEvent: [{ hooks: [{ type: "command", command: "./x.sh" }] }],
         PreToolUse: [{ hooks: [{ type: "command", command: "./pre.sh" }] }],
       },
     });
-    // Only the known PreToolUse entry survives.
     expect(r.entries).toHaveLength(1);
     expect(r.entries[0].event).toBe("pre");
     expect(r.warnings.some((w) => w.includes("TotallyUnknownEvent"))).toBe(true);
@@ -144,8 +150,7 @@ describe("parseHookConfig — unknown event ignored + warned (decision b)", () =
   });
 });
 
-// #811 milestone-2 — the six non-blocking lifecycle events are now a recognized
-// part of the closed event-key set (config-only; no `.sh` prefix).
+// Lifecycle events are config-only; legacy scripts have no lifecycle filename prefix.
 describe("parseHookConfig — lifecycle event keys recognized (#811 m2)", () => {
   it.each([
     ["PostToolUseFailure"],
@@ -168,7 +173,6 @@ describe("parseHookConfig — lifecycle event keys recognized (#811 m2)", () => 
     expect(r.entries).toHaveLength(1);
     // Lifecycle events map to themselves (not the pre|post|perm projection).
     expect(r.entries[0].event).toBe(eventKey);
-    // Recognized ⇒ not warned as unknown.
     expect(r.warnings.some((w) => w.includes("unknown event"))).toBe(false);
   });
 });

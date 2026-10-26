@@ -2,26 +2,11 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 
-/**
- * The one shape the window band uses to report app lifecycle state: an app
- * update, plugin updates, managed-plugin bootstrap.
- *
- * Each subject used to draw its own surface — two of them as floating banners
- * over the content — so three unrelated visual languages competed for the same
- * moment and the content lost width to them. One pill shape, one row, one
- * height token means a second pill appearing next to a first cannot move
- * anything else on screen, and a reader learns the shape once.
- *
- * Tone is the only visual axis. It is a semantic token name, so a theme bundle
- * supplies the actual color.
- */
+/** Lifecycle subjects share one pill shape and height; tones come from semantic theme tokens. */
 type ToolbarStatusPillTone = "info" | "muted" | "success" | "warning" | "destructive";
 
-/**
- * Full class strings per tone rather than an interpolated token name: the
- * stylesheet build scans source text for utilities, and a name assembled at
- * runtime is not there to be found.
- */
+/** Full class strings per tone rather than an interpolated token name: the stylesheet build scans source text for
+ * utilities, and a name assembled at runtime is not there to be found. */
 const TONE_CLASS: Record<ToolbarStatusPillTone, string> = {
   info: "text-info border-info/(--opacity-medium) bg-info/(--opacity-subtle) hover:bg-info/(--opacity-light)",
   muted: "text-muted-foreground border-border bg-muted/(--opacity-medium)",
@@ -31,19 +16,8 @@ const TONE_CLASS: Record<ToolbarStatusPillTone, string> = {
     "text-destructive border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) hover:bg-destructive/(--opacity-light)",
 };
 
-/**
- * The resting tint, restated under `hover:` for a pill that is not actionable.
- *
- * An unactionable pill is marked with `aria-disabled` rather than the native
- * `disabled` attribute, because a natively disabled button gets
- * `pointer-events: none` from the button base and drops out of the tab order —
- * and a pill whose progress or version lives in its tooltip would then have no
- * way to show it, by pointer or by keyboard. Keeping pointer events also means
- * the browser no longer withholds `:hover`, so the inert appearance has to be
- * stated instead of inherited. The `aria-disabled` variant carries an attribute
- * selector, so these outrank both the tone hover above and the button variant's
- * own.
- */
+/** Use aria-disabled to keep tooltip progress reachable by pointer and keyboard; explicitly suppress hover tint for inert
+ * pills. */
 const TONE_INERT_CLASS: Record<ToolbarStatusPillTone, string> = {
   info: "aria-disabled:hover:bg-info/(--opacity-subtle) aria-disabled:hover:text-info",
   muted: "aria-disabled:hover:bg-muted/(--opacity-medium) aria-disabled:hover:text-muted-foreground",
@@ -71,19 +45,14 @@ export interface ToolbarStatusPillProps {
   /** Hover text and tooltip body. The place the long form goes. */
   title: string;
   ariaLabel: string;
-  /**
-   * Rendered inside the pill after the label — a keyboard hint, a count. It is
-   * decoration on top of `label`, not a second label: `ariaLabel` already
-   * carries everything a reader needs, so the pill reads the same without it.
-   */
+  /** Rendered inside the pill after the label — a keyboard hint, a count. It is decoration on top of `label`, not a second
+   * label: `ariaLabel` already carries everything a reader needs, so the pill reads the same without it. */
   trailing?: React.ReactNode;
   /** Work is in flight: the icon spins and the cursor reads as progress. */
   busy?: boolean;
   onClick?: () => void;
-  /**
-   * Present but not actionable. The pill stays hoverable and focusable so the
-   * tooltip — where the long form lives — can still be reached.
-   */
+  /** Present but not actionable. The pill stays hoverable and focusable so the tooltip — where the long form lives — can
+   * still be reached. */
   disabled?: boolean;
   testId: string;
   secondaryAction?: ToolbarStatusPillAction;

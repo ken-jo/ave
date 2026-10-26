@@ -1,10 +1,3 @@
-/**
- * Automatic updates in the marketplace tab (design §18.7, §18.9): the
- * switches, *Apply now*, the rows that need the user and their actions, the
- * recent automatic updates, the boot notice's "Updated automatically", the
- * update review's consent rows and approvals, and the component approval of
- * an `approval-pending` agent plugin.
- */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
@@ -256,8 +249,8 @@ describe("required installs not met (§10.2)", () => {
     expect(reason("lint")).toHaveTextContent("아직 이 마켓플레이스에 연결하지 못했습니다.");
     expect(reason("audit")).toHaveTextContent("이 마켓플레이스 목록에 없습니다.");
     expect(reason("review")).toHaveTextContent("Ave 9.0.0 이상이 필요합니다.");
-    // A rollout hold is availability, not this app's version.
-    // Waiting alone is not promised to help: a pre-release-only catalog needs a release offered to this device.
+    // A rollout hold is availability, not this app's version. Waiting alone is not promised to help: a pre-release-only
+    // catalog needs a release offered to this device.
     expect(reason("beta")).toHaveTextContent("아직 이 기기에 제공되는 릴리스가 없습니다: 릴리스가 단계적 배포로 보류되었거나 사전 릴리스뿐입니다. 이 기기에 릴리스가 제공되면 설치할 수 있습니다.");
     expect(reason("beta")).not.toHaveTextContent("Ave");
     expect(reason("triage")).toHaveTextContent("이 마켓플레이스가 이 설치에 제공하는 릴리스가 없습니다.");

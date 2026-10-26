@@ -1,16 +1,4 @@
-// Window notices for a profile whose route is going away.
-//
-// RetiredProviderNotice: the settings load leaves `llm.retiredProvider` set
-// when the stored profile named a removed LLM vendor (moved off it) or a model
-// its vendor's own complete listing no longer names (the retired tier). While
-// it is set, API-key chat is refused (main reads the active route as not
-// configured), and this notice says why and where to go. It is not
-// dismissible: it stays until the user picks in Settings, which is what
-// clears the marker.
-//
-// DeprecatedModelNotice: the catalog marks the saved model deprecated (design
-// `model-capability-catalog.md` §6.1). Chat keeps working, so the notice is a
-// status line the user can dismiss for this window's lifetime.
+// Removed routes block API chat until reconfigured; deprecated models remain usable and show a dismissible catalog notice.
 
 import { useState } from "react";
 import { Button } from "../../../components/ui/button.js";

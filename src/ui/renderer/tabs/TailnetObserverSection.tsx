@@ -1,16 +1,5 @@
-/**
- * Local-owner controls for the Tailnet observer listener.
- *
- * The observer used to be configurable only through boot environment
- * variables, which a packaged app has no way to set — so the listener, paired
- * sharing, the controller, and the web surface were all unreachable for the
- * user the app ships to, and "off" was indistinguishable from "not built".
- *
- * This section renders whether or not sharing is currently available, because
- * it is the control that makes sharing available in the first place. It reads a
- * host-owned snapshot and proposes a whole configuration; the host validates,
- * persists, and decides.
- */
+/** Keep setup reachable when sharing is unavailable; main validates and persists the complete proposed observer
+ * configuration. */
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -43,8 +32,8 @@ export interface TailnetObserverSectionProps {
 /** What a save writes when the owner asks to start over from a damaged file. */
 const RESET_CONFIG: TailnetObserverConfigView = Object.freeze({
   enabled: false,
-  // Starting over lands on the default boundary, not on a half-filled advanced
-  // one: identity mode needs nothing typed to be valid.
+  // Starting over lands on the default boundary, not on a half-filled advanced one: identity mode needs nothing typed to be
+  // valid.
   authorization: { kind: "tailnet-identity" as const },
   port: DEFAULT_TAILNET_OBSERVER_VIEW_PORT,
   controllerEnabled: false,
@@ -161,8 +150,8 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
   const [serveUrl, setServeUrl] = useState<string | null>(null);
   const [serveOutput, setServeOutput] = useState<string | null>(null);
   const { copied, copy: copyToClipboard } = useCopyFlash();
-  // Toggling back to identity mode must not silently discard a capability the
-  // user already typed; the draft keeps it so flipping the switch is reversible.
+  // Toggling back to identity mode must not silently discard a capability the user already typed; the draft keeps it so
+  // flipping the switch is reversible.
   const [capabilityDraft, setCapabilityDraft] = useState("");
 
   const refresh = useCallback(async () => {
@@ -190,8 +179,8 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
     setBusy(true);
     const result = await api.tailnetObserver.apply(config);
     if (result.ok) {
-      // After the refresh, not before: a successful snapshot clears feedback,
-      // so setting it first left a save that applied with nothing said about it.
+      // After the refresh, not before: a successful snapshot clears feedback, so setting it first left a save that applied with
+      // nothing said about it.
       await refresh();
       onHostStateChanged?.();
       setFeedback({ tone: "success", text: t("tailnetObserver.saved") });
@@ -213,8 +202,8 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
       onHostStateChanged?.();
       setFeedback({ tone: "success", text: t("tailnetObserver.serveConfigured") });
     } else {
-      // Tailscale's own sentence, not a paraphrase of it: the certificate case
-      // needs a tailnet administrator, and only Tailscale says so.
+      // Tailscale's own sentence, not a paraphrase of it: the certificate case needs a tailnet administrator, and only Tailscale
+      // says so.
       setServeOutput(result.output);
       setFeedback({ tone: "error", text: tailnetObserverErrorText(result.error, t) });
     }

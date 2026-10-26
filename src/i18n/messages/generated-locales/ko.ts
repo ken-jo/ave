@@ -82,6 +82,7 @@ import { ko as ko_chatTab } from "../generated/chatTab.js";
 import { ko as ko_chatView } from "../generated/chatView.js";
 import { ko as ko_checkpointDivider } from "../generated/checkpointDivider.js";
 import { ko as ko_clipboardPaste } from "../generated/clipboardPaste.js";
+import { ko as ko_codeRewind } from "../generated/codeRewind.js";
 import { ko as ko_commandActions } from "../generated/commandActions.js";
 import { ko as ko_compactedToolResult } from "../generated/compactedToolResult.js";
 import { ko as ko_composer } from "../generated/composer.js";
@@ -94,6 +95,7 @@ import { ko as ko_deferredQueueDialog } from "../generated/deferredQueueDialog.j
 import { ko as ko_deferredQueuePanel } from "../generated/deferredQueuePanel.js";
 import { ko as ko_devToolsPanel } from "../generated/devToolsPanel.js";
 import { ko as ko_dockedApprovalCard } from "../generated/dockedApprovalCard.js";
+import { ko as ko_egressApprovalCard } from "../generated/egressApprovalCard.js";
 import { ko as ko_errorBoundary } from "../generated/errorBoundary.js";
 import { ko as ko_fileEditDiff } from "../generated/fileEditDiff.js";
 import { ko as ko_formatIpcError } from "../generated/formatIpcError.js";
@@ -117,6 +119,7 @@ import { ko as ko_messageQueuePanel } from "../generated/messageQueuePanel.js";
 import { ko as ko_messageQueueStore } from "../generated/messageQueueStore.js";
 import { ko as ko_overlayCard } from "../generated/overlayCard.js";
 import { ko as ko_overlayCardRegion } from "../generated/overlayCardRegion.js";
+import { ko as ko_pagePreview } from "../generated/pagePreview.js";
 import { ko as ko_pendingAnswerDot } from "../generated/pendingAnswerDot.js";
 import { ko as ko_permissionDecisionCard } from "../generated/permissionDecisionCard.js";
 import { ko as ko_permissionEvaluationContextPanel } from "../generated/permissionEvaluationContextPanel.js";
@@ -161,6 +164,7 @@ import { ko as ko_summaryToast } from "../generated/summaryToast.js";
 import { ko as ko_tailnetAccessTab } from "../generated/tailnetAccessTab.js";
 import { ko as ko_telegramConnection } from "../generated/telegramConnection.js";
 import { ko as ko_terminalBlocks } from "../generated/terminalBlocks.js";
+import { ko as ko_terminalEgressBanner } from "../generated/terminalEgressBanner.js";
 import { ko as ko_tokenCostBadge } from "../generated/tokenCostBadge.js";
 import { ko as ko_tokenProgressRing } from "../generated/tokenProgressRing.js";
 import { ko as ko_toolActivity } from "../generated/toolActivity.js";
@@ -170,6 +174,7 @@ import { ko as ko_toolGroupCard } from "../generated/toolGroupCard.js";
 import { ko as ko_trustOriginLabel } from "../generated/trustOriginLabel.js";
 import { ko as ko_turnActionBar } from "../generated/turnActionBar.js";
 import { ko as ko_unifiedSearchPanel } from "../generated/unifiedSearchPanel.js";
+import { ko as ko_upstreamProxySettings } from "../generated/upstreamProxySettings.js";
 import { ko as ko_usageDashboard } from "../generated/usageDashboard.js";
 import { ko as ko_useChatState } from "../generated/useChatState.js";
 import { ko as ko_useMemorySearch } from "../generated/useMemorySearch.js";
@@ -269,6 +274,7 @@ export const koMessages: Record<string, string> = {
   ...ko_chatView,
   ...ko_checkpointDivider,
   ...ko_clipboardPaste,
+  ...ko_codeRewind,
   ...ko_commandActions,
   ...ko_compactedToolResult,
   ...ko_composer,
@@ -281,6 +287,7 @@ export const koMessages: Record<string, string> = {
   ...ko_deferredQueuePanel,
   ...ko_devToolsPanel,
   ...ko_dockedApprovalCard,
+  ...ko_egressApprovalCard,
   ...ko_errorBoundary,
   ...ko_fileEditDiff,
   ...ko_formatIpcError,
@@ -304,6 +311,7 @@ export const koMessages: Record<string, string> = {
   ...ko_messageQueueStore,
   ...ko_overlayCard,
   ...ko_overlayCardRegion,
+  ...ko_pagePreview,
   ...ko_pendingAnswerDot,
   ...ko_permissionDecisionCard,
   ...ko_permissionEvaluationContextPanel,
@@ -348,6 +356,7 @@ export const koMessages: Record<string, string> = {
   ...ko_tailnetAccessTab,
   ...ko_telegramConnection,
   ...ko_terminalBlocks,
+  ...ko_terminalEgressBanner,
   ...ko_tokenCostBadge,
   ...ko_tokenProgressRing,
   ...ko_toolActivity,
@@ -357,6 +366,7 @@ export const koMessages: Record<string, string> = {
   ...ko_trustOriginLabel,
   ...ko_turnActionBar,
   ...ko_unifiedSearchPanel,
+  ...ko_upstreamProxySettings,
   ...ko_usageDashboard,
   ...ko_useChatState,
   ...ko_useMemorySearch,

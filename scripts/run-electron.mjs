@@ -31,12 +31,7 @@ if (commandArgs) {
 const { default: electronPath } = await import("electron");
 ensureElectronNativeModules({ repoRoot });
 
-// Ensure NODE_ENV is set so logger.ts can select pino-pretty at module load
-// time. This script handles unpackaged dev runs (`bun run start`); packaged
-// production builds are detected by the absence of process.defaultApp in the
-// Electron runtime (see src/lib/logger.ts). Setting "development" here when
-// not already set keeps the dev-run experience consistent regardless of the
-// shell's NODE_ENV.
+// Set development logging before module load unless the caller already selected an environment.
 if (!env.NODE_ENV) {
   env.NODE_ENV = "development";
 }
@@ -44,43 +39,16 @@ if (!env.NODE_ENV) {
 if (!env.AVE_DEV_CONSOLE) {
   env.AVE_DEV_CONSOLE = "0";
 }
-// `bun run start` already injects --no-sandbox via WINDOWS_SAFE_ELECTRON_FLAGS
-// below; tell main.ts to mirror that into the ave:// protocol registration so
-// OS-launched second instances on corp boxes don't silently crash before
-// requestSingleInstanceLock(). Mirror the same gate as the runtime flag
-// injection (win32 + AVE_KEEP_GPU !== "1") so the foreground process and
-// the protocol-registered command always agree on sandbox posture. The dev-
-// flags.ts SoT in main.ts hard-gates this on `!app.isPackaged` regardless,
-// so a packaged binary that inherits AVE_WIN_NO_SANDBOX=1 still keeps
-// Chromium sandboxing.
-//
-// The shared helper applies platform launch flags and UTF-8 subprocess defaults.
 prepareElectronLaunchEnv(env);
 
-// Windows corp PCs often run Electron under EDR/AV sandboxing + restricted
-// GPU drivers (Hyper-V isolation / VDI / locked-down ANGLE). Under those
-// conditions the default GPU process crashes with "GPU process isn't usable.
-// Goodbye!" before the window appears. The minimal reliable combo for
-// Chromium 131 (Electron 41) is `--disable-gpu` + `--disable-software-
-// rasterizer` + `--disable-gpu-compositing` + `--no-sandbox`. Older flag
-// names we used to stack (`--in-process-gpu`, `--use-angle=swiftshader`) are
-// either deprecated or renamed in new Chromium and can make things worse —
-// they sometimes force GPU init that then fails in the restricted env. Opt
-// out with `AVE_KEEP_GPU=1` on machines with a sane GPU (passthrough VMs,
-// CI). Override with `AVE_EXTRA_ELECTRON_FLAGS="--foo --bar"` to append
-// extra flags without losing the defaults.
+// Restricted desktop GPU and sandbox initialization can fail before the window appears.
+// Keep launch flags aligned with the shared platform policy.
 args.splice(0, args.length, ...prepareElectronLaunchArgs(args, env, {
   profileName: "Electron-Ave-Run",
 }));
 
-// Windows: launch Electron through a cmd.exe wrapper so `chcp 65001` and
-// Electron share the SAME console. A separate `execSync("chcp")` runs in a
-// detached subprocess — the code-page change never reaches Electron's
-// console. We use `shell: true` (which invokes `cmd.exe /d /s /c "<cmd>"` on
-// Windows) so cmd's `/s` flag preserves our inner quoting around electron.exe
-// path; passing cmd.exe + /c manually without /s triggers cmd's legacy
-// quote-stripping rule and produces "electron.exe 는 실행할 수 있는 프로그램…
-// 아닙니다".
+// Code-page changes must share the child console.
+// Preserve nested executable-path quoting through the shell wrapper.
 if (process.platform === "win32") {
   if (env.AVE_DEBUG === "1") {
     process.stderr.write(

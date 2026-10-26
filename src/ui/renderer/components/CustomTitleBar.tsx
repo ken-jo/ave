@@ -1,34 +1,4 @@
-/**
- * CustomTitleBar — cross-platform custom window chrome, now the single top
- * band that also hosts the app toolbar content.
- *
- * The band content (sidebar-collapse toggle, Chat/Work mode, Dev badge,
- * search / star / export) is passed in as `children` and rendered in the
- * band's left + middle, LEFT of the native window controls. There is no
- * separate toolbar row below the band — the toolbar lives IN the band.
- *
- * Win/Linux: renders the band with `children` on the left + middle and the
- *            native Minimize / Maximize / Close buttons pinned to the trailing
- *            corner. The band stays a drag region in empty zones; every
- *            interactive control opts out via `WebkitAppRegion: "no-drag"`.
- * macOS:     no renderer-drawn window buttons — the OS draws the traffic
- *            lights into the `hiddenInset` area (`TRAFFIC_LIGHT_POSITION` in
- *            `shared/shell-geometry.ts`). The band renders `children` with
- *            `BAND_LEAD_PAD_DARWIN` of left padding, derived from where those
- *            lights end, so the first control clears them while the band stays
- *            a drag region elsewhere.
- *
- * Platform detection uses `window.avePlatform.isDarwin` (set by preload)
- * rather than a UA sniff — throw if the bridge is absent so misconfigurations
- * are loud, not silent.
- *
- * Drag region uses the Electron CSS hint `WebkitAppRegion: "drag"`;
- * interactive children opt out with `WebkitAppRegion: "no-drag"`.
- *
- * Theme sync: when the applied theme values change (`appliedRevision`), the component calls
- * `window.aveWindow.syncTitleBarTheme` so the Electron titleBarOverlay
- * (Win/Linux native layer) matches our CSS tokens.
- */
+/** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Minus, Maximize2, Minimize2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -37,7 +7,6 @@ import { useTranslation } from "../../../i18n/react.js";
 import { BAND_EDGE_PAD, BAND_LEAD_PAD_DARWIN } from "../../../shared/shell-geometry.js";
 import { getPlatformBridge } from "../api-client.js";
 
-// ─── Token → hex helpers ──────────────────────────────────────────────────
 // We read the CSS variable as an HSL triple (e.g. "222.2 84% 4.9%") and
 // convert it to a hex string that Electron's setTitleBarOverlay() accepts.
 function hslTripleToHex(triple: string): string {
@@ -63,13 +32,7 @@ function readCssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name);
 }
 
-// ─── Platform bridge ─────────────────────────────────────────────────────
-// `getPlatformBridge()` is null when the Electron preload bridge is absent
-// (jsdom / Storybook / SSR). In those environments the component renders
-// nothing — there is no native window chrome to replace. In Electron
-// production the bridge is always injected by preload.ts; if it IS present but
-// contains invalid data, we throw so the misconfiguration is loud rather than
-// silently defaulting.
+// Without a native platform bridge, render no title bar; invalid data on a present bridge must throw.
 
 function getWindowBridge(): {
   minimize: () => Promise<void>;
@@ -86,8 +49,6 @@ function getWindowBridge(): {
   return w as ReturnType<typeof getWindowBridge>;
 }
 
-// ─── Component ────────────────────────────────────────────────────────────
-
 export interface CustomTitleBarProps {
   /**
    * Band content — the app toolbar cluster (collapse toggle, Chat/Work mode,
@@ -97,16 +58,7 @@ export interface CustomTitleBarProps {
    * in the gaps between them.
    */
   children?: ReactNode;
-  /**
-   * Viewport x where band content must begin, because the floating sidebar
-   * card extends UP into this band and would otherwise cover it.
-   *
-   * It lives here rather than on the content because the band ALREADY has a
-   * leading reserve of its own — the traffic-light inset on macOS, a plain gutter
-   * elsewhere — and the two are the same reserve, not two stacked ones. The
-   * band takes whichever is larger; a second padding applied by the content
-   * pushed the path a whole `BAND_LEAD_PAD_DARWIN` past the sidebar's edge.
-   */
+  /** Use the larger of sidebar and native-control leading reserves, never stack both paddings. */
   leadClearance?: number;
 }
 
@@ -189,24 +141,8 @@ export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarPr
   if (isFullscreen) return null;
 
   if (isDarwin) {
-    // macOS: the OS draws the traffic lights into the hiddenInset area
-    // (`TRAFFIC_LIGHT_POSITION`). The band stays a drag region and hosts the
-    // toolbar content with `BAND_LEAD_PAD_DARWIN` of left padding — the lights'
-    // right edge plus a tight gap — so the first control clears them with no
-    // hover overlap.
-    //
-    // The band is 36px (`--chrome-band-height`, a px token: the lights are drawn
-    // in device px, so the band must not follow the type scale). It is
-    // deliberately NOT taller than the composer's
-    // action row at the window's bottom edge: a window reads as top-heavy the
-    // moment its title band outweighs its footer, and the band carries less
-    // than the footer does. It also matches the chat group's own header, so
-    // every chrome row in the window is one height.
-    //
-    // 36px with items-center centers a `--chrome-control-height` (28px) control
-    // at cy=18, and the traffic lights center on the same line — see
-    // `TRAFFIC_LIGHT_POSITION` in shared/shell-geometry.ts, which is the other
-    // half of this number and must move with it.
+    // Keep chrome dimensions in pixels to align native controls across font scales; move band height and traffic-light
+    // geometry together.
     return (
       <div
         data-testid="custom-titlebar-darwin"
@@ -224,8 +160,8 @@ export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarPr
     );
   }
 
-  // Win / Linux: band hosts the toolbar content on the left + middle, with the
-  // native − □ × cluster pinned to the trailing corner.
+  // Win / Linux: band hosts the toolbar content on the left + middle, with the native − □ × cluster pinned to the trailing
+  // corner.
   return (
     <div
       data-testid="custom-titlebar"

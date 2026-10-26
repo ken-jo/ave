@@ -45,7 +45,6 @@ interface AuditState {
   report: Omit<HostApiBudgetAudit, "count" | "summary">;
 }
 
-/** One incarnation's bounded token buckets and denial diagnostics. */
 export class HostApiBudgets {
   private readonly buckets = new Map<string, BucketState>();
   private readonly audits = new Map<string, AuditState>();
@@ -56,15 +55,13 @@ export class HostApiBudgets {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Return milliseconds until the next token, or zero after consuming one. */
   take(method: HostApiPath | "notifications/ave/log"): number {
     const name: BucketName = method === "hostFetch" || method === "resolveApiKey"
       ? method
       : method === "emitEvent" ? "emitEvent"
       : method === "logEvent" || method === "notifications/ave/log" ? "logEvent"
       : "default";
-    // Log requests and context.log share one plugin budget. All other request
-    // buckets are per method, with the same default capacity.
+    // Log calls share one per-plugin budget; other methods have separate buckets.
     const key = name === "logEvent" ? "logEvent" : method;
     const limit = BUCKETS[name];
     const now = Math.trunc(this.now());
@@ -130,7 +127,7 @@ export class HostApiBudgets {
     try {
       this.report(entry);
     } catch {
-      // A diagnostic sink cannot turn a refusal into a failed transport call.
+      // Diagnostic failures must not replace transport refusals.
     }
   }
 }

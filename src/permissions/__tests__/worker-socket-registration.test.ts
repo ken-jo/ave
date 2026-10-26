@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   initializeAsrtSandbox,
@@ -8,21 +9,27 @@ import {
   unregisterWorkerUnixSocketDir,
 } from "../asrt-sandbox.js";
 
-// Config ownership only: the probe gets a valid wrapper and a successful child
-// lifecycle. Runtime confinement and probe failures have separate coverage.
+useVerifiedAveHomePrivacy();
+
+// Config ownership only: the probe gets a valid wrapper and a successful child lifecycle. Runtime confinement and probe failures have separate coverage.
 const manager = vi.hoisted(() => ({
   config: undefined as { network: { allowUnixSockets?: string[] } } | undefined,
   update: vi.fn(),
+  openListener: vi.fn(),
+  closeListener: vi.fn(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
+  setParentProxyRouter: () => undefined,
   initialize: async (config: typeof manager.config) => { manager.config = config; },
   updateConfig: (config: typeof manager.config) => { manager.update(config); manager.config = config; },
   reset: async () => { manager.config = undefined; },
   wrapWithSandboxArgv: async () => ({
-    argv: ["/bin/bash", "-c", "/configured/bwrap --ro-bind / / -- /bin/bash -c true"],
+    argv: ["/bin/bash", "-c", "/configured/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / / -- /bin/bash -c true"],
     env: process.env,
   }),
   cleanupAfterCommand: () => undefined,
+  openInvocationListener: manager.openListener,
+  closeInvocationListener: manager.closeListener,
 } }));
 vi.mock("node:child_process", () => ({
   spawn: () => {
@@ -39,7 +46,12 @@ describe("worker socket directory ownership", () => {
   beforeEach(async () => {
     setProcessPlatform("linux");
     manager.update.mockReset();
+    manager.openListener.mockReset().mockResolvedValue({ socketPath: "/configured/proxy.sock" });
+    manager.closeListener.mockReset();
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    expect(manager.openListener).toHaveBeenCalledOnce();
+    expect(manager.openListener).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]{32}$/u));
+    expect(manager.closeListener).toHaveBeenCalledWith(manager.openListener.mock.calls[0]![0]);
   });
   afterEach(async () => {
     try {

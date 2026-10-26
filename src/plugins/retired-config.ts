@@ -45,8 +45,7 @@ export function createPluginRetirementPort(deps: {
       return record;
     },
     async writeIfAbsent(pluginId, record) {
-      // No await between the read and set: SettingsService updates memory
-      // synchronously and resolves only after persistence (or rolls it back).
+      // Keep read and synchronous memory update in one turn; persistence may later resolve or roll back.
       const records = deps.settings.get("retiredPluginConfigs");
       if (Object.hasOwn(records, pluginId)) return;
       await deps.settings.set("retiredPluginConfigs", { ...records, [pluginId]: structuredClone(record) });

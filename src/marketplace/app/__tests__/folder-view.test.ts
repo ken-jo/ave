@@ -1,10 +1,4 @@
-/**
- * How a folder source looks and what *Show in Finder* may touch (design
- * §18.4.8, §18.9): the *Local folder* / *Network folder* badge on the
- * preview, the row and its packages; the provenance a package sheet shows;
- * and `revealFolder`, which answers only for a folder source and judges the
- * folder as a read would before anything touches it.
- */
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -28,20 +22,26 @@ afterEach(() => {
   rmSync(dirname(folder), { recursive: true, force: true });
 });
 
-async function addLocalMarket() {
-  writeFolderFiles(folder, {
+function localVolume() {
+  return new FakeVolume(process.platform, { drives: { [tmpdir().slice(0, 2).toUpperCase()]: "\\Device\\HarddiskVolume1" } });
+}
+
+async function addLocalMarket(volume?: FakeVolume) {
+  const files = {
     "marketplace.json": index,
     "skills/alpha/ave-package.json": skill("alpha"),
     "skills/alpha/SKILL.md": "Write alpha.\n",
-  });
-  const harness = await folderService({ root, folders: nodeFolders() });
+  };
+  if (volume) for (const [path, contents] of Object.entries(files)) volume.file(join(folder, path), contents);
+  else writeFolderFiles(folder, files);
+  const folders = volume ? { ...nodeFolders(), fs: volume } : nodeFolders();
+  const harness = await folderService({ root, folders });
   const preview = await harness.service.previewSource({ input: folder, auth: "none" });
   if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
   const view = await harness.service.addSource({ previewId: preview.previewId, id: "team" });
   return { harness, preview, view };
 }
 
-/** A Windows volume whose `Z:` maps to a local disk until the test remaps it to a share. */
 function windowsVolume() {
   const drives: Record<string, string> = { "C:": "\\Device\\HarddiskVolume3", "Z:": "\\Device\\HarddiskVolume4" };
   const volume = new FakeVolume("win32", { drives });
@@ -52,7 +52,6 @@ async function windowsService(volume: FakeVolume, now?: () => Date) {
   return folderService({ root, folders: { fs: volume, platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example", ...(now ? { now } : {}) });
 }
 
-/** A local `Z:\m` folder source on a Windows volume, added while `Z:` is a disk of this computer. */
 async function addLocalDrive(volume: FakeVolume, now?: () => Date) {
   volume.file("Z:\\m\\SKILL.md", SKILL);
   const harness = await windowsService(volume, now);
@@ -72,7 +71,6 @@ describe("folder badges (§18.4.8)", () => {
       expect(view.badges).toEqual(["local-folder"]);
       const catalog = await harness.service.catalog({ sourceId: "team" });
       expect(catalog.entries.map((item) => item.sourceBadges)).toEqual([["local-folder"]]);
-      // A git source keeps its own badges: the official one has none.
       const sources = await harness.service.listSources();
       for (const item of sources.filter((candidate) => candidate.transport === "git")) expect(item.badges).not.toContain("local-folder");
     } finally {
@@ -106,14 +104,13 @@ describe("folder badges when the folder or its classifier changes (§18.4.8)", (
       volume.queryDosDevice = async () => {
         throw new Error("Windows folder classifier is missing: C:\\Ave\\resources\\windows-path-kind\\x64\\ave-path-kind.exe. Reinstall Ave.");
       };
-      clock += 60_001; // past the badge's minute, so it is asked again
+      clock += 60_001;
       const sources = await harness.service.listSources();
       expect(sources.find((item) => item.id === "notes")!.badges).toEqual(["folder-unclassified"]);
       expect(sources.filter((item) => item.transport === "git").length).toBeGreaterThan(0);
       const catalog = await harness.service.catalog({});
       expect(catalog.entries.filter((item) => item.key.sourceId === "notes").map((item) => item.sourceBadges)).toEqual([["folder-unclassified"]]);
 
-      // Not remembered as a class: once the classifier runs again, the folder is classified.
       volume.queryDosDevice = healthy;
       expect((await harness.service.listSources()).find((item) => item.id === "notes")!.badges).toEqual(["local-folder"]);
     } finally {
@@ -137,7 +134,7 @@ describe("folder badges when the folder or its classifier changes (§18.4.8)", (
 
 describe("package provenance of a folder (§18.4.8)", () => {
   it("names the folder, when it was read and the digest of what the package installs", async () => {
-    const { harness, view } = await addLocalMarket();
+    const { harness, view } = await addLocalMarket(localVolume());
     try {
       const detail = await harness.service.detail({ sourceId: "team", kind: "skill", name: "alpha" });
       const snapshot = (await harness.syncer.readSnapshot("team"))!;
@@ -156,7 +153,7 @@ describe("package provenance of a folder (§18.4.8)", () => {
 
 describe("revealFolder (§18.9)", () => {
   it("answers a folder source's canonical path, null for a git source, and refuses an unknown id", async () => {
-    const { harness, view } = await addLocalMarket();
+    const { harness, view } = await addLocalMarket(localVolume());
     try {
       await expect(harness.service.revealFolder("team")).resolves.toBe(view.path);
       const git = (await harness.service.listSources()).find((item) => item.transport === "git");
@@ -169,16 +166,17 @@ describe("revealFolder (§18.9)", () => {
   });
 
   it("says the folder is gone instead of opening nothing", async () => {
-    const { harness, view } = await addLocalMarket();
+    const volume = localVolume();
+    const { harness, view } = await addLocalMarket(volume);
     try {
-      rmSync(folder, { recursive: true, force: true });
+      volume.remove(folder);
       expect(await refused(harness.service.revealFolder("team"))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "not-found", path: view.path } });
     } finally {
       harness.service.close();
     }
   });
 
-  it("says the folder moved when its path now leads to another folder, instead of showing that one", async () => {
+  it.skipIf(!canCreateSymlinks())("says the folder moved when its path now leads to another folder, instead of showing that one", async () => {
     const { harness, view } = await addLocalMarket();
     try {
       const elsewhere = join(dirname(folder), "elsewhere");
@@ -211,7 +209,7 @@ describe("revealFolder (§18.9)", () => {
       const lstat = volume.lstat.bind(volume);
       volume.lstat = async (path) => {
         const answer = await lstat(path);
-        if (path === "Z:\\m") drives["Z:"] = SHARE; // remapped right after the walk's last stat
+        if (path === "Z:\\m") drives["Z:"] = SHARE;
         return answer;
       };
       expect(await refused(harness.service.revealFolder("notes"))).toMatchObject({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "network-folder", server: "files.corp" } });
@@ -235,7 +233,6 @@ describe("revealFolder (§18.9)", () => {
       volume.calls.length = 0;
       const error = await refused(harness.service.revealFolder("notes"));
       expect(error).toMatchObject({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "network-folder", server: "files.corp" } });
-      // Only the drive's mapping was read: nothing on the share was touched.
       expect(volume.calls).toEqual([{ op: "queryDosDevice", path: "Z:" }]);
     } finally {
       harness.service.close();
@@ -247,7 +244,6 @@ describe("a folder source an earlier build stored under a credential-shaped id (
   // Assembled here so no whole token sits in the source.
   const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
 
-  /** Rename the added `notes` folder source and its data to TOKEN, as an earlier build stored them, and reopen. */
   async function storeUnderToken(harness: Awaited<ReturnType<typeof windowsService>>, volume: FakeVolume) {
     harness.service.close();
     const marketplaces = join(root, "marketplaces");
@@ -270,7 +266,6 @@ describe("a folder source an earlier build stored under a credential-shaped id (
       const row = (await harness.service.listSources()).find((item) => item.status.state === "id-holds-credential")!;
       expect(row).toMatchObject({ transport: "folder", badges: [] });
       expect(row.id).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
-      // A source that is only removed is not classified: its drive is not asked about.
       expect(volume.calls).toEqual([]);
       for (const id of [row.id, TOKEN]) {
         expect(await refused(harness.service.revealFolder(id)), id).toMatchObject({ code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });

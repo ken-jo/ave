@@ -1,15 +1,7 @@
-/**
- * Snapshot retention (design §2.3): a sync prunes old snapshots, but never
- * one an installed package still references by its `origin.commit` (the
- * snapshot commit its install plan was bound to). Each reader lists the
- * origins of one kind of install; `retainedCommitsFrom` turns them into the
- * syncer's `retainedCommits` option. The revocation feed reads the same
- * origins to find each installed package's bound source (§10.4).
- */
+/** Retain every snapshot an installed origin references; those origins also bind revocation sources. */
 import { readPluginRegistry } from "../../plugins/registry.js";
 import type { PackageKind } from "../catalog/types.js";
 
-/** An installed package bound to a source, and the snapshot commit its install used. */
 export interface InstalledOrigin {
   kind: PackageKind;
   name: string;
@@ -31,7 +23,6 @@ export function retainedCommitsFrom(readers: readonly OriginReader[]): (sourceId
   };
 }
 
-/** Origins of git-installed plugins, from the plugin registry. */
 export function pluginRegistryOrigins(registryPath: string): OriginReader {
   return async () => {
     const registry = await readPluginRegistry(registryPath);

@@ -1,6 +1,5 @@
 import type { RetirementSuccessors } from "../../shared/alerts-types.js";
 
-/** A synced source's authority to retire a plugin and transfer its choices. */
 export interface RetirementEntry {
   sourceId: string;
   successors: RetirementSuccessors;

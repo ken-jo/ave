@@ -32,8 +32,8 @@ describe("viewHistoryIntent", () => {
   });
 
   it("refuses the OTHER platform's chord on each platform", () => {
-    // The load-bearing one: Alt+Arrow must stay inert on macOS or word-wise
-    // caret movement in the composer starts navigating instead.
+    // The load-bearing one: Alt+Arrow must stay inert on macOS or word-wise caret movement in the composer starts navigating
+    // instead.
     expect(viewHistoryIntent(key({ key: "ArrowLeft", altKey: true }), true)).toBeNull();
     expect(viewHistoryIntent(key({ key: "ArrowRight", altKey: true }), true)).toBeNull();
     expect(viewHistoryIntent(key({ key: "[", metaKey: true }), false)).toBeNull();

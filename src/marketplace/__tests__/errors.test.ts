@@ -22,7 +22,7 @@ describe("MarketplaceError detail (design §18.8)", () => {
     expect(scrubMarketplaceErrorDetail("SOURCE_POLICY_BLOCKED", identifiers)).toEqual(identifiers);
   });
 
-  // Built here, never written out whole: a token-shaped ssh account name, which URL normalization keeps.
+  // Assemble the token-shaped SSH account to avoid storing a whole token in source.
   const TOKEN = `ghp_${"a".repeat(36)}`;
   const pasted = `ssh://${TOKEN}@github.com/acme/market`;
   const ordinary = "ssh://git@github.com/acme/market";

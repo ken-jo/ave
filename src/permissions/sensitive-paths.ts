@@ -33,31 +33,20 @@
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
 import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
 
-/**
- * Bounded walk-up depth used by {@link canonicalizePathForMatch} when the
- * input path does not yet exist on disk. We try `realpathSync.native()` on
- * progressively higher ancestors until we find one that exists, then
- * compose `<resolvedAncestor>/<remainder>`. Capped to defend against
- * adversarial inputs (deep paths, symlink cycles).
- */
+// Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
 export const MAX_WALK_UP = 64;
 
 const NO_RUNTIME_SECRET_KEY_PATHS: readonly string[] = Object.freeze([]);
 let runtimeSecretKeyPaths: { configured: string; paths: readonly string[] } | undefined;
 
-/**
- * The native host's configured external key is secret regardless of its name
- * or workspace grants. Both the host guard and the OS deny floor consume these
- * same literal paths. Host startup resolves them before exposing tools; retain
- * that target if a directory symlink changes later. The host owns this process
- * environment setting and keeps it unchanged for the encryption lifetime.
- */
+// The native host's configured external key is secret regardless of its name or workspace grants. Both the host guard and the OS deny floor consume these same literal paths. Host startup resolves them before exposing tools; retain that target if a directory symlink changes later. The host owns this process environment setting and keeps it unchanged for the encryption lifetime.
 export function getRuntimeSensitiveKeyPaths(): readonly string[] {
   const configured = process.env.AVE_SECRET_KEY_FILE;
   if (configured === undefined) return NO_RUNTIME_SECRET_KEY_PATHS;
@@ -65,8 +54,7 @@ export function getRuntimeSensitiveKeyPaths(): readonly string[] {
   if (!isAbsolute(configured) || configured.includes("\0")) {
     throw new Error("AVE_SECRET_KEY_FILE must be an absolute file path");
   }
-  // ASRT interprets these characters as patterns, including within a literal
-  // filename. Refuse an unrepresentable key path instead of losing its deny.
+  // ASRT interprets these characters as patterns, including within a literal filename. Refuse an unrepresentable key path instead of losing its deny.
   const assertSandboxLiteral = (path: string): void => {
     if (/[*?\[\]]/.test(path)) {
       throw new Error("AVE_SECRET_KEY_FILE must not contain sandbox glob characters");
@@ -85,98 +73,30 @@ export function getRuntimeSensitiveKeyPaths(): readonly string[] {
   return paths;
 }
 
-/**
- * Where a {@link SensitiveEntry}'s segments hang off.
- *
- *   - `ave-home` — below the Ave home root (`~/.ave` unless `AVE_HOME`).
- *   - `home`      — below the real user home (`os.homedir()`).
- *   - `root`      — below the filesystem root (`/etc/…`).
- *
- * The host-tool guard is anchor-INSENSITIVE by design: it matches a
- * canonicalized absolute path with an anchor-free `**\/` prefix, so a
- * credential store dropped outside the user's home (a copied `.ssh` under
- * `/tmp`, a second `HOME` in a container mount) is still caught. The anchor
- * also identifies the literal runtime roots. Both enforcement points resolve
- * `ave-home` rows at call time so a relocated profile retains its protection.
- */
+// Where a SensitiveEntry's segments hang off. - `ave-home` — below the Ave home root (`~/.ave` unless `AVE_HOME`). - `home` — below the real user home (`os.homedir`). - `root` — below the filesystem root (`/etc/…`). The host-tool guard is anchor-INSENSITIVE by design: it matches a canonicalized absolute path with an anchor-free `**\/` prefix, so a credential store dropped outside the user's home (a copied `.ssh` under `/tmp`, a second `HOME` in a container mount) is still caught. The anchor also identifies the literal runtime roots. Both enforcement points resolve `ave-home` rows at call time so a relocated profile retains its protection.
 type SensitiveAnchor = "ave-home" | "home" | "root";
 
-/**
- * One row of the sensitive-path hard-blocklist — the single authority for
- * "which filesystem paths are secret".
- *
- * TWO enforcement points consume this table and neither may restate it:
- *   - the in-process host-tool guard, via the glob projection baked into
- *     {@link SENSITIVE_PATH_PATTERNS} below (anchor-free `**` patterns, because
- *     the host guard matches an already-canonicalized absolute path); and
- *   - the OS sandbox read/write deny floor, via
- *     `getDefaultSensitiveReadDenyPaths` in `src/permissions/asrt-sandbox.ts`
- *     (literal absolute paths resolved at CALL time, because bwrap/seatbelt
- *     cannot glob and `AVE_HOME` / `HOME` can move between calls).
- *
- * Those two shapes are why the table stores segments rather than strings: each
- * side projects the same rows into the form its enforcement point can consume.
- * Adding a row here denies the path on BOTH surfaces; there is no second list
- * to mirror it into.
- *
- * What is NOT in this table, and why. These are the ONLY admissible reasons
- * for a path to be secret on one surface and not the other; anything else is
- * drift:
- *   - DELIBERATELY UNANCHORED patterns (`**\/.env`, `**\/.env.*`, `**\/id_rsa`,
- *     `**\/.config/**\/Login Data`, `**\/ave-secrets.json`) must match wherever
- *     the file lands — a staged key under `/tmp`, a `.env` in any working tree.
- *     They therefore have no single literal absolute form to hand bwrap or
- *     seatbelt, and stay host-guard-only in {@link SENSITIVE_PATH_PATTERNS}.
- *     (A table row is also matched anchor-free by the host guard; what makes
- *     these different is that they have no anchored form AT ALL.)
- *   - `~/Library/Cookies` and `~/Library/Keychains` are a deliberate sandbox
- *     exclusion (encrypted-at-rest, outside ASRT's filesystem threat model) and
- *     stay host-guard-only for that recorded reason.
- *   - the {@link SensitiveEntry.rotations} flag is the same unanchored case one
- *     level down: `<name>.*` has no literal form, so a row's rotation glob is
- *     host-guard-only while its base file is on both surfaces.
- *   - the Electron userData dir is hand-projected on BOTH surfaces rather than
- *     being a row, because the exact directory is only knowable at runtime from
- *     `app.getPath("userData")`. The sandbox floor gets the exact path; the host
- *     guard can only pin the per-platform defaults as static globs.
- *   - the native host's external key has an operator-selected literal path.
- *     Both surfaces consume {@link getRuntimeSensitiveKeyPaths} for that path.
- */
+// One sensitive-path table feeds both host globs and runtime literal floors; resolve literals at call time as home paths may change. Unanchored/rotation globs remain host-only because they have no literal equivalent. Runtime userData uses its trusted exact path while host guards pin defaults; both surfaces also consume operator-selected sensitive key paths.
 export interface SensitiveEntry {
-  /** Which root {@link segments} hangs off — see {@link SensitiveAnchor}. */
+  // Which root segments hangs off — see SensitiveAnchor.
   readonly anchor: SensitiveAnchor;
-  /** Path segments below the anchor. */
+  // Path segments below the anchor.
   readonly segments: readonly string[];
-  /** `dir` denies the directory and everything under it; `file` one path. */
+  // `dir` denies the directory and everything under it; `file` one path.
   readonly kind: "dir" | "file";
-  /**
-   * Also deny `<name>.*` rotations. Host-glob only — a rotation glob has no
-   * literal form, so the sandbox floor covers the base file only.
-   */
+  // Also deny `<name>.*` rotations. Host-glob only — a rotation glob has no literal form, so the sandbox floor covers the base file only.
   readonly rotations?: true;
-  /** The configured primary session store is readable, but never tool-writable. */
+  // The configured primary session store is readable, but never tool-writable.
   readonly access?: "read-only";
-  /**
-   * A Windows location (`%APPDATA%`, `%LOCALAPPDATA%`). Windows paths are
-   * case-insensitive, so its glob matches case-insensitively on EVERY
-   * platform — a command scanned on a POSIX host (a PowerShell script, a
-   * staged copy) must not slip past by spelling `appdata\roaming` in lower
-   * case. Stores that sit at the same place under the profile on every OS
-   * (`.ssh`, `.aws`, `.kube/config`, …) are the POSIX rows above, which the
-   * anchor-free host guard already matches under `C:/Users/<name>/`.
-   */
-  readonly windows?: true;
-  /** Why this is secret. Kept next to the row so neither side drifts alone. */
+  // The one OS whose software keeps this store at this path; absent when a store can sit here on any OS (the macOS-named rows stay untagged too: they cost nothing to keep and ported tools may reuse them). `win32` marks a Windows location (`%APPDATA%`, `%LOCALAPPDATA%`): Windows paths are case-insensitive, so its glob matches case-insensitively on EVERY platform — a command scanned on a POSIX host (a PowerShell script, a staged copy) must not slip past by spelling `appdata\roaming` in lower case. Stores that sit at the same place under the profile on every OS (`.ssh`, `.aws`, `.kube/config`, …) are untagged rows, which the anchor-free host guard already matches under `C:/Users/<name>/`. `linux` marks a snap or Flatpak home, packaging that exists only on Linux. The host guard keeps every row on every OS (it catches staged copies); only the macOS Seatbelt floor drops a row tagged for another OS — see sensitiveEntryOnSandboxFloor.
+  readonly platform?: "win32" | "linux";
+  // Why this is secret. Kept next to the row so neither side drifts alone.
   readonly why: string;
 }
 
-/**
- * The sensitive-path table. Order is the projection order for
- * {@link SENSITIVE_PATH_PATTERNS}; both projections dedupe, so it carries no
- * meaning beyond which pattern string a match reports.
- */
+// The sensitive-path table. Order is the projection order for SENSITIVE_PATH_PATTERNS; both projections dedupe, so it carries no meaning beyond which pattern string a match reports.
 export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
-  // ── Standard credential / secret stores under the user home ──────────
+  // Standard credential / secret stores under the user home
   { anchor: "home", segments: [".ssh"], kind: "dir", why: "SSH private keys + config" },
   {
     anchor: "home",
@@ -205,40 +125,112 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".docker", "config.json"], kind: "file", why: "Docker registry credentials" },
   { anchor: "home", segments: [".npmrc"], kind: "file", why: "npm registry auth token" },
   { anchor: "home", segments: [".netrc"], kind: "file", why: "generic machine credentials" },
+  { anchor: "home", segments: [".curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: ["_curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: ["curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: [".config", "curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: [".wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  // Windows wget reads wget.ini beside its executable; the host guard matches it anywhere.
+  { anchor: "home", segments: ["wget.ini"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "root", segments: ["etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "root", segments: ["usr", "local", "etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "home", segments: [".pgpass"], kind: "file", why: "PostgreSQL credentials" },
-  // ── Shell / tool histories — routinely contain pasted secrets ────────
+  // Keychains, keyrings and password managers `Library/Keychains` and `Library/Cookies` were once a recorded sandbox exclusion, written while the builtin shell also denied the whole real HOME (as main still does), which already kept them unreadable. Without that whole-home deny, leaving them out would expose them below main's level, so they are rows for parity. Cost (same as main): keychain-backed credential helpers (git osxkeychain, `security`, docker) fail inside the sandbox.
+  { anchor: "home", segments: ["Library", "Keychains"], kind: "dir", why: "macOS login keychain databases" },
+  { anchor: "home", segments: [".local", "share", "keyrings"], kind: "dir", why: "GNOME Keyring / libsecret stores" },
+  { anchor: "home", segments: [".password-store"], kind: "dir", why: "pass(1) GPG-encrypted password store" },
+  { anchor: "home", segments: [".config", "op"], kind: "dir", why: "1Password CLI configuration and session state" },
+  // The 1Password app's group container has a team-id-prefixed name; the floor takes literal paths, so the published ids are pinned.
+  { anchor: "home", segments: ["Library", "Group Containers", "2BUA8C4S2C.com.1password"], kind: "dir", why: "1Password 8 app data (macOS)" },
+  { anchor: "home", segments: ["Library", "Group Containers", "2BUA8C4S2C.com.agilebits"], kind: "dir", why: "1Password 7 app data (macOS)" },
+  { anchor: "home", segments: [".local", "share", "kwalletd"], kind: "dir", why: "KDE Wallet stores" },
+  // Browser profiles: saved logins, cookies, and the keys that decrypt them Firefox and Linux Chromium keep the decrypting key in the profile (key4.db, a fixed or keyring-held Local State key), so a copy is decrypted offline. macOS/Windows Chromium wrap that key with the keychain/DPAPI; the floor denies the keychain and DPAPI key FILES, not the securityd/DPAPI API. Whole profile roots, so a glob over a random profile name stays inside; a vendor parent that holds only that vendor's app data replaces the channel list (beta, dev, canary) so a new channel is covered too.
+  { anchor: "home", segments: ["Library", "Cookies"], kind: "dir", why: "macOS legacy shared cookie jar (WebKit apps)" },
+  { anchor: "home", segments: ["Library", "Containers", "com.apple.Safari"], kind: "dir", why: "Safari container: cookies, history, local storage (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Google"], kind: "dir", why: "Chrome profiles, every channel (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge"], kind: "dir", why: "Edge profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge Beta"], kind: "dir", why: "Edge Beta profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge Dev"], kind: "dir", why: "Edge Dev profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge Canary"], kind: "dir", why: "Edge Canary profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "BraveSoftware"], kind: "dir", why: "Brave profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Chromium"], kind: "dir", why: "Chromium profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Arc"], kind: "dir", why: "Arc profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Vivaldi"], kind: "dir", why: "Vivaldi profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "com.operasoftware.Opera"], kind: "dir", why: "Opera profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "com.operasoftware.OperaGX"], kind: "dir", why: "Opera GX profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Firefox"], kind: "dir", why: "Firefox profiles (macOS)" },
+  { anchor: "home", segments: [".mozilla"], kind: "dir", why: "Firefox profiles (Linux)" },
+  { anchor: "home", segments: [".config", "google-chrome"], kind: "dir", why: "Chrome profiles (Linux)" },
+  { anchor: "home", segments: [".config", "chromium"], kind: "dir", why: "Chromium profiles (Linux)" },
+  { anchor: "home", segments: [".config", "BraveSoftware"], kind: "dir", why: "Brave profiles (Linux)" },
+  { anchor: "home", segments: [".config", "microsoft-edge"], kind: "dir", why: "Edge profiles (Linux)" },
+  { anchor: "home", segments: [".config", "vivaldi"], kind: "dir", why: "Vivaldi profiles (Linux)" },
+  { anchor: "home", segments: [".config", "opera"], kind: "dir", why: "Opera profiles (Linux)" },
+  { anchor: "home", segments: [".config", "google-chrome-beta"], kind: "dir", why: "Chrome Beta profiles (Linux)" },
+  { anchor: "home", segments: [".config", "google-chrome-unstable"], kind: "dir", why: "Chrome Dev profiles (Linux)" },
+  { anchor: "home", segments: [".config", "microsoft-edge-beta"], kind: "dir", why: "Edge Beta profiles (Linux)" },
+  { anchor: "home", segments: [".config", "microsoft-edge-dev"], kind: "dir", why: "Edge Dev profiles (Linux)" },
+  // Snap and Flatpak keep each app's whole home under one per-app directory.
+  { anchor: "home", segments: ["snap", "firefox"], kind: "dir", platform: "linux", why: "Firefox snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "chromium"], kind: "dir", platform: "linux", why: "Chromium snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "brave"], kind: "dir", platform: "linux", why: "Brave snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "thunderbird"], kind: "dir", platform: "linux", why: "Thunderbird snap home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.mozilla.firefox"], kind: "dir", platform: "linux", why: "Firefox Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.chromium.Chromium"], kind: "dir", platform: "linux", why: "Chromium Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.google.Chrome"], kind: "dir", platform: "linux", why: "Chrome Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.brave.Browser"], kind: "dir", platform: "linux", why: "Brave Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.microsoft.Edge"], kind: "dir", platform: "linux", why: "Edge Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.mozilla.Thunderbird"], kind: "dir", platform: "linux", why: "Thunderbird Flatpak home (Linux)" },
+  // Mail clients: saved account passwords (logins.json + key4.db)
+  { anchor: "home", segments: [".thunderbird"], kind: "dir", why: "Thunderbird profiles (Linux)" },
+  { anchor: "home", segments: ["Library", "Thunderbird"], kind: "dir", why: "Thunderbird profiles (macOS)" },
+  // Shell / tool histories — routinely contain pasted secrets
   { anchor: "home", segments: [".bash_history"], kind: "file", why: "shell history" },
   { anchor: "home", segments: [".zsh_history"], kind: "file", why: "shell history" },
   { anchor: "home", segments: [".python_history"], kind: "file", why: "REPL history" },
   { anchor: "home", segments: [".psql_history"], kind: "file", why: "psql history (may hold DSNs)" },
   { anchor: "home", segments: [".viminfo"], kind: "file", why: "editor history + register contents" },
-  // ── Windows credential stores under the profile (%APPDATA%, %LOCALAPPDATA%) ──
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (roaming)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (local)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Protect"], kind: "dir", windows: true, why: "DPAPI master keys (decrypt every DPAPI-protected secret)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Crypto"], kind: "dir", windows: true, why: "user CryptoAPI/CNG private keys" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (web and app credentials, roaming)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (local)" },
+  // Windows credential stores under the profile (%APPDATA%, %LOCALAPPDATA%)
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Credentials"], kind: "dir", platform: "win32", why: "Windows Credential Manager blobs (roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Credentials"], kind: "dir", platform: "win32", why: "Windows Credential Manager blobs (local)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Protect"], kind: "dir", platform: "win32", why: "DPAPI master keys (decrypt every DPAPI-protected secret)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Crypto"], kind: "dir", platform: "win32", why: "user CryptoAPI/CNG private keys" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Vault"], kind: "dir", platform: "win32", why: "Windows Vault (web and app credentials, roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Vault"], kind: "dir", platform: "win32", why: "Windows Vault (local)" },
   {
     anchor: "home",
     segments: ["AppData", "Local", "Microsoft", "PowerShell", "secretmanagement"],
     kind: "dir",
-    windows: true,
+    platform: "win32",
     why: "PowerShell SecretStore vault",
   },
-  { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", windows: true, why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
-  // ── Ave hook scripts — supply-chain / re-exec protection ────────────
+  { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", platform: "win32", why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome", "User Data"], kind: "dir", platform: "win32", why: "Chrome profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge", "User Data"], kind: "dir", platform: "win32", why: "Edge profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"], kind: "dir", platform: "win32", why: "Brave profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Chromium", "User Data"], kind: "dir", platform: "win32", why: "Chromium profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Vivaldi", "User Data"], kind: "dir", platform: "win32", why: "Vivaldi profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Opera Software"], kind: "dir", platform: "win32", why: "Opera profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome SxS", "User Data"], kind: "dir", platform: "win32", why: "Chrome Canary profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Beta", "User Data"], kind: "dir", platform: "win32", why: "Chrome Beta profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Dev", "User Data"], kind: "dir", platform: "win32", why: "Chrome Dev profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"], kind: "dir", platform: "win32", why: "Edge Beta profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"], kind: "dir", platform: "win32", why: "Edge Dev profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"], kind: "dir", platform: "win32", why: "Edge Canary profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Thunderbird"], kind: "dir", platform: "win32", why: "Thunderbird profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"], kind: "dir", platform: "win32", why: "Firefox profiles (Windows)" },
+  // Ave hook scripts — supply-chain / re-exec protection
   {
     anchor: "home",
     segments: [".config", "ave", "hooks"],
     kind: "dir",
     why: "hook supply-chain protection (host-executed scripts)",
   },
-  // ── System account databases ─────────────────────────────────────────
+  // System account databases
   { anchor: "root", segments: ["etc", "shadow"], kind: "file", why: "system password hashes" },
   { anchor: "root", segments: ["etc", "sudoers"], kind: "file", why: "sudo policy" },
   { anchor: "root", segments: ["etc", "passwd-"], kind: "file", why: "passwd backup" },
-  // ── Ave home sensitive namespace ────────────────────────────────────
+  // Ave home sensitive namespace
   { anchor: "ave-home", segments: ["certs"], kind: "dir", why: "corporate CA bundle + extracted certs" },
   { anchor: "ave-home", segments: ["secrets"], kind: "dir", why: "encrypted API keys, tokens" },
   { anchor: "ave-home", segments: ["subscription-runtimes"], kind: "dir", why: "subscription credentials, executable grants, and host-owned runtime state" },
@@ -272,22 +264,17 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   },
 ]);
 
-/**
- * Host-tool glob projection of {@link SENSITIVE_PATH_ENTRIES}.
- *
- * Anchor-free (`**` prefix) for every anchor — see {@link SensitiveAnchor} for
- * why the host guard deliberately ignores the anchor. `ave-home` rows keep the
- * literal `.ave` segment to protect copied stores too. `isSensitivePath` also
- * projects those rows onto the current `aveHome()`, matching the sandbox floor.
- *
- * A `dir` row needs only the `/**` form: `policyMatchPaths` also tries
- * `<path>/`, so `**\/.ssh/**` already matches the bare directory.
- */
-/**
- * Host-guard-only Windows patterns (no literal form): Chromium-family
- * `Login Data` under any `User Data` profile (Chrome, Edge, Brave, …).
- */
-const WINDOWS_UNANCHORED_PATTERNS: readonly string[] = ["**/AppData/Local/**/User Data/**/Login Data"];
+// Host-tool glob projection of SENSITIVE_PATH_ENTRIES. Anchor-free (`**` prefix) for every anchor — see SensitiveAnchor for why the host guard deliberately ignores the anchor. `ave-home` rows keep the literal `.ave` segment to protect copied stores too. `isSensitivePath` also projects those rows onto the current `aveHome`, matching the sandbox floor. A `dir` row needs only the `/**` form: `policyMatchPaths` also tries `<path>/`, so `**\/.ssh/**` already matches the bare directory.
+// Host-guard-only Windows patterns (no literal form): Chromium-family `Login Data` under any `User Data` profile (Chrome, Edge, Brave, …).
+const WINDOWS_UNANCHORED_PATTERNS: readonly string[] = [
+  "**/AppData/Local/**/User Data/**/Login Data",
+  "**/AppData/Local/**/User Data/**/Cookies",
+  "**/AppData/Local/**/User Data/**/Web Data",
+  "**/AppData/Local/**/User Data/Local State",
+  "**/AppData/Roaming/Mozilla/Firefox/Profiles/**/logins.json",
+  "**/AppData/Roaming/Mozilla/Firefox/Profiles/**/key4.db",
+  "**/AppData/Roaming/Mozilla/Firefox/Profiles/**/cookies.sqlite",
+];
 
 function sensitiveEntryGlobs(entries: readonly SensitiveEntry[] = SENSITIVE_PATH_ENTRIES): readonly string[] {
   const globs: string[] = [];
@@ -304,19 +291,18 @@ const READ_ONLY_NAMESPACE_PATTERNS = new Set(sensitiveEntryGlobs(
   SENSITIVE_PATH_ENTRIES.filter((entry) => entry.access === "read-only"),
 ));
 
-/** Patterns matched case-insensitively on every platform (Windows locations). */
+// Patterns matched case-insensitively on every platform (Windows locations).
 const CASE_INSENSITIVE_PATTERNS: ReadonlySet<string> = new Set([
-  ...sensitiveEntryGlobs(SENSITIVE_PATH_ENTRIES.filter((entry) => entry.windows === true)),
+  ...sensitiveEntryGlobs(SENSITIVE_PATH_ENTRIES.filter((entry) => entry.platform === "win32")),
   ...WINDOWS_UNANCHORED_PATTERNS,
 ]);
 
-/**
- * Patterns use minimatch-compatible glob syntax:
- *   double-star  — matches any path (including path separators)
- *   single-star  — matches any single path segment
- *
- * Ordering: credential store patterns first, then OS expansion, then Ave-specific.
- */
+// Whether the OS sandbox floor built on `platform` carries this row. Seatbelt compiles the profile again for every wrap and its compile time grows with the path filters, so macOS leaves out rows whose store only another OS's software creates: nothing on macOS writes a secret there, and the host guard still denies the path. Linux and Windows keep every row, so their floors stay exactly as they were.
+export function sensitiveEntryOnSandboxFloor(entry: SensitiveEntry, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "darwin" || entry.platform === undefined;
+}
+
+// Patterns use minimatch-compatible glob syntax: double-star — matches any path (including path separators) single-star — matches any single path segment Ordering: credential store patterns first, then OS expansion, then Ave-specific.
 export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   // ── Projected from SENSITIVE_PATH_ENTRIES ───────────
   // The single authority the OS sandbox deny floor projects from too. Do NOT
@@ -326,15 +312,36 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   // realpath() resolves /etc → /private/etc on macOS; the double-star matches
   // both forms.
   ...sensitiveEntryGlobs(),
-  // ── Host-guard-only: deliberately unanchored, so no literal form ────
-  // These must match wherever the file lands, which is exactly why they have no
-  // single absolute path to project onto the sandbox floor (bwrap/seatbelt
-  // cannot glob). See SENSITIVE_PATH_ENTRIES for the full rule.
+  // Host-guard-only: deliberately unanchored, so no literal form These must match wherever the file lands, which is exactly why they have no single absolute path to project onto the sandbox floor (bwrap/seatbelt cannot glob). See SENSITIVE_PATH_ENTRIES for the full rule.
   "**/.config/**/Login Data", // browser credential DB, vendor dir varies
+  // Chromium-family profile stores (Chrome, Edge, Brave, Arc, Chromium):
+  // saved passwords, cookies, autofill and the key that decrypts them.
+  // The vendor directory varies, so the store name is matched under it.
+  "**/Library/Application Support/**/Login Data",
+  "**/Library/Application Support/**/Cookies",
+  "**/Library/Application Support/**/Web Data",
+  "**/Library/Application Support/**/Local State",
+  "**/.config/**/Cookies",
+  "**/.config/**/Web Data",
+  "**/.config/**/Local State",
+  // Firefox profile stores: saved logins, the key that decrypts them, cookies.
+  "**/Firefox/Profiles/**/logins.json",
+  "**/Firefox/Profiles/**/key4.db",
+  "**/Firefox/Profiles/**/cookies.sqlite",
+  "**/.mozilla/firefox/**/logins.json",
+  "**/.mozilla/firefox/**/key4.db",
+  "**/.mozilla/firefox/**/cookies.sqlite",
+  // Linux per-process secrets: another process's environment, memory and open files. `/proc/<pid>/cmdline` and `status` stay readable.
+  "/proc/*/environ",
+  "/proc/*/mem",
+  "/proc/*/fd/**",
+  "/proc/*/map_files/**",
+  "/proc/*/task/*/environ",
+  "/proc/*/task/*/mem",
+  "/proc/*/task/*/fd/**",
   "**/.env",
   "**/.env.*",
-  // Generic SSH key globs — catches id_rsa / id_ed25519 / id_ecdsa even
-  // if dropped outside `.ssh/` (e.g. /tmp staging, ~/Downloads).
+  // Generic SSH key globs — catches id_rsa / id_ed25519 / id_ecdsa even if dropped outside `.ssh/` (e.g. /tmp staging, ~/Downloads).
   "**/id_rsa",
   "**/id_rsa.pub",
   "**/id_ed25519",
@@ -342,56 +349,24 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ecdsa",
   "**/id_ecdsa.pub",
   "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
+  // 1Password group containers under any team-id prefix (the floor pins the
+  // published ids as table rows).
+  "**/Library/Group Containers/*.com.1password*/**",
+  "**/Library/Group Containers/*.com.agilebits*/**",
   ...WINDOWS_UNANCHORED_PATTERNS,
-  // ── Host-guard-only: deliberate sandbox exclusion ───
-  // Recorded in `getDefaultSensitiveReadDenyPaths`: encrypted-at-rest and
-  // outside ASRT's filesystem threat model, so consciously not on the OS floor.
-  "**/Library/Cookies/**",
-  "**/Library/Keychains/**",
-  // ── Electron userData dir — per-platform DEFAULT locations ──────────
-  // Holds plugin OAuth session cookies/tokens (Partitions/), Cookies (SQLite),
-  // and the safeStorage-encrypted ave-secrets.json. The sandbox floor denies
-  // the EXACT dir (it receives `app.getPath("userData")`, so it also covers
-  // `--user-data-dir` / XDG_CONFIG_HOME / a productName rename); the host guard
-  // can only pin the per-platform defaults as static globs.
+  // Electron userData dir — per-platform DEFAULT locations Holds plugin OAuth session cookies/tokens (Partitions/), Cookies (SQLite), and the safeStorage-encrypted ave-secrets.json. The sandbox floor denies the EXACT dir (it receives `app.getPath("userData")`, so it also covers `--user-data-dir` / XDG_CONFIG_HOME / a productName rename); the host guard can only pin the per-platform defaults as static globs.
   "**/Library/Application Support/Ave/**",
   "**/AppData/Roaming/Ave/**",
   "**/.config/Ave/**",
 ]);
 
-// ─── Public helpers ─────────────────────────────────
+// Public helpers
 
-/**
- * Canonical form of a raw filesystem path for sensitive-path matching.
- *
- * Applies a five-step normalization that is shared between Layer 0
- * (sensitive-path hard-block) and Layer 1 (allowed-directories prefix
- * match) so both layers see *bit-identical* path strings:
- *
- *   1. `path.resolve()` — expands `..`/`.` segments, makes path absolute.
- *   2. `realpathSync.native()` walk-up to the nearest existing ancestor
- *      (bounded by {@link MAX_WALK_UP}). Resolves symlinks for the
- *      existing prefix; appends the remaining un-existing tail. Caps the
- *      ancestor walk so an adversarial cycle / deep path cannot DoS.
- *   3. Duplicate-slash collapse (`///Users` → `/Users`).
- *   4. Unicode NFC normalization — folds NFD-decomposed forms.
- *   5. Case-folding on macOS/Windows — case-insensitive filesystems.
- *
- * **Frozen-canonical contract:** call this ONCE at the executor entry and
- * pass the resulting string to every downstream layer. Re-canonicalizing
- * mid-pipeline opens a TOCTOU race (caller could swap a symlink between
- * Layer 0 and Layer 1).
- *
- * If even the filesystem root cannot be `realpath`'d within MAX_WALK_UP
- * steps (pathological / adversarial input), we still return a *resolved*
- * path string but it is treated as **opaque** by the allow-check (Layer 1
- * denies opaque paths by default — see `isPathAllowed`).
- */
+// Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
 export function canonicalizePathForMatch(rawPath: string): string {
   let canonical = pathResolve(rawPath);
 
-  // Step 2 — realpath walk-up. Try the path itself first; if missing, walk
-  // up to the nearest existing ancestor and compose the unresolved tail.
+  // Step 2 — realpath walk-up. Try the path itself first; if missing, walk up to the nearest existing ancestor and compose the unresolved tail.
   try {
     canonical = realpathSync.native(canonical);
   } catch {
@@ -409,12 +384,10 @@ export function canonicalizePathForMatch(rawPath: string): string {
         resolved = true;
         break;
       } catch {
-        /* keep walking */
+        // keep walking
       }
     }
-    // depth == MAX_WALK_UP without resolve — leave `canonical` as the
-    // pure pathResolve() output. Layer 1 treats unresolved canonicals as
-    // opaque (deny by default in allow-check).
+    // depth == MAX_WALK_UP without resolve — leave `canonical` as the pure pathResolve output. Layer 1 treats unresolved canonicals as opaque (deny by default in allow-check).
     if (!resolved) {
       // explicit no-op — canonical already equals pathResolve(rawPath)
     }
@@ -423,49 +396,24 @@ export function canonicalizePathForMatch(rawPath: string): string {
   return foldCanonicalPathSeparators(canonical);
 }
 
-/**
- * Steps 3–5 of {@link canonicalizePathForMatch}: separator folding, duplicate
- * collapse, NFC, and the win32 drive-letter case fold.
- *
- * Exported with an explicit `platform` because the Windows shapes cannot be
- * exercised through {@link canonicalizePathForMatch} anywhere else: `resolve`
- * and `realpath` follow the HOST's rules, so a `\\server\share\…` input is just
- * a filename with backslashes in it on macOS/Linux, and a win32-only assertion
- * would never run on the machines this is developed and CI'd on.
- */
+// Steps 3–5 of canonicalizePathForMatch: separator folding, duplicate collapse, NFC, and the win32 drive-letter case fold. Exported with an explicit `platform` because the Windows shapes cannot be exercised through canonicalizePathForMatch anywhere else: `resolve` and `realpath` follow the HOST's rules, so a `\\server\share\…` input is just a filename with backslashes in it on macOS/Linux, and a win32-only assertion would never run on the machines this is developed and CI'd on.
 export function foldCanonicalPathSeparators(
   canonical: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const slashed = canonical.replace(/\\/g, "/");
-  // A Windows path may legitimately BEGIN with two separators: `\\server\share`
-  // names a network share, `\\?\…` the device namespace. Both arrive here from
-  // `realpathSync.native`, which resolves a mapped network drive (`Z:\proj`) to
-  // its UNC form — so this is not an exotic input, it is what an ordinary
-  // corporate project folder canonicalizes to. Squeezing the pair to one slash
-  // turned `//server/share/proj` into `/server/share/proj`, which Win32 then
-  // resolves against the current drive: a directory that does not exist, so the
-  // caller's `stat` fails and the path is reported missing. The `//server/share`
-  // and `//?/…` forms `isFilesystemRootPath` matches are likewise only
-  // reachable because this keeps the leading pair intact.
+  // Preserve leading double separators for UNC/device paths returned by realpath; collapsing them resolves against the current drive and breaks mapped network roots.
   const startsAtWindowsUncRoot = platform === "win32" && /^\/\/[^/]/.test(slashed);
   const collapsed = slashed.replace(/\/+/g, "/");
   return (startsAtWindowsUncRoot ? `/${collapsed}` : collapsed)
     .normalize("NFC")
     .replace(/^([a-zA-Z]:)/, (m) =>
-      // Preserve drive-letter case sensitivity on win32 — only lowercase
-      // the drive letter (case-insensitive) but the rest is handled below.
+      // Preserve drive-letter case sensitivity on win32 — only lowercase the drive letter (case-insensitive) but the rest is handled below.
       platform === "win32" ? m.toLowerCase() : m,
     );
 }
 
-/**
- * Permission policy P2.5 — case-fold a canonical path for matching on case-insensitive
- * filesystems (darwin/win32). Kept separate from
- * {@link canonicalizePathForMatch} so allow-list directories from
- * settings.json can be compared with the SAME case-fold applied to both
- * sides without re-running the realpath walk.
- */
+// Permission policy.5 — case-fold a canonical path for matching on case-insensitive filesystems (darwin/win32). Kept separate from canonicalizePathForMatch so allow-list directories from settings.json can be compared with the SAME case-fold applied to both sides without re-running the realpath walk.
 export function caseFoldForMatch(canonical: string): string {
   if (process.platform === "darwin" || process.platform === "win32") {
     return canonical.toLowerCase();
@@ -473,15 +421,24 @@ export function caseFoldForMatch(canonical: string): string {
   return canonical;
 }
 
-/**
- * Returns the path-policy tuple `[path, path + "/"]` used by the
- * underlying glob match pass. Exposed for tests and for callers that want
- * to run custom pattern lists against the same normalization.
- *
- * Example:
- *   policyMatchPaths("/home/example/.aws")
- *     → ["/home/example/.aws", "/home/example/.aws/"]
- */
+// Control files remain unwritable even when their containing directory is granted.
+export const PROTECTED_ROOT_ENTRIES = [
+  ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
+  ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
+  ".husky", ".githooks", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands",
+  ".idea/workspace.xml", ".pre-commit-config.yaml", ".envrc", "lefthook.yml",
+] as const;
+
+// Host write tools floor the same control files wherever they appear in a canonical path, inside or outside the project, folded like sensitive paths.
+export function protectedControlEntryFor(path: string): string | undefined {
+  const segments = caseFoldForMatch(path).split("/").filter(Boolean);
+  return PROTECTED_ROOT_ENTRIES.find((entry) => {
+    const parts = entry.split("/");
+    return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
+  });
+}
+
+// Returns the path-policy tuple `[path, path + "/"]` used by the underlying glob match pass. Exposed for tests and for callers that want to run custom pattern lists against the same normalization. Example: policyMatchPaths("/home/example/.aws") → ["/home/example/.aws", "/home/example/.aws/"]
 export function policyMatchPaths(filePath: string): readonly string[] {
   const normalized = normalizePath(filePath);
   if (normalized.endsWith("/")) {
@@ -490,24 +447,22 @@ export function policyMatchPaths(filePath: string): readonly string[] {
   return Object.freeze([normalized, normalized + "/"]);
 }
 
-/** Resolve only the primary session namespace, without materializing it. */
+// Resolve only the primary session namespace, without materializing it.
 export function getConfiguredSessionReadRoot(): string | undefined {
   const home = canonicalizePathForMatch(aveHome());
   const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
   const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
-  // A relocated application root is valid. A sessions-directory link must not
-  // turn that single namespace into a grant for some other host directory.
+  // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
   if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
   // The native filesystem policy interprets these as patterns, not literals.
   if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
-  // A configured application root inside a credential store cannot turn that
-  // store into an allowed native read subtree.
+  // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
   if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
     SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
   return canonicalRoot;
 }
 
-/** Membership only: callers must still apply every other sensitive-path rule. */
+// Membership only: callers must still apply every other sensitive-path rule.
 export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
   const root = getConfiguredSessionReadRoot();
   if (root === undefined) return false;
@@ -516,15 +471,13 @@ export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
   return foldedPath === foldedRoot || foldedPath.startsWith(`${foldedRoot}/`);
 }
 
-/** Project the existing sensitive rules beneath a host-resolved session root.
- * Native glob matching owns recursion; this function never scans stored data.
- */
+// Project the existing sensitive rules beneath a host-resolved session root. Native glob matching owns recursion; this function never scans stored data.
 function getSessionReadDenyPatterns(sessionReadRoot: string): readonly string[] {
   return Object.freeze(SENSITIVE_PATH_PATTERNS.map((pattern) =>
     `${sessionReadRoot}/${pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern}`));
 }
 
-/** Native shell routes must pair the read grant with its scoped exclusions. */
+// Native shell routes must pair the read grant with its scoped exclusions.
 export function getConfiguredSessionReadPolicy(): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
@@ -536,17 +489,32 @@ export function getConfiguredSessionReadPolicy(): {
   });
 }
 
-/**
- * Return an unconditional deny pattern for a canonical, case-folded path.
- * Omitting the effect preserves the stricter write policy. Only the configured
- * primary session namespace receives a read exception; other sensitive rules
- * still apply, including credentials placed inside the readable namespace.
- */
+// Return an unconditional deny pattern for a canonical, case-folded path. Omitting the effect preserves the stricter write policy. Only the configured primary session namespace receives a read exception; other sensitive rules still apply, including credentials placed inside the readable namespace.
+// Directories whose contents hold secrets, canonical and case-folded: every anchored table row, plus the stores the unanchored globs reach under the home (`Library/Application Support`, `.config`, `AppData`) and `/proc`. A recursive search started at or above one of them reads it. Resolved per call: the home and the Ave home are read live, never cached at module load.
+function sensitiveSearchAnchors(): string[] {
+  const home = homedir();
+  const ave = aveHome();
+  const paths = SENSITIVE_PATH_ENTRIES.map((entry) =>
+    pathResolve(entry.anchor === "home" ? home : entry.anchor === "ave-home" ? ave : "/", ...entry.segments));
+  for (const segments of [["Library", "Application Support"], [".config"], ["AppData"]]) {
+    paths.push(pathResolve(home, ...segments));
+  }
+  paths.push("/proc");
+  return paths.map((path) => caseFoldForMatch(canonicalizePathForMatch(path)));
+}
+
+// The secret-holding location at or below `directory` (canonical and case-folded, as canonicalizePathForMatch and caseFoldForMatch produce), or null. A recursive search rooted at `directory` would read it.
+export function sensitiveLocationUnder(directory: string): string | null {
+  const trimmed = directory.length > 1 ? directory.replace(/\/+$/, "") : directory;
+  const base = trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+  return sensitiveSearchAnchors().find((anchor) => anchor === trimmed || anchor.startsWith(base)) ?? null;
+}
+
 export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
   return absPath ? createSensitivePathMatcher(effect)(absPath) : null;
 }
 
-/** Snapshot policy roots and compiled globs once for one permission decision. */
+// Snapshot policy roots and compiled globs once for one permission decision.
 export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPath: string) => string | null {
   const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
   const patterns = SENSITIVE_PATH_PATTERNS.map((pattern) => ({
@@ -592,14 +560,9 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
   };
 }
 
-// ─── Internal glob matcher ──────────────────────────
+// Internal glob matcher
 
-/**
- * Normalize path separators: Windows backslash → forward slash. Leaves
- * POSIX paths intact. Does NOT resolve `..` or symlinks — callers are
- * expected to supply an absolute path already canonicalized via
- * `path.resolve()` or similar.
- */
+// Normalize path separators: Windows backslash → forward slash. Leaves POSIX paths intact. Does NOT resolve `..` or symlinks — callers are expected to supply an absolute path already canonicalized via `path.resolve` or similar.
 function normalizePath(p: string): string {
   return p.replace(/\\/g, "/");
 }

@@ -1,17 +1,5 @@
-/**
- * A request from outside the marketplace tab to review updates (the toolbar's
- * update pill). An update installs only through its review (design §15.6), so
- * the pill opens the tab instead of installing: one package opens its sheet in
- * update mode, several open the Installed view, where each shows its update.
- * An update already applied that still needs the user (installed but not
- * running, or components waiting for approval, §18.7.5), or one that has
- * waited 30 minutes for the conversation to pause (§18.7.4), has no review to
- * plan: the request opens the Updates card, which says what to do and offers
- * *Apply now*.
- *
- * Held until the tab takes it, like a deep link: the tab may mount after the
- * request, or be open already and hear it.
- */
+/** Review requests persist until consumed: one package opens its sheet, several open Installed, and already-applied or
+ * pause-blocked updates open the Updates card. */
 import type { PackageKeyView, PackageUpdateView } from "../../../../shared/git-marketplace.js";
 
 export type UpdateReviewRequest = { kind: "package"; key: PackageKeyView } | { kind: "installed" } | { kind: "updates" };

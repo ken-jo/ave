@@ -1,25 +1,9 @@
-/**
- * SubAgentRunner — behavioral coverage for three concrete failure modes
- * (turn-cap enforcement, sourceTools allowlist, recursive spawn refusal):
- *
- *   1. C3(a) maxRounds bound — the runner must stop emitting LLM rounds
- *      once the host-assigned `maxRounds` budget is reached, even if the fake
- *      provider would happily keep streaming. The `maxRounds` plumb-through in
- *      queryLoop is the loop-boundary defense for this. When the budget is hit
- *      with work still pending, the runner marks the result `incomplete` and
- *      forwards stopReason "round-cap" (cut-off resume signal).
- *
- *   2. sourceTools allowlist — a sub-agent that requests a tool not in
- *      `sourceTools` must receive a "tool not found" result. Validates
- *      that ToolRegistry.createScopedView is actually being applied.
- *
- *   3. C3(b) recursive spawn refusal — a sub-agent calling agent_spawn
- *      must receive the "cannot be invoked from a sub-agent" error,
- *      regardless of whether the registry strip succeeded.
- */
+// Round budgets stop incomplete work; frozen tool scope and depth guards constrain child authority.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, existsSync, readdirSync } from "node:fs";
+import { readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { AsyncResource } from "node:async_hooks";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationLoop } from "../conversation-loop.js";
@@ -27,8 +11,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
+import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import {
   SubAgentRunner,
   resolveSubAgentModel,
@@ -42,7 +25,7 @@ import {
   type SubAgentToolScope,
 } from "../subagent-runner.js";
 import { MODEL_COMPLEXITY_MAP } from "../../shared/model-complexity-map.js";
-import { LLM_VENDOR_MODEL_OPTIONS } from "../../shared/llm-vendor-defaults.js";
+import { llmVendorModelOptions } from "../../shared/llm-vendor-defaults.js";
 import { AGENT_MODE_MAP } from "../../shared/agent-mode-map.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
@@ -75,9 +58,8 @@ import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js"
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { SkillOverlay } from "../../main/skill-overlay.js";
+import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { LoadedSkill } from "../../main/skill-store.js";
-
-// ─── Test scaffolding ─────────────────────────────────
 
 const SUBSCRIPTION_SELECTION = { kind: "subscription", provider: "codex" } as const;
 
@@ -100,27 +82,25 @@ class ScriptedProvider implements LLMProvider {
   }
 }
 
-/**
- * Minimal fake for the ISOLATED subagent MemoryManager (`~/.ave/subagent/`).
- * SubAgentRunner now composes the child loop with this store instead of the
- * parent's main-chat MemoryManager, so every construction must supply it.
- * A no-op saveSession is enough for the behavioral suites here; the
- * persistence-routing suite below uses a REAL MemoryManager on a temp home.
- */
+// Use an isolated child store so behavioral fixtures cannot write main-session history.
 function fakeSubAgentMemoryManager(memory: Partial<PromptMemorySource> = {}) {
   return {
-    // The child's system prompt is assembled from THIS store, so the double
-    // carries the real reader contract instead of empty stand-ins.
+    // Prompt fixtures must implement the child store reader contract.
     ...makePromptMemorySource(memory),
     saveSession: () => Promise.resolve(),
-    // PR-B: spawn() persists resume metadata via saveSessionMetadata into the
-    // isolated subagent store — the behavioral suites use a no-op here (the
-    // round-trip is pinned by the PR-B suite against a REAL MemoryManager).
     saveSessionMetadata: () => Promise.resolve(),
     listSessions: () => [],
     listSessionsPage: () => [],
     load: () => undefined,
   } as unknown as ConstructorParameters<typeof SubAgentRunner>[0]["subAgentMemoryManager"];
+}
+
+function makeRunner(toolRegistry: ToolRegistry) {
+  return new SubAgentRunner({
+    parentDeps: buildLoopDeps(toolRegistry),
+    toolRegistry,
+    subAgentMemoryManager: fakeSubAgentMemoryManager(),
+  });
 }
 
 function createInMemoryMailboxNamespace() {
@@ -146,37 +126,95 @@ function createInMemoryMailboxNamespace() {
   };
 }
 
-function buildLoopDeps(toolRegistry: ToolRegistry) {
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
-  return {
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: {
-      build: () => "system",
-      setToolScope: () => undefined,
-      setOriginSource: () => undefined,
-      setActiveSessionId: () => undefined,
-      // The runner never shares the parent builder with a child, so the double
-      // hands back a separate one of the same shape.
-      createIsolated: () => ({
-        build: () => "system",
-        setToolScope: () => undefined,
-        setOriginSource: () => undefined,
-        setActiveSessionId: () => undefined,
-      }),
-    },
-    inputClassifier,
-    routeEngine,
-    toolRegistry,
-    memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-    },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
-}
+describe("SubAgentRunner checkpoint child lifetime", () => {
+  it.each([
+    ["spawn", "finished"], ["spawn", "failed"], ["spawn", "cancelled"],
+    ["resume", "finished"], ["resume", "failed"], ["resume", "cancelled"],
+  ] as const)("keeps later parent turns unavailable during %s until the child is %s", async (entry, outcome) => {
+    const root = await realpath(mkdtempSync(join(tmpdir(), "ave-runner-checkpoint-")));
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    const sessionId = "a1bdc27a-c758-4a74-8955-5e9188412366";
+    const file = join(root, "t2.txt");
+    const childFile = join(root, "child.txt");
+    await writeFile(file, "original");
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_item", description: "Read an item", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} }, execute: async () => ({ output: "value", isError: false }),
+    }));
+    const memory = new MemoryManager({ aveDir: join(root, "subagent") });
+    const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory });
+    const hasProvider = vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    const refresh = vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    const loadSession = vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn");
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let editChild!: () => void;
+    const editAllowed = new Promise<void>((resolve) => { editChild = resolve; });
+    let edited!: () => void;
+    const childEdited = new Promise<void>((resolve) => { edited = resolve; });
+    let finish!: () => void;
+    const finishing = new Promise<void>((resolve) => { finish = resolve; });
+    let running: Promise<SubAgentSpawnResult> | undefined;
+    const detached = new AsyncResource("checkpoint-child-dispatch");
+    try {
+      const input = { toolScope: PARENT_ALL_TOOL_SCOPE, title: "checkpoint child", instructions: "edit", originSessionId: sessionId, background: true };
+      let resumeId: string | undefined;
+      if (entry === "resume") {
+        runTurn.mockResolvedValue({ text: "paused", toolCalls: [], route: "default", stopReason: "round-cap" });
+        resumeId = (await runner.spawn(input)).childSessionId;
+      }
+      runTurn.mockImplementation(async () => {
+        start();
+        await editAllowed;
+        await checkpointFileMutation([{ path: childFile, content: "child edit" }], () => writeFile(childFile, "child edit"));
+        edited();
+        await finishing;
+        if (outcome === "failed") throw new Error("child failed");
+        return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+      });
+      await withCodeCheckpoint({ sessionId, messageId: "T1" }, async () => {
+        const dispatch = () => entry === "spawn" ? runner.spawn(input) : runner.resume(resumeId!, "continue", input.title, undefined, sessionId, undefined, true);
+        running = outcome === "finished" ? dispatch() : detached.runInAsyncScope(dispatch);
+        await Promise.race([started, running.then(() => { throw new Error("Child ended before it started"); })]);
+      });
+      await withCodeCheckpoint({ sessionId, messageId: "T2" }, async () => {
+        await checkpointFileMutation([{ path: file, content: "parent edit" }], () => writeFile(file, "parent edit"));
+        editChild();
+        await childEdited;
+      });
+      if (outcome === "cancelled") {
+        const status = runner.listRunStatuses(sessionId).find((item) => item.status === "running")!;
+        expect(runner.interruptRun(status.spawnId ?? status.childSessionId, sessionId)).toMatchObject({ ok: true });
+      }
+      expect(await restoreCodeCheckpoint(sessionId, "T2", { cwd: root, extraAllowedDirectories: [] }))
+        .toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+      expect(await readFile(file, "utf8")).toBe("parent edit");
+      expect(await readFile(childFile, "utf8")).toBe("child edit");
+      finish();
+      await running;
+      const ledger = JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8"));
+      expect(ledger.turns.find((item: { messageId: string }) => item.messageId === "T1").unavailable).toBe(true);
+      expect(ledger.turns.find((item: { messageId: string }) => item.messageId === "T2").unavailable).toBe(true);
+      await withCodeCheckpoint({ sessionId, messageId: "after" }, () =>
+        checkpointFileMutation([{ path: file, content: "later" }], () => writeFile(file, "later")));
+      expect(await restoreCodeCheckpoint(sessionId, "after", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
+      expect(await readFile(file, "utf8")).toBe("parent edit");
+    } finally {
+      editChild();
+      finish();
+      await running;
+      runTurn.mockRestore();
+      loadSession.mockRestore();
+      refresh.mockRestore();
+      hasProvider.mockRestore();
+      detached.emitDestroy();
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("SubAgentRunner — authorization terminal propagation", () => {
   it("lifts a live child authorization terminal into the spawn result", async () => {
@@ -213,17 +251,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       const result = await runner.spawn({
@@ -263,7 +291,6 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
 
     const childSessionIds: string[] = [];
     const toolRegistry = new ToolRegistry();
-    // Stands in for skill_load: registers the read under the CALLING session.
     toolRegistry.register(createDynamicTool({
       name: "overlay_probe",
       description: "Registers a skill read for the calling session",
@@ -296,17 +323,7 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       const result = await runner.spawn({
@@ -318,7 +335,6 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
       });
 
       expect(result.ok).toBe(true);
-      // The probe ran in the child, under the child's own session id.
       expect(childSessionIds).toHaveLength(1);
       const [childSessionId] = childSessionIds;
       expect(childSessionId).not.toBe(parentSessionId);
@@ -330,8 +346,6 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
     }
   });
 });
-
-// ─── 1) maxRounds bound ───────────────────────────────
 
 describe("SubAgentRunner — maxRounds bound", () => {
   it("terminates after the host-assigned `maxRounds` budget even if provider keeps emitting tool calls, and flags the cut-off run incomplete", async () => {
@@ -349,7 +363,6 @@ describe("SubAgentRunner — maxRounds bound", () => {
       }),
     );
 
-    // 5 rounds of "still calling tools" — but maxTurns=2 must clamp.
     const provider = new ScriptedProvider(
       Array.from({ length: 5 }).map((_, i) => [
         { type: "text_delta", text: `round-${i}` },
@@ -362,13 +375,8 @@ describe("SubAgentRunner — maxRounds bound", () => {
     const parentLoop = new ConversationLoop(buildLoopDeps(toolRegistry));
     (parentLoop as { provider: LLMProvider | null }).provider = provider;
 
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    // Inject the fake provider into the child loop too — runner constructs
-    // a fresh ConversationLoop per spawn, so we patch the prototype.
+    const runner = makeRunner(toolRegistry);
+    // Patch child loops too because each spawn constructs a fresh loop.
     const origConstructor = ConversationLoop.prototype as unknown as {
       hasProvider: () => boolean;
     };
@@ -394,22 +402,11 @@ describe("SubAgentRunner — maxRounds bound", () => {
         maxRounds: 2,
         originSessionId: "a1bdc27a-c758-4a74-8955-5e9188412366",
       });
-      // R2-CR-2: tighten — `<=2` would also pass on a regression that bails
-      // out at 0 or 1 rounds. The provider script emits 5 valid tool_use
-      // rounds, so with maxTurns=2 the loop MUST execute exactly 2 rounds.
+      // Require the full budget, not just an upper bound that would admit premature termination.
       expect(result.turnCount).toBe(2);
-      // Per-round tool fan-out cap is 10; with maxTurns=2 the total tool
-      // call count is bounded by 2 * 10 = 20.
       expect(result.toolCallCount).toBeLessThanOrEqual(2 * 10);
-      // R2-CR-2: tighten — exactly 2 tool executions happened (one per round
-      // since the provider emits a single tool_call per round). A regression
-      // that early-terminates would invoke the executor 0 or 1 times only.
       expect(execSpy).toHaveBeenCalledTimes(2);
-      // Cut-off resume signal: the provider still wanted to keep calling tools
-      // when the budget was hit, so this run stopped on its round budget with
-      // work pending. The runner must surface that as a SUCCESSFUL-but-
-      // incomplete result (ok=true, incomplete=true) forwarding stopReason
-      // "round-cap" — NOT a failed spawn — so the parent can decide to continue.
+      // Round-capped work is successful but incomplete, allowing the parent to resume it.
       expect(result.ok).toBe(true);
       expect(result.incomplete).toBe(true);
       expect(result.stopReason).toBe("round-cap");
@@ -433,34 +430,14 @@ describe("SubAgentRunner — maxRounds bound", () => {
 
   it("does NOT flag a clean end_turn completion as incomplete", async () => {
     const toolRegistry = new ToolRegistry();
-    // Provider ends naturally on round 1, well within the budget.
     const provider = new ScriptedProvider([
       [
         { type: "text_delta", text: "final answer" },
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     try {
       const result = await runner.spawn({
         toolScope: PARENT_ALL_TOOL_SCOPE,
@@ -470,7 +447,6 @@ describe("SubAgentRunner — maxRounds bound", () => {
       });
       expect(result.ok).toBe(true);
       expect(result.stopReason).toBe("end_turn");
-      // Cut-off resume signal must be OFF: a finished turn is not incomplete.
       expect(result.incomplete).toBeFalsy();
       expect(result.suspension).toBeUndefined();
       expect(result.summary).toContain("final answer");
@@ -490,8 +466,7 @@ describe("SubAgentRunner — maxRounds bound", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]));
-    // Deliberately absent from the default API-key vendor catalog. Codex must
-    // send it to main's live subscription catalog instead of dropping it here.
+    // An ID absent from the API-key catalog must still reach the live subscription catalog.
     const profileModel = "codex-live-only-test-model";
     const configuredSettings = {
       ...fakeLlmSettings(),
@@ -612,16 +587,10 @@ describe("SubAgentRunner — maxRounds bound", () => {
   });
 });
 
-// ─── 2) sourceTools allowlist ─────────────────────────
-
 describe("SubAgentRunner — provider-status activity", () => {
   it("publishes a retry status snapshot before the child completes its answer", async () => {
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -679,11 +648,7 @@ describe("SubAgentRunner — provider-status activity", () => {
 
   it("clears a status-only retry before an errored child result is published", async () => {
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -728,27 +693,8 @@ describe("SubAgentRunner — cross-agent DLP boundary", () => {
       ],
     ]);
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     const onActivity = vi.fn();
 
     try {
@@ -780,11 +726,7 @@ describe("SubAgentRunner — cross-agent DLP boundary", () => {
   it("masks a child failure across returned, tracked, and error callback surfaces", async () => {
     const secret = "ghp_" + "e".repeat(24);
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -1328,10 +1270,7 @@ describe("SubAgentRunner — projected terminal status", () => {
   });
 });
 describe("SubAgentToolScope — one meaning per value", () => {
-  // The three grants used to be encoded in one `string[]` whose EMPTY case read
-  // as "the whole parent registry" on the spawn path, "nothing" on the A2A wire
-  // path, and "unreadable metadata, refuse" on the resume path. These pin that
-  // each meaning is now a distinct value that cannot be mistaken for another.
+  // Parent scope, deliberate empty scope, and corrupt frozen scope must stay distinct grants.
   it("refuses to build an `exactly` scope with no names", () => {
     expect(() => exactToolScope([])).toThrow(/at least one tool name/i);
   });
@@ -1357,17 +1296,13 @@ describe("SubAgentToolScope — one meaning per value", () => {
   });
 
   it("decodes an EMPTY record as deny-all only for a wire-bound task", () => {
-    // The wire path is the only one that can freeze a run with no tools, so an
-    // empty list is deliberate there and a corruption/tamper signal elsewhere.
-    // Neither reading is "grant the parent registry": there is no decode that
-    // widens.
+    // Only the wire path may freeze an empty grant; no empty decode may widen to parent tools.
     expect(fromPersistedToolScope([], true)).toEqual(DENY_ALL_TOOL_SCOPE);
     expect(fromPersistedToolScope([], false)).toBeNull();
   });
 });
 
 describe("SubAgentRunner — what each tool scope grants", () => {
-  /** A parent registry holding one read tool, one shell tool, and the blocklisted `agent_spawn`. */
   function scopeProbeRegistry(): ToolRegistry {
     const toolRegistry = new ToolRegistry();
     for (const [name, category] of [
@@ -1381,7 +1316,6 @@ describe("SubAgentRunner — what each tool scope grants", () => {
           description: name,
           source: "builtin",
           category,
-          // The registry refuses a builtin `meta` tool with no decision policy.
           ...(category === "meta" ? { decisionOverride: "ask" as const } : {}),
           jsonSchema: { type: "object", properties: {} },
           execute: async () => ({ output: name, isError: false }),
@@ -1399,11 +1333,7 @@ describe("SubAgentRunner — what each tool scope grants", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -1439,8 +1369,7 @@ describe("SubAgentRunner — what each tool scope grants", () => {
   });
 
   it("grants no source tool at all for `deny-all`", async () => {
-    // The posture the A2A wire path relies on: a bound profile that names no
-    // tool hands the remote peer nothing, never the parent's whole surface.
+    // A tool-less wire profile must grant nothing rather than the parent registry.
     expect(await advertisedToolNames(DENY_ALL_TOOL_SCOPE)).toEqual([]);
   });
 });
@@ -1470,19 +1399,12 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       }),
     );
 
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
 
-    // Build the scoped view via the runner's registry filter and assert it
-    // contains "bash" but not "read_file" — exercises the allowlist
-    // contract directly without firing a fake provider.
     const scoped = toolRegistry.createScopedView(["bash"]);
     expect(scoped.findByName("bash")).toBeDefined();
     expect(scoped.findByName("read_file")).toBeUndefined();
-    void runner; // referenced so test compiles even if assertions trim
+    void runner;
   });
 
   it("keeps allowlisted plugin tools visible to the child LLM schema", async () => {
@@ -1530,22 +1452,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1565,10 +1472,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
   });
 
   it("does not ADVERTISE a plugin the child cannot call (prompt scope == registry scope)", async () => {
-    // The child's executable surface is the scoped registry. Its ADVERTISED
-    // surface (the request_plugin catalog in the system prompt) must be bounded
-    // by that same registry — it used to be computed from the boot-time global
-    // one, because the boot factory closed over it.
+    // Advertised plugin tools must be bounded by the same scoped registry as execution.
     const toolRegistry = new ToolRegistry();
     const pluginTools: Array<[string, string]> = [
       [CARD_FIXTURE_IN_SCOPE_PLUGIN, CARD_FIXTURE_IN_SCOPE_TOOL],
@@ -1595,7 +1499,6 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       { type: "text_delta", text: "done" },
       { type: "message_complete", stopReason: "end_turn" },
     ]]);
-    // The REAL boot factory builds the card provider — this is the producer.
     const parentDeps = {
       ...buildLoopDeps(toolRegistry),
       systemPromptBuilder: createSystemPromptBuilder({
@@ -1607,20 +1510,9 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
     const runner = new SubAgentRunner({
       parentDeps,
       toolRegistry,
-      // The child builder reads THIS memory manager (createIsolated overrides it).
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1631,9 +1523,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       });
 
       const childPrompt = provider.observedSystemPrompts[0] ?? "";
-      // Enforcement: the child can only call the one allowlisted plugin tool.
       expect(provider.observedToolNames[0]).toEqual([CARD_FIXTURE_IN_SCOPE_TOOL]);
-      // Advertisement must agree.
       expect(childPrompt).not.toContain(CARD_FIXTURE_OUT_OF_SCOPE_PLUGIN);
       for (const name of CARD_FIXTURE_OUT_OF_SCOPE_TOOLS) {
         expect(childPrompt).not.toContain(name);
@@ -1669,22 +1559,8 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       { type: "text_delta", text: "done" },
       { type: "message_complete", stopReason: "end_turn" },
     ]]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1702,11 +1578,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
   });
 
   it("does not execute an inactive plugin's tool even when allowlisted via sourceTools", async () => {
-    // The scoped view a sub-agent receives does not rebuild tools — it hands
-    // out the same gated adapter objects. sourceTools is not filtered by
-    // isPluginEnabled (an inactive tool name CAN be allowlisted and exposed),
-    // so the boundary must hold at execution: the adapter fail-closes before
-    // reaching the runtime.
+    // Scoped views share gated adapters; disabled plugin tools must still fail closed at execution.
     const toolRegistry = new ToolRegistry();
     const runtimeCall = vi.fn(async () => ({ items: ["secret"] }));
     const fakeRuntime = {
@@ -1744,27 +1616,8 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1774,9 +1627,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         maxRounds: 2,
       });
 
-      // Exposed to the child (sourceTools is not isPluginEnabled-filtered)…
       expect(provider.observedToolNames[0]).toContain(toolName);
-      // …but execution fails closed at the adapter — the runtime is never hit.
       expect(runtimeCall).not.toHaveBeenCalled();
     } finally {
       hasProviderSpy.mockRestore();
@@ -1792,8 +1643,6 @@ describe("SubAgentRunner — the child's agent context", () => {
       { type: "text_delta", text: "done" },
       { type: "message_complete", stopReason: "end_turn" },
     ]]);
-    // REAL boot factory + REAL builder: the composition under test is the
-    // production one, reached through the runner rather than re-implemented.
     const parentDeps = {
       ...buildLoopDeps(toolRegistry),
       systemPromptBuilder: createSystemPromptBuilder({
@@ -1813,17 +1662,7 @@ describe("SubAgentRunner — the child's agent context", () => {
         getAgentsCustomMd: () => "CHILD own rules",
       }),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({ toolScope: PARENT_ALL_TOOL_SCOPE, title: "child", instructions: "summarize", maxRounds: 1 });
@@ -1831,10 +1670,10 @@ describe("SubAgentRunner — the child's agent context", () => {
       const childPrompt = provider.observedSystemPrompts[0] ?? "";
       expect(childPrompt).toContain("<ave-agents-custom-context>");
       expect(childPrompt).toContain("CHILD packaged reference");
-      // The user's own half is ordered last so it wins a conflict.
+      // Put the user-owned prompt half last so it wins conflicts.
       expect(childPrompt.indexOf("CHILD packaged reference"))
         .toBeLessThan(childPrompt.indexOf("CHILD own rules"));
-      // Both halves come from the child's OWN store, never the parent's.
+      // Both prompt halves must come from the child store, never the parent store.
       expect(childPrompt).not.toContain("PARENT packaged reference");
       expect(childPrompt).not.toContain("PARENT own rules");
     } finally {
@@ -1844,15 +1683,12 @@ describe("SubAgentRunner — the child's agent context", () => {
   });
 });
 
-// ─── 3) Recursive spawn refusal ───────────────────────
-
 describe("agent_spawn — recursive call refusal", () => {
   it("returns an error when invoked from a sub-agent (spawnDepth >= 1)", async () => {
     const tool = createAgentSpawnTool({
       getRunner: () => ({ spawn: async () => ({}) }) as never,
       emit: () => undefined,
     });
-    // Simulate the executor metadata for a sub-agent invocation.
     const ctxAsSubAgent = {
       cwd: process.cwd(),
       metadata: { sessionId: "1ae80cfb-d8c8-4a02-806d-4f4d2872a62d", spawnDepth: 1 },
@@ -1895,8 +1731,6 @@ describe("agent_spawn — recursive call refusal", () => {
   });
 });
 
-// ─── SubAgentRunner blocklist ────────────────────────
-
 describe("SubAgentRunner — agent_spawn always stripped", () => {
   it("strips agent_spawn from the child registry even when sourceTools includes it", async () => {
     const toolRegistry = new ToolRegistry();
@@ -1923,8 +1757,6 @@ describe("SubAgentRunner — agent_spawn always stripped", () => {
       }),
     );
 
-    // Direct probe of the blocklist behavior: the scoped view a runner would
-    // hand the child must NOT include `agent_spawn` even when listed.
     const scopedFromAllowlist = toolRegistry.createScopedView(
       ["agent_spawn", "noop"].filter((n) => n !== "agent_spawn"),
     );
@@ -1934,23 +1766,41 @@ describe("SubAgentRunner — agent_spawn always stripped", () => {
 });
 
 describe("resolveSubAgentModel — #1112 complexity resolution", () => {
+  const NO_LIVE_MODELS: readonly string[] = [];
+
   it("resolves a complexity tier to the active vendor's model", () => {
-    expect(resolveSubAgentModel("mid", "claude")).toBe(
+    expect(resolveSubAgentModel("mid", "claude", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.claude.mid,
     );
-    expect(resolveSubAgentModel("high", "openai")).toBe(
+    expect(resolveSubAgentModel("high", "openai", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.openai.high,
     );
-    expect(resolveSubAgentModel("low", "gemini")).toBe(
+    expect(resolveSubAgentModel("low", "gemini", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.gemini.low,
     );
   });
 
   it("passes an explicit model ID through only when the active vendor offers it", () => {
-    const claudeOpt = LLM_VENDOR_MODEL_OPTIONS.claude[0];
-    expect(resolveSubAgentModel(claudeOpt, "claude")).toBe(claudeOpt);
-    const openaiOpt = LLM_VENDOR_MODEL_OPTIONS.openai[0];
-    expect(resolveSubAgentModel(openaiOpt, "openai")).toBe(openaiOpt);
+    const claudeOpt = llmVendorModelOptions("claude")[0]!;
+    expect(resolveSubAgentModel(claudeOpt, "claude", undefined, NO_LIVE_MODELS)).toBe(claudeOpt);
+    const openaiOpt = llmVendorModelOptions("openai")[0]!;
+    expect(resolveSubAgentModel(openaiOpt, "openai", undefined, NO_LIVE_MODELS)).toBe(openaiOpt);
+  });
+
+  it("accepts a model the catalog lists for the vendor even when no hand-written seed named it", () => {
+    expect(resolveSubAgentModel("gpt-6.1-sol", "openai", undefined, NO_LIVE_MODELS)).toBe("gpt-6.1-sol");
+    expect(resolveSubAgentModel("claude-opus-5-5", "claude", undefined, NO_LIVE_MODELS)).toBe("claude-opus-5-5");
+  });
+
+  it("accepts a model only the vendor's live /models answer named", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(resolveSubAgentModel("ft:gpt-6-luna:acme::abc123", "openai", undefined, NO_LIVE_MODELS)).toBeNull();
+      expect(resolveSubAgentModel("ft:gpt-6-luna:acme::abc123", "openai", undefined, ["ft:gpt-6-luna:acme::abc123"]))
+        .toBe("ft:gpt-6-luna:acme::abc123");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("falls back to the parent model (null) + warns when an explicit ID is not selectable for the active vendor", () => {
@@ -1958,9 +1808,8 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
       .spyOn(console, "warn")
       .mockImplementation(() => undefined);
     try {
-      // An openai model ID under the claude vendor: claude cannot serve it,
-      // so it must NOT reach the provider as a non-retryable model-not-found.
-      expect(resolveSubAgentModel("gpt-5.4", "claude")).toBeNull();
+      // Vendor-incompatible model IDs must be rejected before reaching the provider.
+      expect(resolveSubAgentModel("gpt-5.4", "claude", undefined, NO_LIVE_MODELS)).toBeNull();
       const logged = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toMatch(/parent-model fallback used/i);
     } finally {
@@ -1969,21 +1818,20 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
   });
 
   it("returns null for undefined / empty — caller keeps the parent model", () => {
-    expect(resolveSubAgentModel(undefined, "claude")).toBeNull();
-    expect(resolveSubAgentModel("", "claude")).toBeNull();
-    expect(resolveSubAgentModel("   ", "claude")).toBeNull();
+    expect(resolveSubAgentModel(undefined, "claude", undefined, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("", "claude", undefined, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("   ", "claude", undefined, NO_LIVE_MODELS)).toBeNull();
   });
 
   it("uses the active Codex subscription catalog instead of the stale API-key vendor catalog", () => {
     const codex = { kind: "subscription", provider: "codex" } as const;
 
-    expect(resolveSubAgentModel("  codex-live-only-model  ", "claude", codex))
+    expect(resolveSubAgentModel("  codex-live-only-model  ", "claude", codex, NO_LIVE_MODELS))
       .toBe("codex-live-only-model");
-    // Complexity names are not model IDs and Codex has no static engine map;
-    // the persisted subscription selection remains in effect.
-    expect(resolveSubAgentModel("high", "openai", codex)).toBeNull();
-    expect(resolveSubAgentModel("bad\u0000model", "openai", codex)).toBeNull();
-    expect(resolveSubAgentModel("x".repeat(MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH + 1), "openai", codex)).toBeNull();
+    // Complexity tiers are not subscription model IDs; retain the persisted selection.
+    expect(resolveSubAgentModel("high", "openai", codex, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("bad\u0000model", "openai", codex, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("x".repeat(MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH + 1), "openai", codex, NO_LIVE_MODELS)).toBeNull();
   });
 
   it("keeps an ACP subscription's persisted default model", () => {
@@ -1991,18 +1839,17 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
       "codex-live-only-model",
       "openai",
       { kind: "subscription", provider: "kimi-code" },
+      NO_LIVE_MODELS,
     )).toBeNull();
   });
 
   it("returns null when the active vendor is outside the union (boundary)", () => {
-    // A complexity tier needs a known vendor to map against. An unknown
-    // vendor string (corrupt settings, etc.) yields the parent-model
-    // fallback rather than a wrong model.
-    expect(resolveSubAgentModel("mid", "totally-fake-vendor")).toBeNull();
+    // Unknown vendors cannot map complexity tiers; retain the parent model instead.
+    expect(resolveSubAgentModel("mid", "totally-fake-vendor", undefined, NO_LIVE_MODELS)).toBeNull();
   });
 
   it("trims surrounding whitespace before classifying", () => {
-    expect(resolveSubAgentModel("  mid  ", "claude")).toBe(
+    expect(resolveSubAgentModel("  mid  ", "claude", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.claude.mid,
     );
   });
@@ -2017,7 +1864,7 @@ describe("buildModePreamble — #1113 mode posture + skill recommendation", () =
     for (const skill of AGENT_MODE_MAP.execute.autoSkills) {
       expect(preamble).toContain(skill);
     }
-    // RECOMMENDATION, not force-load — body-hash approval gate still runs.
+    // Skill recommendations must still pass body-hash approval.
     expect(preamble).toContain("skill_load");
   });
 
@@ -2032,8 +1879,6 @@ describe("buildModePreamble — #1113 mode posture + skill recommendation", () =
   });
 });
 
-// ─── Unknown-mode audit warn (#1113) ──────────────────
-
 describe("SubAgentRunner — unknown mode audit warn", () => {
   it("logs a warning when the profile mode does not match a known mode", async () => {
     const toolRegistry = new ToolRegistry();
@@ -2043,27 +1888,8 @@ describe("SubAgentRunner — unknown mode audit warn", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     const warnSpy = vi
       .spyOn(console, "warn")
       .mockImplementation(() => undefined);
@@ -2072,7 +1898,7 @@ describe("SubAgentRunner — unknown mode audit warn", () => {
         toolScope: PARENT_ALL_TOOL_SCOPE,
         title: "t",
         instructions: "do",
-        profileMode: "supervise", // not a member of AGENT_MODES
+        profileMode: "supervise",
         maxRounds: 1,
       });
       const logged = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
@@ -2085,16 +1911,8 @@ describe("SubAgentRunner — unknown mode audit warn", () => {
   });
 });
 
-// ─── PR-A: session namespace isolation + regex-valid id ───────────────
-//
-// The orphan/pollution bug: the child loop used to persist under its bare
-// constructor UUID into the parent's main-chat MemoryManager, so sub-agent
-// JSONL landed in `~/.ave/sessions/` and leaked into the main session list;
-// the returned childSessionId (`origin::uuid`) failed SESSION_ID_REGEX and was
-// addressable by nobody. This suite pins the fix end-to-end against REAL
-// MemoryManagers on a temp AVE_HOME.
+// Persist regex-valid child IDs only in the isolated subagent namespace.
 
-// Mirror MemoryManager's SESSION_ID_REGEX exactly (not exported).
 const SESSION_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
 describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () => {
@@ -2115,8 +1933,6 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
 
   it("persists the child JSONL under ~/.ave/subagent/, keeps it out of the main session list, and returns a regex-valid childSessionId", async () => {
     const toolRegistry = new ToolRegistry();
-    // Provider ends cleanly on round 1 so the child's fallback persistence path
-    // (postTurnHookChain undefined) writes exactly one session JSONL.
     const provider = new ScriptedProvider([
       [
         { type: "text_delta", text: "child answer" },
@@ -2124,8 +1940,6 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
       ],
     ]);
 
-    // REAL stores rooted at the temp home. Main = ~/.ave/sessions/;
-    // subagent = ~/.ave/subagent/sessions/ (via openFeatureNamespace).
     const mainMemoryManager = new MemoryManager({ aveDir: tmpHome });
     mainMemoryManager.load();
     const subAgentMemoryManager = new MemoryManager({
@@ -2134,8 +1948,7 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
     subAgentMemoryManager.load();
 
     const parentDeps = buildLoopDeps(toolRegistry);
-    // Point the PARENT deps at the real main store so a regression that reused
-    // the parent MemoryManager would visibly pollute the main session list.
+    // Use a real parent store so accidental reuse visibly pollutes its session list.
     (parentDeps as { memoryManager: unknown }).memoryManager =
       mainMemoryManager;
 
@@ -2145,22 +1958,7 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
       subAgentMemoryManager,
     });
 
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       const result = await runner.spawn({
@@ -2171,30 +1969,22 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
         maxRounds: 3,
       });
 
-      // 1) The returned childSessionId is regex-valid (loadSession/saveSession
-      //    both reject anything else). The old `::` form failed this.
       expect(result.childSessionId).toMatch(SESSION_ID_REGEX);
-      // It also carries the sanitized-origin + sub- prefix shape.
       expect(result.childSessionId.startsWith("sub-")).toBe(true);
 
-      // 2) The child JSONL lives in the SUBAGENT namespace…
       const subSessionsDir = join(tmpHome, "subagent", "sessions");
       expect(
         existsSync(join(subSessionsDir, `${result.childSessionId}.jsonl`)),
       ).toBe(true);
 
-      // 3) …and NOT in the main sessions dir.
       const mainSessionsDir = join(tmpHome, "sessions");
       const mainFiles = existsSync(mainSessionsDir)
         ? readdirSync(mainSessionsDir).filter((f) => f.endsWith(".jsonl"))
         : [];
       expect(mainFiles).toEqual([]);
 
-      // 4) The main listSessions no longer surfaces the sub-agent session.
       expect(mainMemoryManager.listSessions()).toEqual([]);
-      // The isolated store DOES see it (addressable for future resume). PR-B
-      // tags it `sessionKind: "subagent"`, so it is scoped out of the default
-      // "main" listing and surfaces under the "subagent" (or "all") kind.
+      // Child sessions must be listed under the subagent kind, never the default main kind.
       const subIds = subAgentMemoryManager
         .listSessions({ kind: "subagent" })
         .map((s) => s.id);
@@ -2222,22 +2012,7 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
       toolRegistry,
       subAgentMemoryManager,
     });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     try {
       const result = await runner.spawn({
         toolScope: PARENT_ALL_TOOL_SCOPE,
@@ -2256,15 +2031,7 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
   });
 });
 
-// ─── PR-B: resume metadata + "subagent" SessionKind + review-nit fold ─────────
-//
-// Metadata-only foundation for same-instance resume (PR-C). Pins that a spawn:
-//   1. tags its persisted session `sessionKind: "subagent"`,
-//   2. round-trips the resume fields (sourceTools/profileModel/profileMode/
-//      resumeCount/cumulativeRounds) through saveSessionMetadata,
-//   3. builds a child id whose origin tag is a HASH of the origin id (info-leak
-//      NIT fold) — not a raw slice — while staying regex-valid,
-//   4. re-inits the tracer on the rebound childSessionId (dev-trace NIT fold).
+// Persist frozen resume metadata and hash the origin tag to avoid exposing parent IDs.
 
 describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () => {
   let tmpHome: string;
@@ -2308,22 +2075,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       toolRegistry,
       subAgentMemoryManager,
     });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     return {
       run: () => runner.spawn(input),
       restore: () => {
@@ -2408,26 +2160,18 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
     );
     try {
       const result = await run();
-      // Re-read the persisted metadata from the SAME isolated store — this is
-      // the exact round-trip PR-C's resume relies on.
       const meta = subAgentMemoryManager.loadSessionMetadata(
         result.childSessionId,
       );
       expect(meta).not.toBeNull();
       expect(meta?.sessionKind).toBe("subagent");
-      // The frozen scoped tool surface. `sourceTools: ["noop"]` resolves to a
-      // one-tool registry, so the persisted allowlist is exactly ["noop"].
       expect(meta?.sourceTools).toEqual(["noop"]);
       expect(meta?.profileModel).toBe("high");
       expect(meta?.profileMode).toBe("execute");
-      // resumeCount inits to 0 (no resume yet). cumulativeRounds now records the
-      // spawn's OWN round count (PR-C Commit 2 fix: previously left at 0, which
-      // made the resume-chain ceiling inaccurate). A clean 1-round spawn → 1.
       expect(meta?.resumeCount).toBe(0);
       expect(meta?.budgetResumeCount).toBe(0);
       expect(meta?.questionAnswerCount).toBe(0);
       expect(meta?.cumulativeRounds).toBe(result.turnCount);
-      // The session surfaces in the isolated store's listing as a subagent.
       const listed = subAgentMemoryManager
         .listSessions({ kind: "subagent" })
         .find((s) => s.id === result.childSessionId);
@@ -2464,10 +2208,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       expect(meta?.resumeCount).toBe(0);
       expect(meta?.budgetResumeCount).toBe(0);
       expect(meta?.questionAnswerCount).toBe(0);
-      // cumulativeRounds records the spawn's own round count (PR-C Commit 2 fix).
       expect(meta?.cumulativeRounds).toBe(result.turnCount);
-      // sourceTools falls back to the full (blocklist-stripped) parent surface,
-      // which for this registry is the single "noop" tool.
       expect(meta?.sourceTools).toEqual(["noop"]);
     } finally {
       restore();
@@ -2479,8 +2220,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       aveDir: openFeatureNamespace("subagent").dir,
     });
     subAgentMemoryManager.load();
-    // A raw-slice implementation would embed the first 8 alphanumerics of the
-    // origin ("abcdefgh") verbatim in the child id. The hash fold must NOT.
+    // Origin tags must not embed a raw slice of the parent session ID.
     const origin = "abcdefgh-IJKL-should-not-appear-verbatim";
     const { run, restore } = spawnWith(
       makeCleanProvider(),
@@ -2497,10 +2237,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       const result = await run();
       expect(result.childSessionId).toMatch(SESSION_ID_REGEX);
       expect(result.childSessionId.startsWith("sub-")).toBe(true);
-      // The raw-slice fossil ("abcdefgh") must not correlate the child filename
-      // to the parent session id.
       expect(result.childSessionId).not.toContain("abcdefgh");
-      // The tag is the deterministic short sha256 of the origin id.
       const expectedTag = createHash("sha256")
         .update(origin)
         .digest("hex")
@@ -2515,7 +2252,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
 
   it("re-inits the tracer on the rebound childSessionId so dev traces key on the addressable id (not the stale constructor UUID)", async () => {
     const prevTrace = process.env.AVE_TRACE;
-    process.env.AVE_TRACE = "1"; // force-enable FileTracer regardless of NODE_ENV
+    process.env.AVE_TRACE = "1";
     const subAgentMemoryManager = new MemoryManager({
       aveDir: openFeatureNamespace("subagent").dir,
     });
@@ -2533,16 +2270,12 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
     );
     try {
       const result = await run();
-      // The tracer writes ~/.ave/traces/<sessionId>.jsonl on the first turn
-      // step (TURN_ORCHESTRATE). With the tracer rebound, the file is named
-      // after the childSessionId; a stale-UUID tracer would produce a
-      // UUID-named file and no <childSessionId>.jsonl.
+      // Trace filenames must use the rebound child session ID rather than the constructor UUID.
       const tracesDir = join(tmpHome, "traces");
       const traceFiles = existsSync(tracesDir)
         ? readdirSync(tracesDir).filter((f) => f.endsWith(".jsonl"))
         : [];
       expect(traceFiles).toContain(`${result.childSessionId}.jsonl`);
-      // No trace file may be keyed on a bare constructor UUID (the stale-id bug).
       const uuidNamed = traceFiles.filter((f) =>
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/.test(
           f,
@@ -2560,11 +2293,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
 describe("SubAgentRunner A2A bus facade", () => {
   it("fails closed and returns inert mailbox results when boot has no bus", async () => {
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
 
     await expect(
       runner.deliverToParent({
@@ -2934,26 +2663,15 @@ describe("SubAgentRunner workspace lifecycle", () => {
 });
 describe("spawn cancellation signal", () => {
   it("hands the run's abort signal to the child turn", async () => {
-    // `interruptRun` reports CANCELED, but the only carrier used to be the
-    // `abortCurrentTurn()` closure — documented as a no-op when no turn is in
-    // flight. An interrupt landing during spawn setup therefore reported
-    // cancellation while the child ran its full `cappedRounds`, and the second
-    // interrupt answers "not running", so the user could not retry.
+    // Cancellation during spawn setup must reach the later turn even before abortCurrentTurn can.
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
         "hasProvider",
       )
       .mockReturnValue(true);
-    // Park the child turn so the run is still in flight when the interrupt
-    // lands — the whole point is the window where a turn exists but the
-    // closure-based carrier cannot reach it.
     let releaseTurn: () => void = () => {};
     const turnParked = new Promise<void>((resolve) => {
       releaseTurn = resolve;
@@ -2982,8 +2700,7 @@ describe("spawn cancellation signal", () => {
       );
       await turnStarted;
 
-      // Assert the linkage, not the arity: a signal that is not the run's own
-      // would satisfy "third argument is defined" and still never fire.
+      // Assert signal linkage; a defined but unrelated signal would not propagate cancellation.
       const signal = runTurnSpy.mock.calls[0]?.[2] as AbortSignal | undefined;
       expect(signal).toBeInstanceOf(AbortSignal);
       expect(signal?.aborted).toBe(false);
@@ -3003,15 +2720,7 @@ describe("spawn cancellation signal", () => {
 });
 
 describe("SubAgentRunner terminal completion step", () => {
-  /**
-   * A completing sub-agent has two audiences that must not disagree: the
-   * parent LLM, which reads the run through `agent_status`, and the tile's
-   * sub-agent panel, which is the only place the user can watch it. The
-   * renderer frame used to be dispatched by whoever awaited the run, one
-   * scheduling hop after the runner published the terminal state — so the
-   * parent could already be answering from a `done` the panel had not been
-   * told about. These pin the frame to the completion step itself.
-   */
+  // Publish the terminal renderer frame in the completion step so it agrees with agent_status.
   function completionRunner() {
     const toolRegistry = new ToolRegistry();
     return new SubAgentRunner({
@@ -3021,10 +2730,7 @@ describe("SubAgentRunner terminal completion step", () => {
     });
   }
 
-  // The fake settings build a real OpenAI provider with a fake key, so without
-  // this the child sent a request to api.openai.com and the test passed only
-  // when that request came back 401 in time; a stalled network timed it out.
-  // These cases are about the completion step, so take the no-provider branch.
+  // Use the no-provider branch to test completion without an accidental endpoint request.
   let hasProviderSpy: { mockRestore: () => void };
   beforeEach(() => {
     hasProviderSpy = vi
@@ -3038,8 +2744,6 @@ describe("SubAgentRunner terminal completion step", () => {
   it("publishes the terminal state and the renderer frame in one uninterruptible step", async () => {
     const runner = completionRunner();
     const observed: string[] = [];
-    // The child loop has no provider, so the run reaches its terminal state
-    // through the completion step without needing a scripted LLM turn.
     const spawned = runner.spawn(
       {
         toolScope: PARENT_ALL_TOOL_SCOPE,
@@ -3051,9 +2755,6 @@ describe("SubAgentRunner terminal completion step", () => {
       {
         onTerminal: (result) => {
           observed.push(`frame:${result.ok ? "ok" : "error"}`);
-          // Exactly what `agent_status` would answer at this instant. If the
-          // frame were dispatched by the awaiting caller instead, the answer
-          // here would already have been readable for a whole scheduling hop.
           observed.push(
             `agent_status:${
               runner.getRunStatus("spawn-completion-order", "a1bdc27a-c758-4a74-8955-5e9188412366")?.status
@@ -3090,8 +2791,7 @@ describe("SubAgentRunner terminal completion step", () => {
     );
     expect(onTerminal).toHaveBeenCalledTimes(1);
 
-    // Re-finalizing the same tracked run is what a late cancellation or a
-    // retried persistence path does. The observer must not fire again.
+    // Re-finalization after cancellation or persistence retry must not notify twice.
     const tracked = (
       runner as unknown as { trackedRuns: Map<string, { title: string }> }
     ).trackedRuns.get("1f2ffeba-7ce4-4ac6-8a3e-6846649f7785");
@@ -3112,15 +2812,7 @@ describe("SubAgentRunner terminal completion step", () => {
 });
 
 describe("SubAgentRunner completion mailbox single-shot", () => {
-  /**
-   * A finished sub-agent reports through two channels by construction: the
-   * terminal snapshot `agent_status` hands the parent mid-turn, and the
-   * durable mailbox entry the parent's NEXT turn folds in as host steering.
-   * Both are needed — a parent that never polls must still get the report —
-   * but a parent that already answered from `agent_status` was being told to
-   * go and review the same work again. The completion step records which
-   * message carries the report; reading that report retires the queued copy.
-   */
+  // Reading a terminal report retires its durable steering copy to prevent duplicate parent review.
   const parentSessionId = "a1bdc27a-c758-4a74-8955-5e9188412366";
   const restore: Array<() => void> = [];
 
@@ -3168,9 +2860,7 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
     >[0]["subAgentMemoryManager"];
     let runner!: SubAgentRunner;
     const bus = new A2ASubAgentMessageBus({
-      // A parent that is not the loop's active session and has no turn open:
-      // the delivery lands in the durable mailbox rather than being injected
-      // mid-turn, which is the shape the doubled report was reported in.
+      // An inactive parent receives durable mailbox delivery rather than live guidance.
       parentLoop: {
         getSessionId: () => "different-active-session",
         hasActiveTurn: () => false,
@@ -3239,18 +2929,13 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
       run: { status: "done", spawnId: handle.spawnId },
     });
 
-    // The parent's next turn folds the mailbox in. The report it already
-    // answered from must not come back as a steering row — this turn or any
-    // turn after it.
     await expect(
       fixture.runner.peekParentMailbox(parentSessionId),
     ).resolves.toEqual([]);
     await expect(
       fixture.runner.peekParentMailbox(parentSessionId),
     ).resolves.toEqual([]);
-    // And it is gone from the DURABLE mailbox, not merely hidden by the
-    // runner's filter: the read mark is process-local, so an entry the
-    // acknowledgement left behind would come back after a restart.
+    // Retire the durable entry too; process-local read marks cannot survive restart.
     await expect(
       fixture.bus.peekParentMailbox(parentSessionId),
     ).resolves.toEqual([]);
@@ -3273,17 +2958,7 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
   });
 
   it("does not count a snapshot whose result the state machine refused as a read report", async () => {
-    // Reading terminal is not the test the guard can use: `interruptRun` writes
-    // CANCELED the instant an abort is requested, and `persistFinalResult`
-    // claims the terminal commit before its awaits, so a run reads terminal
-    // while its summary and error are still missing. The guard asks the
-    // narrower question — did the completion step's patch actually land — and
-    // a refused transition is the sharpest way to drive it.
-    //
-    // The refusal itself is defence in depth: both run loops normalize an
-    // aborted run's result to `interrupted` before finalizing, so a COMPLETED
-    // result cannot reach `finalizeRun` behind a CANCELED state at runtime.
-    // Driving it directly is what makes the guard observable.
+    // Retire reports only after the completion patch lands; terminal state alone can precede its data.
     const fixture = completionMailboxFixture();
     let releaseTurn: () => void = () => {};
     const turnParked = new Promise<void>((resolve) => {
@@ -3322,7 +2997,6 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
     expect(run?.taskState).toBe(A2ATaskState.CANCELED);
     const childSessionId = run!.childSessionId;
 
-    // The child's completed answer arrives behind the interrupt.
     (fixture.runner as unknown as {
       finalizeRun: (run: unknown, result: SubAgentSpawnResult) => void;
     }).finalizeRun(run, {
@@ -3335,7 +3009,6 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
       stopReason: "end_turn",
     });
 
-    // Refused: nothing of that result is readable through agent_status.
     const snapshot = fixture.runner.getRunStatus(handle.spawnId, parentSessionId, {
       deliversReportToParent: true,
     });
@@ -3343,7 +3016,6 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
     expect(snapshot?.summary).toBeUndefined();
     expect(snapshot?.error).toBeUndefined();
 
-    // The mailbox copy, which does carry the answer, is therefore still owed.
     await expect(fixture.runner.deliverToParent(
       {
         parentSessionId,
@@ -3370,8 +3042,6 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
     const { queued } = await spawnUntilReportQueued(fixture, "never read");
     expect(queued).toHaveLength(1);
 
-    // Turn one: the parent never called agent_status, so the report is still
-    // owed and must be handed over rather than quietly retired.
     const firstTurn = await fixture.runner.peekParentMailbox(parentSessionId);
     expect(firstTurn).toHaveLength(1);
     expect(firstTurn[0]?.id).toBe(queued[0]?.id);
@@ -3379,7 +3049,6 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
       fixture.runner.acknowledgeParentMailbox(parentSessionId, [firstTurn[0]!.id]),
     ).resolves.toBe(1);
 
-    // Turn two: consumed, and not replayed.
     await expect(
       fixture.runner.peekParentMailbox(parentSessionId),
     ).resolves.toEqual([]);
@@ -3408,5 +3077,122 @@ describe("listWorkBoardRunSessions", () => {
       kind: "subagent",
       workBoardRuns: true,
     });
+  });
+});
+
+describe("SubAgentRunner activity ordering", () => {
+  it.each(["spawn", "resume"] as const)("preserves activity, lifecycle and terminal payload order for %s", async (entry) => {
+    const root = mkdtempSync(join(tmpdir(), "ave-subagent-activity-"));
+    vi.stubEnv("AVE_HOME", root);
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_item", description: "Read an item", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} }, execute: async () => ({ output: "value", isError: false }),
+    }));
+    const memory = new MemoryManager({ aveDir: join(root, "subagent") });
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry),
+      toolRegistry: registry,
+      subAgentMemoryManager: memory,
+    });
+    const timeline: string[] = [];
+    const activities: Array<{ toolCallCount: number; turnCount: number }> = [];
+    let terminalResult: SubAgentSpawnResult | undefined;
+    let terminalTaskState: string | undefined;
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    vi.spyOn(ConversationLoop.prototype, "fireLifecycleEvent").mockImplementation(async (name) => {
+      timeline.push(name);
+    });
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn").mockResolvedValue({
+      text: "paused", toolCalls: [], route: "default", stopReason: "round-cap",
+    });
+    const input = {
+      title: "activity child", instructions: "work", toolScope: PARENT_ALL_TOOL_SCOPE,
+      originSessionId: "a1bdc27a-c758-4a74-8955-5e9188412366",
+    };
+    try {
+      const resumeId = entry === "resume" ? (await runner.spawn(input)).childSessionId : undefined;
+      timeline.length = 0;
+      const saveMetadata = memory.saveSessionMetadata.bind(memory);
+      vi.spyOn(memory, "saveSessionMetadata").mockImplementation(async (id, metadata) => {
+        timeline.push(`metadata:${metadata.subAgentTaskState}`);
+        await saveMetadata(id, metadata);
+      });
+      runTurn.mockImplementation(async (_prompt, callbacks, signal, options) => {
+        timeline.push("run");
+        expect(signal?.aborted).toBe(false);
+        expect(options).toMatchObject({ spawnDepth: 1, inputOrigin: "llm-tool-arg" });
+        expect(options?.sessionIdOverride).toMatch(/^sub-/);
+        expect(Object.hasOwn(options!, "subagentStop")).toBe(entry === "spawn");
+        const meta = { groupId: "group", toolUseId: "tool", displayOrder: 0 };
+        callbacks?.onLlmStatus?.({ phase: "retry", attempt: 2, maxAttempts: 5 });
+        callbacks?.onReasoningDelta?.("thinking");
+        callbacks?.onToolStart?.("read_item", { path: "item" }, meta);
+        callbacks?.onPermissionReview?.({
+          status: "reviewing", toolName: "read_item", groupId: "group", toolUseId: "tool", displayOrder: 0,
+        });
+        callbacks?.onToolEnd?.("read_item", "value", false, meta, undefined, 12);
+        callbacks?.onAssistantRound?.({
+          roundIndex: 0, text: "answer", thought: "thought", stopReason: "end_turn",
+          hasToolCalls: false, messageId: "message",
+        });
+        callbacks?.onError?.("notice");
+        return {
+          text: "answer", route: "default", stopReason: "end_turn",
+          // The final count comes from the turn result, even if one callback was absent.
+          toolCalls: Array.from({ length: 2 }, () => ({ name: "read_item", input: {}, result: "value" })),
+        };
+      });
+      const callbacks = {
+        onLinked: () => { timeline.push("linked"); },
+        onReady: () => { timeline.push("ready"); },
+        onActivity: (update: { entries: unknown[]; toolCallCount: number }) => {
+          timeline.push(`activity:${update.toolCallCount}`);
+          const run = runner.listRunStatuses(input.originSessionId).find((item) => item.status === "running")!;
+          expect(run.entries).toBe(update.entries);
+          activities.push({ toolCallCount: run.toolCallCount, turnCount: run.turnCount });
+        },
+        onError: (message: string) => { timeline.push(`error:${message}`); },
+        onTerminal: (result: SubAgentSpawnResult) => {
+          timeline.push("terminal");
+          terminalResult = structuredClone(result);
+          terminalTaskState = memory.loadSessionMetadata(result.childSessionId)?.subAgentTaskState;
+        },
+      };
+      const result = entry === "spawn"
+        ? await runner.spawn(input, callbacks)
+        : await runner.resume(resumeId!, "continue", input.title, callbacks, input.originSessionId);
+      expect(result.ok).toBe(true);
+      expect(terminalResult).toEqual({
+        summary: "answer", toolCallCount: 2, turnCount: 1,
+        childSessionId: result.childSessionId, entries: result.entries, ok: true, stopReason: "end_turn",
+      });
+      expect(terminalTaskState).toBe(A2ATaskState.COMPLETED);
+      expect(activities).toEqual([
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 1, turnCount: 0 },
+        { toolCallCount: 1, turnCount: 1 },
+      ]);
+      expect(timeline).toEqual([
+        "linked",
+        ...(entry === "spawn" ? ["metadata:TASK_STATE_SUBMITTED", "SubagentStart"] : ["metadata:TASK_STATE_WORKING", "ready"]),
+        "run", "activity:0", "activity:0", "activity:0", "activity:0", "activity:1", "activity:1", "error:notice",
+        ...(entry === "spawn" ? ["SubagentStop"] : []),
+        "metadata:TASK_STATE_COMPLETED", "terminal",
+      ]);
+      const terminalTimeline = [...timeline];
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(timeline).toEqual(terminalTimeline);
+    } finally {
+      memory.closeSearchIndex();
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      await cleanupTmpDir(root);
+    }
   });
 });

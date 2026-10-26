@@ -1,22 +1,5 @@
-/**
- * Web surfaces — the window's browser guests, kept alive independently of
- * where (or whether) they are shown.
- *
- * Moving or remounting a `<webview>` destroys its guest and reloads the page
- * (measured 2026-10-15: an `appendChild` or `moveBefore` re-parent gives the
- * guest a new webContents id and loses scroll, form input and the SPA route).
- * So a browser tab's `<webview>` is NOT rendered where the tab is shown. Each
- * live browser tab owns one entry here; `WebSurfaceLayer`, mounted once at the
- * window root, renders one `<webview>` per entry and places it over the tab's
- * SLOT — a plain placeholder element the side panel or a main pane renders
- * where the page should appear. Moving a tab is moving its slot; the guest
- * never leaves the layer, so it never reloads.
- *
- * Lifetime: an entry lives while some tab store lists its tab id as a live
- * browser tab (`publishLiveWebTabs`). A slot that goes away — tab switched,
- * panel closed, pane routed elsewhere — only hides the guest. Closing the tab
- * removes it from its store, and the next reconcile destroys the guest.
- */
+/** Reparenting or remounting a webview reloads its guest, so tabs move slots while guests stay in the window layer. Hiding
+ * a slot preserves its guest; removing the live tab destroys it. */
 export interface WebSurface {
   tabId: string;
   /** The url the guest was last pointed at by the host (not its live url). */
@@ -69,10 +52,8 @@ export function getWebSurfaces(): readonly WebSurface[] {
   return surfaces;
 }
 
-/**
- * Point the tab's guest at `url`, creating the entry on first use. The same
- * url is a no-op; a different one navigates the existing guest.
- */
+/** Point the tab's guest at `url`, creating the entry on first use. The same url is a no-op; a different one navigates the
+ * existing guest. */
 export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: string): void {
   const existing = surfaces.find((surface) => surface.tabId === tabId);
   const requestId = bindRequestId ?? existing?.bindRequestId;
@@ -85,10 +66,23 @@ export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: str
   scheduleReconcile();
 }
 
-// Where each guest's page actually is — a link, redirect or in-page route
-// moves it without the host setting a url. What a saved layout records.
+// Where each guest's page actually is — a link, redirect or in-page route moves it without the host setting a url. What a
+// saved layout records.
 const locations = new Map<string, string>();
+const favicons = new Map<string, string>();
 const locationListeners = new Set<() => void>();
+
+/** The guest's latest site icon, retained while its tab is alive. */
+export function webSurfaceFavicon(tabId: string): string | null {
+  return favicons.get(tabId) ?? null;
+}
+
+export function noteWebSurfaceFavicon(tabId: string, favicon: string | null): void {
+  if ((favicons.get(tabId) ?? null) === favicon) return;
+  if (favicon === null) favicons.delete(tabId);
+  else favicons.set(tabId, favicon);
+  emit();
+}
 
 /** The layer saw the tab's main frame navigate to `url`. */
 export function noteWebSurfaceLocation(tabId: string, url: string): void {
@@ -97,11 +91,9 @@ export function noteWebSurfaceLocation(tabId: string, url: string): void {
   for (const listener of [...locationListeners]) listener();
 }
 
-/**
- * The guest attached again (a new page process): what it committed before is
- * not this page's address any more.
- */
+/** The guest attached again (a new page process): what it committed before is not this page's address any more. */
 export function forgetWebSurfaceLocation(tabId: string): void {
+  noteWebSurfaceFavicon(tabId, null);
   if (!locations.delete(tabId)) return;
   for (const listener of [...locationListeners]) listener();
 }
@@ -157,10 +149,8 @@ export function getWebSurfaceElement(tabId: string): HTMLElement | null {
   return webviews.get(tabId) ?? null;
 }
 
-/**
- * A tab store says which of its tabs are live browser tabs. `source` is the
- * store's own identity; publishing replaces its previous set.
- */
+/** A tab store says which of its tabs are live browser tabs. `source` is the store's own identity; publishing replaces its
+ * previous set. */
 export function publishLiveWebTabs(source: symbol, tabIds: ReadonlySet<string>): void {
   liveSources.set(source, tabIds);
   scheduleReconcile();
@@ -173,11 +163,8 @@ export function withdrawLiveWebTabs(source: symbol): void {
 
 let reconcileQueued = false;
 
-/**
- * Drop the guests no store lists any more. Deferred to a microtask so a move —
- * one store releasing a tab and another adopting it in the same commit — is
- * seen whole rather than as a close followed by an open.
- */
+/** Drop the guests no store lists any more. Deferred to a microtask so a move — one store releasing a tab and another
+ * adopting it in the same commit — is seen whole rather than as a close followed by an open. */
 function scheduleReconcile(): void {
   if (reconcileQueued) return;
   reconcileQueued = true;
@@ -187,17 +174,17 @@ function scheduleReconcile(): void {
     for (const ids of liveSources.values()) for (const id of ids) live.add(id);
     const next = surfaces.filter((surface) => live.has(surface.tabId));
     if (next.length === surfaces.length) return;
-    for (const surface of surfaces) if (!live.has(surface.tabId)) locations.delete(surface.tabId);
+    for (const surface of surfaces) if (!live.has(surface.tabId)) {
+      locations.delete(surface.tabId);
+      favicons.delete(surface.tabId);
+    }
     surfaces = next;
     emit();
   });
 }
 
-/**
- * Elements that must draw over a web surface but cannot be portaled above it
- * (a pane's approval and question cards). The layer cuts their boxes out of
- * every guest they overlap, so the card stays visible and clickable.
- */
+/** Elements that must draw over a web surface but cannot be portaled above it (a pane's approval and question cards). The
+ * layer cuts their boxes out of every guest they overlap, so the card stays visible and clickable. */
 export function registerWebSurfaceOccluder(element: HTMLElement): () => void {
   occluders.add(element);
   requestWebSurfaceLayout();

@@ -1,15 +1,6 @@
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
-/**
- * C1 gap-lock — initPluginRuntime HostApi: openAuthWindow / clearAuthPartition
- * capability + partition allow-list gates (observable effects).
- *
- * Both surfaces are capability-gated on `external-auth-consumer` and
- * clearAuthPartition additionally restricts the target to the calling
- * plugin's own `persist:plugin-auth:<id>[:<sub>]` partitions. This locks the
- * CURRENT observable behavior: capability-denied throws, invalid-partition
- * throws, and a valid clearAuthPartition delegates to the injected service.
- */
+/** Auth surfaces require capability checks; partition clearing is limited to the caller’s own partitions. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -22,8 +13,7 @@ const runtimeTestState = vi.hoisted(() => ({
   capturedRuntimeOptions: null as Record<string, unknown> | null,
   clearAuthPartitionService: vi.fn(async (_partition: string) => {}),
   runtime: {
-    // boot installs each loaded plugin's partition policy before starting any
-    // of them, so the double needs the cheap half of startAll too.
+    // Install partition policy for every loaded plugin before starting any plugin.
     load: vi.fn(async () => {}),
     startAll: vi.fn(async () => {}),
     listToolNames: vi.fn(() => [] as string[]),
@@ -158,7 +148,6 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
     shellOpenExternal: vi.fn(),
     approvalGate: { requestAndWait: vi.fn() } as never,
     routinesStore: { list: () => [] } as never,
-    // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
     getAlertsService: () => undefined,
   });

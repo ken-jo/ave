@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ApprovalGate } from "./approval-gate.js";
 
-/** Host-built description of one non-tool mutation that needs explicit consent. */
+// Host-built description of one non-tool mutation that needs explicit consent.
 export interface AgentActionApprovalRequest {
   toolName: string;
   args: unknown;
@@ -9,7 +9,7 @@ export interface AgentActionApprovalRequest {
   trustOrigin: string;
 }
 
-/** Redacted diagnostic identity. Raw request arguments never cross this seam. */
+// Redacted diagnostic identity. Raw request arguments never cross this seam.
 export interface AgentActionApprovalDiagnostic {
   toolName: string;
   trustOrigin: string;
@@ -25,20 +25,12 @@ export type AgentActionApprover = (
 ) => Promise<AgentActionApprovalReceipt | null>;
 
 export interface AgentActionApprovalReceipt {
-  /** Host-generated ApprovalGate request/decision correlation identifier. */
+  // Host-generated ApprovalGate request/decision correlation identifier.
   decisionId: string;
   decidedAt: string;
 }
 
-/**
- * Build a fail-closed, single-flight ApprovalGate adapter for host mutations.
- *
- * The caller owns the user-facing reason and supplies only host-derived labels.
- * Diagnostics are best-effort and receive tool/origin identity but never the
- * possibly sensitive argument payload or raw gate error. Agent actions are
- * host-constrained one-shot decisions: there is no exact-memory consumer on
- * this mutation seam, so the UI must not imply that `allow-always` persists.
- */
+// Build a fail-closed, single-flight ApprovalGate adapter for host mutations. The caller owns the user-facing reason and supplies only host-derived labels. Diagnostics are best-effort and receive tool/origin identity but never the possibly sensitive argument payload or raw gate error. Agent actions are host-constrained one-shot decisions: there is no exact-memory consumer on this mutation seam, so the UI must not imply that `allow-always` persists.
 export function buildSingleFlightAgentActionApprover(
   approvalGate: Pick<ApprovalGate, "requestAndWait"> | undefined,
   diagnostics: AgentActionApprovalDiagnostics = {},
@@ -60,9 +52,7 @@ export function buildSingleFlightAgentActionApprover(
 
     pending = true;
     try {
-      // Keep the legacy option in the builder signature for call-site
-      // compatibility, but every agent action is now explicitly one-shot.
-      // A disabled, visible Always allow control explains this constraint.
+      // Keep the legacy option in the builder signature for call-site compatibility, but every agent action is now explicitly one-shot. A disabled, visible Always allow control explains this constraint.
       void options;
       const decision = await approvalGate.requestAndWait({
         id: randomUUID(),
@@ -78,9 +68,7 @@ export function buildSingleFlightAgentActionApprover(
         createdAt: Date.now(),
         trustOrigin,
       });
-      // The request constraint is defense in depth, not the only boundary:
-      // injected/test gates and future adapters cannot turn the one-shot grant
-      // into a durable receipt by returning another allow kind.
+      // The request constraint is defense in depth, not the only boundary: injected/test gates and future adapters cannot turn the one-shot grant into a durable receipt by returning another allow kind.
       const allowed = decision.choice === "allow-once";
       return allowed
         ? Object.freeze({ decisionId: decision.requestId, decidedAt: new Date().toISOString() })

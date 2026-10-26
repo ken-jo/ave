@@ -1,8 +1,4 @@
-/**
- * Terminal and web panels in the main area, driven through the real app: the
- * sidebar rows that open them, the panes that hold them, and the rule that a
- * surface is in one pane at a time while two panes may each hold one.
- */
+// Verify surface ownership: each panel is in one pane while multiple panes may each hold a surface.
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -18,8 +14,7 @@ import { terminalSessionFixture } from "../../src/__tests__/support/terminal-ses
 import type { TerminalSessionRef } from "../../src/shared/terminal-session.js";
 import { t } from "../../src/i18n/index.js";
 
-// The terminal suites below give the app a terminal surface, which mounts
-// xterm; jsdom has no canvas, so xterm is the one thing stood in for.
+// Replace only terminal rendering because this DOM environment has no canvas.
 const { xtermWrites } = vi.hoisted(() => ({ xtermWrites: [] as string[] }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -113,7 +108,6 @@ describe("main-area terminal and web panels", () => {
     const [terminal] = shownSurfaces(container);
     expect(terminal!.kind).toBe("terminal");
     expect(terminal!.tabId).toMatch(/^terminal:[0-9a-f]{8}-\d+$/);
-    // The pane holds it at its own location, so the PTY view is the pane's.
     expect(container.querySelector('[data-testid="pane-header"]')).not.toBeNull();
 
     await clickSidebarNavRow("features", "sidebar-web");
@@ -153,24 +147,19 @@ describe("main-area terminal and web panels", () => {
     await clickSidebarNavRow("features", "sidebar-web");
     await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("browser"));
     const page = shownSurfaces(container)[0]!.tabId!;
-    // The focused pane's page is the tab the tools default to.
     await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
 
-    // The pane moves on to a terminal; the page keeps running unshown.
     await clickSidebarNavRow("features", "sidebar-terminal");
     await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("terminal"));
     await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "terminal" })));
 
-    // Main asks to show the page: it comes back in the focused pane.
     act(() => browser.browserTabs.emitBrowserTabOp({ requestId: "r1", op: "select", tabId: page }));
     await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(page));
     await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
 
-    // The agent controls it: the pane says so.
     act(() => browser.browserTabs.emitBrowserControl([page]));
     await waitFor(() => expect(container.querySelector('[data-testid="web-panel"] [data-testid="agent-browser-control-badge"]')).not.toBeNull());
 
-    // Main closes it: the pane gives it up and nothing is the active surface.
     act(() => browser.browserTabs.emitBrowserTabOp({ requestId: "r2", op: "close", tabId: page }));
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
     await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith(null));
@@ -184,7 +173,6 @@ describe("main-area terminal and web panels", () => {
 
     await splitIntoTwoTiles(container);
     await clickSidebarNavRow("features", "sidebar-terminal");
-    // No unshown terminal is left, so the new pane gets a new one.
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(2));
     const ids = shownSurfaces(container).map((each) => each.tabId);
     expect(ids).toContain(first.tabId);
@@ -203,7 +191,6 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.click(close); });
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
     expect(report).toHaveBeenLastCalledWith(null);
-    // Closed, not parked: the sidebar row now opens a new terminal.
     await clickSidebarNavRow("features", "sidebar-terminal");
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
   });
@@ -225,7 +212,6 @@ describe("main-area terminal and web panels", () => {
     return tab.getAttribute("data-tab-id")!;
   }
 
-  /** Open `tile`'s side panel and a terminal tab in it; the tab's id. */
   async function openSideTerminalIn(tile: HTMLElement): Promise<string> {
     await act(async () => { fireEvent.click(tile.querySelector('[data-testid="pane-panel-toggle"]')!); });
     const launcher = await waitFor(() => {
@@ -246,7 +232,7 @@ describe("main-area terminal and web panels", () => {
       .map((el) => el.getAttribute("data-tab-id")!);
   }
 
-  /** jsdom has no DataTransfer; a drag carries its data through this stand-in. */
+  // Supply drag payloads because this DOM environment has no native DataTransfer.
   function dataTransfer() {
     const data = new Map<string, string>();
     return {
@@ -267,8 +253,7 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.click(move); });
     await waitFor(() => expect(shownSurfaces(container)).toEqual([{ kind: "terminal", tabId }]));
     expect(sideTabIds()).not.toContain(tabId);
-    // Back to a side panel is a drag of the pane's header (below); the header's
-    // panel toggle opens the pane's own chat instead.
+    // Return panels by header drag; the header toggle opens the pane's own chat.
   });
 
   it("drops a dragged side tab on a pane, and a pane's header on the side panel's tabs", async () => {
@@ -284,7 +269,6 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.drop(pane, { dataTransfer: transfer, clientX: 0, clientY: 0 }); });
     await waitFor(() => expect(shownSurfaces(container).map((each) => each.tabId)).toEqual([tabId]));
 
-    // Back: the pane's header is the handle, the side panel's tab strip the target.
     const header = container.querySelector<HTMLElement>('[data-testid="surface-pane"]')!
       .closest('[data-testid="pane"]')!
       .querySelector<HTMLElement>('[data-testid="pane-header"]')!;
@@ -309,7 +293,7 @@ describe("main-area terminal and web panels", () => {
     fireEvent.keyDown(window, { key: "u", ctrlKey: true, shiftKey: true });
   });
 
-  /** jsdom lays nothing out; give every element a box so "on screen" holds as in the app. */
+  // Supply element bounds because this DOM environment does not compute layout.
   function withLaidOutBoxes() {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(400);
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(300);
@@ -322,12 +306,10 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
     const terminal = shownSurfaces(container)[0]!;
     const terminalPane = () => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${terminal.tabId}"]`)!.closest('[data-testid="pane"]')!;
-    // Its pane has focus: the user is looking at it, so nothing rings.
     expect(terminalPane().getAttribute("data-focused")).toBe("true");
     notify(api, terminal.tabId!, "seen already");
     expect(getTerminalAttention().has(terminal.tabId!)).toBe(false);
 
-    // Focus moves to the other half of a split: still on screen, but not attended.
     await splitIntoTwoTiles(container);
     await waitFor(() => expect(terminalPane().getAttribute("data-focused")).toBeNull());
     notify(api, terminal.tabId!, "build done");
@@ -342,8 +324,7 @@ describe("main-area terminal and web panels", () => {
     withLaidOutBoxes();
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true });
     const tabId = await openSideTerminal(container);
-    // Another tab takes the front, so the terminal is out of view.
-    // Radix opens the "+" menu on pointerdown.
+    // Open the launcher on pointerdown before replacing the visible terminal.
     const add = document.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')!;
     await act(async () => {
       fireEvent.pointerDown(add, { button: 0, ctrlKey: false });
@@ -387,7 +368,7 @@ describe("main-area terminal and web panels", () => {
     expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
     expect(container.textContent).toContain(t("ptyTerminal.manualEnvironment"));
     expect(container.textContent).toContain(t("ptyTerminal.initialCwd", { cwd: manual.initialCwd }));
-    // The launch directory is not evidence of a current directory to save.
+    // A launch directory is not evidence of the current directory.
     expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual" });
     expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
     const spawnsBeforeClose = terminalApi.spawn.mock.calls.length;
@@ -420,7 +401,6 @@ describe("main-area terminal and web panels", () => {
     expect(pane().querySelector('[data-testid="pane-chat"]')).toBeNull();
 
     await act(async () => { fireEvent.click(toggle()); });
-    // The chat docks inside the pane's own tile, beside the terminal.
     const chat = await waitFor(() => {
       const el = pane().querySelector<HTMLElement>('[data-testid="pane-chat"]');
       expect(el).not.toBeNull();
@@ -431,10 +411,8 @@ describe("main-area terminal and web panels", () => {
     const chip = chat.querySelector<HTMLElement>('[data-testid="side-chat-target"] [data-tab-id]')!;
     expect(chip.getAttribute("data-tab-id")).toBe(terminal);
     expect(chip.getAttribute("data-surface-kind")).toBe("terminal");
-    // The binding is the pane's: the chip offers nothing to change it.
     expect(chat.querySelector('[data-testid="side-chat-target"] button')).toBeNull();
 
-    // Every turn names the pane's tab.
     const input = chat.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       fireEvent.change(input, { target: { value: "what failed?" } });
@@ -484,20 +462,17 @@ describe("main-area terminal and web panels", () => {
     expect(transcript(first!)).not.toContain("second pane question");
     expect(sideChat.send.mock.calls.map((call) => (call[4] as { tabId: string }).tabId)).toEqual([first, second]);
 
-    // Closed and opened again, a pane's chat is back on its own conversation.
     await toggle(first!);
     expect(chat(first!)).toBeNull();
     await toggle(first!);
     await waitFor(() => expect(transcript(first!)).toContain("first pane question"));
     expect(transcript(first!)).not.toContain("second pane question");
 
-    // "New" in a pane chat starts that pane's chat afresh, not the window-wide one.
     await act(async () => { fireEvent.click(chat(second!)!.querySelector('[data-testid="side-chat-new"]')!); });
     await waitFor(() => expect(sideChat.endPaneChat).toHaveBeenCalledWith(second, "new"));
     expect(sideChat.new).not.toHaveBeenCalled();
     await waitFor(() => expect(transcript(second!)).not.toContain("second pane question"));
 
-    // Closing the pane ends its chat.
     await act(async () => { fireEvent.click(pane(first!).querySelector('[data-testid="pane-close"]')!); });
     await waitFor(() => expect(sideChat.endPaneChat).toHaveBeenCalledWith(first, "closed"));
   });
@@ -516,19 +491,16 @@ describe("main-area terminal and web panels", () => {
       fireEvent.click(document.querySelector('[data-testid="chat-side-panel-launcher-side-chat"]')!);
     });
     const chip = () => document.querySelector<HTMLElement>('[data-testid="side-chat-target"] [data-tab-id]');
-    // Moving to the side chat did not change what it acts on: the terminal shown last.
     await waitFor(() => expect(chip()?.getAttribute("data-tab-id")).toBe(mainTerminal));
     expect(chip()!.getAttribute("data-surface-kind")).toBe("terminal");
 
     await act(async () => { fireEvent.click(document.querySelector('[data-testid="side-chat-target-remove"]')!); });
     expect(chip()).toBeNull();
 
-    // Focusing the terminal's pane again picks it back up.
     const terminalPane = container.querySelector(`[data-testid="surface-pane"][data-tab-id="${mainTerminal}"]`)!.closest('[data-testid="pane"]')!;
     await act(async () => { fireEvent.mouseDown(terminalPane); });
     await waitFor(() => expect(chip()?.getAttribute("data-tab-id")).toBe(mainTerminal));
 
-    // A terminal brought to the front of the side panel takes over.
     const add = chatTile.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')
       ?? document.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')!;
     await act(async () => {
@@ -543,9 +515,7 @@ describe("main-area terminal and web panels", () => {
     });
     await waitFor(() => expect(chip()?.getAttribute("data-tab-id")).toBe(sideTerminal));
 
-    // Closing the target clears it.
     await act(async () => {
-      // The tab's close control is the last of its row.
       fireEvent.click(document.querySelector(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${sideTerminal}"] > button:last-child`)!);
     });
     await waitFor(() => expect(document.querySelector('[data-testid="side-chat-target"]')).toBeNull());
@@ -567,7 +537,6 @@ describe("main-area terminal and web panels", () => {
     });
     await waitFor(() => expect(chat()!.textContent).toContain("what did the build print?"));
 
-    // The same pane now shows a page: its chat is the page's, not the terminal's.
     await clickSidebarNavRow("features", "sidebar-web");
     const page = await waitFor(() => {
       const tab = shownSurfaces(container)[0]!.tabId!;
@@ -658,9 +627,10 @@ describe("main-area terminal and web panels", () => {
       focusedId: "main",
       surfaces: { main: { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: startingDirectory, url: null } },
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: {},
     };
-    // A saved starting directory is known input; Manual output supplies no observed cwd.
+    // Saved starting directories are known input; manual output does not observe cwd.
     const first = await renderApp({
       hasApiKey: true,
       terminal: true,
@@ -696,13 +666,11 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(second.container).map((each) => each.tabId)).toEqual([mainTerminal]));
     expect(second.container.querySelectorAll('[data-testid^="pane-cell:"]:not([data-hidden="true"])')).toHaveLength(2);
     await waitFor(() => expect(document.querySelector(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${sideTerminal}"]`)).not.toBeNull());
-    // A new shell, in the saved directory, saying it is one.
     await waitFor(() => expect(secondTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: mainTerminal, lane: "manual", cwd: startingDirectory })));
     expect(xtermWrites.join("")).toContain(t("ptyTerminal.restored"));
     await waitFor(() => expect(secondTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: sideTerminal, lane: "manual" })));
     const sideSpawn = secondTerminal.spawn.mock.calls.find(([payload]) => (payload as { tabId: string }).tabId === sideTerminal)![0];
     expect(sideSpawn).not.toHaveProperty("cwd");
-    // A terminal opened after the restore does not take a restored id.
     await clickSidebarNavRow("features", "sidebar-terminal");
     const ids = new Set([mainTerminal, sideTerminal]);
     await waitFor(() => expect(secondTerminal.spawn.mock.calls.some(([payload]) => !ids.has((payload as { tabId: string }).tabId))).toBe(true));
@@ -715,9 +683,9 @@ describe("main-area terminal and web panels", () => {
       focusedId: "main",
       surfaces: { main: { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 1, cwd: "/work/repo", url: null } },
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: {},
     };
-    // Main loads a secondary window with the role query (`shared/main-window-role.ts`).
     const before = window.location.href;
     window.history.replaceState(null, "", "?aveWindow=secondary");
     try {
@@ -729,7 +697,6 @@ describe("main-area terminal and web panels", () => {
       const terminal = (api as unknown as { terminal: { spawn: ReturnType<typeof vi.fn> } }).terminal;
       await clickSidebarNavRow("features", "sidebar-terminal");
       await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
-      // Its own new terminal, not the primary window's saved one.
       expect(shownSurfaces(container)[0]!.tabId).not.toBe("terminal:0000000a-4");
       expect(terminal.spawn.mock.calls.some(([payload]) => (payload as { tabId: string }).tabId === "terminal:0000000a-4")).toBe(false);
       await new Promise((resolve) => setTimeout(resolve, MAIN_LAYOUT_SAVE_DELAY_MS * 3));
@@ -749,6 +716,7 @@ describe("main-area terminal and web panels", () => {
       focusedId: "group-5",
       surfaces: {},
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: {},
     };
     const { container } = await renderApp({
@@ -774,7 +742,6 @@ describe("main-area terminal and web panels", () => {
     const cellOf = (tabId: string | null) => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`)!
       .closest('[data-testid^="pane-cell:"]')!.getAttribute("data-testid");
     expect(cellOf(terminal.tabId)).toBe("pane-cell:main");
-    // Focus the terminal's pane, then move it right: the two swap.
     const terminalPane = container.querySelector<HTMLElement>(`[data-testid="surface-pane"][data-tab-id="${terminal.tabId}"]`)!.closest('[data-testid="pane"]')!;
     await act(async () => { fireEvent.mouseDown(terminalPane); });
     await act(async () => {

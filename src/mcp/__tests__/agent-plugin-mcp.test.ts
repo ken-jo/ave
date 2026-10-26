@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentPluginComponents } from "../../marketplace/catalog/types.js";
 import { resolveRuntimeMcp } from "../agent-plugin-mcp.js";
@@ -46,12 +46,11 @@ describe("agent plugin MCP runtime resolution", () => {
     if (projection.config.transport !== "stdio") return;
     expect(projection.config.cwd).toBe(realpathSync(item.generationRoot));
     expect(projection.config.pluginDataDir).toBe(realpathSync(item.dataDir));
-    // The one directory under the refused agent-plugin packages root the server reads.
     expect(projection.config.bundledPayloadRoot).toBe(realpathSync(item.generationRoot));
     expect(projection.config.env).toMatchObject({ PLUGIN_ROOT: realpathSync(item.generationRoot), PLUGIN_DATA: realpathSync(item.dataDir) });
     if (command.startsWith("./")) expect(projection.config.command).toBe(join(realpathSync(item.generationRoot), "server", "run"));
     else expect(projection.config.command).toBe(command);
-    if (command === "node" || command === "bun") expect(projection.config.args?.[0]).toMatch(/^\//u);
+    if (command === "node" || command === "bun") expect(isAbsolute(projection.config.args?.[0] ?? "")).toBe(true);
     if (command === "npx" && args.includes("${PLUGIN_DATA}/db")) expect(projection.config.args?.at(-1)).toBe(join(realpathSync(item.dataDir), "db"));
   });
 

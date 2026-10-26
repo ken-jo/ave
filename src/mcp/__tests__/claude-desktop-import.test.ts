@@ -1,10 +1,4 @@
-/**
- * #FU262 — Claude Desktop config importer tests.
- *
- * Locks the parse + map contract: malformed input never throws, secret
- * heuristic flags the right env keys, valid entries map to the Ave
- * stdio config shape with `auth: "none"`.
- */
+/** Import parsing never throws; valid stdio entries default to no authentication. */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

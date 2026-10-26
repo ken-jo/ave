@@ -1,18 +1,4 @@
-/**
- * Staged-origin guidance, carried in the turn context of the staged turn.
- *
- * Emits a "second-guess this trigger before acting" instruction *only*
- * when the per-turn origin source starts with `overlay:`. Default
- * (user-initiated) turns must NOT see this section.
- *
- * The query loop passes the round's staged origin to `buildTurnContext`, so a
- * later user turn is unaffected and the system prompt never changes for it.
- *
- * ONE source builds the block for every staged origin by resolving the
- * staged-origin table, so these cases also pin that a registered origin gets
- * its own tag and text — a staged origin with a permission gate but no
- * model-facing warning is the failure this guards.
- */
+/** Stage origin guidance per turn so triggered work receives its warning without altering later user turns. */
 import { describe, it, expect } from "vitest";
 
 import { makeSystemPromptBuilder } from "./test-helpers.js";
@@ -43,8 +29,6 @@ describe("SystemPromptBuilder — Staged Origin Guidance", () => {
 
   it("omits guidance when origin is set but not `overlay:` prefixed", () => {
     const builder = makeSystemPromptBuilder();
-    // Defensive: if a future surface ever lands a non-overlay trigger,
-    // it should NOT inadvertently inherit the guidance section.
     expect(builder.buildTurnContext("", "user:typed")).not.toContain("overlay-trigger-origin-guidance");
   });
 
@@ -75,8 +59,7 @@ describe("SystemPromptBuilder — Staged Origin Guidance", () => {
     expect(prompt).toContain("<mcp-prompt-origin-guidance");
     expect(prompt).toContain("mcp-prompt:hr-mcp");
     expect(prompt).toContain("</mcp-prompt-origin-guidance>");
-    // The body is server-authored: the guidance must name the fence it is
-    // talking about, in every locale, so the model can tell body from policy.
+    // Name the server-authored data fence in every locale so the model can distinguish content from policy.
     expect(prompt).toContain("<mcp-prompt>");
     expect(prompt).not.toContain("app-message-origin-guidance");
   });

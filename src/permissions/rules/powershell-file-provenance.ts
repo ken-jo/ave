@@ -2,35 +2,15 @@ import { statSync } from "node:fs";
 import { isAbsolute, posix } from "node:path";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES, PowerShellAnalysisBudget } from "./powershell-command-policy.js";
 
-/**
- * Associated types: https://support.microsoft.com/en-us/outlook/blocked-attachments-in-outlook
- * and native catalogue extensions from https://lolbas-project.github.io/ (2026-10-15).
- * Document/media/data rows: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types/Common_types
- * Unknown types stay opaque. Document rows describe the supported inert default action;
- * explicit execution and same-input file provenance retain their own launcher boundary.
- */
-const FILE_TYPE_ROWS = {
-  opaque: ".ade .adp .apk .app .appcontent-ms .application .appref-ms .appx .asp .aspx .asx .bas .bat .bgi .cab .cdxml .cer .chm .cmd .cnt .com .cpl .crt .csh .der .diagcab .exe .fxp .gadget .grp .hlp .hpj .hta .htc .img .inf .ins .iso .isp .its .jar .jnlp .js .jse .ksh .library-ms .lnk .mad .maf .mag .mam .maq .mar .mas .mat .mau .mav .maw .mcf .mda .mdb .mde .mdt .mdw .mdz .msc .mht .mhtml .msh .msh1 .msh2 .mshxml .msh1xml .msh2xml .msi .msp .mst .msu .ops .osd .pcd .pif .pl .plg .prf .prg .printerexport .ps1xml .ps2 .ps2xml .psc1 .psc2 .psd1 .psdm1 .pssc .pst .py .pyc .pyo .pyw .pyz .pyzw .reg .scf .scr .sct .search-ms .settingcontent-ms .shb .shs .theme .tmp .udl .url .vb .vbe .vbp .vbs .vhd .vhdx .vsmacros .vsw .webpnp .website .ws .wsb .wsc .wsf .wsh .xbap .xll .xnk",
-  script: ".ps1 .psm1",
-  document: ".aac .abw .apng .avif .avi .azw .bmp .cda .css .csv .doc .docx .epub .gif .htm .html .ico .ics .jpeg .jpg .json .jsonld .md .mid .midi .m4a .mp3 .mp4 .mpeg .odp .ods .odt .oga .ogv .ogx .opus .png .pdf .ppt .pptx .rtf .svg .tif .tiff .txt .vsd .wav .weba .webm .webp .xhtml .xls .xlsx .xml .3gp .3g2",
-} as const;
-
-function fileTypes(): Readonly<Record<string, keyof typeof FILE_TYPE_ROWS>> {
-  const types = Object.fromEntries(Object.entries(FILE_TYPE_ROWS).flatMap(([type, extensions]) =>
-    extensions.split(" ").map((extension) => [extension, type as keyof typeof FILE_TYPE_ROWS])));
-  for (const [name, policy] of Object.entries(POWERSHELL_COMMAND_POLICIES)) {
-    if (policy.native) types[posix.extname(name)] ??= "opaque";
-  }
-  return Object.freeze(types);
-}
-
-export const POWERSHELL_FILE_TYPES = fileTypes();
+// Unknown file types stay opaque; inert default actions never authorize explicit execution or same-input file provenance.
+export { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
+import { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
 
 interface MaterializedFile {
   catalogue?: string;
 }
 
-/** Monotone facts: uncertainty, overwrites and scope changes never erase provenance. */
+// Monotone facts: uncertainty, overwrites and scope changes never erase provenance.
 export class PowerShellFileProvenance {
   private readonly paths = new Map<string, MaterializedFile>();
   private readonly leaves = new Map<string, MaterializedFile>();
@@ -71,7 +51,7 @@ export class PowerShellFileProvenance {
     return /[\\/]$/.test(text) || /^(?:\.{1,2}|[a-z]:[\\/])$/i.test(text);
   }
 
-  /** A pre-call directory observation cannot survive possible filesystem effects. */
+  // A pre-call directory observation cannot survive possible filesystem effects.
   isExistingDirectory(text: string): boolean {
     this.budget.spend(1, text.length);
     if (this.revision !== 0 || /^(?:~|[\\/]{2})/.test(text) || /^[\\/]{2}/.test(this.cwd ?? "")
@@ -129,13 +109,13 @@ export class PowerShellFileProvenance {
     return undefined;
   }
 
-  /** Unknown argv supplies no write paths, but cannot prove a later script untouched. */
+  // Unknown argv supplies no write paths, but cannot prove a later script untouched.
   observeOpaqueEffects(): void {
     this.budget.spend();
     if (!this.opaqueEffects) { this.opaqueEffects = true; this.revision += 1; }
   }
 
-  /** Script discovery need not name its executable inputs. */
+  // Script discovery need not name its executable inputs.
   hasExecutableWrites(): boolean {
     this.budget.spend();
     if (this.opaque || this.unknownLeaves) return true;
@@ -143,7 +123,7 @@ export class PowerShellFileProvenance {
     return false;
   }
 
-  /** Unresolved writes constrain execution checks; ordinary data lookups stay precise. */
+  // Unresolved writes constrain execution checks; ordinary data lookups stay precise.
   executionTarget(text: string): MaterializedFile | undefined {
     return this.lookup(text) ?? (this.opaque || this.unknownLeaves || (this.opaqueEffects && this.fileType(text) === "script") ? {} : undefined);
   }

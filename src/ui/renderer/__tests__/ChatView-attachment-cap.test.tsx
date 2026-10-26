@@ -1,15 +1,3 @@
-/**
- * Behavior-lock tests for ChatView.handleAttach's 5-attachment cap.
- *
- * C13 pre-decomposition lock (C15 will move handleAttach into a hook). These
- * capture the CURRENT observable behavior of the atomic flushSync commit:
- * when a single native openFile() returns MORE candidates than the remaining
- * capacity, only the first ATTACH_MAX_COUNT (5) are committed and the overflow
- * is dropped — the 6th never becomes an attachment nor a textarea marker.
- *
- * Harness conventions copied from ChatView.test.tsx (renderApp through <App />,
- * window.ave.attach reassigned after render, iab-attach-button click).
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -59,8 +47,7 @@ describe("ChatView attachment 5-cap (handleAttach)", () => {
       fireEvent.click(container.querySelector('[data-testid="iab-attach-button"]')!);
     });
 
-    // 5 accepted → 2+ attachments render the stacked collapsed chip whose
-    // badge reads "<count>/<max>" plus " full" at the cap.
+    // 5 accepted → 2+ attachments render the stacked collapsed chip whose badge reads "<count>/<max>" plus " full" at the cap.
     const badge = await waitFor(() => {
       const el = container.querySelector('[data-testid="chip-count-badge"]');
       expect(el).not.toBeNull();

@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import { useTranslation } from "../../../i18n/react.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { wrapRenderHtmlInlineFrameDocument } from "../../../shared/render-html-preview.js";
+import { previewDocumentFormatOf, type PreviewDocumentFormat } from "../../../shared/preview-document.js";
+import { previewPageFormatOf, type PreviewPageFormat } from "../../../shared/preview-page-document.js";
 
 /**
  * Progressive file/text viewer registry (§6.10.6). A descriptor (text + an
@@ -28,6 +30,24 @@ export interface PreviewContentDescriptor {
 }
 
 export type PreviewRenderKind = "text" | "markdown" | "mermaid";
+
+/**
+ * How a file target is previewed. Table documents (csv/tsv/xlsx/xls/ods) are
+ * parsed in a child and shown as a grid. Page documents have a separate page
+ * view; other files use the text renderer registry. Classifiers are shared
+ * with the host reader.
+ */
+export type FilePreviewRoute =
+  | { kind: "table"; format: PreviewDocumentFormat }
+  | { kind: "page"; format: PreviewPageFormat }
+  | { kind: "text" };
+
+export function resolveFilePreviewRoute(path: string): FilePreviewRoute {
+  const format = previewDocumentFormatOf(path);
+  if (format) return { kind: "table", format };
+  const pageFormat = previewPageFormatOf(path);
+  return pageFormat ? { kind: "page", format: pageFormat } : { kind: "text" };
+}
 
 export interface PreviewRenderer {
   kind: PreviewRenderKind;

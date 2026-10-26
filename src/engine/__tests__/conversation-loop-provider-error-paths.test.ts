@@ -1,14 +1,3 @@
-/**
- * C1 gap-lock — ConversationLoop provider ERROR paths (throw / stream-end /
- * timeout).
- *
- * `conversation-loop-generate-text.test.ts` already covers the `error`-EVENT
- * path for both `generateText` and `pingProvider` (provider yields an
- * `{ type: "error" }` chunk). What was NOT covered is what happens when the
- * provider's `streamTurn` THROWS (rejects) rather than yielding an error
- * chunk, plus `pingProvider`'s stream-ended and timeout branches. This file
- * locks that CURRENT observable behavior.
- */
 import { describe, expect, it } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -32,7 +21,6 @@ class EmptyStreamProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   // eslint-disable-next-line require-yield
   async *streamTurn(_params: StreamTurnParams): AsyncIterable<StreamEvent> {
-    // Yields nothing and never emits message_complete or error.
   }
 }
 
@@ -54,7 +42,7 @@ function buildLoop(provider: LLMProvider | null): ConversationLoop {
   const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },

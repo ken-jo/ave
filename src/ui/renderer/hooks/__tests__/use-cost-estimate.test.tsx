@@ -8,6 +8,17 @@ import { useCostEstimate } from "../use-cost-estimate.js";
 import { costTier } from "../../../../lib/cost-estimator.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 
+function renderDraftCost(overrides: Partial<Omit<Parameters<typeof useCostEstimate>[0], "enabled">> = {}) {
+  return renderHook(() => useCostEstimate({
+    entries: [],
+    draft: { text: "hi" },
+    llmVendor: "azure-foundry",
+    llmModel: "gpt-5.4-mini",
+    maxOutputTokens: 1_000,
+    ...overrides,
+  }));
+}
+
 describe("useCostEstimate", () => {
   it("uses the latest context carrier instead of reserializing stale visible history", () => {
     const staleVisibleHistory = "x".repeat(2_000_000);
@@ -16,15 +27,7 @@ describe("useCostEstimate", () => {
       { kind: "context_usage", tokensIn: 42_000, source: "compact-estimate" },
     ];
 
-    const { result } = renderHook(() =>
-      useCostEstimate({
-        entries,
-        draft: { text: "hi" },
-        llmVendor: "azure-foundry",
-        llmModel: "gpt-5.4-mini",
-        maxOutputTokens: 1_000,
-      }),
-    );
+    const { result } = renderDraftCost({ entries });
 
     expect(result.current.costEstimate.inputTokens).toBe(
       42_000 + estimateOutgoingUserMessageTokens("hi"),
@@ -41,24 +44,8 @@ describe("useCostEstimate", () => {
       height: 1024,
       bytes: 4096,
     };
-    const { result: withoutImage } = renderHook(() =>
-      useCostEstimate({
-        entries: [],
-        draft: { text: "inspect" },
-        llmVendor: "azure-foundry",
-        llmModel: "gpt-5.4-mini",
-        maxOutputTokens: 1_000,
-      }),
-    );
-    const { result: withImage } = renderHook(() =>
-      useCostEstimate({
-        entries: [],
-        draft: { text: "inspect", attachments: [image] },
-        llmVendor: "azure-foundry",
-        llmModel: "gpt-5.4-mini",
-        maxOutputTokens: 1_000,
-      }),
-    );
+    const { result: withoutImage } = renderDraftCost({ draft: { text: "inspect" } });
+    const { result: withImage } = renderDraftCost({ draft: { text: "inspect", attachments: [image] } });
 
     expect(withImage.current.costEstimate.inputTokens)
       .toBeGreaterThan(withoutImage.current.costEstimate.inputTokens);
@@ -78,15 +65,7 @@ describe("useCostEstimate", () => {
     const entries: ChatEntry[] = [{ kind: "context_usage", tokensIn: 7_000, source: "compact-estimate" }];
     const draft = "한글 사용자 질문";
 
-    const { result } = renderHook(() =>
-      useCostEstimate({
-        entries,
-        draft: { text: draft, attachments },
-        llmVendor: "azure-foundry",
-        llmModel: "gpt-5.4-mini",
-        maxOutputTokens: 1_000,
-      }),
-    );
+    const { result } = renderDraftCost({ entries, draft: { text: draft, attachments } });
 
     expect(result.current.costEstimate.inputTokens).toBe(
       7_000 + estimateOutgoingUserMessageTokens(draft, attachments),
@@ -94,16 +73,11 @@ describe("useCostEstimate", () => {
   });
 
   it("marks zero-price placeholder models as pricing unknown instead of showing a fake zero cost", () => {
-    const { result } = renderHook(() =>
-      useCostEstimate({
-        entries: [],
-        draft: { text: "hi" },
-        llmVendor: "openai",
-        // A zero row in the hand-kept table that the catalog does not price.
-        llmModel: "o1-mini",
-        maxOutputTokens: 1_000,
-      }),
-    );
+    const { result } = renderDraftCost({
+      llmVendor: "openai",
+      // A zero row in the hand-kept table that the catalog does not price.
+      llmModel: "o1-mini",
+    });
 
     expect(result.current.costEstimate.inputTokens).toBeGreaterThan(0);
     expect(result.current.costEstimate.total).toBe(0);

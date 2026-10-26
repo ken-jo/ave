@@ -1,11 +1,4 @@
-/**
- * Host due-soon scanner contract.
- *
- * Verifies the half-open `[now, now+24h)` window, the `(id, due_at)` dedupe
- * (fire once per deadline), pruning of keys whose items left the window, and
- * re-fire when an item's `due_at` actually changes. The board reader + storage
- * are in-memory fakes so no real `~/.ave` is touched; `emit` is captured.
- */
+/** Use a half-open 24-hour window and deduplicate by item plus deadline; changed deadlines may fire again. */
 import { describe, it, expect, vi } from "vitest";
 import {
   scanAndEmitDueSoon,
@@ -25,7 +18,6 @@ const raiseAlert = async () => ({ status: "disabled_by_user" as const });
 
 const NOW = Date.parse("2026-06-16T00:00:00.000Z");
 
-/** Build a resolved work item with sensible defaults for the field under test. */
 function item(partial: Partial<WorkItem> & { id: number }): WorkItemResolved {
   const base: WorkItem = {
     title: `item ${partial.id}`,
@@ -38,7 +30,6 @@ function item(partial: Partial<WorkItem> & { id: number }): WorkItemResolved {
   return { ...base, status_resolved: base.status };
 }
 
-/** In-memory storage capturing the dedupe map across scans. */
 function memStorage(seed?: Record<string, unknown>): WorkBoardStorage {
   const files: Record<string, unknown> = { ...seed };
   return {
@@ -50,7 +41,6 @@ function memStorage(seed?: Record<string, unknown>): WorkBoardStorage {
   } as unknown as WorkBoardStorage;
 }
 
-/** Capture emitted (type, payload) pairs. */
 function recorder() {
   const calls: Array<{ type: string; data: unknown }> = [];
   return { emit: (type: string, data?: unknown) => calls.push({ type, data }), calls };
@@ -147,7 +137,6 @@ describe("scanAndEmitDueSoon", () => {
     await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: due2 })]), storage, emit, NOW, raiseAlert);
 
     expect(calls).toHaveLength(2);
-    // The stale key is pruned; only the current deadline survives.
     const persisted = (await storage.readJson<Record<string, string>>(DUE_SOON_NOTIFIED_FILE)) ?? {};
     expect(Object.keys(persisted)).toEqual([`1:${due2}`]);
   });
@@ -157,9 +146,7 @@ describe("scanAndEmitDueSoon", () => {
     const storage = memStorage();
     const { emit } = recorder();
 
-    // First scan fires + records the key.
     await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: dueIn1h })]), storage, emit, NOW, raiseAlert);
-    // Item later completed → no longer due-soon → key pruned.
     await scanAndEmitDueSoon(
       okListReader([item({ id: 1, due_at: dueIn1h, status: "completed" })]),
       storage,

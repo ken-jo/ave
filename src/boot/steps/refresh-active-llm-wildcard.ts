@@ -1,28 +1,4 @@
-/**
- * Active LLM vendor → plugin runtime wildcard config-override bridge.
- *
- * A standalone factory, rather than inline in `boot.ts`, so the
- * debounce + vendor-change-restart contract can be unit-tested without a
- * full Electron bootstrap.
- *
- * Contract (mirrors the inline `refreshActiveLlmWildcard` closure in boot.ts):
- *   - The wildcard slot carries ONLY non-secret API-provider metadata
- *     (`hostApiVendor`). It is absent while a subscription runtime owns
- *     generation or the API selection remains unresolved after retirement.
- *     Stale `hostApiKey` slots from older builds are cleared on every call
- *     so a soft-reload after upgrade does not leave a ghost value.
- *   - On the FIRST invocation we seed `lastWildcardVendor` without restarting
- *     plugins — the boot loop drives the first call, not a real vendor swap.
- *   - On subsequent calls, when the active vendor actually changes, restart
- *     every loaded plugin so the next `hostApi.config.get("hostApiVendor")`
- *     and `hostApi.getSecret(...)` calls observe the new value. Debounce
- *     (200ms by default) coalesces bursts from rapid IPC settings churn
- *     (vendor + key + baseUrl patched in one IPC, see `settings.ts`).
- *   - Calls with the same vendor as last seen are no-ops (after the debounced
- *     restart has fired, if any).
- *   - Calls with no/empty vendor remove `hostApiVendor`. This is the
- *     subscription-runtime or unresolved retired-profile state.
- */
+/** Expose only non-secret API-vendor metadata; seed once at boot, then debounce restarts on vendor changes. */
 
 import { createLogger } from "../../lib/logger.js";
 import type { LLMSettings } from "../../data/settings-store.js";
@@ -32,34 +8,20 @@ const log = createLogger("ave");
 export interface RefreshActiveLlmWildcardDeps {
   /** Active API provider id. Undefined for subscription or unresolved retired profiles. */
   getActiveVendor: () => string | undefined;
-  /** Wildcard-slot writer on `PluginRuntime`. */
   setWildcardConfigOverride: (config: Record<string, unknown>) => void;
-  /** Wildcard-slot key cleaner on `PluginRuntime`. */
   clearWildcardConfigOverride: (keys: string[]) => void;
-  /** Returns the ids of all currently-loaded plugins. */
   listPluginIds: () => string[];
-  /** Restart a plugin so its HostApi observes the new vendor. */
   restartPlugin: (pluginId: string) => Promise<void>;
-  /**
-   * Cancel restart operations that already passed the debounce boundary.
-   * The plugin runtime's cancellation token prevents an in-flight replacement
-   * from publishing or starting after host shutdown begins.
-   */
+  /** Cancel in-flight replacements so shutdown prevents candidate publication after timers have fired. */
   cancelPendingRestarts: () => void;
   /** Debounce window for the post-vendor-change restart sweep (ms). Default 200. */
   debounceMs?: number;
 
-  /** Test seam — defaults to global setTimeout. */
   setTimeoutFn?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
-  /** Test seam — defaults to global clearTimeout. */
   clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void;
 }
 
-/**
- * Return the only API-vendor identity that may be exposed through plugin
- * `hostApiVendor` metadata. Subscription runtimes and unresolved retired
- * profiles do not project their retained API-provider settings.
- */
+/** Subscription and unresolved retired profiles must not expose retained API-provider identity. */
 export function activeHostApiVendor(
   llm: Pick<LLMSettings, "activeChatRuntime" | "provider" | "retiredProvider">,
 ): string | undefined {
@@ -71,15 +33,9 @@ export function activeHostApiVendor(
 export interface RefreshActiveLlmWildcardHandle {
   /** Idempotent refresh. Safe to call on boot and on every llm-settings IPC change. */
   refresh: () => void;
-  /** Drop any pending debounce timer (e.g. on shutdown). */
   dispose: () => void;
 }
 
-/**
- * Build a `refresh()` closure with the same semantics as the inline boot
- * helper. Returns a handle so callers can dispose any pending debounce
- * timer (e.g. during host shutdown).
- */
 export function createRefreshActiveLlmWildcard(
   deps: RefreshActiveLlmWildcardDeps,
 ): RefreshActiveLlmWildcardHandle {
@@ -90,9 +46,7 @@ export function createRefreshActiveLlmWildcard(
   let hasRefreshed = false;
   let lastWildcardVendor: string | undefined;
   let disposed = false;
-  // Browser vs Node return shapes for `setTimeout` differ; using `unknown`
-  // for the cross-platform handle keeps the dependency-injected
-  // `setTimeoutFn` / `clearTimeoutFn` seam usable from both environments.
+  // Timer handles differ between browser and server runtimes; keep the injected boundary opaque.
   let restartTimer: unknown = null;
 
   const refresh = (): void => {
@@ -100,9 +54,7 @@ export function createRefreshActiveLlmWildcard(
     const raw = deps.getActiveVendor();
     const activeVendor = typeof raw === "string" ? raw.trim() || undefined : undefined;
 
-    // Defensive cleanup — older builds populated
-    // `hostApiKey` here. A soft reload after upgrade would otherwise
-    // leave a ghost value visible to plugins via `config.get(...)`.
+    // Remove stale wildcard secret slots on every refresh, including soft reloads.
     deps.clearWildcardConfigOverride(["hostApiKey", "hostApiVendor"]);
     if (activeVendor) {
       deps.setWildcardConfigOverride({ hostApiVendor: activeVendor });
@@ -133,15 +85,11 @@ export function createRefreshActiveLlmWildcard(
       clearT(restartTimer as ReturnType<typeof setTimeout>);
       restartTimer = null;
     }
-    // Clearing the timer alone is insufficient once its callback has started:
-    // PluginRuntime may already be preparing a replacement generation. Cancel
-    // its in-flight restart tokens before plugin shutdown runs so no candidate
-    // can publish or start after teardown has begun.
+    // Cancel runtime restart tokens as well as timers; started replacements may otherwise publish during shutdown.
     try {
       deps.cancelPendingRestarts();
     } catch (err) {
       // Shutdown remains best-effort; a failure to signal cancellation must
-      // not prevent the rest of the host cleanup pipeline from running.
       log.warn(`cancelPendingRestarts during active LLM wildcard disposal failed: ${(err as Error).message}`);
     }
   };

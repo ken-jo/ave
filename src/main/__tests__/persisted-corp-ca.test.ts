@@ -1,13 +1,6 @@
+import { writeSettingsFile } from "./support/settings-file.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * The boot-time corporate-CA read, and the shared synchronous settings parse
- * underneath it.
- *
- * The whole point of these settings is that a packaged app has no environment
- * to set, so the one thing that must hold is the round trip: what the Settings
- * UI writes through `SettingsService` is what the next launch reads back here,
- * before `bootstrap()` exists to ask.
- */
+// Boot reads must recover UI-saved settings before asynchronous bootstrap.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -73,13 +66,8 @@ describe("readPersistedCorpCaConfigSync", () => {
   });
 
   it("still lets a deployment launcher pin the values through the environment", () => {
-    // A managed deployment sets these before the app starts; the profile must
-    // not quietly win over them.
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { corpCaEnabled: true, corpCaCommonName: "Acme Root CA" } }),
-      "utf-8",
-    );
+    // A managed deployment sets these before the app starts; the profile must not quietly win over them.
+    writeSettingsFile(userDataPath, { system: { corpCaEnabled: true, corpCaCommonName: "Acme Root CA" } });
 
     expect(
       readPersistedCorpCaConfigSync(userDataPath, {
@@ -119,8 +107,7 @@ describe("persisted settings sync readers", () => {
   });
 
   it("keeps 'not chosen' distinct from 'chosen off'", () => {
-    // Collapsing these is what turns a boot default into a silent override of
-    // the user's choice, in whichever direction the default happens to point.
+    // Collapsing these is what turns a boot default into a silent override of the user's choice, in whichever direction the default happens to point.
     write('{"system": {"corpCaEnabled": false}}');
     expect(readPersistedSystemBooleanSync(userDataPath, "corpCaEnabled")).toBe(false);
     expect(readPersistedSystemBooleanSync(userDataPath, "corpCaDebugLog")).toBeUndefined();

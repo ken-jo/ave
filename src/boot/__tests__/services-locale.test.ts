@@ -53,12 +53,8 @@ describe("applyBootLocale", () => {
   });
 
   it("ignores the persisted locale on a headless run so the request decides the language", async () => {
-    // The setting names the language the app's surfaces are drawn in, and a
-    // one-shot run draws none. What it does have is a system prompt assembled
-    // through the same catalog: under a non-English setting the model was
-    // handed a prompt in the machine's language and answered in it.
-    // The stub throws rather than answering: a headless run must not consult
-    // the persisted language at all, so reading it is itself the failure.
+    // Headless model prompts must not inherit the app UI language.
+    // Throw on persisted-language reads so the test detects any headless lookup.
     const settingsService = {
       get: () => { throw new Error("headless boot read the persisted locale"); },
     } as unknown as Parameters<typeof applyBootLocale>[0];
@@ -71,9 +67,7 @@ describe("applyBootLocale", () => {
   });
 
   it("keeps the persisted locale for --set-secret, which runs no model", async () => {
-    // `--set-secret` is headless too, but it builds no prompt and calls no
-    // model. Pinning it would only mean its own diagnostics stop speaking the
-    // language the user chose, for no benefit.
+    // Secret-setting commands build no prompt and retain localized diagnostics.
     const settingsService = {
       get: () => ({ language: "ko" }),
     } as unknown as Parameters<typeof applyBootLocale>[0];

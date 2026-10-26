@@ -1,15 +1,3 @@
-/**
- * Per-source system-prompt size breakdown (TPM base-size measurement enabler).
- *
- * Verifies:
- *   - getSourceSizeBreakdown() returns one entry per assembled (non-empty) source
- *   - per-source `chars` sum (+ "\n\n" join separators) reconciles with build().length
- *   - totalEstTokens equals the sum of per-source estTokens
- *   - entries are sorted descending by chars
- *   - expected representative labels (tools / memory) are present
- *   - the dev-only AVE_DEV_PROMPT_SOURCE_DUMP gate never alters the assembled
- *     prompt (measurement only — no behavior change)
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SystemPromptBuilder } from "../system-prompt-builder.js";
@@ -48,7 +36,6 @@ describe("SystemPromptBuilder — getSourceSizeBreakdown", () => {
     const builder = makeBuilderWithMemory();
     const { sources } = builder.getSourceSizeBreakdown();
 
-    // Every kept source corresponds to a non-empty rendered section.
     expect(sources.length).toBeGreaterThan(0);
     for (const entry of sources) {
       expect(entry.chars).toBeGreaterThan(0);
@@ -63,7 +50,6 @@ describe("SystemPromptBuilder — getSourceSizeBreakdown", () => {
     const prompt = builder.build();
     const { sources, totalChars } = builder.getSourceSizeBreakdown();
 
-    // build() joins kept sections with "\n\n" (2 chars) between them.
     const joinChars = sources.length > 1 ? (sources.length - 1) * 2 : 0;
     const charsSum = sources.reduce((sum, s) => sum + s.chars, 0);
 
@@ -89,8 +75,6 @@ describe("SystemPromptBuilder — getSourceSizeBreakdown", () => {
   it("includes the expected representative source labels (tools + memory)", () => {
     const builder = makeBuilderWithMemory();
     const labels = builder.getSourceSizeBreakdown().sources.map((s) => s.label);
-    // Tool descriptions/input_schema source and the memory source — the two
-    // candidates we expect to dominate the per-round base.
     expect(labels).toContain("Tool Schemas");
     expect(labels).toContain("Memory & Knowledge");
   });
@@ -101,7 +85,6 @@ describe("SystemPromptBuilder — getSourceSizeBreakdown", () => {
     const second = builder.getSourceSizeBreakdown();
     expect(second.totalChars).toBe(first.totalChars);
     expect(second.totalEstTokens).toBe(first.totalEstTokens);
-    // build() after measuring is unchanged.
     expect(builder.build().length).toBe(first.totalChars);
   });
 });
@@ -130,13 +113,10 @@ describe("SystemPromptBuilder — AVE_DEV_PROMPT_SOURCE_DUMP gate (no behavior c
     process.env.AVE_DEV_PROMPT_SOURCE_DUMP = "1";
     const withFlag = makeBuilderWithMemory().build();
 
-    // The dump is a side-effect-only log; the assembled prompt is unaffected.
     expect(withFlag).toBe(withoutFlag);
   });
 
   it("does not log under production NODE_ENV even when the flag is set", () => {
-    // The gate short-circuits on production NODE_ENV; build() must still succeed
-    // and yield the same prompt (no throw, no content change).
     process.env.NODE_ENV = "production";
     process.env.AVE_DEV_PROMPT_SOURCE_DUMP = "1";
     const prod = makeBuilderWithMemory().build();

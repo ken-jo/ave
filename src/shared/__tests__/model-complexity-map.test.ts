@@ -7,12 +7,42 @@ import {
   resolveModelForComplexity,
 } from "../model-complexity-map.js";
 import {
-  LLM_VENDOR_MODEL_OPTIONS,
   LLM_VENDORS,
   type LLMVendor,
 } from "../llm-vendor-defaults.js";
 
+import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
+
 describe("model-complexity-map", () => {
+  it("leaves unresolved tiers to the parent without inventing a default", () => {
+    const original = activeModelCatalog();
+    try {
+      installModelCatalog({ ...original, providers: {} });
+      for (const vendor of LLM_VENDORS) {
+        for (const level of MODEL_COMPLEXITY_LEVELS) {
+          expect(resolveModelForComplexity(vendor, level)).toBeNull();
+        }
+      }
+    } finally {
+      installModelCatalog(original);
+    }
+  });
+  it("resolves a newly installed family entry without retaining an imported id", () => {
+    const original = activeModelCatalog();
+    const model = original.providers.openai!.models[resolveModelForComplexity("openai", "mid")!]!;
+    try {
+      installModelCatalog({ ...original, providers: { ...original.providers, openai: {
+        models: { ...original.providers.openai!.models,
+          "future-workhorse": { ...model, id: "future-workhorse", releaseDate: "2099-01-01" },
+        },
+      } } });
+      expect(resolveModelForComplexity("openai", "mid")).toBe("future-workhorse");
+    } finally {
+      installModelCatalog(original);
+    }
+    expect(resolveModelForComplexity("openai", "mid")).toBe(model.id);
+  });
+
   describe("MODEL_COMPLEXITY_MAP coverage", () => {
     it("declares every LLM vendor", () => {
       for (const vendor of LLM_VENDORS) {
@@ -25,17 +55,15 @@ describe("model-complexity-map", () => {
 
     it("declares every complexity tier per vendor", () => {
       for (const vendor of LLM_VENDORS) {
-        // Handshake-only vendors (openai-compatible) have no static catalog, so
-        // every tier maps to the empty model → parent-model fallback. Vendors
-        // with a static catalog must map each tier to a non-empty model id.
-        const handshakeOnly = LLM_VENDOR_MODEL_OPTIONS[vendor].length === 0;
+        // Only routes with a declared family policy may change the parent model.
+        const usesParent = !["claude", "openai", "gemini", "vertex-ai"].includes(vendor);
         for (const level of MODEL_COMPLEXITY_LEVELS) {
           const model = MODEL_COMPLEXITY_MAP[vendor][level];
           expect(
             typeof model,
             `${vendor}/${level} must be a string`,
           ).toBe("string");
-          if (handshakeOnly) {
+          if (usesParent) {
             expect(model, `${vendor}/${level} handshake-only tier must be empty`).toBe("");
           } else {
             expect(model.length).toBeGreaterThan(0);
@@ -44,7 +72,7 @@ describe("model-complexity-map", () => {
       }
     });
 
-    it("every (vendor, tier, model) triple appears in LLM_VENDOR_MODEL_OPTIONS", () => {
+    it("every (vendor, tier, model) triple appears in the vendor's model options", () => {
       const orphans = findOrphanedComplexityModels();
       expect(
         orphans,
@@ -83,8 +111,7 @@ describe("model-complexity-map", () => {
       for (const vendor of LLM_VENDORS) {
         for (const level of MODEL_COMPLEXITY_LEVELS) {
           const resolved = resolveModelForComplexity(vendor, level);
-          // Handshake-only vendors map to the empty model, which resolves to
-          // null (parent-model fallback) rather than an empty-string id.
+          // Handshake-only vendors resolve to parent-model fallback, never an empty model id.
           expect(resolved).toBe(MODEL_COMPLEXITY_MAP[vendor][level] || null);
         }
       }
@@ -114,32 +141,25 @@ describe("model-complexity-map", () => {
   });
 
   describe("per-vendor sanity (concrete pinned tiers)", () => {
-    // Anchor the picks so a future contributor who flips the catalog has
-    // to come through here and re-justify the tier choice. These are the
-    // tiers the staff-facing agent profiles depend on; cross-PR drift
-    // would silently shift the user's sub-agent model.
+    // Tier changes alter sub-agent model choice; update expectations deliberately.
     it("claude tiers: haiku=low, sonnet=mid, opus=high", () => {
       expect(MODEL_COMPLEXITY_MAP.claude).toEqual({
-        low: "claude-haiku-4-5",
-        mid: "claude-sonnet-4-6",
-        high: "claude-opus-4-6",
+        low: "claude-haiku-5-5",
+        mid: "claude-sonnet-5-5",
+        high: "claude-opus-5-5",
       });
     });
 
-    it("openai tiers: nano=low, mini=mid, full=high", () => {
-      expect(MODEL_COMPLEXITY_MAP.openai).toEqual({
-        low: "gpt-5.4-nano",
-        mid: "gpt-5.4-mini",
-        high: "gpt-5.4",
-      });
+    it("native reasoning tiers select the efficient, balanced and flagship families", () => {
+      const tiers = { low: "gpt-6-luna", mid: "gpt-6.1-sol", high: "gpt-6-astra" };
+      expect(MODEL_COMPLEXITY_MAP.openai).toEqual(tiers);
+      expect(MODEL_COMPLEXITY_MAP["azure-foundry"]).toEqual({ low: "", mid: "", high: "" });
     });
 
-    it("gemini tiers: flash-lite=low, flash=mid, pro=high", () => {
-      expect(MODEL_COMPLEXITY_MAP.gemini).toEqual({
-        low: "gemini-2.5-flash-lite",
-        mid: "gemini-2.5-flash",
-        high: "gemini-2.5-pro",
-      });
+    it("mapped tiers preserve distinct efficient, balanced and deep-reasoning families", () => {
+      const tiers = { low: "gemini-3.5-flash-lite", mid: "gemini-3.8-flash", high: "gemini-3.1-pro-preview" };
+      expect(MODEL_COMPLEXITY_MAP.gemini).toEqual(tiers);
+      expect(MODEL_COMPLEXITY_MAP["vertex-ai"]).toEqual(tiers);
     });
   });
 });

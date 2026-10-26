@@ -5,11 +5,12 @@ import {
   readdirSync,
   renameSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 
 import {
   PRIVATE_DIR_MODE,
@@ -17,6 +18,7 @@ import {
   isCommittedAtomicWriteError,
   isMissingPathError,
   replaceUtf8FileAtomicSyncIf,
+  writeUtf8FileAtomic,
   writeUtf8FileAtomicSync,
 } from "../atomic-file.js";
 import {
@@ -29,6 +31,22 @@ import {
 import { retryOnTransientFsLock } from "../transient-fs-lock-retry.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+const staging = vi.hoisted(() => ({ beforeOpen: undefined as ((path: string) => void) | undefined }));
+const atStaging = (path: unknown) => {
+  if (!String(path).endsWith(".tmp") || !staging.beforeOpen) return;
+  const run = staging.beforeOpen;
+  staging.beforeOpen = undefined;
+  run(String(path));
+};
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, openSync: (...args: Parameters<typeof actual.openSync>) => { atStaging(args[0]); return actual.openSync(...args); } };
+});
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: (...args: Parameters<typeof actual.open>) => { atStaging(args[0]); return actual.open(...args); } };
+});
+
 let dir: string;
 
 beforeEach(() => {
@@ -36,6 +54,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  staging.beforeOpen = undefined;
   await cleanupTmpDir(dir);
 });
 
@@ -64,6 +83,28 @@ describe("writeUtf8FileAtomicSync", () => {
     }
   });
 
+  for (const [kind, write] of [
+    ["sync", async (path: string, content: string) => { writeUtf8FileAtomicSync(path, content); }],
+    ["async", writeUtf8FileAtomic],
+  ] as const) {
+    it(`refuses a link planted at the staging path instead of writing through it (${kind})`, async (ctx: TestContext) => {
+      const outside = join(dir, "outside.txt");
+      const target = join(dir, "settings.json");
+      writeFileSync(outside, "user\n");
+      writeFileSync(target, "old");
+      try { symlinkSync(outside, join(dir, "probe")); } catch { ctx.skip(); }
+      let planted: string | undefined;
+      staging.beforeOpen = (path) => {
+        symlinkSync(outside, path);
+        planted = path;
+      };
+      await expect(write(target, "staged\n")).rejects.toMatchObject({ code: "EEXIST" });
+      expect(planted?.startsWith(join(dir, ".settings.json."))).toBe(true);
+      expect(readFileSync(outside, "utf8")).toBe("user\n");
+      expect(readFileSync(target, "utf8")).toBe("old");
+    });
+  }
+
   it("keeps the destination intact when a final replacement precondition fails", () => {
     const target = join(dir, "AGENTS.md");
     writeFileSync(target, "user edit", "utf8");
@@ -80,12 +121,7 @@ describe("writeUtf8FileAtomicSync", () => {
   });
 
   it("residual TOCTOU window stays whole-file: an external write between check and rename is replaced atomically, never partial (#1640)", () => {
-    // Accepted Minor residual: precondition() and renameSync() are not a
-    // filesystem CAS. Drive the race deterministically — the precondition
-    // itself performs a same-user external write inside the window, then still
-    // approves — and assert the bounded behavior: the staged content wins as a
-    // whole file (no partial/corrupt state, no leftover temp). This pins that
-    // the window can only ever be whole-file last-writer-wins.
+    // Precondition plus rename is not filesystem CAS; a race may only produce whole-file last-writer-wins with no staging residue.
     const target = join(dir, "AGENTS.md");
     writeFileSync(target, "packaged prior", "utf8");
 
@@ -148,9 +184,7 @@ describe("writeUtf8FileAtomicSync", () => {
   });
 
   it("recognises only the Error this module throws as committed", () => {
-    // The permission-settings copy accepted any object carrying
-    // `committed: true`; the registry copy required an Error. This module
-    // throws an Error, so the strict form is the truth.
+    // Committed-write failures require Error instances, not arbitrary committed:true objects.
     expect(isCommittedAtomicWriteError({ committed: true })).toBe(false);
     expect(isCommittedAtomicWriteError(Object.assign(new Error("x"), { committed: true }))).toBe(true);
     expect(isCommittedAtomicWriteError(new Error("x"))).toBe(false);
@@ -182,7 +216,6 @@ describe("writeUtf8FileAtomicSync", () => {
     });
 
     expect(attempts).toBe(3);
-    // Schedule comes from the shared ladder, not a local constant.
     expect(waits).toEqual([transientFsLockDelayMs(1), transientFsLockDelayMs(2)]);
     expect(readFileSync(target, "utf8")).toBe("new");
     expect(readdirSync(dir)).toEqual(["windows.json"]);
@@ -216,17 +249,7 @@ describe("writeUtf8FileAtomicSync", () => {
   });
 
   it("takes its curve and budget from the shared policy, and so does the async ladder", async () => {
-    // The two ladders defend against the same Windows lock class and cannot be
-    // merged (this one is sync/Atomics.wait, the other async/setTimeout). They
-    // HAD drifted: this side budgeted 60ms against a class its sibling
-    // documents as clearing in "a few hundred milliseconds".
-    //
-    // NOT asserting the two totals are EQUAL — they are deliberately different
-    // now, because only this side blocks the caller (the Electron main thread
-    // for the settings/secret writers). What must hold is that neither side
-    // hardcodes its own schedule: both observed wait sequences have to be the
-    // shared curve evaluated over that side's own budget. Hardcoding a
-    // different curve on either side breaks its row.
+    // Sync and async retries must use the same curve with separate budgets; only synchronous waits block the UI.
     const target = join(dir, "windows.json");
     writeFileSync(target, "old", "utf8");
     const syncWaits: number[] = [];
@@ -248,8 +271,6 @@ describe("writeUtf8FileAtomicSync", () => {
       wait: (ms) => syncWaits.push(ms),
     })).toThrow("locked");
 
-    // Drive the REAL async ladder over a permanently-locked op and record its
-    // sleeps the same way.
     const asyncWaits: number[] = [];
     await expect(
       retryOnTransientFsLock(
@@ -263,7 +284,6 @@ describe("writeUtf8FileAtomicSync", () => {
     const curveOver = (attempts: number) =>
       Array.from({ length: attempts - 1 }, (_, i) => transientFsLockDelayMs(i + 1));
 
-    // Each side rides the SHARED curve over its OWN budget.
     expect(syncWaits).toEqual(curveOver(SYNC_UI_BLOCKING_ATTEMPTS));
     expect(asyncWaits).toEqual(curveOver(BACKGROUND_ATTEMPTS));
 
@@ -272,20 +292,9 @@ describe("writeUtf8FileAtomicSync", () => {
     expect(syncTotal).toBe(SYNC_UI_BLOCKING_BUDGET_MS);
     expect(asyncTotal).toBe(BACKGROUND_BUDGET_MS);
 
-    // The property that made the ORIGINAL budget wrong: 60ms could not outlast
-    // a lock class documented to clear in a few hundred milliseconds. The 500ms
-    // that replaced it could not either — `withFileLock` serializes the
-    // settings writers, so back-to-back locked writes are normal and the OS
-    // handle outlives the lock release. That lost deterministically under load
-    // while succeeding on a quiet machine, so the contention was clearing, just
-    // later than documented. A lost settings write silently discards a
-    // permission the user granted.
+    // Settings lock contention can outlive lock release; a failed replacement must not silently discard granted permissions.
     expect(syncTotal).toBeGreaterThanOrEqual(1000);
-    // ...and the property that keeps the fix from becoming a UI freeze. This
-    // blocks the main thread, and Windows shows the unresponsive-window prompt
-    // at roughly five seconds, so the ceiling is about staying far short of
-    // that rather than about any threshold at one second. If someone raises
-    // this toward the background budget, this fails.
+    // Keep synchronous retries well below the OS unresponsive-window threshold.
     expect(syncTotal).toBeLessThanOrEqual(1200);
     expect(syncTotal).toBeLessThan(asyncTotal);
   });

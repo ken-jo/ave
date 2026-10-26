@@ -95,8 +95,7 @@ describe("uninstallPluginWithLifecycle", () => {
       })).rejects.toThrow("incomplete post-commit cleanup");
       expect(records[pluginId]?.config).toEqual({ choice: true });
       expect(new PluginUninstallCleanupJournal(journalPath).find(pluginId)?.completedPhases).not.toContain("config");
-      // Consumption may finish while cleanup is pending. Its durable decision
-      // must survive the stale capture stored before registry removal.
+      // Consumption may finish during cleanup; preserve its durable decision over the stale pre-removal capture.
       records[pluginId]!.consumedBy = ["successor-fixture"];
       const consumed = structuredClone(records[pluginId]);
       set.mockClear();
@@ -149,16 +148,13 @@ describe("uninstallPluginWithLifecycle", () => {
     }
   });
 
-  // The plugin's cache holds receipts, version caches and retained
-  // generations, none granted to a confined process. A runtime directory in
-  // it would be, so the cleanup refuses rather than racing a writer.
+  // Cache roots are not child-writable; refuse unexpected runtime directories rather than racing a writer.
   it("refuses to delete a plugin cache that holds a runtime directory", async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-uninstall-cache-runtime-"));
     try {
       const cacheRoot = join(root, ".cache");
       await mkdir(join(cacheRoot, "samplehub", "data"), { recursive: true });
 
-      // makeDeps' generic commit mock widens to unknown; the shape is what matters here.
       const deps = makeDeps("samplehub", cacheRoot) as unknown as Parameters<typeof uninstallPluginWithLifecycle>[1];
       const failure = await uninstallPluginWithLifecycle("samplehub", deps).then(
         () => { throw new Error("uninstall resolved"); },

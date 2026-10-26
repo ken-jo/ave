@@ -44,8 +44,7 @@ describe.skipIf(process.platform === "win32")("managed child group lifetime", ()
       }, { timeout: 3_000 });
     } finally {
       restoreClock();
-      // The bounded fixture owns this group; never signal it after observing
-      // absence, including when the numeric ID could subsequently be reused.
+      // The bounded fixture owns this group; never signal it after observing absence, including when the numeric ID could subsequently be reused.
       if (!groupGone && typeof groupId === "number" && groupId > 0) {
         try { process.kill(-groupId, "SIGKILL"); } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;

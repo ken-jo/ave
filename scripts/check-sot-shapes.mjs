@@ -1,31 +1,6 @@
 #!/usr/bin/env node
-/**
- * check-sot-shapes.mjs — single-source-of-truth shape gate
- *
- * Three behaviours in this tree each have one home, chosen after their copies
- * had drifted apart and the drift had cost a defect:
- *
- *   - `rename()` / `renameSync()`: the atomic-replace and lock-retry helpers in
- *     `src/lib/atomic-file.ts`, `src/lib/transient-fs-lock-retry.ts` and the
- *     per-feature storage in `src/main/storage/feature-namespace.ts`. A bare
- *     rename elsewhere is a durability decision made a second time.
- *   - `homedir()` + `startsWith("~")`: `src/shared/home-tilde.ts`. The
- *     permission layer and the tool that opens the file must expand `~` the
- *     same way or they judge and touch different files.
- *   - `x instanceof Error ? x.message : String(x)`: `src/shared/error-message.ts`.
- *
- * A grep is enough to see a new copy appear, and this script is that grep,
- * run as a gate. The copies that existed when the gate was written are held
- * in `sot-shapes-baseline.json` per file, per shape, as a count. The gate
- * fails when any file's count rises or a file without an entry gains a hit —
- * a new copy — and it also fails when a count falls, so the ledger is
- * re-written (`--update-baseline`) rather than left describing copies that
- * are gone. The update refuses to record growth: the baseline only shrinks.
- *
- * Comment-only lines are not counted; prose that names the shape is not a
- * copy of it. Test trees are not scanned: a test may spell the shape out to
- * prove the home handles it.
- */
+// Enforce shared helpers for atomic replacement, home expansion and error messages.
+// Per-file baselines must shrink; comments and tests are excluded.
 import { readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -38,11 +13,7 @@ const SCAN_SKIP_DIRS = new Set(["__tests__", "__mocks__", "__probes__", "node_mo
 const TEST_FILE_RE = /\.(?:test|spec)\.(?:ts|tsx)$/;
 const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*|\*)/;
 
-/**
- * Each shape: the line pattern, the files that are its home (never counted),
- * and an optional file-level precondition — the tilde shape is only a copy of
- * `home-tilde.ts` when the file also resolves the home directory itself.
- */
+// Home-expansion copies count only in files that also resolve the home directory.
 export const SOT_SHAPES = Object.freeze([
   {
     id: "fs-rename",
@@ -149,8 +120,7 @@ export function runSotShapesGate({ root, baselinePath, updateBaseline, stdout, s
     baseline = readJsonFile(baselinePath, "sot-shapes-baseline.json");
   } catch (error) {
     if (!updateBaseline) throw error;
-    // The first write is the only one that records copies: everything the
-    // scan finds is grandfathered once, and shrinks from there.
+    // Only the initial baseline records existing copies; later updates may only shrink.
     writeKnipBaselineAtomicSync(baselinePath, formatSotShapesBaseline(current));
     stdout(`[sot-shapes] baseline written: ${totals(current)}`);
     return 0;

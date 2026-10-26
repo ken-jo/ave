@@ -25,10 +25,8 @@ export function ToolPayloadBlock({ value, isError = false }: { value: unknown; i
 
 function shouldConstrainPayload(value: string): boolean {
   const lines = value.split("\n");
-  if (lines.length > 5) return true;
-  // Long JSON/XML/RSS strings often wrap visually into many rows without
-  // containing newline characters. Approximate wrapped rows so every tool
-  // input/output follows the same "about 5 visible lines" rule.
+  // Long JSON/XML/RSS strings often wrap visually into many rows without containing newline characters. Approximate wrapped
+  // rows so every tool input/output follows the same "about 5 visible lines" rule.
   const estimatedVisualLines = lines.reduce(
     (sum, line) => sum + Math.max(1, Math.ceil(line.length / 96)),
     0,

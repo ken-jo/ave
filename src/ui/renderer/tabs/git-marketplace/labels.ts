@@ -1,7 +1,4 @@
-/**
- * Copy for the git marketplace views (design §15). Every label is a literal
- * `t("…")` call so the used-keys gate proves it exists in the catalog.
- */
+/** Keep labels as literal t calls so the used-keys gate can verify the catalog. */
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
 import type { ClaudeDesktopImportFailure } from "../../../../mcp/claude-desktop-import.js";
 import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
@@ -129,11 +126,8 @@ export function sourceStatusLabel(t: Translate, status: SourceStatusView): strin
   }
 }
 
-/**
- * The status chip of a source whose last sync failed with `code` (§15.4):
- * "Unreachable" only when the host was not reached, otherwise what went
- * wrong, and "Update failed" for a code no sync is expected to record.
- */
+/** The status chip of a source whose last sync failed with `code` (§15.4): "Unreachable" only when the host was not
+ * reached, otherwise what went wrong, and "Update failed" for a code no sync is expected to record. */
 function failedSyncLabel(t: Translate, code: Extract<SourceStatusView, { state: "unreachable" }>["code"], detail: MarketplaceErrorDetail | undefined): string {
   switch (code) {
     case "SOURCE_UNREACHABLE": {
@@ -195,7 +189,6 @@ export function sourceStatusDetail(t: Translate, source: SourceView): string | n
   switch (status.state) {
     case "unreachable": return failureText(t, { code: status.code, message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
     case "auth-required": return failureText(t, { code: "SOURCE_AUTH_REQUIRED", message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
-    // The sentence names the Repair the row offers.
     case "broken": return failureText(t, { code: "SOURCE_LOCAL_DATA_DAMAGED", message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
     // The sentence names the Remove the row offers.
     case "id-holds-credential": return failureText(t, { code: "SOURCE_ID_INVALID", message: "", detail: { reason: "stored-id-holds-credential" } }, subject);
@@ -268,11 +261,8 @@ function knownHostName(host: string, port: number): string {
   return port === 22 ? bare : `[${bare}]:${port}`;
 }
 
-/**
- * The command a failure asks the user to run, for *Copy command*; null when
- * it asks for none, or when main masked part of the host (it held a token's
- * shape), since a command naming a masked host would not run (§18.8).
- */
+/** The command a failure asks the user to run, for *Copy command*; null when it asks for none, or when main masked part of
+ * the host (it held a token's shape), since a command naming a masked host would not run (§18.8). */
 export function failureCommand(failure: GitMarketplaceFailure): string | null {
   if (failure.code !== "SOURCE_SSH_HOST_UNKNOWN") return null;
   const detail = parseMarketplaceErrorDetail(failure.code, failure.detail);
@@ -286,16 +276,7 @@ function hostKeyCommand(detail: MarketplaceErrorDetail<"SOURCE_SSH_HOST_UNKNOWN"
     : `ssh-keygen -R "${knownHostName(detail.host, detail.port)}"`;
 }
 
-/**
- * What a failure is about, so its sentence offers only actions the user has
- * there (§18.8):
- *   - `entry`: the address, branch, folder and sign-in the user is typing
- *     (Add marketplace, Install from Git URL), every one of them editable;
- *   - `source`: a listed source, with what its row in Sources offers: Set
- *     token… for a token source, Remove source for one the user added, and
- *     nothing that changes an official or organization source's address;
- *   - `other`: no single source (the catalog, git itself, Refresh all).
- */
+/** Failure actions depend on subject: editable form fields, permitted source-row actions, or no source-specific recovery. */
 export type FailureSubject =
   | { kind: "entry" }
   | { kind: "source"; source: Pick<SourceView, "origin" | "label" | "auth" | "tokenStored"> }
@@ -308,11 +289,8 @@ export function sourceSubject(source: Pick<SourceView, "origin" | "label" | "aut
   return { kind: "source", source: { origin: source.origin, label: source.label, auth: source.auth, tokenStored: source.tokenStored } };
 }
 
-/**
- * A source as the user sees it named: the official source by its origin's
- * name (as its row shows it), any other by its label; the id when the
- * failure is about no listed source.
- */
+/** A source as the user sees it named: the official source by its origin's name (as its row shows it), any other by its
+ * label; the id when the failure is about no listed source. */
 function sourceName(t: Translate, subject: FailureSubject, sourceId: string): string {
   if (subject.kind !== "source") return sourceId;
   return subject.source.origin === "official" ? originLabel(t, "official") : subject.source.label;
@@ -339,15 +317,8 @@ function audienceOf(subject: FailureSubject): Audience {
   return unhandled(subject.source.origin);
 }
 
-/**
- * The sign-in step a source failure can offer: the form's Access token
- * (`entry`), the row's Set token… to add (`set-token`) or replace
- * (`replace-token`) a token, Remove source and add it again with a token
- * (`readd`, a source the user added without one), the administrator
- * (`administrator`, an organization source set up without one), none
- * (`owned`, the official source read without a token), or the row in
- * Sources (`other`, when no one source is known).
- */
+/** Offer only the sign-in recovery the source origin supports: token entry/replacement, re-add, administrator help, or no
+ * credential action. */
 type SignIn = "entry" | "set-token" | "replace-token" | "readd" | "administrator" | "owned" | "other";
 
 function signInOf(subject: FailureSubject): SignIn {
@@ -365,16 +336,8 @@ function signInOf(subject: FailureSubject): SignIn {
   return unhandled(origin);
 }
 
-/**
- * The sentence for a failure (design §18.8): what happened and what to do,
- * from its code and, when it carries one, the detail's reason. Every code has
- * a reason-less sentence for a failure without a detail (an older state file,
- * or a detail that was dropped). A source failure's sentence also depends on
- * `subject`: it never asks the user to check a field they cannot change,
- * and names the sign-in step the row actually offers. Main's English
- * `message` never shows here, `unavailable`'s included; it is behind *Copy
- * details* (`MarketplaceProblem`), scrubbed.
- */
+/** Localize failures from code and subject, including reason-less variants; raw host messages are scrubbed and exposed only
+ * through Copy details. */
 export function failureText(t: Translate, failure: GitMarketplaceFailure, subject: FailureSubject): string {
   const code = failure.code;
   const audience = audienceOf(subject);
@@ -837,11 +800,8 @@ function inProxyRange(address: string | null): boolean {
   return address !== null && /^198\.1[89]\./u.test(address);
 }
 
-/**
- * The risk of a warning about a source's own address (§18.5, §18.8): what
- * happens and when to continue. The Add dialog lists these before any
- * connection; a sync or install that hits one names it with *Allow…*.
- */
+/** The risk of a warning about a source's own address (§18.5, §18.8): what happens and when to continue. The Add dialog
+ * lists these before any connection; a sync or install that hits one names it with *Allow…*. */
 export function warningText(t: Translate, view: EnteredTargetWarningView): string {
   const host = view.host ?? "";
   const address = view.address ?? "";
@@ -902,11 +862,8 @@ export function badgeTooltip(t: Translate, badge: SourceBadge): string {
   return unhandled(badge);
 }
 
-/**
- * The confirmation a failure asks for, when *Allow…* resolves it (§18.5): a
- * target that needs a warning the source does not hold, or sign-in over
- * http. Null for every other failure.
- */
+/** The confirmation a failure asks for, when *Allow…* resolves it (§18.5): a target that needs a warning the source does
+ * not hold, or sign-in over http. Null for every other failure. */
 export function allowableWarning(failure: Pick<GitMarketplaceFailure, "code" | "detail">): SourceWarning | null {
   if (failure.code === "SOURCE_CONFIRMATION_REQUIRED") return parseMarketplaceErrorDetail(failure.code, failure.detail)?.reason ?? null;
   if (failure.code === "SOURCE_AUTH_REQUIRED" && parseMarketplaceErrorDetail(failure.code, failure.detail)?.reason === "token-unencrypted") return "token-unencrypted";
@@ -960,11 +917,8 @@ export function revealLabel(t: Translate, userAgent: string = globalThis.navigat
   return t("gitMarketplace.sources.revealFileManager");
 }
 
-/**
- * A long path cut in the middle, keeping its start (the volume or share) and
- * its end (the folder's own name): `/Users/example/…/team/market`. The full path
- * belongs in the tooltip beside it.
- */
+/** A long path cut in the middle, keeping its start (the volume or share) and its end (the folder's own name):
+ * `/Users/example/…/team/market`. The full path belongs in the tooltip beside it. */
 export function middleTruncate(text: string, max: number = 48): string {
   const chars = [...text];
   if (chars.length <= max) return text;

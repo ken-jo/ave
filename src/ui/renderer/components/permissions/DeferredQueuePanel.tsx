@@ -1,7 +1,3 @@
-
-
-
-
 import { useEffect, useState, useCallback, type ReactElement } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -93,8 +89,7 @@ export function DeferredQueuePanel({ showEmpty = false, onClose }: DeferredQueue
   const hasPending = pending.length > 0;
   const activeEntry = pending[0];
   const activeLevel = activeEntry?.verdict.level ?? "low";
-  // Korean risk label (raw English
-  // `activeLevel.toUpperCase()` → `LOW`/`MEDIUM`/`HIGH` leaking into UI).
+  // Korean risk label (raw English `activeLevel.toUpperCase()` → `LOW`/`MEDIUM`/`HIGH` leaking into UI).
   const queueBadge = hasPending ? riskLevelKoLabel(activeLevel) : t("deferredQueuePanel.noQueue");
   const badgeClassName = levelBadgeClass(activeLevel);
 

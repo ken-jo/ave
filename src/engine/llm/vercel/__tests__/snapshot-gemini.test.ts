@@ -1,18 +1,7 @@
-/**
- * L1–L3 snapshot parity tests for VercelUnifiedProvider (Gemini path).
- *
- * Per docs/references/vercel-ai-sdk-migration.md §11:
- *   L1 — Structural: StreamEvent type sequence matches expectation
- *   L2 — Content:    concatenated text_delta + reasoning_delta matches
- *   L3 — Tool:       tool_call payload (id/name/input) matches
- *   L4 — Signature:  skipped for Gemini (no extended thinking signatures)
- */
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect, streamFromArray as fromArray } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import { fullStreamToStreamEvent, genericToModelMessages } from "../adapter.js";
-
-
 
 describe("VercelUnifiedProvider gemini — L1 structural parity", () => {
   it("maps a canned fullStream to the expected StreamEvent sequence", async () => {
@@ -163,7 +152,6 @@ describe("VercelUnifiedProvider gemini — L3 tool payload parity", () => {
         recursive: true,
         depth: 3,
       });
-      // id present (excluded from deep-equal per L3 rule)
       expect(typeof toolCall.id).toBe("string");
       expect(toolCall.id.length).toBeGreaterThan(0);
     }
@@ -230,9 +218,6 @@ describe("message-mapper (gemini-safe)", () => {
   });
 
   it("emits thinkingBlocks as reasoning parts (P3 — Claude round-trip path)", () => {
-    // P3 change: thinkingBlocks now map to `reasoning` parts carrying
-    // providerOptions.anthropic.signature. Non-Anthropic providers ignore
-    // reasoning parts they don't recognize, so this is safe cross-vendor.
     const result = genericToModelMessages([
       {
         role: "assistant",
@@ -294,9 +279,6 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
     vi.doUnmock("@ai-sdk/google");
   });
 
-  // (P2: openai is now implemented — see snapshot-openai.test.ts.
-  //  Claude stub assertion also lives there.)
-
   it("forwards abortSignal to streamText()", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
@@ -334,9 +316,7 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
     const callArgs = streamTextSpy.mock.calls[0]![0] as {
       abortSignal?: AbortSignal;
     };
-    // The adapter composes the caller's signal with an idle-ceiling controller
-    // (AbortSignal.any, #1574), so it is no longer the same reference — but the
-    // caller's signal must still drive it.
+    // The composed idle-ceiling signal differs by identity but must still follow caller cancellation.
     expect(callArgs.abortSignal).toBeInstanceOf(AbortSignal);
     expect(callArgs.abortSignal?.aborted).toBe(false);
     ac.abort();
@@ -353,7 +333,6 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
       return {
         ...actual,
         streamText: vi.fn(() => {
-          // Simulate APICallError-style pre-stream failure (e.g. 429 rate limit).
           const err = new Error("429 rate limited");
           throw err;
         }),
@@ -387,7 +366,6 @@ describe("VercelUnifiedProvider gemini — adapter smoke (mocked ai.streamText)"
     vi.doUnmock("@ai-sdk/google");
   });
 
-  // P3: vendor=claude is now implemented — see snapshot-claude.test.ts.
 });
 
 describe("stream-mapper — usage v4/v5 fallback", () => {

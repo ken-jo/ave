@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 
-export interface SkillRegistryEntry {
+interface SkillRegistryEntry {
   id: string;
   version: string;
   source: "marketplace";
@@ -37,7 +37,7 @@ async function readSkillRegistry(registryPath: string): Promise<SkillRegistry> {
   return { version: 1, skills: parsed.skills };
 }
 
-export async function writeSkillRegistry(registryPath: string, registry: SkillRegistry): Promise<void> {
+async function writeSkillRegistry(registryPath: string, registry: SkillRegistry): Promise<void> {
   await mkdir(dirname(registryPath), { recursive: true });
   await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8");
 }

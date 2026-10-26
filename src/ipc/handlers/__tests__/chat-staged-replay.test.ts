@@ -1,17 +1,4 @@
-/**
- * Staged provenance survives the REPLAY paths.
- *
- * `chat:send` binds a staged origin to its envelope. Internal edit/resend,
- * continue-last-user, and retry-effort use a host-owned registrar to derive a
- * closed staged inputOrigin from stored history before DLP.
- *
- * `runStreamedTurn` validates that host-minted claim and extracts its source.
- * It never derives staged provenance from raw surface text: a remote or
- * user-controlled app/overlay-looking body remains data.
- *
- * These pin that contract and the fail-closed case (a staged claim whose
- * envelope did not survive, e.g. DLP rewriting the fence header).
- */
+// Replay must derive staged provenance from stored envelopes before DLP; it cannot default to keyboard trust.
 import { describe, expect, it, vi } from "vitest";
 import { runStreamedTurn, STREAM_TURN_OPTIONS } from "../chat-stream.js";
 import { formatStagedEnvelope, STAGED_ORIGIN_KINDS } from "../../../shared/staged-origins.js";
@@ -39,8 +26,6 @@ describe("staged provenance on the replay paths", () => {
       const { loop, runTurn } = makeLoop();
       const stored = formatStagedEnvelope(kind, "do the staged thing", source);
 
-      // The IPC registrar derives this closed enum before DLP. This boundary
-      // only validates the envelope and extracts its source tag.
       await runStreamedTurn(loop, stored, vi.fn(), { inputOrigin: kind.inputOrigin });
 
       expect(turnOptions(runTurn)).toMatchObject({
@@ -51,9 +36,7 @@ describe("staged provenance on the replay paths", () => {
 
     it(`fails closed when a ${kind.inputOrigin} turn's envelope is unreadable`, async () => {
       const { loop, runTurn } = makeLoop();
-      // The reachable case is not an attacker: DLP redaction runs between the send
-      // gate and here and can rewrite a serverId inside the fence header. Dropping
-      // to "no staged origin" would silently disable the force-ask gate.
+      // DLP may rewrite a staged header; unreadable provenance must retain force-ask semantics by failing closed.
       await expect(
         runStreamedTurn(loop, "envelope was stripped", vi.fn(), {
           inputOrigin: kind.inputOrigin,
@@ -68,8 +51,6 @@ describe("staged provenance on the replay paths", () => {
     const { loop, runTurn } = makeLoop();
     const stored = formatStagedEnvelope(second!, "text", sampleSource[second!.inputOrigin]!);
 
-    // The envelope wins over the claim — the text's provenance is the truth, and it
-    // must be reported as the kind that actually wrote it.
     await runStreamedTurn(loop, stored, vi.fn(), { inputOrigin: first!.inputOrigin });
 
     expect(turnOptions(runTurn)).toMatchObject({
@@ -105,17 +86,7 @@ describe("staged provenance on the replay paths", () => {
 });
 
 describe("a resource turn's transcript row survives the replay paths", () => {
-  // Same family of defect as the staged-origin cases above, one field over. A resource
-  // turn's content is TWO text parts (the user's words, then the host's fence), and
-  // `continueFromLastUserTurn` folds every text part into the prompt body — so the
-  // replayed turn has no attachment parts, the seam that sets `displayText` never fires,
-  // and the persisted row renders the SERVER'S body inside the user's own bubble on
-  // reload. One click after the seam worked.
-  //
-  // The transport half is pinned here: `runStreamedTurn` must forward a caller-supplied
-  // `displayText` into the turn options. The caller half (the replay reading it off the
-  // prior row) is in the ipc domain; the engine half (setting it from the parts on a
-  // first send) is in the conversation-loop suite.
+  // Resource replay folds multiple text parts into input; preserve the original user-row display text.
   it("forwards a caller-supplied displayText into the turn", async () => {
     const { loop, runTurn } = makeLoop();
     await runStreamedTurn(loop, "summarize [Resource #1]", () => {}, {
@@ -126,8 +97,6 @@ describe("a resource turn's transcript row survives the replay paths", () => {
   });
 
   it("adds no displayText when the caller supplies none", async () => {
-    // Without this, a version that always set the field would satisfy the case above
-    // while quietly giving every ordinary turn a second copy of its own text.
     const { loop, runTurn } = makeLoop();
     await runStreamedTurn(loop, "an ordinary question", () => {}, {
       ...STREAM_TURN_OPTIONS,

@@ -1,12 +1,3 @@
-/**
- * Shared fixtures for the `PluginArtifactStore` suites.
- *
- * `plugin-artifact-store.test.ts` and
- * `plugin-artifact-store-windows-lock.test.ts` both need a store rooted at a
- * throwaway temp dir. Keeping a single
- * implementation here is what `scripts/check-test-duplicates.mjs` enforces —
- * copying `makeStore` into each suite trips the `--fail-on-duplicates` gate.
- */
 import { mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -15,7 +6,6 @@ import {
   type ArtifactStoreOptions,
 } from "../plugin-artifact-store.js";
 
-/** A store rooted at `{tmpDir}/installed` + `{tmpDir}/cache`. */
 export function makeStore(
   tmpDir: string,
   overrides: Partial<Pick<ArtifactStoreOptions, "artifactLimits">> = {},
@@ -32,10 +22,5 @@ export function makeTmpDir(prefix = "artifact-store-"): string {
   return mkdtempSync(join(process.cwd(), `.${prefix}`));
 }
 
-/**
- * Tear down a {@link makeTmpDir} directory, retrying the transient Windows
- * lock codes. Re-exported so these suites keep their existing import, while the
- * implementation — and the reasoning behind it — lives in one place for every
- * suite that needs a scratch directory.
- */
+/** Retry transient Windows locks when removing a fixture directory. */
 export { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";

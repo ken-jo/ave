@@ -65,11 +65,8 @@ const CONFINEMENT_I18N_KEY: Record<NonNullable<PluginCardSummary["confinement"]>
   "not-spawned": "pluginConfigTab.confinementNotSpawned",
 };
 
-/**
- * Where a plugin runs and under which wrap: shown by the Doctor panel for a
- * failed plugin and by the loaded-plugin row for a running one. Renders
- * nothing when the card carries no arm — a failure before routing.
- */
+/** Where a plugin runs and under which wrap: shown by the Doctor panel for a failed plugin and by the loaded-plugin row for
+ * a running one. Renders nothing when the card carries no arm — a failure before routing. */
 function PluginRuntimeArm({ plugin, surface }: { plugin: PluginCardSummary; surface: "row" | "doctor" }) {
   const { t } = useTranslation();
   if (!plugin.arm || !plugin.confinement) return null;
@@ -101,11 +98,8 @@ function PluginRuntimeArm({ plugin, surface }: { plugin: PluginCardSummary; surf
   );
 }
 
-/**
- * The last refused update or restart of a RUNNING plugin (decision 52): one
- * muted line on the loaded row. The plugin stays loaded at its running
- * version, so this is not a failure state and the Doctor panel does not open.
- */
+/** The last refused update or restart of a RUNNING plugin (decision 52): one muted line on the loaded row. The plugin stays
+ * loaded at its running version, so this is not a failure state and the Doctor panel does not open. */
 function PluginLastAttemptRefusal({ plugin }: { plugin: PluginCardSummary }) {
   const { t } = useTranslation();
   const refusal = plugin.lastAttemptRefusal;
@@ -220,9 +214,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const unseen = new Map<string, number>();
   for (const row of alerts.rows) { if (!row.choice.seenByUser) unseen.set(row.pluginId, (unseen.get(row.pluginId) ?? 0) + 1); }
   const [uninstallTarget, setUninstallTarget] = useState<PluginCardSummary | null>(null);
-  // Tools list is collapsed by default — plugins that declare many tools
-  // would otherwise dominate the detail panel. Reset to collapsed on
-  // plugin switch.
+  // Tools list is collapsed by default — plugins that declare many tools would otherwise dominate the detail panel. Reset to
+  // collapsed on plugin switch.
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [contributionTrust, setContributionTrust] = useState<PluginContributionTrustRow[]>([]);
   const [contributionTrustError, setContributionTrustError] = useState<string | null>(null);
@@ -231,13 +224,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   useEffect(() => {
     setToolsExpanded(false);
   }, [selectedId]);
-  // Test environments do not always inject `window.aveApi`; fall back to
-  // `null` so unrelated PluginConfigTab tests don't crash before they
-  // exercise their own code paths. The hook short-circuits when api is null.
-  // useMemo([]) — `window.aveApi` is set once at preload boot and never
-  // reassigned at runtime; recomputing on every render would force the
-  // hook's `refresh` callback to re-bind, tearing down + re-subscribing
-  // every `<pluginId>.auth.changed` listener on each parent render.
+  // Memoize the preload API once so auth listeners stay stable; absent bridges disable the hook for isolated tests.
   const apiForAuthHook = useMemo(() => {
     try { return getApi(); } catch { return null; }
   }, []);
@@ -326,15 +313,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     };
   }, []);
 
-  // Load plugin list — extracted so install/uninstall result events can
-  // re-fetch without remounting the tab. Without this, the settings dialog
-  // would still display the pre-install plugin set after a `ave://install`
-  // deep-link landed (other plugin surfaces refresh via the same event but
-  // the settings tab's local `plugins` state was a one-shot mount-time snapshot).
-  // Latest read wins: saves and install results each re-read the cards, and
-  // an older read answering after a newer one must not put its snapshot back
-  // (a cleared refusal reappearing). The caller still gets the cards it asked
-  // for; only the tab's list ignores a superseded answer.
+  // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
+  // their own result.
   const cardsReadTokenRef = useRef(0);
   const refreshPlugins = useCallback(async (
     options?: { preferInstallKey?: string },
@@ -368,9 +348,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     }
   }, [showBanner, t]);
 
-  // #1176 — toggle a plugin active/inactive. Inactive plugins stay loaded but
-  // their tools are hidden from the model. Optimistically reflects the new
-  // loadStatus, then refreshes from the runtime (which is the source of truth).
+  // #1176 — toggle a plugin active/inactive. Inactive plugins stay loaded but their tools are hidden from the model.
+  // Optimistically reflects the new loadStatus, then refreshes from the runtime (which is the source of truth).
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const handleToggleEnabled = useCallback(
     async (pluginId: string, nextEnabled: boolean) => {
@@ -413,9 +392,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     const unsubs: Array<() => void> = [];
     if (typeof api.onPluginInstallResult === "function") {
       unsubs.push(
-        // A failed install can still change a card: a refused update of a
-        // running plugin is recorded on its loaded row (`lastAttemptRefusal`,
-        // §9.8 A1), so both outcomes re-read the cards.
+        // A failed install can still change a card: a refused update of a running plugin is recorded on its loaded row
+        // (`lastAttemptRefusal`, §9.8 A1), so both outcomes re-read the cards.
         api.onPluginInstallResult(() => {
           void refreshPlugins();
         }),
@@ -430,8 +408,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         }),
       );
     }
-    // #1176 — refresh when a plugin's active/inactive state changes from any
-    // surface so the list badges + tools panel reflect the toggle.
+    // #1176 — refresh when a plugin's active/inactive state changes from any surface so the list badges + tools panel reflect
+    // the toggle.
     if (typeof api.onPluginEnabledChanged === "function") {
       unsubs.push(
         api.onPluginEnabledChanged(() => {
@@ -522,8 +500,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       showBanner("error", errorMessage(e) || t("pluginConfigTab.errorSave"));
     } finally {
       setSaving(false);
-      // A save restarts the plugin, and the restart's outcome is on its card:
-      // a refusal recorded, or a recorded one cleared by the commit.
+      // A save restarts the plugin, and the restart's outcome is on its card: a refusal recorded, or a recorded one cleared by
+      // the commit.
       void refreshPlugins();
     }
   }, [selectedId, entries, showBanner, notifySaved, refreshPlugins, t]);
@@ -550,9 +528,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const selectedPluginToggleable = selectedPlugin
     ? selectedPluginRuntimeLoaded || selectedPlugin.loadStatus === "disabled"
     : false;
-  // §9.2 — merge schema-declared defaults with the saved config
-  // so the typed form always shows the value the plugin will actually
-  // receive (defaults first, saved overrides win).
+  // §9.2 — merge schema-declared defaults with the saved config so the typed form always shows the value the plugin will
+  // actually receive (defaults first, saved overrides win).
   const mergedConfigValues = useMemo(() => {
     const schema = selectedPlugin?.configSchema;
     if (!schema?.properties) return savedConfig;
@@ -564,9 +541,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     }
     return merged;
   }, [selectedPlugin, savedConfig]);
-  // US-3c.1: build secretsPresent map for PluginConfigSchemaForm.
-  // Batches a single IPC call per plugin selection to find which secret
-  // fields already have a value in the keychain, so the masked input shows
+  // US-3c.1: build secretsPresent map for PluginConfigSchemaForm. Batches a single IPC call per plugin selection to find
+  // which secret fields already have a value in the keychain, so the masked input shows
 
   const [secretsPresent, setSecretsPresent] = useState<Record<string, boolean>>({});
   useEffect(() => {
@@ -667,8 +643,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       if (!refreshedCards) return;
       const refreshedPlugin = findRefreshedDoctorPlugin(refreshedCards, plugin, [installKey]);
       if (!isDoctorRepairLoaded(refreshedPlugin)) {
-        // The same bytes went back on disk and still do not load: the fix is
-        // the publisher's, not a retry.
+        // The same bytes went back on disk and still do not load: the fix is the publisher's, not a retry.
         showBanner("warning", t("pluginConfigTab.doctorDiagnosticUnresolved", { displayName: plugin.name }));
         return;
       }
@@ -1252,15 +1227,13 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             key,
                             value,
                           );
-                          // A secret save may restart the plugin; its card
-                          // carries the outcome either way.
+                          // A secret save may restart the plugin; its card carries the outcome either way.
                           void refreshPlugins();
                           if (!result.ok) {
                             showBanner("error", result.message ?? t("pluginConfigTab.errorSaveSecret"));
                             return;
                           }
-                          // Optimistically mark the key as present so the
-                          // masked "**** (저장됨)" placeholder appears immediately.
+                          // Optimistically mark the key as present so the masked "**** (저장됨)" placeholder appears immediately.
                           setSecretsPresent((prev) => ({ ...prev, [key]: true }));
                           showBanner("success", t("pluginConfigTab.successSaveSecret", { key }));
                           notifySaved();
@@ -1353,7 +1326,13 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         </div>
       )}
       {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
-      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
+      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} completionSound={{
+        enabled: alerts.turnCompletionSoundEnabled,
+        onChange: async (enabled) => {
+          const result = await alertsApi.updateSettings({ system: { turnCompletionSoundEnabled: enabled } });
+          if ("error" in result) throw new Error("Completion sound setting could not be saved");
+        },
+      }} />}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the
           config content and pulls its own perf stats via the api. */}

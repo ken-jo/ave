@@ -1,21 +1,10 @@
-/**
- * Every filesystem call a folder source makes (design §18.4.5): the stage-4
- * walk, the folder reader and the network classification of a drive letter
- * go through this interface and nothing else, so the tests replace it with a
- * recording fake and can prove which paths were touched, and when.
- *
- * Nothing here follows a link on purpose: `lstat` and `readlink` describe a
- * link without touching its target, `readdir` lists a directory the caller
- * has already checked, and `open` refuses a final component that is a link
- * where the OS can (`O_NOFOLLOW` on macOS and Linux). On Windows Node's open
- * follows reparse points; §18.4.5 states that residual.
- */
+/** All folder access uses this interface so reads can be fenced before touching paths.
+ * Unix opens reject final symlinks; Windows follows reparse points, leaving a concurrent-swap risk. */
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readdir, readlink, type FileHandle } from "node:fs/promises";
 
 type FolderEntryKind = "file" | "directory" | "link" | "special";
 
-/** What `lstat` or `fstat` reports, in the terms the reader judges. */
 export interface FolderStat {
   kind: FolderEntryKind;
   /** Volume and file identity; zero where the filesystem reports none (some network filesystems). */
@@ -26,14 +15,12 @@ export interface FolderStat {
   executable: boolean;
 }
 
-/** An open file. Opaque to the reader: it only hands it back to `fstat`, `read` and `close`. */
 export interface FolderFileHandle {
   readonly path: string;
 }
 
 export interface FolderFs {
   lstat(path: string): Promise<FolderStat>;
-  /** The link's own text, never resolved. */
   readlink(path: string): Promise<string>;
   readdir(path: string): Promise<string[]>;
   /** Open for reading; refuses a final component that is a link where the OS can. */
@@ -42,13 +29,7 @@ export interface FolderFs {
   /** The file's bytes, at most `maxBytes + 1` of them, so a caller sees a file larger than its limit. */
   read(handle: FolderFileHandle, maxBytes: number): Promise<Buffer>;
   close(handle: FolderFileHandle): Promise<void>;
-  /**
-   * The current MS-DOS device mapping of a drive letter (`"Z:"` →
-   * `\Device\Mup\…`), read without opening anything on the drive
-   * (§18.4.1 stage 2), or null when the OS has no mapping for it. Windows
-   * only; it throws elsewhere, and when the lookup itself cannot run or
-   * answers outside its protocol: that is a broken install, not a drive.
-   */
+  /** Query drive mappings without opening the drive; missing mappings are null, helper failures throw. */
   queryDosDevice(drive: string): Promise<string | null>;
 }
 
@@ -73,10 +54,6 @@ function nodeHandle(handle: FolderFileHandle): FileHandle {
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 const READ_CHUNK = 64 * 1024;
 
-/**
- * The real filesystem. `queryDosDevice` is the Windows helper
- * (`native/windows-path-kind/`), supplied by the composition root.
- */
 export function createNodeFolderFs(options: { platform: NodeJS.Platform; queryDosDevice: (drive: string) => Promise<string | null> }): FolderFs {
   const executable = (mode: bigint) => options.platform !== "win32" && (mode & 0o111n) !== 0n;
   const stat = (info: BigIntStats): FolderStat => ({

@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../src/__tests__/support/symlink-capability.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,7 +58,7 @@ describe("release repository gate", () => {
     expect(unset.stderr).toContain("GITHUB_REPOSITORY is not set");
   });
 
-  it("still runs, and still fails, when invoked through a symlink or a relative path", () => {
+  it.skipIf(!canCreateSymlinks())("still runs, and still fails, when invoked through a symlink", () => {
     const directory = mkdtempSync(join(tmpdir(), "release-repository-"));
     temporary.push(directory);
     const link = join(directory, "check-release-repository.mjs");
@@ -66,7 +67,9 @@ describe("release repository gate", () => {
     const throughLink = runGate("new-owner/ave", link);
     expect(throughLink.status).toBe(1);
     expect(throughLink.stderr).toContain("[release-repository]");
+  });
 
+  it("still runs, and still fails, when invoked through a relative path", () => {
     const throughRelative = runGate("new-owner/ave", "./check-release-repository.mjs", dirname(SCRIPT));
     expect(throughRelative.status).toBe(1);
     expect(throughRelative.stderr).toContain("[release-repository]");

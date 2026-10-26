@@ -2,19 +2,8 @@ import type { SessionSummary } from "../hooks/use-sessions.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { findWorkspaceProject } from "../../../shared/project-identity.js";
 
-/**
- * Pure aggregation for the Insights "프로젝트별 대화" (conversations-by-project)
- * panel. Extracted from StarredView so the group-by join can be unit-tested
- * without rendering the view.
- *
- * A session is grouped by its current registry label when available; legacy
- * callers without a registry fall back to `projectName` or the root basename.
- * Sessions that carry no current named-project identity fall through to the
- * caller-supplied `fallbackLabel` (e.g. "프로젝트 없음"). The regression this
- * guards (2026-07): new main sessions under the default/base-directory project
- * were not persisting their project identity, so every conversation collapsed
- * into the fallback bucket even though an active project existed.
- */
+/** Prefer current registry labels, then legacy project name/root basename; sessions with no named-project identity use the
+ * caller's fallback. */
 
 export interface ProjectSessionGroup {
   name: string;

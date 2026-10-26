@@ -1,14 +1,4 @@
-/**
- * hostapi-effect-recorder.test.ts
- *
- * Unit coverage for the structural recording wrapper ({@link
- * instrumentEffectsByPath}) and the per-path target/effect extractors in the
- * classification SOT. Drives recording through wrapped objects and inspects the
- * ambient ledger so every branch — static vs verb-derived effect, each
- * `targetFromArgs` extractor (valid + degenerate), nested-namespace recursion,
- * idempotence, non-namespace passthrough, the fail-closed default, and the
- * "recording never breaks the host" guarantee — is exercised.
- */
+// Recording must preserve call behavior, including degenerate args, recursion and idempotence; unmapped methods stay write-equivalent.
 import { describe, it, expect } from "vitest";
 import { instrumentEffectsByPath } from "../hostapi-effect-recorder.js";
 import {
@@ -18,7 +8,7 @@ import {
   type EffectLedger,
 } from "../effect-ledger.js";
 
-/** Wrap `api`, invoke `call(wrapped)` inside a fresh ledger scope, return effects. */
+// Wrap `api`, invoke `call(wrapped)` inside a fresh ledger scope, return effects.
 async function record<T extends object>(
   api: T,
   call: (wrapped: T) => void | Promise<void>,
@@ -51,12 +41,7 @@ describe("instrumentEffectsByPath — static effect + selfRecorded skip", () => 
   });
 
   it("SKIPS hostFetch — the only verb-derived chokepoint is selfRecorded in its closure", async () => {
-    // hostFetch's effect depends on the HTTP verb (a plugin-controlled arg
-    // VALUE). The generic recorder must NOT re-read that value (a second,
-    // independent read is the value-divergence forgery vector), so it records
-    // NOTHING here — the real hostFetch host closure snapshots the verb ONCE and
-    // records the effect + pins the wire from that single read. The end-to-end
-    // single-read guarantee is covered in host-fetch-verb-snapshot.test.ts.
+    // hostFetch's effect depends on the HTTP verb (a plugin-controlled arg VALUE). The generic recorder must NOT re-read that value (a second, independent read is the value-divergence forgery vector), so it records NOTHING here — the real hostFetch host closure snapshots the verb ONCE and records the effect + pins the wire from that single read. The end-to-end single-read guarantee is covered in host-fetch-verb-snapshot.test.ts.
     const post = await record({ hostFetch: noop }, (w) => {
       w.hostFetch("https://api.example.com/x?token=secret", { method: "POST" });
     });
@@ -297,7 +282,7 @@ describe("instrumentEffectsByPath — fail-closed default + purity", () => {
 });
 
 describe("instrumentEffectsByPath — a hostile arg getter cannot suppress the effect signal", () => {
-  /** An object whose named property THROWS on access (a hostile getter). */
+  // An object whose named property THROWS on access (a hostile getter).
   const throwingField = (field: string): Record<string, unknown> => ({
     get [field](): never {
       throw new Error(`hostile ${field} getter`);
@@ -339,8 +324,7 @@ describe("instrumentEffectsByPath — a hostile arg getter cannot suppress the e
     const wrapped = instrumentEffectsByPath({ triggerConversation: noop });
     const ledger = createEffectLedger("cid-hostile");
     await runWithEffectLedger(ledger, async () => {
-      // A throwing target getter costs only the forensic descriptor — the static
-      // write effect is already on the ledger, so the plugin cannot hide its write.
+      // A throwing target getter costs only the forensic descriptor — the static write effect is already on the ledger, so the plugin cannot hide its write.
       (wrapped.triggerConversation as (s: unknown) => unknown)(
         throwingField("source"),
       );
@@ -352,8 +336,7 @@ describe("instrumentEffectsByPath — a hostile arg getter cannot suppress the e
 describe("instrumentEffectsByPath — non-plain namespace is left UNINSTRUMENTED (the gap the completeness test guards)", () => {
   it("copies a class-instance namespace verbatim — its methods record nothing", async () => {
     class CustomProtoNamespace {
-      // class field → an OWN-enumerable function property, but the prototype is
-      // CustomProtoNamespace.prototype (NOT Object.prototype) → non-plain.
+      // class field → an OWN-enumerable function property, but the prototype is CustomProtoNamespace.prototype (NOT Object.prototype) → non-plain.
       doMutation = (): string => "mutated";
     }
     const instance = new CustomProtoNamespace();
@@ -365,9 +348,7 @@ describe("instrumentEffectsByPath — non-plain namespace is left UNINSTRUMENTED
         (w.getInstalledPluginIds as () => unknown)();
       },
     );
-    // Only the instrumented top-level method recorded; the non-plain namespace's
-    // method left no effect — exactly why the completeness test rejects such a
-    // namespace so it can never ship.
+    // Only the instrumented top-level method recorded; the non-plain namespace's method left no effect — exactly why the completeness test rejects such a namespace so it can never ship.
     expect(effects).toEqual([
       { kind: "getInstalledPluginIds", effect: "read", target: undefined },
     ]);

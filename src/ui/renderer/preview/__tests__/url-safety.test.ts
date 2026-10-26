@@ -1,13 +1,5 @@
-/**
- * `normalizeBrowserNavigationUrl` — the renderer's navigation gate.
- *
- * The protocol + embedded-credential decision is delegated to the shared
- * `validateExternalUrl` authority; this module owns only the renderer-side
- * affordance (trim, and treat a bare host as https). These cases therefore pin
- * BOTH: dropping the credential rule from the shared authority turns the
- * credential cases red, and re-inlining a private copy here would be caught by
- * the same red when the shared rule is mutated.
- */
+/** Delegate protocol and credential checks to validateExternalUrl; renderer normalization only trims and defaults bare
+ * hosts to https. */
 import { describe, it, expect } from "vitest";
 import { normalizeBrowserNavigationUrl } from "../url-safety.js";
 

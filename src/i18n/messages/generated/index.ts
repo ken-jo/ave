@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 185
+ * Fragments: 190
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -91,6 +91,7 @@ import { en as en_chatTab } from "./chatTab.js";
 import { en as en_chatView } from "./chatView.js";
 import { en as en_checkpointDivider } from "./checkpointDivider.js";
 import { en as en_clipboardPaste } from "./clipboardPaste.js";
+import { en as en_codeRewind } from "./codeRewind.js";
 import { en as en_commandActions } from "./commandActions.js";
 import { en as en_compactedToolResult } from "./compactedToolResult.js";
 import { en as en_composer } from "./composer.js";
@@ -103,6 +104,7 @@ import { en as en_deferredQueueDialog } from "./deferredQueueDialog.js";
 import { en as en_deferredQueuePanel } from "./deferredQueuePanel.js";
 import { en as en_devToolsPanel } from "./devToolsPanel.js";
 import { en as en_dockedApprovalCard } from "./dockedApprovalCard.js";
+import { en as en_egressApprovalCard } from "./egressApprovalCard.js";
 import { en as en_errorBoundary } from "./errorBoundary.js";
 import { en as en_fileEditDiff } from "./fileEditDiff.js";
 import { en as en_formatIpcError } from "./formatIpcError.js";
@@ -126,6 +128,7 @@ import { en as en_messageQueuePanel } from "./messageQueuePanel.js";
 import { en as en_messageQueueStore } from "./messageQueueStore.js";
 import { en as en_overlayCard } from "./overlayCard.js";
 import { en as en_overlayCardRegion } from "./overlayCardRegion.js";
+import { en as en_pagePreview } from "./pagePreview.js";
 import { en as en_pendingAnswerDot } from "./pendingAnswerDot.js";
 import { en as en_permissionDecisionCard } from "./permissionDecisionCard.js";
 import { en as en_permissionEvaluationContextPanel } from "./permissionEvaluationContextPanel.js";
@@ -170,6 +173,7 @@ import { en as en_summaryToast } from "./summaryToast.js";
 import { en as en_tailnetAccessTab } from "./tailnetAccessTab.js";
 import { en as en_telegramConnection } from "./telegramConnection.js";
 import { en as en_terminalBlocks } from "./terminalBlocks.js";
+import { en as en_terminalEgressBanner } from "./terminalEgressBanner.js";
 import { en as en_tokenCostBadge } from "./tokenCostBadge.js";
 import { en as en_tokenProgressRing } from "./tokenProgressRing.js";
 import { en as en_toolActivity } from "./toolActivity.js";
@@ -179,6 +183,7 @@ import { en as en_toolGroupCard } from "./toolGroupCard.js";
 import { en as en_trustOriginLabel } from "./trustOriginLabel.js";
 import { en as en_turnActionBar } from "./turnActionBar.js";
 import { en as en_unifiedSearchPanel } from "./unifiedSearchPanel.js";
+import { en as en_upstreamProxySettings } from "./upstreamProxySettings.js";
 import { en as en_usageDashboard } from "./usageDashboard.js";
 import { en as en_useChatState } from "./useChatState.js";
 import { en as en_useMemorySearch } from "./useMemorySearch.js";
@@ -278,6 +283,7 @@ export const generatedEn: Record<string, string> = {
   ...en_chatView,
   ...en_checkpointDivider,
   ...en_clipboardPaste,
+  ...en_codeRewind,
   ...en_commandActions,
   ...en_compactedToolResult,
   ...en_composer,
@@ -290,6 +296,7 @@ export const generatedEn: Record<string, string> = {
   ...en_deferredQueuePanel,
   ...en_devToolsPanel,
   ...en_dockedApprovalCard,
+  ...en_egressApprovalCard,
   ...en_errorBoundary,
   ...en_fileEditDiff,
   ...en_formatIpcError,
@@ -313,6 +320,7 @@ export const generatedEn: Record<string, string> = {
   ...en_messageQueueStore,
   ...en_overlayCard,
   ...en_overlayCardRegion,
+  ...en_pagePreview,
   ...en_pendingAnswerDot,
   ...en_permissionDecisionCard,
   ...en_permissionEvaluationContextPanel,
@@ -357,6 +365,7 @@ export const generatedEn: Record<string, string> = {
   ...en_tailnetAccessTab,
   ...en_telegramConnection,
   ...en_terminalBlocks,
+  ...en_terminalEgressBanner,
   ...en_tokenCostBadge,
   ...en_tokenProgressRing,
   ...en_toolActivity,
@@ -366,6 +375,7 @@ export const generatedEn: Record<string, string> = {
   ...en_trustOriginLabel,
   ...en_turnActionBar,
   ...en_unifiedSearchPanel,
+  ...en_upstreamProxySettings,
   ...en_usageDashboard,
   ...en_useChatState,
   ...en_useMemorySearch,

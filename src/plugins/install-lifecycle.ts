@@ -1,4 +1,5 @@
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
+import { isAppRelaunchRequested } from "../main/app-relaunch-state.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { raceWithTimeout } from "../shared/abortable-deadline.js";
 
@@ -35,8 +36,7 @@ class ObservedReentrantPromise<T> extends Promise<T> {
     super((resolve, reject) => {
       void source.then(resolve, reject);
     });
-    // Branch failures are reported to the owning lifecycle mutation, not to
-    // the process unhandled-rejection channel.
+    // Report branch failures to the lifecycle owner without unhandled rejections.
     void Promise.prototype.then.call(this, undefined, () => undefined);
   }
 
@@ -96,11 +96,7 @@ class PluginLifecycleDrainTimeoutError extends Error {
   }
 }
 
-/**
- * Per-pluginId in-flight install mutex. Serializes the full install ->
- * addPlugin -> rollback-if-needed sequence for a plugin across IPC and
- * protocol install paths.
- */
+/** Serialize install, activation and rollback for one plugin across every entry path. */
 export function withPluginInstallLock<T>(
   pluginId: string,
   fn: () => Promise<T>,
@@ -120,11 +116,7 @@ export function withPluginInstallLock<T>(
   return acquirePluginInstallLock(pluginId, fn, heldLocks);
 }
 
-/**
- * Hold every identity that can address one plugin for the full mutation.
- * Sorting provides a single acquisition order, so alias/canonical callers
- * cannot deadlock while an inner remove temporarily clears runtime aliases.
- */
+/** Lock alias and canonical identities in sorted order for the entire mutation to avoid deadlocks. */
 function withPluginInstallLocks<T>(
   pluginIds: readonly string[],
   fn: () => Promise<T>,
@@ -156,11 +148,7 @@ function withPluginInstallLocks<T>(
   return acquireMultiplePluginInstallLocks(lockKeys, fn, heldLocks);
 }
 
-/**
- * Resolve alias/canonical lock identities again after admission. An operation
- * that waited while another mutation temporarily cleared and then restored an
- * alias must not continue under only its stale pre-wait identity.
- */
+/** Resolve lock identities again after waiting; another mutation may have temporarily removed an alias. */
 export async function withResolvedPluginInstallLocks<T>(
   resolvePluginIds: () => readonly string[],
   fn: () => Promise<T>,
@@ -198,9 +186,7 @@ async function acquireMultiplePluginInstallLocks<T>(
     if (queuedExclusiveLifecycleMutations === 0) {
       const quarantineError = getPluginLifecycleQuarantineErrorFor(pluginIds);
       if (quarantineError) throw quarantineError;
-      // One mutation owns every identity reservation, so the global drain
-      // counter advances once. All queue slots are published below before the
-      // first await, preventing an exclusive mutation from interposing.
+      // Count one mutation across all identity reservations; publish every queue slot before the first await.
       activePluginLifecycleMutations += 1;
       break;
     }
@@ -300,11 +286,7 @@ async function acquirePluginInstallLock<T>(
   heldLocks: ReadonlyMap<string, HeldPluginInstallLock> | undefined,
 ): Promise<T> {
   while (true) {
-    // Reserve the per-plugin scheduling slot synchronously whenever no
-    // exclusive mutation is queued. A resolved-Promise await here creates a
-    // TOCTOU window where restartPlugin publishes pending state, then a global
-    // mutation enters and waits on that restart while the restart waits on the
-    // new exclusive tail.
+    // Reserve synchronously: yielding lets a global mutation interpose and deadlock against pending restart state.
     if (queuedExclusiveLifecycleMutations === 0) {
       const quarantineError = getPluginLifecycleQuarantineError(pluginId);
       if (quarantineError) throw quarantineError;
@@ -312,10 +294,7 @@ async function acquirePluginInstallLock<T>(
       break;
     }
     await waitForPluginLifecycleGate(exclusiveLifecycleTail, pluginId);
-    // A timed-out exclusive owner releases its queue gate before its stale
-    // detached work settles, so the queue count intentionally remains
-    // non-zero. Reject quarantined callers here instead of spinning on the
-    // already-resolved tail.
+    // A timed-out owner keeps its queue position; refuse quarantined callers instead of spinning on the resolved gate.
     const quarantineError = getPluginLifecycleQuarantineError(pluginId);
     if (quarantineError) throw quarantineError;
   }
@@ -369,10 +348,7 @@ async function acquirePluginInstallLock<T>(
       drainError = err;
       if (err instanceof PluginLifecycleDrainTimeoutError) {
         beginPluginInstallQuarantine(pluginId);
-        // Fail the caller within a bounded time, but retain the lock token and
-        // queue position until the already-started mutation really settles.
-        // Releasing here would allow uninstall cleanup to race that stale
-        // write. This is a fail-closed quarantine, not an event-loop wait.
+        // Timeout fails the caller but retains the lock until stale work settles, preventing cleanup from racing writes.
         releaseDeferred = true;
         void settleReentrantOperations(token).finally(() => {
           quarantinedPluginInstallLocks.delete(pluginId);
@@ -400,11 +376,7 @@ export function isPluginInstallLockHeld(pluginId: string): boolean {
   return held?.get(ALL_PLUGIN_LOCK_KEY)?.active === true || held?.get(pluginId)?.active === true;
 }
 
-/**
- * True while the calling async context holds any plugin lifecycle lock. The
- * marketplace refuses to take a package lock then (lock order: marketplace
- * operation, then package, then plugin; design §18.6).
- */
+/** Lock order is marketplace operation, package, then plugin; refuse package acquisition under a plugin lock. */
 export function holdsAnyPluginInstallLock(): boolean {
   const held = heldPluginInstallLocks.getStore();
   if (!held) return false;
@@ -417,11 +389,7 @@ export function hasExclusivePluginLifecycleMutation(): boolean {
   return queuedExclusiveLifecycleMutations > 0;
 }
 
-/**
- * Wait for fire-and-forget mutations that re-entered the currently held lock.
- * Uninstall calls this immediately after runtime stop so a detached HostApi
- * write cannot finish after durable plugin state has been deleted.
- */
+/** Drain detached reentrant writes after runtime stop and before deleting durable state. */
 export async function drainPluginInstallLockOperations(pluginId: string): Promise<void> {
   const held = heldPluginInstallLocks.getStore();
   const token = selectActiveHeldLock(held, pluginId);
@@ -429,7 +397,6 @@ export async function drainPluginInstallLockOperations(pluginId: string): Promis
   await drainReentrantOperations(token);
 }
 
-/** Serialize a multi-plugin artifact mutation plus its full runtime rebuild. */
 export function withAllPluginInstallLocks<T>(fn: () => Promise<T>): Promise<T> {
   const quarantineError = getAnyPluginLifecycleQuarantineError();
   if (quarantineError) return Promise.reject(quarantineError);
@@ -773,6 +740,7 @@ export function hasPluginInstallInFlight(pluginId?: string): boolean {
 }
 
 function assertAppUpdateInstallNotRequested(): void {
+  if (isAppRelaunchRequested()) throw Object.assign(new Error("Plugin changes are paused while Ave is restarting."), { code: "relaunch-in-progress" });
   if (!isAppUpdateInstallRequested()) return;
   throw new AppUpdateInstallInProgressError();
 }

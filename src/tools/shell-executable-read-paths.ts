@@ -7,8 +7,7 @@ import { stripCommandPath } from "../shared/shell-effective-command.js";
 import { inspectShellExecution, type ShellCommandEvent, type ShellExecutionFacts } from "../shared/shell-execution.js";
 import { inspectEmbeddedShellPrograms } from "./shell-path-policy.js";
 
-// The event's builtin flag describes lookup context, not builtin membership.
-// A bare external command has that flag too; only these names avoid PATH lookup.
+// The event builtin flag describes lookup context; only actual builtin names avoid PATH lookup.
 const SHELL_BUILTINS = new Set([
   ":", ".", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd",
   "command", "compgen", "complete", "compopt", "continue", "declare", "dirs",
@@ -31,8 +30,7 @@ interface ExecutablePath {
 }
 
 function readableExecutable(path: ExecutablePath): boolean {
-  // The filesystem transport interprets these bytes as patterns, even when
-  // the shell supplied a quoted literal. It cannot express an exact grant.
+  // Transport pattern bytes cannot express exact grants, even when shell-quoted.
   if (/[?*\[\]]/.test(path.lexical) || /[?*\[\]]/.test(path.real)) return false;
   // Canonicalizing the lexical name first could hide a sensitive symlink name.
   return !isSensitivePath(caseFoldForMatch(foldCanonicalPathSeparators(path.lexical)))
@@ -78,8 +76,7 @@ function resolvedExecutables(name: string, path: string, cwd: string | null, all
   const explicit = executablePath(name);
   if (!explicit || !readableExecutable(explicit)) return [];
   const selected = lookupExecutable(basename(name), path, cwd)[0];
-  // An explicit command outside PATH has no ambient executable capability.
-  // The caller independently applies its existing absolute-path authority.
+  // Explicit executables outside PATH need independent absolute-path authority.
   return selected && readableExecutable(selected) && caseFoldForMatch(selected.real) === caseFoldForMatch(explicit.real)
     ? [explicit, selected] : [];
 }
@@ -112,8 +109,7 @@ function queryNames(event: ShellCommandEvent): { names: string[]; all: boolean }
 
 function wrapperNames(event: ShellCommandEvent): string[] {
   const { effective, node } = event;
-  // The event carries only the final wrapper state. Earlier states are not
-  // recoverable after env/cwd changes, so do not guess an outer PATH lookup.
+  // Only final wrapper state is available; never guess outer PATH after environment or cwd changes.
   if (effective.cwd || effective.resetEnvironment || effective.unsetEnvironment.includes("PATH")
     || effective.environment.some((assignment) => assignment.name === "PATH")
     || node.assignments.some((assignment) => assignment.name === "PATH")) return [];
@@ -123,8 +119,7 @@ function wrapperNames(event: ShellCommandEvent): string[] {
   const names: string[] = [];
   for (const wrapper of new Set(effective.wrappers)) {
     const candidates = prefix.filter((word): word is string => word !== undefined && stripCommandPath(word) === wrapper);
-    // Option data may spell a wrapper name. Only an exact count proves that
-    // every occurrence is a wrapper head in the canonical flattened view.
+    // Require exact wrapper-head counts; option data may also spell wrapper names.
     if (candidates.length !== effective.wrappers.filter((name) => name === wrapper).length) continue;
     for (const candidate of candidates) {
       if ((wrapper === "command" || wrapper === "time") && !candidate.includes("/")) continue;
@@ -167,8 +162,7 @@ export function collectShellExecutableReadPaths(
         };
         const exportedPathMatches = event.exportedEnvironment.PATH === baselinePath;
         for (const wrapper of wrapperNames(event)) {
-          // The outer shell can use an unexported PATH; later external
-          // wrappers receive only the exported environment.
+          // Outer shells can use unexported PATH; external wrappers receive only exported environment.
           if (exportedPathMatches || wrapper === outer) add(wrapper);
         }
         const head = event.argv[0];

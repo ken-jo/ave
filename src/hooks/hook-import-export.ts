@@ -1,19 +1,13 @@
 import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
 import type { HookEvent } from "./script-hook-types.js";
 import { validateSymbolicHookArgv } from "../plugins/resolve-bundled-argv.js";
+import { HOOK_EVENT_TYPES, hookEventSupportsMatcher } from "./hook-contract.js";
 
-const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = {
-  PreToolUse: "pre", PostToolUse: "post", PermissionRequest: "perm",
-  UserPromptSubmit: "UserPromptSubmit", PostToolUseFailure: "PostToolUseFailure",
-  PermissionDenied: "PermissionDenied", SessionStart: "SessionStart",
-  SessionEnd: "SessionEnd", Notification: "Notification", Stop: "Stop",
-  PreCompact: "PreCompact", PostCompact: "PostCompact",
-  SubagentStart: "SubagentStart", SubagentStop: "SubagentStop",
-};
+const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = HOOK_EVENT_TYPES;
 const INTERNAL_TO_EVENT = Object.fromEntries(Object.entries(EVENT_TO_INTERNAL).map(([external, internal]) => [internal, external]));
 
 export interface ImportedHookEntry {
-  /** The source file containing this handler, retained for studio review. */
+  // The source file containing this handler, retained for studio review.
   sourcePath: string;
   event: HookEvent;
   matcher?: string;
@@ -44,7 +38,7 @@ function hasForbiddenPlaceholder(value: string): boolean {
   return /\$\{user_config\.|\$\{CLAUDE_/u.test(rewritten);
 }
 
-/** Convert one source file's supported events and exec-form handlers into review-only entries. */
+// Convert one source file's supported events and exec-form handlers into review-only entries.
 export function importLegacyHooks(value: unknown, sourcePath: string): { entries: ImportedHookEntry[]; diagnostics: HookImportDiagnostic[] } {
   if (!sourcePath.trim()) throw new Error("hook import requires a source path");
   const entries: ImportedHookEntry[] = [];
@@ -70,7 +64,10 @@ export function importLegacyHooks(value: unknown, sourcePath: string): { entries
     blocks.forEach((rawBlock, blockIndex) => {
       const block = record(rawBlock);
       const handlers = block?.hooks;
-      const matcher = block?.matcher;
+      const matcher = hookEventSupportsMatcher(event) ? block?.matcher : undefined;
+      if (block?.matcher !== undefined && !hookEventSupportsMatcher(event)) {
+        report("rewritten", `${sourceEvent}[${blockIndex}]`, "matcher ignored: event has no matcher support");
+      }
       if (!block || !Array.isArray(handlers) || (matcher !== undefined && typeof matcher !== "string")) {
         report("lost", `${sourceEvent}[${blockIndex}]`, "invalid matcher block");
         return;
@@ -118,7 +115,7 @@ export function importLegacyHooks(value: unknown, sourcePath: string): { entries
   return { entries, diagnostics };
 }
 
-/** Refuse publication until the user has reviewed each imported protocol boundary. */
+// Refuse publication until the user has reviewed each imported protocol boundary.
 export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, "needsAdaptation"> & { needsAdaptation?: boolean })[]): { version: 1; hooks: Record<string, unknown[]> } {
   const hooks: Record<string, unknown[]> = {};
   for (const [index, entry] of entries.entries()) {
@@ -126,7 +123,7 @@ export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, 
     const event = Object.hasOwn(INTERNAL_TO_EVENT, entry.event) ? INTERNAL_TO_EVENT[entry.event] : undefined;
     if (!event) throw new Error(`hook ${index} has an unsupported event`);
     validateSymbolicHookArgv([...entry.command, ...Object.values(entry.env ?? {})], `hook ${index}`);
-    (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
+    (hooks[event] ??= []).push({ ...(entry.matcher && hookEventSupportsMatcher(entry.event) ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
       command: entry.command, ...(entry.env ? { env: entry.env } : {}),
       ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}) }] });
   }
@@ -138,7 +135,7 @@ export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, 
   return document;
 }
 
-/** Project reviewed native entries for an optional adjacent legacy layout. */
+// Project reviewed native entries for an optional adjacent legacy layout.
 export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks: Record<string, unknown[]>; notice: string } {
   const hooks: Record<string, unknown[]> = {};
   const back = (value: string) => value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
@@ -148,7 +145,7 @@ export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks:
     if (!event) throw new Error(`hook event ${entry.event} cannot be exported`);
     const [command, ...args] = entry.command;
     if (!command) throw new Error(`hook ${entry.id} has no executable`);
-    (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
+    (hooks[event] ??= []).push({ ...(entry.matcher && hookEventSupportsMatcher(entry.event) ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
       command: back(command), args: args.map(back),
       ...(entry.env ? { env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, back(value)])) } : {}),
       timeoutMs: entry.timeoutMs }] });

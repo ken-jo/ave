@@ -32,8 +32,8 @@ describe("splitLeaf", () => {
   });
 
   it("takes half of the dropped-on tile and nothing from the others", () => {
-    // A drop should not resize a part of the screen the user was not pointing
-    // at: A keeps its half, and B's half is what gets divided.
+    // A drop should not resize a part of the screen the user was not pointing at: A keeps its half, and B's half is what gets
+    // divided.
     const two = splitLeaf(main, "main", "right", "group-2");
     const three = splitLeaf(two, "group-2", "bottom", "group-3");
 
@@ -179,8 +179,8 @@ describe("minimumCanvasHeight", () => {
   });
 
   it("reads the layout in percentages, not fractions", () => {
-    // The units are the trap: a fold seeded with 1 would answer 250 for every
-    // shape, which is the whole cap silently doing nothing.
+    // The units are the trap: a fold seeded with 1 would answer 250 for every shape, which is the whole cap silently doing
+    // nothing.
     expect(minimumCanvasHeight(layoutBoxes(splitLeaf(main, "main", "bottom", "group-2")), 250)).toBe(500);
   });
 

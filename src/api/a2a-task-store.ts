@@ -32,14 +32,7 @@ import { isValidSessionId } from "../memory/memory-manager.js";
 
 const STORE_VERSION = 1;
 const DEFAULT_FILE_NAME = "tasks.json";
-/**
- * Wire-level shape rule shared with the A2A subagent handler. Both modules
- * validate the same child-session ids off the same wire, so they must reject
- * the same strings — exported here because this module owns the persisted
- * task record those ids are keys into. The structural ids (context, task,
- * artifact) go through `isSafeStructuralId` in `shared/dlp-safe-id.ts` for
- * the same reason.
- */
+// Share child-session id validation with the wire handler; structural ids use isSafeStructuralId.
 /** Metadata object keys may not carry C0 controls or DEL. */
 const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
 const TASK_KEYS = new Set(["id", "contextId", "status", "history"]);
@@ -55,7 +48,6 @@ const RECORD_KEYS = new Set([
 
 const RFC3339_TIMESTAMP = /^(\d{4})-(0[1-9]|1[0-2])-([0-2]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
-/** Validate the RFC 3339 JSON representation used by protobuf Timestamp. */
 export function isA2ARfc3339Timestamp(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const match = RFC3339_TIMESTAMP.exec(value);
@@ -154,12 +146,7 @@ function normalizeStoredMessage(value: unknown): A2AMessage | null {
   }
 }
 
-/**
- * Canonical, DLP-masked validator for an untrusted remote Task result. This is
- * intentionally colocated with the local task-store validator so both stores
- * share the same message/part/timestamp limits and lifecycle state SOT. The
- * local sub-agent projection remains stricter and still excludes AUTH_REQUIRED.
- */
+// Share remote-task limits with local validation; the local projection still excludes AUTH_REQUIRED.
 export function canonicalizeA2ARemoteTask(
   value: unknown,
   maxHistoryMessages = GUIDE_MAX_ENTRIES,
@@ -340,10 +327,6 @@ function normalizeRecord(value: unknown, maxHistoryMessages: number): A2ATaskRec
     updatedAt: value.updatedAt,
     task,
   };
-}
-
-function cloneRecord(record: A2ATaskRecord): A2ATaskRecord {
-  return structuredClone(record);
 }
 
 function taskKey(handlerId: string, taskId: string): string {
@@ -661,7 +644,7 @@ export class A2ATaskStore {
   async get(handlerId: string, taskId: string): Promise<A2ATaskRecord | null> {
     return await this.withLock(() => {
       const index = this.findIndex(handlerId, taskId);
-      return index < 0 ? null : cloneRecord(this.records[index]!);
+      return index < 0 ? null : structuredClone(this.records[index]!);
     });
   }
 
@@ -669,7 +652,7 @@ export class A2ATaskStore {
   async lookupTask(handlerId: string, taskId: string): Promise<A2ATaskLookupResult> {
     return await this.withLock(() => {
       const index = this.findIndex(handlerId, taskId);
-      if (index >= 0) return { ok: true, record: cloneRecord(this.records[index]!) };
+      if (index >= 0) return { ok: true, record: structuredClone(this.records[index]!) };
       return {
         ok: false,
         reason: this.records.some((record) => record.task.id === taskId)
@@ -682,7 +665,7 @@ export class A2ATaskStore {
   async findByMessageId(handlerId: string, messageId: string): Promise<A2ATaskRecord | null> {
     return await this.withLock(() => {
       const record = this.findMessageRecord(handlerId, messageId);
-      return record ? cloneRecord(record) : null;
+      return record ? structuredClone(record) : null;
     });
   }
 
@@ -695,14 +678,10 @@ export class A2ATaskStore {
         !filter.statusTimestampAfter
         || Date.parse(record.updatedAt) >= Date.parse(filter.statusTimestampAfter))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.task.id.localeCompare(b.task.id))
-      .map(cloneRecord));
+      .map((record) => structuredClone(record)));
   }
 
-  /**
-   * Reserve the single in-process admission slot before prompting or starting a
-   * child. The reservation is intentionally not persisted and is released when
-   * the durable Task link commits or the attempted spawn fails.
-   */
+  // Reserve admission before approval or spawn; release on durable task linkage or spawn failure.
   async reserveInitialTaskAdmission(input: {
     handlerId: string;
     message: A2AMessage;
@@ -730,7 +709,7 @@ export class A2ATaskStore {
           taskId: duplicate.task.id,
         });
         return assignedMessage && hasExactInitialStoredMessage(duplicate, assignedMessage)
-          ? { ok: true, reserved: false, record: cloneRecord(duplicate) }
+          ? { ok: true, reserved: false, record: structuredClone(duplicate) }
           : { ok: false, reason: "duplicate-message" };
       }
       if (this.initialAdmission) {
@@ -831,7 +810,7 @@ export class A2ATaskStore {
           return { ok: false, reason: "duplicate-message" };
         }
         consumeAdmission();
-        return { ok: true, created: false, record: cloneRecord(duplicateMessage) };
+        return { ok: true, created: false, record: structuredClone(duplicateMessage) };
       }
       const existingIndex = this.findIndex(input.handlerId, input.childSessionId);
       if (existingIndex >= 0) {
@@ -840,7 +819,7 @@ export class A2ATaskStore {
           return { ok: false, reason: "duplicate-message" };
         }
         consumeAdmission();
-        return { ok: true, created: false, record: cloneRecord(existing) };
+        return { ok: true, created: false, record: structuredClone(existing) };
       }
 
       const removeCount = this.removalCountForAdmission(input.handlerId);
@@ -882,7 +861,7 @@ export class A2ATaskStore {
         throw error;
       }
       consumeAdmission();
-      return { ok: true, created: true, record: cloneRecord(record) };
+      return { ok: true, created: true, record: structuredClone(record) };
     });
   }
 
@@ -896,7 +875,7 @@ export class A2ATaskStore {
       const inspected = this.inspectContinuationUnlocked(input);
       if (!inspected.ok) return inspected;
       if (inspected.duplicate) {
-        return { ok: true, duplicate: true, record: cloneRecord(inspected.record) };
+        return { ok: true, duplicate: true, record: structuredClone(inspected.record) };
       }
       const record = inspected.record;
       const previous = structuredClone(this.records);
@@ -910,15 +889,11 @@ export class A2ATaskStore {
         this.records = previous;
         throw error;
       }
-      return { ok: true, duplicate: false, record: cloneRecord(record) };
+      return { ok: true, duplicate: false, record: structuredClone(record) };
     });
   }
 
-  /**
-   * Validate a continuation without changing task state or durable history.
-   * Callers must still use {@link beginContinuation} after authorization so
-   * races are revalidated under the store lock before the mutation commits.
-   */
+  // Preflight does not mutate state; beginContinuation must revalidate under the store lock after approval.
   async preflightContinuation(input: {
     handlerId: string;
     taskId: string;
@@ -931,7 +906,7 @@ export class A2ATaskStore {
       return {
         ok: true,
         duplicate: inspected.duplicate,
-        record: cloneRecord(inspected.record),
+        record: structuredClone(inspected.record),
       };
     });
   }
@@ -948,7 +923,7 @@ export class A2ATaskStore {
       const record = this.records[index]!;
       const current = record.task.status.state;
       if (isA2ATerminalTaskState(current)) {
-        return { ok: true, changed: false, record: cloneRecord(record) };
+        return { ok: true, changed: false, record: structuredClone(record) };
       }
       if (!canTransitionA2ATaskState(current, input.state)) {
         return { ok: false, reason: "invalid-transition" };
@@ -989,7 +964,7 @@ export class A2ATaskStore {
         this.records = previous;
         throw error;
       }
-      return { ok: true, changed: true, record: cloneRecord(record) };
+      return { ok: true, changed: true, record: structuredClone(record) };
     });
   }
 }

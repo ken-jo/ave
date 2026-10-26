@@ -5,13 +5,7 @@ import { registerStandardCategories } from "../../permissions/category-registry.
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
-/**
- * web_fetch must route through NetworkGuard.fetchPublicHttpResponse so
- * localhost / private / loopback / metadata endpoints are rejected before a
- * real network request is made. This test relies on NetworkGuard's
- * ensurePublicHttpUrl pre-check which rejects based on DNS resolution of
- * reserved ranges — no live network required.
- */
+/** Reject private and reserved destinations before transport; DNS prechecks need no live request. */
 describe("web_fetch SSRF guard", () => {
   function makeWebFetchTool(
     workflowDeps: Parameters<typeof registerBuiltinTools>[2] = {
@@ -66,17 +60,13 @@ describe("web_fetch SSRF guard", () => {
   it("keeps the network category for every destination", () => {
     const tool = makeWebFetchTool();
 
-    // `network` for BOTH public and private destinations: the URL is
-    // model-chosen, so a public fetch is an egress channel just as much as a
-    // private one, and every exclusion resting on this category keeps applying
-    // to both. Which public fetches actually prompt is decided by the request
-    // screen in the risk classifier, not here.
+    // All model-chosen fetches are network egress; risk screening decides which requests prompt.
     expect(tool.category).toBe("network");
     expect(tool.categoryForInput?.({
       url: "https://example.com/page",
     })).toBe("network");
     expect(tool.categoryForInput?.({
-      url: "http://10.185.177.209:8080/status",
+      url: "http://10.10.1.209:8080/status",
       allowPrivateNetwork: true,
     })).toBe("network");
   });
@@ -84,9 +74,7 @@ describe("web_fetch SSRF guard", () => {
   it("remembers an approval per destination host, not per URL", () => {
     const tool = makeWebFetchTool();
 
-    // The host is the unit a person can decide about, and the unit that bounds
-    // where data can go. A key per URL would make "always allow" mean "this
-    // exact page"; the tool name alone would make it mean "anywhere".
+    // Scope persistent grants by host so they bound destinations without being page-specific.
     expect(tool.approvalCacheKey?.({
       url: "https://docs.example.org/guide/install",
     })).toBe("web_fetch:host:docs.example.org");
@@ -103,14 +91,14 @@ describe("web_fetch SSRF guard", () => {
     const tool = makeWebFetchTool();
 
     const privateKey = tool.approvalCacheKey?.({
-      url: "http://10.185.177.209:8080/status",
+      url: "http://10.10.1.209:8080/status",
       allowPrivateNetwork: true,
     });
     const publicKey = tool.approvalCacheKey?.({
-      url: "http://10.185.177.209:8080/status",
+      url: "http://10.10.1.209:8080/status",
     });
-    expect(privateKey).toBe("web_fetch:host:private-network:10.185.177.209");
-    expect(publicKey).toBe("web_fetch:host:10.185.177.209");
+    expect(privateKey).toBe("web_fetch:host:private-network:10.10.1.209");
+    expect(publicKey).toBe("web_fetch:host:10.10.1.209");
     expect(privateKey).not.toBe(publicKey);
   });
 
@@ -127,7 +115,7 @@ describe("web_fetch SSRF guard", () => {
       "builtin",
       "network",
       null,
-      { approvalCacheKey: "web_fetch:host:private-network:10.185.177.209" },
+      { approvalCacheKey: "web_fetch:host:private-network:10.10.1.209" },
     );
     expect(privateDecision.decision).toBe("ask");
   });
@@ -142,9 +130,7 @@ describe("web_fetch SSRF guard", () => {
     expect(result.output).toMatch(/non-public address/i);
   });
 
-  // The guard validates each hop itself, so its transport has to be the one
-  // that hands a redirect back rather than throwing on it. Asserting that the
-  // plain `net.fetch` stays untouched is the half that catches a re-wiring.
+  // The guard owns redirect validation and must receive redirect responses from its transport.
   it("runs tool calls on the injected single-hop Electron transport", async () => {
     const singleHopNetworkFetch = vi.fn(async () =>
       new Response("<html><body>resolved through electron</body></html>", { status: 200 }),
@@ -156,7 +142,7 @@ describe("web_fetch SSRF guard", () => {
     });
 
     const result = await tool.execute(
-      { url: "http://10.185.177.209/page", allowPrivateNetwork: true },
+      { url: "http://10.10.1.209/page", allowPrivateNetwork: true },
       {} as never,
     );
 

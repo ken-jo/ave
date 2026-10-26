@@ -543,7 +543,6 @@ describe("A2ATaskStore — child session id rule is the host's", () => {
       contextId: "context-long",
       message: userMessage("message-long"),
     })).resolves.toEqual({ ok: false, reason: "invalid-task" });
-    // The old cap also let any `[A-Za-z0-9_-]{1,256}` through.
     await expect(store.create({
       handlerId: "profile-a",
       childSessionId: "sub-child-1",

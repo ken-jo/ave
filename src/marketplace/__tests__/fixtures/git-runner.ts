@@ -1,14 +1,11 @@
-/**
- * Test fixture: a {@link GitRunner} over the host's git with a real askpass
- * broker, an empty generated global config and Ave-owned empty directories.
- */
+/** Host git with a real askpass broker and isolated global config. */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AskpassBroker } from "../../git/askpass.js";
 import { detectGitRuntime, type GitExecutable, nodeGitDetectionDeps } from "../../git/detect.js";
 import { GitRunner, type GitRunnerOptions } from "../../git/run-git.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 export interface TestGitRunner {
   runner: GitRunner;
@@ -25,16 +22,17 @@ export async function hostGitExecutable(): Promise<GitExecutable> {
 }
 
 export async function createTestGitRunner(
-  options: { tokens?: Record<string, string> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig">> = {},
+  options: { tokens?: Record<string, string>; runtime?: Pick<TestGitRunner, "git" | "broker"> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig" | "_scheduleTimeoutForTest">> = {},
 ): Promise<TestGitRunner> {
+  if (options.runtime && options.tokens) throw new Error("a shared broker owns its token store");
   const dir = mkdtempSync(join(tmpdir(), "ave-git-runner-"));
   const emptyDir = join(dir, "empty");
   mkdirSync(emptyDir);
   const globalConfigPath = join(dir, "gitconfig");
   writeFileSync(globalConfigPath, "");
-  const git = await hostGitExecutable();
+  const git = options.runtime?.git ?? await hostGitExecutable();
   const tokens = options.tokens ?? {};
-  const broker = await AskpassBroker.start({ getToken: (host) => tokens[host] ?? null });
+  const broker = options.runtime?.broker ?? await AskpassBroker.start({ getToken: (host) => tokens[host] ?? null });
   const runner = new GitRunner({
     git,
     globalConfigPath,
@@ -43,6 +41,7 @@ export async function createTestGitRunner(
     ...(options.resolveProxy ? { resolveProxy: options.resolveProxy } : {}),
     ...(options.lookup ? { lookup: options.lookup } : {}),
     ...(options.readSshConfig ? { readSshConfig: options.readSshConfig } : {}),
+    ...(options._scheduleTimeoutForTest ? { _scheduleTimeoutForTest: options._scheduleTimeoutForTest } : {}),
   });
   return {
     runner,
@@ -50,8 +49,8 @@ export async function createTestGitRunner(
     git,
     dir,
     async cleanup() {
-      await broker.close();
-      await rm(dir, { recursive: true, force: true });
+      if (!options.runtime) await broker.close();
+      await cleanupTmpDir(dir);
     },
   };
 }

@@ -1,16 +1,11 @@
-/**
- * Process-local signal for the Electron updater install path.
- *
- * electron-updater's `quitAndInstall()` first closes BrowserWindows and then
- * quits the app. Ave lets the first updater-owned window close proceed,
- * intercepts the first updater-owned before-quit to run bounded cleanup, then
- * resumes app quit. Once prepared, updater-owned before-quit events must not
- * be converted back into a second async shutdown pass.
- */
+import { isAppRelaunchRequested } from "./app-relaunch-state.js";
+
+// The updater closes windows before quitting; intercept its first quit for bounded cleanup and never restart that cleanup.
 let appUpdateInstallRequested = false;
 let appUpdateInstallPrepared = false;
 
 export function beginAppUpdateInstallRequest(): void {
+  if (isAppRelaunchRequested()) throw new Error("relaunch-in-progress");
   appUpdateInstallRequested = true;
   appUpdateInstallPrepared = false;
 }

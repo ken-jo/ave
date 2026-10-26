@@ -1,7 +1,7 @@
 import {
   __resetActiveSandboxCapabilityForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "./process-platform.js";
 
@@ -9,7 +9,7 @@ export type HostShellSandboxFixturePlatform = "darwin" | "linux" | "win32";
 
 export function partialWindowsAsrt(): void {
   setProcessPlatform("win32");
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({
     kind: "asrt",
     confidence: "verified",
@@ -24,5 +24,5 @@ export function requestedSandboxUnavailable(
 ): void {
   setProcessPlatform(platform);
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
 }

@@ -1,12 +1,4 @@
-/**
- * Host-owned execution plan for the two builtin shell tools.
- *
- * This deliberately models the execution substrate, not merely the process-wide
- * ASRT capability. On current Windows ASRT, a path-string ACL grant cannot make
- * a one-shot shell filesystem lease reparse-safe. Until upstream exposes a
- * handle-bound/no-follow grant primitive, requested Windows shell work therefore
- * uses an honest plain-host plan and must be explicitly approved per invocation.
- */
+// Path-string ACL grants cannot make one-shot filesystem leases reparse-safe; until handle-bound/no-follow grants exist, the plain-host Windows route requires per-invocation consent.
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { SandboxCapability } from "./sandbox-capability.js";
@@ -14,15 +6,20 @@ import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
-export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v3" as const;
+export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v4" as const;
 
 export type HostShellExecutionRequest = "default" | "host";
 
 export type HostShellExecutionMode = "asrt" | "plain" | "blocked";
 
-/** Machine-readable, host-owned fallback state. Never derive authority from UI text. */
+// What confines a sandboxed (`mode: "asrt"`) shell child: the ASRT wrap (Seatbelt, bubblewrap), or — on Windows hosts that offer it — a Microsoft Execution Containers container per command (`mxc-windows.ts`), whose network reaches only the invocation's own proxy port. `none` for every other mode.
+type HostShellSubstrate = "asrt" | "mxc" | "none";
+
+// Machine-readable, host-owned fallback state. Never derive authority from UI text.
 export type HostShellFallbackReason =
   | "none"
+  | "disabled-by-setting"
+  | "platform-unsupported"
   | "windows-partial-shell-acl-unsafe"
   | "requested-sandbox-unavailable"
   | "active-sandbox-not-shell-contained";
@@ -30,35 +27,37 @@ export type HostShellFallbackReason =
 export interface HostShellExecutionPlan {
   readonly version: typeof HOST_SHELL_EXECUTION_PLAN_VERSION;
   readonly platform: NodeJS.Platform;
-  /** Boot-sealed settings/env intent; never re-read from renderer settings. */
+  // Boot-sealed settings/env intent; never re-read from renderer settings.
   readonly requestedSandbox: boolean;
-  /** Explicit per-invocation request, separate from sandbox availability. */
+  // Explicit per-invocation request, separate from sandbox availability.
   readonly executionRequest: HostShellExecutionRequest;
-  /** Actual route selected before permission/reviewer processing. */
+  // Actual route selected before permission/reviewer processing.
   readonly mode: HostShellExecutionMode;
-  /** Honest capability of the child selected by this plan. */
+  // True only for the confined route this invocation will actually use.
+  readonly sandboxed: boolean;
+  // What confines the child when `mode` is `asrt`; `none` otherwise.
+  readonly substrate: HostShellSubstrate;
+  // Honest capability of the child selected by this plan.
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  /** True whenever this plain shell requires a fresh one-shot approval. */
+  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request or the Windows partial-ASRT Plan B (an exact `Bash(<command>)` allow rule or a fresh approval). A requested-but-unavailable sandbox is not one of them: it follows the same exact-rule policy and only records its `fallbackReason`.
   readonly requiresExplicitUserApproval: boolean;
-  /** Stable identity for audit/cache consumers; contains no command or raw path. */
+  // Stable identity for audit/cache consumers; contains no command or raw path.
   readonly identity: string;
 }
 
-/**
- * The allowlist-only, serializable execution-plan view retained in audit data
- * and shell result metadata. It deliberately excludes command arguments,
- * directories, approval bindings, permits, nonces, HMACs, and free-form
- * capability reasons.
- */
+// The allowlist-only, serializable execution-plan view retained in audit data and shell result metadata. It deliberately excludes command arguments, directories, approval bindings, permits, nonces, HMACs, and free-form capability reasons.
 export interface HostShellExecutionPlanAuditProjection {
   readonly version: typeof HOST_SHELL_EXECUTION_PLAN_VERSION;
   readonly identity: string;
   readonly platform: NodeJS.Platform;
   readonly requestedSandbox: boolean;
-  /** Explicit per-invocation request, separate from sandbox availability. */
+  // Explicit per-invocation request, separate from sandbox availability.
   readonly executionRequest: HostShellExecutionRequest;
   readonly mode: HostShellExecutionMode;
+  // True only for the confined route this invocation will actually use.
+  readonly sandboxed: boolean;
+  readonly substrate: HostShellSubstrate;
   readonly fallbackReason: HostShellFallbackReason;
   readonly requiresExplicitUserApproval: boolean;
   readonly capability: Readonly<{
@@ -75,11 +74,7 @@ const auditProjections = new WeakMap<
 >();
 const issuedAuditProjections = new WeakSet<HostShellExecutionPlanAuditProjection>();
 
-/**
- * Return the single immutable, public-safe projection for an issued plan.
- * A WeakMap keeps the result identity stable through approval, audit, and the
- * native shell result without retaining completed invocation plans.
- */
+// Return the single immutable, public-safe projection for an issued plan. A WeakMap keeps the result identity stable through approval, audit, and the native shell result without retaining completed invocation plans.
 export function getHostShellExecutionPlanAuditProjection(
   plan: HostShellExecutionPlan,
 ): HostShellExecutionPlanAuditProjection {
@@ -96,6 +91,8 @@ export function getHostShellExecutionPlanAuditProjection(
     requestedSandbox: plan.requestedSandbox,
     executionRequest: plan.executionRequest,
     mode: plan.mode,
+    sandboxed: plan.sandboxed,
+    substrate: plan.substrate,
     fallbackReason: plan.fallbackReason,
     requiresExplicitUserApproval: plan.requiresExplicitUserApproval,
     capability: Object.freeze({
@@ -110,11 +107,7 @@ export function getHostShellExecutionPlanAuditProjection(
   return projection;
 }
 
-/**
- * Accept only an allowlist projection issued by this module. Approval payloads
- * remain in-process until IPC serialization, so object identity gives the host
- * a stronger boundary than trusting a structural lookalike with extra fields.
- */
+// Accept only an allowlist projection issued by this module. Approval payloads remain in-process until IPC serialization, so object identity gives the host a stronger boundary than trusting a structural lookalike with extra fields.
 export function isIssuedHostShellExecutionPlanAuditProjection(
   projection: unknown,
 ): projection is HostShellExecutionPlanAuditProjection {
@@ -123,21 +116,11 @@ export function isIssuedHostShellExecutionPlanAuditProjection(
     issuedAuditProjections.has(projection as HostShellExecutionPlanAuditProjection);
 }
 
-/**
- * Stable approval/reviewer-cache partition for a host shell execution plan.
- *
- * This deliberately hashes the complete renderer-safe projection instead of
- * relying on {@link HostShellExecutionPlan.identity} alone. In particular, a
- * plain `none` plan can have the same route identity while differing in
- * `requestedSandbox`; an approval or reviewer verdict produced under one must
- * never be replayed under the other.
- */
+// Stable approval/reviewer-cache partition for a host shell execution plan. This deliberately hashes the complete renderer-safe projection instead of relying on HostShellExecutionPlan.identity alone. Requested intent, the actual sandboxed route and confinement dimensions must all partition approvals and reviewer verdicts.
 export function getHostShellExecutionPlanCacheIdentity(
   projection: HostShellExecutionPlanAuditProjection,
 ): string {
-  // Keep this explicit, ordered shape rather than relying on object insertion
-  // order. Every authority-relevant projection field participates, including
-  // the distinction between an omitted legacy `confines` value and all-false.
+  // Keep this explicit, ordered shape rather than relying on object insertion order. Every authority-relevant projection field participates, including the distinction between an omitted legacy `confines` value and all-false.
   const canonicalProjection = JSON.stringify({
     capability: {
       confidence: projection.capability.confidence,
@@ -154,13 +137,15 @@ export function getHostShellExecutionPlanCacheIdentity(
     fallbackReason: projection.fallbackReason,
     identity: projection.identity,
     mode: projection.mode,
+    sandboxed: projection.sandboxed,
+    substrate: projection.substrate,
     platform: projection.platform,
     requestedSandbox: projection.requestedSandbox,
     executionRequest: projection.executionRequest,
     requiresExplicitUserApproval: projection.requiresExplicitUserApproval,
     version: projection.version,
   });
-  return "host-shell-execution-plan-cache/v3:" +
+  return "host-shell-execution-plan-cache/v4:" +
     sha256Hex(canonicalProjection);
 }
 
@@ -191,29 +176,29 @@ function noneCapability(platform: NodeJS.Platform, reason: string): SandboxCapab
 }
 
 function hasShellContainment(capability: SandboxCapability): boolean {
-  if (capability.kind !== "asrt" || capability.confidence === "assumed") return false;
-  // Preserve the legacy full-ASRT contract for fixtures produced before the
-  // per-dimension field existed. Real current producers always declare it.
-  return capability.confines === undefined ||
-    (capability.confines.filesystem === true && capability.confines.process === true);
+  if (capability.kind !== "asrt" || capability.confidence !== "verified") return false;
+  return capability.confines?.filesystem === true &&
+    capability.confines.process === true && capability.confines.network === true;
 }
 
-/**
- * Build the immutable plan once per invocation, after final tool category/input
- * are known and before permission routing. It intentionally does not attempt
- * Windows ACL grants or an ASRT wrapper for the Plan-B branch.
- */
+// Build the immutable plan once per invocation, after final tool category/input are known and before permission routing. It intentionally does not attempt Windows ACL grants or an ASRT wrapper for the Plan-B branch.
 export function buildHostShellExecutionPlan(input: {
   platform: NodeJS.Platform;
   requestedSandbox: boolean;
   activeCapability: SandboxCapability;
+  // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
+  shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
 }): HostShellExecutionPlan {
+  const shellSubstrate = input.shellSubstrate ?? "asrt";
+  if (shellSubstrate === "mxc" && input.platform !== "win32") {
+    throw new Error("The MXC shell substrate exists only on Windows");
+  }
   const executionRequest = input.executionMode ?? "default";
   if (executionRequest !== "default" && executionRequest !== "host") {
     throw new Error("Invalid host shell execution request");
   }
-  const requestedSandbox = input.requestedSandbox || input.activeCapability.kind === "asrt";
+  const requestedSandbox = input.requestedSandbox;
 
   if (executionRequest === "host") {
     return Object.freeze({
@@ -222,6 +207,8 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      sandboxed: false,
+      substrate: "none" as const,
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
@@ -229,9 +216,26 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable yields an honest plain child on
-  // every platform. It must carry an opaque, exact-action allow-once permit;
-  // explicit sandbox-off remains the normal plain-shell policy path below.
+  if (!requestedSandbox) {
+    const fallbackReason: HostShellFallbackReason =
+      input.platform === "darwin" || input.platform === "linux" || input.platform === "win32"
+        ? "disabled-by-setting" : "platform-unsupported";
+    return Object.freeze({
+      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
+      platform: input.platform,
+      requestedSandbox,
+      executionRequest,
+      mode: "plain" as const,
+      sandboxed: false,
+      substrate: "none" as const,
+      capability: noneCapability(input.platform, "The OS shell sandbox is disabled for this host."),
+      fallbackReason,
+      requiresExplicitUserApproval: false,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+    });
+  }
+
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: without a sandbox only an exact `Bash(<command>)` allow rule runs it unasked, and everything else asks (owner 2026-10-25, unsandboxed shell exact-rule requirement, superseding I3's normal-rule auto-allow). The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
@@ -244,9 +248,11 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      sandboxed: false,
+      substrate: "none" as const,
       capability,
       fallbackReason,
-      requiresExplicitUserApproval: true,
+      requiresExplicitUserApproval: false,
       identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
     });
   }
@@ -259,15 +265,16 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "asrt" as const,
+      sandboxed: true,
+      substrate: shellSubstrate,
       capability,
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":asrt",
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
     });
   }
 
-  // Windows remains special only when a real ASRT substrate is active but is
-  // not shell-contained. The execution authorization itself is generic.
+  // Windows remains special only when a real ASRT substrate is active but is not shell-contained. The execution authorization itself is generic.
   if (
     input.platform === "win32" &&
     requestedSandbox &&
@@ -284,6 +291,8 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      sandboxed: false,
+      substrate: "none" as const,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
@@ -291,51 +300,28 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // Only a full ASRT route and the explicitly modelled Windows ASRT Plan B
-  // may execute a requested shell. Future partial substrates (for example
-  // `partial` or `fs-only`) must not silently degrade to an ordinary host
-  // shell before they receive their own sealed execution contract.
-  if (input.activeCapability.kind !== "none") {
-    const fallbackReason: HostShellFallbackReason = "active-sandbox-not-shell-contained";
-    const capability = noneCapability(
-      input.platform,
-      "The active OS sandbox does not provide both filesystem and process confinement required for shell execution.",
-    );
-    return Object.freeze({
-      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
-      platform: input.platform,
-      requestedSandbox,
-      executionRequest,
-      mode: "blocked" as const,
-      capability,
-      fallbackReason,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
-    });
-  }
-
+  // Only a full ASRT route and the explicitly modelled Windows ASRT Plan B may execute a requested shell. Future partial substrates (for example `partial` or `fs-only`) must not silently degrade to an ordinary host shell before they receive their own sealed execution contract.
+  const fallbackReason: HostShellFallbackReason = "active-sandbox-not-shell-contained";
   const capability = noneCapability(
     input.platform,
-    "no OS sandbox configured for the host process",
+    "The active OS sandbox does not provide both filesystem and process confinement required for shell execution.",
   );
   return Object.freeze({
     version: HOST_SHELL_EXECUTION_PLAN_VERSION,
     platform: input.platform,
     requestedSandbox,
     executionRequest,
-    mode: "plain" as const,
+    mode: "blocked" as const,
+    sandboxed: false,
+    substrate: "none" as const,
     capability,
-    fallbackReason: "none" as const,
+    fallbackReason,
     requiresExplicitUserApproval: false,
-    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":none",
+    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
   });
 }
 
-
-/**
- * Host-owned hard gate for explicit host requests and requested-sandbox
- * fallbacks. Every such plain child needs the same opaque allow-once permit.
- */
+// Host-owned hard gate for explicit host requests and the Windows partial-ASRT Plan B. Every such plain child needs the same opaque one-shot permit; only an explicit host request may also receive it from a matching allow rule.
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan): boolean {
   return plan.mode === "plain" &&
     (plan.executionRequest === "host" || plan.requestedSandbox === true) &&
@@ -343,12 +329,7 @@ export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan):
     plan.requiresExplicitUserApproval === true;
 }
 
-/**
- * Schema-relevant input normalization shared by the host approval surface and
- * the final native shell permit. It lives in this leaf module (which imports
- * neither approval-gate nor the permit module) so the two host boundaries
- * never form a runtime cycle through their shared parser.
- */
+// Schema-relevant input normalization shared by the host approval surface and the final native shell permit. It lives in this leaf module (which imports neither approval-gate nor the permit module) so the two host boundaries never form a runtime cycle through their shared parser.
 export interface ParsedHostShellExecutionInput {
   readonly command: string;
   readonly cwd: string | undefined;
@@ -358,10 +339,7 @@ export interface ParsedHostShellExecutionInput {
   readonly runInBackground: boolean;
 }
 
-/**
- * Normalize exactly the execution-relevant subset shared by BashTool and
- * PowerShellTool. Undefined means the value cannot represent a native spawn.
- */
+// Normalize exactly the execution-relevant subset shared by BashTool and PowerShellTool. Undefined means the value cannot represent a native spawn.
 export function parseHostShellExecutionInput(
   input: unknown,
 ): ParsedHostShellExecutionInput | undefined {
@@ -379,9 +357,7 @@ export function parseHostShellExecutionInput(
   if (cwd !== undefined && typeof cwd !== "string") return undefined;
   const timeoutSeconds = input.timeoutSeconds ??
     TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000;
-  // Type sanity only: a deadline must exist and be a positive integer, but it
-  // has no upper bound — a retry after a timeout escalates the budget, and the
-  // permit must not refuse the spawn that retry asks for.
+  // Type sanity only: a deadline must exist and be a positive integer, but it has no upper bound — a retry after a timeout escalates the budget, and the permit must not refuse the spawn that retry asks for.
   if (
     typeof timeoutSeconds !== "number" ||
     !Number.isInteger(timeoutSeconds) ||

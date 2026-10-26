@@ -1,17 +1,4 @@
-/**
- * http-server + stream-broadcaster — #1436 loopback transport + secret auth.
- *
- * Spins a REAL node:http server on an ephemeral port (port 0) and drives it with
- * REAL `fetch` (node environment). Asserts the fail-closed axes:
- *   - auth on every route (401 missing / 401 wrong / 200 with correct secret),
- *   - dispatch success (200 {ok:true}) and rejection passthrough (403 codes),
- *   - request validation (400 malformed / 400 missing channel / 413 over-cap),
- *   - handler throw → 500 without leaking the thrown message,
- *   - loopback binding (port>0, address 127.0.0.1),
- *   - broadcaster fan-out / unsubscribe / throwing-subscriber isolation.
- *
- * Every server is torn down in afterEach so vitest exits with no leaked handles.
- */
+// Exercise authenticated loopback dispatch and SSE over real HTTP.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { request as httpRequest } from "node:http";
 import {
@@ -25,7 +12,6 @@ import type { LocalApi, LocalApiResult } from "../local-api.js";
 
 const SECRET = "test-secret-0123456789abcdef";
 
-/** Build a stub dispatcher that returns a fixed result (or throws). */
 function stubApi(
   impl: (req: { channel: string; args?: unknown; origin: string }) => LocalApiResult,
 ): LocalApi {
@@ -34,7 +20,6 @@ function stubApi(
 
 let servers: LocalApiHttpServer[] = [];
 
-/** Start a tracked server AND return its broadcaster (for SSE fan-out tests). */
 async function startWithBroadcaster(
   api: LocalApi,
   secret = SECRET,
@@ -104,9 +89,7 @@ describe("http-server — loopback binding", () => {
     "::1",
     "0:0:0:0:0:0:0:1",
   ])("accepts an explicit loopback literal (%s)", async (host) => {
-    // A Fetch-blocked port is rejected only after the host allowlist. This
-    // proves both IPv4 and equivalent IPv6 loopback spellings pass validation
-    // without depending on IPv6 availability in the test runner.
+    // Check loopback spelling before Fetch's port restriction without requiring IPv6 on the test host.
     await expect(
       startLocalApiHttpServer({
         api: stubApi(() => ({ ok: true, data: {} })),
@@ -383,7 +366,6 @@ describe("http-server — loopback binding", () => {
     const server = await startLocalApiHttpServer({ api, secret: SECRET, broadcaster, port: 0 });
     servers.push(server);
     expect(server.port).toBeGreaterThan(0);
-    // Reachable on loopback with the correct secret.
     const res = await fetch(`http://127.0.0.1:${server.port}/v1/health`, { headers: authHeaders() });
     expect(res.status).toBe(200);
   });
@@ -445,7 +427,6 @@ describe("stream-broadcaster", () => {
   });
 });
 
-/** Read from an SSE body reader, accumulating decoded text until `done(buf)`. */
 async function readUntil(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   done: (buffer: string) => boolean,
@@ -460,7 +441,6 @@ async function readUntil(
   return buffer;
 }
 
-/** Poll `check()` up to `tries` times (10ms apart) until it returns true. */
 async function poll(check: () => boolean, tries = 100): Promise<boolean> {
   for (let i = 0; i < tries && !check(); i++) {
     await new Promise((r) => setTimeout(r, 10));
@@ -496,12 +476,10 @@ describe("http-server — GET /v1/events (SSE)", () => {
     expect(res.headers.get("cache-control")).toBe("no-cache, no-transform");
     const reader = res.body!.getReader();
 
-    // Preamble arrives on connect.
     const preamble = await readUntil(reader, (b) => b.includes(": connected"));
     expect(preamble).toContain("retry: 3000");
     expect(preamble).toContain(": connected");
 
-    // A broadcast frame becomes an SSE message with the channel + JSON payload.
     broadcaster.sink(CHANNELS.chat.stream, { streamId: 1, type: "text_delta", text: "hi" });
     const frame = await readUntil(reader, (b) => b.includes(`event: ${CHANNELS.chat.stream}`));
     expect(frame).toContain(`event: ${CHANNELS.chat.stream}`);
@@ -523,7 +501,6 @@ describe("http-server — GET /v1/events (SSE)", () => {
     const r2 = res2.body!.getReader();
     await readUntil(r1, (b) => b.includes(": connected"));
     await readUntil(r2, (b) => b.includes(": connected"));
-    // Both subscriptions are registered before the fan-out.
     expect(await poll(() => broadcaster.subscriberCount() === 2)).toBe(true);
 
     broadcaster.sink(CHANNELS.chat.stream, { streamId: 7, type: "text_delta", text: "yo" });
@@ -552,9 +529,7 @@ describe("http-server — GET /v1/events (SSE)", () => {
     await readUntil(reader, (b) => b.includes(": connected"));
     expect(await poll(() => broadcaster.subscriberCount() === 1)).toBe(true);
 
-    // This is much larger than node's ServerResponse high-water mark. A slow
-    // subscriber must be dropped synchronously instead of making the model
-    // producer wait for `drain` or retaining a per-client event queue.
+    // Exceed the response high-water mark: a slow subscriber must drop without blocking the producer or queuing events.
     expect(() => {
       broadcaster.sink(CHANNELS.chat.stream, {
         streamId: 8,
@@ -564,7 +539,6 @@ describe("http-server — GET /v1/events (SSE)", () => {
     }).not.toThrow();
     expect(await poll(() => broadcaster.subscriberCount() === 0)).toBe(true);
 
-    // No detached subscription remains to receive later frames.
     expect(() => broadcaster.sink(CHANNELS.chat.stream, { streamId: 8, type: "done" })).not.toThrow();
     expect(broadcaster.subscriberCount()).toBe(0);
 
@@ -599,10 +573,8 @@ describe("http-server — GET /v1/events (SSE)", () => {
     await readUntil(reader, (b) => b.includes(": connected"));
     expect(await poll(() => broadcaster.subscriberCount() === 1)).toBe(true);
 
-    // Both the first close and an idempotent lifecycle cleanup must resolve.
     await server.close();
     await server.close();
-    // Drop from the tracking list because this test already closed it.
     servers = servers.filter((s) => s !== server);
     expect(broadcaster.subscriberCount()).toBe(0);
     controller.abort();
@@ -640,7 +612,6 @@ describe("http-server — createSseFrameWriter (shared with the tailnet stream)"
     expect(writer.writeOrClose("data: 1\n\n")).toBe(false);
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(res.destroyed).toBe(true);
-    // After teardown a write is refused even though the fake is still "writable".
     expect(writer.writeOrClose("data: 2\n\n")).toBe(false);
     expect(res.writes).toEqual(["data: 1\n\n"]);
   });

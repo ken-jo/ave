@@ -1,9 +1,4 @@
-/**
- * Bonus security hardening — plugin manifest `entry` must resolve inside the
- * plugin directory. Traversal (`../../../etc/passwd.js`) and absolute paths
- * are rejected fail-soft: the offending plugin is dropped + audit-logged, and
- * the rest of the registry loads normally.
- */
+/** Escaping entries are dropped and audited without preventing other plugins from loading. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -69,9 +64,7 @@ describe("PluginRuntime — entry path allowlist", () => {
       const runtime = makeTestPluginRuntimeWithAudit(fixture, auditEntries);
       await runtime.load();
 
-      // Plugin dropped fail-soft.
       expect(runtime.listPluginIds()).not.toContain("p-evil");
-      // Audit trail recorded the rejection.
       expect(
         auditEntries.some(
           (e) => e.level === "error" && e.message === "plugin_entry_path_rejected",
@@ -117,15 +110,7 @@ describe("PluginRuntime — entry path allowlist", () => {
   });
 });
 
-/**
- * Direct unit tests of the exported resolver. These exercise the
- * path-sep independence that the old string-prefix check lacked.
- *
- * Note: We can't truly swap the path module at runtime in a single vitest
- * process, but we *can* assert that the current (POSIX) path impl accepts
- * plausibly-rooted relative entries and rejects traversal — the core shape
- * the Windows fix preserves.
- */
+/** Entry containment must respect path separators on each platform. */
 describe("resolvePluginEntryPath — direct", () => {
   const root = join(tmpdir(), "plugins", "sample");
 
@@ -168,8 +153,7 @@ describe("resolvePluginEntryPath — direct", () => {
   });
 
   it("rejects traversal even when entry starts with a sibling name prefix", () => {
-    // Guards against the classic `pluginRootResolved` string-prefix bug:
-    // "/root/plugin-foo" should NOT accept "/root/plugin-foobar/evil.js".
+    // A sibling with the same prefix is outside the plugin root.
     expect(() => resolvePluginEntryPath(root, "../sample-evil/entry.mjs")).toThrow(
       /outside plugin directory/,
     );

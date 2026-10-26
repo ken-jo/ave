@@ -1,8 +1,4 @@
-/**
- * Main-process connection manager for explicitly approved ACP subscription
- * runtimes. It deliberately owns only setup and authentication verification;
- * it is not an LLM provider and never exposes ACP tools to the application.
- */
+// Owns setup and authentication checks for approved runtimes; it exposes no LLM provider or native tools.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
@@ -44,15 +40,7 @@ type SpawnAcpRuntime = (
   options: SpawnOptions,
 ) => ChildProcess;
 
-/**
- * Main-process-only provider metadata shared by the short-lived auth probe and
- * the long-lived ACP session transport. `acpArgs` identify the documented
- * stdio transport only; they are deliberately not a general CLI-flag surface.
- *
- * If a provider documents a safe native-tool disable setting, put it in the
- * isolated provider-home configuration managed by the registry, then retain
- * the session client's fail-closed tool detection as a backstop.
- */
+// acpArgs select stdio transport only; safe native-tool clamps belong in isolated provider configuration with fail-closed session checks.
 export interface AcpSubscriptionRuntimeManifest {
   readonly provider: AcpSubscriptionProviderId;
   readonly homeEnv: "KIMI_CODE_HOME" | "GROK_HOME";
@@ -107,19 +95,19 @@ export class AcpSubscriptionRuntimeError extends Error {
 
 export interface AcpSubscriptionRuntimeClientOptions {
   provider: AcpSubscriptionProviderId;
-  /** Existing, app-owned isolated data root for exactly one provider. */
+  // Existing, app-owned isolated data root for exactly one provider.
   runtimeHome: string;
-  /** Existing, blank app-owned workspace. Never bind a real project here. */
+  // Existing, blank app-owned workspace. Never bind a real project here.
   workspaceDir: string;
-  /** Existing, app-owned temporary directory for exactly one provider. */
+  // Existing, app-owned temporary directory for exactly one provider.
   runtimeTempDir?: string;
-  /** A previously main-approved absolute executable path, if one exists. */
+  // A previously main-approved absolute executable path, if one exists.
   executablePath?: string | null;
-  /** Test seam; production uses the managed-child registry. */
+  // Test seam; production uses the managed-child registry.
   spawn?: SpawnAcpRuntime;
-  /** Test seam for filesystem-based executable validation. */
+  // Test seam for filesystem-based executable validation.
   resolveExecutable?: (candidate: string) => Promise<string>;
-  /** Test seam for platform-sensitive validation and environment creation. */
+  // Test seam for platform-sensitive validation and environment creation.
   platform?: NodeJS.Platform;
   clientVersion?: string;
 }
@@ -179,8 +167,7 @@ function numericVersionParts(value: string): readonly number[] | null {
 }
 
 function versionAtLeast(actual: string, minimum: string): boolean {
-  // A prerelease may share the numeric tuple but not the tool-profile contract.
-  // This guard is deliberately used only for the pinned Grok runtime boundary.
+  // A prerelease may share the numeric tuple but not the tool-profile contract. This guard is deliberately used only for the pinned Grok runtime boundary.
   if (actual.replace(/^v/i, "").includes("-")) return false;
   const actualParts = numericVersionParts(actual);
   const minimumParts = numericVersionParts(minimum);
@@ -261,12 +248,7 @@ const GROK_DISABLED_FEATURE_ENV_NAMES = Object.freeze([
   "GROK_CODEX_SESSIONS_ENABLED",
 ] as const);
 
-/**
- * Start from an allowlist rather than a copy of process.env. The only runtime
- * credential source is the provider's isolated home; API keys, existing CLI
- * homes, proxies, loader injection, and custom auth-provider commands are not
- * inherited. Executable search and temporary files receive fixed safe values.
- */
+// Allowlist the environment: credentials come only from the isolated provider home; inherit no API keys, proxies, loaders, or custom auth commands.
 export function sanitizedAcpSubscriptionEnvironment(
   provider: AcpSubscriptionProviderId,
   runtimeHome: string,
@@ -309,8 +291,7 @@ export function sanitizedAcpSubscriptionEnvironment(
     env.GROK_AGENT = grokBuildGovernedAgentDefinitionPath(isolatedHome, platform);
     env.GROK_REQUIRED_MINIMUM_VERSION = GROK_BUILD_REQUIRED_MINIMUM_VERSION;
   }
-  // Avoid vendor debug output that can include login context. stderr is parsed
-  // only for a strictly allowlisted, short-lived device-code flow.
+  // Avoid vendor debug output that can include login context. stderr is parsed only for a strictly allowlisted, short-lived device-code flow.
   env.RUST_LOG = "error";
   return env;
 }
@@ -338,11 +319,8 @@ function safeWindowsSystemRoot(parentEnv: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-/**
- * Canonicalize a picker-approved executable before persisting or spawning it.
- * The caller must repeat this immediately before every execution because the
- * persisted config is not a trusted input and the filesystem can change.
- */
+// Canonicalize a picker-approved executable before persisting or spawning it. The caller must repeat this immediately before every execution because the
+// persisted config is not a trusted input and the filesystem can change.
 export async function resolveAcpSubscriptionExecutable(
   candidate: string,
   platform: NodeJS.Platform = process.platform,
@@ -400,8 +378,7 @@ class AcpAuthProbe {
     child.stdout.on("data", (chunk: Buffer | string) => this.reader.write(chunk));
     child.stdout.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.stdin.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
-    // Drain but never retain or log diagnostic output. Provider CLIs can print
-    // device codes, URLs, account emails, and network details here.
+    // Drain but never retain or log diagnostic output. Provider CLIs can print device codes, URLs, account emails, and network details here.
     child.stderr?.on("data", () => {});
     child.stderr?.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
     child.once("error", () => this.close(new AcpSubscriptionRuntimeError("acp-operation-failed")));
@@ -447,9 +424,9 @@ class AcpAuthProbe {
     }
   }
 
-  dispose(): void {
+  dispose(): void | Promise<void> {
     this.close(new AcpSubscriptionRuntimeError("acp-operation-failed"));
-    forceKillManagedChildProcess(this.child, "acp subscription authentication probe");
+    return forceKillManagedChildProcess(this.child, "acp subscription authentication probe");
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -486,10 +463,8 @@ class AcpAuthProbe {
       this.close(new AcpSubscriptionRuntimeError("acp-operation-failed"));
       return;
     }
-    // An ACP runtime must not call arbitrary host capabilities during an auth
-    // probe. A reverse request can use the same numeric ID as an outgoing
-    // request, so classify requests before responses, decline it and fail
-    // closed rather than consuming a pending reply.
+    // An ACP runtime must not call arbitrary host capabilities during an auth probe. A reverse request can use the same numeric ID as an outgoing request,
+    // so classify requests before responses, decline it and fail closed rather than consuming a pending reply.
     if (message.id !== undefined && typeof message.method === "string") {
       try {
         this.child.stdin?.write(`${JSON.stringify({
@@ -549,7 +524,7 @@ export class AcpSubscriptionRuntimeClient {
       : configuredStatus(options.provider);
   }
 
-  /** Read-only status: this method never executes a user-selected program. */
+  // Read-only status: this method never executes a user-selected program.
   async getStatus(): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       const status = await this.getStatusUnsafe();
@@ -584,16 +559,16 @@ export class AcpSubscriptionRuntimeClient {
     return this.currentStatus();
   }
 
-  /** Main-only canonical path for the config store; never crosses IPC. */
+  // Main-only canonical path for the config store; never crosses IPC.
   getConfiguredExecutable(): string | null {
     return this.executablePath;
   }
 
-  /** Store only a canonical, non-executed picker-approved path. */
+  // Store only a canonical, non-executed picker-approved path.
   async setExecutable(candidate: string): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       const executable = await this.resolveExecutable(candidate);
-      this.stopUnsafe();
+      await this.stopUnsafe();
       this.completedLoginError = null;
       this.executablePath = executable;
       this.verifiedExecutable = null;
@@ -604,7 +579,7 @@ export class AcpSubscriptionRuntimeClient {
 
   async clearExecutable(): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
-      this.stopUnsafe();
+      await this.stopUnsafe();
       this.completedLoginError = null;
       this.executablePath = null;
       this.verifiedExecutable = null;
@@ -613,7 +588,7 @@ export class AcpSubscriptionRuntimeClient {
     });
   }
 
-  /** Explicit verification is the only path that executes the selected binary. */
+  // Explicit verification is the only path that executes the selected binary.
   async verify(): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       if (this.pendingLogin) throw new AcpSubscriptionRuntimeError("acp-login-in-progress");
@@ -650,18 +625,15 @@ export class AcpSubscriptionRuntimeClient {
     });
   }
 
-  /**
-   * Starts only the documented device-code command. The official runtime may
-   * open the user's native system browser, but Ave does not automate that
-   * browser. All output is parsed in-memory under strict allowlists only.
-   */
+  // Starts only the documented device-code command. The official runtime may open the user's native system browser, but Ave does not automate that
+  // browser. All output is parsed in-memory under strict allowlists only.
   async startDeviceCodeLogin(): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       if (this.pendingLogin) throw new AcpSubscriptionRuntimeError("acp-login-in-progress");
       const executable = await this.requireExecutable();
       const child = this.launch(executable, this.manifest.loginArgs);
       if (!child.stdout || !child.stderr) {
-        forceKillManagedChildProcess(child, "acp subscription login missing output streams");
+        await forceKillManagedChildProcess(child, "acp subscription login missing output streams");
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       }
       const pending = {
@@ -702,7 +674,7 @@ export class AcpSubscriptionRuntimeClient {
     });
   }
 
-  /** The renderer never receives the dynamic URL; only this main-side callback does. */
+  // The renderer never receives the dynamic URL; only this main-side callback does.
   async openPendingVerificationUrl(openExternal: (url: string) => Promise<void>): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       const pending = this.pendingLogin;
@@ -722,7 +694,7 @@ export class AcpSubscriptionRuntimeClient {
     return this.withOperationLock(async () => {
       const pending = this.pendingLogin;
       if (!pending) return this.getStatusUnsafe();
-      this.finishPendingLogin(pending, "cancelled");
+      await this.finishPendingLogin(pending, "cancelled");
       return this.currentStatus();
     });
   }
@@ -748,7 +720,7 @@ export class AcpSubscriptionRuntimeClient {
 
   async stop(): Promise<void> {
     await this.withOperationLock(async () => {
-      this.stopUnsafe();
+      await this.stopUnsafe();
     });
   }
 
@@ -775,8 +747,7 @@ export class AcpSubscriptionRuntimeClient {
     return this.spawn(executable, args, {
       cwd: this.options.workspaceDir,
       env,
-      // ACP authentication is JSONL over stdin/stdout. Keeping stdin piped is
-      // required for the probe and harmless for version/login subcommands.
+      // ACP authentication is JSONL over stdin/stdout. Keeping stdin piped is required for the probe and harmless for version/login subcommands.
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
       windowsHide: true,
@@ -808,21 +779,26 @@ export class AcpSubscriptionRuntimeClient {
     const stdoutStream = child.stdout;
     const stderrStream = child.stderr;
     if (!stdoutStream || !stderrStream) {
-      forceKillManagedChildProcess(child, "acp subscription command missing output streams");
+      await forceKillManagedChildProcess(child, "acp subscription command missing output streams");
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
     }
     return new Promise<string>((resolveCommand, rejectCommand) => {
       let settled = false;
       let stdout = "";
+      let termination: void | Promise<void>;
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (error) rejectCommand(error);
-        else resolveCommand(stdout);
+        const settle = (): void => {
+          if (error) rejectCommand(error);
+          else resolveCommand(stdout);
+        };
+        if (termination) void termination.then(settle);
+        else settle();
       };
       const timer = setTimeout(() => {
-        forceKillManagedChildProcess(child, "acp subscription command timeout");
+        termination = forceKillManagedChildProcess(child, "acp subscription command timeout");
         finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"));
       }, PROBE_TIMEOUT_MS);
       timer.unref?.();
@@ -830,13 +806,13 @@ export class AcpSubscriptionRuntimeClient {
         if (!captureStdout || settled) return;
         stdout += String(chunk);
         if (Buffer.byteLength(stdout, "utf8") > MAX_VERSION_LENGTH * 4) {
-          forceKillManagedChildProcess(child, "acp subscription command output limit");
+          termination = forceKillManagedChildProcess(child, "acp subscription command output limit");
           finish(new AcpSubscriptionRuntimeError("acp-operation-failed"));
         }
       });
       stderrStream.on("data", () => {});
       child.once("error", () => {
-        forceKillManagedChildProcess(child, "acp subscription command error");
+        termination = forceKillManagedChildProcess(child, "acp subscription command error");
         finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"));
       });
       child.once("close", (code: number | null) => {
@@ -857,9 +833,9 @@ export class AcpSubscriptionRuntimeClient {
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
     } finally {
       if (probe) {
-        probe.dispose();
+        await probe.dispose();
       } else {
-        forceKillManagedChildProcess(child, "acp subscription invalid authentication probe");
+        await forceKillManagedChildProcess(child, "acp subscription invalid authentication probe");
       }
     }
   }
@@ -980,14 +956,14 @@ export class AcpSubscriptionRuntimeClient {
     outcome: "succeeded" | "failed" | "cancelled",
   ): void {
     void this.withOperationLock(async () => {
-      this.finishPendingLogin(pending, outcome);
+      await this.finishPendingLogin(pending, outcome);
     }).catch(() => undefined);
   }
 
-  private finishPendingLogin(
+  private async finishPendingLogin(
     pending: PendingLogin,
     outcome: "succeeded" | "failed" | "cancelled",
-  ): void {
+  ): Promise<void> {
     if (this.pendingLogin !== pending) return;
     this.pendingLogin = null;
     clearTimeout(pending.timer);
@@ -995,7 +971,7 @@ export class AcpSubscriptionRuntimeClient {
     pending.stderrBuffer = "";
     pending.verificationUrl = null;
     pending.deviceCode = null;
-    forceKillManagedChildProcess(pending.child, `acp subscription login ${outcome}`);
+    await forceKillManagedChildProcess(pending.child, `acp subscription login ${outcome}`);
     this.verifiedExecutable = null;
     this.status = acpSubscriptionStatus(
       this.options.provider,
@@ -1005,8 +981,8 @@ export class AcpSubscriptionRuntimeClient {
     if (outcome === "failed") this.completedLoginError = "acp-login-failed";
   }
 
-  private stopUnsafe(): void {
-    if (this.pendingLogin) this.finishPendingLogin(this.pendingLogin, "cancelled");
+  private async stopUnsafe(): Promise<void> {
+    if (this.pendingLogin) await this.finishPendingLogin(this.pendingLogin, "cancelled");
   }
 
   private currentStatus(): AcpSubscriptionStatus {

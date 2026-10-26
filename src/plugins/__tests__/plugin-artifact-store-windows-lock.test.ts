@@ -1,28 +1,4 @@
-/**
- * meeting#154 — Windows plugin install/update fails with
- * `EPERM: operation not permitted, rename '.<slug>.stage-…' -> '<slug>'`.
- *
- * Root cause (two compounding defects in `extractZipWithCommit`):
- *   1. The atomic dir-swap used a bare `rename()` with no retry. On Windows a
- *      `rename()` of a directory rejects with EPERM while any file inside it
- *      is held open by another process (a still-running plugin webview/worker,
- *      an antivirus scan). The lock is transient — it clears within a few
- *      hundred ms of the previous instance tearing down — but the bare rename
- *      gave up on the first EPERM.
- *   2. `rename(installDir, oldDir)` swallowed *every* error as "first install".
- *      A locked (not absent) installDir was misread as absent, so promotion
- *      then targeted a still-present, still-locked installDir and failed with
- *      the exact EPERM in the issue's stack trace.
- *
- * Proof strategy:
- *   - Deterministic (all platforms): drive `retryOnTransientFsLock` directly to
- *     show the retry ladder recovers transient locks, does NOT retry ENOENT,
- *     and rethrows after exhausting attempts.
- *   - Real hardware (win32 only): hold an OS file handle inside installDir to
- *     produce a genuine EPERM, then release it mid-flight and assert the
- *     install recovers. Against the pre-fix call sites this test FAILS with the
- *     issue's EPERM; against the fixed call sites it passes.
- */
+/** Windows directory renames can fail while child files are open; retry lock errors but never treat them as ENOENT. */
 import AdmZip from "adm-zip";
 import { describe, expect, it } from "vitest";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
@@ -96,9 +72,7 @@ describe.skipIf(process.platform !== "win32")(
         const store = makeStore(tmp);
         const installDir = store.installDirFor("meeting");
         await mkdir(installDir, { recursive: true });
-        // Simulate the previously-installed, still-running plugin: a file
-        // inside installDir held open by another handle locks the whole dir
-        // against rename on Windows.
+        // An open child file locks its parent directory against rename on Windows.
         const lockedFile = resolve(installDir, "runtime.lock");
         await writeFile(lockedFile, "held by running plugin");
         await writeFile(
@@ -107,8 +81,7 @@ describe.skipIf(process.platform !== "win32")(
         );
 
         const handle = await open(lockedFile, "r");
-        // Release the lock partway through the install's retry window,
-        // mirroring the previous plugin instance finishing its teardown.
+        // Release the handle within the install retry window.
         const releaseTimer = setTimeout(() => {
           void handle.close();
         }, 300);
@@ -147,16 +120,8 @@ describe.skipIf(process.platform !== "win32")(
           JSON.stringify({ id: "meeting", version: "old" }),
         );
 
-        // Hold the lock for the whole install: the `installDir->old` rename
-        // exhausts its retry ladder and the non-ENOENT error must surface
-        // (the fixed catch rethrows it instead of misreading it as "first
-        // install"), leaving the previous install untouched — never a
-        // half-promoted or overwritten state.
-        //
-        // Doubles as an erosion guard: if a future libuv stops blocking the
-        // dir rename while a file inside is held open, the install would
-        // *succeed* here and this `rejects` assertion would fail loudly rather
-        // than the lock path silently going uncovered.
+        // An exhausted lock retry must preserve the old install and surface the error.
+        // The rejects assertion also detects platforms that stop reproducing the lock.
         const handle = await open(lockedFile, "r");
         try {
           const zip = new AdmZip();

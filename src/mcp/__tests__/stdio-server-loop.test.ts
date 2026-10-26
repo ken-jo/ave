@@ -1,7 +1,3 @@
-/**
- * stdio framing + StdioServerLoop (mcp-alignment-design.md §3.1
- * untrusted-stdio-isolation — the subprocess serving core).
- */
 import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { frameMessage, StdioFrameDecoder, StdioFrameOverflowError } from "../stdio-framing.js";
@@ -28,7 +24,6 @@ const MANIFEST: PluginManifest = {
 
 const RC_META = { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } };
 
-/** A bound far above anything these cases frame; the bound itself has its own cases. */
 const LINE_MAX = 1024 * 1024;
 
 describe("stdio-framing", () => {
@@ -50,14 +45,14 @@ describe("stdio-framing", () => {
   it("buffers a frame split across chunks, then yields it whole", () => {
     const decoder = new StdioFrameDecoder(LINE_MAX);
     const framed = frameMessage({ jsonrpc: "2.0", id: 7, method: "m" });
-    expect(decoder.push(framed.subarray(0, 10))).toEqual([]); // partial → nothing
+    expect(decoder.push(framed.subarray(0, 10))).toEqual([]);
     expect(decoder.push(framed.subarray(10))).toEqual([{ jsonrpc: "2.0", id: 7, method: "m" }]);
   });
 
   it("decodes a hand-written newline stream whose multi-byte character is split across chunks", () => {
     const decoder = new StdioFrameDecoder(LINE_MAX);
     const stream = Buffer.from('{"jsonrpc":"2.0","id":3,"method":"m","params":{"s":"한"}}\n', "utf-8");
-    // "한" is three UTF-8 bytes; cut after its first byte so neither chunk holds it whole.
+    // Split a UTF-8 code point across chunks to catch premature decoding.
     const cut = stream.indexOf(Buffer.from("한", "utf-8")) + 1;
     expect(decoder.push(stream.subarray(0, cut))).toEqual([]);
     expect(decoder.push(stream.subarray(cut))).toEqual([
@@ -91,7 +86,6 @@ describe("stdio-framing", () => {
 
   describe("the line bound", () => {
     const CAP = 64;
-    /** A JSON object line of exactly `bytes` bytes, newline excluded. */
     const lineOf = (bytes: number): string => {
       const shell = '{"s":""}';
       return `{"s":"${"x".repeat(bytes - shell.length)}"}`;
@@ -108,8 +102,7 @@ describe("stdio-framing", () => {
       const decoder = new StdioFrameDecoder(CAP);
       expect(decoder.push(Buffer.alloc(CAP, 0x78))).toEqual([]);
       expect(decoder.pendingBytes).toBe(CAP);
-      // One more byte with no newline anywhere: the peer has written more than
-      // any line may hold, and the rest of this line is all that could follow.
+      // Exceed the line cap without a delimiter to verify early overflow rejection.
       expect(() => decoder.push(Buffer.from("x"))).toThrow(StdioFrameOverflowError);
       expect(() => decoder.push(frameMessage({ id: 1 }))).toThrow(StdioFrameOverflowError);
       expect(decoder.pendingBytes).toBe(0);
@@ -121,9 +114,7 @@ describe("stdio-framing", () => {
     });
 
     it("copies each byte of a long line once, however many chunks it arrives in", () => {
-      // A line re-joined on every push costs O(chunks²) — the stall a peer
-      // buys by writing a line just under the cap in small chunks. Counted in
-      // bytes copied rather than timed, so the test cannot be flaky.
+      // Count copied bytes to catch quadratic chunk joining without timing-dependent assertions.
       const lineBytes = 1024 * 1024;
       const chunkBytes = 4096;
       const decoder = new StdioFrameDecoder(lineBytes);

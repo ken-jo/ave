@@ -1,4 +1,4 @@
-/** Browser-originated drag text. Never accepts native file lists or model data. */
+// Browser-originated drag text. Never accepts native file lists or model data.
 export interface BrowserDragData {
   readonly items: readonly {
     readonly mimeType: "text/plain" | "text/html" | "text/uri-list";
@@ -23,8 +23,7 @@ export function browserDragData(value: unknown, origin: string): BrowserDragData
   if (!record(value)) refuse();
   keys(value, ["items", "files", "dragOperationsMask"]);
   if (value.files !== undefined && (!Array.isArray(value.files) || value.files.length !== 0)) refuse();
-  // The native "all/uninitialized" sentinel is UINT_MAX, serialized by the
-  // protocol's signed integer as -1. Narrow it to the three supported effects.
+  // The native "all/uninitialized" sentinel is UINT_MAX, serialized by the protocol's signed integer as -1. Narrow it to the three supported effects.
   const mask = value.dragOperationsMask === -1 ? 19 : value.dragOperationsMask;
   if (!Number.isInteger(mask) || typeof mask !== "number" || mask < 1 || mask > 19 || (mask & ~19) !== 0) refuse();
   if (!Array.isArray(value.items) || value.items.length < 1 || value.items.length > 16) refuse();

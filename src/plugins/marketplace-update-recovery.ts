@@ -1,21 +1,5 @@
-/**
- * Durable marketplace/local replacement recovery.
- *
- * Ownership and removal contract:
- * - the replacement transaction owns `registryEntry.pendingUpdate` from the
- *   final pre-promotion boundary until its registry commit succeeds;
- * - boot or an explicit service retry may clear it only when the old live
- *   manifest + receipt still match exactly, or after restoring the validated
- *   recorded backup and old receipt;
- * - recovery backups remain outside `+tombstones+` and are never swept while
- *   unresolved; explicit cleanup may delete the backup metadata but leaves the
- *   row pending/hidden until a verified reinstall publishes a new row;
- * - only obsolete backups from an already-successful commit enter the existing
- *   tombstone/sweeper lifecycle;
- * - a plugin data directory nobody can attribute is PARKED in
- *   `+unattributed-plugin-state+`, which nothing sweeps, and the park is logged
- *   with the plugin id and the resulting path so an operator can find it.
- */
+// Replacement recovery owns pendingUpdate until state is restored or committed; never delete unattributed state.
+// Park losing state outside swept namespaces and log its path.
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
@@ -69,39 +53,14 @@ function ownedManifestPath(paths: PluginPaths, pluginId: string): string {
   return resolve(ownedInstallDir(paths, pluginId), "plugin.json");
 }
 
-/**
- * The carry policy recovery uses, everywhere it carries.
- *
- * Recovery has no rollback. Every path below ends by either clearing
- * `pendingUpdate` or reporting "unresolved" for a LATER boot to retry, and a
- * throw out of a carry is neither: the row stays pending, the plugin stays
- * unloadable, and the next boot arrives at the identical state and throws
- * again. So a conflicting state directory (`data/` or `storage/`) is resolved
- * here rather than reported — see {@link PluginDataCarryPolicy} for the rules.
- *
- * `unattributedRoot` is the live install directory because that is the only
- * path a stray write can reach: a confined child writes
- * `<pluginsRoot>/<id>/data`, `getPluginStorage` and every `hostApi.storage`
- * handle resolve the host-only `<pluginsRoot>/<id>/storage` beside it, and no
- * recovery backup path is ever either. So when a carry finds state on both sides, the backup's is
- * the one a transaction deliberately put there and the live one is the stray.
- *
- * `moveAside` PARKS. It does not use `tombstoneAndDeferredRemove`, which reads
- * like the right helper and is not one: that is a removal lifecycle — it
- * schedules an `rm` of what it renames, and `sweepOrphanUninstallDirs` finishes
- * off anything that survives on the next boot. Handing unattributable state to
- * it would delete the very bytes this branch exists to keep.
- */
+/** Recovery must resolve every carry conflict; park unattributed state where no removal lifecycle can delete it. */
 function recoveryDataCarry(paths: PluginPaths, pluginId: string): PluginDataCarryPolicy {
   return {
     onConflict: "resolve",
     unattributedRoot: ownedInstallDir(paths, pluginId),
     moveAside: async (conflictingDataDir) => {
       const parked = await parkUnattributedPluginState(conflictingDataDir, paths.pluginsRoot);
-      // The one place this state is ever mentioned. Nothing sweeps the parked
-      // namespace and no registry row points at it, so without this line the
-      // bytes are kept and nobody is told where — which is indistinguishable
-      // from having deleted them, for anyone trying to get the data back.
+      // Log the parked path: no registry row or sweeper otherwise makes retained bytes discoverable.
       log.warn(
         { pluginId, source: conflictingDataDir, parked },
         "plugin data directory could not be attributed to the transaction; parked for operator review",
@@ -110,28 +69,14 @@ function recoveryDataCarry(paths: PluginPaths, pluginId: string): PluginDataCarr
   };
 }
 
-/**
- * Recovery keeps destination entries on a same-name conflict while retaining
- * the original directory's identity.
- */
+/** Keep destination conflict entries while preserving the original directory identity. */
 const RECOVERY_SOCKET_CARRY: PluginSocketCarryPolicy = {
   onConflict: "keep-destination",
   onDiscardEntry: (path, reason) =>
     log.warn({ path, reason }, "removed a plugin socket entry recovery cannot carry"),
 };
 
-/**
- * Remove a plugin ROOT recovery has finished with, after moving whatever state
- * it still holds into the root that survives.
- *
- * Every directory recovery removes here is a plugin root — a set-aside live
- * root, a rollback backup, a superseded retry backup — and a plugin root can
- * hold the only copy of `data/`. Which one holds it depends on how far the
- * interrupted transaction got, which is exactly what recovery cannot know; so
- * the carry runs before every removal rather than at the points where the
- * state was expected to be. A root with no data directory makes the carry a
- * no-op, which is the common case and costs one `lstat`.
- */
+/** Carry remaining state before removing a root; absence is a no-op, never a reason to lose the only copy. */
 async function discardOwnedPluginRoot(
   paths: PluginPaths,
   pluginId: string,
@@ -140,12 +85,9 @@ async function discardOwnedPluginRoot(
   await retryOnTransientFsLock(
     () => carryPluginStateDirs(rootDir, ownedInstallDir(paths, pluginId), recoveryDataCarry(paths, pluginId)),
   );
-  // Socket directories too, for the same "which root holds them depends on how
-  // far the transaction got" reason: a local install parks the live
-  // generation's `sockets/` and `run/` in its recovery backup while it swaps.
+  // Carry sockets too: a local swap may have parked live runtime directories in its backup.
   await carryPluginSocketDirs(rootDir, ownedInstallDir(paths, pluginId), RECOVERY_SOCKET_CARRY);
-  // Boot recovery deletes now; a runtime restore (a failed local install) may
-  // still have a child confined to this path, so the root waits for the next boot.
+  // Runtime rollback may still have bound children; deletion waits for boot.
   await removePluginTreeNowOrAtBoot(rootDir, paths.pluginsRoot, removeRecoveredTreeNow);
 }
 
@@ -280,9 +222,7 @@ export async function preparePendingPluginUpdate(
       throw new Error(`Plugin registry entry changed before update: ${expectedEntry.id}`);
     }
     if (entry.pendingUpdate) {
-      // A verified retry never snapshots unresolved live bytes as a predecessor.
-      // Keep the original recovery contract intact and journal the retry's
-      // immediate backup as cleanup-only ownership before promotion can occur.
+      // Preserve the original predecessor; journal retry backups as cleanup-only before promotion.
       appendPendingCleanup(entry, cleanupRecordForBackup({
         recoveryBackupDir: options.recoveryBackupDir,
         recoveryBackupMode: options.recoveryBackupMode,
@@ -318,9 +258,7 @@ export async function recoverPendingPluginUpdate(
     if (!await liveMatchesPrevious(paths, entry)) return "unresolved";
     if (pending.recoveryBackupDir) {
       const backupDir = assertRecoveryBackupPath(paths, pluginId, pending);
-      // A crash after the replacement moved the plugin's data directory into
-      // its backup but before the promotion leaves the state in the backup
-      // while the live root — the one that survives here — has none.
+      // If promotion never happened, restore state carried into the backup to the surviving live root.
       await discardOwnedPluginRoot(paths, pluginId, backupDir);
     }
     await clearPendingUpdate(paths, pluginId, pending);
@@ -333,23 +271,17 @@ export async function recoverPendingPluginUpdate(
     return "unresolved";
   }
 
-  // The promoted root is discarded. A crash after the replacement carried the
-  // plugin's data directory into it leaves the state there; it goes back into
-  // the backup that becomes the live root before anything is removed.
+  // Move state out of a discarded promoted root before restoring its backup.
   await retryOnTransientFsLock(() => carryPluginStateDirs(installDir, backupDir, recoveryDataCarry(paths, pluginId)));
-  // An interrupted merge may leave the original directory in the backup.
-  // Finish that direction first, so reversing the carry cannot replace its
-  // inode with the temporary directory created at the promoted root.
+  // Finish interrupted forward merges before reversing so the original inode survives.
   await carryPluginSocketDirs(backupDir, installDir, RECOVERY_SOCKET_CARRY);
-  // Called at runtime too (a failed local install restores its predecessor
-  // through here), where the predecessor is live and bound to these.
+  // Runtime restore must preserve directories still bound to the predecessor.
   await carryPluginSocketDirs(installDir, backupDir, RECOVERY_SOCKET_CARRY);
   await removePluginTreeNowOrAtBoot(installDir, paths.pluginsRoot, removeRecoveredTreeNow);
   if (pending.recoveryBackupMode === "rename") {
     await retryOnTransientFsLock(() => rename(backupDir, installDir));
   } else {
     const restoreStage = `${installDir}.recovery-${process.pid}-${Date.now()}`;
-    // A payload copy no confined process is granted; see assertPayloadOnlyPluginTree.
     await assertPayloadOnlyPluginTree(restoreStage);
     await rm(restoreStage, { recursive: true, force: true });
     await mkdir(dirname(restoreStage), { recursive: true });
@@ -484,11 +416,7 @@ export async function cleanupPendingPluginUpdateBackup(paths: PluginPaths, plugi
   const pending = entry?.pendingUpdate;
   if (!pending?.recoveryBackupDir) return false;
   const backupDir = assertRecoveryBackupPath(paths, pluginId, pending);
-  // The backup may hold the plugin's only data directory: a crash between the
-  // replacement's carry into the backup and its promotion leaves the state
-  // there, and this function is how an operator-driven retry drops that backup.
-  // Dropping it without the carry is the same silent loss the whole carry
-  // exists to prevent, only reached through the cleanup door instead.
+  // Explicit backup cleanup must carry its data first; it may hold the only copy.
   await discardOwnedPluginRoot(paths, pluginId, backupDir);
   await updatePluginRegistry(paths.registryPath, (fresh) => {
     const current = fresh.plugins.find((candidate) => candidate.id === pluginId);

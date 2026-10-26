@@ -8,7 +8,7 @@ import {
 } from "../../../shared/marketplace-package-assets.js";
 import { rendererSettingsSnapshot } from "../../../ipc/domains/settings.js";
 import { resolveMainActiveChatModel } from "../active-chat-model.js";
-import { buildProvider } from "../provider.js";
+import { buildProvider, generateText, pingProvider } from "../provider.js";
 import type { ConversationLoopDeps } from "../types.js";
 
 vi.mock("electron", () => ({
@@ -59,9 +59,9 @@ describe("main's active chat model", () => {
     vi.unstubAllEnvs();
   });
 
-  it("is none on a fresh profile, although the default vendor block names a model", () => {
+  it("is none on a fresh profile with no selected model", () => {
     const settingsService = fakeSettings({});
-    expect(DEFAULT_SETTINGS.llm.vendors.openai?.model).toBeTruthy();
+    expect(DEFAULT_SETTINGS.llm.vendors.openai?.model).toBe("");
     expect(resolveMainActiveChatModel(settingsService)).toEqual({
       kind: "none",
       reason: "no-connected-provider",
@@ -74,14 +74,42 @@ describe("main's active chat model", () => {
     expect("a2aRemote" in snapshot).toBe(false);
   });
 
-  it("names the route's model once the active vendor holds a credential", () => {
+  it("requires a model choice after connecting a fresh route", () => {
     const settingsService = fakeSettings({ secrets: { "llm.apiKey.openai": "sk-test" } });
     expect(rendererSettingsSnapshot(settingsService).activeChatModel).toEqual({
-      kind: "api",
-      vendor: "openai",
-      model: DEFAULT_SETTINGS.llm.vendors.openai?.model,
+      kind: "none",
+      reason: "no-model-selected",
     });
   });
+
+  it("reports ping as unconfigured if the selection was cleared after provider construction", async () => {
+    const settingsService = fakeSettings({ secrets: { "llm.apiKey.openai": "fixture-key" } });
+    const streamTurn = vi.fn(async function* () { yield { type: "message_complete" as const, stopReason: "end_turn" as const }; });
+    expect(await pingProvider({ vendor: "openai", streamTurn }, settingsService)).toMatchObject({ configured: false, error: "not-configured" });
+    expect(streamTurn).not.toHaveBeenCalled();
+  });
+
+  it("reports generation as unconfigured if the selection was cleared after provider construction", async () => {
+    const settingsService = fakeSettings({ secrets: { "llm.apiKey.openai": "fixture-key" } });
+    const streamTurn = vi.fn(async function* () { yield { type: "message_complete" as const, stopReason: "end_turn" as const }; });
+    await expect(generateText({ vendor: "openai", streamTurn }, settingsService, "hello")).rejects.toThrow("LLM provider not configured");
+    expect(streamTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude", "openai", "gemini", "azure-foundry", "vertex-ai"] as const)(
+    "leaves an empty %s route unconfigured even with credentials",
+    (provider) => {
+      const settingsService = fakeSettings({
+        llm: {
+          provider,
+          vendors: { [provider]: { ...DEFAULT_SETTINGS.llm.vendors.openai!, model: "", vertexProject: "example-project" } },
+        },
+        secrets: { [`llm.apiKey.${provider}`]: "fixture-key" },
+      });
+      expect(resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "no-model-selected" });
+      expect(providerFor(settingsService)).toBeNull();
+    },
+  );
 
   it("does not adopt a credential saved for a vendor that is not active", () => {
     const settingsService = fakeSettings({ secrets: { "llm.apiKey.claude": "sk-ant-test" } });
@@ -132,11 +160,11 @@ describe("main's active chat model", () => {
     expect(resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "retired-provider" });
   });
 
-  // The snapshot's answer and the transport's must agree, or the composer
-  // could name a model the next turn cannot reach (or hide one it can).
+  // Composer model selection must agree with the model the transport can reach.
   it.each<[string, "none" | "api", FakeSettingsInput]>([
     ["fresh profile", "none", {}],
-    ["active vendor with a key", "api", { secrets: { "llm.apiKey.openai": "sk-test" } }],
+    ["active vendor with a key and no model", "none", { secrets: { "llm.apiKey.openai": "sk-test" } }],
+    ["saved model with a key", "api", { secrets: { "llm.apiKey.openai": "sk-test" }, llm: { vendors: { openai: { ...DEFAULT_SETTINGS.llm.vendors.openai!, model: "saved-model" } } } }],
     ["key for an inactive vendor", "none", { secrets: { "llm.apiKey.claude": "sk-ant-test" } }],
     ["vertex without a project", "none", { llm: { provider: "vertex-ai" } }],
     ["vertex with a project", "api", {

@@ -26,7 +26,6 @@ import { McpManager } from "../mcp-manager.js";
 import { McpGovernance } from "../mcp-governance.js";
 import { PluginMcpTrustStore, preparePluginMcpGeneration as prepareWithDigests } from "../plugin-mcp-projection.js";
 
-/** Prepare with an approval digest per server that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
 function preparePluginMcpGeneration(generation: ActivePluginGeneration, root: string) {
   return prepareWithDigests(generation, root, new Map(generation.contributions.map((contribution) =>
     [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));
@@ -327,8 +326,7 @@ describe("plugin-owned MCP projections", () => {
       command: "node",
       args: [expect.stringMatching(/[\\/]mcp[\\/]server\.mjs$/)],
     });
-    // The payload the command was anchored in is the one directory under the
-    // refused plugins root this server reads.
+    // The owned payload is the only readable directory beneath the otherwise-denied plugin root.
     expect(projection.config).toMatchObject({ bundledPayloadRoot: realpathSync(testDir) });
     expect(projection.owner.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(projection.owner.fingerprint).not.toBe(contribution.fingerprint);

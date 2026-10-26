@@ -15,7 +15,7 @@ const CAPABILITY = "ave.example.com/cap/conversation-observer";
 const DNS_NAME = "desk.example-tailnet.ts.net";
 const WEB_ORIGIN = "https://" + DNS_NAME;
 
-/** A signed-in node with a MagicDNS name — the case everything else varies from. */
+// A signed-in node with a MagicDNS name — the case everything else varies from.
 function readyEnvironment(overrides: Partial<TailscaleEnvironment> = {}): TailscaleEnvironment {
   return {
     state: "ready",
@@ -64,20 +64,17 @@ function service(options: {
       activeConfig: options.activeConfig ?? null,
       lastStartError: options.lastStartError ?? null,
     }),
-    // The probe and the listener lifecycle are injected so this matrix stays a
-    // question about the configuration surface, not about whether the machine
+    // The probe and the listener lifecycle are injected so this matrix stays a question about the configuration surface, not about whether the machine
     // running it happens to have Tailscale installed and a listener bound.
     probeEnvironment: async () => options.environment ?? readyEnvironment(),
     restartListener: options.restartListener ?? (async () => undefined),
-    // Injected for the same reason: the admission record is real host state,
-    // and reading it would make this matrix depend on the developer's own.
+    // Injected for the same reason: the admission record is real host state, and reading it would make this matrix depend on the developer's own.
     readOwnDeviceAdmission: async () => options.ownDeviceAdmission === true,
     writeOwnDeviceAdmission: options.writeOwnDeviceAdmission ?? (async () => undefined),
     ...(options.runServe === undefined ? {} : { runServe: options.runServe as never }),
     ...(options.choosePort === undefined ? {} : { choosePort: options.choosePort }),
   });
 }
-
 
 const OFF_VIEW: TailnetObserverConfigView = Object.freeze({
   enabled: false,
@@ -88,6 +85,10 @@ const OFF_VIEW: TailnetObserverConfigView = Object.freeze({
   webEnabled: false,
   webOrigin: "",
 });
+
+function enabledView(overrides: Partial<TailnetObserverConfigView> = {}): TailnetObserverConfigView {
+  return { ...OFF_VIEW, enabled: true, authorization: APP_CAPABILITY, pairedSharingEnabled: true, ...overrides };
+}
 
 describe("Tailnet observer configuration service", () => {
   it("reports a never-configured observer as off, not as missing", async () => {
@@ -122,15 +123,7 @@ describe("Tailnet observer configuration service", () => {
 
   it("persists only what was chosen, not the negatives", async () => {
     const writeConfigFile = vi.fn(async () => undefined);
-    await service({ writeConfigFile }).apply({
-      enabled: true,
-      authorization: APP_CAPABILITY,
-      port: 46_173,
-      controllerEnabled: false,
-      pairedSharingEnabled: true,
-      webEnabled: false,
-      webOrigin: "",
-    });
+    await service({ writeConfigFile }).apply(enabledView());
 
     expect(writeConfigFile).toHaveBeenCalledWith({
       enabled: true,
@@ -149,15 +142,7 @@ describe("Tailnet observer configuration service", () => {
 
     it("persists the derived origin and ignores whatever the proposal carried", async () => {
       const writeConfigFile = vi.fn(async () => undefined);
-      await service({ writeConfigFile }).apply({
-        enabled: true,
-        authorization: APP_CAPABILITY,
-        port: 46_173,
-        controllerEnabled: false,
-        pairedSharingEnabled: true,
-        webEnabled: true,
-        webOrigin: "https://someone-typed-this.ts.net",
-      });
+      await service({ writeConfigFile }).apply(enabledView({ webEnabled: true, webOrigin: "https://someone-typed-this.ts.net" }));
 
       expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({
         webEnabled: true,
@@ -173,15 +158,7 @@ describe("Tailnet observer configuration service", () => {
       });
 
       expect((await surface.snapshot()).derivedWebOrigin).toBeNull();
-      await expect(surface.apply({
-        enabled: true,
-        authorization: APP_CAPABILITY,
-        port: 46_173,
-        controllerEnabled: false,
-        pairedSharingEnabled: true,
-        webEnabled: true,
-        webOrigin: "",
-      })).rejects.toThrow("tailnet-web-origin-underivable");
+      await expect(surface.apply(enabledView({ webEnabled: true, webOrigin: "" }))).rejects.toThrow("tailnet-web-origin-underivable");
       expect(writeConfigFile).not.toHaveBeenCalled();
     });
   });
@@ -194,8 +171,7 @@ describe("Tailnet observer configuration service", () => {
     it("names the damage and still produces a saveable snapshot", async () => {
       const snapshot = await service({ readConfigFile: damaged }).snapshot();
 
-      // The whole point: a draft exists, so Save is reachable. This used to
-      // throw, leaving the section with a Refresh button and no way forward.
+      // The whole point: a draft exists, so Save is reachable. This used to throw, leaving the section with a Refresh button and no way forward.
       expect(snapshot.configFileError).toBe("tailnet-observer-config-file-invalid");
       expect(snapshot.saved).toEqual(OFF_VIEW);
       expect(snapshot.effective.enabled).toBe(false);
@@ -225,9 +201,8 @@ describe("Tailnet observer configuration service", () => {
       const writeConfigFile = vi.fn(async () => undefined);
       await service({ readConfigFile: damaged, writeConfigFile }).apply(OFF_VIEW);
 
-      // Not `{}` any more: the boundary has no implicit default, so a file
-      // that named none would be invalid the moment the listener is enabled.
-      // Starting over therefore writes the default boundary out explicitly.
+      // Not `{}` any more: the boundary has no implicit default, so a file that named none would be invalid the moment the listener is enabled. Starting over
+      // therefore writes the default boundary out explicitly.
       expect(writeConfigFile).toHaveBeenCalledWith({ authorization: TAILNET_IDENTITY });
     });
   });
@@ -398,8 +373,7 @@ describe("Tailnet observer configuration service", () => {
       expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({ port: 46_500 }));
     });
 
-    // The real chooser against a real socket: the default port is what a first
-    // run asks for, and a machine already using it must still end up with a
+    // The real chooser against a real socket: the default port is what a first run asks for, and a machine already using it must still end up with a
     // listener rather than with a start failure nobody can act on.
     it("persists an OS-assigned port when the default one is taken", async () => {
       const release = await occupy(46_173);
@@ -493,8 +467,7 @@ describe("Tailnet observer configuration service", () => {
         }),
       }).guidedSetup();
 
-      // Tailscale's own sentence survives: the message for this code says its
-      // output is below, and the certificate case cannot be acted on without it.
+      // Tailscale's own sentence survives: the message for this code says its output is below, and the certificate case cannot be acted on without it.
       expect(result).toEqual({
         ok: false,
         error: "tailnet-serve-command-failed",

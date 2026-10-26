@@ -1,15 +1,4 @@
-/**
- * Installed content packages (blueprint P3). Covers:
- * ave:marketplace:content:installed, ave:marketplace:content:language-messages,
- * the `ave-content:` asset scheme, and how content takes effect in main.
- *
- * The store under `~/.ave/packages` is loaded once, on the renderer's first
- * request at boot: installed languages join the main process's locale
- * registry (dialogs, menus and notifications use them too), installed theme
- * ids become valid plugin theme broadcasts, and fonts and theme previews are
- * served through the asset scheme. Installing and removing packages comes with
- * the install IPC; the activation below is what those calls run.
- */
+// Load installed content lazily during renderer hydration; settings own activation and removal defaults.
 import { ipcMain, protocol } from "electron";
 import { randomBytes } from "node:crypto";
 import { rm } from "node:fs/promises";
@@ -46,16 +35,11 @@ import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 
 const log = createLogger("marketplace-content");
 
-/** `~/.ave/packages` (design §2). */
 function contentPackagesRoot(home: string = aveHome()): string {
   return join(home, "packages");
 }
 
-/**
- * The settings side of the first-boot content migration (design §16.3): the
- * activations the server marketplace left in settings, and the removal of the
- * theme ids and locales installed packages provide once it has adopted them.
- */
+// Migrate existing package activations without retaining obsolete compiled theme or locale registrations.
 export function legacyContentSettings(deps: IpcDeps): {
   activations: LegacyActivations;
   release(provided: { themes: readonly string[]; locales: readonly string[] }): Promise<void>;
@@ -81,18 +65,7 @@ export function legacyContentSettings(deps: IpcDeps): {
   };
 }
 
-/**
- * How installed content takes effect in this app. Providers go through the
- * same preset path the settings IPC uses and messaging connections through
- * the same settings field; removing a theme, language or font
- * that is selected puts its setting back to the default.
- *
- * A settings write that fails throws, so the store undoes the install (or
- * keeps the package on uninstall). Once the write has landed, what follows —
- * the reviewer rewire, the provider refresh, the broadcast — is logged when it
- * fails, never thrown: settings already changed, and undoing the ledger would
- * leave them describing a package that is not installed.
- */
+// Use normal settings paths for activation; failed writes roll the store back to the prior install.
 export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): ContentActivation {
   const settings = deps.settingsService;
   const afterPersist = async (what: string, finishError: { message: string } | null, broadcast = false) => {
@@ -104,12 +77,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       log.warn({ err: errorMessage(error) }, `${what}: settings saved, broadcast failed`);
     }
   };
-  /**
-   * Run a settings write with the vendor's saved key set aside: the key is
-   * removed before the write, so it never sits next to an address it was not
-   * entered for, and put back if the write fails, so a failed install costs
-   * the user nothing.
-   */
+  // Remove the address-bound key before changing settings and restore it if the write fails.
   const withoutVendorKey = async <T>(vendorId: string, write: () => Promise<T>): Promise<T> => {
     const secretKey = `llm.apiKey.${vendorId}`;
     let saved: string | null = null;
@@ -135,7 +103,6 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
   };
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
-  /** Whether the settings already hold this package's id from another path (design §15.1). */
   const heldBySettings = (content: ParsedContent): boolean => {
     const marketplace = settings.get("marketplace");
     return content.kind === "provider"
@@ -145,7 +112,6 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       : content.kind === "messaging-connection" && marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId);
   };
 
-  /** Publish an agent plugin's servers and hooks with `componentConsents` on the installed generation in `dir`. */
   const activateAgentPlugin = async (content: ParsedContent & { kind: "agent-plugin" }, entry: LedgerEntry, dir: string | undefined, componentConsents: readonly ComponentConsent[]) => {
     if (!mcpRuntime || !dir) throw new Error("agent plugin MCP activation requires its installed directory and runtime");
     if (content.components.hooks.length > 0 && !hookRuntime) throw new Error("agent plugin hook activation requires its hook runner");
@@ -160,26 +126,22 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
     let servers: { retired: Promise<void> };
     try { servers = await mcpRuntime.activate(item, mcpConsents); }
     catch (error) { await hooks.rollback(); throw error; }
-    // The replaced install's files go once both its hooks and its servers have drained (§18.7.4).
     return { retired: Promise.all([hooks.retired, servers.retired]).then(() => undefined) };
   };
 
   return {
     async approveComponents(entry: LedgerEntry, content: ParsedContent & { kind: "agent-plugin" }, dir: string, consents: readonly ComponentConsent[]) {
-      // The installed generation stays; only the named components gain approval, so nothing is retired.
       await activateAgentPlugin(content, entry, dir, consents);
     },
     async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents: readonly ComponentConsent[] = []) {
       if (content.kind === "agent-plugin") return activateAgentPlugin(content, entry, dir, componentConsents);
       if (componentConsents.length > 0) throw new Error("component consent applies only to an agent plugin");
       if (!previous && heldBySettings(content)) {
-        // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
         if (adopt) return { retired: Promise.resolve() };
         throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
       }
       if (!previous && (content.kind === "skill" || content.kind === "agent")) {
         const held = content.kind === "skill" ? await deps.skillStore?.userSkillFile(entry.name) : await deps.agentProfileStore?.userProfileFile(entry.name);
-        // The user's own file wins in the store, so the package would never apply; replacing it is theirs to do.
         if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${held} already defines ${content.kind} ${entry.name}; rename or remove it first`);
       }
       if (content.kind === "provider" && "vendor" in content) {
@@ -191,8 +153,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
             marketplace: { installedProviderIds: installed.includes(providerId) ? installed : [...installed, providerId] },
             ...(Object.keys(vendor).length > 0 ? { llm: { vendors: { [providerId]: vendor } } } : {}),
           });
-        // A key the user saved for the vendor was entered for the address it had then: moving the
-        // address drops the key, as a preset whose base URL changes does, so it never reaches the new host.
+        // Changing a provider address drops its saved key so credentials cannot reach a new host.
         const moves = baseUrl !== undefined && settings.get("llm").vendors[providerId]?.baseUrl !== baseUrl;
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () => (moves ? withoutVendorKey(providerId, write) : write()));
         await afterPersist(`activating ${entry.name}`, finishError);
@@ -203,8 +164,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
         await settings.patch({ marketplace: { installedMessagingConnections: [...connectionsWithout(content.connection.connectionId), content.connection] } });
         await afterPersist(`activating ${entry.name}`, null, true);
       }
-      // Themes, languages, fonts, skills and agents are read from the loaded store; selecting one is the user's.
-      // Nothing of theirs keeps running from the replaced install's files once the store is reloaded.
+      // Reload passive content before retiring the replaced install's files.
       return { retired: Promise.resolve() };
     },
     async deactivate(entry: LedgerEntry, content: ParsedContent | null) {
@@ -217,9 +177,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       const appearance = settings.get("appearance");
       const what = `deactivating ${entry.name}`;
       if (entry.kind === "provider") {
-        // The provider id is the package name; a vendor package unlocked a built-in vendor. Its key
-        // goes with it: it may have been entered for the address the package set, and must not reach
-        // the vendor's own host if the vendor is turned on again another way.
+        // Removing an unlocked provider also removes its address-bound key so later activation cannot send it elsewhere.
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
           isMarketplaceEligibleLLMVendor(entry.name)
             ? withoutVendorKey(entry.name, () =>
@@ -239,7 +197,6 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
         appearance.language === content.locale &&
         !(SUPPORTED_LOCALES as readonly string[]).includes(content.locale)
       ) {
-        // A compiled locale's package only overlays it: the compiled catalog still renders it.
         await settings.patch({ appearance: { ...appearance, language: DEFAULT_LOCALE } });
       } else if (entry.kind === "font" && appearance.font?.family === installedFontStack(entry.name)) {
         await settings.patch({ appearance: { ...appearance, font: { ...appearance.font, family: "system" } } });
@@ -253,20 +210,15 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
 
 type InstalledContentPort = Pick<InstalledContentService, "installed" | "languageMessages" | "servedFile">;
 
-/** The loaded store, its service, and the reload an install or uninstall runs. */
 export interface InstalledContentRuntime {
   store: ContentStore;
   service: InstalledContentPort;
-  /** Re-read the store and apply it in main again. */
   reload(): Promise<void>;
   removeAgentPluginData(name: string, serverNames: readonly string[]): Promise<void>;
-  /** The approval state of an installed agent plugin's servers and hooks (§18.7.2, §18.7.5). */
   componentApprovals(name: string): Promise<AgentPluginComponentApprovals>;
-  /** Whether a call of the agent plugin's current generation is running (§18.7.4). */
   callsInFlight(name: string): boolean;
 }
 
-/** {@link InstalledContentRuntime.componentApprovals}: each component of the published generation. */
 interface AgentPluginComponentApprovals {
   mcpServers: Array<{ name: string; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>;
   hooks: Array<{ index: number; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>;
@@ -276,10 +228,7 @@ export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsServ
   assertAgentPluginPackageName(name);
   const operations = serverNames.map((server) => settings.deleteSecret(
     bundledCredentialKey({ kind: "agent-plugin", name }, server)));
-  // The package's bundled MCP servers and hooks wrote this directory and may
-  // not have exited yet, so it is renamed into the namespace's tombstones and
-  // deleted at the next boot, before anything confined starts
-  // (lib/confined-process-phase.ts).
+  // Servers may outlive uninstall; tombstone their data for the pre-confinement boot sweep.
   const dataRoot = agentPluginDataRoot();
   operations.push(removePluginTreeNowOrAtBoot(join(dataRoot, name), dataRoot, (path) => rm(path, { recursive: true, force: true })).then(() => undefined));
   const results = await Promise.allSettled(operations);
@@ -287,7 +236,6 @@ export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsServ
   if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), "agent plugin data removal failed");
 }
 
-/** Apply the loaded content to this process: locales, theme ids, and the skill and agent stores. */
 async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, mcpRuntime: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): Promise<void> {
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
   registerInstalledLocales(view.languages);
@@ -300,21 +248,22 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
   deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
   deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
   deps.personaPromptStore?.setInstalledAgentPlugins(agentPlugins);
-  if (service.installedAgentPluginRuntime().some((item) => Object.keys(item.content.components.mcpServers).length > 0)) {
-    deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
-      list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
-        packageName: item.name, serverName, transport: server.transport,
-        ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
-          apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
-        ...(server.auth ? { auth: server.auth } : {}),
-      }))),
-      reconnect: async (packageName, serverName) => {
-        const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
-        if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
-        await mcpRuntime.reconnect(item);
-      },
-    });
-  }
+  // Publish the installed set even without servers to retire stale sign-ins; failed loads cannot vouch for completeness.
+  deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
+    installedPackages: async () => (view.broken.length === 0
+      ? new Set(service.installedAgentPluginRuntime().map((item) => item.name)) : undefined),
+    list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
+      packageName: item.name, serverName, transport: server.transport,
+      ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
+        apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
+      ...(server.auth ? { auth: server.auth } : {}),
+    }))),
+    reconnect: async (packageName, serverName) => {
+      const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
+      if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
+      await mcpRuntime.reconnect(item);
+    },
+  });
   await mcpRuntime.sync(service.installedAgentPluginRuntime());
   if (service.installedAgentPluginRuntime().some((item) => item.content.components.hooks.length > 0) && !hookRuntime) {
     throw new Error("installed agent plugin hooks require the hook runner");
@@ -323,11 +272,7 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
   broadcastPromptsUpdated(deps);
 }
 
-/**
- * Open the store and apply what it holds to this process. A ledger that
- * cannot be read leaves every installed package unapplied (and logged)
- * rather than stopping the app.
- */
+// An unreadable ledger leaves packages unapplied and logs the failure without stopping the app.
 export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentRuntime> {
   const mcpRuntime = new AgentPluginMcpRuntime(deps.mcpManager);
   const hookRuntime = deps.scriptHookManager ? new AgentPluginHookRuntime(deps.scriptHookManager) : undefined;
@@ -336,7 +281,6 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     english: messages.en,
     activation: createContentActivation(deps, mcpRuntime, hookRuntime),
   });
-  // Install directories a quit or a failed removal left behind (§18.7.4); nothing runs from them yet.
   const swept = await store.sweep();
   if (swept.length > 0) log.info({ count: swept.length }, "removed install directories no installed package names");
   const service = new InstalledContentService(store, assetToken, (kind, name, version) => {
@@ -344,7 +288,6 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
   });
   await applyInMain(deps, service, await service.reload(), mcpRuntime, hookRuntime);
-  // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);
   return {
     store,
@@ -364,18 +307,9 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
   };
 }
 
-/**
- * The store loads on the first request, which the renderer makes while it
- * boots (theme and language hydration): a process that never asks, such as
- * a test that registers every handler, reads nothing under `~/.ave/packages`.
- * The `ave-content:` handler is registered here, before any window loads,
- * because a frame binds its custom-scheme loaders when it commits: a handler
- * added after the page loaded answers `ERR_UNKNOWN_URL_SCHEME` to that page.
- * An asset request waits for the same load.
- */
+// Register the asset scheme before windows load; lazy store reads keep unused processes out of package storage.
 export function registerMarketplaceContentHandlers(
   deps: IpcDeps,
-  // Drawn once per launch: the host of every `ave-content:` URL (see content-asset-protocol.ts).
   assetToken: string = `t${randomBytes(16).toString("hex")}`,
   load: () => Promise<InstalledContentRuntime> = () => loadInstalledContent(deps, assetToken),
 ): () => Promise<InstalledContentRuntime | null> {

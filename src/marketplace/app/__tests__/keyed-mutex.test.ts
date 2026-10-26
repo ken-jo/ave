@@ -7,7 +7,6 @@ async function turns(count: number): Promise<void> {
   for (let i = 0; i < count; i += 1) await turn();
 }
 
-/** A gate the test opens: `inside` resolves when the holder runs, `open()` lets it return. */
 function gate() {
   let open!: () => void;
   let entered!: () => void;
@@ -16,7 +15,6 @@ function gate() {
   return { open, inside, hold: async () => { entered(); await opened; } };
 }
 
-/** Settles `work` within a bounded wait, or reports that it is stuck. */
 async function bounded<T>(work: Promise<T>): Promise<T | "stuck"> {
   return Promise.race([work, new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 1_000))]);
 }
@@ -45,7 +43,7 @@ describe("KeyedMutex", () => {
     let bothRan = false;
     const both = mutex.run(["b", "a"], async (lease) => { bothRan = true; return lease.keys; });
     await turns(2);
-    // a is free, but a caller of a alone arrived after the request for a and b, so it waits behind it.
+    // The later single-key request waits behind the earlier request for both keys.
     let aRan = false;
     const onlyA = mutex.run(["a"], async () => { aRan = true; });
     await turns(2);
@@ -82,7 +80,6 @@ describe("KeyedMutex", () => {
     expect(await cancelled).toMatchObject({ message: "shutdown" });
     let laterEntered = false;
     const later = mutex.run(["p"], async () => { laterEntered = true; });
-    // q is free again at once.
     expect(await bounded(mutex.run(["q"], async () => "q"))).toBe("q");
     await turns(3);
     expect(laterEntered).toBe(false);
@@ -129,7 +126,7 @@ describe("KeyedMutex", () => {
     const mutex = new KeyedMutex();
     const abort = new AbortController();
     let ran = false;
-    // Free keys are granted at once, but the body starts a turn later: cancelled in between, it never starts.
+    // Cancellation before the deferred body starts must prevent entry.
     const request = mutex.run(["p"], async () => { ran = true; }, { signal: abort.signal }).catch((error: unknown) => error);
     abort.abort(new Error("shutdown"));
     expect(await request).toMatchObject({ message: "shutdown" });
@@ -182,7 +179,6 @@ describe("KeyedMutex", () => {
     const order: string[] = [];
     const holder = mutex.run(["p"], async (lease) => {
       kept = lease;
-      // Not awaited: the holder returns while it runs.
       underLease = mutex.within(lease, ["p"], async () => { await child.hold(); order.push("child"); return "child"; });
       await child.inside;
     });
@@ -217,7 +213,7 @@ describe("KeyedMutex", () => {
   });
 });
 
-/** A small deterministic generator (xorshift32), so a failing seed reproduces. */
+/** xorshift32 keeps failures reproducible from the seed. */
 function seeded(seed: number): () => number {
   let state = seed >>> 0 || 1;
   return () => {
@@ -232,13 +228,7 @@ function seeded(seed: number): () => number {
 const KEYS = ["k0", "k1", "k2", "k3", "k4"];
 
 describe("KeyedMutex under random interleavings", () => {
-  /**
-   * The model keeps its own owner per key, from the keys each task asked
-   * for, never from what the lock reports: a task entering its body claims
-   * every key it requested and must find each unowned; it gives them back
-   * just before it returns, and re-checks after every await that it still
-   * owns each one.
-   */
+  /** Tracks ownership independently of the lock and rechecks it after every await. */
   async function scenario(seed: number): Promise<void> {
     const next = seeded(seed);
     const mutex = new KeyedMutex();
@@ -260,7 +250,6 @@ describe("KeyedMutex under random interleavings", () => {
       const requested = [...new Set(keys)].sort();
       const abort = new AbortController();
       const cancel = next();
-      // Cancelled at once (before the request's first continuation), a few turns in, or never.
       if (cancel < 0.15) queueMicrotask(() => abort.abort(new Error("cancelled")));
       else if (cancel < 0.4) void turns(Math.floor(next() * 4)).then(() => abort.abort(new Error("cancelled")));
       const id = (ids += 1);
@@ -296,10 +285,8 @@ describe("KeyedMutex under random interleavings", () => {
 
     const tasks = Array.from({ length: 10 }, () => task());
     const settled = await bounded(Promise.all(tasks));
-    // No lost wakeup: every request that was not cancelled got all its keys and finished.
     expect(settled, `seed ${seed}: a request was never woken`).not.toBe("stuck");
     expect(violations).toEqual([]);
-    // No orphaned reservation: nothing is held or waited for once every request settled.
     expect(mutex.idle, `seed ${seed}: a reservation outlived its request`).toBe(true);
     expect(owner.size).toBe(0);
   }

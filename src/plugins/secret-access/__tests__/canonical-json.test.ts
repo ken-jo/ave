@@ -1,13 +1,4 @@
-/**
- * #893 Ralph cycle 1 — canonical JSON serializer for the manifest-sha pin.
- *
- * Critical regression coverage: the previous `JSON.stringify(manifest, Object.keys(manifest).sort())`
- * replacer-array form emitted every nested object as `{}`, causing all
- * plugins' manifests to hash identically and defeating the Tier-3 pin.
- * These tests pin the contract that nested objects ARE serialized with
- * their own keys (sorted) so two plugins with different nested config
- * produce different shas.
- */
+/** Canonical manifest hashing must retain nested keys, unlike a top-level stringify replacer list. */
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
 import { canonicalJSON } from "../canonical-json.js";
@@ -45,10 +36,7 @@ describe("canonicalJSON — nested-object reorder yields identical output", () =
 
 describe("canonicalJSON — nested key insertion CHANGES output (regression catch)", () => {
   it("two plugins with different nested config produce different shas (was the bug)", () => {
-    // Before the fix, `JSON.stringify(m, Object.keys(m).sort())` produced
-    // identical output for both inputs because nested objects collapsed
-    // to `{}`. These tests pin the corrected behaviour: nested-key
-    // differences must surface in the sha.
+    // Nested-key differences must change the hash; a top-level replacer list can collapse nested objects to empty.
     const a = {
       id: "plugin-a",
       hostSecrets: { read: ["llm.apiKey.openai"] },
@@ -138,9 +126,7 @@ describe("canonicalJSON — undefined property dropping", () => {
 
 describe("canonicalJSON — regression vs the old broken serializer", () => {
   it("nested object IS emitted with its keys (old form emitted {})", () => {
-    // The old code: JSON.stringify({a:0,b:{x:1},c:1},["a","b","c"]) =
-    // '{"a":0,"b":{},"c":1}' — nested {x:1} collapsed to {}.
-    // Pin the corrected behaviour.
+    // Preserve nested x even when top-level canonical keys are a, b and c.
     expect(canonicalJSON({ a: 0, b: { x: 1 }, c: 1 })).toBe(
       '{"a":0,"b":{"x":1},"c":1}',
     );

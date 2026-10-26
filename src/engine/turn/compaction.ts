@@ -1,11 +1,3 @@
-/**
- * Compaction path.
- *
- * manualCompact (`/compact`) / runPreflightGuard (token preflight + force-
- * recover + rate-limit recovery) / applyBoundaryToSession (boundary apply +
- * checkpoint persist). Free functions over a `self: ConversationLoop`
- * this-shaped param — all mutable compaction state stays on the instance.
- */
 import type { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, MessageMeta } from "../llm/types.js";
 import type {
@@ -45,9 +37,7 @@ import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription
 
 const log = createLogger("ave");
 
-// ACP runtimes do not expose a trustworthy model-context descriptor. Keep a
-// conservative independent budget rather than accidentally inheriting an
-// inactive API-key provider's potentially much larger context window.
+// Runtimes without trustworthy capacity use an independent budget, never inactive API-key settings.
 const SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW = 64_000;
 const SUBSCRIPTION_FALLBACK_PREFLIGHT = getPreflightThreshold(
   SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW,
@@ -63,30 +53,15 @@ interface RuntimeContextBudget
   readonly preflight: number;
   readonly usableContext: number;
   readonly identity: string;
-  /** Observability only — which input the preflight threshold came from. */
   readonly thresholdSource: PreflightThresholdSource | "subscription-fallback" | "reported-context-window";
-  /**
-   * Observability only — which input the CONTEXT WINDOW behind that threshold
-   * came from. `fallback` says the whole budget rests on a guess.
-   */
+  // Capacity source is diagnostic; fallback means the budget rests on a conservative estimate.
   readonly contextWindowSource: ContextWindowSource | "subscription-fallback";
-  /** The resolved window itself, for an API route; observability only. */
   readonly contextWindow?: number;
-  /**
-   * The output limit a chat request on this API route carries — requested,
-   * the model's ceiling, and the smaller of the two. Absent for subscription
-   * runtimes, whose protocol owns output control.
-   */
+  // API output controls record requested, model ceiling, and effective limit; subscriptions own theirs.
   readonly output?: ResolvedOutputTokenLimit;
 }
 
-/**
- * Warn once per route about a budget resting on the fallback window.
- *
- * Once, because this is read on every preflight evaluation and the round-loop
- * gate evaluates it every round — a per-evaluation warning would bury the log
- * of a long agent turn under thousands of identical lines.
- */
+// Warn once per route; repeated preflight evaluations must not flood long-turn logs.
 const fallbackContextWindowWarned = new Set<string>();
 
 function warnFallbackContextWindowOnce(identity: string, model: string): void {
@@ -100,11 +75,7 @@ function warnFallbackContextWindowOnce(identity: string, model: string): void {
 
 const unresolvedCatalogModelWarned = new Set<string>();
 
-/**
- * Warn once per vendor, model and named entry about a `catalogModel` the
- * catalog does not list. The setting is hand-written in `settings.json`, and a
- * typo in it otherwise only shows as a window from a lower source.
- */
+// Warn once for unknown declared entries so settings typos do not silently select lower knowledge.
 function warnUnresolvedCatalogModelOnce(identity: string, catalogModel: string): void {
   const key = `${identity}\u0000${catalogModel}`;
   if (unresolvedCatalogModelWarned.has(key)) return;
@@ -117,14 +88,7 @@ function warnUnresolvedCatalogModelOnce(identity: string, catalogModel: string):
 
 const unstatedReasoningWarned = new Set<string>();
 
-/**
- * Warn once per route that a thinking-enabled request carries no reasoning
- * control because nobody states the effort levels its model accepts (the
- * reasoning plan's `host-fallback`). Such a request also asks for no reasoning
- * summary, so reasoning the user turned on would otherwise vanish from the
- * turn without a word — on an Azure deployment or a custom endpoint whose
- * model the catalog cannot identify.
- */
+// Warn once when enabled thinking lacks declared effort controls or summary support.
 export function warnUnstatedReasoningOnce(
   route: { identity: string; vendor: string; model: string },
   plan: Pick<ReasoningPlan, "kind" | "source" | "suppressed"> | undefined,
@@ -138,28 +102,14 @@ export function warnUnstatedReasoningOnce(
   );
 }
 
-/**
- * Ask the route's endpoint what it serves, in the background.
- *
- * Reached only when nothing knew the model's window, so it costs one request
- * per route per process and nothing at all on a route the catalog knows. The
- * answer lands in settings and the NEXT budget reads it — this one is already
- * committed to the fallback, which is the honest thing to budget against until
- * a better number exists.
- *
- * Deliberately not awaited: this is on the path of every preflight evaluation,
- * including one per round of a long turn, and a turn must not wait on a
- * catalogue probe.
- */
+// Probe unknown capacity without blocking preflight; only later budgets use the persisted answer.
 function probeRouteModelListInBackground(
   self: ConversationLoop,
   llm: LlmRouteSettings,
   presets: readonly LlmRouteProviderPreset[] | undefined,
 ): void {
   const address = llmRouteCatalogAddress(llm, presets);
-  // A preset's declared discovery policy governs whether its endpoint may be
-  // asked at all. Passing it through is what keeps this probe from doing what
-  // the settings page refuses to do for the same route.
+  // Background probing must honor the same declared discovery policy as settings sync.
   const policy = address.credentialScope
     ? presets?.find((preset) => preset.providerId === address.credentialScope)?.modelDiscoveryPolicy
     : undefined;
@@ -179,18 +129,11 @@ function safeReportedContextBudget(
   if (typeof contextWindow !== "number" || !Number.isSafeInteger(contextWindow) || contextWindow <= 0) return undefined;
   const usableContext = getUsableContext(contextWindow);
   const preflight = getPreflightThreshold(contextWindow);
-  // A malformed tiny provider window must not turn the preflight guard off.
+  // Tiny malformed capacity reports must not disable preflight.
   return usableContext > 0 && preflight > 0 ? { preflight, usableContext } : undefined;
 }
 
-/**
- * A Codex sub-agent may carry a profile-model candidate paired with the active
- * Codex selection as its same-runtime fallback. The engine's provider marker
- * cannot receive the asynchronous live-catalog resolution result, so both
- * valid and stale candidates deliberately use the 64K subscription budget for
- * the whole child loop. This prevents candidate pricing metadata from ever
- * deferring compaction beyond the verified parent model's unknown capacity.
- */
+// Keep candidate and stale subscription models on one conservative child budget until capacity is verified.
 function hasPendingCodexProfileFallback(
   self: ConversationLoop,
   subscriptionRuntime: SubscriptionChatRuntimeSelection,
@@ -217,8 +160,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
           contextWindowSource: "subscription-fallback",
         };
       }
-      // Codex catalog model IDs are OpenAI model IDs, but remain isolated from
-      // the user's inactive API-key configuration and pricing accounting.
+      // Subscription model IDs stay isolated from inactive API-key settings and pricing.
       const catalogWindow = resolveModelContextWindow({ vendor: "openai", model });
       const catalogPreflight = getModelPreflightThreshold("openai", model);
       const catalogUsableContext = getModelUsableContext("openai", model);
@@ -228,9 +170,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
           ? reported.contextWindow
           : undefined,
       );
-      // A matching terminal Codex report may make the catalog budget more
-      // conservative, never larger. Invalid/tiny reports retain the catalog
-      // threshold so a malformed external value cannot disable preflight.
+      // Matching runtime reports may lower budgets, never raise them; invalid tiny values retain thresholds.
       const reportedIsTighter = reportedBudget !== undefined && reportedBudget.preflight < catalogPreflight;
       return {
         model,
@@ -261,9 +201,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
 
   const llmSettings = self.deps.settingsService.get("llm");
   const provider = llmSettings.provider;
-  // The same resolution the renderer's context-fill ring divides by, off the
-  // same settings. Engine and UI cannot disagree about the window because
-  // neither of them decides it.
+  // Engine preflight and UI fullness use the same route resolution.
   const installedProviderPresets =
     provider === "openai-compatible" && llmSettings.marketplaceProviderPresetId
       ? self.deps.settingsService.get("marketplace").installedProviderPresets
@@ -299,14 +237,9 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
   };
 }
 
-
-
-
 const MAX_FORCE_RECOVER_PER_SESSION = 3;
 
-/** Manual `/compact`: progress callbacks plus the user's optional focus. */
 export type ManualCompactOptions = Pick<TurnCallbacks, "onCompactOccurred" | "onCompactStarted"> & {
-  /** What the summary should keep, from `/compact <focus>`. */
   focus?: string;
 };
 
@@ -356,15 +289,12 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
       const toolSchemas = self.rebuildToolSchemas(scope);
       const projectionContext = self.createRequestProjectionContext(scope, null, undefined, toolSchemas);
       const requestProjection = projectionContext.estimateCurrent();
-      // Mirror runPreflightGuard's pre-compact UX hint so slash-`/compact`
 
-      // potentially long-running LLM summarization.
       callbacks?.onCompactStarted?.({
         triggerSource: "manual",
         estimatedBefore: requestProjection.totalTokens,
         preflight,
       });
-      // ── #811 m2: PreCompact (NON-BLOCKING) ── manual `/compact` path.
       await self.fireLifecycleEvent("PreCompact", {
         reason: "manual",
         tokenEstimate: requestProjection.totalTokens,
@@ -401,14 +331,13 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
         projectionContext,
       );
 
-      // ── #811 m2: PostCompact (NON-BLOCKING) ── manual path, after apply.
       await self.fireLifecycleEvent("PostCompact", {
+        reason: "manual",
         messagesBefore: messagesBeforeCount,
         messagesAfter: self.history.getMessages().length,
         tokensBefore,
         tokensAfter: self.lastContextInputTokens,
       });
-
 
       void Promise.resolve(
         self.deps.memoryManager?.saveSession(self.sessionId, self.history.getMessages()),
@@ -430,8 +359,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
       };
     } catch (err) {
       log.error("manualCompact failed: %s", (err as Error).message);
-      // Return safe result rather than bubbling — prevents unhandled IPC rejection.
-      // `/compact` command handler and callers get a user-visible failure message.
+      // Return a safe failure instead of rejecting IPC; callers show the compact error.
       return {
         compacted: false,
         compactedAt: null,
@@ -451,12 +379,9 @@ export async function applyBoundaryToSession(
     callbacks: TurnCallbacks | undefined,
 
     prevMessageCount: number,
-    /** §C1: verbatim pre-compact messages — persisted as checkpoint snapshot for branchFromCheckpoint. */
     messagesBefore: import("../llm/types.js").GenericMessage[],
     projectionContext: RequestProjectionContext,
   ): Promise<void> {
-
-
     if (result.boundary === null) {
       self.compactNum += 1;
       let truncated = contentTruncatedHistoryWithContextCarrier({
@@ -527,10 +452,7 @@ export async function applyBoundaryToSession(
 
     self.compactNum = result.boundary.compactNum;
 
-    // Persist pre-compact history so branchFromCheckpoint can replay. saveCheckpointSnapshot
-    // owns JSONL stubbing and file-backed artifacts for oversized tool results.
-    // Failure is non-fatal — warn and continue; branch-from-checkpoint will surface the
-    // "no snapshot found" error at use-time rather than silently corrupting a compact.
+    // Snapshot failure is non-fatal to compaction; branching reports the missing snapshot when used.
     try {
       await self.deps.memoryManager.saveCheckpointSnapshot(
         self.sessionId,
@@ -558,8 +480,7 @@ export async function applyBoundaryToSession(
     self.lastContextInputTokens = contextTokensAfter;
     self.lastContextInputProjectionTokens = contextTokensAfter;
 
-    // Same-session checkpoint chain.
-    // ctxUsageAtTrigger 분모는 *usable context window* (Ave reservation 적용).
+    // Checkpoint usage divides by usable context after reservations.
     try {
       const { usableContext: usable } = contextBudgetForCurrentRuntime(self);
       const ctxUsageAtTrigger = usable > 0 ? Math.min(1.0, estimatedBefore / usable) : 0;
@@ -594,12 +515,7 @@ export async function applyBoundaryToSession(
     });
   }
 
-/**
- * Emits the `PREFLIGHT_GUARD` trace step — the single legibility point for
- * "is compaction running?" (O-1). No prompt/message content, only counts and
- * the decision. `self.tracer` is a NullTracer outside dev/`AVE_TRACE=1`, so
- * this is a no-op appendFileSync skip in production hot paths.
- */
+// Trace counts and decisions only, never prompt or message content.
 function tracePreflightGuard(
   self: ConversationLoop,
   outcome: "skipped" | "not-reached" | "fired",
@@ -616,20 +532,8 @@ export async function runPreflightGuard(
     callbacks?: TurnCallbacks,
     options?: PreflightGuardOptions,
   ): Promise<boolean> {
-    // Issue #910 follow-up — prior turn ended with context_error / stream_error
-    // and the user-facing message promised auto-compact on the next send.
-    // Force-trigger compact regardless of threshold + autoCompact setting:
-    // the host's promise overrides the user's compact-off preference for this
-    // single recovery cycle (otherwise the conversation is unrecoverable
-    // without manual /compact). Flag clears in `finally` so every path
-    // (success / NOOP / throw) keeps the "single cycle = single clear"
-    // invariant.
-    //
-    // DoS guard (round-4 security MED): if the same session has already
-    // burned through MAX_FORCE_RECOVER_PER_SESSION recovery attempts without
-    // the user being able to make progress, stop force-triggering — the
-    // failure is structural (compact cannot reduce, or input pattern keeps
-    // hitting the limit) and further attempts just multiply API cost.
+    // Pending recovery bypasses compact-off once per cycle, within the per-session recovery budget.
+    // Exhaustion blocks repeated API spending until a clean turn re-arms recovery.
     const overRecoveryBudget = self.contextErrorRecoveryCount >= MAX_FORCE_RECOVER_PER_SESSION;
     const forceRecover = self.contextErrorPending && !overRecoveryBudget;
     const forceRateLimit = options?.forceReason === "rate-limit";
@@ -637,10 +541,7 @@ export async function runPreflightGuard(
       log.warn(
         `preflight: force-recover BUDGET EXHAUSTED (count=${self.contextErrorRecoveryCount}/${MAX_FORCE_RECOVER_PER_SESSION}) — blocking all compact API calls`,
       );
-      // Issue #917: budget 소진은 compact 가 context 를 줄이지 못하는 구조적
-      // 실패이므로 이후 API 호출을 완전 차단한다 (force + normal 모두). 이전
-      // 코드는 normal threshold gate 로 fallthrough 해서 여전히 compactWithBoundary
-      // 를 호출했는데 이는 DoS hard-cap 을 무력화하는 갭.
+      // Recovery exhaustion blocks both forced and normal compact calls; threshold fallthrough would bypass the cap.
       self.contextErrorPending = false;
       self.recoveryExhausted = true;
       callbacks?.onRecoveryExhausted?.();
@@ -649,7 +550,6 @@ export async function runPreflightGuard(
       });
       return false;
     }
-    // Budget 소진 상태면 compact 완전 차단 (re-arm 은 정상 turn 완료 후 reset).
     if (self.recoveryExhausted) {
       log.warn("preflight: recoveryExhausted — all compact API calls blocked until normal turn completes");
       tracePreflightGuard(self, "skipped", "recovery-exhausted");
@@ -688,10 +588,7 @@ export async function runPreflightGuard(
     const messagesBefore = self.history.getMessages();
     const requestProjection = projectionContext.estimateCurrent();
     const estimated = requestProjection.totalTokens;
-    // Two-signal preflight: local request projection can drift from provider
-    // tokenization. Pair it with the latest provider-calibrated context-fill
-    // SOT. Do not use cumulativeUsage here: session billing sums grow every
-    // turn and are not a context-window fill metric.
+    // Pair local projection with provider-calibrated context fill; cumulative billing is not context pressure.
     const pendingInputDelta = self.lastContextInputProjectionTokens > 0
       ? Math.max(0, estimated - self.lastContextInputProjectionTokens)
       : 0;
@@ -716,9 +613,7 @@ export async function runPreflightGuard(
     });
 
     self.isCompacting = true;
-    // Notify renderer immediately so it can show a "자동 압축 중..." indicator
-    // before the blocking LLM compaction call. `onCompactOccurred` fires on
-    // completion; this fires at start so there is no silent wait.
+    // Notify before blocking summary generation so the renderer can show compact progress.
     callbacks?.onCompactStarted?.({
       triggerSource,
       estimatedBefore: estimated,
@@ -728,14 +623,7 @@ export async function runPreflightGuard(
       log.info(
         `preflight: TRIGGER — source=${triggerSource} estimated=${estimated} contextTokensIn=${contextTokensIn} preflight=${preflight} (model=${identity}) → LLM compact #${self.compactNum + 1}`,
       );
-      // Adaptive token-budget preserve — usagePct 가 높을수록 줄인다. 별도 invariant 로
-      // compactWithBoundary 가 최근 5 user turn (+ 현재 pending user question)
-      // 을 verbatim 보존한다.
-      //
-      // forceRecover (context_error pending) 및 rate-limit 복구도 동일하게
-      // preserve=0 — provider 가
-      // 직접 거부한 상황이므로 보수적 preserve 가 의미 없음. 약속한 compact
-      // 를 가장 공격적으로 수행하는 게 사용자 약속 정합.
+      // Reduce token preservation under pressure; forced recovery uses zero token preserve but retains the turn floor.
       const preflightPressure = Math.max(estimated, contextTokensIn);
       const usagePct = preflight > 0 ? preflightPressure / preflight : 0;
       const basePreserveRecentTokens = forceRecover || forceRateLimit || usagePct >= 1.0
@@ -747,15 +635,9 @@ export async function runPreflightGuard(
       const currentUserPreserveTokens = latestMessage?.role === "user"
         ? Math.max(1, estimateMessagesTokens([latestMessage]))
         : 0;
-      // Step 5 appends the current user turn before preflight runs. Even in
-      // red-zone / force-recover compaction, that just-entered user message is
-      // part of the visible transcript contract and must survive as verbatim
-      // context; otherwise the UI can show an assistant answer with no question.
+      // Preserve the just-entered question verbatim even during forced recovery.
       const preserveRecentTokens = Math.max(basePreserveRecentTokens, currentUserPreserveTokens);
-      // ── #811 m2: PreCompact (NON-BLOCKING) ──
-      // Fired right before the blocking LLM compaction. OBSERVE-ONLY — the
-      // dispatch result is discarded; a hook can never veto compaction.
-      // Payload: reason (auto-compact threshold here) + tokenEstimate.
+      // PreCompact is observe-only; a hook cannot veto compaction.
       await self.fireLifecycleEvent("PreCompact", {
         reason: "auto-compact",
         tokenEstimate: estimated,
@@ -767,10 +649,7 @@ export async function runPreflightGuard(
         memoryReviewer,
         preserveRecentTokens,
         preserveRecentTurns: DEFAULT_PRESERVE_RECENT_TURNS,
-        // Mid-turn the protected window has to be measured in this turn's own
-        // tool rounds. Left on user turns it covers everything the turn
-        // appended, and the compactor returns NOOP however far over the
-        // threshold the turn has grown.
+        // In-turn preservation counts tool rounds; a user-turn floor would prevent all reduction.
         ...(options?.intraTurn ? { preserveUnit: "tool-rounds" as const } : {}),
         compactNum: self.compactNum + 1,
         sessionId: self.sessionId,
@@ -783,14 +662,11 @@ export async function runPreflightGuard(
         self.lastContextInputTokens = contextTokensIn;
         self.lastContextInputProjectionTokens = estimated;
         self.tracer.step("COMPACTION_RESULT", { status: "noop", triggerSource });
-        // NOOP ⇒ no compaction applied ⇒ no PostCompact (mirrors onCompactOccurred,
-        // which only emits when applyBoundaryToSession runs).
+        // No applied boundary means no PostCompact notification.
         return false;
       }
 
-      // 다음 prompt assembly 가 새 boundary 를 read 해야 함.
-      // onCompactOccurred (compactNum 포함) 은 applyBoundaryToSession 안에서 단일 emit.
-      // 여기서 두 번째 emit 을 제거해 CheckpointDivider 중복 방지.
+      // Boundary application emits the compact event once; a second event duplicates the divider.
       await applyBoundaryToSession(self,
         compactResult,
         "auto-compact",
@@ -811,10 +687,9 @@ export async function runPreflightGuard(
         estimatedAfter: compactResult.estimatedAfter,
         compactNum: self.compactNum,
       });
-      // ── #811 m2: PostCompact (NON-BLOCKING) ──
-      // Fired AFTER auto-compact applied. OBSERVE-ONLY. Payload: before/after
-      // message + token counts. After-counts are read post-mutation.
+      // PostCompact observes counts after boundary mutation and cannot veto the result.
       await self.fireLifecycleEvent("PostCompact", {
+        reason: "auto-compact",
         messagesBefore: messagesBeforeCount,
         messagesAfter: self.history.getMessages().length,
         tokensBefore,
@@ -822,18 +697,13 @@ export async function runPreflightGuard(
       });
       return true;
     } catch (err) {
-      // LLM compact 실패 시 turn 자체는 계속 진행 — compact 미적용 history 로 stream attempt.
-      // context_error 도달 시 stream-collector 의 safety net 이 사용자 안내 처리.
+      // Failed compaction leaves the turn running; context-error handling supplies user guidance.
       log.warn(`preflight: LLM compact failed — ${(err as Error).message}. Delegating to context_error safety net.`);
       self.tracer.step("COMPACTION_RESULT", { status: "error", triggerSource, message: (err as Error).message });
       return false;
     } finally {
       self.isCompacting = false;
-      // Single-cycle invariant — every force-recover attempt (success /
-      // NOOP / throw) clears the flag and bumps the recovery counter.
-      // Without this in `finally`, a `compactWithBoundary` throw would
-      // leave the flag set and the next turn would force-recover again
-      // → indistinguishable from infinite retry (round-4 architect MAJOR).
+      // Finally clears recovery and charges every attempt, including throws and no-ops, to prevent infinite retry.
       if (forceRecover) {
         self.contextErrorPending = false;
         self.contextErrorRecoveryCount += 1;
@@ -841,13 +711,7 @@ export async function runPreflightGuard(
     }
   }
 
-/**
- * Context-fill carrier helpers.
- *
- * Attach a `checkpointMeta.contextTokensAfter` carrier to compacted /
- * content-truncated histories. Extracted verbatim from `conversation-loop.ts` —
- * no `this` dependency.
- */
+// Compact and content-truncated histories carry their post-compact context size on checkpoint metadata.
 function compactedHistoryWithContextCarrier(
   messages: GenericMessage[],
   contextTokensAfter: number,

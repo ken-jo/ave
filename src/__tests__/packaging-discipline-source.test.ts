@@ -1,10 +1,17 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readRepoFile } from "./test-helpers.js";
+import {
+  TRUSTED_EVENTS,
+  PULL_REQUEST_TARGET_WORKFLOWS,
+  pullRequestTargetAllowListViolations,
+  pullRequestTargetExecutedFiles,
+  workflowEvents,
+  workflowRunnerViolations,
+} from "./support/workflow-runner-policy.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 
@@ -215,6 +222,47 @@ describe("installer smoke and packaging discipline", () => {
     expectPinnedAction(workflow, "softprops/action-gh-release");
   });
 
+  it("keeps the disposable installer scope on the static hosted matrix", () => {
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const parsed = parseYaml(workflow) as {
+      on: { workflow_dispatch: { inputs: { installer_scope: { default: string; options: string[] } } } };
+    };
+    expect(parsed.on.workflow_dispatch.inputs.installer_scope).toMatchObject({
+      default: "all",
+      options: ["all", "windows-disposable"],
+    });
+    // Every installer entry already runs on a disposable hosted image
+    // (workflow-runner-policy.ts needs a statically readable matrix), so the
+    // scope does not compute the matrix: it only keeps the build unsigned and
+    // unpublished, asserted in the next test.
+    const jobs = workflowJobs(workflow);
+    const installers = jobs.get("installers");
+    const profile = jobs.get("release-profile");
+    if (installers === undefined || profile === undefined) throw new Error("missing installers or release-profile job");
+    expect(installers).not.toContain("needs.release-profile.outputs");
+    expect(profile).not.toMatch(/^ {4}outputs:$/mu);
+    expect(workflow).not.toContain("vars.AVE_");
+  });
+
+  it("keeps disposable Windows validation unsigned and outside release publication", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const installers = jobs.get("installers");
+    if (installers === undefined) throw new Error("missing installers job");
+    expect(installers).toContain("if: github.event_name == 'push' || inputs.installer_scope == 'windows-disposable' || inputs.contract_probe != 'true'");
+    const build = jobRunCommands(installers).find((command) => command.includes('args=("--${{ matrix.target }}")'));
+    if (build === undefined) throw new Error("missing installer build command");
+    expect(build.split("elif")[0]).toContain('if [ "${{ inputs.installer_scope }}" = "windows-disposable" ]; then');
+    expect(build.split("elif")[0]).toContain('args+=("--skip-code-sign" "--publish" "never")');
+    expect(build.split("elif")[0]).toContain('echo "skip_sign=true" >> "$GITHUB_OUTPUT"');
+    for (const id of ["publish-release", "publish-r2"]) {
+      expect(jobs.get(id)).toMatch(/^ {4}if: github\.event_name == 'push'$/mu);
+    }
+    expect(jobs.get("publish-contract")).toContain("inputs.installer_scope != 'windows-disposable'");
+    // Every installer job runs on a disposable hosted image, so the Windows
+    // smoke is authorized by target alone; no runner.environment branch.
+    expect(installers).toContain("AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}");
+  });
+
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     const smokeScript = readRepoFile("scripts/smoke-packaged-app.mjs");
@@ -400,6 +448,478 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
+  it("runs every workflow job on a hosted runner and keeps fork-triggered jobs away from write tokens", () => {
+    const violations = workflowFileNames()
+      .flatMap((name) => workflowRunnerViolations(readRepoFile(`.github/workflows/${name}`), name));
+    expect(violations).toEqual([]);
+    // The fork rules are read, not vacuous: these workflows are fork-reachable.
+    const reachable = workflowFileNames().filter((name) => {
+      const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
+      return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
+    });
+    expect(reachable).toEqual(["ci.yml", "cluster-detector.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
+  });
+
+  /** A repository file's content, or undefined when the path is no file. */
+  const repoFile = (path: string): string | undefined => {
+    const absolute = resolve(root, path);
+    return existsSync(absolute) && statSync(absolute).isFile() ? readRepoFile(path) : undefined;
+  };
+  const allowListWhy = "pull_request_target runs with base-repo permissions; update the allow-list "
+    + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
+
+  it("pins every pull_request_target workflow, and every file it executes, to a reviewed allow-list entry", () => {
+    const names = workflowFileNames();
+    const violations = names.flatMap((name) =>
+      pullRequestTargetAllowListViolations(readRepoFile(`.github/workflows/${name}`), name, repoFile));
+    expect(violations).toEqual([]);
+    // The list is exact: every entry is a workflow that exists and runs on
+    // pull_request_target, so a removed or retriggered one leaves no stale pin.
+    const targets = names.filter((name) => {
+      const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
+      return workflowEvents(on).includes("pull_request_target");
+    });
+    expect(Object.keys(PULL_REQUEST_TARGET_WORKFLOWS).sort()).toEqual(targets);
+    expect(targets).toEqual(["cluster-detector.yml"]);
+    // The derivation is read, not vacuous: the scope script the workflow runs
+    // from its .cluster-policy checkout, and the module that script imports.
+    expect(pullRequestTargetExecutedFiles(
+      "cluster-detector.yml",
+      readRepoFile(".github/workflows/cluster-detector.yml"),
+      repoFile,
+    ).files).toEqual([
+      ".github/workflows/cluster-detector.yml",
+      "scripts/check-cluster-scope.mjs",
+      "scripts/check-cluster-sensitive-paths.mjs",
+    ]);
+  });
+
+  it("refuses an edited or unlisted pull_request_target workflow until the allow-list is updated", () => {
+    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const edited = cluster.replace("CLUSTER_THRESHOLD=3", "CLUSTER_THRESHOLD=4");
+    expect(edited).not.toBe(cluster);
+    const [changed, ...rest] = pullRequestTargetAllowListViolations(edited, "cluster-detector.yml", repoFile);
+    expect(rest).toEqual([]);
+    expect(changed).toMatch(/^\.github\/workflows\/cluster-detector\.yml changed since its pull_request_target review of cluster-detector\.yml \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
+    expect(changed?.endsWith(allowListWhy)).toBe(true);
+    // Line endings alone are not an edit: a Windows checkout reads CRLF.
+    expect(pullRequestTargetAllowListViolations(cluster.replace(/\n/gu, "\r\n"), "cluster-detector.yml", repoFile))
+      .toEqual([]);
+    expect(pullRequestTargetAllowListViolations(cluster, "copy.yml", repoFile))
+      .toEqual([`copy.yml is not on the pull_request_target allow-list: ${allowListWhy}`]);
+    expect(pullRequestTargetAllowListViolations(cluster.replace("pull_request_target:", "pull_request:"), "copy.yml", repoFile))
+      .toEqual([]);
+  });
+
+  describe("files a pull_request_target workflow executes", () => {
+    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const withFile = (path: string, content: string) => (candidate: string): string | undefined =>
+      (candidate === path ? content : repoFile(candidate));
+
+    it.each([
+      ["the scope script it runs", "scripts/check-cluster-scope.mjs"],
+      ["the module that script imports", "scripts/check-cluster-sensitive-paths.mjs"],
+    ])("refuses an edit to %s without a re-pin", (_label, path) => {
+      const edited = `${repoFile(path) as string}\n// edited\n`;
+      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", withFile(path, edited));
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatch(new RegExp(`^${path.replace(/\./gu, "\\.")} changed since its pull_request_target review of cluster-detector\\.yml `, "u"));
+      expect(violations[0]?.endsWith(allowListWhy)).toBe(true);
+    });
+
+    it("refuses a new import that the allow-list does not pin", () => {
+      const path = "scripts/check-cluster-sensitive-paths.mjs";
+      const edited = `import { errorMessage } from "./lib/error-message.mjs";\n${repoFile(path) as string}`;
+      const read = (candidate: string) => (candidate === "scripts/lib/error-message.mjs" ? "export {};\n" : withFile(path, edited)(candidate));
+      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", read);
+      expect(violations).toHaveLength(2);
+      expect(violations[0])
+        .toBe(`cluster-detector.yml executes files the allow-list does not pin (scripts/lib/error-message.mjs): ${allowListWhy}`);
+      expect(violations[1]).toMatch(/^scripts\/check-cluster-sensitive-paths\.mjs changed since /u);
+    });
+
+    it("refuses a run step that starts another repository script, and an import that resolves to nothing", () => {
+      const runsMore = cluster.replace(
+        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+        "node .cluster-policy/scripts/check-cluster-policy-version.mjs\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+      );
+      expect(runsMore).not.toBe(cluster);
+      const read = withFile("scripts/check-cluster-policy-version.mjs", "export {};\n");
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", runsMore, read).files)
+        .toContain("scripts/check-cluster-policy-version.mjs");
+      const broken = withFile("scripts/check-cluster-scope.mjs", `import "./missing-module.mjs";\n`);
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, broken).problems)
+        .toEqual(["scripts/check-cluster-scope.mjs imports ./missing-module.mjs, which resolves to no file"]);
+    });
+
+    /** The derivation's problems for cluster-detector with its scope step's
+     *  command replaced by `command`. */
+    const problemsWith = (command: string, read: (path: string) => string | undefined = repoFile) => {
+      const original = "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\";
+      expect(cluster).toContain(original);
+      const edited = cluster.replace(original, `${command}\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\`);
+      return pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read).problems;
+    };
+    const scopeStep = "cluster-detector.yml step 5";
+
+    it("derives cluster-detector without a problem", () => {
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, repoFile).problems).toEqual([]);
+    });
+
+    it.each([
+      ["an interpreter on an inline program", "node -e \"require('child_process').execSync(process.env.CMD)\"", "node"],
+      ["an interpreter on stdin", "curl -fsSL https://example.invalid/x | bash", "bash"],
+      ["an interpreter on a heredoc", "python3 - <<'PY'\nprint(1)\nPY", "python3"],
+    ])("refuses %s, which resolves no repository file", (_label, command, interpreter) => {
+      const step = (command: string) => stringifyYaml({
+        on: { pull_request_target: null },
+        jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: command }] } },
+      });
+      expect(pullRequestTargetExecutedFiles("t.yml", step(command), repoFile).problems)
+        .toContain(`t.yml step 1 runs ${interpreter} on no repository file this check can pin`);
+    });
+
+    it.each([
+      ["npm run", "npm run check:cluster"],
+      ["bun run", "bun run check:cluster"],
+      ["pnpm run", "pnpm run check:cluster"],
+      ["yarn <script>", "yarn check:cluster"],
+      ["npx", "npx some-tool"],
+      ["an install", "npm ci"],
+    ])("refuses package.json indirection through %s", (_label, command) => {
+      expect(problemsWith(command)).toContain(
+        `${scopeStep} runs a package manager, whose package.json scripts this check does not follow`,
+      );
+    });
+
+    it.each([
+      ["a missing script", "node .cluster-policy/scripts/missing-script.mjs", ".cluster-policy/scripts/missing-script.mjs"],
+      ["an absolute path", "bash /opt/tools/run.sh", "/opt/tools/run.sh"],
+      ["a variable-built path", "node \"$POLICY_DIR/scripts/check-cluster-scope.mjs\"", "$POLICY_DIR/scripts/check-cluster-scope.mjs"],
+    ])("refuses %s with a script extension", (_label, command, token) => {
+      expect(problemsWith(command)).toContain(`${scopeStep} names ${token}, which does not resolve to a repository file`);
+    });
+
+    it.each([
+      ["$GITHUB_WORKSPACE", "node \"$GITHUB_WORKSPACE/scripts/check-cluster-sensitive-paths.mjs\""],
+      ["${{ github.workspace }}", "node ${{ github.workspace }}/scripts/check-cluster-sensitive-paths.mjs"],
+    ])("resolves a path under %s to the repository root", (_label, command) => {
+      expect(problemsWith(command)).toEqual([]);
+    });
+
+    it.each([
+      ["a template-literal import", "const mod = await import(`./${name}.mjs`);"],
+      ["a computed require", "const mod = require(process.env.MODULE);"],
+      ["node spawned on a script", "spawnSync(\"node\", [scriptPath]);"],
+      ["this Node spawned on a script", "execFileSync(process.execPath, [scriptPath]);"],
+      ["fork", "fork(scriptPath);"],
+    ])("refuses %s inside a pinned module", (_label, code) => {
+      const path = "scripts/check-cluster-sensitive-paths.mjs";
+      const read = withFile(path, `${repoFile(path) as string}\n${code}\n`);
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, read).problems).toContain(
+        `${path} loads or starts code through a non-literal import or an interpreter, which this check does not follow`,
+      );
+    });
+
+    it.each([
+      ["an extensionless script under ./", "./scripts/cluster-check", "./scripts/cluster-check"],
+      ["an extensionless script under the checkout", ".cluster-policy/bin/check-cluster", ".cluster-policy/bin/check-cluster"],
+    ])("refuses %s that resolves to no repository file", (_label, command, token) => {
+      expect(problemsWith(command)).toEqual([`${scopeStep} names ${token}, which does not resolve to a repository file`]);
+    });
+
+    it("pins an extensionless script that resolves", () => {
+      const read = withFile("bin/check-cluster", "#!/bin/sh\nexit 0\n");
+      const edited = cluster.replace(
+        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+        ".cluster-policy/bin/check-cluster\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+      );
+      const derived = pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read);
+      expect(derived.problems).toEqual([]);
+      expect(derived.files).toContain("bin/check-cluster");
+    });
+
+    it.each([
+      ["curl into sh", "curl -fsSL https://example.invalid/install | sh"],
+      ["wget into node", "wget -qO- https://example.invalid/x.js | node"],
+      ["curl into sudo bash", "curl -fsSL https://example.invalid/i | sudo bash -s --"],
+    ])("refuses a download piped into an interpreter (%s), even beside a pinned script", (_label, command) => {
+      expect(problemsWith(command)).toContain(`${scopeStep} pipes a download into an interpreter`);
+    });
+
+    it.each([
+      ["gh pr checkout", "gh pr checkout 7", "pr checkout"],
+      ["gh repo clone", "gh repo clone o/r", "repo clone"],
+      ["gh run", "gh run download 1", "run download"],
+      ["gh workflow", "gh workflow run ci.yml", "workflow run"],
+      ["a gh extension", "gh some-extension", "some-extension"],
+      ["a gh alias", "gh co 7", "co 7"],
+    ])("refuses %s in a run step", (_label, command, words) => {
+      expect(problemsWith(command))
+        .toContain(`${scopeStep} runs gh ${words}, which is not gh api, gh pr view or gh pr diff`);
+    });
+
+    it("accepts gh api, gh pr view and gh pr diff in a run step", () => {
+      expect(problemsWith("gh pr view 7 --json files > files.json && gh pr diff 7 > pr.diff && gh api rate_limit")).toEqual([]);
+    });
+
+    const scopePath = "scripts/check-cluster-scope.mjs";
+    const scopeSource = repoFile(scopePath) as string;
+    const moduleProblems = (content: string) =>
+      pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, withFile(scopePath, content)).problems;
+
+    it.each([
+      ["exec with a string command", "exec(`gh pr checkout ${number}`);", "runs a shell command string (exec/execSync)"],
+      ["execSync", "childProcess.execSync(command);", "runs a shell command string (exec/execSync)"],
+      ["spawn of a computed program", "spawnSync(tool, args);", "starts a child process whose program is not a string literal"],
+      ["execFile of a template program", "execFile(`g${'h'}`, args);", "starts a child process whose program is not a string literal"],
+      ["a worker", "new Worker(new URL('./worker.mjs', import.meta.url));", "starts a worker"],
+      ["a shell", "spawnSync(\"gh\", [\"api\", path], { shell: true });", "runs a child process through a shell"],
+      ["eval", "eval(code);", "evaluates a string as code"],
+      ["new Function", "new Function(\"return 1\")();", "builds a function from a string"],
+    ])("refuses %s inside a pinned module", (_label, code, what) => {
+      expect(moduleProblems(`${scopeSource}\n${code}\n`)).toContain(`${scopePath} ${what}, which this check does not follow`);
+    });
+
+    it.each([
+      ["pr checkout", "spawnSync(\"gh\", [\"pr\", \"checkout\", number]);", "runs gh pr checkout"],
+      ["repo clone", "spawnSync(\"gh\", [\"repo\", \"clone\", repo]);", "runs gh repo clone"],
+      ["an extension", "spawnSync(\"gh\", [\"some-extension\"]);", "runs gh some-extension"],
+      ["args from a parameter", "function run(args) {\n  return spawnSync(\"gh\", args);\n}", "runs gh with args"],
+    ])("refuses gh %s inside a pinned module", (_label, code, what) => {
+      expect(moduleProblems(`${scopeSource}\n${code}\n`))
+        .toContain(`${scopePath} ${what}, which is not gh api, gh pr view or gh pr diff`);
+    });
+
+    it("reads createGhApiRequester's args literal, so changing its subcommand is refused", () => {
+      expect(moduleProblems(scopeSource)).toEqual([]);
+      const original = 'const args = ["api", "--method", "GET", endpoint];';
+      expect(scopeSource).toContain(original);
+      expect(moduleProblems(scopeSource.replace(original, 'const args = ["run", "--method", "GET", endpoint];')))
+        .toEqual([`${scopePath} runs gh run --method, which is not gh api, gh pr view or gh pr diff`]);
+      expect(moduleProblems(`${scopeSource}\nspawnSync("gh", ["pr", "view", "7"]);\nspawnSync("gh", ["pr", "diff", "7"]);\n`)).toEqual([]);
+    });
+
+    it("refuses a source include inside a pinned shell script", () => {
+      const read = withFile("scripts/cluster-policy.sh", "set -e\nsource \"$HELPERS\"\n");
+      expect(problemsWith("bash .cluster-policy/scripts/cluster-policy.sh", read))
+        .toEqual(["scripts/cluster-policy.sh sources another file, which this check does not follow"]);
+    });
+  });
+
+  describe("workflow runner policy mutations", () => {
+    const base = (job: Record<string, unknown>, on: unknown = { pull_request: null, push: null }) =>
+      stringifyYaml({ on, permissions: { contents: "read" }, jobs: { check: { steps: [{ run: "true" }], ...job } } });
+    const matrix = (os: unknown[]) => ({ "runs-on": "${{ matrix.os }}", strategy: { matrix: { include: os.map((label) => ({ os: label })) } } });
+
+    it("accepts a hosted label and a static matrix of hosted labels", () => {
+      expect(workflowRunnerViolations(base({ "runs-on": "ubuntu-latest" }), "ok.yml")).toEqual([]);
+      expect(workflowRunnerViolations(base(matrix(["macos-15", "windows-2025"]), { workflow_dispatch: null }), "ok.yml"))
+        .toEqual([]);
+    });
+
+    it.each([
+      ["a self-hosted literal", { "runs-on": "self-hosted" }],
+      ["a label array", { "runs-on": ["self-hosted", "Linux"] }],
+      ["a repository variable", { "runs-on": "${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}" }],
+      ["a guarded repository variable", { "runs-on": "${{ github.event_name == 'push' && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}" }],
+      ["a matrix entry that is not hosted", matrix(["macos-15", "self-hosted"])],
+      ["a matrix entry from a variable", matrix(["${{ fromJSON(vars.AVE_MACOS_RUNNER) }}"])],
+      ["a computed matrix", { "runs-on": "${{ matrix.os }}", strategy: { matrix: "${{ fromJSON(needs.plan.outputs.matrix) }}" } }],
+    ])("rejects %s, on trusted and fork-reachable workflows alike", (_label, job) => {
+      expect(workflowRunnerViolations(base(job), "bad.yml")).toHaveLength(1);
+      expect(workflowRunnerViolations(base(job, { workflow_dispatch: null }), "bad.yml")).toHaveLength(1);
+    });
+
+    it.each(["issue_comment", "pull_request_review", "workflow_run", "discussion_comment", "a_future_event"])(
+      "treats %s as fork-reachable",
+      (event) => {
+        const noPermissions = stringifyYaml({ on: { [event]: null }, jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: "true" }] } } });
+        expect(workflowRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
+      },
+    );
+
+    it("requires a permissions block and refuses write-all", () => {
+      const noPermissions = stringifyYaml({ on: "pull_request", jobs: { check: { "runs-on": "ubuntu-latest" } } });
+      expect(workflowRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
+      expect(workflowRunnerViolations(base({ "runs-on": "ubuntu-latest", permissions: "write-all" }), "bad.yml"))
+        .toEqual(["bad.yml:check grants write-all"]);
+    });
+
+    it("refuses pull request code, write tokens and secrets under pull_request_target", () => {
+      const target = (step: Record<string, unknown>, job: Record<string, unknown> = {}) =>
+        workflowRunnerViolations(
+          base({ "runs-on": "ubuntu-latest", steps: [step], ...job }, { pull_request_target: null }),
+          "t.yml",
+        );
+      const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+      const trusted = { ref: "${{ steps.pr-snapshot.outputs.base_sha }}", "persist-credentials": false };
+      expect(target({ uses: checkout, with: trusted })).toEqual([]);
+      expect(target({ uses: checkout, with: { ...trusted, ref: "${{ github.event.pull_request.head.sha }}" } }))
+        .toHaveLength(1);
+      expect(target({ uses: checkout, with: { ...trusted, repository: "${{ github.event.pull_request.head.repo.full_name }}" } }))
+        .toHaveLength(1);
+      expect(target({ uses: checkout, with: { ref: trusted.ref } })).toHaveLength(1);
+      expect(target({ run: "true", env: { TOKEN: "${{ secrets.NPM_TOKEN }}" } })).toHaveLength(1);
+      expect(target({ run: "true" }, { permissions: { "pull-requests": "write" } })).toHaveLength(1);
+    });
+
+    const underTarget = (step: Record<string, unknown>) => workflowRunnerViolations(
+      base({ "runs-on": "ubuntu-latest", steps: [step] }, { pull_request_target: null }),
+      "t.yml",
+    );
+
+    it.each([
+      ["the whole context serialized", { run: "echo \"${{ toJSON(secrets) }}\"" }],
+      ["the bare context", { run: "true", env: { ALL: "${{ secrets }}" } }],
+      ["the context passed to a function", { run: "true", env: { ALL: "${{ format('{0}', secrets) }}" } }],
+      ["a computed key", { run: "true", env: { ONE: "${{ secrets[inputs.name] }}" } }],
+      ["a step condition", { run: "true", if: "secrets.NPM_TOKEN != ''" }],
+    ])("refuses a secret read under pull_request_target through %s", (_label, step) => {
+      expect(underTarget(step)).toEqual(["t.yml reads a secret under pull_request_target"]);
+    });
+
+    it.each([
+      ["gh pr checkout", "gh pr checkout ${{ github.event.pull_request.number }}"],
+      ["a pull/<n>/head refspec", "git fetch origin pull/${{ github.event.pull_request.number }}/head:pr && git switch pr"],
+      ["a pull/<n>/merge refspec", "git fetch origin +pull/7/merge"],
+      ["a refs/pull/ ref", "git fetch origin refs/pull/7/head"],
+      ["the head sha from the payload", "git fetch origin && git checkout ${{ github.event.pull_request.head.sha }}"],
+      ["the head branch", "git checkout \"${{ github.head_ref }}\""],
+    ])("refuses a run step that fetches pull request code under pull_request_target through %s", (_label, run) => {
+      expect(underTarget({ run })).toEqual(["t.yml:check fetches pull request code in a run step under pull_request_target"]);
+    });
+
+    const fetchesPullRequestCode = ["t.yml:check fetches pull request code in a run step under pull_request_target"];
+
+    it.each([
+      ["a head sha set on one line and checked out on a later one",
+        "SHA='${{ github.event.pull_request.head.sha }}'\necho \"checking $SHA\"\ngit checkout \"$SHA\""],
+      ["the head branch from the runner's environment", "git fetch origin \"$GITHUB_HEAD_REF\""],
+      ["the head sha read from the event file",
+        "H=$(jq -r .pull_request.head.sha \"$GITHUB_EVENT_PATH\")\ngit fetch origin \"$H\""],
+    ])("refuses a multi-line run step that fetches pull request code through %s", (_label, run) => {
+      expect(underTarget({ run })).toEqual(fetchesPullRequestCode);
+    });
+
+    it("refuses a run step that reaches the head commit through step or job env", () => {
+      const head = "${{ github.event.pull_request.head.sha }}";
+      expect(underTarget({ env: { H: head }, run: "git fetch origin \"$H\"" })).toEqual(fetchesPullRequestCode);
+      expect(workflowRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", env: { H: head }, steps: [{ run: "set -e\ngit fetch origin $H" }] },
+          { pull_request_target: null }),
+        "t.yml",
+      )).toEqual(fetchesPullRequestCode);
+      const workflowEnv = stringifyYaml({
+        on: { pull_request_target: null },
+        permissions: { contents: "read" },
+        env: { REF: "${{ github.head_ref }}" },
+        jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: "gh repo clone o/r -- --branch \"$REF\"" }] } },
+      });
+      expect(workflowRunnerViolations(workflowEnv, "t.yml")).toEqual(fetchesPullRequestCode);
+      // The same reference with no git or gh in the step is not a checkout.
+      expect(underTarget({ env: { H: head }, run: "echo \"$H\"" })).toEqual([]);
+    });
+
+    describe("pull request references passed between steps", () => {
+      const head = "${{ github.event.pull_request.head.sha }}";
+      const writeHead = { id: "a", run: `echo "sha=${head}" >> "$GITHUB_OUTPUT"` };
+      const steps = (...list: Record<string, unknown>[]) => workflowRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", steps: list }, { pull_request_target: null }),
+        "t.yml",
+      );
+      const job = (extra: Record<string, unknown>, ...list: Record<string, unknown>[]) => workflowRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", steps: list, ...extra }, { pull_request_target: null }),
+        "t.yml",
+      );
+      const reason = (text: string) => [`t.yml:check ${text} under pull_request_target`];
+      const fetches = reason("fetches pull request code in a run step");
+
+      it.each<[string, Record<string, unknown>[], string[]]>([
+        ["an output read in a later script", [writeHead, { run: "git fetch origin ${{ steps.a.outputs.sha }}" }], fetches],
+        ["an output read through a later step's env", [
+          { id: "a", env: { H: head }, run: "echo \"sha=$H\" >> $GITHUB_OUTPUT" },
+          { env: { S: "${{ steps.a.outputs.sha }}" }, run: "set -e\ngit checkout \"$S\"" },
+        ], fetches],
+        ["an output relayed through a step that runs no git", [
+          writeHead,
+          { id: "b", run: "echo \"relay=${{ steps.a.outputs.sha }}\" >> \"$GITHUB_OUTPUT\"" },
+          { run: "gh pr diff ${{ steps.b.outputs.relay }}" },
+        ], fetches],
+        ["the head the API returned, written by the step that fetched it", [
+          { id: "a", run: "gh api repos/o/r/pulls/7 --jq .head.sha >> \"$GITHUB_OUTPUT\"" },
+        ], fetches],
+        ["$GITHUB_ENV", [{ run: `echo "PR_SHA=${head}" >> "$GITHUB_ENV"` }, { run: "git fetch origin \"$PR_SHA\"" }],
+          reason("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH")],
+        ["$GITHUB_PATH", [{ env: { REF: "${{ github.head_ref }}" }, run: "echo \"$RUNNER_TEMP/$REF\" >> $GITHUB_PATH" }],
+          reason("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH")],
+        ["an action input", [writeHead, {
+          uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          with: { ref: "${{ steps.a.outputs.sha }}", "persist-credentials": false },
+        }], reason("passes a pull request reference from an earlier step to an action")],
+      ])("refuses a pull request reference handed on through %s", (_label, list, expected) => {
+        expect(steps(...list)).toEqual(expected);
+      });
+
+      it.each<[string, string]>([
+        ["the whole context serialized", "git fetch origin \"$(echo '${{ toJSON(steps) }}' | jq -r .a.outputs.sha)\""],
+        ["a bracketed output name", "git fetch origin ${{ steps.a.outputs['sha'] }}"],
+        ["a bracketed step id", "git fetch origin ${{ steps['a'].outputs.sha }}"],
+        ["a wildcard step", "git fetch origin ${{ join(steps.*.outputs.sha, ' ') }}"],
+        ["upper-case context and property names", "git fetch origin ${{ STEPS.A.OUTPUTS.sha }}"],
+      ])("refuses a tainted step output read through %s", (_label, run) => {
+        expect(steps(writeHead, { run })).toEqual(fetches);
+      });
+
+      it("lets an exact read of an untainted step through while another step is tainted", () => {
+        expect(steps(
+          { id: "clean", run: "echo \"base=abc\" >> \"$GITHUB_OUTPUT\"" },
+          writeHead,
+          { run: "git -C policy cat-file -e ${{ steps.clean.outputs.base }}" },
+        )).toEqual([]);
+      });
+
+      it.each<[string, Record<string, unknown>]>([
+        ["a github-script input", {
+          uses: "actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+          with: { script: "await exec.exec('git', ['fetch', 'origin', context.payload.pull_request.head.sha])" },
+        }],
+        ["an action's env", {
+          uses: "some/action@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+          env: { REF: "${{ github.event.pull_request.head.ref }}" },
+        }],
+      ])("refuses pull request code handed straight to an action through %s", (_label, step) => {
+        expect(steps(step)).toEqual(reason("passes pull request code to an action"));
+      });
+
+      it.each([
+        ["the head repository's clone URL", "url=$(gh api repos/o/r/pulls/7 --jq .head.repo.clone_url)\ngit clone \"$url\" pr"],
+        ["the head repository's name", "gh repo clone \"$(gh api repos/o/r/pulls/7 --jq '.head.repo.full_name')\""],
+        ["a jq pipe from .head", "sha=$(gh api repos/o/r/pulls/7 | jq -r '.head | .sha')\ngit fetch origin \"$sha\""],
+      ])("refuses a run step that reaches %s", (_label, run) => {
+        expect(steps({ run })).toEqual(fetches);
+      });
+
+      it("refuses a job output that maps a tainted step output", () => {
+        expect(job({ outputs: { sha: "${{ steps.a.outputs.sha }}" } }, writeHead))
+          .toEqual(reason("maps a pull request reference to a job output"));
+      });
+
+      it("lets a tainted output gate a later git step, and an untainted one feed it", () => {
+        expect(steps(
+          { id: "snapshot", run: "gh api repos/o/r/pulls/7 --jq .base.sha | sed 's/^/base_sha=/' >> \"$GITHUB_OUTPUT\"" },
+          { id: "current", env: { H: head }, run: "echo \"superseded=$([ \"$H\" = x ] && echo true || echo false)\" >> \"$GITHUB_OUTPUT\"" },
+          { if: "steps.current.outputs.superseded != 'true'", env: { B: "${{ steps.snapshot.outputs.base_sha }}" },
+            run: "git -C policy rev-parse HEAD | grep -qx \"$B\"" },
+        )).toEqual([]);
+      });
+    });
+
+    it("reads secrets as an expression context, not as a word in a script", () => {
+      expect(underTarget({ run: "cat secrets.txt && git log --oneline -1" })).toEqual([]);
+    });
+  });
+
   it.each([
     ["dot access", "${{ secrets.R2_BUCKET }}"],
     ["dot access with whitespace", "${{\n secrets \t . \n R2_ACCESS_KEY_ID \n}}"],
@@ -527,7 +1047,7 @@ describe("installer smoke and packaging discipline", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
     const contract = jobs.get("publish-contract");
     if (contract === undefined) throw new Error("build-installers.yml has no publish-contract job");
-    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true'\)$/mu);
+    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true' && inputs\.installer_scope != 'windows-disposable'\)$/mu);
     expect(contract).toContain("if: github.event_name == 'push'");
     expect(contract).toContain('if [ "$REF_PROTECTED" != "true" ]; then');
     expect(contract).toContain('if [ "$tag_object_type" != "tag" ]');
@@ -556,75 +1076,26 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("runs every release Linux job on the runner the repo variable names", () => {
-    // Only a job with nothing before it falls back, and only to a self-hosted
-    // runner so its check step can name the unset variable; never to a
-    // billing-blocked hosted label.
-    const entryRunner = "runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}";
-    const linuxRunner = "runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}";
+  it("runs every release Linux job on the pinned hosted ARM64 image", () => {
+    const linuxRunner = "runs-on: ubuntu-24.04-arm";
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
-    for (const [id, runner] of [
-      ["release-profile", entryRunner],
-      ["publish-release", linuxRunner],
-      ["publish-r2", linuxRunner],
-    ] as const) {
+    for (const id of ["release-profile", "publish-release", "publish-r2", "publish-contract"]) {
       const body = installers.get(id);
       if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
-      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${runner}`]);
+      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${linuxRunner}`]);
     }
     for (const id of ["installers", "publish-release", "publish-r2"]) {
       expect(installers.get(id), id).toMatch(/^ {4}needs: (?:release-profile|\[release-profile, installers\])$/mu);
     }
     const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
     if (probe === undefined) throw new Error("r2-probe.yml has no probe job");
-    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${entryRunner}`]);
-  });
-
-  it("fails a release run naming any unset runner variable before a job needs it", () => {
-    const check = "bash .github/scripts/require-runner-vars.sh";
-    const profile = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("release-profile");
-    const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
-    if (profile === undefined || probe === undefined) throw new Error("missing release-profile or probe job");
-    const names = ["AVE_LINUX_RUNNER", "AVE_MACOS_RUNNER", "AVE_WINDOWS_RUNNER"];
-    expect(jobRunCommands(profile)).toContain(`${check} ${names.join(" ")}`);
-    expect(jobRunCommands(probe)).toContain(`${check} AVE_LINUX_RUNNER`);
-    for (const name of names) expect(profile).toContain(`${name}: \${{ vars.${name} }}`);
-    expect(probe).toContain("AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}");
-    // The check precedes every other step that could depend on the runner.
-    expect(profile.indexOf(check)).toBeLessThan(profile.indexOf("Verify exact source head"));
-    expect(probe.indexOf(check)).toBeLessThan(probe.indexOf("install-aws-cli"));
-    // No workflow job that a runner variable chooses falls back to a hosted label.
-    for (const name of ["build-installers.yml", "r2-probe.yml"]) {
-      expect(readRepoFile(`.github/workflows/${name}`), name).not.toMatch(/fromJSON\(vars\.AVE_[A-Z]+_RUNNER\) \|\| '(?!self-hosted')/u);
+    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${linuxRunner}`]);
+    // No workflow reads a runner from a repository variable any more, so the
+    // AVE_*_RUNNER variables can be deleted without changing any run.
+    for (const name of workflowFileNames()) {
+      expect(readRepoFile(`.github/workflows/${name}`), name).not.toMatch(/vars\.AVE_[A-Z]+_RUNNER/u);
     }
-
-    const run = (env: Record<string, string>, ...args: string[]) => {
-      const clean = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !/^AVE_[A-Z]+_RUNNER$/u.test(key)),
-      );
-      return spawnSync("bash", [".github/scripts/require-runner-vars.sh", ...args], {
-        cwd: root,
-        encoding: "utf8",
-        env: { ...clean, ...env },
-      });
-    };
-    const selfHosted = '["self-hosted","Linux","ARM64","ave"]';
-    const ok = run({ AVE_LINUX_RUNNER: selfHosted, AVE_MACOS_RUNNER: '"macos-15"', AVE_WINDOWS_RUNNER: '["windows-latest"]' }, ...names);
-    expect(ok.status, ok.stdout + ok.stderr).toBe(0);
-    expect(ok.stdout).toContain(`AVE_LINUX_RUNNER = ${selfHosted}`);
-
-    const unset = run({ AVE_LINUX_RUNNER: selfHosted, AVE_WINDOWS_RUNNER: "" }, ...names);
-    expect(unset.status).toBe(1);
-    expect(unset.stdout).toContain("::error::Repository variable AVE_MACOS_RUNNER is not set.");
-    expect(unset.stdout).toContain("::error::Repository variable AVE_WINDOWS_RUNNER is not set.");
-    expect(unset.stdout).not.toContain("AVE_LINUX_RUNNER is not set");
-
-    for (const bad of ["ubuntu-latest", "[]", '[""]', "[1]", "{}", "null"]) {
-      const malformed = run({ AVE_LINUX_RUNNER: bad }, "AVE_LINUX_RUNNER");
-      expect(malformed.status, bad).toBe(1);
-      expect(malformed.stdout, bad).toContain("::error::Repository variable AVE_LINUX_RUNNER must be a JSON label string");
-    }
-    expect(run({}).status).toBe(2);
+    expect(existsSync(resolve(root, ".github/scripts/require-runner-vars.sh"))).toBe(false);
   });
 
   it("ships x64 Linux installers from any runner arch and refuses a foreign-arch binary", () => {
@@ -669,27 +1140,31 @@ describe("installer smoke and packaging discipline", () => {
     expect(afterPack).toContain("if (archDir !== arch) rmSync(join(keepRoot, archDir), { recursive: true, force: true });");
   });
 
-  it("builds macOS and Windows installers on the runners the repo variables name", () => {
+  it("builds macOS and Windows installers on pinned hosted images", () => {
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
 
-    // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
-    // carries its own runner, with no hosted fallback; the Linux entry
-    // cross-builds x64 on the ARM64 self-hosted runners.
+    // Each matrix entry names a pinned hosted image; the Linux entry
+    // cross-builds x64 on the ARM64 image.
     expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
-      "            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}",
-      "            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}",
-      "            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}",
+      "            os: macos-15",
+      "            os: ubuntu-24.04-arm",
+      "            os: windows-2025",
     ]);
     expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
 
     // Every step runs in one shell that exists on all three hosts.
     expect(installers).toMatch(/^ {4}defaults:\n {6}run:\n {8}shell: bash$/mu);
 
-    // A persistent runner starts from a clean checkout, gets Node from the
-    // runner tool cache rather than a system install, and drops its build
-    // output after the upload.
-    expect(installers).toMatch(/^ {10}persist-credentials: false\n {10}clean: true$/mu);
+    // The checkout keeps no token, and Node is the pinned 24 rather than the
+    // image's own. Nothing is left over from a self-hosted runner: no clean
+    // or build-output removal for a persistent workspace, and no branch on
+    // the runner's environment, since every job runs on a hosted image.
+    expect(installers).toMatch(/^ {10}persist-credentials: false$/mu);
+    expect(installers).not.toContain("Remove build output");
+    for (const name of workflowFileNames()) {
+      expect(readRepoFile(`.github/workflows/${name}`), name).not.toContain("runner.environment");
+    }
     expectPinnedAction(installers, "actions/setup-node");
     expect(installers).toContain('node-version: "24"');
     const setupNode = installers.indexOf("uses: actions/setup-node@");
@@ -825,59 +1300,32 @@ describe("installer smoke and packaging discipline", () => {
     expect(setupBun).toContain("    - name: Verify bun is the job-local pinned build\n");
     expect(setupBun).toContain("for tool in bun bunx; do");
 
-    expect(installers).toContain(
-      "      - name: Remove build output from a self-hosted runner\n"
-        + "        if: always() && runner.environment == 'self-hosted'\n"
-        + "        run: rm -rf release",
-    );
-    expect(installers.indexOf("Remove build output")).toBeGreaterThan(installers.indexOf("Upload installers"));
-
     // Installer caches stay per OS.
     expect(installers).toContain("key: ${{ runner.os }}-installers-");
     expect(installers).toContain("key: ${{ runner.os }}-uv-");
   });
 
-  it("never authorizes a destructive or host-mutating release step on a self-hosted runner", () => {
-    const hosted = "runner.environment == 'github-hosted'";
+  it("authorizes the destructive Windows release steps only on the hosted Windows installer job", () => {
+    // These steps claim HKCU ave://, install machine-wide and uninstall, so
+    // they need a disposable machine. Every job runs on a hosted label (the
+    // runner policy above), so the Windows matrix entry is that machine; each
+    // authorization is still scoped to it alone.
     const workflows = readdirSync(resolve(root, ".github/workflows")).filter((name) => /\.ya?ml$/u.test(name));
-    // Every place any workflow sets a disposable-host or destructive smoke
-    // authorization requires a hosted runner in the same expression, so a
-    // self-hosted runner's own environment can never turn one on.
     let authorizations = 0;
     for (const name of workflows) {
       for (const line of readRepoFile(`.github/workflows/${name}`).split("\n")) {
         if (!/AVE_ALLOW_[A-Z_]*(DISPOSABLE|DESTRUCTIVE)[A-Z_]*:/u.test(line)) continue;
         authorizations += 1;
-        expect(line, `${name}: ${line.trim()}`).toContain(`&& ${hosted} && '1' || ''`);
+        expect(name).toBe("build-installers.yml");
+        expect(line, `${name}: ${line.trim()}`).toMatch(/: \$\{\{ matrix\.target == 'win' && '1' \|\| '' \}\}$/u);
       }
     }
     expect(authorizations).toBe(2);
 
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
-    const commands = jobRunCommands(installers);
-
-    // The packaged application claims HKCU ave:// for its executable when it
-    // launches, so no step launches it on a self-hosted (owner) Windows PC:
-    // every step that runs a packaged-app launcher is gated to hosted Windows.
-    const launchers = ["scripts/smoke-packaged-app.mjs", "scripts/packaged-escape-gate.mjs"];
-    const windowsHostedOnly = "&& (matrix.target != 'win' || runner.environment == 'github-hosted')";
-    let launchSteps = 0;
-    for (const step of installers.split(/\n(?= {6}- )/u)) {
-      if (!launchers.some((launcher) => step.includes(launcher))) continue;
-      launchSteps += 1;
-      const condition = step.match(/^ {8}if: >-\n((?: {10}.*\n)+)/mu)?.[1] ?? "";
-      expect(condition, step.split("\n")[0]).toContain(windowsHostedOnly);
-    }
-    expect(launchSteps).toBe(launchers.length);
+    expect(installers).toMatch(/^ {12}os: windows-2025\n {12}target: win$/mu);
     expect(installers).not.toContain("--skip-windows-installer-smoke");
-
-    // Signing imports into and searches a keychain; a self-hosted runner is
-    // the owner's machine, so it always builds unsigned.
-    const build = commands.find((command) => command.includes("node scripts/build-installers.mjs"));
-    const unsignedBranch = build?.slice(build.indexOf("elif "), build.indexOf("else\n")) ?? "";
-    expect(unsignedBranch).toContain('|| [ "${{ runner.environment }}" != "github-hosted" ] \\\n');
-    expect(unsignedBranch).toContain('args+=("--skip-code-sign")');
   });
 
   it("provides the AWS CLI from a signature-checked official build before any aws call", () => {
@@ -1060,11 +1508,54 @@ describe("installer smoke and packaging discipline", () => {
     expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
+  it("runs the native control boundaries in both platform regression jobs", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
+    for (const job of ["macos-permission-tests", "linux-confinement-tests"]) {
+      const commands = jobRunCommands(jobs.get(job) as string);
+      const tests = commands.find((command) => command.includes("bun run test --"));
+      expect(tests, `${job} has no native regression invocation`).toBeDefined();
+      for (const suite of [
+        "sandbox-control-writes.integration.test.ts",
+        "sandbox-shell-sockets.integration.test.ts",
+        "sandbox-git-controls.integration.test.ts",
+        "egress-terminal-background.integration.test.ts",
+      ]) {
+        expect(tests, `${job} omits ${suite}`).toContain(`src/permissions/__tests__/${suite}`);
+      }
+    }
+  });
+
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
     expect(verification, "ci.yml lost its build-and-test job").toBeDefined();
     const commands = jobRunCommands(verification as string);
+    const build = jobs.get("build");
+    const shards = jobs.get("vitest");
+    expect(build, "ci.yml lost its build job").toBeDefined();
+    expect(shards, "ci.yml lost its vitest shard job").toBeDefined();
+
+    // build-and-test reports the build job and every Vitest shard: it needs
+    // both, still runs when one failed or the run was cancelled (a skipped
+    // job reports success to branch protection), and its first step, which
+    // a cancellation cannot skip either, fails unless both succeeded.
+    // The hygiene gates follow it, so they run after every verification step
+    // has reported, as the ordering scan above requires within one job.
+    const body = verification as string;
+    expect(body).toMatch(/^ {4}needs: \[build, vitest\]$/mu);
+    expect(body).toMatch(/^ {4}if: always\(\)$/mu);
+    expect(body).not.toContain("cancelled()");
+    expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
+    const results = commands[0] as string;
+    expect(results).toContain('if [ "$BUILD_RESULT" != "success" ]; then');
+    expect(results).toContain('if [ "$VITEST_RESULT" != "success" ]; then');
+    expect(results).toContain('if [ "$VITEST_RESULT" != "skipped" ]; then');
+    expect(body).toContain("BUILD_RESULT: ${{ needs.build.result }}");
+    expect(body).toContain("VITEST_RESULT: ${{ needs.vitest.result }}");
+    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
+    expect(shards).toMatch(/^ {4}needs: build$/mu);
+    expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
+    expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
 
     // `build-and-test` is one of the two required status checks on `main`; the
     // other is `naming-gate`. Read the current list with
@@ -1093,15 +1584,164 @@ describe("installer smoke and packaging discipline", () => {
     // that `test:ci` runs; there is no separate evidence step. `test:ci`
     // (scripts/run-ci-suite.mjs) runs `check:test-coverage`'s gate on every
     // full run and the affected tests on a traceable pull request.
-    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([
+    expect(matched(jobRunCommands(build as string), VERIFIES_THE_CODE)).toEqual([
       "bun run build",
-      "bun run test:ci",
       "bun run typecheck",
       "check:typecheck-tests",
       "check:typecheck-tests:self-test",
     ]);
+    expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci"]);
     expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
     expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
+  });
+
+  // The Vitest shards gate on the build job's docs_only output at job level,
+  // so their steps carry no condition of their own; the confinement job
+  // classifies the change itself and conditions each step.
+  const SHARD_GATE = undefined;
+  const DOCS_GATE = "steps.docs-impact.outputs.docs_only != 'true'";
+
+  it.each([
+    ["vitest", SHARD_GATE, "bubblewrap socat ripgrep zsh", "bwrap socat rg zsh"],
+    ["linux-confinement-tests", DOCS_GATE, "bubblewrap socat ripgrep xvfb bash zsh", "bwrap socat rg xvfb-run bash zsh"],
+  ])("uses cached packages and proves the sandbox in %s", (jobId, gate, packages, commands) => {
+    const source = readRepoFile(".github/workflows/ci.yml");
+    const workflow = parseYaml(source);
+    const steps = workflow.jobs[jobId].steps;
+    const install = steps.find((step: { uses?: string }) => step.uses === "./ave/.github/actions/linux-packages");
+    expect(install).toMatchObject({ with: { packages, commands } });
+    expect(install.if).toBe(gate);
+    const runtime = steps.filter((step: { name?: string }) => [
+      "Allow unprivileged user namespaces", "Prove the sandbox backend",
+    ].includes(step.name ?? ""));
+    expect(runtime).toHaveLength(2);
+    for (const step of runtime) {
+      expect(step.if).toBe(gate);
+      expect(steps.indexOf(step)).toBeGreaterThan(steps.indexOf(install));
+    }
+    expect(runtime[0].run).toContain("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0");
+    expect(runtime[1].run).toContain("bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true");
+    const job = workflowJobs(source).get(jobId) as string;
+    expect(jobRunCommands(job).join("\n")).not.toMatch(/apt-get\s+install/u);
+    // Native confinement cases run in both lanes, so a lane whose backend
+    // cannot start fails instead of skipping them.
+    const tests = steps.findIndex((step: { run?: string }) =>
+      step.run?.includes(jobId === "vitest" ? "bun run test:ci" : "bun run test --"));
+    expect(tests).toBeGreaterThan(steps.indexOf(runtime[1]));
+    expect(steps[tests].env?.AVE_REQUIRE_SANDBOX_CASES).toBe("1");
+    const mustRun = JSON.parse(readRepoFile("config/ci-must-run-tests.json")) as { groups: Record<string, string[]> };
+    expect(mustRun.groups.permissions).toContain("src/permissions/");
+  });
+
+  it("gates the Vitest shards on the build job's documentation classification", () => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    expect(workflow.jobs.vitest.if).toBe("needs.build.outputs.docs_only != 'true'");
+  });
+
+  it.each(["vitest", "linux-confinement-tests"])("installs and saves packages before dependency code in %s", (jobId) => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const steps = workflow.jobs[jobId].steps;
+    const install = steps.find((step: { uses?: string }) => step.uses === "./ave/.github/actions/linux-packages");
+    expect(install).toBeDefined();
+    const dependencySteps = steps.filter((step: { run?: string }) => /\bbun\s+(?:install|run)\b/u.test(step.run ?? ""));
+    expect(dependencySteps.length).toBeGreaterThan(0);
+    for (const step of dependencySteps) {
+      expect(steps.indexOf(step)).toBeGreaterThan(steps.indexOf(install));
+    }
+  });
+
+  it("caches image-specific package archives and recovers an incomplete cache", () => {
+    const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
+    expect(action.runs.using).toBe("composite");
+    const steps = action.runs.steps;
+    const prepare = steps.find((step: { id?: string }) => step.id === "prepare");
+    expect(prepare.run).toContain('sort -u');
+    expect(prepare.run).toContain('sha256sum');
+    expect(prepare.run).toContain('${ImageOS:-');
+    expect(prepare.run).toContain('${ImageVersion:-');
+    expect(prepare.run).toContain('sudo -n true');
+    expect(prepare.run).toContain('command -v');
+    // apt creates partial/ only under Dir::Cache, so a RUNNER_TEMP archive dir needs it made.
+    expect(prepare.run).toContain('mkdir -p "$archives/partial"');
+    expect(prepare.run).toContain('archives="$RUNNER_TEMP/linux-packages-$packages_hash"');
+    expect(prepare.run).not.toContain("mktemp");
+    const cache = steps.find((step: { id?: string }) => step.id === "cache");
+    expect(cache.uses).toBe("actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
+    expect(cache.if).toBe("steps.prepare.outputs.install == 'true'");
+    expect(cache.with.path).toBe("${{ steps.prepare.outputs.archives }}/*.deb");
+    for (const field of ["runner.os", "runner.arch", "steps.prepare.outputs.image-os", "steps.prepare.outputs.image-version", "steps.prepare.outputs.packages-hash"]) {
+      expect(cache.with.key).toContain(`\${{ ${field} }}`);
+    }
+    expect(cache.with["restore-keys"]).toBeUndefined();
+    const hit = steps.find((step: { id?: string }) => step.id === "install-cache");
+    expect(hit.if).toContain("steps.cache.outputs.cache-hit == 'true'");
+    expect(hit.run).toContain('sudo dpkg -i');
+    expect(hit.run).not.toContain("apt-get");
+    expect(hit.run).toContain('installed=true');
+    const miss = steps.find((step: { id?: string }) => step.id === "download-install");
+    expect(miss.if).toContain("steps.install-cache.outputs.installed != 'true'");
+    expect(miss.run.match(/apt-get update/gu)).toHaveLength(1);
+    expect(miss.run).toContain("--download-only");
+    expect(miss.run).toContain("--fix-broken");
+    expect(miss.run).toContain('Dir::Cache::archives=');
+    expect(miss.run).toContain('sudo dpkg -i');
+    expect(miss.env.ARCHIVES).toBe("${{ steps.prepare.outputs.archives }}");
+  });
+
+  it("saves package archives immediately after installation before returning to the caller", () => {
+    const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
+    const steps = action.runs.steps;
+    const cacheSteps = steps.filter((step: { uses?: string }) => step.uses?.startsWith("actions/cache"));
+    expect(cacheSteps.map((step: { uses: string }) => step.uses)).toEqual([
+      "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+    ]);
+    expect(steps.some((step: { uses?: string }) => step.uses?.startsWith("actions/cache@"))).toBe(false);
+    const installIndex = steps.findIndex((step: { id?: string }) => step.id === "download-install");
+    expect(installIndex).toBeGreaterThanOrEqual(0);
+    expect(steps[installIndex].run).toContain('sudo dpkg -i "${archives[@]}"');
+    const save = steps[installIndex + 1];
+    expect(save.uses).toBe(cacheSteps[1].uses);
+    expect(save.if).toBe("steps.prepare.outputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'");
+    expect(save["continue-on-error"]).toBe(true);
+    expect(save.with.key).toBe(cacheSteps[0].with.key);
+    expect(save.with.path).toBe(cacheSteps[0].with.path);
+  });
+
+  it("clears stale package archives before downloading replacements", () => {
+    const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
+    const miss = action.runs.steps.find((step: { id?: string }) => step.id === "download-install");
+    const cleanup = 'find "$ARCHIVES" -maxdepth 1 -type f -name \'*.deb\' -delete';
+    expect(miss.run.trimStart().startsWith(cleanup)).toBe(true);
+    expect(miss.run.indexOf(cleanup)).toBeLessThan(miss.run.indexOf("sudo apt-get install"));
+  });
+
+  it("derives missing image identity from the operating system and installed package set", () => {
+    const source = readRepoFile(".github/actions/linux-packages/action.yml");
+    const action = parseYaml(source);
+    const prepare = action.runs.steps.find((step: { id?: string }) => step.id === "prepare");
+    expect(source).not.toContain("unknown");
+    expect(prepare.run).toContain('image_os=${ImageOS:-}');
+    expect(prepare.run).toContain('image_version=${ImageVersion:-}');
+    expect(prepare.run).toContain('if [ -z "$image_os" ] || [ -z "$image_version" ]; then');
+    expect(prepare.run).toContain('image_os=installed');
+    expect(prepare.run).toContain('image_version=$({ cat /etc/os-release; LC_ALL=C dpkg-query -W; } | sha256sum | cut -d \' \' -f 1)');
+    expect(prepare.run).toContain('echo "image-os=$image_os"');
+    expect(prepare.run).toContain('echo "image-version=$image_version"');
+  });
+
+  it("requires shared temporary write regressions in the Linux confinement job", () => {
+    const job = workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("linux-confinement-tests");
+    const step = job?.split(/^ {6}- /mu).find((body) => body.startsWith("name: Run Linux confinement regressions\n"));
+    expect(step).toBeDefined();
+    expect(step).toMatch(/^ {10}AVE_REQUIRE_SANDBOX_CASES: "1"$/mu);
+    const commands = jobRunCommands(step as string);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatch(/^bun run test --\s/u);
+    expect(commands[0]?.split(/\s+/u)).toEqual(expect.arrayContaining([
+      "src/permissions/__tests__/linux-sandbox-wrap.test.ts",
+      "src/permissions/__tests__/asrt-sandbox.test.ts",
+    ]));
   });
 
   it("keeps check:gate-core in step with its callers", () => {
@@ -1317,7 +1957,7 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("runs the NSIS smoke before win-unpacked and owner-cleans HKCU afterward", () => {
+  it("runs the NSIS smoke before win-unpacked and proves HKCU unclaimed afterward", () => {
     const smoke = readRepoFile("scripts/smoke-packaged-app.mjs");
     const installerSmoke = smoke.indexOf(
       "await runWindowsInstallerSmoke(releaseDir, timeoutMs)",
@@ -1329,7 +1969,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(installerSmoke).toBeGreaterThanOrEqual(0);
     expect(unpackedSmoke).toBeGreaterThan(installerSmoke);
     expect(
-      smoke.lastIndexOf("cleanupOwnedWindowsProtocolHandler(executable)"),
+      smoke.lastIndexOf("assertNoWindowsProtocolClaim(executable)"),
     ).toBeGreaterThan(smoke.indexOf("} finally {"));
     const launchBody = smoke.slice(
       smoke.indexOf("async function launchSmoke"),
@@ -1345,22 +1985,24 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("src/main/ave-protocol-registration.ts"))
       .toContain(".ave-nsis-per-machine-v1");
 
-    // The owner-only cleanup is shared: the launch smoke and the packaged
-    // escape gate both launch the full application from win-unpacked, and
-    // each removes exactly the claim that launch wrote.
+    // The no-claim check is shared: the launch smoke and the packaged escape
+    // gate both launch the full application from win-unpacked with an
+    // isolated AVE_HOME and --user-data-dir, so the app must skip
+    // self-registration; a claim naming that executable is removed and fails.
     const cleanupImport =
-      'import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";';
+      'import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";';
     expect(smoke).toContain(cleanupImport);
     const gate = readRepoFile("scripts/packaged-escape-gate.mjs");
     expect(gate).toContain(cleanupImport);
     const control = gate.slice(gate.indexOf("async function measureControl"), gate.indexOf("async function main"));
-    expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}cleanupOwnedWindowsProtocolHandler\(executable\);\n {2}\}/u);
+    expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}assertNoWindowsProtocolClaim\(executable\);\n {2}\}/u);
 
     const cleanup = readRepoFile("scripts/lib/windows-protocol-cleanup.mjs");
-    expect(cleanup).toContain('if (process.platform !== "win32") return;');
+    expect(cleanup).toContain("{ platform = process.platform, run = spawnSync } = {},");
+    expect(cleanup).toContain('if (platform !== "win32") return;');
     const cleanupScript = cleanup.slice(
       cleanup.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
-      cleanup.indexOf("export function cleanupOwnedWindowsProtocolHandler"),
+      cleanup.indexOf('].join("\\n");') + '].join("\\n");'.length,
     );
     expect(cleanupScript.length).toBeGreaterThan(0);
     expect(cleanupScript).toContain("$expectedCommand");
@@ -1377,11 +2019,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(cleanupScript).toContain("$key.GetValueKind($name)");
     expect(cleanupScript).toContain("$commandKind = $commandKey.GetValueKind('')");
     expect(cleanupScript).toContain(
-      "if ($null -eq $rootKey) { throw 'expected win-unpacked HKCU ave protocol root is missing' }",
+      "if ($null -eq $rootKey) { Write-Output 'absent'; exit 0 }",
     );
     expect(cleanupScript).not.toContain(
-      "if ($null -eq $rootKey) { return }",
+      "expected win-unpacked HKCU ave protocol root is missing",
     );
+    expect(cleanupScript.trimEnd().endsWith('"Write-Output \'removed\'",\n].join("\\n");')).toBe(true);
+    expect(cleanup).toContain('if (outcome === "absent" || outcome === "foreign") return;');
+    expect(cleanup).toContain('if (outcome === "removed") {');
 
     expect(cleanupScript).toContain(
       "[Microsoft.Win32.RegistryValueKind]::String",
@@ -1509,10 +2154,16 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("AbortController");
     expect(agents).toContain("plus `Tool Governance` and `Security And Audit`");
     expect(agents).not.toContain("architecture section 6.3");
-    expect(agents).toContain("OS tool sandbox is opt-in on every platform");
-    expect(agents).toContain("per the decision comment beside");
-    expect(agents).toContain("src/data/settings-defaults.ts#L237-L254");
-    expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1`");
+    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows");
+    expect(agents).toContain("per `osToolSandbox`");
+    expect(agents).toContain("src/data/settings-defaults.ts");
+    expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` or\n  `AVE_PLUGIN_WORKER_CONFINEMENT=1` activation failure");
+    // The two sandbox scopes stay separate in the contract: neither setting or
+    // variable decides the other.
+    expect(agents).toContain("`osToolSandbox` confines host shells only");
+    expect(agents).toContain("`pluginWorkerConfinement` confines plugin workers");
+    expect(agents).toContain("`AVE_SANDBOX_ENABLED=1` forces the shell scope only");
+    expect(agents).toContain("on `isPluginWorkerConfinementActive`, never the raw `isAsrtSandboxActive`");
     expect(agents).toContain("aborts startup; settings activation warns and continues without OS isolation");
     expect(agents).toContain("Windows always warns and continues when unavailable");
     expect(agents).toContain("Keep plugin read relaxation conditional on active filesystem confinement");
@@ -1665,12 +2316,12 @@ describe("installer smoke and packaging discipline", () => {
     // node-pty is N-API and ships per-platform prebuilds; postinstall must not
     // compile a per-Electron-ABI copy (it needs a C++ toolchain, `node-gyp
     // rebuild` deletes the working binding before it fails, and the `&&` chain
-    // then skips uv fetch + protocol registration + hook install).
+    // then skips uv fetch + hook install).
     expect(packageJson.scripts?.postinstall).not.toContain("electron-rebuild");
     // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
     // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.
@@ -1694,8 +2345,8 @@ describe("installer smoke and packaging discipline", () => {
 
     expect(packageJson.build?.electronLanguages).toEqual(["en-US"]);
     expect(packageFootprint).toContain('DEFAULT_PACKAGED_ELECTRON_LANGUAGES = Object.freeze(["en-US"])');
-    expect(packageFootprint).toContain("desktop app must package only the default Electron language");
-    expect(packageFootprint).toContain("ship UI languages as marketplace language packs");
+    expect(packageFootprint).toContain("desktop app must package only the default shell language");
+    expect(packageFootprint).toContain("UI catalogs are independent of browser locale files");
     expect(packageFootprint).not.toContain('["en-US", "ko"]');
     expect(packageFootprint).not.toContain('"ko.pak"');
     expect(packageFootprint).not.toContain('"ko.lproj"');

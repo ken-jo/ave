@@ -1,4 +1,5 @@
 import { validateExternalUrl } from "./external-url.js";
+import { isRecord } from "./is-record.js";
 
 export const BROWSER_WORKSPACE_LIMITS = {
   bookmarks: 500, history: 1000, sitePermissions: 500, downloads: 100,
@@ -52,9 +53,6 @@ export interface BrowserWorkspaceRequests {
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
 export const BROWSER_SITE_DECISIONS: readonly BrowserSiteDecision[] = ["ask", "allow", "block"];
 
-function object(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
 function keys(record: Record<string, unknown>, fields: readonly string[]): boolean {
   return Object.keys(record).length === fields.length && fields.every((key) => Object.hasOwn(record, key));
 }
@@ -75,8 +73,8 @@ function target(record: Record<string, unknown>): boolean {
 }
 export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceRequests>(operation: K, value: unknown): BrowserWorkspaceRequests[K] | null {
   if (operation === "getState" || operation === "clearHistory") return value === undefined ? undefined as BrowserWorkspaceRequests[K] : null;
-  const record = object(value);
-  if (!record) return null;
+  const record = value;
+  if (!isRecord(record)) return null;
   if (operation === "setBookmark") {
     const url = browserWorkspaceUrl(record.url);
     if (!keys(record, ["url", "title", "bookmarked"]) || !url || typeof record.title !== "string" || record.title.length > BROWSER_WORKSPACE_LIMITS.titleLength || typeof record.bookmarked !== "boolean") return null;
@@ -96,26 +94,26 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
 
 /** Persisted collections and host snapshots share this record validator. */
 export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceState | null {
-  const record = object(value);
-  if (!record || !keys(record, ["revision", "bookmarks", "history", "sitePermissions", "downloads", "tabs", "storageStatus", "capabilities"]) || !Number.isSafeInteger(record.revision) || Number(record.revision) < 0 || typeof record.storageStatus !== "string" || !["ready", "corrupt"].includes(record.storageStatus)) return null;
-  const capabilities = object(record.capabilities);
-  if (!capabilities || !keys(capabilities, ["fullscreen"]) || typeof capabilities.fullscreen !== "boolean") return null;
+  const record = value;
+  if (!isRecord(record) || !keys(record, ["revision", "bookmarks", "history", "sitePermissions", "downloads", "tabs", "storageStatus", "capabilities"]) || !Number.isSafeInteger(record.revision) || Number(record.revision) < 0 || typeof record.storageStatus !== "string" || !["ready", "corrupt"].includes(record.storageStatus)) return null;
+  const capabilities = record.capabilities;
+  if (!isRecord(capabilities) || !keys(capabilities, ["fullscreen"]) || typeof capabilities.fullscreen !== "boolean") return null;
   const library = (items: unknown, limit: number): boolean => Array.isArray(items) && items.length <= limit && items.every((item) => {
-    const entry = object(item);
-    return entry && keys(entry, ["url", "title", "at"]) && browserWorkspaceUrl(entry.url) === entry.url && typeof entry.title === "string" && entry.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && typeof entry.at === "number" && Number.isFinite(entry.at) && entry.at >= 0;
+    const entry = item;
+    return isRecord(entry) && keys(entry, ["url", "title", "at"]) && browserWorkspaceUrl(entry.url) === entry.url && typeof entry.title === "string" && entry.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && typeof entry.at === "number" && Number.isFinite(entry.at) && entry.at >= 0;
   });
   if (!library(record.bookmarks, BROWSER_WORKSPACE_LIMITS.bookmarks) || !library(record.history, BROWSER_WORKSPACE_LIMITS.history)) return null;
   if (!Array.isArray(record.sitePermissions) || record.sitePermissions.length > BROWSER_WORKSPACE_LIMITS.sitePermissions || !record.sitePermissions.every((item) => {
-    const rule = object(item);
-    return rule && keys(rule, ["origin", "permission", "decision"]) && browserWorkspaceOrigin(rule.origin) && BROWSER_SITE_PERMISSIONS.includes(rule.permission as BrowserSitePermission) && BROWSER_SITE_DECISIONS.includes(rule.decision as BrowserSiteDecision);
+    const rule = item;
+    return isRecord(rule) && keys(rule, ["origin", "permission", "decision"]) && browserWorkspaceOrigin(rule.origin) && BROWSER_SITE_PERMISSIONS.includes(rule.permission as BrowserSitePermission) && BROWSER_SITE_DECISIONS.includes(rule.decision as BrowserSiteDecision);
   })) return null;
   if (!Array.isArray(record.tabs) || record.tabs.length > 1000 || !record.tabs.every((item) => {
-    const tab = object(item);
-    return tab && keys(tab, ["tabId", "documentGeneration", "url", "title", "zoomFactor"]) && target(tab) && (tab.url === "about:blank" || browserWorkspaceUrl(tab.url) === tab.url) && typeof tab.title === "string" && tab.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && typeof tab.zoomFactor === "number" && Number.isFinite(tab.zoomFactor) && tab.zoomFactor > 0;
+    const tab = item;
+    return isRecord(tab) && keys(tab, ["tabId", "documentGeneration", "url", "title", "zoomFactor"]) && target(tab) && (tab.url === "about:blank" || browserWorkspaceUrl(tab.url) === tab.url) && typeof tab.title === "string" && tab.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && typeof tab.zoomFactor === "number" && Number.isFinite(tab.zoomFactor) && tab.zoomFactor > 0;
   })) return null;
   if (!Array.isArray(record.downloads) || record.downloads.length > BROWSER_WORKSPACE_LIMITS.downloads || !record.downloads.every((item) => {
-    const download = object(item);
-    return download && keys(download, ["id", "name", "receivedBytes", "totalBytes", "state", "at"]) && typeof download.id === "string" && download.id.length > 0 && download.id.length <= 200 && typeof download.name === "string" && download.name.length <= 300 && typeof download.state === "string" && ["progressing", "completed", "cancelled", "interrupted"].includes(download.state) && [download.receivedBytes, download.totalBytes, download.at].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0);
+    const download = item;
+    return isRecord(download) && keys(download, ["id", "name", "receivedBytes", "totalBytes", "state", "at"]) && typeof download.id === "string" && download.id.length > 0 && download.id.length <= 200 && typeof download.name === "string" && download.name.length <= 300 && typeof download.state === "string" && ["progressing", "completed", "cancelled", "interrupted"].includes(download.state) && [download.receivedBytes, download.totalBytes, download.at].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0);
   })) return null;
   const unique = (items: readonly unknown[], identity: (entry: Record<string, unknown>) => string) => new Set(items.map((entry) => identity(entry as Record<string, unknown>))).size === items.length;
   if (!unique(record.bookmarks as unknown[], (entry) => String(entry.url)) || !unique(record.history as unknown[], (entry) => String(entry.url)) || !unique(record.sitePermissions, (entry) => `${entry.origin}:${entry.permission}`) || !unique(record.tabs, (entry) => String(entry.tabId)) || !unique(record.downloads, (entry) => String(entry.id))) return null;
@@ -123,8 +121,8 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
 }
 
 export function parseBrowserWorkspacePreview(value: unknown): BrowserPreview | null {
-  const record = object(value);
-  if (!record || !keys(record, ["tabId", "documentGeneration", "dataUrl", "width", "height"]) || !target(record)) return null;
+  const record = value;
+  if (!isRecord(record) || !keys(record, ["tabId", "documentGeneration", "dataUrl", "width", "height"]) || !target(record)) return null;
   if (typeof record.dataUrl !== "string" || record.dataUrl.length > Math.ceil(BROWSER_WORKSPACE_LIMITS.previewBytes * 4 / 3) + 23 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(record.dataUrl)) return null;
   if (!Number.isSafeInteger(record.width) || Number(record.width) < 1 || Number(record.width) > BROWSER_WORKSPACE_LIMITS.previewWidth || !Number.isSafeInteger(record.height) || Number(record.height) < 1 || Number(record.height) > BROWSER_WORKSPACE_LIMITS.previewHeight) return null;
   return record as unknown as BrowserPreview;

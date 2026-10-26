@@ -1,41 +1,16 @@
-/**
- * Experimental `StdioChildTransport` — the host (client) side of the
- * out-of-process plugin path (mcp-alignment-design.md §3.1,
- * `untrusted-stdio-isolation`).
- *
- * Spawns a subprocess that runs {@link StdioServerLoop} + a `PluginMcpServer` and
- * frames RC JSON-RPC over its stdin/stdout (the same newline-delimited framing as
- * `stdio-framing.ts`). A {@link PluginMcpHost} drives it exactly as it
- * drives the in-process {@link LoopbackTransport} for first-party plugins — same
- * host, same projection, a different transport — which is the hybrid topology's
- * untrusted arm.
- *
- * Isolation/containment: because the plugin runs in a separate process, a crash
- * or hang is contained — `exit`/`error` surface via `onClose` (rejecting the
- * client's pending requests), and `close()` SIGTERMs the child. OS sandboxing
- * (the Anthropic Sandbox Runtime — macOS Seatbelt / Linux bwrap) is an
- * ADDITIONAL hardening layer applied by wrapping the spawn argv; the process
- * boundary here is the containment primitive it builds on.
- */
+/** Isolates plugin crashes behind stdio transport; exits reject pending calls.
+ * Optional OS confinement wraps spawning and is separate from the process boundary. */
 import { spawn, type ChildProcess } from "node:child_process";
 import { frameMessage, StdioFrameDecoder } from "../stdio-framing.js";
 import type { JsonRpcMessage, JsonRpcResponse, McpTransport } from "../mcp-client.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 export interface StdioChildOptions {
-  /**
-   * The longest line the child may write before it is killed as broken. No
-   * default: an unbounded read of an untrusted process's stdout is the thing
-   * being prevented.
-   */
+  /** A mandatory line cap bounds untrusted stdout before decoding. */
   maxLineBytes: number;
   cwd?: string;
   env?: Record<string, string>;
-  /**
-   * Optional sandbox wrapper: given the base command+args, return the wrapped
-   * command+args (e.g. via the ASRT argv wrapper). Identity by default
-   * (process isolation only).
-   */
+  /** Optional spawn confinement; absent wrappers provide process isolation only. */
   sandboxWrap?: (command: string, args: string[]) => { command: string; args: string[] };
 }
 
@@ -113,7 +88,6 @@ export class StdioChildTransport implements McpTransport {
     this.closeHandler = handler;
   }
 
-  /** Mark dead exactly once and surface the reason (crash/hang containment). */
   private fail(reason: string): void {
     if (!this.alive) return;
     this.alive = false;

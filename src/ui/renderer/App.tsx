@@ -19,8 +19,7 @@ import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGr
 import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
-// The away surfaces for an MCP-app card that left its home mount — one singleton
-// each (each renders nothing while no card occupies its slot).
+// One mounted singleton per away display mode; empty slots render nothing.
 import { McpAppPipPanel } from "./components/McpAppPipPanel.js";
 import { McpAppFullscreenPanel } from "./components/McpAppFullscreenPanel.js";
 import { MemorySearchPanel } from "./components/MemorySearchPanel.js";
@@ -36,6 +35,8 @@ import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
+import { surfaceMountLocation, useSurfaceMountRevision } from "./preview/surface-mounts.js";
+import { approvalsForDocks } from "./components/permissions/TerminalEgressBanner.js";
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
@@ -56,7 +57,6 @@ import type { ApprovalRequest } from "./types.js";
 import type { UserApprovalVerdict } from "../../shared/permissions-events.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
-// ─── Imports: types / constants / helpers / components / tabs ────────
 import { getApi, getPluginViewDescription, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
 import type { PluginEntry } from "./types.js";
 import { pluginIconFor } from "./utils/plugin-icon.js";
@@ -119,8 +119,6 @@ import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 import { errorMessage } from "../../shared/error-message.js";
 
-// ─── App ────────────────────────────────────────────
-
 /** A canvas not laid out yet measures 0x0 — that is "unmeasured", not "no room". */
 function measuredCanvasSize(canvas: HTMLElement | null) {
   return canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0
@@ -132,23 +130,16 @@ export function App() {
   const { locale, t } = useTranslation();
   const api = useMemo(() => getApi(), []);
 
-  // Block default file:// navigation when a file is dropped onto the window
-  // (the drag-drop indexing feature was removed; this guard is all that remains).
+  // Prevent dropped files from navigating the window to file://.
   useWindowFileDropGuard();
 
-  // The tiles' conversations. Each ChatGroupSession publishes its handle here
-  // and the WINDOW reads whichever tile is focused — see
-  // chat-group-session-registry.ts for why this is a store and not state.
+  // Read the focused tile through the session registry; see chat-group-session-registry.ts for store lifetime.
   const chatGroupSessions = useMemo(() => new ChatGroupSessionRegistry(), []);
 
-  // The window's conversation list. Separate from any tile's current session:
-  // the list describes the window and is the same for all of them.
+  // The conversation list belongs to the window, independently of tile sessions.
   const { sessions, refreshSessions } = useSessionList(api);
 
-  // Top status surface: persistent operational items plus transient toasts.
-  // Window-scoped — a toast about a project error or an app update is the
-  // window's news, not one conversation's. Initialized early because plugin
-  // auth selection can emit toasts.
+  // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
     persistent: statusPersistent,
     visibleToast: statusVisibleToast,
@@ -157,9 +148,7 @@ export function App() {
     removeToast: statusRemoveToast,
   } = useStatusBar({ api });
 
-  // Issue #260 — when a notification toast is clicked, dispatch the click via
-  // notifyClick IPC (which restores+focuses the window) and dismiss the toast.
-  // Other toast producers leave `notification` undefined so this is a no-op.
+  // Notification clicks restore and focus the window through notifyClick; other toasts carry no notification.
   const handleStatusToastClick = useCallback(
     (toast: { id: string; notification?: NotificationToastMeta }) => {
       if (!toast.notification) return;
@@ -176,17 +165,9 @@ export function App() {
     [api, statusRemoveToast],
   );
 
-  // App auto-update badge — surfaces main-process electron-updater events as a
-  // permanent badge next to the Home button. User-gated: download/install only
-  // run on explicit badge click. Declared after useStatusBar so the unsigned-
-  // build manual-install fallback can raise a toast: an unsigned macOS build
-  // can't self-install (Squirrel.Mac needs a Developer ID), so the main process
-  // opens the release page and signals "manual-install-required" here instead
-  // of leaving the badge a dead button.
+  // Download and install require a badge click; unsigned macOS builds use a manual-install toast.
   const appUpdate = useAppUpdate(api, () => {
-    // Unsigned macOS build can't self-install (Squirrel.Mac needs a Developer
-    // ID); the main process opened the Ave homepage, which hosts the manual
-    // update guide. Tell the user to finish up, quit, then update per the guide.
+    // Unsigned macOS builds require manual installation; the host has opened the update guide.
     statusPushToast({
       severity: "warning",
       message: t("app.manualInstallRequiredToast"),
@@ -194,7 +175,6 @@ export function App() {
     });
   });
 
-  // App state
   const {
     onTourComplete,
     onTourDismiss,
@@ -202,72 +182,40 @@ export function App() {
     effectiveHasApiKey,
   } = useOnboardingTourController(api);
   const [deferredQueueOpen, setDeferredQueueOpen] = useState(false);
-  // Inline settings: which tab the panel is on — seeded on open and updated by
-  // the panel's own read-back as the user moves — and the view to
-  // return to via the back affordance. Settings is an inline view in EVERY
-  // appMode — there is no detached settings window on this path (see
-  // onOpenSettings below), so these drive it in both modes.
-  // Persisted alongside the view (#1995), so a restart resumes the exact page
-  // inside Settings rather than the tab it was last opened on.
+  // Persist the current settings tab and return view so restart resumes the same page.
   const { settingsTab, setSettingsTab, restoresApplied: settingsTabRestoresApplied } =
     useSettingsTab(api);
-  // Workspace mode (Chat / Work) + coupled shell layout state. The hook owns the
-  // seed-before-paint state, the no-op-guarded persistence, and the
-  // appMode-transition effects (rail-width coupling, resizeForMode). See
-  // use-app-mode.ts.
   const {
     appMode, setAppMode,
     sidebarCollapsed, setSidebarCollapsed,
     setSidePanelOpen,
   } = useAppMode(api);
-  // In chat mode the expanded sidebar FLOATS over the single conversation tile
-  // instead of pushing it: the band and <main> keep their collapsed geometry
-  // and the card overlays the surface. Work mode keeps the pushed layout —
-  // its tiles have room to give. Derived from appMode alone, so a mode flip
-  // while the card is open re-lays the shell with no second state to drift.
+  // Chat mode overlays the expanded sidebar without reflowing the tile; work mode reserves its width.
   const sidebarOverlay = appMode === "chat" && !sidebarCollapsed;
-  // Durable expanded-width of the primary navigation sidebar (drag-to-resize on
-  // its inner edge). Persists via SystemSettings.sidebarWidth; drives both the
-  // sidebar card width and the <main> left-padding reserve in the shell layout.
+  // Persisted sidebar width drives both the card and the canvas reserve.
   const {
     width: sidebarWidth,
     setWidth: setSidebarWidth,
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
 
-  // The tiled chat groups — the geometry. See `useChatGroups` and
-  // docs/design/tiled-chat-groups.md.
+  // Tile geometry follows docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(appMode);
-  // The terminals and web pages that live in the main area as panes. See
-  // `preview/main-surfaces.ts`; which pane shows one is that pane's content.
   const mainSurfaces = useMainSurfaces();
-  // The pane layout, its terminals' directories and its pages' addresses come
-  // back at launch and are saved as they change (`hooks/use-main-layout.ts`).
+  // Pane layout, terminal directories and page addresses persist across launches.
   useMainLayout(api, chatGroups, mainSurfaces);
-  // Every terminal's output is watched for "look at me" notifications, shown
-  // or not; see `preview/terminal-attention.ts`.
+  // Watch every terminal for attention notifications, including hidden terminals.
   const terminalNotificationTitle = useCallback(() => t("mainPanels.terminalNotificationTitle"), [t]);
   useTerminalAttentionWatcher(api.terminal, terminalNotificationTitle);
 
-  /**
-   * The conversation the WINDOW is talking about.
-   *
-   * Every window control that names "the conversation" — the toolbar's
-   * streaming state, the sidebar's highlighted session, the search panel's
-   * transcript, a prefill from the tour — means the tile the user is looking
-   * at. Reading it here once is what keeps that meaning in one place.
-   */
-  // The tile area in pixels. The split control halves the focused tile's LONGER
-  // side, and the tree only knows fractions — a fraction cannot say which side
-  // of a tile is longer.
+  /** Window controls address the focused tile, including search, streaming status and tour prefills. */
+  // Split along the longer pixel dimension; tree fractions alone cannot identify it.
   const chatGroupCanvasRef = useRef<HTMLDivElement>(null);
   const focusedSession = useChatGroupSession(chatGroupSessions, chatGroups.focusedId);
   const tileSessions = useTileSessions(chatGroupSessions);
   const { entries, streaming, currentSessionId, currentSessionProject } = focusedSession;
   const settings = useSettings(api);
 
-  // Search is window chrome (the panel is an overlay over everything), reading
-  // the focused tile's transcript — the one actually on screen.
   const {
     open: searchOpen, query: searchQuery, caseSensitive: searchCase,
     matches: searchMatches, matchSet: searchMatchSet, matchIdx: searchIdx, highlight: searchHighlight,
@@ -284,9 +232,7 @@ export function App() {
     catch (err) { console.warn("[ave] export failed:", errorMessage(err)); }
   }, [api]);
 
-  // Reverse of handleExport. Returns the new sessionId on success so the caller
-  // can load it and refresh the sidebar, matching the export/import symmetry —
-  // import always yields a brand-new session, never overwrites the current one.
+  // Import creates a new session and returns its id; it never overwrites the current session.
   const handleImport = useCallback(async (): Promise<string | null> => {
     try {
       const result = await api.chatImport();
@@ -297,45 +243,32 @@ export function App() {
     }
   }, [api]);
 
-  // A conversation open in another tile is brought forward, not loaded a
-  // second time — see `tileHoldingSession`.
-  // Read through refs so the callback is stable: it sits in the environment
-  // every tile receives, and a fresh identity per render would re-render every
-  // tile on every stream delta.
+  // Focus an existing tile instead of loading its session twice. Refs keep shared callbacks stable during streaming.
   const chatGroupsRef = useRef(chatGroups);
   chatGroupsRef.current = chatGroups;
   const { focus: focusGroup } = chatGroups;
   const focusChatGroup = useCallback((chatGroupId: string): boolean => {
     const { tree, focusedId } = chatGroupsRef.current;
-    // The host can name a tile that is already closed (its release is still
-    // in flight); focusing an id the tree does not hold would put the window
-    // on a tile that exists nowhere.
+    // A host focus request can race a tile close; never focus an id absent from the tree.
     if (chatGroupId === focusedId || !leafIds(tree).includes(chatGroupId)) return false;
     focusGroup(chatGroupId);
     return true;
   }, [focusGroup]);
-  // Which surface shows an overlay card. Only the window can answer it: it
-  // needs every tile's conversation to say whether any of them owns the card,
-  // and it knows which pane is focused — where a card no conversation owns is
-  // drawn.
+  // Card placement needs all tile sessions plus the focused pane for cards with no conversation owner.
   const overlayCardTileForWindow = useCallback(
     (card: { originSessionId?: string }): OverlayCardPlacement =>
       overlayCardTile(tileSessions, chatGroups.focusedId, card),
     [tileSessions, chatGroups.focusedId],
   );
 
-  // Letting a conversation go in main. Fire-and-forget because nothing in the
-  // window can address that group once it has left the tree.
+  // Fire-and-forget: a removed group is no longer addressable by the window.
   const releaseChatGroupLoop = useCallback((chatGroupId: string) => {
     void chatGroupApi(api, chatGroupId).chatGroupRelease().catch((err: unknown) => {
       console.warn("[ave] chat group release failed: %s", errorMessage(err));
     });
   }, [api]);
 
-  // Closing a tile is one of the two moments its conversation is let go of in
-  // main — not unmount, which the chat-mode toggle also causes and must not
-  // destroy anything. (The other is `adopt` releasing an idle group to make
-  // room.) The tile leaves the tree at once.
+  // Release conversations on tile close or idle-group adoption, never on chat-mode unmount.
   const closeChatGroup = useCallback((chatGroupId: string) => {
     chatGroups.close(chatGroupId);
     releaseChatGroupLoop(chatGroupId);
@@ -344,12 +277,8 @@ export function App() {
   const [pendingSessionDrop, setPendingSessionDrop] =
     useState<{ chatGroupId: string; sessionId: string } | null>(null);
 
-  // The project a group adopted for New Chat must start its conversation
-  // under. Handed to that one tile, not set on the window: the window's
-  // project follows the tile once the tile holds the conversation, so a
-  // refused adoption or a refused `chatNew` leaves the window where it was.
-  // Read by the tile at hydration; dropped once it holds a conversation or
-  // its group is gone — see `pruneGroupRequests`.
+  // Hold the requested project on the adopted tile until hydration; a refused adoption must leave the window project
+  // unchanged.
   const [freshProjectByGroup, setFreshProjectByGroup] =
     useState<ReadonlyMap<string, ProjectIdentity>>(() => new Map());
   const liveGroupIds = useMemo(
@@ -363,33 +292,17 @@ export function App() {
   const focusTileHolding = useCallback((sessionId: string): boolean => {
     const holder = tileHoldingSession(tileSessions, sessionId);
     if (holder === undefined) return false;
-    // A tile already holding it means the conversation is REACHED, which is a
-    // different question from whether focus moved — `focusChatGroup` answers
-    // the latter and says false when the tile is already focused. Reading that
-    // as "not reached" is what sent a click on the focused tile's own session
-    // down to a load the main process then refused, leaving a user sitting on
-    // a plugin panel with no way back to the conversation.
+    // A session in the focused tile is already reached even when focusChatGroup reports no focus change.
     focusChatGroup(holder.chatGroupId);
     return true;
   }, [tileSessions, focusChatGroup]);
 
-  /**
-   * Give an incoming conversation a group of its own beside a busy
-   * `targetGroupId`, and return that group's id — or `null`, said out loud,
-   * when the canvas is at its ceiling with every group mid-turn.
-   *
-   * The new group's tile mounts on the next commit and hydrates a fresh
-   * conversation of its own; a caller that wants a particular one delivers it
-   * once the tile publishes its handle. In chat mode the adopted group is the
-   * only one DRAWN, so the canvas does not split. The displaced tile stays
-   * mounted and its turn runs on.
-   */
+  /** Adopt beside a busy group, or return null at the busy-group ceiling. Deliver the session after the new tile publishes
+   * its handle. */
   const adoptGroupBeside = useCallback((targetGroupId: string): string | null => {
     const adopted = chatGroupsRef.current.adopt(targetGroupId, (chatGroupId) => {
       const each = tileSessions.find((candidate) => candidate.chatGroupId === chatGroupId);
-      // A group with no tile is a group whose state nothing can see. That is
-      // not the same as an idle one, and releasing it would abort whatever it
-      // is doing — so an unanswerable question is answered "busy".
+      // Treat a group with no published tile as busy; releasing it could abort an unseen turn.
       if (each === undefined) return false;
       return !each.streaming;
     }, measuredCanvasSize(chatGroupCanvasRef.current));
@@ -401,12 +314,9 @@ export function App() {
       });
       return null;
     }
-    // The tree already dropped it; main still has to let the loop go.
     if (adopted.released !== null) {
       releaseChatGroupLoop(adopted.released);
-      // Say so. Making room costs the user a tile they did not ask to lose, and
-      // the click that caused it looked like plain navigation. The conversation
-      // itself is on disk; the composer draft and the scroll position were not.
+      // Disclose replacement of a tile: the session persists, but its draft and scroll position do not.
       statusPushToast({
         severity: "info",
         message: t("app.conversationSetAside"),
@@ -416,18 +326,7 @@ export function App() {
     return adopted.chatGroupId;
   }, [releaseChatGroupLoop, statusPushToast, t, tileSessions]);
 
-  /**
-   * Put a conversation in front of the user, in `targetGroupId` if that group
-   * can take it.
-   *
-   * Three answers, in order: a tile already holding it is focused; an idle
-   * target loads it; and a target that is mid-turn does not have its
-   * conversation taken out from under it — the incoming one is given a group of
-   * its own beside it instead. Swapping the session on a running loop is what
-   * main refuses, and rightly: `saveSession` rewrites the session file from the
-   * loop's in-memory history, so a swap mid-turn writes one conversation's
-   * messages into the other's file.
-   */
+  /** Never swap sessions on a running loop: saveSession would write one conversation into the other session file. */
   const reachSession = useCallback(async (
     sessionId: string,
     targetGroupId: string,
@@ -438,13 +337,11 @@ export function App() {
     if (target !== undefined && !target.streaming && tile) return tile.loadSession(sessionId);
     const adoptedGroupId = adoptGroupBeside(targetGroupId);
     if (adoptedGroupId === null) return false;
-    // The adopted group is not mounted yet, so the load rides the same delivery
-    // the edge-drop uses — it runs when that tile publishes its handle.
+    // Deliver the adopted session when its tile publishes a handle.
     setPendingSessionDrop({ chatGroupId: adoptedGroupId, sessionId });
     return true;
   }, [adoptGroupBeside, chatGroupSessions, focusTileHolding, tileSessions]);
 
-  /** The same ladder for a request from outside the canvas: the focused tile is the target. */
   const handleLoadSessionAndRefresh = useCallback(
     (sessionId: string) => reachSession(sessionId, chatGroupsRef.current.focusedId),
     [reachSession],
@@ -456,14 +353,7 @@ export function App() {
     await handleLoadSessionAndRefresh(sessionId);
   }, [handleImport, handleLoadSessionAndRefresh]);
 
-  /**
-   * A conversation dragged out of the sidebar and dropped on a tile.
-   *
-   * The middle of a tile means "show it here"; an edge means "put it beside
-   * this one". The second case creates a tile that is not mounted yet, so the
-   * load cannot happen in this handler — it is remembered and run the moment
-   * that tile publishes its handle.
-   */
+  /** Edge drops create a tile; defer loading until that tile publishes its handle. */
   const handleSessionDrop = useCallback((
     targetGroupId: string,
     sessionId: string,
@@ -476,16 +366,12 @@ export function App() {
     }
     if (target === "center") {
       chatGroups.focus(targetGroupId);
-      // "Show it here" is the same request the sidebar makes, aimed at the tile
-      // the user pointed at. Dropping straight to `loadSession` would earn a
-      // silent refusal when that tile is mid-turn — the dead end a click no
-      // longer has.
+      // Use reachSession for center drops so a busy tile can adopt a group instead of silently refusing the load.
       void reachSession(sessionId, targetGroupId);
       return;
     }
     const created = chatGroups.dropOnEdge(targetGroupId, target);
-    // null is the ceiling: four tiles already. Nothing to say — the frame
-    // stops offering edges once `canSplit` is false.
+    // The frame disables edge drops at the four-tile ceiling.
     if (created) setPendingSessionDrop({ chatGroupId: created, sessionId });
   }, [chatGroups, reachSession, tileSessions]);
 
@@ -503,21 +389,47 @@ export function App() {
     return chatGroupSessions.subscribe(chatGroupId, () => { deliver(); });
   }, [pendingSessionDrop, chatGroupSessions]);
 
-  /**
-   * Terminals and web pages moving between side panels and panes. The surface
-   * itself never moves (see `preview/surface-moves.ts`): its record changes
-   * store and its location changes pane, in this one event.
-   */
+  /** Move surface ownership and pane location together; the surface itself stays mounted. */
   const surfaceMoves = useMemo<SurfaceMoves>(() => {
     const sinkOf = (chatGroupId: string) => {
       const sink = getSideTabsSink(chatGroupId);
-      // Every pane is a mounted conversation group with its own side panel;
-      // a pane without one is a broken invariant, not a case to skip.
+      // Every pane must have a mounted conversation group and side panel.
       if (!sink) throw new Error(`side-tabs-sink-missing:${chatGroupId}`);
       return sink;
     };
     const guestUrl = (tabId: string) => getWebSurfaces().find((each) => each.tabId === tabId)?.url ?? null;
+    const tabToSide: SurfaceMoves["tabToSide"] = (tabId, toGroupId) => {
+      const sink = sinkOf(toGroupId);
+      if (sink.activate(tabId)) {
+        chatGroups.focus(toGroupId);
+        return;
+      }
+      const surface = mainSurfaces.release(tabId);
+      let adopted = false;
+      if (surface) {
+        sink.adopt({ id: surface.tabId, kind: surface.kind, ordinal: surface.ordinal }, surface.kind === "browser" ? guestUrl(tabId) : null);
+        adopted = true;
+        for (const [paneId, content] of Object.entries(chatGroups.contentById)) {
+          if (content?.surface === tabId) chatGroups.setPaneContent(paneId, PANE_HOME);
+        }
+      } else {
+        for (const group of chatGroups.groups) {
+          if (group.id === toGroupId) continue;
+          const source = sinkOf(group.id);
+          if (!source.snapshot().some((tab) => tab.tabId === tabId)) continue;
+          const tab = source.release(tabId);
+          if (!tab) return;
+          sink.adopt(tab, tab.kind === "browser" ? guestUrl(tabId) : null);
+          adopted = true;
+          break;
+        }
+      }
+      if (!adopted) return;
+      sink.open();
+      chatGroups.focus(toGroupId);
+    };
     return {
+      tabToSide,
       tabToMain: (fromGroupId, tabId, drop) => {
         const sink = sinkOf(fromGroupId);
         const tab = sink.release(tabId);
@@ -533,8 +445,6 @@ export function App() {
           }
           return;
         }
-        // Beside the conversation it came from when the canvas has room, so
-        // the chat and the surface are both in view; else in that pane itself.
         const beside = chatGroups.canSplit
           && chatGroups.splitFits(fromGroupId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
           ? chatGroups.placeOnEdge(fromGroupId, "right", location)
@@ -544,20 +454,11 @@ export function App() {
       paneToSide: (paneId, toGroupId = paneId) => {
         const surfaceId = chatGroups.contentById[paneId]?.surface;
         if (!surfaceId) return;
-        const surface = mainSurfaces.release(surfaceId);
-        if (!surface) return;
-        const sink = sinkOf(toGroupId);
-        sink.adopt({ id: surface.tabId, kind: surface.kind, ordinal: surface.ordinal }, surface.kind === "browser" ? guestUrl(surface.tabId) : null);
-        // The pane goes back to its conversation, whose side panel now shows
-        // the surface.
-        chatGroups.setPaneContent(paneId, PANE_HOME);
-        sink.open();
-        chatGroups.focus(toGroupId);
+        tabToSide(surfaceId, toGroupId);
       },
     };
   }, [chatGroups, mainSurfaces]);
 
-  /** A surface dropped on a pane: a side tab, or another pane dragged by its header. */
   const handleSurfaceDrop = useCallback((targetPaneId: string, payload: SurfaceDragPayload, target: DropTarget) => {
     if ("side" in payload.from) {
       surfaceMoves.tabToMain(payload.from.side, payload.tabId, { paneId: targetPaneId, target });
@@ -571,11 +472,10 @@ export function App() {
     if (placed === null) chatGroups.movePaneContent(fromPane, targetPaneId);
   }, [chatGroups, surfaceMoves]);
 
-  /** Bring back the most recently closed surface, new, in the focused pane. */
   const reopenClosedSurface = useCallback(() => {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
-    // A terminal comes back where its shell last was; a page at its address.
+    // Restore terminals at their last directory and pages at their last address.
     const surface = mainSurfaces.create(closed.kind, closed.url, closed.cwd);
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
@@ -603,12 +503,7 @@ export function App() {
     return false;
   }, []);
 
-  /**
-   * Show the terminal that most recently asked for attention: its pane when a
-   * pane shows it, the focused pane when it is a main terminal no pane shows,
-   * else the side panel that holds it. Showing it is what reads it. An entry
-   * whose terminal is gone is read and the next one tried.
-   */
+  /** Show the most recent live terminal asking for attention; discard stale entries until one can be shown. */
   const jumpToUnreadTerminal = useCallback(() => {
     for (let latest = latestUnreadTerminal(); latest; latest = latestUnreadTerminal()) {
       const { tabId } = latest;
@@ -618,11 +513,9 @@ export function App() {
     }
   }, [openWorkspaceSurface]);
 
-  // What the side chat acts on is also the tab main's agent tools default to
-  // when none is named: one report per window, from the one store.
+  // The reported side-chat target is also the default for agent tools that name no tab.
   useReportActiveSurface(api);
-  // A closed terminal or page ends its pane chat: main stops that chat's turn
-  // and archives its conversation, and the list shows it archived.
+  // Closing a surface stops and archives its pane chat.
   useEffect(() => subscribeSurfaceClosed((tabId) => {
     const sideChat = api.sideChat;
     if (!sideChat) return;
@@ -632,11 +525,7 @@ export function App() {
     }, (err: unknown) => console.warn(`pane chat for ${tabId} not ended: ${errorMessage(err)}`));
   }), [api, refreshSessions]);
 
-  // The main area's web panels are a host of the agent browser tools' tab
-  // operations (`preview/agent-browser-bridge.ts`): select shows the page —
-  // focusing the pane that holds it, else putting it in the focused pane —
-  // and close closes it like the pane's own close. It opens no agent tabs;
-  // those go beside the chat that asked.
+  // Main-area browser selection reveals an existing page; new agent tabs belong beside the requesting chat.
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => null,
     hasTab: (tabId) => mainBrowserHostRef.current.mainSurfaces.get(tabId)?.kind === "browser",
@@ -651,9 +540,7 @@ export function App() {
     },
   }), [api, openWorkspaceSurface]);
 
-  // Focusing a pane that shows a terminal or a page makes it what the side
-  // chat acts on (`preview/active-surface.ts`). Shown once per focus change;
-  // a directory the shell reports later only updates the current target.
+  // Pane focus selects the side-chat target; later shell directory reports only update that target.
   const focusedSurfaceId = chatGroups.contentById[chatGroups.focusedId]?.surface;
   const focusedMainSurface = focusedSurfaceId ? mainSurfaces.surfaces.find((each) => each.tabId === focusedSurfaceId) : undefined;
   const focusedActiveSurface: ActiveSurface | null = focusedMainSurface
@@ -680,8 +567,6 @@ export function App() {
       case "pane.moveRight":
       case "pane.moveUp":
       case "pane.moveDown": {
-        // Moves what the focused pane shows when it is a terminal or a page;
-        // a conversation pane is moved by dragging its sessions, not by this.
         if (!chatGroups.contentById[focused]?.surface) return;
         const direction = ({ "pane.moveLeft": "left", "pane.moveRight": "right", "pane.moveUp": "up", "pane.moveDown": "down" } as const)[id];
         const neighbor = chatGroups.paneNeighbor(focused, direction);
@@ -700,9 +585,7 @@ export function App() {
     }
   }, [chatGroups, reopenClosedSurface, jumpToUnreadTerminal]);
 
-  // The panel chords, from the one table. Bound in the capture phase so a
-  // terminal (whose input is a textarea) does not swallow them; three
-  // modifiers are never typed text.
+  // Capture panel chords before terminal textareas can swallow them.
   const runPanelCommandRef = useRef(runPanelCommand);
   runPanelCommandRef.current = runPanelCommand;
   useEffect(() => {
@@ -718,8 +601,6 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
-  // Pinned-project preference — pinned projects sort to the top of the
-  // sidebar's Projects tab.
   const {
     isProjectPinned,
     toggleProjectPin,
@@ -734,11 +615,7 @@ export function App() {
   const [workspaceProjects, setWorkspaceProjects] = useState<ProjectIdentity[]>([]);
   const [activeProject, setActiveProject] = useState<ProjectIdentity | undefined>(undefined);
 
-  // Dev tools — Cmd/Ctrl+Shift+D toggles the floating panel.
-  // Listener is only bound in dev mode (`window.__aveDevMode === true`) so
-  // packaged builds neither swallow the chord nor pay setState cost on every
-  // press. Main process strips dev IPC handlers when packaged, so even if a
-  // production build accidentally read true, the panel would render inert.
+  // Bind dev-tool shortcuts only in dev mode; packaged builds expose no dev IPC handlers.
   useEffect(() => {
     if ((window as unknown as { __aveDevMode?: boolean }).__aveDevMode !== true) {
       return;
@@ -757,47 +634,37 @@ export function App() {
   const { status: bootstrapStatus, dismiss: dismissBootstrapStatus, retry: retryBootstrap } = useBootstrapStatus(api);
   const approvals = useApproval();
   const { queue: approvalQueue, decide: handleApprovalDecide, claims: approvalClaims } = approvals;
-  // A card is drawn by the surface whose conversation asked: a tile for its
-  // own conversation and its sub-agents, a side chat for its loop — and it is
-  // drawn THERE, in that surface, whether or not the user is looking at it.
-  // The window draws none of them. What it does draw, in the focused pane's
-  // lane, is the one request that has no conversation to belong to: a host or
-  // plugin ask. Every parked request is a yellow dot on its conversation's
-  // sidebar row, and on the control leading to it while it is off screen.
-  //
-  // One selector answers both — which rows and controls carry the dot, and
-  // which requests the lane draws — so the sidebar, the pane headers and the
-  // lane cannot disagree about who is waiting.
+  // Conversation cards stay with their owning surface; unowned host/plugin cards use the focused pane. One selector drives
+  // both cards and attention dots.
   const deferredSessionIds = useDeferredSessionIds(api.permission);
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
-  // A pane's own chat is no tile; the claim it holds is how the window knows it draws its cards.
+  // Terminal egress asks use the tab banner while mounted, otherwise the pane lane, so hidden tabs can still be answered.
+  const surfaceMountRevision = useSurfaceMountRevision();
+  const dockApprovals = useMemo(
+    () => approvalsForDocks(approvalQueue, (tabId) => surfaceMountLocation(tabId) !== null),
+    // The revision is what makes `surfaceMountLocation` worth re-reading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [approvalQueue, surfaceMountRevision],
+  );
+  // The pane-chat claim identifies card ownership for chats outside the tile registry.
   const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
-    approvals: approvalQueue,
+    approvals: dockApprovals,
     tiles: tileSessions,
     deferredSessionIds,
     overlayCards: overlayQueue,
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
-  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  }), [dockApprovals, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
-  // Cards waiting in the dedicated Suggestions conversation — its row's count.
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
     [overlayQueue],
   );
-  // Approval-memory hit + reviewer suggestion. Both report on the WINDOW's
-  // permission settings, not on one conversation, so they are subscribed once
-  // here — per tile they would raise the same disclosure in every open
-  // conversation at once. The hit is a toast rendered below; the suggestion
-  // goes into the approval surface value, so whichever card is up draws it.
+  // Subscribe once per window to avoid duplicate permission-memory and reviewer disclosures across tiles.
   const { userApprovalHitToast, reviewerSuggestion } = usePermissionSignals();
   const [exactDenyDraft, setExactDenyDraft] = useState<ExactDenyDraft | null>(null);
-  // `/allow <sentence>` is typed into the focused tile's composer, so it
-  // addresses the out-of-directory card shown in that tile; with none there,
-  // the lane card that pane also draws. Other approval kinds keep their own
-  // explicit decision form and must never consume a proposal they cannot
-  // display.
+  // Only out-of-directory cards consume /allow proposals; other approval forms cannot display them.
   const approvalSentenceTarget = useMemo(() => {
     const inFocusedTile = approvalQueue.find((req) =>
       req.kind === "out-of-allowed-dir"
@@ -820,38 +687,18 @@ export function App() {
     [approvalSentenceTarget, approvalProposedChoice],
   );
 
-  // Routine + plugin-overlay IPC pipeline. Owns runningRoutines, the addFireRef
-  // surfaced to OverlayContextProvider (populated during that provider's render),
-  // the overlay lookup map, and the routine/overlay IPC subscriptions. A card's
-  // primary action reaches its tile through the registry, so the turn starts in
-  // the conversation the card was shown in. See use-routine-overlay.ts.
-  // Marketplace + plugin UI extensions
+  // Routine primary actions reach the card-owning tile through the registry.
   const { pluginViews, pluginCards, refreshViews, refreshCards } = usePluginMarketplace(api);
 
-  // Where the main window is. `InlineViewKey` (not `string`) so a destination
-  // that has no inline form — or a typo — cannot be assigned here at all.
-  // Persisted and restored on next launch. Declared AFTER the plugin views it
-  // needs: a restored `plugin:` key is only entered once this list confirms the
-  // view still exists, so uninstalling a plugin cannot leave the app opening on
-  // a view that is gone.
+  // Restore plugin views only after the installed-view list confirms they still exist.
   const loadedPluginViewKeys = useMemo(
     () => pluginViews.map((view) => toViewKey(view)),
     [pluginViews],
   );
-  // Set for the duration of ONE new-pane gesture — see `openViewInNewPane`.
+  // The new-pane navigation claim lasts one gesture.
   const newPaneTargetRef = useRef<string | null>(null);
-  // The location lives in the focused pane's content, so navigating is putting
-  // a view IN that pane. `useActiveView` still owns the restore and the
-  // persistence; what it no longer owns is the value. With one focused pane
-  // `contentById[focusedId].view` and the old window-wide `activeView` are the
-  // same string, which is why the router below is untouched.
-  /**
-   * Put a terminal or a web page in `paneId`. A bare `terminal`/`web` names a
-   * kind of place, not one place, so it resolves to an instance: a main-area
-   * surface of that kind no pane is showing (closing a pane or routing it
-   * elsewhere leaves its surface running, and this is how it is reached
-   * again), else a new one. `fresh` always makes a new one.
-   */
+  // The focused pane owns the active location; useActiveView owns restoration and persistence.
+  /** Bare terminal/web destinations reuse an unshown surface before creating one; fresh always creates an instance. */
   const showInstanceView = useCallback((paneId: string, view: InstanceViewKey, fresh = false) => {
     const kind = SURFACE_KIND_OF_VIEW[view];
     const shown = new Set(Object.values(chatGroups.contentById).map((content) => content.surface));
@@ -864,17 +711,10 @@ export function App() {
   const activeViewPane = useMemo(() => ({
     view: chatGroups.contentById[chatGroups.focusedId]?.view ?? "home",
     navigate: (next: InlineViewKey) => {
-      // A navigation the new-pane gesture asked for goes into the pane that
-      // gesture just made, which `focusedId` cannot yet name: the pane is
-      // created and filled inside one event, and React has not re-rendered in
-      // between. The claim lives for exactly that event (see
-      // `openViewInNewPane`), so nothing later can be captured by it — and it
-      // has to be honoured, or the two moves would land as two locations and
-      // the visit history would record a stop at a pane's blank conversation.
+      // Route within the creating event to avoid recording the new pane's blank conversation in history.
       const paneId = newPaneTargetRef.current ?? chatGroups.focusedId;
       if (isInstanceViewKey(next)) {
-        // A new pane asked for this view: it gets a new instance, not a
-        // running one moved out of wherever the user left it.
+        // A new-pane gesture creates a surface instance instead of moving a running one.
         showInstanceView(paneId, next, newPaneTargetRef.current !== null);
         return;
       }
@@ -883,41 +723,27 @@ export function App() {
   }), [chatGroups.contentById, chatGroups.focusedId, chatGroups.setPaneContent, showInstanceView]);
   const { activeView, setActiveView, restoresApplied: activeViewRestoresApplied } =
     useActiveView(api, loadedPluginViewKeys, activeViewPane);
-  // The location has two halves and each restores itself, so the history needs
-  // one signal covering both. Each count only ever rises, so their sum rises
-  // exactly when either half is restored — which is all the history reads.
+  // Summed monotonic restore counters signal completion of either location half.
   const restoresApplied = activeViewRestoresApplied + settingsTabRestoresApplied;
-  // Where the window IS, as one value — the pair the top-bar path renders and
-  // the unit visit history records. Settings is one view key but several
-  // places, so the tab belongs in the location or the path would say
-  // "Settings" while the user is on Permissions.
-  // An instance view's location names its surface, so walking back onto a
-  // terminal returns to THAT terminal rather than to a terminal.
+  // History includes the settings tab and surface id so return visits resolve the same page or instance.
   const focusedSurface = chatGroups.contentById[chatGroups.focusedId]?.surface;
   const location = useMemo(() => {
     const base = toViewLocation(activeView, settingsTab);
     return isInstanceViewKey(activeView) && focusedSurface ? { ...base, surface: focusedSurface } : base;
   }, [activeView, settingsTab, focusedSurface]);
-  // Applying a history entry sets BOTH halves, so replaying a settings entry
-  // lands on the page it was recorded on rather than the tab last opened.
+  // Restore both location halves so settings history returns to the recorded tab.
   const navigateToLocation = useCallback((to: ViewLocation) => {
     if (to.view === "settings") setSettingsTab(to.settingsTab ?? "llm");
-    // A surface still running is shown again; one closed since is gone, and
-    // the entry resolves like its bare view.
+    // Reuse a live surface; a closed one resolves as a bare destination.
     if (to.surface && mainSurfaces.surfaces.some((surface) => surface.tabId === to.surface)) {
       chatGroups.setPaneContent(chatGroups.focusedId, to);
       return;
     }
     setActiveView(to.view);
   }, [setSettingsTab, setActiveView, mainSurfaces.surfaces, chatGroups]);
-  // The section a deep link named, held only until the panel has landed on it.
-  // Kept OUT of `ViewLocation` deliberately: a location is a place the user can
-  // return to, and this is an event — recording it would replay the scroll and
-  // the arrival ring every time history walked back onto the settings entry.
+  // Settings-section targets are one-shot events; persisting them would replay scrolling on every history visit.
   const [settingsSectionTarget, setSettingsSectionTarget] = useState<string | null>(null);
   const clearSettingsSectionTarget = useCallback(() => setSettingsSectionTarget(null), []);
-  // Composed after `navigateToLocation` because an accepted onboarding proposal
-  // may name a settings destination, and the move is this window's to make.
   const navigateToSettingsPath = useCallback(
     (path: SettingsPath) => {
       navigateToLocation({ view: "settings", settingsTab: path.tab });
@@ -925,9 +751,7 @@ export function App() {
     },
     [navigateToLocation],
   );
-  // A card addressed to the Suggestions conversation: main made that
-  // conversation exist (or moved it up the list) before sending it, so the
-  // list is re-read for its row to carry the card's dot and count.
+  // Refresh the list after a Suggestions card arrives so its row receives the attention count.
   const refreshSessionsOnSuggestion = useCallback(() => { void refreshSessions(); }, [refreshSessions]);
   const {
     addFireRef,
@@ -984,12 +808,9 @@ export function App() {
     reviewerSuggestion,
   }), [approvals, handleOpenPermanentDeny, exactDenyDraft, approvalProposal, reviewerSuggestion]);
 
-  // Auth status for every plugin that declares `manifest.auth`. Hoisting to
-  // App.tsx means a single live-poll + event-bridge subscription serves every
-  // surface — no duplicate listeners, no stale-state divergence between views.
+  // Share one plugin-auth poll and event subscription across window surfaces.
   const { statuses: pluginAuthStatuses, refresh: refreshPluginAuthStatus } = usePluginAuthStatuses(api, pluginCards);
 
-  // Role preset, cost preview, multimodal attachments
   const { rolePresets, activePreset, activePresetId, setActivePresetId } = useRolePresets(api);
   const {
     starred,
@@ -1003,10 +824,7 @@ export function App() {
     statusPushToast({
       severity: "error",
       message: formatIpcError(error, message, {
-        // Only reached for a code the shared IPC table does not know — every
-        // code these operations actually return is mapped. The add label is
-        // the file-browser one because the menu entry carries a trailing
-        // ellipsis that reads badly in `<context>: <message>`.
+        // Unknown codes use a contextual fallback; the file-browser label avoids the menu label's trailing ellipsis.
         fallbackContext: operation === "add"
           ? t("chatPreviewRail.addProjectRoot")
           : operation === "remove"
@@ -1019,9 +837,7 @@ export function App() {
     });
   }, [statusPushToast, t]);
 
-  // The project list refreshes on mount and after every add and remove, so a
-  // standing fault would re-toast on each pass. Only a change of condition is
-  // news; a repair clears the memory so the next one is reported again.
+  // Toast project-list faults only on condition changes; clear the memory after recovery.
   const reportedListFault = useRef<string | null>(null);
   const reportProjectListFault = useCallback((code: string) => {
     if (reportedListFault.current === code) return;
@@ -1033,19 +849,14 @@ export function App() {
     try {
       const result = await window.ave?.workspace?.listRoots?.();
       if (!result?.ok) {
-        // An empty project list and a project list main could not read look
-        // identical on screen, so the second one is only ever a condition the
-        // user is told about — never a silently shorter sidebar.
+        // Report unreadable project lists instead of silently presenting them as empty.
         if (result?.error) reportProjectListFault(result.error);
         return;
       }
       if (result.settingsFault) reportProjectListFault(result.settingsFault);
       else reportedListFault.current = null;
       const roots = Array.isArray(result.roots) ? result.roots : [];
-      // fallbackName is only a safety net for a root with no resolvable
-      // basename — the default project is excluded from every display
-      // surface (composer selector, sidebar grouping, Insights), so its
-      // exact string value is never shown.
+      // The default project is hidden from display surfaces, so its fallback basename is never shown.
       const projects = workspaceRootsToProjects(result.defaultRoot, roots, t("sidebar.projectsLabel"));
       setWorkspaceProjects(projects);
       setActiveProject((current) => reconcileActiveProject(current, projects));
@@ -1058,31 +869,15 @@ export function App() {
     void refreshWorkspaceProjects();
   }, [refreshWorkspaceProjects]);
 
-  /**
-   * Resolve an EXPLICITLY requested project against the known list.
-   *
-   * A request that is not in the list is passed through unchanged rather than
-   * replaced by the default. `workspaceProjects` is a render-time snapshot, so
-   * the folder the user just added is reliably absent from it — the selector's
-   * refresh has not re-rendered this callback yet — and substituting the
-   * default there silently discarded the very choice the user made. The
-   * authority for "may this root be used" is main's
-   * `resolveAuthorizedWorkspaceProject`, which answers `project-not-allowed`;
-   * a renderer-side guess cannot add safety, only wrong answers.
-   */
+  /** Main authorizes project roots; do not replace an explicit root missing from a stale renderer list. */
   const resolveKnownProject = useCallback((project: ProjectIdentity | undefined): ProjectIdentity | undefined => {
     if (!project) return undefined;
     return findWorkspaceProject(workspaceProjects, project) ?? project;
   }, [workspaceProjects]);
 
   useEffect(() => {
-    // Follow the focused tile's conversation, and only once it holds one. A
-    // tile that has not published (the registry's empty stand-in) or has not
-    // hydrated yet reports no project because it has no conversation — not
-    // because its conversation is unscoped. Reading that as "the default
-    // project" reset the window's project in the commit that focused a tile
-    // adopted for New Chat during a turn, before that tile read the project
-    // it was asked to start under.
+    // Wait for the focused tile to hydrate before following its project; an unpublished tile does not imply the default
+    // project.
     if (!currentSessionId) return;
     const sessionProject = projectIdentityFromPayload(currentSessionProject);
     setActiveProject(reconcileActiveProject(sessionProject, workspaceProjects));
@@ -1095,11 +890,7 @@ export function App() {
 
   const handleOpenRoutineSession = useCallback(
     async (sessionId: string) => {
-      // One rule for reaching a conversation, wherever the request comes from:
-      // a routine card opening its session is the sidebar's ladder with the
-      // view switch on the end. The switch only happens if the conversation was
-      // actually reached — a card naming a session that cannot be opened must
-      // not drag the user out of the routines view to look at an unrelated one.
+      // Switch from routines only after the requested conversation is reached.
       try {
         const loaded = await handleLoadSessionAndRefresh(sessionId);
         if (loaded !== false) setActiveView("home");
@@ -1118,9 +909,7 @@ export function App() {
     void refreshStarred();
   }, [refreshSessions, refreshStarred, searchOpen]);
 
-  // A work-board run is a row in the conversation list, so the list has to
-  // move when a run starts (the row appears) and when it ends (its time and
-  // order change) — the same way a chat turn ending refreshes it.
+  // Refresh the conversation list when work-board runs start or end.
   useEffect(() => {
     const unsubscribeStarted = api.onWorkBoardRunStarted(() => void refreshSessions());
     const unsubscribeFinished = api.onWorkBoardRunFinished(() => void refreshSessions());
@@ -1132,15 +921,12 @@ export function App() {
     };
   }, [api, refreshSessions]);
 
-  // A fired routine is a row too. Its conversation runs on the routine engine's
-  // own loop, so no tile ever reports a turn ending for it and nothing else
-  // would tell the list it exists.
+  // Routine loops have no tile turn-end event; refresh their conversation rows separately.
   useEffect(() => {
     if (typeof api.onRoutineFired !== "function") return undefined;
     return api.onRoutineFired(() => void refreshSessions());
   }, [api, refreshSessions]);
 
-  // Small adapter callbacks that bridge hook outputs to ChatView / MainToolbar.
   const {
     llmVendor,
     llmModel,
@@ -1168,19 +954,13 @@ export function App() {
   const chatReadyWithoutApiKey = subscriptionRuntimeSelected
     ? subscriptionChatReady === true
     : llmReadyWithoutApiKey;
-  // Until the authoritative runtime snapshot lands, the initial API-vendor
-  // defaults are not a safe source for billing or context UI. Hide those
-  // projections just as send and attachment ingress already fail closed.
+  // Hide billing/context projections until the authoritative runtime snapshot loads.
   const apiUsageProjectionAvailable = settingsLoaded && !subscriptionRuntimeSelected;
   const effectiveLlmReady = useMemo(
     () => {
-      // A selected subscription runtime is the sole authority for readiness.
-      // Never revive a failed/pending subscription selection with a stale API key.
-      // A pending readiness probe is deliberately non-sendable: it has not yet
-      // established an authenticated chat session.
+      // Subscription readiness alone authorizes sending; pending or failed selections must not fall back to stale API keys.
       if (subscriptionRuntimeSelected) return subscriptionChatReady === true;
-      // Moved off a removed vendor: main refuses API turns until the user picks
-      // a provider, so a key saved for the fallback vendor reads as not ready.
+      // A removed provider keeps API chat unavailable until the user selects a replacement.
       if (retiredLlmProvider) return false;
       return effectiveHasApiKey === null
         ? (chatReadyWithoutApiKey ? true : null)
@@ -1190,20 +970,12 @@ export function App() {
   );
   const subscriptionUnavailableProvider = subscriptionRuntimePolicy.unavailableProvider;
   const subscriptionPendingProvider = subscriptionRuntimePolicy.pendingProvider;
-  // Whether any chat model is configured — main's `activeChatModel`, which is
-  // "none" for a route with no credential behind it even though its vendor
-  // block names a default id. Unknown until the settings snapshot lands, so
-  // the sidebar does not alert on the pre-load defaults.
+  // Use activeChatModel for readiness, and wait for the settings snapshot before showing configuration alerts.
   const chatModelConfigured = settingsLoaded && activeChatModel
     ? activeChatModel.kind !== "none"
     : null;
   const subscriptionImageAttachmentProvider = subscriptionRuntimePolicy.imageAttachmentProvider;
   const subscriptionFileAttachmentProvider = subscriptionRuntimePolicy.fileAttachmentProvider;
-  // Plugin/built-in view routing + host-managed plugin auth lifecycle (the 4
-  // auth-gate refs + action guard + pluginAuthErrors + the two drain effects +
-  // the uninstalled-plugin fallback), extracted as ONE unit. Routing no longer
-  // reads appMode: every view renders inline in every mode. See
-  // use-plugin-view-routing.ts.
   const {
     handleViewSelect,
     pluginPaneFor,
@@ -1213,9 +985,7 @@ export function App() {
     statusPushToast,
   });
 
-  // Path + history controls handed to the top bar. Labels resolve through the
-  // plugin's declared title so a plugin crumb names the panel the way its own
-  // sidebar entry does.
+  // Resolve plugin path labels from declared titles so sidebar and toolbar agree.
   const viewNav = useMemo(() => {
     const deps = {
       t,
@@ -1223,13 +993,10 @@ export function App() {
         const view = pluginViews.find((candidate) => toViewKey(candidate) === viewKey);
         return view ? getPluginViewLabel(view, locale) : undefined;
       },
-      // A session on the workspace default is a plain chat (the sidebar's own
-      // rule for its Chats tab); only a named project names the root crumb.
+      // Default-workspace sessions are plain chats; only named projects label the root crumb.
       sessionProject: activeProject && !activeProject.isDefault ? activeProject : undefined,
     };
-    // Name the destination on the buttons. In chat mode the path itself does
-    // not render, so without this the only navigation left says nothing about
-    // where it goes. The deepest crumb is the destination's own name.
+    // Chat mode hides the path, so history buttons must name their destinations.
     const destinationLabel = (target: ViewLocation | null) =>
       target ? viewLocationBreadcrumb(target, deps).at(-1)?.label : undefined;
     return {
@@ -1244,13 +1011,8 @@ export function App() {
     };
   }, [location, t, locale, pluginViews, viewHistory, navigateToLocation, activeProject]);
 
-  // The conversation action set. Built once so the pane header and the
-  // sidebar row's context menu cannot drift apart about what is offered.
-  // Build flat PluginEntry list for InputActionBar plugin grid.
-  // `unauthed` is set when the owning plugin declares `manifest.auth` AND its
-  // current statusTool result is `kind: "unauthed"`. The grid renders a
-  // small 🔒 indicator on those entries so users see the missing-auth state
-  // without first opening Settings.
+  // Share conversation actions between headers and sidebar menus. Plugin-grid auth indicators follow manifest.auth and live
+  // status.
   const pluginEntries = useMemo<PluginEntry[]>(() => {
     const viewEntries: PluginEntry[] = pluginViews.map((view): PluginEntry => {
       const card = pluginCards.find((candidate) => candidate.id === view.pluginId);
@@ -1282,7 +1044,6 @@ export function App() {
             pluginId: card.id,
             loadStatus: card.loadStatus,
             preparationStatus: card.preparationStatus,
-            // The card's name is this entry's last resort, ahead of its id.
             label: getPluginViewLabel({ pluginId: card.name, extension }, locale),
             icon: card.icon,
             iconText: card.iconText,
@@ -1314,12 +1075,7 @@ export function App() {
     );
   }, [pluginCards, pluginViews]);
 
-  // A plugin the user switched off keeps its card (`loadStatus: "disabled"`)
-  // but has no live view, so the sidebar used to render nothing for it — the
-  // same "installed everywhere except in the app" dead end a dropped plugin
-  // produces. Scoped to manifests that declare a sidebar extension: those are
-  // the plugins whose absence from THIS list is what a user notices, and the
-  // row stands in the slot the plugin will occupy once re-enabled.
+  // Keep disabled sidebar extensions visible as settings shortcuts even though they have no live view.
   const inactivePluginCards = useMemo(() => {
     const pluginIdsWithViews = new Set(pluginViews.map((view) => view.pluginId));
     return pluginCards.filter((card) =>
@@ -1355,29 +1111,19 @@ export function App() {
     });
   }, [api, approvalQueue.length, handleLoadSessionAndRefresh, handleViewSelect]);
 
-  // Settings is ALWAYS an inline view now — there is no detached Settings
-  // window in either mode (overhaul). So the old "chat mode force-closes inline
-  // settings" guard is gone: the settings view is valid in every appMode, and a
-  // mode switch must not eject the user from it.
-
-  // Settings joins the inline view pattern (업무보드/루틴/메모리/별표 + plugin
-  // views) in EVERY mode. `setActiveView("settings")` + the main content region renders
-  // SettingsContent inline; there is no BrowserWindow path. Re-selecting
-  // Settings while already inline only refreshes the tab, so the view never
-  // re-mounts and loses its place.
+  // Settings remains inline in every app mode; reselecting it changes the tab without remounting.
   const onOpenSettings = useCallback((tab = "llm") => {
     setSettingsTab(normalizeSettingsTab(tab));
     setActiveView("settings");
   }, []);
-  // An update installs only through its review, in the marketplace tab (design §15.6).
+  // Updates install only through marketplace review.
   const reviewMarketplaceUpdates = useCallback((updates: PackageUpdateView[]) => {
     requestUpdateReview(updates);
     onOpenSettings("marketplace");
   }, [onOpenSettings]);
 
   const handleViewSelectWithDoctor = useCallback((key: string) => {
-    // An inactive plugin's row is a shortcut to the toggle that turned it off,
-    // not an incident: it opens Plugin Settings with no warning toast.
+    // Disabled-plugin rows open their settings toggle without a warning toast.
     if (parsePluginSettingsViewKey(key)) {
       onOpenSettings("plugin-config");
       return;
@@ -1396,32 +1142,20 @@ export function App() {
     handleViewSelect(key);
   }, [handleViewSelect, onOpenSettings, pluginCards, statusPushToast, t]);
 
-  // The item a sidebar row asked the board to open, held until the board has
-  // opened it. An event, not a location, for the same reason as the settings
-  // section target above.
+  // Board-item targets are consumed once rather than persisted as history locations.
   const [workBoardFocusItemId, setWorkBoardFocusItemId] = useState<number | null>(null);
   const openWorkBoardItem = useCallback((itemId: number) => {
     handleViewSelectWithDoctor("work-board");
     setWorkBoardFocusItemId(itemId);
   }, [handleViewSelectWithDoctor]);
 
-  /**
-   * The side chat a sidebar row asked for, addressed to the tile that must show
-   * it. Held as an event rather than a location for the same reason as the
-   * board item above: the tile consumes it once and the request is spent.
-   *
-   * `nonce` is what makes asking for the SAME side chat twice two requests. The
-   * ids alone would compare equal and the second click would do nothing.
-   */
+  /** Side-chat requests are one-shot events; nonce distinguishes repeated requests for the same ids. */
   const [sideChatOpenRequest, setSideChatOpenRequest] = useState<
     { chatGroupId: string; sessionId: string; nonce: number } | null
   >(null);
   const sideChatRequestNonce = useRef(0);
   const openSideChat = useCallback(async (sideChatSessionId: string, originSessionId?: string) => {
-    // The conversation first: a side chat is shown beside the conversation it
-    // belongs to, and the panel that draws it is that conversation's own. A
-    // parent that cannot be reached is not a reason to refuse the side chat —
-    // it opens beside whatever the focused tile is already holding.
+    // Reach the parent conversation when possible; otherwise show the side chat beside the focused conversation.
     if (originSessionId !== undefined) {
       try {
         const loaded = await handleLoadSessionAndRefresh(originSessionId);
@@ -1439,30 +1173,9 @@ export function App() {
     });
   }, [handleLoadSessionAndRefresh, setActiveView]);
 
-  /**
-   * Open a sidebar row's view in a NEW pane, beside the focused one.
-   *
-   * The pane and the view land in ONE commit: the claim above points the
-   * navigation at the pane this call just made, so the window's location goes
-   * straight from where it was to the view. Opening the pane and then
-   * navigating as two commits would put the new pane's blank conversation
-   * between them, and the visit history — which records the location it
-   * observes — would keep that as a step the user never took.
-   *
-   * The selection itself is the ordinary one, so the plugin auth gate, the
-   * Doctor interception and the no-duplicates rule are all still in front of
-   * the destination. Nothing about where a view may go is decided twice here.
-   *
-   * Three outcomes, all of them stated:
-   *   • already open in another pane → no new pane, and the ordinary selection
-   *     focuses the pane that has it (`paneShowing` is that rule's one home);
-   *   • no room on the canvas → a message, and nothing opens;
-   *   • otherwise → a pane, focused, holding the view.
-   */
+  /** Create and navigate in one commit to avoid a blank history entry; retain ordinary auth and duplicate-view gates. */
   const openViewInNewPane = useCallback((key: string) => {
-    // The same runtime boundary the focused-pane path has: a string that is not
-    // a place the window can BE must not cost a pane. The rows whose key is a
-    // shortcut rather than a location do not offer this gesture at all.
+    // Reject invalid destinations before allocating a pane.
     const parsed = parseInlineViewKey(key);
     if (!parsed) {
       console.warn(`[nav] ignoring unknown view key '${key}'`);
@@ -1482,55 +1195,35 @@ export function App() {
     try {
       handleViewSelectWithDoctor(key);
     } finally {
-      // The claim is one event long. A plugin whose sign-in defers the open
-      // lands later, by which time focus IS the new pane and the ordinary
-      // path names it — so a claim that outlived this call could only ever
-      // capture a navigation the gesture did not ask for.
+      // Clear the navigation claim after this event so deferred sign-in cannot capture unrelated navigation.
       newPaneTargetRef.current = null;
     }
   }, [chatGroups, handleViewSelectWithDoctor, statusPushToast, t]);
 
-  // Side panel (ChatSidePanel) is a home-view affordance: navigating away from
-  // home closes it so it never lingers behind another view. Toggling from a
-  // non-home view first returns to home, then opens the panel.
-
-  // Settings renders in-process, so a successful save refreshes the live API
-  // key and model state directly without a cross-window notification hop.
+  // Leaving home closes the side panel; opening it elsewhere first returns home. Inline settings saves refresh live
+  // configuration directly.
   const handleInlineSettingsSaved = useCallback(() => {
     void checkApiKey();
     void refreshLlmSettings();
   }, [checkApiKey, refreshLlmSettings]);
 
-  // Composer send pipeline. Owns handleAsk (+ its turnRequestRef guard) and
-  // writes handleAskRef.current each render so the forward-ref cycle with
-  // use-routine-overlay's handlePluginPrimaryAction stays live. See
-  // use-send-message.ts.
   const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }) => {
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
     if (streaming) {
-      // The focused tile is mid-turn, and a new chat on its loop is the same
-      // mid-turn swap `reachSession` refuses. The same ladder applies: the new
-      // conversation gets a group of its own beside the busy one. At the
-      // ceiling the refusal is said out loud and nothing else changes.
+      // New Chat beside a busy tile adopts another group; at the ceiling it refuses without changing the current conversation.
       const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId);
       if (adopted === null) return;
-      // The tile hydrates its fresh conversation under the project handed to
-      // it — in the same commit that mounts it. The window's project is not
-      // touched here: it follows that tile once the tile holds a conversation,
-      // so a `chatNew` main refuses leaves it where it was.
+      // Hydrate the tile under its requested project; update the window project only after chatNew succeeds.
       if (nextProject) {
         setFreshProjectByGroup((current) => new Map(current).set(adopted, nextProject));
       }
       setActiveView("home");
       return;
     }
-    // The tile starts it: chatNew has to reach the FOCUSED tile's loop, and
-    // the reset has to land on that tile's transcript.
+    // Start chatNew on the focused tile's loop and reset that tile's transcript.
     const started = await focusedSession.startNewChat(nextProject
       ? { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName }
       : undefined);
-    // Refused: the tile said why and still holds what it held, so the window
-    // stays on that conversation's project and view.
     if (!started) return;
     if (nextProject) setActiveProject(nextProject);
     setActiveView("home");
@@ -1539,10 +1232,7 @@ export function App() {
     resolveKnownProject, setActiveView, streaming,
   ]);
 
-  // ── What a conversation ROW can do to itself ───────────────────────────────
-  // Assembled here because these are the only place that has both the IPC
-  // bridge and the list refresh: every mutation below has to be followed by
-  // `refreshSessions()` or the row keeps rendering the state it just left.
+  // Refresh the conversation list after every row mutation.
   const conversationActions = useMemo<ConversationRowActions>(() => {
     const findSession = (sessionId: string) => sessions.find((session) => session.id === sessionId);
     const applyUpdate = async (
@@ -1563,8 +1253,6 @@ export function App() {
       onRename: (sessionId, title) => applyUpdate({ sessionId, title }),
       onSetArchived: (sessionId, archived) => applyUpdate({ sessionId, archived }),
       onSetUnread: (sessionId, unread) => applyUpdate({ sessionId, unread }),
-      // Share hands the conversation to the OS save dialog as Markdown — the
-      // one format that is readable by whoever receives it without Ave.
       onShare: (sessionId) => handleExport("markdown", sessionId),
       onCopy: async (sessionId) => {
         const history = await api.chatSessionHistory(sessionId);
@@ -1584,18 +1272,12 @@ export function App() {
       onDelete: async (sessionId) => {
         const result = await api.chatSessionDelete(sessionId);
         if (!result?.ok) {
-          // A cancelled confirm is the user's own decision, not a failure.
           if (!("canceled" in result && result.canceled)) {
             console.warn("[ave] conversation delete failed:", result?.error);
           }
           return;
         }
-        // Deleting a LOADED conversation leaves the loop that held it pointed
-        // at a file that is gone, so THAT tile starts a fresh one, under the
-        // project it was in. Not the focused tile: the conversation it shows
-        // may be another one entirely, and replacing it — or, mid-turn,
-        // opening a tile beside it — answers a question nobody asked. Main
-        // refuses to delete a conversation mid-turn, so the holder is idle.
+        // After deleting a loaded session, restart its idle holder under the same project, even if another tile is focused.
         if (result.wasLoaded) {
           const holder = tileHoldingSession(tileSessions, sessionId);
           const tile = holder ? chatGroupSessions.read(holder.chatGroupId) : undefined;
@@ -1603,10 +1285,7 @@ export function App() {
             const { projectRoot, projectName } = tile.currentSessionProject;
             const scoped = projectRoot ? { projectRoot, projectName } : undefined;
             const started = await tile.startNewChat(scoped);
-            // Main refuses a conversation in a folder that has left the
-            // workspace (the tile has said so). The tile must not stay on the
-            // deleted session, so it restarts unscoped — the default project
-            // main always accepts.
+            // If the deleted session's project is no longer authorized, restart its holder under the default project.
             if (!started && scoped) await tile.startNewChat(undefined);
             if (holder.chatGroupId === chatGroupsRef.current.focusedId) setActiveView("home");
           }
@@ -1615,13 +1294,11 @@ export function App() {
       },
     };
   }, [api, sessions, tileSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
-  // A turn that ends where the user is not looking marks its row; looking
-  // at a conversation reads it. The sidebar's bold rows come from here.
+  // Turns ending off screen mark their rows unread; viewing the conversation clears the mark.
   useTurnAttention({
     tiles: tileSessions,
     attention: {
       focusedChatGroupId: chatGroups.focusedId,
-      // The focused PANE's own content, the same fact its `hidden` prop reads.
       conversationVisible:
         (chatGroups.contentById[chatGroups.focusedId]?.view ?? "home") === "home",
     },
@@ -1630,11 +1307,7 @@ export function App() {
     onTurnsEnded: refreshSessions,
   });
 
-  // The work panel is per-GROUP state now (each conversation carries its own),
-  // but WIDENING THE WINDOW is a window-level effect: it has to fire when ANY
-  // group wants the extra room, and stop the moment we leave the surface those
-  // groups live on. So the flag useAppMode drives resizeForSidePanel with is
-  // derived here rather than being a second, independently-toggled truth.
+  // Resize the window when any group needs side-panel space, but only while that group surface is shown.
   const anyGroupPanelOpen =
     activeView === "home" && chatGroups.groups.some((group) => group.panelOpen);
   useEffect(() => {
@@ -1648,7 +1321,6 @@ export function App() {
     onSetLabel: setProjectLabel,
   }), [isProjectArchived, toggleProjectArchived, projectLabel, setProjectLabel]);
 
-  // ─── Effects ──────────────────────────────────
   const toggleSlashPicker = useCallback(() => {
     if (activeView !== "home") {
       setActiveView("home");
@@ -1663,15 +1335,9 @@ export function App() {
     setActiveView, onOpenSettings,
     toggleSlashPicker,
   });
-  // Plugin/agent/skill lifecycle → catalog refresh. Owns the in-flight install
-  // tracker + every IPC subscription that keeps plugin views/cards/marketplace
-  // fresh (install/uninstall/runtime/progress broadcasts, the preparing-plugin
-  // poll, agent/skill install results). See use-plugin-lifecycle-refresh.ts.
   usePluginLifecycleRefresh({ api, pluginCards, refreshViews, refreshCards });
 
-  // Clear the SlashPicker's raise flag when navigating away from home. The
-  // picker is only mounted on the home view, so a flag left set survives the
-  // unmount and pops a menu the moment the user comes back.
+  // Clear SlashPicker state off home so returning does not reopen a stale menu.
   useEffect(() => {
     if (activeView !== "home") setSlashPickerOpen(false);
   }, [activeView]);
@@ -1708,17 +1374,7 @@ export function App() {
     },
     [dismissMarketplaceAnnouncement],
   );
-  /**
-   * Follow an announcement's button.
-   *
-   * Navigation only, and deliberately exhaustive over the two target kinds:
-   * an in-app place goes through the same `navigateToLocation` the breadcrumb
-   * and the history use, and a web page goes through `openExternalUrl`, the
-   * renderer's one external-navigation sink. Nothing here writes settings —
-   * an announcement is content fetched from the marketplace, so a branch that
-   * did would be a path from a marketplace post into this machine's
-   * configuration. The user turns a feature on at the destination.
-   */
+  /** Marketplace announcements may navigate through existing sinks, never write machine settings. */
   const handleMarketplaceAnnouncementAction = useCallback(
     (target: MarketplaceAnnouncementActionTarget) => {
       if (target.kind === "settings") {
@@ -1730,26 +1386,17 @@ export function App() {
     [navigateToSettingsPath, api],
   );
 
-  /**
-   * Everything a tile needs that is NOT its own conversation.
-   *
-   * One object rather than fifty props: a tile is rendered in a loop, so
-   * threading these individually would put fifty lines at every call site and
-   * make adding one a change in two places.
-   */
+  /** Tiles share window-scoped dependencies through one environment object. */
   const chatGroupEnvironment = useMemo<ChatGroupEnvironment>(() => ({
     llmVendor, llmModel, llmContextWindow, llmInputLimit, llmRoutePricing, llmRouteModalities, settingsLoaded,
     subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable,
-    // Until the persisted runtime selection has loaded, API-vendor defaults are
-    // not a safe authority for a setting a selected subscription runtime does
-    // not expose. Keep this control fail-closed with send/attachment UX.
+    // Keep output controls disabled until the persisted runtime selection loads.
     chatReasoningAvailable: settingsLoaded && activeSubscriptionRuntime === null,
     effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey,
-    // The route's effective output limit — what the engine sends, not an
-    // assumed 4,096 — so the output estimate is the most a reply may cost.
+    // Estimate output cost from the route's effective limit.
     onOpenSettings,
     maxOutputTokens: llmOutputTokenLimit.effective,
     maxOutputTokensSource: llmOutputTokenLimit.effectiveSource,
@@ -1801,7 +1448,6 @@ export function App() {
     pendingAnswers,
   ]);
 
-  /** What a terminal or web pane's own chat composer needs to know about the model. */
   const paneChatRuntime = useMemo<SideChatRuntime>(() => ({
     hasApiKey: effectiveLlmReady, settingsLoaded, onOpenSettings,
     subscriptionRuntimePolicy,
@@ -1816,32 +1462,12 @@ export function App() {
     llmVendor, llmModel, llmRouteModalities, processingDisplayLevel, apiUsageProjectionAvailable,
   ]);
 
-  // ─── Render ───────────────────────────────────
-  /**
-   * A pane's maximize control carries the dot while it is the maximized pane
-   * and a pane the tree hides behind it holds a parked request. The card stays
-   * in that hidden pane, undrawn; the dot on the one control that brings the
-   * pane back is what says something is waiting there.
-   */
+  /** A maximized pane's restore control carries attention for requests parked in hidden panes. */
   const paneRestoreAttention = (paneId: string): boolean =>
     chatGroups.maximizedId === paneId && pendingAnswers.hiddenPaneIds.size > 0;
 
-  /**
-   * What ONE pane's frame lane holds.
-   *
-   * Built by the window because only the window sees every tile
-   * (`overlayCardTile`) and holds the handlers a card's action runs through.
-   * The region acts in its own pane: a card no conversation owns is drawn here
-   * because this pane is focused — where the user is — and the turn it starts
-   * belongs here. It is handed to whichever frame is DRAWN for the pane — the
-   * routed one while a view covers the conversation, the conversation's
-   * otherwise — never both, or one card would be drawn twice.
-   *
-   * The focused pane's lane also draws the one approval that has no
-   * conversation to be drawn in — a host or plugin ask. It is a lane card, not
-   * a dock: no composer is waiting on it, so it covers and inerts nothing, and
-   * it follows focus the way an unowned overlay card does.
-   */
+  /** Draw each pane's lane once, in its visible frame. Unowned host/plugin approvals follow focus without covering a
+   * composer. */
   const paneLane = (chatGroupId: string): ReactNode => (
     <>
       {chatGroupId === chatGroups.focusedId && laneApprovalHead !== null ? (
@@ -1878,53 +1504,19 @@ export function App() {
     </>
   );
 
-  /**
-   * What ONE pane draws while it is not showing its conversation.
-   *
-   * The view is the pane's own — `contentById[paneId]` — not the window's, so
-   * two panes can hold two different views at once and each closes back to its
-   * own conversation. `null` means this pane is on home and the conversation
-   * behind it is what shows.
-   *
-   * One branch per view keeps the router readable; a built-in view — Settings
-   * included — and a plugin surface all go into the same frame a conversation
-   * gets.
-   */
+  /** Each routed pane renders its own view and returns to its own conversation. */
   const renderPaneRoute = (view: InlineViewKey, paneId: string, settle: ReactNode): ReactNode => {
-    // Closing a routed pane does not close the pane: it puts THIS one back on
-    // home, so the conversation the view was covering comes back (design §3).
-    // Loading a conversation from Memory, Insights or Routines ends the same
-    // way — content navigation, not a history replay, so the top toolbar keeps
-    // exclusive ownership of visit history and the result reveals its chat.
+    // Closing a routed view reveals its conversation; toolbar history remains the sole owner of replay.
     const closePane = () => chatGroups.setPaneContent(paneId, PANE_HOME);
-    /*
-     * What that close control is CALLED here, and the only place it is worked
-     * out. "Close pane" is what the control does on a conversation pane, and it
-     * would be a lie on this path: the pane stays, holding its conversation
-     * again. So the label names the view being dismissed, taken from the title
-     * the frame is already given rather than worked out a second time.
-     */
+    /** Label the control for the dismissed view because the pane itself remains open. */
     const routedCloseLabel = (title: string) => t("pane.closeView", { view: title });
     const pluginPane = pluginPaneFor(view);
-    /*
-     * What every pane is as a TILE, whatever it is showing.
-     *
-     * The same bindings the conversation frame gets, from the same source: a
-     * pane holding the work board is focusable, splittable and maximizable
-     * exactly as the conversation it replaced was, or the canvas would quietly
-     * lose those controls the moment a view opened in a tile. `onClose` is the
-     * one that differs — it hands the pane back to its conversation rather
-     * than removing the pane — so it stays with each branch.
-     */
+    /** Routed views retain the conversation tile's focus, split and maximize controls; close returns to the conversation. */
     const asTile = {
       focused: chatGroups.focusedId === paneId,
       onFocus: () => chatGroups.focus(paneId),
-      // The overlay cards this pane shows come with it into whatever it draws.
       lane: paneLane(paneId),
-      // So do the cards its CONVERSATION is parked on: the view covers the
-      // conversation, not the answer it is waiting for. The tile builds them
-      // (it owns the queue they answer through); the frame gives them the same
-      // bottom slot the conversation's composer dock would.
+      // Routed frames retain the conversation's pending-answer cards in their settle slot.
       settle,
       restoreAttention: paneRestoreAttention(paneId),
       onSurfaceDrop: (payload: SurfaceDragPayload, target: DropTarget) => handleSurfaceDrop(paneId, payload, target),
@@ -1940,18 +1532,7 @@ export function App() {
         onToggleMaximize: () => chatGroups.toggleMaximize(paneId),
       } : {}),
     };
-    /*
-     * The routed body, inside the pane's own cell.
-     *
-     * The cell already carries the tile inset and the box the
-     * split tree gave it, so the shell adds no margin of its
-     * own — a routed pane's outline lands exactly where the
-     * conversation it replaced drew one.
-     *
-     * `data-view` says which view this shell is holding.
-     * `main-pane-shell` alone cannot: a second pane's shell is
-     * one too, and both are in the DOM at the same time.
-     */
+    /** The cell owns tile insets; data-view distinguishes simultaneous routed pane shells. */
     const paneShell = (view: InlineViewKey, frame: ReactNode) => (
       <div
         className="flex min-h-0 min-w-0 flex-1 flex-col"
@@ -1962,24 +1543,7 @@ export function App() {
       </div>
     );
 
-    /*
-     * A built-in view, drawn as a pane.
-     *
-     * The frame carries what used to be a heading INSIDE the
-     * view: its name, its glyph, and — through
-     * `usePaneActions` — the global controls that sat beside
-     * that heading. Closing it does not close the pane: it
-     * puts the pane back on `home`, so the conversation the
-     * view was covering comes back (design §3).
-     *
-     * `bodyInset` is where the view's page margin lives, and
-     * it lives in exactly one place per view: `page` for a
-     * view whose body is one column of content, `none` for a
-     * view that lays out its own regions to the hairline —
-     * Settings, whose nav column's full-height divider has to
-     * reach the frame's edge to read as two regions of one
-     * pane rather than a card floating inside it.
-     */
+    /** Apply body margins once: page for column content, none for views such as Settings that own full-height regions. */
     const viewPane = (
       view: PaneViewKey,
       body: ReactNode,
@@ -2045,16 +1609,11 @@ export function App() {
     }
 
     if (view === "settings") {
-      // Settings renders inline in EVERY appMode; there is no
-      // detached settings window on this path. It lays out its
-      // own two regions, so the frame insets it by nothing.
+      // Settings owns its two-region layout, so the frame adds no inset.
       return viewPane("settings", (
         <SettingsInlineView
           api={api}
-          /* The away-authority binding names a CONVERSATION, and
-             the focused pane is the one showing Settings — so it
-             is the conversation pane focus came from, not the
-             focused pane itself, that this means. */
+          /** Settings away-authority targets the conversation focus came from, not the pane currently showing Settings. */
           chatGroupId={paneId}
           initialTab={settingsTab}
           sectionTarget={settingsSectionTarget}
@@ -2083,15 +1642,13 @@ export function App() {
       const surfaceId = chatGroups.contentById[paneId]?.surface;
       const surface = mainSurfaces.surfaces.find((each) => each.tabId === surfaceId);
       if (!surface) {
-        // The location names a surface this window no longer has. Say so,
-        // with the one control that leaves.
+        // Report a missing surface and offer navigation away.
         return viewPane(view, (
           <p className="text-sm text-muted-foreground" data-testid="surface-pane-gone">{t("mainPanels.surfaceGone")}</p>
         ));
       }
       const name = `${t(BUILTIN_LABEL_KEYS[view])} ${surface.ordinal}`;
-      // Closing a terminal or web pane closes the surface — the shell is
-      // ended, the page let go — and gives the pane back its conversation.
+      // Closing a terminal/web surface ends it and returns the pane to its conversation.
       const closeSurface = () => {
         closePane();
         mainSurfaces.close(surface.tabId);
@@ -2107,54 +1664,25 @@ export function App() {
             ...asTile,
             onClose: closeSurface,
             closeLabel: routedCloseLabel(name),
-            // The header is the surface's drag handle: onto another pane, or
-            // onto a side panel's tabs.
             dragSurface: { tabId: surface.tabId, kind: surface.kind, from: { pane: paneId } },
           }}
           chatRuntime={paneChatRuntime}
           onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
-          // A main terminal has no conversation beside it: its blocks go to
-          // the composer the user last typed in.
+          // Main-terminal blocks attach to the last composer the user typed in.
           onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
         />
       ));
     }
 
-    // The conversations are rendered OUTSIDE this router — see
-    // `chatSurface` above. They must stay mounted across view
-    // navigation: each tile's stream subscription starts when it
-    // mounts, so unmounting them to show Settings would drop the
-    // frames of a turn that is still running.
+    // Keep conversation tiles mounted across navigation so running turns retain their stream subscriptions.
     if (view === "home") return null;
 
-    // Everything above narrowed away an inline BUILT-IN key, so what is
-    // left is a plugin view — proven, not assumed. The annotation is the
-    // proof: add a built-in to `BUILTIN_VIEWS` with `inline: true` and
-    // forget a branch here, and this line stops compiling. That is what
-    // replaced the old bare fallback, which rendered ANY unrecognized
-    // string as a plugin view and so reported a misspelled destination
-    // as a missing plugin.
+    // The exhaustive built-in narrowing makes an omitted built-in route a compile error before treating the key as a plugin.
     const pluginKey: PluginViewKey = view;
     void pluginKey;
-    /*
-     * The plugin surface is a pane BODY, framed exactly like
-     * a built-in view: the header carries the extension's
-     * label and the glyph its sidebar row draws — both from
-     * the manifest, so the host holds no plugin-specific code
-     * (architecture.md §9) — and the extension's description,
-     * which used to be a second line of page chrome, is the
-     * title's tooltip.
-     *
-     * It is UNMOUNTED whenever it is not what the pane holds,
-     * not kept behind `display:none`. The conversation is the
-     * one surface that must survive being covered — its
-     * stream subscription, its composer draft and its scroll
-     * position all live in it — and a guest kept alive
-     * off-screen is a whole renderer process holding a
-     * partition open for a view nobody is looking at. The
-     * price is that coming back reloads the guest.
-     */
+    /** Plugin labels come from manifests; unmount hidden plugin guests to release their renderer and partition, accepting
+     * reload on return. */
     const PluginPaneIcon = pluginIconFor({
       icon: pluginPane.view?.icon,
       iconText: pluginPane.view?.iconText,
@@ -2186,8 +1714,6 @@ export function App() {
   };
 
   return (
-    /* The composition root's provider stack, outer → inner:
-       ErrorBoundary → ThemeProvider → TooltipProvider → OverlayContextProvider. */
     <ErrorBoundary fallback={t("app.appErrorFallback")}>
       <ThemeProvider api={api}>
         <TooltipProvider>
@@ -2258,10 +1784,7 @@ export function App() {
               <Sidebar
                 activeView={activeView}
                 onSelect={handleViewSelectWithDoctor}
-                /* Chat mode draws one pane and nothing of the others, so there
-                   is no second pane to open into and the gesture is not
-                   offered — the same rule that takes the split control out of
-                   a pane header there. */
+                /** Chat mode offers no new-pane gesture because it draws only one pane. */
                 onSelectInNewPane={appMode === "chat" ? undefined : openViewInNewPane}
                 pluginViews={pluginViews}
                 failedPluginCards={failedPluginCards}
@@ -2302,6 +1825,7 @@ export function App() {
                 conversationActions={conversationActions}
                 projectActions={projectActions}
                 mainSurfaces={mainSurfaces.surfaces}
+                browserTabs={api.browserTabs}
                 chatGroupIds={leafIds(chatGroups.tree)}
                 onOpenSurface={openWorkspaceSurface}
                 isSessionStarred={isSessionStarred}
@@ -2315,15 +1839,8 @@ export function App() {
                   className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-200 ease-out motion-reduce:transition-none ${
                     sidebarCollapsed || sidebarOverlay ? "pl-(--shell-collapsed-rail-reserve)" : ""
                   }`}
-                  // Expanded: reserve the sidebar card width plus one SHELL_GUTTER
-                  // of right gap so the floating rail never occludes the canvas.
-                  // Collapsed uses the fixed `--shell-collapsed-rail-reserve`
-                  // class above. Inline style so the durable, user-resized width
-                  // (SystemSettings.sidebarWidth) drives the reserve directly —
-                  // during a drag this tracks the live width for a seamless resize.
-                  // Overlaying (chat mode, expanded) keeps the collapsed reserve:
-                  // the card covers the tile rather than pushing it, so the
-                  // surface neither changes width nor reflows.
+                  // Reserve the live sidebar width plus SHELL_GUTTER in work mode; chat overlays retain the collapsed reserve to avoid
+                  // reflow.
                   style={sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
                 >
                   {/* The window's notice strip — the announcement banner, the
@@ -2464,9 +1981,6 @@ export function App() {
                       boundaryName="main-content"
                       fallback={t("app.mainContentErrorFallback")}
                       onReset={() => {
-                        // Refresh plugin views/cards in case the failure was caused by
-                        // a transient state mismatch. activeView reset to "home" gives
-                        // the user a clean baseline to navigate from.
                         void refreshViews();
                         void refreshCards();
                         setActiveView("home");
@@ -2531,18 +2045,9 @@ export function App() {
                                 return (
                                 <div
                                   key={group.id}
-                                  /* The half-gutter: two adjacent tiles make the 8px gap
-                                     between tiles, and the row's own padding is reduced by
-                                     the same 4px so the outer edges land on the sidebar
-                                     card's. Both read the chrome px tokens the sidebar's
-                                     insets use — the chat group's bottom line has to stay on
-                                     the sidebar's at every font scale, so neither side may
-                                     be rem. */
+                                  /** Use pixel half-gutters so adjacent tiles make an 8px gap and stay aligned with sidebar chrome at every font scale. */
                                   className="absolute flex p-(--chrome-gap-tight)"
-                                  /* Hidden, not unmounted: this tile's conversation
-                                     may be mid-turn, and the turn's stream
-                                     subscription, its streaming flag and its stop
-                                     control all live inside the tile. */
+                                  /** Keep hidden tiles mounted to preserve running turns, stream subscriptions and stop controls. */
                                   style={{ ...areaStyle(group.box), ...(group.hidden ? { display: "none" } : {}) }}
                                   data-testid={`pane-cell:${group.id}`}
                                   data-hidden={group.hidden ? "true" : undefined}
@@ -2569,26 +2074,11 @@ export function App() {
                                     registry={chatGroupSessions}
                                     env={chatGroupEnvironment}
                                     panelOpen={group.panelOpen}
+                                    thumbnailOpen={group.thumbnailOpen}
+                                    onThumbnailOpenChange={(open) => chatGroups.setThumbnailOpen(group.id, open)}
                                     focused={chatGroups.focusedId === group.id}
-                                    // "Hidden" means this tile's CONVERSATION is not drawn on
-                                    // screen NOW, whatever the reason. The tree answers one
-                                    // reason (another pane has the box); the route answers the
-                                    // other (this pane is showing Settings or a plugin view, so
-                                    // its conversation is behind display:none). The composer
-                                    // dock and the question overlay sit over the composer, so
-                                    // they read this combined flag: routed, the same cards go
-                                    // into the routed frame's `settle` slot instead.
-                                    //
-                                    // `paneHidden` is the tree's answer alone, and it is the
-                                    // one that decides whether this tile DRAWS its cards at
-                                    // all: a routed pane still has a frame on screen to draw
-                                    // them in; a pane the tree is not drawing has none, so its
-                                    // cards stay parked in it and the window shows a dot.
-                                    //
-                                    // The route is asked of THIS pane's own content, not of
-                                    // the window: a pane showing Settings hides its
-                                    // conversation, and a pane still on home does not,
-                                    // whatever its neighbours are showing.
+                                    // Route visibility hides the conversation dock; tree visibility decides whether its frame can draw cards or must park
+                                    // them.
                                     hidden={group.hidden || paneView !== "home"}
                                     paneHidden={group.hidden}
                                     onSidePanelOpenChange={(open) => chatGroups.setPanelOpen(group.id, open)}
@@ -2613,13 +2103,8 @@ export function App() {
                                         onSurfaceDrop={(payload, target) =>
                                           handleSurfaceDrop(group.id, payload, target)}
                                         canSplit={chatGroups.canSplit}
-                                        /* A conversation lays out its own transcript and composer to
-                                           the hairline, and its work panel lands in the frame's aside
-                                           slot — the two things this pane's content brings. */
                                         asideSlot
                                         bodyInset="none"
-                                        /* The pane's cards, while the conversation is what this
-                                           pane draws. Routed, the routed frame carries them. */
                                         lane={paneView === "home" ? paneLane(group.id) : undefined}
                                         trailing={trailing}
                                         actions={actions}

@@ -1,27 +1,4 @@
-/**
- * Permission policy Layer 6 hook system boot wiring.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- *
- * Boot pipeline:
- *   1. {@link runHookTrustWorkflow} — ensure dir exists, diff `.sh` files AND
- *      the `hooks.json` trust unit against the lockfile, and strict-deny
- *      (quarantine to `.disabled/`) anything new or changed.
- *   2. {@link ScriptHookManager.setTrustedRegistry} — feed the resolved trusted
- *      `.sh` hooks + trusted `hooks.json` command entries into the runtime
- *      manager as one unified registry.
- *   3. Return the manager so the executor / approval-gate can call
- *      `runPreToolUse` / `runPostToolUse` / `runPermissionRequest`.
- *
- * #811 — `hooks.json` IS loaded, but ONLY through the same TOFU quarantine gate
- * as `.sh` files: a new/changed `hooks.json` is quarantined and its declarative
- * `command` entries NEVER execute until the user runs
- * `/permission hooks accept hooks.json`. A trusted, unchanged `hooks.json`
- * contributes its `command` entries to the registry. There is no path by which
- * an un-trusted config spawns a command — `runHookTrustWorkflow` only returns
- * `trustedConfigEntries` when the synthetic config trust unit is in the trusted
- * set.
- */
+/** Hook trust contract: docs/architecture/permission-policy-design.md, Layer 6. */
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import {
   runHookTrustWorkflow,
@@ -32,42 +9,33 @@ import { HOOKS_CONFIG_FILENAME } from "../../hooks/hook-config-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { randomUUID } from "node:crypto";
+import type { HookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
+import { collectHookMatcherDiagnostics } from "../../hooks/hook-matcher-diagnostics.js";
+import type { NotificationService } from "../../main/notification-service.js";
 
 const log = createLogger("hook-system-wiring");
 
 export interface WireHookSystemDeps {
-  /** Override hook directory (test). */
+  notificationService?: Pick<NotificationService, "fire">;
+  authorizeCommand?: HookCommandAuthorizer;
   hooksDir?: string;
-  /** Override lockfile path (test). */
   lockfilePath?: string;
-  /** Override disabled subfolder (test). */
   disabledDir?: string;
-  /**
-   * Test-only trust dispatcher. Production boot deliberately omits this
-   * and strict-denies new or changed hooks.
-   */
+  /** Tests may inject trust decisions; production quarantines all new or changed hooks. */
   promptDispatcher?: TrustPromptDispatcher;
-  /** Structured boot-time quarantine audit surface. */
   auditLogger?: Pick<AuditLogger, "log" | "isPermissionAuditChainReady" | "appendPermissionAuditEntry">;
 }
 
 export interface HookSystemBootResult {
-  /** Live runtime manager. Pass to executor + approval-gate. */
   manager: ScriptHookManager;
-  /** Trust workflow result — for audit + diagnostics. */
   trust: RunHookTrustResult;
 }
 
-/**
- * Wire the Layer 6 hook system at boot.
- *
- * Production boot has a single path: no renderer prompt, strict-deny
- * every new or changed `.sh` file AND `hooks.json`. Tests may inject
- * `promptDispatcher` to exercise the lockfile/trust workflow deterministically.
- */
+/** Production never prompts at boot: new or changed scripts and hooks.json are quarantined. */
 export async function wireHookSystem(
   deps: WireHookSystemDeps = {},
 ): Promise<HookSystemBootResult> {
+  const diagnostics = collectHookMatcherDiagnostics(deps.hooksDir, deps.disabledDir);
   const trust = await runHookTrustWorkflow({
     hooksDir: deps.hooksDir,
     lockfilePath: deps.lockfilePath,
@@ -75,13 +43,21 @@ export async function wireHookSystem(
     promptDispatcher: deps.promptDispatcher,
   });
   const manager = new ScriptHookManager();
-  // Feed the UNIFIED registry: trusted `.sh` hooks (filter the synthetic
-  // `hooks.json` trust unit out — it is not a runnable `.sh`) + trusted
-  // `hooks.json` command entries. `trust.trustedConfigEntries` is non-empty
-  // ONLY when the config trust unit passed the quarantine gate, so an untrusted
-  // config can never contribute a runnable command here.
+  manager.setCommandAuthorizer(deps.authorizeCommand ?? (async () => ({
+    decision: "deny", reason: "hook command policy is not wired",
+  })));
+  // Only trusted config contributes commands; the synthetic hooks.json trust unit is not a runnable script.
   const shHooks = trust.trustedHooks.filter((h) => h.fileName !== HOOKS_CONFIG_FILENAME);
   manager.setTrustedRegistry(shHooks, trust.trustedConfigEntries);
+  manager.setMatcherGuards(diagnostics.guards);
+  for (const notice of diagnostics.notices) {
+    log.warn("%s", notice);
+    // The existing notification service caps each body at 80 characters.
+    const parts = notice.match(/[\s\S]{1,80}/gu) ?? [];
+    parts.forEach((body, index) => deps.notificationService?.fire({
+      kind: "system", title: `Hook configuration (${index + 1}/${parts.length})`, body, sticky: true,
+    }));
+  }
   log.info(
     "boot: hook system ready (sh=%d, config-entries=%d, disabled=%d)",
     shHooks.length,

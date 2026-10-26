@@ -7,17 +7,15 @@
  */
 export {
   DEFAULT_LOCALE,
-  LOCALE_INFO,
   SUPPORTED_LOCALES,
   isDefaultVisibleLocale,
   isInstalledLocale,
   isLocale,
-  isMarketplaceEligibleLocale,
+  isOfficialPackageLocale,
   localeInfo,
   normalizeLocale,
   normalizeLocaleSetting,
   registerInstalledLocales,
-  recommendedMarketplaceLocaleForSystem,
   visibleLocalesFor,
   type Locale,
 } from "./locale.js";

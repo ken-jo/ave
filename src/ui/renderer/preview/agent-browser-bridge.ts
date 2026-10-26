@@ -1,23 +1,10 @@
-/**
- * The renderer's half of the agent browser tools' tab operations.
- *
- * Main sends one `ave:browser:tab-op` stream per window, but a window can
- * hold several chat views, each with its own workspace-tab store. This
- * module subscribes ONCE and routes each operation to exactly one store:
- *   · select / close → the store that holds the tab;
- *   · new            → the store of the chat the tab is opened for
- *                      (`sessionId`), else the first store registered that
- *                      opens agent tabs (the main area's web panels do
- *                      not: an agent's new tab goes beside its chat).
- * It also mirrors main's agent-control state for the "Agent is controlling
- * this tab" badge. Main resolves the agent's request only when it observes
- * the result (a bind, the guest gone, the tab shown), so a dropped or
- * unroutable operation simply times out there.
- */
+/** Subscribe once per window and route tab operations to one store: existing-tab owner, or the requesting chat for new
+ * tabs. */
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement } from "./web-surfaces.js";
+import { getWebSurfaceElement, noteWebSurfaceFavicon } from "./web-surfaces.js";
+import { guestFaviconSource } from "./favicon-source.js";
 
 export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
@@ -30,6 +17,13 @@ export interface BrowserTabHost {
 }
 
 const hosts: BrowserTabHost[] = [];
+
+/** Close from trusted window chrome through the same host that handles tab operations. */
+export function closeBrowserTab(tabId: string): void {
+  const host = hosts.find((candidate) => candidate.hasTab(tabId));
+  if (!host) return;
+  host.closeTab(tabId);
+}
 let unsubscribe: (() => void) | null = null;
 let controlled: ReadonlySet<string> = new Set();
 const EMPTY_CONTROL_STATE: BrowserTabControlState = { revision: -1, tabs: [] };
@@ -139,10 +133,8 @@ function setControlState(state: BrowserTabControlState): void {
   notifyControl();
 }
 
-/**
- * Register a chat view's tab store. The first registration subscribes to
- * main; the last unregistration unsubscribes. Returns the unregister function.
- */
+/** Register a chat view's tab store. The first registration subscribes to main; the last unregistration unsubscribes.
+ * Returns the unregister function. */
 export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () => void {
   hosts.push(host);
   if (!unsubscribe && api.browserTabs) {
@@ -187,17 +179,7 @@ function subscribeControl(listener: () => void): () => void {
 const BIND_RETRY_LIMIT = 20;
 const BIND_RETRY_MS = 100;
 
-/**
- * Bind the guest of `webview` to `tabId` in main (`ave:browser:bind-tab`) on
- * every attach, and now if it is already attached, so the agent browser tools
- * can reach the tab's page. `requestId` marks a tab opened for the agent.
- * Returns the cleanup. The page's did-attach can reach the renderer before
- * main has seen the guest attach (main's did-attach-webview); main answers
- * guest-not-live until then, so the bind is retried shortly. And at
- * did-attach the element cannot name its guest yet (measured: Electron's
- * `getWebContentsId()` throws until the guest's first dom-ready), so the
- * first dom-ready of each guest binds it too.
- */
+/** Bind on attach and first dom-ready; retry guest-not-live because renderer attach can precede main's guest registration. */
 export function bindGuestToTab(
   api: AveApi,
   webview: HTMLElement,
@@ -244,13 +226,24 @@ export function bindGuestToTab(
       if (!cancelled && sequence === bindSequence) sentFor = undefined;
     });
   };
-  const onAttachEvent = () => onAttach();
+  const clearFavicon = () => noteWebSurfaceFavicon(tabId, null);
+  const onAttachEvent = () => { clearFavicon(); onAttach(); };
+  const onNavigate = (event: Event) => {
+    if ((event as Event & { isMainFrame?: boolean }).isMainFrame !== false) clearFavicon();
+  };
+  const onFavicon = (event: Event) => {
+    const icons = (event as Event & { favicons?: unknown }).favicons;
+    const favicon = Array.isArray(icons) ? icons.find((icon) => guestFaviconSource(icon) !== null) : undefined;
+    noteWebSurfaceFavicon(tabId, guestFaviconSource(favicon));
+  };
   const onReady = () => {
     const webContentsId = guestId();
     if (webContentsId !== undefined && webContentsId !== sentFor) onAttach();
   };
   webview.addEventListener("did-attach", onAttachEvent);
   webview.addEventListener("dom-ready", onReady);
+  webview.addEventListener("did-navigate", onNavigate);
+  webview.addEventListener("page-favicon-updated", onFavicon);
   // Already attached (the tab id or request changed on a live guest).
   onAttach();
   return () => {
@@ -258,6 +251,8 @@ export function bindGuestToTab(
     if (retry !== undefined) clearTimeout(retry);
     webview.removeEventListener("did-attach", onAttachEvent);
     webview.removeEventListener("dom-ready", onReady);
+    webview.removeEventListener("did-navigate", onNavigate);
+    webview.removeEventListener("page-favicon-updated", onFavicon);
   };
 }
 

@@ -1,41 +1,5 @@
-/**
- * Reviewer agent boot wiring.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 5,
- * §11 v2.1 binding decisions plus active-LLM following: persisted
- * `permissions.reviewer.provider/model` are legacy fields, while runtime
- * `mode="llm"` uses the active chat provider/model when boot supplies it.
- * `fallbackOnError ∈ {deny, rule}` with fail-closed default.
- *
- * This step wires the {@link RiskClassifier}, cache, and deferred queue into
- * {@link PermissionManager}:
- *
- * 1. Read `permissions.reviewer` block from `~/.ave/settings.json`.
- * 2. For `mode: "rule" | "disabled" | "strict"` — sync classifier, no provider
- *    needed.
- * 3. For `mode: "llm"` — follow the active chat LLM provider/model and wrap
- *    host's existing LLMProvider in a thin
- *    {@link LlmReviewerProviderAdapter} that translates the provider's
- *    chunked `streamTurn` interface into the one-shot `complete` shape
- *    {@link LlmRiskClassifier} expects.
- * 4. Construct the cache + deferred queue (default file paths under
- *    `~/.ave/permissions/`).
- * 5. Call {@link PermissionManager.setReviewer} so {@link
- *    PermissionManager.dispatchReviewer} can support foreground auto-review
- *    approval prompts and headless MED/HIGH queue deferral.
- *
- * Fresh-install degrade (CLAUDE.md No-Fallback boundary case): if `mode: "llm"`
- * is configured but the LLM provider/API key is not yet available (fresh
- * install before login), adapter resolution throws. Because the default mode is
- * now "llm", an unguarded throw here would crash the first boot — so the llm
- * branch catches the adapter-resolution failure and degrades to the rule
- * classifier (`runtimeMode = "llm-degraded-to-rule"`). This is the external
- * boundary the No-Fallback rule explicitly permits (missing user API key is an
- * external configuration state), the degrade is fail-safe (rule is stricter
- * than disabled), and it is self-healing (configuring a provider re-fires
- * wiring and restores "llm") — the self-heal IS the deprecation path, so no
- * lingering shim remains.
- */
+/** Reviewer wiring follows the selected model or active chat identity; errors default to denial (docs/architecture/permission-policy-design.md).
+ * Only missing provider configuration may degrade to rules; reconfiguration restores model review. */
 import {
   createRiskClassifier,
   type LlmCompletionResult,
@@ -43,10 +7,6 @@ import {
   type RiskClassifier,
   type ReviewerSettings,
 } from "../../permissions/reviewer/risk-classifier.js";
-import {
-  createFoundryProvider,
-  createGcpPlaygroundProvider,
-} from "../../permissions/reviewer/provider-adapters.js";
 import {
   LlmApprovalSentenceSelector,
   UnavailableApprovalSentenceSelector,
@@ -76,16 +36,7 @@ import {
 
 const log = createLogger("reviewer-wiring");
 
-/**
- * Adapt a host {@link LLMProvider} (the one running interactive chat)
- * to the reviewer's one-shot `complete` shape. Collects the streamed
- * `text_delta` events into a single string and surfaces token + cost
- * telemetry from the final `message_complete` event.
- *
- * The reviewer prompt is short and the response is a small JSON object,
- * so a buffered collect (rather than incremental parse) is the simplest
- * correct shape.
- */
+/** Collect text and final usage from the streaming provider into one buffered reviewer response. */
 export class LlmReviewerProviderAdapter implements LlmReviewerProvider {
   constructor(private readonly provider: LLMProvider) {}
 
@@ -121,147 +72,68 @@ export class LlmReviewerProviderAdapter implements LlmReviewerProvider {
         case "error":
           throw new Error(`reviewer provider error: ${event.error}`);
         default:
-          // reasoning_delta / tool_call ignored — reviewer prompt
-          // never asks for tools and reasoning text is not used.
+          // reasoning_delta / tool_call ignored; reviewer prompt never asks for tools and reasoning text is not used.
           break;
       }
     }
-    // costUsd is not surfaced on StreamEvent — let the upstream
-    // pricing layer compute it offline if needed; reviewer telemetry
-    // tolerates 0 here.
+    // Streaming events supply no cost; reviewer telemetry accepts zero for later pricing.
     return { text, tokensIn, tokensOut, costUsd: 0 };
   }
 }
 
-/**
- * Inputs to the reviewer-wiring boot step.
- *
- * `streamProviderFor` resolves a host {@link LLMProvider} for a given
- * vendor name. Boot calls this only when `settings.reviewer.mode === "llm"`.
- * Returning `null` indicates the vendor is not configured; the caller
- * then fails the boot step (atomic cutover, no silent fallback).
- *
- * Key inheritance: `foundry` reads `llm.apiKey.azure-foundry` via
- * `getSecret` and the endpoint via `getFoundryEndpoint` (plain setting,
- * not a secret). `gcp-playground` reads `llm.apiKey.gemini` via `getSecret`.
- * This eliminates separate reviewer secret storage — users who have chat
- * working with Azure AI Foundry or Google Gemini get the reviewer provider
- * automatically.
- */
+/** The reviewer shares the selected chat identity and credentials; provider resolution may fail closed. */
 export interface WireReviewerDeps {
   permissionManager: PermissionManager;
-  /** The host's outbound transport — both reviewer adapters run on it. */
+  /** The host's outbound transport; both reviewer adapters run on it. */
   networkFetch: typeof fetch;
-  /**
-   * Settings reader — defaults to {@link readPermissionSettings} which
-   * pulls from `~/.ave/settings.json`. Override in tests.
-   */
+  /** Defaults to readPermissionSettings; tests may override the reader. */
   readSettings?: () => ReviewerSettingsBlock;
-  /**
-   * Active chat LLM identity. When supplied, reviewer mode="llm" follows this
-   * provider/model instead of the legacy permissions.reviewer provider/model
-   * fields, so the permission reviewer stays on the same vendor/model as chat.
-   */
-  readActiveLlm?: () => ActiveReviewerLlmIdentity;
-  /**
-   * Provider factory for `mode: "llm"` stream-based host providers. Legacy
-   * reviewer names (`openai | anthropic | google`) and active LLM vendor names
-   * (`claude | openai | gemini | azure-foundry | vertex-ai`) can
-   * reach this callback.
-   * Returning `null` means "vendor not configured" — wiring fails closed.
-   * Not called for `foundry` or `gcp-playground` (direct HTTP adapters).
-   */
+  /** Use the selected reviewer identity, or the active chat model. */
+  readActiveLlm: () => ActiveReviewerLlmIdentity;
+  /** An unset selection follows chat; an unavailable explicit selection must fail without substituting rules or another model. */
+  selectedModel?: { label: string; available: boolean };
+  /** A null provider means unconfigured; wiring must fail closed. */
   streamProviderFor?: (vendor: string) => LLMProvider | null;
-  /**
-   * Secret accessor for Foundry and GCP playground providers.
-   * Required when `settings.reviewer.provider` is `"foundry"` or
-   * `"gcp-playground"`. Reads `llm.apiKey.azure-foundry` (Foundry) or
-   * `llm.apiKey.gemini` (GCP). Override in tests to supply fake secrets.
-   */
-  getSecret?: (key: string) => string | null;
-  /**
-   * Endpoint accessor for the Foundry provider. Reads the plain
-   * (non-secret) `llm.vendors.azure-foundry.baseUrl` setting. Required
-   * when `settings.reviewer.provider` is `"foundry"`. Override in tests.
-   */
-  getFoundryEndpoint?: () => string | null;
-  /** Test override for the cache file path. */
+  /** Test-only cache path override. */
   verdictCachePath?: string;
-  /** Test override for the deferred queue file path. */
+  /** Test-only queue path override. */
   deferredQueuePath?: string;
   /** Notify the foreground renderer whenever pending deferred entries change. */
   onDeferredPendingChange?: (summary: { pending: number }) => void;
-  /**
-   * Resolve the provider/model a parent session's own chat loop runs on, for
-   * `parentAdjudication.model: "parent-session"`. Consulted per ask, so a
-   * provider configured after boot lights the option up without a re-wire.
-   * Absent — or `null` for a given session — leaves that option escalating to
-   * the user.
-   */
+  /** Resolve the parent session target per ask so newly configured providers work; absent targets escalate to the user. */
   resolveParentSessionAdjudicationTarget?: ParentAdjudicationTargetResolver;
 }
 
-/**
- * Runtime reviewer mode discriminant — what classifier the runtime actually
- * runs, which can differ from the persisted {@link ReviewerSettingsBlock.mode}.
- * `"llm-degraded-to-rule"` is emitted when persisted mode is `"llm"` but the
- * provider adapter could not be instantiated at boot (fresh install: no chat
- * provider/key configured) and wiring fell back to the rule classifier. UI and
- * boot diagnostics consume this; it is never persisted to settings.
- */
+/** Runtime mode may degrade from model review to rules; diagnostics consume it, but settings never persist it. */
 export type RuntimeReviewerMode =
   | "disabled"
   | "rule"
   | "llm"
   | "strict"
-  | "llm-degraded-to-rule";
+  | "llm-degraded-to-rule"
+  | "llm-model-unavailable";
 
 export interface WireReviewerResult {
   classifier: RiskClassifier;
   rationaleScopeReviewer: RationaleScopeReviewer;
-  /**
-   * Issue #1940 — resolves a `/allow` sentence onto one of the pending
-   * approval's own scopes. It rides the same provider/model as the rest of the
-   * reviewer, so configuring an LLM lights it up and every non-llm reviewer
-   * mode leaves it as the stand-in that proposes nothing.
-   */
+  /** Resolve approval sentences only onto pending scopes, using the reviewer identity; modes without a provider propose nothing. */
   approvalSentenceSelector: ApprovalSentenceSelector;
-  /**
-   * Tier 2 of the sub-agent approval chain. It rides the same provider/model
-   * as the rest of the reviewer — the cheapest model already trusted with risk
-   * classification is the right one to ask a bounded judgement question — and
-   * every reviewer mode that has no provider leaves it as the stand-in whose
-   * only answer is "escalate to the user".
-   */
+  /** Provider-backed parent adjudication shares reviewer identity; without a provider it escalates to the user. */
   parentAdjudicator: ParentAdjudicator;
-  /**
-   * The same tier-2 stage answered by the parent session's OWN chat model,
-   * selected by `parentAdjudication.model: "parent-session"`.
-   *
-   * Built outside the reviewer's mode branch on purpose: it is not the
-   * reviewer, it follows the chat provider rather than the reviewer's
-   * provider, and a reviewer wired as a rule classifier says nothing about
-   * whether the chat model can answer a question. When no chat provider
-   * resolves, the resolver returns null per ask and the lane escalates — the
-   * same fail-closed ending as every other way this stage can produce no
-   * answer.
-   */
+  /** Parent-session adjudication follows chat independently of reviewer mode; missing targets escalate per ask. */
   parentSessionAdjudicator: ParentAdjudicator;
   cache: VerdictCache;
   deferredQueue: DeferredQueue;
-  /** Persisted reviewer block actually loaded (post-normalisation). */
+  /** Settings after normalization. */
   appliedSettings: ReviewerSettingsBlock;
-  /** Provider/model actually used by the runtime after active-LLM following. */
+  /** Runtime provider and model after following the active identity. */
   effectiveSettings: EffectiveReviewerSettings;
-  /**
-   * Classifier the runtime actually wired. Equals `appliedSettings.mode` except
-   * when an "llm" mode degraded to rule (`"llm-degraded-to-rule"`).
-   */
+  /** May differ from persisted mode when model review degrades to rules. */
   runtimeMode: RuntimeReviewerMode;
 }
 
 export interface ActiveReviewerLlmIdentity {
-  /** API-key vendor or a subscription runtime identity for cache partitioning. */
+  /** Transport identity partitions the verdict cache. */
   provider: LLMVendor | `subscription:${SubscriptionRuntimeId}`;
   marketplaceProviderPresetId?: string;
   model: string;
@@ -270,28 +142,16 @@ export interface ActiveReviewerLlmIdentity {
   vertexLocation?: string;
 }
 
-type EffectiveReviewerSettings = Omit<ReviewerSettingsBlock, "provider"> & {
+type EffectiveReviewerSettings = ReviewerSettingsBlock & {
   provider: string;
+  model: string;
   marketplaceProviderPresetId?: string;
   baseUrl?: string;
   vertexProject?: string;
   vertexLocation?: string;
 };
 
-/**
- * Wire the reviewer agent. Idempotent — calling twice replaces the
- * previously-installed classifier on `permissionManager`.
- *
- * MEDIUM: VerdictCache and DeferredQueue are lightweight file-backed stores
- * with no persistent open file handles — each operation opens, appends, and
- * closes atomically via withFileLock. Creating new instances on re-wire is
- * therefore safe: the new instances share the same backing files as the old
- * ones and no write-queue state is lost. The `onDeferredPendingChange`
- * callback is re-supplied so the new queue instance keeps notifying the
- * renderer. For settings changes that only affect the classifier (provider,
- * model, fallbackOnError), the cache and queue file paths are identical
- * across rewires — the data persists transparently.
- */
+/** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; no persistent handles or queue state are lost. */
 export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   const settings = (deps.readSettings ?? defaultReadSettings)();
   const effectiveSettings = resolveEffectiveSettings(settings, deps);
@@ -299,8 +159,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   const deferredQueue = new DeferredQueue(
     deps.deferredQueuePath,
     deps.onDeferredPendingChange,
-    // Routed through the manager, not held here: a re-wire builds a new queue
-    // while the manager (and the ask surface wired onto it) survives.
+    // Route through the surviving manager because rewiring replaces the deferred queue.
     (entry) => deps.permissionManager.onDeferredEntryPending(entry),
   );
 
@@ -310,70 +169,51 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   let approvalSentenceSelector: ApprovalSentenceSelector =
     new UnavailableApprovalSentenceSelector();
   let parentAdjudicator: ParentAdjudicator = new UnavailableParentAdjudicator();
-  // Independent of WHICH classifier the reviewer wired — this one asks the chat
-  // model, and a rule-based reviewer says nothing about whether that model
-  // exists. Not independent of `disabled`, though: that mode's classifier
-  // returns a pass-through LOW for everything, so every call would sit under
-  // the tier-2 ceiling on a verdict that assessed nothing. A ceiling computed
-  // from a stub is not a ceiling, so this option stays unavailable there and
-  // those asks keep going to the user.
+  // Disabled review supplies unassessed LOW verdicts, so it cannot authorize parent-session adjudication below a risk ceiling.
   const parentSessionAdjudicator: ParentAdjudicator =
     deps.resolveParentSessionAdjudicationTarget === undefined ||
     settings.mode === "disabled"
       ? new UnavailableParentAdjudicator()
       : new LlmParentAdjudicator(deps.resolveParentSessionAdjudicationTarget);
-  // Runtime classifier discriminant — diverges from persisted mode only on
-  // the llm-degraded-to-rule path below.
+  // Only model-to-rule degradation differs from persisted mode.
   let runtimeMode: RuntimeReviewerMode = settings.mode;
   let degradedToRule = false;
+  let unavailableReason: string | undefined;
   if (settings.mode === "disabled" || settings.mode === "strict" || settings.mode === "rule") {
     classifier = createRiskClassifier({ mode: settings.mode });
     log.info("boot: reviewer wired (mode=%s)", settings.mode);
   } else {
-    // mode === "llm"
-    //
-    // CLAUDE.md No-Fallback compliance for the degrade path below:
-    //   - External boundary: `resolveReviewerAdapter` throws only when the
-    //     user-supplied LLM provider/API key is absent or invalid — that is an
-    //     *external configuration state* (the user has not finished login),
-    //     not an internal contract violation. Catching it here is the boundary
-    //     handling the No-Fallback rule explicitly permits.
-    //   - Fail-safe, not fail-open: degrading to the rule classifier is
-    //     *stricter* than "disabled" (rule still raises MEDIUM/HIGH for
-    //     un-sandboxed writes/network), so the catch never makes the system
-    //     more permissive than the user's intent.
-    //   - Self-healing IS the deprecation path: there is no lingering shim.
-    //     The moment a provider/key is configured, settings updates re-fire
-    //     `rewireReviewerAgent()`, this branch instantiates the adapter
-    //     successfully, and `runtimeMode` returns to "llm". No removal date is
-    //     needed because the degrade has no persisted footprint.
-    //
-    // Scope discipline: the try only wraps `resolveReviewerAdapter`, which is
-    // the sole call that throws on the external boundary (missing user API
-    // key). The classifier construction + telemetry log below run *outside*
-    // the catch so that any internal programming error there (a contract
-    // violation, not an external configuration state) surfaces loudly rather
-    // than being silently swallowed as a degrade. No-Fallback strictness:
-    // only the documented external boundary is caught.
+    // Catch only missing external provider configuration; rules remain stricter than disabled review and reconfiguration restores model review.
+    // Keep classifier construction and telemetry outside the catch so internal contract violations abort boot.
     let adapter: LlmReviewerProvider | undefined;
-    try {
+    const selectedModelUnavailable = (): void => {
+      runtimeMode = "llm-model-unavailable";
+      unavailableReason = `Selected permission reviewer model ${deps.selectedModel?.label} is unavailable`;
+      log.warn({ model: deps.selectedModel?.label }, "boot: selected permission reviewer model is unavailable");
+    };
+    if (deps.selectedModel?.available === false) {
+      selectedModelUnavailable();
+    } else try {
+      if (!effectiveSettings.model.trim()) {
+        throw new ReviewerProviderUnconfiguredError("Permission reviewer model not configured.");
+      }
       adapter = resolveReviewerAdapter(effectiveSettings.provider, deps);
     } catch (err) {
-      // Discriminate the two failure classes resolveReviewerAdapter can
-      // throw: only ReviewerProviderUnconfiguredError (user has not
-      // configured the provider/API key — the external boundary) degrades.
-      // A contract violation (boot caller forgot getSecret /
-      // streamProviderFor — a plain Error) is a caller bug and must crash
-      // boot loudly, never silently degrade.
+      // Only ReviewerProviderUnconfiguredError may degrade; missing wiring dependencies must abort boot.
       if (!(err instanceof ReviewerProviderUnconfiguredError)) throw err;
-      degradedToRule = true;
-      runtimeMode = "llm-degraded-to-rule";
-      log.warn(
-        { provider: effectiveSettings.provider, error: (err as Error).message },
-        "boot: reviewer mode=llm requested but provider could not be wired — " +
-          "degrading to rule classifier. Reviewer auto-heals to llm once an LLM " +
-          "provider/API key is configured (login or Intelligence settings re-fires wiring).",
-      );
+      if (deps.selectedModel) {
+        // An explicit model choice must work or fail clearly; never substitute another classifier.
+        selectedModelUnavailable();
+      } else {
+        degradedToRule = true;
+        runtimeMode = "llm-degraded-to-rule";
+        log.warn(
+          { provider: effectiveSettings.provider, error: (err as Error).message },
+          "boot: reviewer mode=llm requested but provider could not be wired — " +
+            "degrading to rule classifier. Reviewer auto-heals to llm once an LLM " +
+            "provider/API key is configured (login or Intelligence settings re-fires wiring).",
+        );
+      }
     }
     if (adapter) {
       const reviewerSettings: ReviewerSettings = {
@@ -411,48 +251,27 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     cache,
     deferredQueue,
     degradedToRule,
+    ...(unavailableReason !== undefined ? { unavailableReason } : {}),
     cacheScope: {
-      // Use the *runtime* mode so verdicts produced by the degraded rule
-      // classifier are not reused once wiring heals back to a real "llm"
-      // classifier (the rule verdict was computed under different
-      // assumptions). On heal, runtimeMode flips "llm-degraded-to-rule" →
-      // "llm" and the scope mismatch forces a cache miss.
+      // Partition by runtime mode so healed model review cannot reuse verdicts produced by degraded rules.
       mode: runtimeMode,
       provider: effectiveSettings.provider,
       model: effectiveSettings.model,
       fallbackOnError: settings.fallbackOnError,
-      // Include interactive auto-approve in the cache scope so a setting
-      // change naturally invalidates cached verdicts. Without this,
-      // toggling autoApprove off → on could reuse a stale verdict that
-      // was produced under different policy assumptions.
+      // Auto-approval changes must invalidate verdicts produced under different policy.
       interactiveAutoApprove: settings.interactive.autoApprove,
-      // Include active provider transport identity in cacheScope so baseUrl /
-      // Vertex project changes invalidate reviewer verdicts produced under a
-      // different upstream deployment.
+      // Endpoint or project changes must invalidate verdicts from another upstream deployment.
       providerBaseUrl: effectiveSettings.baseUrl ?? null,
       marketplaceProviderPresetId: effectiveSettings.marketplaceProviderPresetId ?? null,
       vertexProject: effectiveSettings.vertexProject ?? null,
       vertexLocation: effectiveSettings.vertexLocation ?? null,
-      // Legacy Foundry endpoint key retained for existing cache-scope tests.
-      endpoint:
-        effectiveSettings.provider === "foundry" ||
-        effectiveSettings.provider === "azure-foundry"
-          ? (effectiveSettings.baseUrl ?? deps.getFoundryEndpoint?.() ?? null)
-          : null,
     },
   });
-  // Issue #690 — push the interactive auto-approve policy onto the
-  // PermissionManager so its gate can opt-in to the foreground reviewer
-  // lane without re-reading settings on every tool call.
+  // Apply foreground auto-approval policy to the manager during rewiring.
   deps.permissionManager.setInteractiveAutoApprove(settings.interactive.autoApprove);
 
-  // Strict mode returns at layer 2 before foreground reviewer routing, so an
-  // enabled interactive threshold cannot bypass or contradict strict mode.
-  // `mode="allow"` bypasses the reviewer entirely, so the
-  // `interactive.autoApprove` setting is dead config. A user reading
-  // PermissionsTab might assume `interactive=off` protects them — but
-  // `allow` is strictly more permissive than the reviewer lane.
-  // Warn so the user notices the disabled-but-set signal is misleading.
+  // Strict mode returns before reviewer routing; allow mode bypasses review and makes interactive.autoApprove ineffective.
+  // Warn when allow mode makes the configured threshold misleading.
   if (deps.permissionManager.getMode() === "allow") {
     log.warn(
       "exec mode=allow — reviewer (and reviewer.interactive.autoApprove) is " +
@@ -478,13 +297,12 @@ function defaultReadSettings(): ReviewerSettingsBlock {
   return readPermissionSettings().permissions.reviewer;
 }
 
+/** Resolve identity in every mode because judge wiring and cache scopes also consume it. */
 function resolveEffectiveSettings(
   settings: ReviewerSettingsBlock,
   deps: WireReviewerDeps,
 ): EffectiveReviewerSettings {
-  if (settings.mode !== "llm") return settings;
-  const active = deps.readActiveLlm?.();
-  if (!active) return settings;
+  const active = deps.readActiveLlm();
   return {
     ...settings,
     provider: active.provider,
@@ -498,14 +316,7 @@ function resolveEffectiveSettings(
   };
 }
 
-/**
- * Thrown by {@link resolveReviewerAdapter} ONLY when the user has not (yet)
- * configured the LLM provider/API key — the *external configuration state*
- * the degrade-to-rule boundary in {@link wireReviewerAgent} is allowed to
- * catch. Contract violations (boot caller forgot to supply `getSecret` /
- * `streamProviderFor`) deliberately throw a plain Error instead, so they
- * propagate as loud boot failures and are never silently degraded.
- */
+/** Only missing external provider configuration permits degradation; internal wiring errors must propagate. */
 export class ReviewerProviderUnconfiguredError extends Error {
   constructor(message: string) {
     super(message);
@@ -513,65 +324,11 @@ export class ReviewerProviderUnconfiguredError extends Error {
   }
 }
 
-/**
- * Resolve a concrete {@link LlmReviewerProvider} adapter for the configured
- * provider name. Two distinct failure classes:
- *   - {@link ReviewerProviderUnconfiguredError} — the user has not configured
- *     the provider/API key (external boundary; wiring degrades to rule).
- *   - plain Error — the boot caller violated the wiring contract (missing
- *     `getSecret` / `streamProviderFor` dependency); atomic cutover, no
- *     silent fallback per CLAUDE.md No-Fallback — this must crash boot.
- *
- * `foundry` and `gcp-playground` use direct HTTP adapters keyed from
- * the encrypted secret store via `deps.getSecret`. Other provider strings
- * use the host's streaming LLMProvider via `deps.streamProviderFor`.
- */
+/** Missing provider configuration may degrade; missing streamProviderFor violates the wiring contract and must abort boot. */
 function resolveReviewerAdapter(
   provider: string,
   deps: WireReviewerDeps,
 ): LlmReviewerProvider {
-  if (provider === "foundry") {
-    if (!deps.getSecret) {
-      throw new Error(
-        `Permission reviewer wiring: provider='foundry' requires getSecret to be supplied. ` +
-        `Boot caller must provide a secret accessor (atomic cutover — no silent fallback).`,
-      );
-    }
-    const adapter = createFoundryProvider(
-      deps.getSecret,
-      deps.getFoundryEndpoint ?? (() => null),
-      deps.networkFetch,
-    );
-    if (!adapter) {
-      throw new ReviewerProviderUnconfiguredError(
-        `Permission reviewer wiring: provider='foundry' — API key or endpoint not configured. ` +
-        `Set the Azure AI Foundry API key ('llm.apiKey.azure-foundry') and endpoint ` +
-        `('llm.vendors.azure-foundry.baseUrl') via the chat LLM provider settings, ` +
-        `or change the reviewer provider.`,
-      );
-    }
-    return adapter;
-  }
-
-  if (provider === "gcp-playground") {
-    if (!deps.getSecret) {
-      throw new Error(
-        `Permission reviewer wiring: provider='gcp-playground' requires getSecret to be supplied. ` +
-        `Boot caller must provide a secret accessor (atomic cutover — no silent fallback).`,
-      );
-    }
-    const adapter = createGcpPlaygroundProvider(deps.getSecret, deps.networkFetch);
-    if (!adapter) {
-      throw new ReviewerProviderUnconfiguredError(
-        `Permission reviewer wiring: provider='gcp-playground' — API key not configured. ` +
-        `Set the Google Gemini API key ('llm.apiKey.gemini') via the chat LLM provider ` +
-        `settings, or change the reviewer provider.`,
-      );
-    }
-    return adapter;
-  }
-
-  // openai | anthropic | google — use host streaming LLMProvider
   if (!deps.streamProviderFor) {
     throw new Error(
       `Permission reviewer wiring: settings.reviewer.mode='llm' but no streamProviderFor supplied. ` +
@@ -581,7 +338,7 @@ function resolveReviewerAdapter(
   const upstream = deps.streamProviderFor(provider);
   if (!upstream) {
     throw new ReviewerProviderUnconfiguredError(
-      `Permission reviewer wiring: settings.reviewer.provider='${provider}' is not configured. ` +
+      `Permission reviewer wiring: reviewer provider '${provider}' is not configured. ` +
       `Add an API key for ${provider} or change reviewer mode.`,
     );
   }

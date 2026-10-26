@@ -63,6 +63,10 @@ async function activePairing(
   return claim!.pairingId;
 }
 
+function shareInput(pairingId: string, permission: "observe" | "control", conversationId = CONVERSATION) {
+  return { pairingId, conversationId, permission };
+}
+
 describe("TailnetPairingShareStore", () => {
   it("keeps pairing distinct from conversation authority and never persists raw invite or conversation values", async () => {
     const now = { value: 10_000 };
@@ -135,8 +139,7 @@ describe("TailnetPairingShareStore", () => {
     });
     expect(store.currentPairing(OTHER_ACTOR)).toBeNull();
 
-    // An approved pairing has no deadline and is still reported: with no share
-    // yet, the owner's browser comes back to the same page.
+    // An approved pairing has no deadline and is still reported: with no share yet, the owner's browser comes back to the same page.
     expect(await store.activatePairing(claim!.pairingId)).toBe(true);
     expect(store.currentPairing(ACTOR)).toMatchObject({ state: "active", expiresAt: null });
 
@@ -148,18 +151,10 @@ describe("TailnetPairingShareStore", () => {
     const now = { value: 90_000 };
     const { store } = await makeStore(now);
     const pairingId = await activePairing(store);
-    const observe = await store.createShare({
-      pairingId,
-      conversationId: CONVERSATION,
-      permission: "observe",
-    });
+    const observe = await store.createShare(shareInput(pairingId, "observe"));
     expect(observe).not.toBeNull();
 
-    const control = await store.createShare({
-      pairingId,
-      conversationId: CONVERSATION,
-      permission: "control",
-    });
+    const control = await store.createShare(shareInput(pairingId, "control"));
     expect(control).not.toBeNull();
     expect(control!.pairing.scope).not.toBe(observe!.pairing.scope);
     expect(store.isAuthorityCurrent(observe!, CONVERSATION, "observe")).toBe(false);
@@ -177,16 +172,8 @@ describe("TailnetPairingShareStore", () => {
     const now = { value: 130_000 };
     const { store } = await makeStore(now);
     const pairingId = await activePairing(store);
-    const first = await store.createShare({
-      pairingId,
-      conversationId: CONVERSATION,
-      permission: "control",
-    });
-    const second = await store.createShare({
-      pairingId,
-      conversationId: OTHER_CONVERSATION,
-      permission: "observe",
-    });
+    const first = await store.createShare(shareInput(pairingId, "control"));
+    const second = await store.createShare(shareInput(pairingId, "observe", OTHER_CONVERSATION));
     let changes = 0;
     const unsubscribe = store.subscribe(() => {
       changes += 1;
@@ -212,11 +199,7 @@ describe("TailnetPairingShareStore", () => {
     });
     await first.open();
     const pairingId = await activePairing(first);
-    const authority = await first.createShare({
-      pairingId,
-      conversationId: CONVERSATION,
-      permission: "control",
-    });
+    const authority = await first.createShare(shareInput(pairingId, "control"));
     expect(authority).not.toBeNull();
 
     const restored = createTailnetPairingShareStore({

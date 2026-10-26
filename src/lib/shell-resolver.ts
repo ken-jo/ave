@@ -30,7 +30,7 @@ export interface BashCapabilities {
 }
 const bashCapabilities = new WeakMap<ResolvedShellCommand, Map<string, Readonly<BashCapabilities>>>();
 
-/** Fixed native controls only; caller command text is never executed by a probe. */
+/** Probes run fixed native controls, never caller command text. */
 export function getBashCapabilities(
   shell: ResolvedShellCommand,
   environment: Readonly<Record<string, string>>,
@@ -53,8 +53,7 @@ export function getBashCapabilities(
     prefixAssignmentRhs: output[0] === "child" ? "sequential" as const : "incoming" as const,
   });
   if (!entries) { entries = new Map(); bashCapabilities.set(shell, entries); }
-  // Interpreter identity is owned by resolveShell; only locale affects these
-  // fixed controls. Keep at most eight locale observations for that identity.
+  // Cache at most eight locale observations per resolved interpreter identity.
   if (entries.size >= 8) entries.delete(entries.keys().next().value!);
   entries.set(locale, capabilities);
   return capabilities;
@@ -81,9 +80,10 @@ export function resolveShell(dialect: ShellDialect = "posix"): ResolvedShellComm
   for (const candidate of candidates) {
     try {
       if (process.platform === "win32") candidate.cmd = resolveWindowsShellCandidate(candidate.cmd, dialect);
-      // Bash tools are non-interactive and must not acquire login-profile behavior.
+      // Non-interactive shell tools must not load login profiles.
       if (dialect === "bash") candidate.shellArgs = (script: string) => ["-c", script];
       const probe = execFileSync(candidate.cmd, candidate.shellArgs(probeCommand), {
+        windowsHide: true,
         stdio: "pipe",
         encoding: "utf-8",
         timeout: SHELL_PROBE_TIMEOUT_MS,
@@ -112,8 +112,7 @@ export function resolveShell(dialect: ShellDialect = "posix"): ResolvedShellComm
 
 function windowsShellCandidates(): ResolvedShellCommand[] {
   return [
-    // Prefer Git for Windows when installed. WSL's Windows launcher can be
-    // slow under high test concurrency and uses a different path dialect.
+    // Prefer the installed native shell; subsystem launchers use a different path dialect and may stall under concurrency.
     { cmd: "C:\\Program Files\\Git\\usr\\bin\\sh.exe", shellArgs: (script: string) => ["-c", script] },
     { cmd: "C:\\Program Files\\Git\\bin\\bash.exe", shellArgs: (script: string) => ["-lc", script] },
     { cmd: "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe", shellArgs: (script: string) => ["-c", script] },
@@ -125,10 +124,9 @@ function windowsShellCandidates(): ResolvedShellCommand[] {
 
 function resolveWindowsShellCandidate(cmd: string, dialect: ShellDialect): string {
   if (/^[A-Za-z]:[\\/]/.test(cmd)) return cmd;
-  const matches = execFileSync("where", [cmd], { stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
+  const matches = execFileSync("where", [cmd], { windowsHide: true, stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
   if (dialect === "posix") return cmd;
-  // Pin the first search result before probing so later execution cannot repeat
-  // PATH lookup under a different working directory or environment.
+  // Pin the first PATH result before probing so later execution cannot resolve another binary.
   const executable = matches.split(/\r?\n/)[0]?.trim();
   if (!executable || !/^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)/.test(executable) || !/\.exe$/i.test(executable)) {
     throw new Error("Bash lookup did not return an absolute executable path");
@@ -142,6 +140,7 @@ function detectWindowsShellFlavor(shell: ResolvedShellCommand): WindowsShellFlav
   }
   try {
     const output = execFileSync(shell.cmd, shell.shellArgs("uname -s"), {
+      windowsHide: true,
       stdio: "pipe",
       encoding: "utf-8",
       timeout: SHELL_PROBE_TIMEOUT_MS,
@@ -150,7 +149,7 @@ function detectWindowsShellFlavor(shell: ResolvedShellCommand): WindowsShellFlav
     if (/^(MINGW|MSYS|CYGWIN)/i.test(output)) return "msys";
     if (/linux/i.test(output)) return "wsl";
   } catch {
-    // Keep the shell usable for generic commands even if flavor probing fails.
+    // Probe failure must leave generic shell commands usable.
   }
   return "unknown";
 }
@@ -171,11 +170,7 @@ export function shellPathForHostPath(shell: ResolvedShellCommand, hostPath: stri
   return normalized;
 }
 
-/**
- * Inverse of {@link shellPathForHostPath} for a path the shell reported.
- * Undefined when a Windows shell path has no drive mapping (for example an
- * MSYS-internal `/tmp`), so the caller can keep its previous directory.
- */
+/** Return undefined for unmapped Windows shell paths so callers retain the prior directory. */
 export function hostPathForShellPath(shell: ResolvedShellCommand, shellPath: string): string | undefined {
   if (process.platform !== "win32") return shellPath;
   const pattern = shell.windowsFlavor === "wsl"
@@ -229,7 +224,6 @@ function msysPathEntriesForShell(shell: ResolvedShellCommand): string[] {
   return [usrBin, shellDir];
 }
 
-/** Test-only: reset memoization so test cases exercising different PATH states stay isolated. */
 export function __resetShellResolverCache(): void {
   cachedShells.clear();
   cachedErrors.clear();

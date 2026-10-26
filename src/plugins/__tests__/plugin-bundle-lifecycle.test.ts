@@ -58,7 +58,11 @@ function makeLifecycle(
   });
 }
 
-async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } }), withContent = false) {
+async function fixture(
+  hookContent = JSON.stringify({ hooks: { PreToolUse: [] } }),
+  withContent = false,
+  mcpDescriptor: Record<string, unknown> = { transport: "http", url: "https://portal.example.test/mcp" },
+) {
   const root = mkdtempSync(join(tmpdir(), "ave-bundle-life-"));
   roots.push(root);
   const pluginRoot = join(root, "plugin");
@@ -94,7 +98,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
   await writeFile(join(pluginRoot, "skills", "checkin", "SKILL.md"), "---\nname: checkin\ndescription: Checkin workflow\n---\nUse the portal checkin API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
-  await writeFile(join(pluginRoot, "mcp", "portal.json"), JSON.stringify({ transport: "http", url: "https://portal.example.test/mcp" }), "utf8");
+  await writeFile(join(pluginRoot, "mcp", "portal.json"), JSON.stringify(mcpDescriptor), "utf8");
   await mkdir(join(cacheRoot, "sampleportal"), { recursive: true });
   const payloadFiles = [
     "plugin.json",
@@ -117,7 +121,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   return { root, pluginRoot, cacheRoot, manifest };
 }
 
-/** The review binding a user approval sends: the row the user saw (design §18.7.5). */
+/** The approval binds to the exact row the user reviewed. */
 function reviewed(lifecycle: PluginBundleLifecycle, kind: "hook" | "mcpServer", localId: string) {
   const row = lifecycle.listContributionTrust("sampleportal").find((item) => item.kind === kind && item.localId === localId);
   if (!row) throw new Error(`no ${kind} ${localId} row`);
@@ -132,7 +136,6 @@ function runtimeProjection(manifest: PluginManifest, pluginRoot: string) {
     pluginRoot,
     instance: { handlers: {} },
     methods: new Map(),
-    // A generation the routing function produced, spawned with the sandbox off.
     arm: "child" as const,
     confinement: "unconfined" as const,
   };
@@ -235,6 +238,61 @@ describe("PluginBundleLifecycle", () => {
     expect(durableCommit).toHaveBeenCalledOnce();
   });
 
+  it("offers an app plugin's OAuth MCP server as a bundled credential and reconnects it by republishing the generation", async () => {
+    const oauth = { scopes: ["portal.read"], clientId: "portal-desktop" };
+    const { root, pluginRoot, cacheRoot, manifest } = await fixture(undefined, false,
+      { transport: "http", url: "https://portal.example.test/mcp", auth: "oauth", oauth });
+    const prepareBundledGeneration = vi.fn(async () => ({
+      predecessorServerIds: [], predecessorToolNames: [], records: [],
+      registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false,
+    }));
+    const publishBundledGeneration = vi.fn((prepared: { published: boolean }) => { prepared.published = true; });
+    const lifecycle = makeLifecycle({
+      pluginRuntime: {
+        getPluginManifest: () => manifest,
+        getPluginRoot: () => pluginRoot,
+        getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
+        prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        postPublishRuntimeGeneration: vi.fn(),
+        publishRuntimeGeneration: vi.fn(),
+        unpublishRuntimeGeneration: vi.fn(),
+        prepareRuntimeRetirement: vi.fn(() => []),
+      },
+      receiptCacheRoot: cacheRoot,
+      skillStore: new SkillStore({ userDir: join(root, "user-skills") }),
+      hookManager: new ScriptHookManager(),
+      mcpManager: {
+        bundledServerIdsForPlugin: vi.fn(() => []),
+        prepareBundledGeneration,
+        publishBundledGeneration,
+        discardBundledGeneration: vi.fn(async () => undefined),
+        retirePublishedMcpReplacement: vi.fn(async () => undefined),
+        disconnectBundledGeneration: vi.fn(async () => undefined),
+      } as never,
+    });
+    const installed = new Set(["sampleportal", "disabled-plugin"]);
+    const source = lifecycle.bundledMcpCredentialSource(async () => installed);
+    expect(source.list()).toEqual([]);
+    await lifecycle.activate("sampleportal");
+    expect(source.list()).toEqual([{ packageName: "sampleportal", serverName: "portal", transport: "http",
+      url: "https://portal.example.test/mcp", auth: "oauth", oauth }]);
+    // The installed set comes from the install record, not from what is loaded.
+    await expect(source.installedPackages()).resolves.toBe(installed);
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(1);
+    await source.reconnect("sampleportal", "portal");
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
+    expect(prepareBundledGeneration).toHaveBeenLastCalledWith(
+      { pluginId: "sampleportal", generationId: lifecycle.getActive("sampleportal")?.generationId },
+      [expect.objectContaining({ config: expect.objectContaining({ auth: "oauth", oauth }) })],
+      lifecycle.mcpTrust,
+    );
+    expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
+    await expect(source.reconnect("sampleportal", "missing")).rejects.toThrow("plugin MCP 'sampleportal:missing' is not active");
+    await expect(source.reconnect("disabled-plugin", "portal")).rejects.toThrow("plugin 'disabled-plugin' has no active bundle generation");
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
+  });
+
   it("publishes Skills, keeps executable bundles fail-closed, approves exact owners, and tears down", async () => {
     const { root, pluginRoot, cacheRoot, manifest } = await fixture();
     const skillStore = new SkillStore({ userDir: join(root, "user-skills") });
@@ -315,7 +373,7 @@ describe("PluginBundleLifecycle", () => {
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
 
     await lifecycle.approveHook("sampleportal", "policy", reviewed(lifecycle, "hook", "policy"));
-    expect(hookManager.size()).toBe(0); // descriptor intentionally contains no runnable entries
+    expect(hookManager.size()).toBe(0);
     await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
@@ -328,9 +386,7 @@ describe("PluginBundleLifecycle", () => {
     expect(Object.isFrozen(active?.manifest.tools)).toBe(true);
     const generationId = active?.generationId;
     expect(generationId).toMatch(/^[a-f0-9]{64}$/);
-    // A conversation that read the active generation's skill holds its
-    // skill_read authorization in the overlay; a user skill read alongside it
-    // belongs to no generation and must survive the retirement.
+    // Retire generation-owned skill_read grants while preserving unrelated user-skill grants.
     const lease = await lifecycle.acquire("sampleportal");
     const readSkill = skillStore.loadPluginGeneration(lease.generation, "plugin:sampleportal:checkin");
     lease.release();
@@ -1332,7 +1388,6 @@ describe("PluginBundleLifecycle", () => {
 });
 
 describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () => {
-  /** A lifecycle over the fixture whose manifest, files and receipt `release` rewrites in place. */
   async function updatable(options: { mcpTrust?: PluginMcpTrustStore; loopbackManager?: ReturnType<typeof inertLoopbackManager> } = {}) {
     const base = await fixture();
     let manifest = base.manifest;
@@ -1367,7 +1422,6 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
         disconnectBundledGeneration: vi.fn(async () => undefined),
       } as never,
     });
-    /** Publish a new version with the given file contents changed, as an install would leave it. */
     const release = async (version: string, files: Record<string, string> = {}) => {
       manifest = { ...manifest, version } as PluginManifest;
       await writeFile(join(base.pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
@@ -1379,7 +1433,6 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
       await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
     };
     const row = (localId = "portal") => lifecycle.listContributionTrust("sampleportal").find((item) => item.kind === "mcpServer" && item.localId === localId)!;
-    /** The trust-store view of a row's exact identity. */
     const owned = (item: ReturnType<typeof row>) => ({ owner: {
       pluginId: item.pluginId, pluginVersion: item.pluginVersion, generationId: item.generationId, localId: item.localId, fingerprint: item.fingerprint,
     } }) as never;
@@ -1393,7 +1446,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const approved = row();
     expect(approved.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
 
-    // Only the skill text changed: a remote server's approval digest is the same.
+    // Skill-only updates do not change a remote server approval digest.
     await release("1.1.0", { "skills/checkin/SKILL.md": "---\nname: checkin\ndescription: Checkin workflow\n---\nUse the portal checkin API, carefully." });
     await lifecycle.activate("sampleportal");
     const carried = row();
@@ -1420,7 +1473,6 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     const source = row();
     await release("1.1.0", { "skills/checkin/SKILL.md": "---\nname: checkin\ndescription: Checkin workflow\n---\nChanged." });
-    // The user revokes the approval while the update is being prepared.
     let carriedTo: string | undefined;
     loopbackManager.prepareGeneration.mockImplementationOnce(async (manifest: PluginManifest, generationId: string) => {
       lifecycle.mcpTrust.revoke(owned(source));
@@ -1429,7 +1481,6 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     });
     await expect(lifecycle.activate("sampleportal")).rejects.toThrow(/was withdrawn while its update was prepared/u);
     expect(carriedTo).toBeDefined();
-    // The revocation is not undone, the old generation stays active, and nothing was carried.
     expect(row()).toMatchObject({ generationId: source.generationId, pluginVersion: "1.0.0", status: "approval_required" });
     const written = JSON.parse(await readFile(join(cacheRoot, "plugin-contribution-trust", "mcp-servers.json"), "utf8"));
     expect(written.approvals).toEqual([]);
@@ -1445,7 +1496,6 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     loopbackManager.prepareGeneration.mockRejectedValueOnce(new Error("tool registry refused the candidate"));
     const approvedBefore = JSON.stringify(lifecycle.listContributionTrust("sampleportal"));
     await expect(lifecycle.activate("sampleportal")).rejects.toThrow();
-    // The 1.0.0 approval is untouched, and no approval of the never-published 1.1.0 generation remains.
     expect(JSON.stringify(lifecycle.listContributionTrust("sampleportal"))).toBe(approvedBefore);
     expect(row()).toMatchObject({ pluginVersion: "1.0.0", status: "approved" });
     const raw = JSON.parse(await readFile(join(cacheRoot, "plugin-contribution-trust", "mcp-servers.json"), "utf8"));
@@ -1460,7 +1510,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const first = await updatable({ mcpTrust: new PluginMcpTrustStore(trustPath) });
     await first.lifecycle.activate("sampleportal");
     const identity = first.row();
-    // A 0.12 approval of this exact generation: no approval digest.
+    // Legacy approvals may lack an approval digest.
     await writeFile(trustPath, JSON.stringify({ version: 2, kind: "mcpServer", approvals: [{
       pluginId: identity.pluginId, pluginVersion: identity.pluginVersion, generationId: identity.generationId,
       localId: identity.localId, fingerprint: identity.fingerprint,

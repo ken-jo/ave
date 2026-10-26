@@ -1,14 +1,7 @@
-/**
- * Snapshot tests for VercelUnifiedProvider — azure-foundry slot.
- *
- * Azure AI Foundry exposes OpenAI v1 Responses API. We route through
- * @ai-sdk/azure so reasoning summaries can stream as reasoning-delta events.
- */
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
-
 
 describe("VercelUnifiedProvider azure-foundry", () => {
   it("normalizes Azure endpoints and routes through @ai-sdk/azure Responses API", async () => {
@@ -65,9 +58,8 @@ describe("VercelUnifiedProvider azure-foundry", () => {
   });
 
   it.each([
-    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "high", reasoningSummary: "detailed" } } },
-    // A deployment alias does not establish its model, and no level is guessed
-    // from the alias: without a named entry the request carries no effort.
+    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "high", reasoningSummary: "detailed", forceReasoning: true } } },
+    // Deployment aliases cannot establish accepted effort levels.
     { catalogModel: undefined, expected: undefined },
   ])("passes Azure reasoning options only from a named catalog entry ($catalogModel)", async ({ catalogModel, expected }) => {
     vi.resetModules();
@@ -332,7 +324,6 @@ describe("VercelUnifiedProvider azure-foundry", () => {
       }),
     );
 
-    // Missing baseUrl surfaces as a mapped stream error (no sync throw).
     expect(events.some((e) => e.type === "error")).toBe(true);
 
     vi.doUnmock("ai");
@@ -346,9 +337,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
       apiKey: "k",
       baseUrl: "https://example.openai.azure.com/openai/deployments/x/",
     });
-    // PR #705: factory returns a lazy proxy that defers the Vercel adapter
-    // module load until first `streamTurn`. The vendor surface is preserved
-    // synchronously so reviewer-wiring + IPC handlers stay unchanged.
+    // Expose vendor identity synchronously while deferring adapter loading until first stream.
     expect(p.constructor.name).toBe("LazyVercelProvider");
     expect(p.vendor).toBe("azure-foundry");
   });

@@ -1,20 +1,4 @@
-/**
- * Legacy-plugin → host work-board migration (one-shot, idempotent).
- *
- * Every case points `AVE_HOME` at a per-test temp dir (mirroring the
- * feature-namespace test harness) so the scan of `~/.ave/plugins/*​/board.json`
- * and the write to `~/.ave/work-board/board.json` stay entirely inside the
- * temp root — the real `~/.ave` is never read or written.
- *
- * Policy under test:
- *   - Runs once when the destination is absent AND exactly one legacy plugin
- *     board exists; returns true and copies (does not move) the source.
- *   - Skips (returns false) when the destination already exists — idempotent.
- *   - Skips + warns when more than one legacy board exists (ambiguous source).
- *   - Skips when the legacy board is not valid JSON.
- *   - Skips when the legacy board parses but is the wrong shape (not an
- *     object with an items array).
- */
+/** Use a per-test AVE_HOME so migration never reads or writes the real home. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -62,7 +46,7 @@ describe("work-board migration", () => {
     expect(migrated).toBe(true);
     expect(existsSync(destPath)).toBe(true);
     expect(JSON.parse(readFileSync(destPath, "utf-8"))).toEqual(SAMPLE_BOARD);
-    // COPY, not move — the legacy source is left in place for forensics.
+    // Copy rather than move to preserve the source for inspection.
     expect(existsSync(legacyPath)).toBe(true);
     expect(JSON.parse(readFileSync(legacyPath, "utf-8"))).toEqual(SAMPLE_BOARD);
   });
@@ -85,7 +69,6 @@ describe("work-board migration", () => {
     const migrated = await migrateLegacyPluginBoardToWorkBoard();
 
     expect(migrated).toBe(false);
-    // Host board untouched — legacy content was NOT adopted over it.
     expect(JSON.parse(readFileSync(destPath, "utf-8"))).toEqual(hostBoard);
   });
 
@@ -96,12 +79,10 @@ describe("work-board migration", () => {
     const migrated = await migrateLegacyPluginBoardToWorkBoard();
 
     expect(migrated).toBe(false);
-    // Ambiguity → no destination written.
     expect(existsSync(destPath)).toBe(false);
   });
 
   it("returns false when there is no legacy plugin board at all", async () => {
-    // No plugins dir, no board.
     expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(false);
     expect(existsSync(destPath)).toBe(false);
   });
@@ -126,7 +107,6 @@ describe("work-board migration", () => {
 
     const migrated = await migrateLegacyPluginBoardToWorkBoard();
 
-    // Parseable JSON that is not a board must never be adopted — no dest write.
     expect(migrated).toBe(false);
     expect(existsSync(destPath)).toBe(false);
   });

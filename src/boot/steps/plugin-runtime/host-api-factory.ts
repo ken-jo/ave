@@ -1,20 +1,5 @@
 import { requireDesktopHost, type BootHost } from "../../host-runtime.js";
-/**
- * Boot §4.2 Step 3-5 — per-plugin HostApi factory (C6 extraction).
- *
- * Behavior-preserving move of `createHostApi` out of the plugin-runtime barrel.
- * The `enforceMutatingEffects(instrumentEffectsByPath(...))` composition and the
- * hostFetch single-verb snapshot are copied VERBATIM — their nesting order and
- * single-read semantics are security invariants (locked by
- * permissions/__tests__/host-fetch-verb-snapshot.test.ts and
- * permissions/__tests__/hostapi-effect-completeness.test.ts).
- *
- * Lazy binding: `pluginRuntime` is read through the injected `getPluginRuntime`
- * getter (resolved once per createHostApi invocation, which only runs during
- * `startAll()` — after PluginRuntime is assigned). The factory itself is
- * constructed BEFORE PluginRuntime exists, so the value must never be captured
- * at construction time.
- */
+/** Resolve runtime bindings lazily; effect-wrapper order and the single HTTP-verb read are security invariants. */
 import type { BrowserWindow } from "electron";
 import { randomUUID } from "node:crypto";
 import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/host-allow-list.js";
@@ -139,15 +124,7 @@ import { resolvePluginDisplayName } from "../../../shared/plugin-provenance.js";
 
 const log = createLogger("ave");
 
-/**
- * Churn budget for `proposeWork`, in its own bucket.
- *
- * The declared-kind slot ceiling bounds how many cards a plugin can have OPEN;
- * it does not bound how often it rewrites the one it has. This is the
- * secondary defence against upsert thrash — the same sliding-window class the
- * overlay trigger uses, with its own counters so a chatty proposer cannot
- * spend the overlay budget or the reverse.
- */
+/** Proposal churn has its own rate bucket so upserts cannot consume overlay-trigger capacity. */
 const workProposalRateLimiter = new TriggerConversationRateLimiter();
 
 function assertActiveHostApi(
@@ -202,35 +179,14 @@ function enforceActiveHostApi(
   return wrap(hostApi, "hostApi") as PluginHostApi;
 }
 
-/** Explicit deps the HostApi factory needs. Lazy bindings arrive as getters. */
-
-/**
- * The one capture service, built on first use.
- *
- * Lazy because constructing the surface is cheap but wiring the loopback
- * handlers is not free of consequence — an installation that never records
- * should never install a display-media request handler at all. One instance
- * because the hardware is one.
- */
+/** Create one capture service lazily; unused installations must not install display-media handlers. */
 let sharedAudioCaptureService: AudioCaptureService | null = null;
 function audioCaptureService(host: BootHost): AudioCaptureService {
   sharedAudioCaptureService ??= new AudioCaptureService(requireDesktopHost(host).createAudioCaptureSurface());
   return sharedAudioCaptureService;
 }
 
-/**
- * The one floating dock, built on first use.
- *
- * Lazy for a plainer reason than the capture service's: constructing it does
- * nothing visible, but there is no point holding a dock in an installation
- * where nothing ever attaches to it. One instance because the dock IS one
- * window — a second would defeat the framing argument that lets a plugin
- * surface float above other applications at all.
- *
- * The surface resolver is read through the runtime getter rather than captured,
- * because the runtime binding is assigned after this factory is built and a
- * captured reference would be the pre-assignment one.
- */
+/** Create one dock lazily and resolve its surface through the runtime getter after binding. */
 let sharedFloatingDock: FloatingDock | null = null;
 function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): FloatingDock {
   if (!sharedFloatingDock) {
@@ -238,11 +194,7 @@ function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): Fl
       requireDesktopHost(host).createFloatingDockSurface(),
       (pluginId, extensionId) => getPluginRuntime().resolveFloatingSurface(pluginId, extensionId),
     );
-    // Slot titles are manifest text in the UI language; a switch re-resolves
-    // them. Process-lifetime, like the dock itself. Re-resolving runs the full
-    // surface lookup (entry containment included), so an entry rejected at
-    // attach is rejected — and audited — again here; that is the lookup's own
-    // rule, not a second one.
+    // Locale changes rerun full surface lookup, including entry containment checks and refusal audits.
     onLocaleChange(() => dock.refreshTitles());
     sharedFloatingDock = dock;
   }
@@ -253,7 +205,6 @@ function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): Fl
 export function peekFloatingDock(): FloatingDock | null {
   return sharedFloatingDock;
 }
-
 
 export interface CreateHostApiFactoryDeps {
   host: BootHost;
@@ -272,28 +223,12 @@ export interface CreateHostApiFactoryDeps {
   bootAuditLogger: AuditLogger;
   leaseDenialAudit?: LeaseDenialAudit;
   _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
-  /**
-   * The very callback handed to `new PluginRuntime({ auditLog })`, narrowed to
-   * what the storage rejection sink needs. Reused (rather than re-derived from
-   * `bootAuditLogger`) so a storage refusal on the host-plugin path and the
-   * same refusal on the webview-bridge path land as one record shape.
-   */
+  /** Reuse runtime audit transport so host and webview storage refusals share one record shape. */
   pluginRuntimeAuditLog: PluginStorageAuditLog;
   networkFetch: HostFetchTransport;
-  /**
-   * The main window captured at boot. Only a FALLBACK — read
-   * {@link CreateHostApiFactoryDeps.getMainWindow} instead wherever the host
-   * targets "the current main window", because this handle is destroyed once
-   * the window is closed and reopened (tray / dock `activate` / deep link all
-   * route through `showOrCreateMainWindow`, which calls `createWindow()` and
-   * re-registers a NEW BrowserWindow).
-   */
+  /** Boot-captured fallback only; use getMainWindow for live targeting after windows reopen. */
   mainWindow: BrowserWindow | null;
-  /**
-   * Live main-window getter — the same authority `createLifecycleCallbacks`
-   * and every `boot/steps/*` sender already read. Optional so minimal test
-   * hosts can omit it; absent, callers fall back to `mainWindow`.
-   */
+  /** Optional in minimal hosts; production resolves the live main window. */
   getMainWindow?: () => BrowserWindow | null;
   openAuthWindowService: (
     parent: BrowserWindow,
@@ -308,44 +243,23 @@ export interface CreateHostApiFactoryDeps {
     opts: import("../../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
   clearAuthPartitionService: (partition: string) => Promise<void>;
-  /**
-   * The registry of host-owned loopback redirect catchers, SHARED across
-   * plugins and keyed by plugin id inside. Injected rather than module-scoped
-   * so a test host gets its own — a module singleton would carry one test's
-   * bound port into the next.
-   */
+  /** Share redirect catchers across plugins within one runtime; isolate registries between hosts. */
   authRedirectCatchers: AuthRedirectCatchers;
   shellOpenExternal: (url: string) => Promise<void>;
   approvalGate: import("../../../permissions/approval-gate.js").ApprovalGate;
   permissionManager?: import("../../../permissions/permission-manager.js").PermissionManager;
   routinesStore: RoutinesStore;
-  /**
-   * Late-bound Work Board store — `setupWorkBoard` runs AFTER
-   * `initPluginRuntime`, so this reads the boot context rather than capturing a
-   * value that does not exist yet. Plugins only start well after both, so a
-   * `proposeWork` that finds nothing here is a boot-order defect, not a state
-   * to degrade around.
-   */
+  /** Resolve Work Board storage late; absence at plugin start is a boot-order error. */
   getWorkBoardStore: () => WorkBoardStore | undefined;
-  /**
-   * Late-bound alerts service, built before plugins start. A host without one
-   * (a minimal test host) registers no kinds, and `raiseAlert` fails loudly.
-   */
+  /** Minimal hosts may omit alerts; raiseAlert then fails loudly. */
   getAlertsService: () => AlertsService | undefined;
-  /**
-   * Make the dedicated Suggestions conversation exist and rise in the list.
-   * Called synchronously as an accepted `triggerConversation` card is staged:
-   * the card is addressed to that conversation, never to the focused one.
-   */
+  /** Create and promote the Suggestions conversation before staging its card. */
   stageInSuggestionsSession: () => void;
-  /** What a host-secret grant reads from disk (design §10.3). */
+  /** Host-secret evidence contract: marketplace design, host-secret grant conditions. */
   grantEvidence: GrantEvidenceReader;
 }
 
-/**
- * Build the per-plugin `createHostApi` closure passed to `new PluginRuntime`.
- * Returned function is invoked once per plugin during `startAll()`.
- */
+/** Invoked once per plugin during startAll. */
 export function createHostApiFactory(
   deps: CreateHostApiFactoryDeps,
 ): (
@@ -393,18 +307,7 @@ export function createHostApiFactory(
   );
   const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
 
-  /**
-   * The window a host→renderer send (or a host-opened child window's parent)
-   * should target RIGHT NOW.
-   *
-   * Single authority for this factory: `mainWindow` is the boot-time capture,
-   * and after a close+reopen it is a destroyed handle whose `webContents.send`
-   * is a silent no-op. `getMainWindow()` is the registry the rest of boot reads
-   * (`routines-wiring`, `reviewer-permission-wiring`, `workflow-stores`,
-   * `plugin-runtime/lifecycle`), so reading it here keeps one answer to
-   * "which window" across the host. Falls back to the capture when the getter
-   * is absent (minimal hosts). A null result means no desktop surface.
-   */
+  /** Resolve the current window on every send; null means no desktop surface. */
   const liveMainWindow = (): BrowserWindow | null => getMainWindow ? getMainWindow() : mainWindow;
   const requireMainWindow = (): BrowserWindow => {
     const win = liveMainWindow();
@@ -423,10 +326,7 @@ export function createHostApiFactory(
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): PluginHostApi => {
-    // Lazy binding — resolve the eventual `pluginRuntime` assignment (this
-    // closure only runs during startAll, after the barrel assigns it). All
-    // body references below read this single resolved value; `pluginRuntime` is
-    // assigned exactly once so this is byte-identical to a per-reference read.
+    // Resolve the runtime once per plugin incarnation, after assignment.
     const pluginRuntime = getPluginRuntime();
     const getApprovedPluginAccess = (): PluginAccessSpec | undefined =>
       candidateApprovedPluginAccess === undefined
@@ -435,13 +335,7 @@ export function createHostApiFactory(
     if (installPluginId === undefined) {
       throw new Error(`HostApi install provenance missing: ${pluginId}`);
     }
-    // The host-owned entry a host-secret grant trusts: the registry's, re-read
-    // first if another writer changed the file. A candidate answers with its
-    // own entry until the registry records the same install (source, manifest
-    // and, when the candidate names one, origin); after that the registry's
-    // wins, so a later write (the §16.3 migration binding an origin) reaches
-    // this incarnation without a restart. A candidate from another source never
-    // borrows the registry's origin.
+    // Refresh registry evidence; candidates may use only the same install’s origin, never another source’s.
     const readRegistryEntry = async (): Promise<PluginRegistryTrust | undefined> => {
       if (installPluginId === null) return candidateRegistryEntry;
       await refreshRegistryEntryCacheIfChanged();
@@ -449,8 +343,7 @@ export function createHostApiFactory(
       if (!candidateRegistryEntry) return committed;
       return committed && recordsCandidate(committed, candidateRegistryEntry) ? committed : candidateRegistryEntry;
     };
-    // A legacy install's receipt is verified once per incarnation: an update
-    // installs through the ladder and starts a new one.
+    // Verify legacy receipts once per incarnation; updates create a new incarnation.
     let legacyReceiptSha256: string | null | undefined;
     const hostSecretGrantEvidence: HostSecretGrantEvidence = {
       officialPins: (plugin, version) => grantEvidence.officialPins(plugin, version),
@@ -461,10 +354,7 @@ export function createHostApiFactory(
       },
     };
     const hostIncarnation = incarnation;
-    // Host-originated notifications (events, config changes, plugin-set
-    // changes) reach the plugin only while its incarnation is live and the
-    // runtime has not begun shutting down: shutdown admits nothing new into a
-    // generation it is retiring.
+    // Admit host notifications only while this incarnation is live and runtime shutdown has not begun.
     const acceptsHostNotification = (): boolean =>
       hostIncarnation.isActive() && !pluginRuntime.isShuttingDown();
     hostIncarnation.registerDisposer(() => credentialRegistry.endIncarnation(hostIncarnation));
@@ -480,8 +370,7 @@ export function createHostApiFactory(
       hostEffects?.registerDisposer(disposeOnce);
       return disposeOnce;
     };
-    // Candidate grants become effective only with their generation. A failed
-    // candidate cannot replace the incumbent's kinds or alter its settings.
+    // Candidate grants activate with their generation; failed candidates cannot mutate incumbent alerts or settings.
     const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest, () => hostIncarnation.isActive());
     if (alertRegistration) {
       const publish = () => {
@@ -497,17 +386,12 @@ export function createHostApiFactory(
         publish();
       }
     }
-    /** The alerts service, or a loud failure: plugins start after it is built. */
     const requireAlertsService = (member: string): AlertsService => {
       const service = getAlertsService();
       if (!service) throw new Error(`[plugin:${pluginId}] hostApi.${member}: alerts service is not constructed`);
       return service;
     };
-    /**
-     * The Work Board store, or a loud failure. Plugins start long after
-     * `setupWorkBoard`, so an absent store is a boot-order defect — degrading
-     * to a silent no-op would make a plugin's proposal vanish with no signal.
-     */
+    /** Missing Work Board storage is a boot-order error, never a silent proposal drop. */
     const requireWorkBoardStore = (): WorkBoardStore => {
       const store = getWorkBoardStore();
       if (!store) {
@@ -517,7 +401,6 @@ export function createHostApiFactory(
       }
       return store;
     };
-    /** Tell renderer windows the proposal set moved, so the board re-lists. */
     const notifyProposalChanged = (
       id: string,
       change: WorkProposalChangedEventPayload["change"],
@@ -598,34 +481,10 @@ export function createHostApiFactory(
         },
       };
     };
-      // Manifest sha256 pin (design §10.3 condition 2). The host-secret gate
-      // compares the running manifest with the pin the registry recorded at
-      // install, so a post-install manifest swap (different tools / wider
-      // hostSecrets.read) loses every grant. Installers pin the canonical JSON
-      // of the `plugin.json` DOCUMENT; the flat projection this factory
-      // receives hashes differently, so the digest is the one recorded when
-      // the document was parsed. A manifest not read from a document (null)
-      // matches no pin.
+      // Compare the parsed manifest document digest to the install pin; projections and unparsed manifests cannot match.
       const manifestSha256 = manifestDocumentSha256(manifest);
-      // Structural effect observability — wrap the whole hostApi so EVERY method
-      // (and any future-added one) auto-records its host-observed effect on the
-      // ambient per-invocation ledger, looked up by method PATH in the
-      // classification SOT. This is the SINGLE recording point: it replaces the
-      // per-closure manual `recordChokepoint` calls that kept missing methods
-      // across review rounds. The wrapper is a PURE side-effect (records, never
-      // alters behavior), and the completeness test + fail-closed default
-      // guarantee no method can be silently un-instrumented. `storage` is already
-      // instrumented at its own construction boundary, so the wrapper's
-      // idempotence guard leaves it untouched (no double-recording).
-      //
-      // Effect-boundary ENFORCEMENT wraps the recorder as the OUTER layer: a
-      // host-classified WRITE awaits a user approval AT THE EFFECT (foreground) /
-      // fails closed (headless) before the mutation runs, but ONLY when
-      // `hostClassifiesRisk` is ON (the shipped default) — flag OFF (only when
-      // disabled/unset) is a byte-for-byte pass-through. OUTER (not inner) so the pure recorder is untouched and a
-      // DENIED effect is never recorded as a host-observed mutation. The lone
-      // verb-derived chokepoint (hostFetch) is gated INLINE in its closure from
-      // the single verb snapshot; the wrapper skips it.
+      // Record every HostApi effect from the shared path classification; storage instrumentation is idempotent.
+      // Enforce outside the recorder so denied mutations are not recorded as observed; hostFetch gates its own verb.
       return enforceActiveHostApi(pluginId, hostIncarnation, enforceMutatingEffects<PluginHostApi>(
         instrumentEffectsByPath<PluginHostApi>({
       storage: createPluginStorage(
@@ -634,33 +493,12 @@ export function createHostApiFactory(
         deps.host.encryption,
         createPluginStorageAuditSink(pluginId, pluginRuntimeAuditLog),
       ),
-      // §9.2 — typed plugin config access, scoped to this pluginId.
-      // `get` reads the live merged config (manifest defaults + saved
-      //   overrides) directly from settingsService so a write from another
-      //   surface (renderer, IPC, sibling plugin) is visible without reload.
-      // `set` persists via the same `setPluginConfig` IPC bridge used by the
-      //   settings UI and triggers a plugin reload so the plugin's `config`
-      //   snapshot in `PluginRuntimeContext.config` is rebuilt with the new
-      //   value. `format: "secret"` keys are rejected here — secrets MUST go
-      //   through `hostApi.setSecret` so they land encrypted, never in
-      //   cleartext `pluginConfigs`.
-      // `onChange` listeners are registered against the plugin's own id only;
-      //   the underlying bus rejects cross-plugin observation.
+      // Read merged config live so changes from other surfaces are immediately visible.
+      // Secret-format keys must use encrypted secret storage, never cleartext pluginConfigs.
+      // Config listeners are scoped to the bound plugin id; cross-plugin observation is rejected.
       config: {
         get: <T = unknown>(key: string): T | undefined => {
-          // Merge the wildcard slot (`hostApiVendor` etc.)
-          // BETWEEN manifest defaults and plugin-specific overrides so a
-          // plugin's own config can shadow a host-injected value (rare, but
-          // useful for test fixtures and explicit per-plugin overrides),
-          // while shipping a sensible default for plugins that don't set it.
-          //
-          // AB1 — apply `configSchema` defaults as the LOWEST layer (under
-          // manifest.config < wildcard < saved settings). Without this the live
-          // getter returned `undefined` for a schema-defaulted key that the user
-          // hasn't set, while `ctx.config` (built via applyConfigDefaults in
-          // runtime/sandbox.ts) returned the author-declared default — the two
-          // now agree. applyConfigDefaults only backfills keys still undefined,
-          // so it never changes the precedence of the higher layers.
+          // Config precedence is schema defaults, manifest defaults, wildcard metadata, then saved plugin overrides.
           const merged = effectivePluginConfig(manifest,
             pluginRuntime.getWildcardConfigOverride?.() ?? {},
             settingsService.getPluginConfig(pluginId) ?? {},
@@ -677,41 +515,27 @@ export function createHostApiFactory(
           const nestedLifecycleMutation =
             isPluginInstallLockHeld(pluginId) || hostIncarnation.isLifecycleHookActive();
           const persistence = withPluginInstallLock(pluginId, async () => {
-            // The HostApi object belongs to this exact manifest incarnation.
-            // A queued write from a stopped/uninstalled instance must not
-            // recreate persisted config for a removed or reinstalled plugin.
+            // Queued writes from retired incarnations must not recreate removed or reinstalled plugin config.
             if (!hostIncarnation.isActive()) {
               throw new Error(
                 `[plugin:${pluginId}] config.set('${key}'): plugin instance is no longer active`,
               );
             }
             const current = settingsService.getPluginConfig(pluginId) ?? {};
-            // structuredClone so we never accidentally hand the plugin our
-            // internal record reference.
+            // Clone persisted records so plugins cannot mutate host-owned references.
             const nextRecord = structuredClone({
               ...current,
               [key]: value as unknown,
             });
             await settingsService.setPluginConfig(pluginId, nextRecord);
-            // Mirror the IPC handler — refresh the runtime's per-plugin
-            // override so the next reload picks up the new value, then emit
-            // the change so existing listeners observe it without waiting
-            // for the reload.
+            // Refresh runtime overrides before publishing changes so reload and existing listeners see the same value.
             pluginRuntime.setConfigOverride(pluginId, nextRecord);
             emitPluginConfigChange(pluginId, key, value);
           });
-          // Return the tracked chain directly. Crossing an async/await wrapper
-          // here would transfer a detached rejection to an untracked native
-          // Promise and let the owning lifecycle mutation resolve early.
+          // Return the tracked chain directly; async wrapping can detach rejection and end the owning mutation early.
           const operation = persistence.then(async () => {
-            // Lifecycle hooks inherit the owning mutation context. Persist
-            // their write, but never recursively restart the instance whose
-            // start/stop Promise is currently being awaited.
-            // Restart policy: see `plugins/config-restart-policy.ts`. This write
-            // always mutates cleartext config (secrets were rejected above), so
-            // the only question is safety — a write issued from inside a
-            // lifecycle hook, or with a restart already in flight, would re-enter
-            // the mutation whose Promise is currently being awaited.
+            // Lifecycle writes persist without recursively restarting the instance whose mutation is being awaited.
+            // Restart policy must avoid reentering lifecycle hooks or an already-running restart.
             if (
               !shouldRestartAfterPluginConfigWrite({
                 mutatedCleartextConfig: true,
@@ -748,12 +572,7 @@ export function createHostApiFactory(
             if (!acceptsHostNotification()) return;
             callback(nextValue);
           };
-          // `wrapListener`, not a `void`-discarded `wrapCallback`. The bus
-          // contains a synchronous listener's throw with its own try/catch and
-          // a `log.warn`; a discarded promise skips that entirely and rejects
-          // with nothing attached, which on Node's defaults ends the main
-          // process. Both arms of the ternary therefore fail the same way: the
-          // wrapped one inside `wrapListener`, the bare one in the bus's catch.
+          // Use wrapListener to contain async callback failures; discarded rejections can terminate the main process.
           const notify = hostEffects ? hostEffects.wrapListener(invoke) : invoke;
           const unsubscribe = subscribePluginConfigChange(
             pluginId,
@@ -762,7 +581,7 @@ export function createHostApiFactory(
               notify(value as T | undefined);
             },
           );
-          // Auto-cleanup on plugin disable to mirror onEvent semantics.
+          // Remove config listeners when the plugin is disabled.
           return registerOwnedDisposer(unsubscribe);
         },
       },
@@ -789,18 +608,14 @@ export function createHostApiFactory(
           type,
           candidateApprovedPluginAccess,
         );
-        // The host emits `alert.*`, so its owner is the payload's plugin: a
-        // subscriber hears its own alerts and, with a grant, the named plugin's.
+        // Host alert events are visible only to the owner or explicitly granted named-plugin subscribers.
         const alertEvent = isAlertEvent(type);
         const dispatch = (data: unknown) => {
           if (!acceptsHostNotification()) return;
           if (alertEvent && !alertEventReaches(pluginId, type, data, getApprovedPluginAccess())) return;
           handler(data);
         };
-        // Contained for the same reason `config.onChange` is: `emitEvent`
-        // catches what a synchronous handler throws, and a `void`-discarded
-        // promise would route the wrapped handler's failure around that catch
-        // and into the process.
+        // Contain asynchronous event-listener failures just as the bus contains synchronous throws.
         const guardedHandler = hostEffects ? hostEffects.wrapListener(dispatch) : dispatch;
         const unsubscribe = onEvent(type, (data) => { guardedHandler(data); });
         logPluginLifecycle("debug", { pluginId, phase: PluginPhase.EVENT_LISTEN, eventType: type }, "event listener registered");
@@ -824,7 +639,6 @@ export function createHostApiFactory(
           if (typeof subjectId !== "string" || subjectId === pluginId) return;
           handler({ type: "uninstalled", pluginId: subjectId });
         };
-        // Contained, not discarded — see the note on `onEvent` above.
         const guardedInstalled = hostEffects ? hostEffects.wrapListener(dispatchInstalled) : dispatchInstalled;
         const guardedUninstalled = hostEffects ? hostEffects.wrapListener(dispatchUninstalled) : dispatchUninstalled;
         const unsubInstalled = onEvent("plugin.installed", (data) => { guardedInstalled(data); });
@@ -832,12 +646,7 @@ export function createHostApiFactory(
         const unsubscribe = () => { unsubInstalled(); unsubUninstalled(); };
         return registerOwnedDisposer(unsubscribe);
       },
-      // Host implementation of the public contract's `resolveApiKey`.
-      // Returns an opaque host-owned lease by default. Only a reviewed raw
-      // exposure returns copied bytes.
-      // All four tiers are evaluated in-line inside `resolveApiKeyImpl`;
-      // the call here is a thin closure capture of pluginId + manifest +
-      // manifestSha256 + the shared audit/settings services.
+      // Return opaque host leases unless raw exposure was explicitly reviewed.
       resolveApiKey: async (opts) => {
         const request = {
           purpose: opts.purpose,
@@ -958,20 +767,9 @@ export function createHostApiFactory(
         }
       },
       getSecret: async (key) => {
-        // #893 Stage 2 — the four-tier secret access gate. The DECISION lives
-        // in `runSecretGate` (src/plugins/secret-access/secret-gate.ts), the one
-        // authority `resolveApiKey` above also calls; everything below is this
-        // API's own audit vocabulary, counters, and `string | null` shape.
-        //
-        // `keyPrefix` is folded through `sanitizeKeyPrefix`
-        // before it reaches the in-process counter map. An attacker plugin
-        // could otherwise call `hostApi.getSecret("<random-prefix>.x")` in a
-        // loop and grow the counter map unboundedly via the `denied` branch
-        // (one entry per attacker-controlled prefix). Folding unknown
-        // prefixes to the bucket `"other"` caps the cardinality.
-        //
-        // Audit log lines additionally cap `key` to 64 chars so an attacker
-        // can't bloat the JSONL with megabyte-long denied keys.
+        // Both secret APIs use runSecretGate; this closure owns only its result shape and audit accounting.
+        // Fold unknown key prefixes into other to bound attacker-controlled counter cardinality.
+        // Cap audit keys at 64 characters to prevent oversized denial records.
         const auditKey = key.slice(0, 64);
         const keyPrefix = sanitizeKeyPrefix(key);
         const audit = (type: "info" | "warn", line: string): void => {
@@ -984,8 +782,7 @@ export function createHostApiFactory(
             });
           } catch { /* audit must not break host */ }
         };
-        // The grant reads the host-owned registry entry, never `plugin.json`,
-        // which sits inside the plugin's writable surface.
+        // Trust the host registry entry, never writable plugin.json claims.
         const outcome = await runSecretGate({
           pluginId,
           operation: "export",
@@ -1012,10 +809,7 @@ export function createHostApiFactory(
           return null;
         }
         const value = settingsService.getSecret(key);
-        // Value-shape guard. `shouldBlockPluginSecretRead` self-scopes to
-        // `plugin.<id>.*` keys, so this only ever fires on a Tier-1 grant: an
-        // endpoint URL parked in an api-key-shaped plugin secret is an
-        // exfiltration primitive.
+        // Block endpoint URLs in API-key-shaped plugin secrets; otherwise own-namespace reads can exfiltrate data.
         if (shouldBlockPluginSecretRead({ pluginId, storageKey: key, value })) {
           audit(
             "warn",
@@ -1025,9 +819,7 @@ export function createHostApiFactory(
           return null;
         }
         if (outcome.via === "own-namespace") {
-          // Tier-1 reads are counted like every other grant so `hostSecret_read`
-          // totals are comparable between `getSecret` and `resolveApiKey`, which
-          // has always counted its own-namespace hits.
+          // Count own-namespace reads consistently across both secret APIs.
           audit("info", `pluginSecret_read key=${auditKey}`);
           incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
           return value;
@@ -1045,20 +837,9 @@ export function createHostApiFactory(
       },
       hostFetch: async (input, init) => {
         try {
-        // Capability-gated host-mediated egress through Electron net (Chromium
-        // stack → OS proxy incl. PAC/WPAD + OS trust store), for plugins whose
-        // Node libraries (e.g. MSAL) can't be configured for the corporate
-        // proxy/CA.
-        //
-        // The layered policy (scheme/credential reject → https-only →
-        // deny-by-default allow-list → DNS-aware SSRF guard) lives in the pure
-        // `evaluateHostFetch` core so it is unit-testable without the runtime.
-        // Audit + telemetry side effects stay here, the host chokepoint.
-        // Egress denial: bump the per-(plugin, reason) telemetry counter +
-        // write the authoritative audit line. `reasonBucket` goes through
-        // sanitizeKeyPrefix so an unknown bucket folds to "other" — the same
-        // cardinality guard the host-secret path uses (no raw string reaches
-        // the counter map).
+        // Use the host’s OS proxy and trust-store transport for declared network access.
+        // The shared evaluator owns scheme, HTTPS, allow-list, and DNS-aware SSRF checks; audit stays here.
+        // Sanitize denial buckets before telemetry so untrusted reasons cannot grow the counter map.
         const auditEgressDeny = (reasonBucket: string, detail: string) => {
           incrementHostSecretCounter("hostFetch_denied", pluginId, sanitizeKeyPrefix(reasonBucket));
           try {
@@ -1070,15 +851,7 @@ export function createHostApiFactory(
             });
           } catch { /* audit must not break host */ }
         };
-        // ─── Verb snapshot — SINGLE read of the (plugin-controlled) HTTP method.
-        // Destructuring `method` out of `init` invokes its getter EXACTLY ONCE;
-        // `restInit` carries every OTHER field by value and NO LONGER holds the
-        // `method` getter, so the wire spread below cannot re-invoke it. The
-        // recorded effect, the audit verb, and the wire verb are ALL derived from
-        // this one primitive, so a stateful getter (GET to the recorder, POST to
-        // the wire) can no longer record a confirmed READ for an executed WRITE.
-        // The host owns the verb here — non-forgeable. Default "GET" mirrors
-        // `fetch`'s default when init.method is omitted/empty/non-string.
+        // Read the plugin-controlled method getter once; effect classification, audit, and wire verb share that snapshot.
         const { method: rawVerb, ...restInit } = init ?? {};
         const hasAuth = Object.hasOwn(restInit, "auth");
         const auth = hasAuth ? validateWireAuth(restInit.auth) : undefined;
@@ -1092,13 +865,7 @@ export function createHostApiFactory(
         }
         const methodSnapshot =
           typeof rawVerb === "string" && rawVerb.length > 0 ? rawVerb.toUpperCase() : "GET";
-        // hostFetch is the ONLY verb-derived chokepoint, so the generic recorder
-        // skips it (effect-kind.ts marks it `selfRecorded`) and THIS is the single
-        // recording point — no second read, no double-record. Recorded BEFORE the
-        // capability/SSRF gates so a denied egress still surfaces its attempted
-        // effect, matching the prior wrapper-records-first ordering. Target is the
-        // ORIGIN only (no path/query that can carry tokens); string input only,
-        // mirroring the previous urlOriginArg extractor.
+        // Self-record hostFetch once before denial gates; audit attempted effects using origin only.
         let effectTarget: string | undefined;
         if (typeof input === "string") {
           try {
@@ -1119,13 +886,7 @@ export function createHostApiFactory(
           );
         }
         const raw = input instanceof URL ? input.toString() : input;
-        // SSRF defense: an allow-listed host that resolves to a private /
-        // loopback / link-local / metadata address is rejected unless the
-        // manifest explicitly opts into `networkAccess.allowPrivateNetworks`
-        // (the declarative, user-approved governance gate). The host-suffix
-        // allow-list alone cannot stop an attacker-controlled or DNS-rebound
-        // name from pivoting to 169.254.169.254 / 127.0.0.1 / RFC1918 when
-        // `net.fetch` resolves DNS directly (off-corp, no proxy).
+        // Private and reserved DNS results require an explicit private-network grant even for allow-listed hosts.
         const decision = await evaluateHostFetch({
           pluginId,
           rawUrl: raw,
@@ -1138,21 +899,8 @@ export function createHostApiFactory(
           throw new Error(decision.message);
         }
         const url = decision.url;
-        // Effect-boundary ENFORCEMENT — hostFetch is the lone VERB-derived
-        // chokepoint, so it is gated INLINE here (not by the generic
-        // wrapper) from the SAME single `methodSnapshot` that self-recorded the
-        // effect and pins the wire below — the gate's read/write class can never
-        // diverge from what is sent. A mutating verb (non GET/HEAD/OPTIONS) under
-        // an ON flag in the foreground awaits a user approval AT THE EFFECT before
-        // the egress; deny throws (the wire call is skipped). GET/HEAD/OPTIONS are
-        // reads and never prompt; flag OFF (default) is a pass-through. Placed
-        // AFTER the capability + SSRF gates so only an egress that would actually
-        // happen can prompt. Origin-only target (no path/query that can carry tokens).
-        //
-        // Flag-OFF short-circuit BEFORE the approval await: when
-        // `hostClassifiesRisk` is OFF, the gate is skipped entirely. The
-        // synchronous incarnation recheck remains mandatory because upstream
-        // capability/SSRF validation can itself cross async boundaries.
+        // Gate mutations from the same verb snapshot, after capability and SSRF checks but before egress.
+        // Recheck incarnation synchronously even when enforcement is off; earlier validation may have awaited.
         if (hostClassifiesRiskEnabled()) {
           await gateMutatingEffect({
             pluginId,
@@ -1166,9 +914,6 @@ export function createHostApiFactory(
         assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
         const credentialUse = auth ? credentialRegistry.beginUse(auth.lease, pluginId, hostIncarnation) : undefined;
         credentialUse?.assertLive("after-await");
-        // The host-observed effect for this egress was recorded above from the
-        // SAME verb snapshot that drives `decision` and pins the wire below, so
-        // the recorded effect == decision.effect == the wire verb (no divergence).
         incrementHostSecretCounter("hostFetch_egress", pluginId, "egress");
         try {
           bootAuditLogger.log({
@@ -1178,26 +923,8 @@ export function createHostApiFactory(
             input: `[plugin:${pluginId}] host_fetch ${url.origin} method=${decision.method} effect=${decision.effect}`,
           });
         } catch { /* audit must not break host */ }
-        // Redirects: the transport underneath takes exactly ONE hop and hands a
-        // 3xx back instead of following (see `createSingleHopFetch`), and
-        // `runHostFetchHops` decides what happens next from the plugin's own
-        // `init.redirect` — throw (the default, and anything unrecognized),
-        // return the 3xx (`"manual"`, which is how an SSO bounce becomes a
-        // reportable expired session), or follow up to a capped number of hops
-        // (`"follow"`) with THIS SAME `evaluateHostFetch` gate re-run on every
-        // hop before any bytes move. `net.fetch`'s own follow mode is exactly
-        // what this replaces: there, a followed hop was a request no gate ever
-        // saw (#2245). method PINNED to the snapshot: `restInit` excludes the
-        // original `method` getter, so the verb the loop starts from is the
-        // single-read primitive, never a re-read of a live getter.
-        // Session-cookie vault: when the plugin declares
-        // `networkAccess.authCookiePartition`, the host attaches the harvested
-        // session cookies FROM that partition per hop and the plugin bundle
-        // never sees a value. The declaring plugin must not also send its own
-        // `Cookie` header — that would be a second, plugin-controlled credential
-        // origin defeating the vault; reject it loudly (fail-closed, no
-        // silent precedence rule). Non-declaring plugins are unaffected: no
-        // injector, and their own `Cookie` header passes through as before.
+        // Each redirect reruns the gate before sending; default rejects, manual returns, and follow is bounded.
+        // Attach vaulted cookies per hop without exposing values; declaring plugins must not supply a competing Cookie header.
         const authCookieSub = manifest.networkAccess?.authCookiePartition;
         let injectSessionCookie: ((target: URL) => Promise<string>) | undefined;
         if (typeof authCookieSub === "string" && authCookieSub.length > 0) {
@@ -1281,20 +1008,12 @@ export function createHostApiFactory(
         };
         registerOwnedDisposer(unsubscribe);
       },
-      // ─── Host-mediated worker spawn ───────────────────────────────────
-      // HOST PRIMITIVE — Tool.workerId producer is intentionally NOT wired here.
-      // Exposes the host's spawnWorker on the per-plugin hostApi surface with
-      // `pluginId` bound from THIS hostApi instance (a plugin can never name
-      // another plugin's namespace). A future host-routed tool producer must
-      // prove that its call path actually uses this worker before setting
-      // Tool.workerId; a plugin-self-claimed worker id is advisory only (#885 v6
-      // removed the manifest field — normalize drops any legacy `workerId`).
+      // Bind worker identity host-side; a self-claimed worker id cannot authorize host-routed tools.
       spawnWorker: async (workerSpec) => {
         const worker = await spawnWorker({
           ...workerSpec,
           pluginId,
-          // Host-decided, from the reviewed declaration: the plugin's spec
-          // cannot name a read inside the protected floor for its worker.
+          // Only reviewed host declarations may allow worker reads inside the protected floor.
           floorPierces: declaredHostDirectoryFloorPierces(manifest.sandbox),
         });
         if (!hostIncarnation.isActive()) {
@@ -1305,14 +1024,8 @@ export function createHostApiFactory(
         }
         return bindWorkerHandle(worker);
       },
-      // ─── §B3 External URL viewer + host public preference read ─────────
-      // openExternalUrl: follows the Settings → webView.preferredFlow toggle:
-      //   "in-app"  → light BrowserWindow (link-window-service)
-      //   "system-browser" → shell.openExternal
-      // Reads from settingsService on every call so live updates are reflected.
-      //
-      // getAppPreference: only HOST_PUBLIC_PREFERENCE_KEYS allowlist reads are allowed.
-      //   Denied keys return undefined instead of throwing and warn once per key/session.
+      // Read external-link routing live; public preference reads use only the explicit allow-list.
+      // Denied preference keys return undefined and warn once per key and plugin.
       openExternalUrl: async (url: string): Promise<void> => {
         await routeExternalUrl({
           url,
@@ -1326,20 +1039,8 @@ export function createHostApiFactory(
       getAppPreference: <T = unknown>(key: string): T | undefined => {
         return readAppPreference(pluginId, key) as T | undefined;
       },
-      // ─── Corp-network presence probe ───────────────────────────────────
-      // HostApi owns the private DNS probe so plugins never reach `dns.lookup`
-      // (or a raw corp-network presence probe) directly. Pure DNS race with
-      // host-side host validation
-      // + timeout clamping; UX hint only, NOT a trust boundary (see the impl
-      // header). Module-level dedup/no-cache/unref'd-timer semantics live in
-      // private-host-probe.ts.
-      //
-      // Durable audit: the probe is classified `read`, so it never reaches the
-      // executor's AuditLogger path — yet it is a network-adjacent oracle that
-      // reveals which INTERNAL host a plugin is targeting. Record host + outcome
-      // here (the host chokepoint) so operators keep a trail. The host is capped
-      // to 64 chars so an attacker-controlled name cannot bloat the JSONL, and
-      // the audit write is best-effort (must never break the probe).
+      // Host DNS probing is a bounded UX hint, not a trust boundary.
+      // Audit probe host and outcome here because read effects bypass executor audit; cap names to 64 characters.
       probePrivateHost: async (host: string, opts?: { timeoutMs?: number }): Promise<boolean> => {
         const auditHost = (typeof host === "string" ? host : String(host)).slice(0, 64);
         try {
@@ -1365,20 +1066,8 @@ export function createHostApiFactory(
           throw err;
         }
       },
-      // ─── External portal interactive auth (cookie collection) ──────────
-      // Gated by the `external-auth-consumer` capability. Cookies are sensitive
-      // assets, so calls are rejected without declarative opt-in. Both denial
-      // and approval are recorded in AuditLogger.
-      //
-      // Logs record only origin + path. Sensitive SAML/OAuth query values
-      // (SAMLRequest, code, state, session id, etc.) are excluded to avoid leaks.
-      /**
-       * The plugin names no owner: the owner is THIS hostApi's plugin id,
-       * closed over here. That is the whole isolation argument — a plugin
-       * cannot reach another plugin's catcher because it has no way to say
-       * whose catcher it means, exactly as the auth PARTITION is composed
-       * host-side rather than passed in.
-       */
+      // Auth-cookie surfaces require declared capability; audit allows and denials without sensitive query values.
+      /** Bind redirect-catcher ownership to this HostApi’s plugin id; callers cannot name another owner. */
       authRedirect: {
         open: async () => await authRedirectCatchers.open(pluginId),
         wait: async (opts: { handle: string; timeoutMs?: number }) =>
@@ -1387,54 +1076,21 @@ export function createHostApiFactory(
           authRedirectCatchers.close(pluginId, opts.handle);
         },
       },
-      /**
-       * The folder chooser. `pluginId` is closed over here for the same reason
-       * the redirect catcher's owner is: a caller that could name the plugin
-       * could attribute its dialog to a different one.
-       *
-       * `getFocusedWindow()` first so the sheet lands on whatever the user is
-       * actually looking at, falling back to the app's main window; `null` when
-       * there is none, which the picker answers with an unparented chooser
-       * rather than a failure.
-       */
+      /** Bind chooser identity host-side; prefer the focused window and allow an unparented chooser when none exists. */
       pickFolders: async () => {
         const result = await requireDesktopHost(deps.host).pickFolders(pluginId,
           () => requireDesktopHost(deps.host).getFocusedWindow() ?? getMainWindow?.() ?? null,
         );
-        // Copied out of the host's readonly answer: the contract hands the
-        // plugin a list of its own, so nothing the plugin does to it is
-        // visible here.
+        // Return a copied list so plugin mutations cannot change the host’s answer.
         return { canceled: result.canceled, folders: [...result.folders] };
       },
-      /**
-       * The lookup runs HERE, in main, with a command this file owns. What the
-       * plugin contributes is one drive letter, validated inside the resolver
-       * rather than on the way in — one validator, in the place that builds the
-       * command.
-       */
+      /** Validate the drive letter in the resolver that constructs the host-owned command. */
       resolveMappedDriveRoot: async (drive: string) => resolveMappedDriveRoot(drive),
-      /**
-       * The capture runs HERE, in main, in a window this host owns. What the
-       * plugin contributes is a sample rate, a frame length and two booleans;
-       * the renderer, the worklet and the loopback wiring are first-party code
-       * it never sees.
-       *
-       * One service for the whole process, not one per plugin: the microphone
-       * and the system mixer are single physical things, and a per-plugin
-       * service would let two plugins each believe they held them.
-       */
+      /** One host capture service owns the physical devices; plugins supply only bounded capture settings. */
       listAudioInputDevices: async () => audioCaptureService(deps.host).listInputDevices(),
       startAudioCapture: async (request: AudioCaptureRequest) =>
         audioCaptureService(deps.host).start(request),
-      /**
-       * The window is the HOST's. What the plugin contributes is the id of a
-       * surface it already declared in its own manifest, and a height the host
-       * clamps — never a position, never a window flag, never a size the dock
-       * will honour verbatim.
-       *
-       * `pluginId` comes from the binding this factory was built for, not from
-       * the request, so a plugin cannot attach a surface belonging to another.
-       */
+      /** The host owns dock placement and flags; plugins may attach only their own declared surface at a clamped height. */
       attachFloatingPanel: async (request: AttachFloatingPanelRequest) =>
         floatingDock(deps.host, deps.getPluginRuntime).attach(pluginId, request),
       resizeFloatingPanel: async (panelId: string, height: number) =>
@@ -1478,15 +1134,8 @@ export function createHostApiFactory(
           });
         } catch { /* audit must not break host */ }
 
-        // Default to a per-plugin non-persistent partition. Using Electron's default
-        // session would (a) share cookies across BrowserWindow instances so other
-        // plugins could observe captured sessions, and (b) persist them to disk.
-        // Both violate openAuthWindow's "the host does not retain sessions" principle.
-        //
-        // An explicitly requested persistPartition must stay inside the plugin's
-        // own namespace (`persist:plugin-auth:<pluginId>` or a `:<sub>` beneath it).
-        // Otherwise plugin A could request `plugin-auth:pluginB` and open a
-        // cross-plugin cookie exfiltration path.
+        // Default auth partitions are per-plugin and non-persistent so sessions neither leak across plugins nor survive on disk.
+        // Persistent auth partitions must remain within the bound plugin’s namespace.
         const encodedId = encodeURIComponent(pluginId);
         const defaultPartition = `plugin-auth:${encodedId}`;
         const allowedPersistBase = `persist:${defaultPartition}`;
@@ -1516,17 +1165,7 @@ export function createHostApiFactory(
         return openAuthWindowService(requireDesktopHost(deps.host).getFocusedWindow() ?? requireMainWindow(), effectiveOpts);
       }) as PluginHostApi["openAuthWindow"],
 
-      // ─── Issue #649 — Auth-partition viewer ───────────────────────────
-      // Opens a hardened BrowserWindow inside the *caller plugin's*
-      // `persist:plugin-auth:<pluginId>` partition so a re-load of an
-      // SSO-protected URL (e.g. a web calendar after a plugin's SSO login)
-      // does not force the user through AAD again. Same `external-auth-
-      // consumer` capability gate as openAuthWindow — both surfaces grant
-      // access to the plugin's auth partition cookie jar.
-      //
-      // The partition is computed from `pluginId` of *this* HostApi
-      // instance (one HostApi per plugin per `PluginRuntime.start` call)
-      // — plugins cannot reuse another plugin's cookie partition.
+      // Auth viewers use the caller’s partition and the same capability gate as auth capture.
       openAuthPartitionViewer: async (opts: { url: string; windowTitle?: string }) => {
         const safeUrlForLog = (() => {
           try {
@@ -1598,12 +1237,7 @@ export function createHostApiFactory(
         );
       },
 
-      // ─── HostApi clearAuthPartition ───────────────────────────────────
-      // Wipe cookies / storage / cache / HTTP-auth from one of the calling
-      // plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions.
-      // Used after a user-triggered plugin sign-out so a subsequent
-      // `openAuthWindow` cannot silently SSO via residual IdP cookies.
-      // Capability + partition allow-list mirror `openAuthWindow`.
+      // Clear only the caller’s auth partitions after sign-out to prevent residual-cookie SSO.
       clearAuthPartition: async (partition: string): Promise<void> => {
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
           try {
@@ -1682,12 +1316,7 @@ export function createHostApiFactory(
             `[plugin:${pluginId}] getAuthPartitionCookies: urls must be an array of strings`,
           );
         }
-        // Only cookies scoped to a URL whose host is on THIS plugin's declared
-        // allow-list are returned — the same allow-list that gates hostFetch —
-        // so the gated read cannot exfiltrate cookies for a host the plugin was
-        // never approved to reach. An unparseable or off-allow-list URL yields
-        // an empty group rather than an error, so one bad entry cannot fail a
-        // batch.
+        // Cookie reads use the caller’s network allow-list; invalid or disallowed entries return empty groups.
         const normalizedAllowed = normalizeAllowedHosts(
           manifest.networkAccess?.allowedDomains ?? [],
           { allowLoopback: true },
@@ -1722,19 +1351,8 @@ export function createHostApiFactory(
         return results;
       },
 
-      // ─── §8 Agent Approval — hostApi.agentApproval ────────────────────
-      // Exposes the main-process ApprovalGate to plugins so they can request
-      // and resolve pending approval entries from handler code (NOT from the
-      // renderer-only preload bridge). approvalGate is REQUIRED at construction
-      // time — there is no noop fallback. A missing gate would mean the boot
-      // order is wrong, which is a programming error to surface loudly.
-      //
-      // §8 P0 security (issue #71):
-      //   request(): verifies scope against the approved install grant, then records
-      //              (requestId → pluginId + scope) in registry.
-      //   respond(): verifies (a) requestId was issued by THIS plugin
-      //              (b) scope is still in the approved install grant.
-      //   Violations throw ApprovalOriginError (no silent fallback, §No-Fallback).
+      // The approval gate is required at construction; absence is a boot-order error.
+      // Requests bind approved scope and issuer; responses recheck both ownership and the current grant.
       agentApproval: {
         request: async (input: {
           toolName: string;
@@ -1794,18 +1412,8 @@ export function createHostApiFactory(
         },
       },
 
-      // ─── Overlay runner — hostApi.triggerConversation() ────────────────
-      // Overlay runner: gate body lives in evaluateTriggerSpec() so prod
-      // and tests share one implementation. On allow, the host holds the spec
-      // in OverlayContext staging via IPC (fresh ConversationLoop is NOT
-      // started). The card is addressed to the dedicated Suggestions
-      // conversation (`shared/suggestions-session.ts`), which is made to exist
-      // here first; the user's confirm inserts the prompt there via the
-      // imported_trigger mechanism, never into the focused conversation.
-      //
-      // A plugin that declares `alerts` may pass only its declared suggestion
-      // sources, each accepted once per 30 days. Stage synchronously before
-      // charging acceptance, then persist before resolving the call.
+      // Stage suggestions in their dedicated conversation; confirmation imports the prompt without starting a new loop.
+      // Declared suggestion sources are accepted once per 30 days; stage before charging and persist before resolving.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
         const declaredSuggestions = getDeclaredSuggestionSources(manifest, pluginId);
         if (declaredSuggestions !== null) await suggestionLedger.load();
@@ -1814,8 +1422,6 @@ export function createHostApiFactory(
           stageDelivery: (source) => {
             const overlayTarget = requireMainWindow();
 
-            // Allow path — push to renderer OverlayContext via IPC instead of
-            // spawning a fresh ConversationLoop.
             const overlayId = `plugin:${pluginId}:${eventId}`;
             const derivedSummary = deriveOverlaySummaryForDisplay(spec);
             const overlayItem = {
@@ -1854,12 +1460,7 @@ export function createHostApiFactory(
         return { accepted: true, source: decision.source, eventId };
       },
 
-      // ─── Idempotency SOT query — hostApi.hasRoutineBySource() ───────────
-      // Least-privilege boolean probe scoped to the caller's own
-      // `suggestion:<pluginId>:` prefix. A plugin uses this as its "propose
-      // once" gate without ever seeing routine contents or another plugin's
-      // routines. The prefix check is the security boundary: an out-of-prefix
-      // source returns false with NO enumeration.
+      // Routine probes enumerate only the caller’s suggestion prefix; out-of-prefix requests return false.
       hasRoutineBySource: async (source: string): Promise<boolean> => {
         if (typeof source !== "string" || source.length === 0) return false;
         const callerPrefix = `suggestion:${pluginId}:`;
@@ -1869,16 +1470,8 @@ export function createHostApiFactory(
         return routinesStore.list().some((r) => r.source === source);
       },
 
-      // ─── Recommended work — hostApi.proposeWork() / withdrawWorkProposal() ──
-      // The plugin-facing door to the host's Work Board. What arrives here is
-      // TEXT AND A KEY; identity and the grant are the host's, and the start
-      // action is the board's own plan → approve → execute sequence, so nothing
-      // executable crosses this boundary.
-      //
-      // Authorization is INFERRED from the installed manifest's declared
-      // `workProposals.kinds`, exactly as emit authorization is inferred from
-      // `emittedEvents` — no capability string, and a kind the plugin did not
-      // declare is refused rather than defaulted.
+      // Proposals carry text and a key; host-owned planning, approval, and execution retain executable authority.
+      // Only installed manifest kinds authorize proposals; undeclared kinds are refused.
       proposeWork: async (input: WorkProposalInput): Promise<WorkProposalResult> => {
         if (!input || typeof input !== "object" || typeof input.kind !== "string") {
           return { status: "invalid", field: "kind" };
@@ -1889,9 +1482,7 @@ export function createHostApiFactory(
         const result = await requireWorkBoardStore().upsertProposal(
           {
             pluginId,
-            // `name ?? id` is the manifest's own documented rule for an
-            // authored manifest that omits the display name — not a stand-in
-            // for a missing value.
+            // An omitted authored display name intentionally resolves to its id.
             pluginLabel: manifest.name ?? pluginId,
             grantedKinds: getDeclaredWorkProposalKinds(manifest, pluginId),
           },
@@ -1905,18 +1496,12 @@ export function createHostApiFactory(
       withdrawWorkProposal: async (kind: string, key: string): Promise<boolean> => {
         if (typeof kind !== "string" || typeof key !== "string") return false;
         const withdrawn = await requireWorkBoardStore().withdrawProposal(pluginId, kind, key);
-        // The id is derived from the CALLER's plugin id, so a plugin naming
-        // another's kind and key cannot address that proposal at all — there is
-        // nothing to refuse, only nothing to find.
+        // Proposal identity includes the bound plugin id, so another plugin’s key cannot address it.
         if (withdrawn) notifyProposalChanged(proposalId(pluginId, kind, key.trim()), "withdrawn");
         return withdrawn;
       },
 
-      // ─── Alerts — hostApi.raiseAlert() / withdrawAlert() ────────────────
-      // What arrives is a declared kind id, a key and typed slot values; the
-      // card, the prompt and the notification are the host's, rendered from
-      // the kind's declaration. The identity is keyed by the CALLER's plugin
-      // id, so a plugin can neither raise nor withdraw another's alert.
+      // Host-rendered alerts accept declared kind slots only; ownership uses the bound plugin id.
       raiseAlert: async (input: AlertInput): Promise<AlertResult> =>
         requireAlertsService("raiseAlert").raise(pluginId, input),
 

@@ -3,10 +3,8 @@ import { Bot, Play, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
 
-/**
- * Human takeover stays paused until the host confirms an explicit resume.
- * The badge mirrors host state and never grants page authority on its own.
- */
+/** Human takeover stays paused until the host confirms an explicit resume. The badge mirrors host state and never grants
+ * page authority on its own. */
 export function AgentControlBadge({ mode, onPause, onResume }: {
   mode: "agent-active" | "human-paused";
   onPause: () => Promise<{ ok: true } | { ok: false; error: string }>;

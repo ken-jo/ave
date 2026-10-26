@@ -1,27 +1,10 @@
-/**
- * Browser-tab and active-surface IPC — the renderer's half of the main-side
- * browser tab registry (main/browser/browser-tab-registry.ts).
- *
- * Channels (ALL INTERNAL — never in PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS):
- *   `ave:browser:bind-tab`    invoke  renderer→main  tab id ↔ guest webContents id
- *   `ave:browser:stop`        invoke  renderer→main  revoke agent control before user navigation or on stop
- *   `ave:browser:tab-op`      event   main→renderer  new / select / close a tab
- *   `ave:browser:control`     event   main→renderer  the window's agent-controlled tabs
- *   `ave:surface:set-active`  invoke  renderer→main  the window's active browser/terminal tab
- *
- * TRUST BOUNDARY: a bind decides which page the agent's browser tools reach,
- * so every invoke gates on {@link validateHostRendererSender} and acts only on
- * the sender's own main window; the registry additionally accepts a bind only
- * for a guest that attached to that same window.
- *
- * Error contract: kebab-case English `error`.
- */
+// Browser bindings require a host renderer and a guest attached to that sender's own main window.
 import { ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { sendToWindow } from "../safe-send.js";
 import { createLogger } from "../../lib/logger.js";
-import { getMainWindows, mainWindowForContents } from "../../main/app-state.js";
+import { getMainWindows, getPrimaryMainWindow, mainWindowForContents } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { disposeBrowserWorkspaceService, getBrowserWorkspaceService, refreshBrowserPopupControl } from "../../main/browser/browser-workspace-desktop.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
@@ -42,7 +25,6 @@ function asTabId(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_TAB_ID_LENGTH ? value : null;
 }
 
-/** Parse an `ave:surface:set-active` payload; `undefined` = malformed. */
 export function parseActiveSurface(value: unknown): ActiveWorkspaceSurface | null | undefined {
   if (value === null) return null;
   if (typeof value !== "object") return undefined;
@@ -60,6 +42,19 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
   }
   registerBrowserWorkspaceHandlers(deps, getBrowserWorkspaceService());
 
+  browserTabRegistry.setBindingPersistence({
+    savedWindowId: () => getPrimaryMainWindow()?.id,
+    load: (windowId) => getPrimaryMainWindow()?.id === windowId ? deps.settingsService.get("system").mainLayout : undefined,
+    save: async (windowId, layout) => {
+      if (getPrimaryMainWindow()?.id !== windowId) return;
+      await deps.settingsService.patch({ system: { ...deps.settingsService.get("system"), mainLayout: layout } });
+    },
+    sessionExists: (sessionId) => [deps.memoryManager, deps.sideChatMemoryManager]
+      .some((store) => store?.hasSessionTranscript(sessionId))
+      || (deps.getSubAgentRunner?.()?.hasPersistedSession(sessionId) ?? false),
+    legacyPaneSession: (tabId) => deps.sideChatMemoryManager?.findPaneSession(tabId),
+  });
+
   browserTabRegistry.setRendererLink({
     isWindowVisible: (windowId) => {
       const window = getMainWindows().find((candidate) => candidate.id === windowId);
@@ -73,6 +68,10 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       refreshBrowserPopupControl(windowId, state);
       const win = getMainWindows().find((candidate) => candidate.id === windowId);
       sendToWindow(win, CHANNELS.browser.control, state, log);
+    },
+    sendSessionBindings: (windowId, state) => {
+      const win = getMainWindows().find((candidate) => candidate.id === windowId);
+      sendToWindow(win, CHANNELS.browser.sessionBindingsChanged, state, log);
     },
   });
 
@@ -142,6 +141,16 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     const win = mainWindowForContents(e.sender);
     if (!win || payload !== undefined) return { ok: false, error: "bad-request" };
     return browserTabRegistry.controlState(win.id);
+  });
+
+  ipcMain.handle(CHANNELS.browser.getSessionBindings, (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.getSessionBindings, e);
+      return { ok: false, error: "unauthorized-frame" };
+    }
+    const win = mainWindowForContents(e.sender);
+    if (!win || payload !== undefined) return { ok: false, error: "bad-request" };
+    return browserTabRegistry.sessionBindingsState(win.id);
   });
 
   ipcMain.handle(CHANNELS.browser.pausePopup, (e, payload: unknown) => {

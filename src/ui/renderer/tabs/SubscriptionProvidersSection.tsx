@@ -1,10 +1,13 @@
 import { useId } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
 import { useTranslation } from "../../../i18n/react.js";
 import {
+  isSubscriptionRuntimeId,
+  subscriptionRuntimeDescriptor,
   type SubscriptionConnectionState,
   type SubscriptionLoginMethod,
   type SubscriptionRuntimeCapabilities,
@@ -12,14 +15,12 @@ import {
   type SubscriptionRuntimeExecutableSource,
   type SubscriptionRuntimeId,
   type SubscriptionRuntimeInstallGuidance,
+  type SubscriptionRuntimeNotice,
   type SubscriptionRuntimeState,
 } from "../../../shared/subscription-runtime.js";
 
-/**
- * Renderer-safe subscription provider identifier. The main process owns any
- * executable paths, authentication URLs, account tokens, and raw runtime
- * output; none of those values belong in this UI contract.
- */
+/** Renderer-safe subscription provider identifier. The main process owns any executable paths, authentication URLs, account
+ * tokens, and raw runtime output; none of those values belong in this UI contract. */
 type SubscriptionProviderId = SubscriptionRuntimeId;
 
 type SubscriptionProviderRuntimeState = SubscriptionRuntimeState | "checking";
@@ -35,7 +36,8 @@ export type SubscriptionBusyAction =
   | "cancel-login"
   | "logout"
   | "load-models"
-  | "use-for-chat";
+  | "use-for-chat"
+  | "acknowledge-notice";
 
 /** Stable, renderer-safe error codes. Raw runtime errors must be mapped in main. */
 type SubscriptionProviderErrorCode = SubscriptionRuntimeErrorCode;
@@ -61,11 +63,8 @@ interface SubscriptionProviderDescriptor {
   /** Static, browser-safe provider description. */
   description: string;
   loginMethods: readonly SubscriptionLoginMethod[];
-  /**
-   * `discovered`: Ave finds the CLI and the card only reports what it found
-   * (with install guidance and "Check again" when nothing usable is there).
-   * `user-selected`: the card offers the official runtime picker.
-   */
+  /** `discovered`: Ave finds the CLI and the card only reports what it found (with install guidance and "Check again" when
+   * nothing usable is there). `user-selected`: the card offers the official runtime picker. */
   executable: SubscriptionRuntimeExecutableSource;
   supportsLogout?: boolean;
   /** The oldest runtime version Ave can run, when the runtime enforces one. */
@@ -84,12 +83,14 @@ export interface SubscriptionProviderStatus {
   canOpenLoginBrowser?: boolean;
   /** Offered in the settings page's one model chooser, never on this card. */
   models?: readonly SubscriptionProviderModel[];
-  /** Whether chat is host-verified. Only `chat` is read; the rest of the
-   *  projection describes the Ave agent harness, not this provider. */
+  /** Whether chat is host-verified. Only `chat` is read; the rest of the projection describes the Ave agent harness, not this
+   * provider. */
   capabilities?: Partial<SubscriptionProviderCapabilities>;
   /** The version the resolved runtime reported, when it has been read. */
   version?: string | null;
   errorCode?: SubscriptionProviderErrorCode | null;
+  /** A fixed sign-in notice code; never provider text. */
+  notice?: SubscriptionRuntimeNotice | null;
 }
 
 export interface SubscriptionProviderView {
@@ -122,6 +123,10 @@ interface SubscriptionProviderActions {
   useForChat?: (providerId: SubscriptionProviderId, modelId: string | null) => void | Promise<void>;
   /** Explicitly return chat to the separately configured API-key provider. */
   useApiForChat?: () => void | Promise<void>;
+  /** Dismisses the card's sign-in notice. */
+  acknowledgeNotice?: (providerId: SubscriptionProviderId) => void | Promise<void>;
+  /** Opens the provider's own usage settings (ChatGPT plan usage: chatgpt.com/settings/usage). */
+  manageUsage?: (providerId: SubscriptionProviderId) => void | Promise<void>;
 }
 
 export interface SubscriptionProvidersSectionProps {
@@ -140,11 +145,23 @@ export interface SubscriptionProvidersSectionProps {
   sectionId?: string;
 }
 
+/** What each sign-in notice tells the user, and what they can do about it. `welcome` is the first-sign-in dialog. */
+const NOTICE_MESSAGE_KEYS: Record<Exclude<SubscriptionRuntimeNotice, "welcome">, string> = {
+  "plan-usage-disabled": "subscriptionProvidersSection.chatgptPlanNoticePlanUsageDisabled",
+  "reconnect-required": "subscriptionProvidersSection.chatgptPlanNoticeReconnectRequired",
+  "revocation-unconfirmed": "subscriptionProvidersSection.chatgptPlanNoticeRevocationUnconfirmed",
+  declined: "subscriptionProvidersSection.chatgptPlanNoticeDeclined",
+  "account-mismatch": "subscriptionProvidersSection.chatgptPlanNoticeAccountMismatch",
+  "state-mismatch": "subscriptionProvidersSection.chatgptPlanNoticeStateMismatch",
+  "sign-in-failed": "subscriptionProvidersSection.chatgptPlanNoticeSignInFailed",
+};
+
 export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> = {
   "subscription-provider-not-supported": "subscriptionProvidersSection.errorProviderNotSupported",
   "subscription-runtime-not-configured": "subscriptionProvidersSection.errorRuntimeNotConfigured",
   "subscription-runtime-unavailable": "subscriptionProvidersSection.errorRuntimeUnavailable",
   "subscription-runtime-unsafe-location": "subscriptionProvidersSection.errorRuntimeUnsafeLocation",
+  "subscription-runtime-unsafe-npm-location": "subscriptionProvidersSection.errorRuntimeUnsafeNpmLocation",
   "subscription-runtime-version-unsupported": "subscriptionProvidersSection.errorRuntimeVersionUnsupported",
   "subscription-runtime-incompatible": "subscriptionProvidersSection.errorRuntimeIncompatible",
   "subscription-login-in-progress": "subscriptionProvidersSection.errorLoginInProgress",
@@ -155,10 +172,8 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-operation-failed": "subscriptionProvidersSection.errorOperationFailed",
 };
 
-/**
- * Device codes are the sole transient authentication value this renderer may
- * display. Reject values that look like URLs, bearer tokens, or raw logs.
- */
+/** Device codes are the sole transient authentication value this renderer may display. Reject values that look like URLs,
+ * bearer tokens, or raw logs. */
 function isSafeDeviceCode(value: string | null | undefined): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9 -]{0,63}$/.test(value);
 }
@@ -177,29 +192,14 @@ function errorMessageKey(
   if (descriptor.executable === "discovered" && errorCode === "subscription-runtime-not-configured") {
     return "subscriptionProvidersSection.errorCliNotFound";
   }
+  if (descriptor.executable === "none" && errorCode === "subscription-runtime-not-configured") {
+    return "subscriptionProvidersSection.chatgptPlanNotConfigured";
+  }
   return ERROR_MESSAGE_KEYS[errorCode];
 }
 
-/**
- * The sign-in half of one provider row, for the row's expanded body.
- *
- * The settings page draws every provider — subscription-backed, API-key-backed,
- * or both — with ONE row renderer, so the header, the state word, the sub-line
- * and the refresh live there. What stays here is the part that is specific to a
- * subscription runtime and has no API-key counterpart: the CLI it runs on,
- * signing in, the one-time device code, and signing out. Splitting it this way
- * is what stops a provider having two headers, two state words and two refresh
- * buttons.
- *
- * A `discovered` runtime's CLI is found by Ave: this card says what was found,
- * or — when nothing usable is installed — how to install or update it and
- * offers "Check again". It never offers a file picker. A `user-selected`
- * runtime keeps the official runtime picker.
- *
- * The parent owns state refresh and all IPC calls, which keeps main-process
- * validation, browser launching, cancellation, and secret handling on the
- * privileged side.
- */
+/** Discovered runtimes expose install/update guidance, never a file picker; user-selected runtimes retain their picker.
+ * Parent IPC keeps validation and secret handling in main. */
 export function SubscriptionAuthControls({
   provider,
   actions,
@@ -211,8 +211,8 @@ export function SubscriptionAuthControls({
   const invoke = (operation: (() => void | Promise<void>) | undefined) => {
     if (!operation) return;
     try {
-      // The parent maps rejected IPC operations to a safe status.errorCode.
-      // Never surface an arbitrary runtime exception in the renderer.
+      // The parent maps rejected IPC operations to a safe status.errorCode. Never surface an arbitrary runtime exception in the
+      // renderer.
       void Promise.resolve(operation()).catch(() => undefined);
     } catch {
       // Synchronous callback failures follow the same safe parent-state path.
@@ -220,14 +220,19 @@ export function SubscriptionAuthControls({
   };
   const { descriptor, status } = provider;
   const discovered = descriptor.executable === "discovered";
+  // Plan usage runs no executable: there is nothing to find, pick, change or forget.
+  const runsNoExecutable = descriptor.executable === "none";
   const runtime = status?.runtime ?? "checking";
   const connection = status?.connection ?? "unknown";
   const chatReady = connection === "connected" && status?.capabilities?.chat === true;
   const pending = connection === "pending";
   const connected = connection === "connected";
+  // Login admits the executable before spawning; chat still needs verification.
+  const signedOutUnverified = runtime === "unverified" && connection === "signed-out";
   const hasRuntimeSelection = runtime !== "not-configured" && runtime !== "checking";
   const needsRuntimeSelection = runtime === "not-configured";
-  const needsVerification = runtime === "unverified" || (runtime === "ready" && connected && !chatReady);
+  const needsVerification = (runtime === "unverified" && !signedOutUnverified)
+    || (runtime === "ready" && connected && !chatReady);
   const isBusy = provider.busyAction !== null && provider.busyAction !== undefined;
   const disabled = provider.disabled === true || isBusy || provider.refreshPending === true;
   const safeDeviceCode = isSafeDeviceCode(status?.pendingDeviceCode)
@@ -239,8 +244,8 @@ export function SubscriptionAuthControls({
   const showGuidance = Boolean(descriptor.installGuidance)
     && (cliMissing || cliNeedsUpdate || (!discovered && needsRuntimeSelection));
   const checking = provider.refreshPending === true || provider.busyAction === "refresh";
-  // A found CLI that could not be used for another reason (a probe that failed
-  // to run, an auth status it could not read) gets the same way back.
+  // A found CLI that could not be used for another reason (a probe that failed to run, an auth status it could not read)
+  // gets the same way back.
   const cliUnavailable = discovered && runtime === "unavailable" && !cliNeedsUpdate;
   const checkAgainButton = actions.refreshStatus ? (
     <Button
@@ -261,8 +266,107 @@ export function SubscriptionAuthControls({
     </Button>
   ) : null;
 
+  // A runtime reached through the user's own installed CLI bills the user's own subscription; the card says so, and says the
+  // credentials stay there.
+  const usesOwnCli = isSubscriptionRuntimeId(descriptor.id)
+    && subscriptionRuntimeDescriptor(descriptor.id).transport === "claude-cli";
+  // ChatGPT plan usage follows OpenAI's guidelines: say that eligible requests use the plan, how that differs from
+  // API-key charges, and link to where usage is managed.
+  const usesChatGptPlan = isSubscriptionRuntimeId(descriptor.id)
+    && subscriptionRuntimeDescriptor(descriptor.id).transport === "chatgpt-plan-direct";
+
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
+      {usesOwnCli ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:billing-disclosure`}
+        >
+          {t("subscriptionProvidersSection.claudeCliBillingDisclosure")}
+        </p>
+      ) : null}
+      {usesChatGptPlan ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:billing-disclosure`}
+        >
+          {t("subscriptionProvidersSection.chatgptPlanDisclosure")}
+        </p>
+      ) : null}
+      {status?.notice === "welcome" ? (
+        <Dialog
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) invoke(() => actions.acknowledgeNotice?.(descriptor.id));
+          }}
+        >
+          <DialogContent data-testid={`subscription-provider:${descriptor.id}:welcome`}>
+            <DialogHeader>
+              <DialogTitle>{t("subscriptionProvidersSection.chatgptPlanWelcomeTitle")}</DialogTitle>
+              <DialogDescription>{t("subscriptionProvidersSection.chatgptPlanWelcomeBody")}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                onClick={() => invoke(() => actions.acknowledgeNotice?.(descriptor.id))}
+                data-testid={`subscription-provider:${descriptor.id}:welcome-got-it`}
+              >
+                {t("subscriptionProvidersSection.chatgptPlanWelcomeGotIt")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+      {status?.notice && status.notice !== "welcome" ? (
+        <div
+          role="status"
+          className="flex flex-wrap items-start gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:notice`}
+          data-notice={status.notice}
+        >
+          <p className="min-w-0 flex-1">{t(NOTICE_MESSAGE_KEYS[status.notice])}</p>
+          {actions.acknowledgeNotice ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 text-xs"
+              onClick={() => invoke(() => actions.acknowledgeNotice?.(descriptor.id))}
+              data-testid={`subscription-provider:${descriptor.id}:notice-dismiss`}
+            >
+              {t("subscriptionProvidersSection.chatgptPlanNoticeDismiss")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {usesChatGptPlan && runtime === "not-configured" && !status?.errorCode ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:not-configured`}
+        >
+          {t("subscriptionProvidersSection.chatgptPlanNotConfigured")}
+        </p>
+      ) : null}
+      {usesChatGptPlan && chatReady ? (
+        <div
+          className="flex flex-wrap items-center gap-2 text-xs"
+          data-testid={`subscription-provider:${descriptor.id}:plan-in-use`}
+        >
+          <span className="font-medium">{t("subscriptionProvidersSection.chatgptPlanInUse")}</span>
+          {actions.manageUsage ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="link"
+              className="h-auto p-0 text-xs"
+              onClick={() => invoke(() => actions.manageUsage?.(descriptor.id))}
+              data-testid={`subscription-provider:${descriptor.id}:manage-usage`}
+            >
+              {t("subscriptionProvidersSection.chatgptPlanManageUsage")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {status?.errorCode && !(cliMissing && status.errorCode === "subscription-runtime-not-configured") ? (
         <p
           role="alert"
@@ -362,7 +466,7 @@ export function SubscriptionAuthControls({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {!discovered && needsRuntimeSelection && actions.configureRuntime ? (
+        {!discovered && !runsNoExecutable && needsRuntimeSelection && actions.configureRuntime ? (
           <Button
             type="button"
             size="sm"
@@ -376,7 +480,7 @@ export function SubscriptionAuthControls({
               : t("subscriptionProvidersSection.configureRuntime")}
           </Button>
         ) : null}
-        {!discovered && hasRuntimeSelection && actions.configureRuntime ? (
+        {!discovered && !runsNoExecutable && hasRuntimeSelection && actions.configureRuntime ? (
           <Button
             type="button"
             variant="outline"
@@ -392,7 +496,7 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
 
-        {!discovered && hasRuntimeSelection && actions.forgetRuntime ? (
+        {!discovered && !runsNoExecutable && hasRuntimeSelection && actions.forgetRuntime ? (
           <Button
             type="button"
             variant="ghost"
@@ -455,7 +559,7 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
 
-        {!pending && !connected && runtime === "ready" ? descriptor.loginMethods.map((method) => (
+        {!pending && !connected && (runtime === "ready" || signedOutUnverified) ? descriptor.loginMethods.map((method) => (
           <Button
             key={method}
             type="button"
@@ -469,7 +573,9 @@ export function SubscriptionAuthControls({
             {provider.busyAction === `login-${method}`
               ? t("subscriptionProvidersSection.startingLogin")
               : method === "browser"
-                ? t("subscriptionProvidersSection.loginBrowser")
+                ? usesChatGptPlan
+                  ? t("subscriptionProvidersSection.chatgptPlanContinue")
+                  : t("subscriptionProvidersSection.loginBrowser")
                 : t("subscriptionProvidersSection.loginDeviceCode")}
           </Button>
         )) : null}
@@ -494,37 +600,35 @@ export function SubscriptionAuthControls({
   );
 }
 
-/** How a provider with two ways in is signed in to. */
-export type ProviderSignInMethod = "subscription" | "api";
+/** How a provider with two (or, for OpenAI, three) ways in is signed in to: its CLI subscription, its plan-usage sign-in, or an API key. */
+export type ProviderSignInMethod = "subscription" | "plan" | "api";
 
-/**
- * The first question on a provider card that can be reached two ways: sign in
- * with the provider's subscription, or use an API key.
- *
- * One radio group, so it is reachable with Tab and moved with the arrow keys.
- * `value: null` checks neither — a card for a provider with nothing configured
- * yet asks rather than assumes, and shows no key field until "API key" is
- * picked. Choosing a method never removes the other method's credential; the
- * card offers that as its own action.
- */
+/** No configured method means neither radio is selected; switching methods must not delete the other credential. */
 export function SignInMethodChoice({
   rowId,
   planName,
   value,
   onChange,
   disabled,
+  offersPlan,
 }: {
   rowId: string;
   planName: string;
   value: ProviderSignInMethod | null;
   onChange: (method: ProviderSignInMethod) => void;
   disabled?: boolean;
+  /** The row also has plan usage (Sign in with ChatGPT): offer it as a third choice. */
+  offersPlan?: boolean;
 }) {
   const { t } = useTranslation();
   const labelId = useId();
   const optionId = (method: ProviderSignInMethod) => `${labelId}-${method}`;
+  // The existing two choices keep their labels; plan usage, when offered, is a third choice with its own.
   const options: { method: ProviderSignInMethod; label: string }[] = [
     { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
+    ...(offersPlan
+      ? [{ method: "plan" as const, label: t("subscriptionProvidersSection.methodChatgptPlan", { plan: planName }) }]
+      : []),
     { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
   ];
   return (
@@ -534,7 +638,7 @@ export function SignInMethodChoice({
         aria-labelledby={labelId}
         value={value ?? ""}
         onValueChange={(next) => {
-          if (next === "subscription" || next === "api") onChange(next);
+          if (next === "subscription" || next === "api" || (offersPlan && next === "plan")) onChange(next);
         }}
         disabled={disabled}
         className="flex flex-wrap gap-2"

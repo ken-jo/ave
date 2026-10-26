@@ -14,45 +14,75 @@
 //
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
 //
-// Pre-push tiers (the log names the tier and why):
+// Pre-push tiers (the log names the tier and why). Every pull request's CI
+// runs the build and the test scope scripts/run-ci-suite.mjs picks (full, or
+// affected tests only; a test-only diff is never run whole), so a push runs
+// the full suite only on request; the log line of every scoped tier says
+// "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks":
 //   none          a new branch at a commit the remote's default or
 //                 integration/* branches already contain: no new commit
 //   docs-only     unconsumed documentation: document safety and policy checks
 //   comment-only  standalone comment edits: typecheck gate
 //   test-only     test code only: typecheck gate, duplicates, targeted Vitest
-//   fast          other branch source changes: typecheck gate, duplicates,
-//                 the lock suites whose trigger paths changed, changed tests,
-//                 the recorded readers of changed test-read documents, and
+//   fast          other branch changes: typecheck gate, duplicates, the lock
+//                 suites whose trigger paths changed, changed tests, the
+//                 recorded readers of changed test-read documents, and
 //                 `vitest related`, bounded for a shared module's fan-out
 //                 (see pre-push-source-policy.mjs). A message catalog change
 //                 adds the i18n catalog and barrel checks, the i18n suites,
 //                 and the tests and modules that name a changed key's
-//                 namespace (selectMessageCatalogChecks)
-//   full          non-fast-forward or non-branch updates, the default
-//                 branch, integration/* branches, noncanonical paths, global
-//                 test/build inputs, test-read documents with no recorded
-//                 readers, the manual stage, or AVE_PREPUSH_FULL=1: typecheck
-//                 gate, `bun run test`, `bun run build`, `check:gate-core`
-// The full suite and build of a fast push run once at merge time, on the
-// merged tree, and in CI.
+//                 namespace (selectMessageCatalogChecks, or, for a change it
+//                 cannot attribute, selectUnattributedCatalogChecks). A
+//                 scripts/** or .github/** change adds `vitest related` on
+//                 the changed script and the tests that name it; Markdown
+//                 under .github/ takes the document safety checks. A changed
+//                 module with no related test file runs the tests that name
+//                 it, its must-run tests (config/ci-must-run-tests.json) and
+//                 its lock suites, and is logged as having no local test when
+//                 all of those are empty (pre-push-tier.mjs)
+//   global-input  package.json, bun.lock, bunfig.toml, tsconfig*,
+//                 vitest.config*, config/**, the Vitest setup files and the
+//                 other global test/build inputs, changes the import graph
+//                 cannot trace (a deleted module, a mode change, a test-read
+//                 document with no recorded reader, a noncanonical path), a
+//                 full-tier input in pushed history, and pushes whose change
+//                 set could not be resolved: what fast runs, plus every lock
+//                 suite and `bun install --frozen-lockfile --dry-run`
+//   full          only on request: AVE_PREPUSH_FULL=1, the manual stage, a
+//                 direct push to the default branch or an integration/*
+//                 branch, a tag or other non-branch update, or a deletion:
+//                 typecheck gate, `bun run test`, `bun run build`,
+//                 `check:gate-core`
+// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the build
+// of a scoped push runs in the PR's CI on the merged tree, and its test scope
+// there follows scripts/run-ci-suite.mjs (a test-only diff never runs the full
+// suite; a non-test-only category PR does).
 //
 // Host admission (pre-push-host-lock.mjs): a full run holds one exclusive
-// host-wide lock, so two full suites never share a machine; a fast run holds
-// one of AVE_PREPUSH_FAST_SLOTS (default 4) shared slots. A waiting run
-// prints the holder's PID; one that waits past AVE_PREPUSH_LOCK_TIMEOUT_S
-// (default 3600) fails the push. A dead holder's lock is reclaimed by PID
+// host-wide lock, so two full suites never share a machine; a fast or
+// global-input run holds one of AVE_PREPUSH_FAST_SLOTS (default 4) shared
+// slots. A waiting run prints the holder's PID; one that waits past
+// AVE_PREPUSH_LOCK_TIMEOUT_S (default 3600) fails the push. A dead holder's lock is reclaimed by PID
 // liveness. The lock orders checks and never skips one.
 //
 // Multi-stage PRs: a sub-branch is cut from origin/integration/<category> and
 // merged into it by PR; the category branch reaches main through one PR whose
-// CI runs the full suite and build. A sub-branch push therefore runs only the
+// CI runs the full suite for non-test-only changes, and builds every source
+// change. A sub-branch push therefore runs only the
 // checks scoped to its own commits: a new branch is diffed against the
 // closest merge-base with a live default or integration/* tip on the remote
-// (findNewBranchBase), not only the default branch. A direct push TO an
-// integration/* branch is treated like the default branch (full checks):
-// those branches advance through reviewed PR merges and lead-run merges of
-// main, so a direct push is the exceptional case and has to carry the whole
-// proof itself.
+// (findNewBranchBase), not only the default branch. For every branch push,
+// pushed commits that a live default or integration/* tip already contains
+// are not the branch's own: merging the base in does not move the tier, while
+// own commits and a merge's conflict resolutions still do (scanPushedHistory).
+// A direct push TO an integration/* branch is treated like the default
+// branch (full checks): those branches advance through reviewed PR merges and
+// lead-run merges of main, so a direct push is the exceptional case and has to
+// carry the whole proof itself.
+// A non-fast-forward push of a branch (a rebase, an amend) is diffed like a
+// new branch, against its merge-base with the closest live default or
+// integration/* tip, and also against the remote commit it replaces: a commit
+// the rewrite drops changes the remote tree back, so its files are checked too.
 // Every non-deletion update must name HEAD (an annotated tag through the
 // commit it peels to) and the tracked checkout must be clean before and after
 // checks. Deletion-only pushes have no tree to check.
@@ -70,6 +100,7 @@ import {
   parsePrePushUpdates,
   parseRemoteHeads,
   readPrePushInput,
+  resolveHeadUpdates,
   selectBaseCandidates,
 } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
@@ -82,7 +113,7 @@ import { withElectronNativeRebuildLock } from "../lib/electron-native-modules.mj
 import { ensureElectronAbiBetterSqlite3 } from "./node-native-abi.mjs";
 import { readJsonFile } from "../lib/knip-baseline.mjs";
 import { findTlsBypass, isTlsBypassScanTarget } from "../lib/tls-bypass-patterns.mjs";
-import { runCommand, spawnSyncPortable as spawnSync } from "./spawn-command.mjs";
+import { runCommand, splitArgumentsWithinBudget, spawnSyncPortable as spawnSync } from "./spawn-command.mjs";
 import {
   APP_TYPECHECK_GATE_SCRIPTS,
   getMissingPackageScripts,
@@ -94,14 +125,27 @@ import {
 import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
 import {
+  AVE_APP_LOCK_SUITES,
   boundRelatedTests,
   getRelatedCoverageFullReason,
+  isCollectedVitestFile,
   MESSAGE_CATALOG_CHECK_SCRIPTS,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./pre-push-source-policy.mjs";
+import {
+  describeScopedTier,
+  FROZEN_LOCKFILE_ARGS,
+  FULL_SUITE_DEFERRED,
+  GLOBAL_INPUT_TIER,
+  selectNamedPathTests,
+  selectScopedTier,
+  selectUnattributedCatalogChecks,
+  selectUntestedModuleTests,
+} from "./pre-push-tier.mjs";
+import { MUST_RUN_TESTS_PATH } from "../run-ci-suite.mjs";
 import { resolveHostLockSettings, withHostLock } from "./pre-push-host-lock.mjs";
 
 const isWindows = process.platform === "win32";
@@ -184,6 +228,14 @@ function capture(cmd, args, cwd, env = process.env) {
     throw new Error(stderr || `${cmd} ${args.join(" ")} failed`);
   }
   return (result.stdout || "").trim();
+}
+
+/** The branch HEAD names and its tip, or null for a detached HEAD. */
+function headBranch(repoRoot) {
+  const ref = captureOptional("git", ["symbolic-ref", "-q", "HEAD"], repoRoot);
+  if (!ref) return null;
+  const sha = captureOptional("git", ["rev-parse", "--verify", "-q", `${ref}^{commit}`], repoRoot);
+  return sha ? { ref, sha } : null;
 }
 
 function captureOptional(cmd, args, cwd) {
@@ -300,6 +352,14 @@ function ensureAppTestRuntimeAbi(dir) {
     rebuildBetterSqlite3ForElectron(dir);
     return ensureElectronAbiBetterSqlite3(dir);
   }
+}
+
+// The background-shell suites load the git-ignored Windows job launcher. The
+// full tier builds it through `test:prepare`; the test-only, fast and
+// global-input tiers call `test:vitest` directly, so they run the same check here.
+function ensureWindowsJobLauncher(dir) {
+  if (!isWindows) return;
+  run(commands.node, [join(dir, "scripts/prepare-windows-job.mjs")], dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -508,17 +568,35 @@ function gitRunner(repoRoot, timeout) {
 // origin/integration/<category>, and a stale local tracking ref does not
 // matter because the tips come from the remote itself. Tips missing from the
 // local object store are fetched once (objects only: no tags, no ref or
-// FETCH_HEAD update) before the base is chosen.
+// FETCH_HEAD update) before the base is chosen. A non-fast-forward update is
+// measured from the same base (classifyPrePushChanges).
 function findNewBranchBase(repoRoot, update, remoteLocation) {
-  if (!isUsableRemoteLocation(remoteLocation)) {
-    return { reason: `no conservative base found for ${update.localRef}: the push remote location is unusable` };
+  const live = listLiveBaseTips(repoRoot, remoteLocation);
+  if (!live.candidates) return { reason: `no conservative base found for ${update.localRef}: ${live.reason}` };
+  const chosen = chooseNewBranchBase(update.localSha, live.candidates, gitRunner(repoRoot, 15_000));
+  if (!chosen) {
+    return {
+      reason: `no conservative base found for ${update.localRef}: it shares no history with a default or integration branch tip on the remote`,
+    };
   }
+  const kind = /^[0-9a-f]*[1-9a-f][0-9a-f]*$/i.test(update.remoteSha ?? "") ? "non-fast-forward update" : "new branch";
+  console.log(
+    `[checks] ${kind} ${update.localRef}: base is the merge-base with ${chosen.ref} ` +
+      `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
+  );
+  return { sha: chosen.sha, tips: live.candidates.map(({ sha }) => sha) };
+}
+
+// The live default and integration/* tips of the remote that are present
+// locally, after one fetch of any that are missing. They choose a new branch's
+// base and, for every branch push, mark the pushed commits that are not the
+// branch's own (scanPushedHistory).
+function listLiveBaseTips(repoRoot, remoteLocation) {
+  if (!isUsableRemoteLocation(remoteLocation)) return { reason: "the push remote location is unusable" };
   const git = gitRunner(repoRoot, 15_000);
   const listing = git(["ls-remote", "--symref", "--", remoteLocation, "HEAD", "refs/heads/*"]);
   const remoteHeads = listing.status === 0 ? parseRemoteHeads(listing.stdout) : null;
-  if (!remoteHeads) {
-    return { reason: `no conservative base found for ${update.localRef}: the remote's branch heads could not be listed` };
-  }
+  if (!remoteHeads) return { reason: "the remote's branch heads could not be listed" };
   const candidates = selectBaseCandidates(remoteHeads);
   const missing = findMissingCandidateTips(candidates, git);
   if (missing.length > 0) {
@@ -535,17 +613,8 @@ function findNewBranchBase(repoRoot, update, remoteLocation) {
       console.log(`[checks] skipping base candidate ${candidate.ref} (${candidate.sha.slice(0, 12)}): ${fetchReason}`);
     }
   }
-  const chosen = chooseNewBranchBase(update.localSha, candidates, git);
-  if (!chosen) {
-    return {
-      reason: `no conservative base found for ${update.localRef}: it shares no history with a default or integration branch tip on the remote`,
-    };
-  }
-  console.log(
-    `[checks] new branch ${update.localRef}: base is the merge-base with ${chosen.ref} ` +
-      `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
-  );
-  return { sha: chosen.sha };
+  const absent = new Set(findMissingCandidateTips(candidates, git).map(({ ref }) => ref));
+  return { candidates: candidates.filter(({ ref }) => !absent.has(ref)) };
 }
 
 function runSharedHistoryGuard(repoRoot, parsedUpdates, remote, remoteLocation) {
@@ -612,23 +681,53 @@ function getGitBlob(repoRoot, objectId, relativePath) {
   return decodeUtf8Strict(result.stdout);
 }
 
-function getPushedHistoryFullReason(repoRoot, baseSha, localSha) {
+// The tier of a push is decided from the branch's own commits: those in
+// base..local that no live default or integration/* tip of the remote already
+// contains (`excludedTips`). A sub-branch that merges its integration base
+// therefore does not inherit the base's global-input changes; those commits
+// were checked when they reached that tip. A merge commit's own change is the
+// set of paths where it differs from every parent (its conflict resolutions):
+// what it takes unchanged from one parent is that parent's history, which is
+// either checked here as own commits or already on a live tip.
+//
+// Returns { reason } when the pushed history needs the full checks, else
+// { ownCommits, excludedCommits, ownPaths }. ownPaths is null when nothing was
+// excluded, so the whole base..local diff is the branch's own.
+function scanPushedHistory(repoRoot, baseSha, localSha, excludedTips = []) {
   const history = captureOptional(commands.git, ["rev-list", "--parents", `${baseSha}..${localSha}`], repoRoot);
-  if (!history) return "pushed history could not be resolved";
-  for (const line of history.split("\n")) {
+  if (!history) return { reason: "pushed history could not be resolved" };
+  let own = history.split("\n");
+  if (excludedTips.length > 0) {
+    const scoped = spawnSync(
+      commands.git,
+      ["rev-list", "--parents", localSha, `^${baseSha}`, ...excludedTips.map((sha) => `^${sha}`), "--"],
+      { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+    if (scoped.error || scoped.status !== 0) return { reason: "pushed history could not be scoped to own commits" };
+    own = (scoped.stdout || "").split("\n").filter(Boolean);
+  }
+  const excludedCommits = history.split("\n").length - own.length;
+  const ownPaths = excludedCommits > 0 ? new Set() : null;
+  for (const line of own) {
     const [commit, ...parents] = line.split(" ");
     if (parents.length === 0 || ![commit, ...parents].every((sha) => /^[0-9a-f]{40,64}$/.test(sha))) {
-      return "pushed history has no conservative parent";
+      return { reason: "pushed history has no conservative parent" };
     }
+    const perParent = [];
     for (const parent of parents) {
       const entries = getChangedEntries(repoRoot, parent, commit);
-      if (entries === null) return "pushed history diff failed";
-      if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
-      const selection = selectFastSourceChecks(entries);
-      if (!selection.eligible) return `${selection.reason} in pushed history`;
+      if (entries === null) return { reason: "pushed history diff failed" };
+      perParent.push(entries);
     }
+    const entries = perParent.length === 1
+      ? perParent[0]
+      : perParent[0].filter(({ path }) => perParent.every((list) => list.some((entry) => entry.path === path)));
+    for (const { path } of entries) ownPaths?.add(path);
+    if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
+    const selection = selectFastSourceChecks(entries);
+    if (!selection.eligible) return { reason: `${selection.reason} in pushed history` };
   }
-  return null;
+  return { ownCommits: own.length, excludedCommits, ownPaths };
 }
 
 // The checks for the message catalog files of a fast push (see
@@ -655,6 +754,51 @@ function getMessageCatalogSelection(repoRoot, entries) {
   });
 }
 
+// The selection for catalog changes selectMessageCatalogChecks cannot
+// attribute (see selectUnattributedCatalogChecks): the same reads as
+// getMessageCatalogSelection, without its full-checks reasons.
+function getUnattributedCatalogSelection(repoRoot, entries) {
+  const listing = spawnSync(commands.git, ["ls-files", "-z", "--", "src", "test"], {
+    cwd: repoRoot,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const decoded = listing.error || listing.status !== 0 ? null : decodeUtf8Strict(listing.stdout);
+  if (decoded === null) return { reason: "tracked files could not be listed for message consumers" };
+  return selectUnattributedCatalogChecks(entries, {
+    readBlob: (sha, relativePath) => getGitBlob(repoRoot, sha, relativePath),
+    trackedFiles: decoded.split("\0").filter(Boolean),
+    readTrackedFile: (relativePath) => {
+      try {
+        return readFileSync(join(repoRoot, relativePath), "utf8");
+      } catch {
+        return null;
+      }
+    },
+  });
+}
+
+// A non-fast-forward update replaces a remote commit the local object store
+// may not hold. Its objects are fetched once (no tags, no ref or FETCH_HEAD
+// update) so the commits it drops can be diffed. Returns whether it is present.
+function ensureReplacedRemoteCommit(repoRoot, update, remoteLocation) {
+  const git = gitRunner(repoRoot, 15_000);
+  const present = () => git(["cat-file", "-e", `${update.remoteSha}^{commit}`]).status === 0;
+  if (present()) return true;
+  if (!isUsableRemoteLocation(remoteLocation)) return false;
+  console.log(`[checks] fetching the replaced remote commit ${update.remoteSha.slice(0, 12)} of ${update.remoteRef}`);
+  gitRunner(repoRoot, 120_000)([
+    "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", remoteLocation, update.remoteRef,
+  ]);
+  return present();
+}
+
+// Only the request cases below (a deletion, the default branch, an
+// integration branch, a tag or other non-branch update) return the full
+// tier from here; the manual stage and AVE_PREPUSH_FULL=1 are decided by the
+// dispatch. Every other push returns a scoped tier (pre-push-tier.mjs): what
+// the hook cannot resolve or trace keeps the global-input tier, never the
+// full suite, which every pull request's CI runs.
 function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
   if (!parsedUpdates.complete || parsedUpdates.updates.length === 0) {
     return { docsOnly: false, reason: "ref updates could not be classified" };
@@ -662,11 +806,11 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
 
   const changedFiles = new Set();
   const changedEntries = [];
-  let targetedTestsEligible = true;
-  let targetedTestsReason = "";
+  const unresolvedReasons = [];
   let commentOnlyEligible = true;
   let updatesAlreadyOnRemote = 0;
   const protectedBranchNames = getProtectedBranchNames(repoRoot);
+  let liveTips = null;
   for (const update of parsedUpdates.updates) {
     if (isNullObjectId(update.localSha)) {
       return { docsOnly: false, reason: `deleted ref ${update.remoteRef} requires full checks` };
@@ -691,57 +835,100 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
     }
 
     const isNewBranch = isNullObjectId(update.remoteSha);
-    if (isNewBranch) {
-      commentOnlyEligible = false;
-    } else if (isFastForwardUpdate(repoRoot, update.remoteSha, update.localSha) !== true) {
-      return { docsOnly: false, reason: "non-fast-forward updates require full checks" };
+    // A rewritten branch (non-fast-forward) is measured like a new branch,
+    // plus the replaced remote commit (see the header). null: that commit is
+    // not available, so the commits the push drops cannot be listed.
+    const replacesRemote = isNewBranch
+      ? false
+      : ensureReplacedRemoteCommit(repoRoot, update, remoteLocation)
+        ? isFastForwardUpdate(repoRoot, update.remoteSha, update.localSha) !== true
+        : null;
+    if (replacesRemote === null) {
+      unresolvedReasons.push(
+        `the replaced remote commit ${update.remoteSha} of ${update.remoteRef} is not available locally, so the commits it drops cannot be listed`
+      );
     }
-    const base = isNewBranch
+    const measuredLikeNewBranch = isNewBranch || replacesRemote !== false;
+    if (measuredLikeNewBranch) commentOnlyEligible = false;
+    const base = measuredLikeNewBranch
       ? findNewBranchBase(repoRoot, update, remoteLocation)
       : { sha: update.remoteSha };
     if (!base.sha) {
-      return { docsOnly: false, reason: base.reason };
+      unresolvedReasons.push(base.reason);
+      console.log(`[checks] ${update.localRef}: ${base.reason}; no changed-file tests could be selected for this update; CI runs the full suite`);
+      continue;
     }
     const baseSha = base.sha;
     // A new branch at a commit the remote's default or integration branches
     // already contain (cut and pushed before any commit) adds nothing to check.
-    if (baseSha.toLowerCase() === update.localSha.toLowerCase()) {
+    if (isNewBranch && baseSha.toLowerCase() === update.localSha.toLowerCase()) {
       updatesAlreadyOnRemote += 1;
       continue;
     }
 
-    const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
-    if (entries === null) {
-      return { docsOnly: false, reason: `git diff failed for ${update.localRef}` };
+    // A branch's own commits decide its tier; see scanPushedHistory. A listing
+    // failure only loses the scoping: every pushed commit then counts as own.
+    // A new or rewritten branch already holds the tips its base came from.
+    if (base.tips === undefined && liveTips === null) {
+      const live = listLiveBaseTips(repoRoot, remoteLocation);
+      if (!live.candidates) console.log(`[checks] own-commit scoping skipped: ${live.reason}`);
+      liveTips = live.candidates?.map(({ sha }) => sha) ?? [];
     }
-    const historyReason = getPushedHistoryFullReason(repoRoot, baseSha, update.localSha);
-    if (historyReason) return { docsOnly: false, reason: historyReason };
-    for (const entry of entries) {
-      changedFiles.add(entry.path);
-      changedEntries.push({ ...entry, baseSha, localSha: update.localSha });
+    const history = scanPushedHistory(repoRoot, baseSha, update.localSha, base.tips ?? liveTips);
+    // An unresolved history keeps the global-input tier and loses the scoping.
+    if (history.reason) unresolvedReasons.push(history.reason);
+    // Commits a rewrite drops still change the remote, so only a push that
+    // replaces nothing can be wholly already on the remote.
+    else if (history.ownCommits === 0 && replacesRemote === false) {
+      updatesAlreadyOnRemote += 1;
+      continue;
+    }
+    const diff = getChangedEntries(repoRoot, baseSha, update.localSha);
+    if (diff === null) {
+      const reason = `git diff failed for ${update.localRef}`;
+      unresolvedReasons.push(reason);
+      console.log(`[checks] ${update.localRef}: ${reason}; no changed-file tests could be selected for this update; CI runs the full suite`);
+      continue;
+    }
+    const entries = history.ownPaths ? diff.filter(({ path }) => history.ownPaths.has(path)) : diff;
+    if (history.ownPaths) {
+      console.log(
+        `[checks] ${update.localRef}: ${history.excludedCommits} pushed commit(s) already on a live default or ` +
+          `integration branch are excluded; the tier follows ${history.ownCommits} own commit(s) and ${entries.length} path(s)`
+      );
+    }
+    const diffs = [{ entries, baseSha }];
+    // A commit of the replaced remote branch that the push drops changes the
+    // remote tree back: the diff from the replaced commit names its files.
+    if (replacesRemote === true) {
+      const replaced = getChangedEntries(repoRoot, update.remoteSha, update.localSha);
+      if (replaced === null) unresolvedReasons.push(`git diff against the replaced remote commit failed for ${update.localRef}`);
+      else diffs.push({ entries: replaced, baseSha: update.remoteSha });
+    }
+    for (const diff of diffs) {
+      for (const entry of diff.entries) {
+        changedFiles.add(entry.path);
+        changedEntries.push({ ...entry, baseSha: diff.baseSha, localSha: update.localSha });
+      }
     }
   }
 
-  if (changedFiles.size === 0 && updatesAlreadyOnRemote === parsedUpdates.updates.length) {
+  if (changedFiles.size === 0 && unresolvedReasons.length === 0 && updatesAlreadyOnRemote === parsedUpdates.updates.length) {
     return {
       docsOnly: false,
       alreadyOnRemote: true,
       reason: "every pushed commit is already on a default or integration branch of the remote",
     };
   }
-  if (changedFiles.size === 0) {
-    return { docsOnly: false, reason: "no changed files were resolved" };
+  if (changedFiles.size === 0 && unresolvedReasons.length === 0) {
+    unresolvedReasons.push("no changed files were resolved");
   }
-  const noncanonicalPath = [...changedFiles].find((file) => !isCanonicalGitPath(file));
-  if (noncanonicalPath) {
-    return { docsOnly: false, reason: "noncanonical Git path requires full checks" };
-  }
-  const documentation = classifyDocumentationChanges(changedEntries);
-  if (!documentation.docsOnly) {
+  if (unresolvedReasons.length === 0) {
+    const documentation = classifyDocumentationChanges(changedEntries);
+    if (documentation.docsOnly) return { ...documentation, pushedEntries: changedEntries };
     // The safety ceiling applies before the narrower comment and test tiers.
     const fastSelection = selectFastSourceChecks(changedEntries);
-    if (!fastSelection.eligible) return { docsOnly: false, reason: fastSelection.reason };
-    if (commentOnlyEligible && fastSelection.messageCatalogEntries.length === 0) {
+    if (fastSelection.eligible && commentOnlyEligible && fastSelection.messageCatalogEntries.length === 0) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
         (objectId, relativePath) => getGitBlob(repoRoot, objectId, relativePath)
@@ -755,7 +942,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
         };
       }
     }
-    if (targetedTestsEligible) {
+    if (fastSelection.eligible) {
       const selection = selectTargetedAveAppVitestFiles(changedEntries);
       if (selection.eligible) {
         return {
@@ -767,36 +954,55 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
           reason: selection.reason,
         };
       }
-      if (fastSelection.eligible) {
-        let messageCatalog = null;
-        if (fastSelection.messageCatalogEntries.length > 0) {
-          messageCatalog = getMessageCatalogSelection(repoRoot, fastSelection.messageCatalogEntries);
-          if (messageCatalog.reason) return { docsOnly: false, reason: messageCatalog.reason };
-        }
-        return {
-          docsOnly: false,
-          fastSource: true,
-          lockSuites: selectTriggeredLockSuites([...changedFiles]),
-          testFiles: [...new Set([...fastSelection.testFiles, ...(messageCatalog?.testFiles ?? [])])].sort(),
-          relatedFiles: fastSelection.relatedFiles,
-          messageCatalog: messageCatalog && {
-            files: fastSelection.messageCatalogEntries.map(({ path }) => path),
-            namespaces: messageCatalog.namespaces,
-            consumerModules: messageCatalog.consumerModules.filter((path) => !fastSelection.relatedFiles.includes(path)),
-          },
-          documentationEntries: fastSelection.documentationEntries,
-          reason: fastSelection.reason,
-        };
-      }
-      targetedTestsReason ||= fastSelection.reason;
     }
-    return {
-      docsOnly: false,
-      testOnly: false,
-      reason: targetedTestsReason || documentation.reason,
-    };
   }
-  return { ...documentation, pushedEntries: changedEntries };
+
+  const scoped = selectScopedTier(changedEntries, unresolvedReasons);
+  let tier = scoped.tier;
+  const tierReasons = [...scoped.reasons];
+  let messageCatalog = null;
+  if (scoped.messageCatalogEntries.length > 0) {
+    messageCatalog = getMessageCatalogSelection(repoRoot, scoped.messageCatalogEntries);
+    if (messageCatalog.reason) {
+      // An unattributable catalog change keeps the catalog checks, the i18n
+      // suites and the namespace consumers, never the full suite.
+      const unattributedReason = messageCatalog.reason;
+      const fallback = getUnattributedCatalogSelection(repoRoot, scoped.messageCatalogEntries);
+      if (fallback.reason) {
+        tier = GLOBAL_INPUT_TIER;
+        tierReasons.push(`${unattributedReason}; ${fallback.reason}`);
+      }
+      messageCatalog = {
+        namespaces: fallback.namespaces ?? [],
+        testFiles: fallback.testFiles ?? [],
+        consumerModules: fallback.consumerModules ?? [],
+        unattributed: {
+          reason: unattributedReason,
+          files: fallback.unattributedFiles ?? [],
+          skippedConsumers: fallback.skippedConsumers ?? [],
+        },
+      };
+    }
+  }
+  return {
+    docsOnly: false,
+    fastSource: true,
+    tier,
+    tierReasons,
+    lockSuites: selectTriggeredLockSuites([...changedFiles]),
+    testFiles: [...new Set([...scoped.testFiles, ...(messageCatalog?.testFiles ?? [])])].sort(),
+    relatedFiles: scoped.relatedFiles,
+    droppedRelatedFiles: scoped.droppedRelatedFiles,
+    namedPaths: scoped.namedPaths,
+    messageCatalog: messageCatalog && {
+      files: scoped.messageCatalogEntries.map(({ path }) => path),
+      namespaces: messageCatalog.namespaces,
+      consumerModules: messageCatalog.consumerModules.filter((path) => !scoped.relatedFiles.includes(path)),
+      ...(messageCatalog.unattributed ? { unattributed: messageCatalog.unattributed } : {}),
+    },
+    documentationEntries: scoped.documentationEntries,
+    reason: tier === GLOBAL_INPUT_TIER ? tierReasons.join("; ") : scoped.reason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -969,28 +1175,54 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   runAppTypecheckGate(dir, "targeted Vitest checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
+  ensureWindowsJobLauncher(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
-  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
+  runVitestChunks(bun, dir, vitestArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
 }
 
+// vitestArgs is the command (`run` or `related`), its flags, then the file
+// arguments; the file arguments may span several Vitest runs (runVitestChunks),
+// each with its own JSON report, and the zero-test check applies to their sum.
 function runVitestWithReport(bun, dir, vitestArgs, emptyMessage) {
+  const [mode, ...rest] = vitestArgs;
+  const flags = rest.filter((arg) => arg.startsWith("--"));
+  const files = rest.filter((arg) => !arg.startsWith("--"));
   const reportDirectory = mkdtempSync(join(tmpdir(), "ave-related-check-"));
-  const reportPath = join(reportDirectory, "report.json");
+  // Fixed-width names: every chunk's command line is measured with its own path.
+  const reportPath = (index) => join(reportDirectory, `report-${String(index).padStart(4, "0")}.json`);
   try {
-    run(
-      bun,
-      ["run", "test:vitest", "--", ...vitestArgs.slice(0, 1), "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...vitestArgs.slice(1)],
-      dir,
-      withoutGitContext()
-    );
-    const report = readJsonFile(reportPath);
-    if (!Number.isSafeInteger(report.numTotalTests) || report.numTotalTests <= 0 ||
-        !Number.isSafeInteger(report.numPassedTests) || report.numPassedTests <= 0) {
-      throw new Error(emptyMessage);
+    const chunks = runVitestChunks(bun, dir, files, (chunk, index) =>
+      ["run", "test:vitest", "--", mode, "--reporter=default", "--reporter=json", `--outputFile=${reportPath(index)}`, ...flags, ...chunk]);
+    let total = 0;
+    let passed = 0;
+    for (const index of chunks.keys()) {
+      const report = readJsonFile(reportPath(index));
+      if (!Number.isSafeInteger(report.numTotalTests) || !Number.isSafeInteger(report.numPassedTests)) {
+        throw new Error(emptyMessage);
+      }
+      total += report.numTotalTests;
+      passed += report.numPassedTests;
     }
+    if (total <= 0 || passed <= 0) throw new Error(emptyMessage);
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }
+}
+
+// Runs `bun <buildArgs(chunk, index)>` once per chunk of fileArgs that fits the
+// command-line budget (splitArgumentsWithinBudget): the chunks together carry
+// exactly fileArgs, and the first failing chunk fails the check. A file list
+// over the budget used to reach Windows as one spawn and fail with
+// ENAMETOOLONG. Returns the chunks.
+function runVitestChunks(bun, dir, fileArgs, buildArgs) {
+  const chunks = splitArgumentsWithinBudget(bun, fileArgs, buildArgs);
+  for (const [index, chunk] of chunks.entries()) {
+    if (chunks.length > 1) {
+      console.log(`[checks] Vitest chunk ${index + 1}/${chunks.length}: ${chunk.length} of ${fileArgs.length} file argument(s)`);
+    }
+    run(bun, buildArgs(chunk, index), dir, withoutGitContext());
+  }
+  return chunks;
 }
 
 // lockSuites: the suites whose trigger paths changed. relatedSelection: the
@@ -999,8 +1231,10 @@ function runVitestWithReport(bun, dir, vitestArgs, emptyMessage) {
 // message consumers with tests), otherwise the bounded list runs explicitly.
 // A Vitest call with no file arguments would run the whole suite, so an empty
 // list skips its run instead. messageCatalog: the catalog checks run first.
+// frozenLockfile (the global-input tier): a frozen-lockfile install dry run
+// (FROZEN_LOCKFILE_ARGS) runs before everything else; it writes nothing.
 // The run holds one of AVE_PREPUSH_FAST_SLOTS shared host slots.
-function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedSelection, messageCatalog) {
+function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedSelection, messageCatalog, { frozenLockfile = false } = {}) {
   const bun = available(commands.bun);
   if (!bun) {
     throw new Error("bun is required for fast ave source checks");
@@ -1015,18 +1249,20 @@ function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedSelection, me
   }
   const { directory, timeoutMs, fastSlots } = resolveHostLockSettings();
   withHostLock({ name: "fast", label: "fast-tier", directory, timeoutMs, slots: fastSlots }, () =>
-    runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, relatedSelection, messageCatalog));
+    runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, relatedSelection, messageCatalog, frozenLockfile));
 }
 
-function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, relatedSelection, messageCatalog) {
+function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, relatedSelection, messageCatalog, frozenLockfile) {
+  if (frozenLockfile) run(bun, [...FROZEN_LOCKFILE_ARGS], dir);
   runAppTypecheckGate(dir, "fast source checks");
   if (messageCatalog) runPackageScripts(dir, MESSAGE_CATALOG_CHECK_SCRIPTS, "ave message catalog checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
+  ensureWindowsJobLauncher(dir);
   const direct = [...new Set([...lockSuites, ...testFiles])];
   const directArgs = direct.map((file) => `./${file}`);
   if (directArgs.length > 0) {
-    run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
+    runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
   }
   if (relatedSelection.sources.length === 0) return;
   if (relatedSelection.narrowed.length === 0) {
@@ -1045,27 +1281,40 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
 
 // Per-module related-test discovery, then the bound of pre-push-source-policy.
 // consumerModules are message consumers: unchanged modules that name a changed
-// message key; one with no related test file is reported and left out.
-// Returns { tests, narrowed, sources, untestedConsumers } or { reason } (full
-// checks); sources are the modules `vitest related` runs on.
+// message key; one with no related test file is reported and left out. A
+// changed module with no related test file is returned in untestedModules,
+// whose extra selection sources the dispatch adds (selectUntestedModuleTests).
+// Returns { tests, narrowed, sources, untestedConsumers, untestedModules } or
+// { reason } (the global-input tier); sources are the modules `vitest
+// related` runs on.
 function getFastSourceRelatedSelection(dir, relatedFiles, consumerModules = []) {
   const discovered = [...relatedFiles, ...consumerModules];
-  if (discovered.length === 0) return { tests: [], narrowed: [], sources: [], untestedConsumers: [] };
-  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...discovered], {
-    cwd: dir,
-    env: withoutGitContext(),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) return { reason: "related test discovery failed; full checks required" };
-  let coverage;
-  try {
-    coverage = JSON.parse(result.stdout);
-  } catch {
-    return { reason: "related test discovery returned an invalid report; full checks required" };
+  if (discovered.length === 0) return { tests: [], narrowed: [], sources: [], untestedConsumers: [], untestedModules: [] };
+  // Discovery is per source, so the chunks' reports concatenate to the report
+  // of one spawn over every source.
+  const discoveryScript = join(dir, "scripts/hooks/pre-push-related-tests.mjs");
+  const coverage = [];
+  for (const chunk of splitArgumentsWithinBudget(commands.node, discovered, (sources) => [discoveryScript, ...sources])) {
+    const result = spawnSync(commands.node, [discoveryScript, ...chunk], {
+      cwd: dir,
+      env: withoutGitContext(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) return { reason: "related test discovery failed" };
+    let report;
+    try {
+      report = JSON.parse(result.stdout);
+    } catch {
+      return { reason: "related test discovery returned an invalid report" };
+    }
+    if (!Array.isArray(report)) return { reason: "related test coverage could not be resolved" };
+    coverage.push(...report);
   }
-  const reason = getRelatedCoverageFullReason(relatedFiles, coverage, consumerModules);
+  // Every source may have no related test here; the report's shape and paths
+  // are still validated.
+  const reason = getRelatedCoverageFullReason([], coverage, discovered);
   if (reason) return { reason };
   const tested = coverage.filter((record) => record.tests.length > 0);
   const bounded = boundRelatedTests(tested, (relativePath) => {
@@ -1079,7 +1328,77 @@ function getFastSourceRelatedSelection(dir, relatedFiles, consumerModules = []) 
   return {
     ...bounded,
     sources: tested.map((record) => record.source),
-    untestedConsumers: coverage.filter((record) => record.tests.length === 0).map((record) => record.source),
+    untestedConsumers: coverage.filter((record) => record.tests.length === 0 && !relatedFiles.includes(record.source))
+      .map((record) => record.source),
+    untestedModules: coverage.filter((record) => record.tests.length === 0 && relatedFiles.includes(record.source))
+      .map((record) => record.source),
+  };
+}
+
+// The tests a scoped tier adds beyond the changed tests and `vitest related`:
+// the tests that name a changed path of namedPaths or an untested module, and
+// the must-run tests and lock suites of each untested module
+// (selectUntestedModuleTests). The pushed commit is the clean checked-out
+// HEAD, so the working tree is the pushed tree.
+function getScopedExtraTests(repoRoot, namedPaths, untestedModules) {
+  if (namedPaths.length === 0 && untestedModules.length === 0) return { namedTests: [], untested: [] };
+  const listing = spawnSync(commands.git, ["ls-files", "-z", "--", "src", "test"], {
+    cwd: repoRoot,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const decoded = listing.error || listing.status !== 0 ? null : decodeUtf8Strict(listing.stdout);
+  if (decoded === null) throw new Error("[PRE_PUSH_TRACKED_TESTS] tracked test files could not be listed for the scoped tier");
+  const trackedTests = decoded.split("\0").filter((path) => path && isCollectedVitestFile(path)).sort();
+  const texts = new Map();
+  const readText = (relativePath) => {
+    if (!texts.has(relativePath)) {
+      try {
+        texts.set(relativePath, readFileSync(join(repoRoot, relativePath), "utf8"));
+      } catch {
+        texts.set(relativePath, null);
+      }
+    }
+    return texts.get(relativePath);
+  };
+  const namedTests = selectNamedPathTests(namedPaths, trackedTests, readText);
+  if (untestedModules.length === 0) return { namedTests, untested: [] };
+  const mustRunDocument = readJsonFile(join(repoRoot, MUST_RUN_TESTS_PATH));
+  const untested = untestedModules.map((module) =>
+    selectUntestedModuleTests(module, selectNamedPathTests([module], trackedTests, readText), mustRunDocument, trackedTests));
+  return { namedTests, untested };
+}
+
+// Completes a scoped tier's run list after related-test discovery. The
+// global-input tier runs every lock suite. Discovery that fails, or a bound
+// that cannot be met without dropping a module's coverage, drops `vitest
+// related` and keeps the global-input tier; every changed module then counts
+// as untested, so the tests that name it and its must-run tests still run.
+function resolveScopedTier(repoRoot, classification) {
+  const consumerModules = classification.messageCatalog?.consumerModules ?? [];
+  let relatedSelection = getFastSourceRelatedSelection(repoRoot, classification.relatedFiles, consumerModules);
+  let { tier, tierReasons } = classification;
+  if (relatedSelection.reason) {
+    tier = GLOBAL_INPUT_TIER;
+    tierReasons = [...tierReasons, relatedSelection.reason.replace(/; full checks required$/u, "")];
+    relatedSelection = {
+      tests: [], narrowed: [], sources: [], untestedConsumers: consumerModules, untestedModules: classification.relatedFiles,
+    };
+  }
+  const extra = getScopedExtraTests(repoRoot, classification.namedPaths, relatedSelection.untestedModules);
+  const untestedTests = extra.untested.flatMap(({ namedTests, mustRunTests }) => [...namedTests, ...mustRunTests]);
+  return {
+    ...classification,
+    tier,
+    tierReasons,
+    reason: tier === GLOBAL_INPUT_TIER ? tierReasons.join("; ") : classification.reason,
+    lockSuites: tier === GLOBAL_INPUT_TIER
+      ? AVE_APP_LOCK_SUITES.map((suite) => ({ suite, path: "a global-input change" }))
+      : classification.lockSuites,
+    testFiles: [...new Set([...classification.testFiles, ...extra.namedTests, ...untestedTests])].sort(),
+    namedTests: extra.namedTests,
+    untestedModules: extra.untested,
+    relatedSelection,
   };
 }
 
@@ -1101,7 +1420,9 @@ function runAppCommentOnlyChecks(dir) {
 const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
 const prePushUpdates =
-  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
+  stage === "pre-push"
+    ? resolveHeadUpdates(parsePrePushUpdates(readPrePushInput()), () => headBranch(repoRoot))
+    : null;
 let pushCheckout;
 if (stage === "pre-push") {
   runPushPolicyChecks(repoRoot, prePushUpdates);
@@ -1135,13 +1456,7 @@ if (stage === "pre-commit") {
       : process.env.AVE_PREPUSH_FULL === "1"
         ? { docsOnly: false, reason: "AVE_PREPUSH_FULL=1 requested the full checks" }
         : classifyPrePushChanges(repoRoot, withPushedCommits(prePushUpdates, pushCheckout.commitByLocalSha), remoteLocation);
-  if (classification.fastSource) {
-    const consumerModules = classification.messageCatalog?.consumerModules ?? [];
-    const relatedSelection = getFastSourceRelatedSelection(repoRoot, classification.relatedFiles, consumerModules);
-    classification = relatedSelection.reason
-      ? { docsOnly: false, reason: relatedSelection.reason }
-      : { ...classification, relatedSelection };
-  }
+  if (classification.fastSource) classification = resolveScopedTier(repoRoot, classification);
   if (classification.alreadyOnRemote) {
     console.log(`[checks] tier=none pre-push: nothing to check (${classification.reason})`);
   } else if (classification.docsOnly) {
@@ -1150,11 +1465,11 @@ if (stage === "pre-commit") {
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     runRetiredNameGate(repoRoot);
     console.log(
-      `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
+      `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build; ${FULL_SUITE_DEFERRED} (${classification.reason})`
     );
   } else if (classification.commentOnly) {
     console.log(
-      `[checks] tier=comment-only pre-push: running typecheck; skipping full test/build (${classification.reason})`
+      `[checks] tier=comment-only pre-push: running typecheck; ${FULL_SUITE_DEFERRED} (${classification.reason})`
     );
     runRetiredNameGate(repoRoot);
     runAppCommentOnlyChecks(repoRoot);
@@ -1163,7 +1478,7 @@ if (stage === "pre-commit") {
       classification.testFiles.length + classification.testSupportFiles.length;
     console.log(
       `[checks] tier=test-only pre-push: running typecheck, duplicate-helper policy, and ` +
-        `${testCodeFileCount} targeted Vitest code file(s); skipping full test/build ` +
+        `${testCodeFileCount} targeted Vitest code file(s); ${FULL_SUITE_DEFERRED} ` +
         `(${classification.reason})`
     );
     runRetiredNameGate(repoRoot);
@@ -1173,15 +1488,24 @@ if (stage === "pre-commit") {
       classification.supportTestFiles
     );
   } else if (classification.fastSource) {
-    const { lockSuites, relatedSelection, messageCatalog } = classification;
-    console.log(
-      `[checks] tier=fast pre-push: running typecheck, duplicate-helper policy, ` +
+    const { tier, lockSuites, relatedSelection, messageCatalog, untestedModules } = classification;
+    const frozenLockfile = tier === GLOBAL_INPUT_TIER;
+    console.log(describeScopedTier({
+      tier,
+      runs: "typecheck, duplicate-helper policy, " +
+        (frozenLockfile ? "a frozen-lockfile install dry run, " : "") +
         (messageCatalog ? "the message catalog checks, " : "") +
-        `${lockSuites.length} triggered lock suite(s), ${classification.testFiles.length} changed, ` +
-        `document-reader or message-consumer test file(s), and Vitest related to ${relatedSelection.sources.length} module(s); ` +
-        `skipping full test/build, which the category PR's CI runs on the merged tree ` +
-        `(${classification.reason}; AVE_PREPUSH_FULL=1 runs the full checks)`
-    );
+        `${lockSuites.length} ${frozenLockfile ? "" : "triggered "}lock suite(s), ${classification.testFiles.length} changed, ` +
+        `document-reader, message-consumer, path-naming or must-run test file(s), ` +
+        `and Vitest related to ${relatedSelection.sources.length} module(s)`,
+      reason: classification.reason,
+    }));
+    if (classification.droppedRelatedFiles.length > 0) {
+      console.log(
+        `[checks] dropped ${classification.droppedRelatedFiles.length} related module(s) from local discovery ` +
+          `because changed file arguments exceed the safe command limit; CI covers them; path-naming tests still run`
+      );
+    }
     if (messageCatalog) {
       console.log(
         `[checks] message catalog: ${messageCatalog.files.length} file(s) change namespace(s) ` +
@@ -1191,14 +1515,35 @@ if (stage === "pre-commit") {
             : "")
       );
     }
-    for (const { suite, path } of lockSuites) {
+    if (messageCatalog?.unattributed) {
+      const { reason, files, skippedConsumers } = messageCatalog.unattributed;
+      console.log(
+        `[checks] message catalog not attributable (${reason}): running the i18n suites, the catalog checks ` +
+          `and the files that name a touched namespace` +
+          (files.length > 0 ? `; no namespace is readable from ${files.join(", ")}` : "") +
+          (skippedConsumers.length > 0 ? `; left to CI: ${skippedConsumers.join(", ")}` : "")
+      );
+    }
+    if (tier === GLOBAL_INPUT_TIER) {
+      console.log(`[checks] global-input tier: every lock suite runs (${classification.tierReasons.join("; ")})`);
+    }
+    for (const { suite, path } of tier === GLOBAL_INPUT_TIER ? [] : lockSuites) {
       console.log(`[checks] lock suite ${suite}: triggered by ${path}`);
+    }
+    if (classification.namedTests.length > 0) {
+      console.log(`[checks] ${classification.namedTests.length} test file(s) name a changed script, workflow or global path`);
+    }
+    for (const { module, namedTests, mustRunTests, lockSuites: moduleLockSuites, untested } of untestedModules) {
+      console.log(untested
+        ? `[checks] ${module} has no local test: no related, path-naming, must-run or lock-suite test file reaches it; continuing`
+        : `[checks] ${module} has no related test file; running ${namedTests.length} path-naming, ` +
+          `${mustRunTests.length} must-run and ${moduleLockSuites.length} lock-suite test file(s) instead`);
     }
     for (const { source, related, direct, lockSuites: keptLockSuites } of relatedSelection.narrowed) {
       console.log(
         `[checks] related tests bounded: ${source} reaches ${related} test file(s); running its ${direct} direct importer(s) ` +
           `and ${keptLockSuites} lock suite(s) ` +
-          `(over ${RELATED_TEST_BOUND} related files in total; the category PR's CI runs the rest)`
+          `(over ${RELATED_TEST_BOUND} related files in total; CI selects the rest)`
       );
     }
     if (classification.documentationEntries.length > 0) {
@@ -1212,7 +1557,8 @@ if (stage === "pre-commit") {
       lockSuites.map(({ suite }) => suite),
       classification.testFiles,
       relatedSelection,
-      messageCatalog
+      messageCatalog,
+      { frozenLockfile }
     );
   } else {
     console.log(

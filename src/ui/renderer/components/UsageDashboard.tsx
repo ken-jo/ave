@@ -76,36 +76,22 @@ function formatSubscriptionSource(source: { totalTokens: number; segments: numbe
 }
 
 function buildCsvRows(summary: UsageSummaryShape): Array<Record<string, string | number>> {
-  const rows: Array<Record<string, string | number>> = [];
-  for (const pt of summary.trend) {
-    rows.push({
-      date: pt.date,
-      vendor: "all",
-      model: "all",
-      inputTokens: pt.inputTokens,
-      outputTokens: pt.outputTokens,
-      cacheReadTokens: pt.cacheReadTokens ?? 0,
-      cacheWriteTokens: pt.cacheWriteTokens ?? 0,
-      totalTokens: pt.totalTokens,
-      cost: pt.cost,
-      unknownCostTurns: pt.unknownCostTurns ?? 0,
-    });
-  }
-  for (const m of summary.perModel) {
-    rows.push({
-      date: "range-total",
-      vendor: m.vendor,
-      model: m.model,
-      inputTokens: m.inputTokens,
-      outputTokens: m.outputTokens,
-      cacheReadTokens: m.cacheReadTokens ?? 0,
-      cacheWriteTokens: m.cacheWriteTokens ?? 0,
-      totalTokens: m.totalTokens,
-      cost: m.cost,
-      unknownCostTurns: m.unknownCostTurns ?? 0,
-    });
-  }
-  return rows;
+  const row = (usage: UsageTrendPt | UsageSummaryShape["perModel"][number], date: string, vendor: string, model: string) => ({
+    date,
+    vendor,
+    model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+    totalTokens: usage.totalTokens,
+    cost: usage.cost,
+    unknownCostTurns: usage.unknownCostTurns ?? 0,
+  });
+  return [
+    ...summary.trend.map((pt) => row(pt, pt.date, "all", "all")),
+    ...summary.perModel.map((m) => row(m, "range-total", m.vendor, m.model)),
+  ];
 }
 
 export function UsageDashboard({
@@ -157,9 +143,8 @@ export function UsageDashboard({
     />
   );
 
-  // Workspace statistics (relocated from the former General tab) sit at the top
-  // of the Usage surface and stay visible regardless of the usage-summary
-  // fetch state, since they own their own loading via useWorkspaceStats.
+  // Workspace statistics (relocated from the former General tab) sit at the top of the Usage surface and stay visible
+  // regardless of the usage-summary fetch state, since they own their own loading via useWorkspaceStats.
   const workspaceStats = <WorkspaceStatsSection api={api} onNavigate={onNavigate} />;
 
   if (loading) {

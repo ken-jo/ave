@@ -1,28 +1,13 @@
-/**
- * Browser-safe common contract for subscription-backed chat runtimes.
- *
- * API-key vendors deliberately remain in `llm-vendor-defaults.ts`.  A
- * subscription runtime owns its own credential store and stateful transport,
- * so treating one as an API vendor would leak the wrong settings, fallback,
- * pricing, and tool-execution assumptions into the application.
- */
+/** Subscription runtimes own credentials and stateful transport; keep their settings, pricing, and execution assumptions separate from API-key vendors. */
 import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
-const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code"] as const;
+const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code", "chatgpt-plan"] as const;
 
 export type SubscriptionRuntimeId = (typeof SUBSCRIPTION_RUNTIME_IDS)[number];
-/** Shared cap for model ids carried by subscription runtime contracts. */
 export const MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH = 200;
 
-/**
- * Wire contract of the loopback tool bridge between the main process and the
- * stdio MCP shim it spawns for ACP runtimes. Both ends validate the same
- * payloads — the bridge bounds the tool set it publishes, the shim bounds the
- * `tools/list` and `tools/call` bodies it reads back — so the bounds and the
- * environment handoff keys are declared once and imported by both, and one
- * side cannot accept what the other refuses.
- */
+/** The loopback bridge and shim share wire bounds and environment keys so neither accepts payloads the other refuses. */
 export const SUBSCRIPTION_TOOL_BRIDGE_CONTRACT = Object.freeze({
   urlEnv: "AVE_SUBSCRIPTION_TOOL_BRIDGE_URL",
   tokenEnv: "AVE_SUBSCRIPTION_TOOL_BRIDGE_TOKEN",
@@ -39,7 +24,6 @@ export const SUBSCRIPTION_TOOL_BRIDGE_CONTRACT = Object.freeze({
   maxToolNameLength: 128,
 } as const);
 
-/** Shared text admission for every subscription tool transport. */
 export function isSubscriptionToolDescription(value: unknown): value is string {
   return typeof value === "string"
     && value.length <= SUBSCRIPTION_TOOL_BRIDGE_CONTRACT.maxDescriptionBytes
@@ -47,38 +31,17 @@ export function isSubscriptionToolDescription(value: unknown): value is string {
     && new TextEncoder().encode(value).byteLength <= SUBSCRIPTION_TOOL_BRIDGE_CONTRACT.maxDescriptionBytes;
 }
 
-/**
- * The name a host tool travels under on the subscription tool bridge: minted
- * by the bridge (a host name that already fits passes through, anything else
- * becomes `ave_<sha>`), then checked again by the MCP shim on every
- * `tools/list` entry and `tools/call`. One grammar for the two ends of the
- * wire — a leading letter, then letters, digits, `_` or `-`, at most
- * `maxToolNameLength` characters.
- */
+/** Mint and validate bridge tool names with the same bounded grammar; nonconforming host names become ave_<sha>. */
 const SUBSCRIPTION_BRIDGE_TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 
 export function isSubscriptionBridgeToolName(name: unknown): name is string {
   return typeof name === "string" && SUBSCRIPTION_BRIDGE_TOOL_NAME_PATTERN.test(name);
 }
 
-/**
- * Provenance of a subscription-runtime token segment.
- *
- * This is deliberately separate from `TokenUsage`: API-key usage is a
- * billable pricing contract, whereas these values describe consumption under
- * an already-authenticated subscription. A local estimate must never be
- * presented as provider-reported usage.
- */
+/** Local estimates must never appear as provider-reported usage; subscription consumption is separate from billable API usage. */
 export type SubscriptionUsageSource = "provider-reported" | "local-estimate";
 
-/**
- * Renderer-safe per-round subscription usage.
- *
- * `totalTokens` is the provider's exact per-turn total where available, or
- * the sum of the locally-estimated input/output values. It is never an API
- * price input. `billable: false` makes the non-pricing boundary explicit at
- * every persistence and IPC hop.
- */
+/** Exact provider totals or estimated input/output sums are never API price inputs; preserve billable:false across persistence and IPC. */
 export interface SubscriptionUsageTelemetry {
   readonly provider: SubscriptionRuntimeId;
   readonly model: string;
@@ -108,11 +71,7 @@ const SUBSCRIPTION_USAGE_TELEMETRY_KEYS = new Set([
   "contextWindow",
 ]);
 
-/**
- * Validates and copies telemetry arriving from transport, persisted history,
- * or IPC. Unknown fields are rejected so raw provider payloads cannot leak
- * across the main/renderer boundary by being carried incidentally.
- */
+/** Reject unknown telemetry fields and rebuild the projection so raw provider payloads cannot cross into the renderer. */
 export function normalizeSubscriptionUsageTelemetry(
   value: unknown,
 ): SubscriptionUsageTelemetry | undefined {
@@ -167,19 +126,12 @@ export function isSubscriptionRuntimeId(value: unknown): value is SubscriptionRu
     && (SUBSCRIPTION_RUNTIME_IDS as readonly string[]).includes(value);
 }
 
-/**
- * Main-to-renderer invalidation event for a subscription runtime status.
- *
- * This intentionally carries no runtime status, verification URL, executable
- * path, credential, or raw provider output. Consumers re-read the existing
- * safe status projection after observing a newer revision.
- */
+/** Invalidation events carry only a revision; re-read safe status without exposing URLs, paths, credentials, or provider output. */
 export interface SubscriptionRuntimeStatusUpdatedEvent {
   readonly provider: SubscriptionRuntimeId;
   readonly revision: number;
 }
 
-/** Reject malformed or expanded event payloads at the preload boundary. */
 export function isSubscriptionRuntimeStatusUpdatedEvent(
   value: unknown,
 ): value is SubscriptionRuntimeStatusUpdatedEvent {
@@ -197,7 +149,8 @@ export function isSubscriptionRuntimeStatusUpdatedEvent(
     && payload.revision > 0;
 }
 
-type SubscriptionRuntimeTransport = "codex-app-server" | "acp" | "claude-cli";
+/** `chatgpt-plan-direct` is Sign in with ChatGPT plan usage: Ave's own OAuth session and `POST /v1/responses`, no CLI. */
+type SubscriptionRuntimeTransport = "codex-app-server" | "acp" | "claude-cli" | "chatgpt-plan-direct";
 
 export type SubscriptionLoginMethod = "browser" | "device-code";
 
@@ -213,12 +166,7 @@ export type SubscriptionConnectionState =
   | "signed-out"
   | "unknown";
 
-/**
- * Selection persisted under `llm.activeChatRuntime`.
- *
- * `model` is intentionally optional: ACP providers may expose only their
- * own default model, while Codex may enumerate subscription-scoped models.
- */
+/** Model selection is optional because a runtime may expose only its own default. */
 export interface SubscriptionChatRuntimeSelection {
   kind: "subscription";
   provider: SubscriptionRuntimeId;
@@ -231,23 +179,13 @@ interface ApiChatRuntimeSelection {
 
 export type ActiveChatRuntime = ApiChatRuntimeSelection | SubscriptionChatRuntimeSelection;
 
-/**
- * How a runtime's official CLI is found. `discovered`: Ave looks for the CLI
- * the user installed (PATH and the official install locations) and the user
- * never picks a file. `user-selected`: the user points Ave at the executable.
- */
-export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected";
+/** Discovered runtimes use installed CLI locations; user-selected runtimes allow an executable picker; `none` runs no executable. */
+export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected" | "none";
 
 export interface SubscriptionRuntimeDescriptor {
   id: SubscriptionRuntimeId;
-  /**
-   * Internal runtime name for logs and audit. Settings names the company
-   * (the API counterpart's label) and the plan (`planName`), never this.
-   */
   label: string;
-  /** The subscription plan as the provider brands it ("ChatGPT", "Claude"). */
   planName: string;
-  /** The CLI's own name, used only to say what to install. */
   cliName: string;
   transport: SubscriptionRuntimeTransport;
   executable: SubscriptionRuntimeExecutableSource;
@@ -255,30 +193,62 @@ export interface SubscriptionRuntimeDescriptor {
   supportsManagedLogout: boolean;
   /** Only surface a picker when the runtime supplies a trustworthy model list. */
   supportsModelSelection: boolean;
-  /** The oldest CLI version Ave can run, when the runtime enforces one. */
   minimumVersion?: string;
-  /** Official install instructions shown while no runtime is found. */
   installGuidance?: SubscriptionRuntimeInstallGuidance;
+  /** No model selection uses the runtime default, offered explicitly rather than guessed as a model name. */
+  offersCliDefaultModel: boolean;
+  /** The runtime has no default model at all: chat can be selected only with a model from its list. */
+  requiresModelSelection?: true;
+  /** Where the provider lets the user review and limit this app's plan usage. */
+  usageSettingsUrl?: string;
+  /**
+   * Original images are sent only when the selected model accepts them, judged by this API vendor's model catalog
+   * (the same predicate as that vendor's API-key route). Absent: the runtime's verified capability alone decides.
+   */
+  imageInputFollowsModelOf?: "openai";
+  /**
+   * The runtime runs on Ave's own request path, so Ave chooses its reasoning: the user picks a speed
+   * (`SUBSCRIPTION_REASONING_SPEEDS`) and each turn asks the model for that speed's effort.
+   */
+  offersReasoningSpeed?: true;
+}
+
+/** The model speed menu of a runtime that `offersReasoningSpeed`, fastest first, as the provider's own app labels it. */
+export const SUBSCRIPTION_REASONING_SPEEDS = Object.freeze(["instant", "medium", "high"] as const);
+export type SubscriptionReasoningSpeed = (typeof SUBSCRIPTION_REASONING_SPEEDS)[number];
+/** The provider's own app opens on Medium. */
+export const DEFAULT_SUBSCRIPTION_REASONING_SPEED: SubscriptionReasoningSpeed = "medium";
+
+export function isSubscriptionReasoningSpeed(value: unknown): value is SubscriptionReasoningSpeed {
+  return typeof value === "string" && (SUBSCRIPTION_REASONING_SPEEDS as readonly string[]).includes(value);
 }
 
 /**
- * How the provider's own documentation says to install its CLI. Shown as
- * text; Ave never runs these commands.
+ * The reasoning effort a speed asks for. The model's own accepted levels still decide what is sent: a model that
+ * refuses `none` runs Instant at its lowest accepted level, and the speed menu says so.
  */
+export function subscriptionReasoningSpeedEffort(speed: SubscriptionReasoningSpeed): "none" | "medium" | "high" {
+  switch (speed) {
+    case "instant":
+      return "none";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    default: {
+      const unknownSpeed: never = speed;
+      throw new Error(`unknown reasoning speed: ${String(unknownSpeed)}`);
+    }
+  }
+}
+
+/** Install instructions are display text; the app never executes them. */
 export interface SubscriptionRuntimeInstallGuidance {
   readonly documentationUrl: string;
   readonly commands: readonly { readonly label: string; readonly command: string }[];
 }
 
-/**
- * Main-verified feature availability for a subscription runtime.
- *
- * These are deliberately booleans rather than promises about a provider's
- * native client. A value may be `true` only after the Ave-owned runtime has
- * confirmed that the feature is available through the same host permission,
- * audit, project, and lifecycle paths as an API-key provider. A missing
- * status projection is treated as unknown by the renderer, never as enabled.
- */
+/** Only host-verified capabilities using governed permission, audit, project, and lifecycle paths may be true; absent projections remain unknown. */
 export interface SubscriptionImageAttachmentLimits {
   /** Maximum original images accepted for one subscription prompt. */
   readonly maxCount: number;
@@ -292,10 +262,7 @@ export interface SubscriptionRuntimeCapabilities {
   readonly chat: boolean;
   /** The runtime accepts original image bytes through its negotiated transport. */
   readonly images: boolean;
-  /**
-   * Main-verified native image budget, or null when images are unavailable.
-   * This is distinct from the normal file-marker/read-tool flow.
-   */
+  /** The negotiated original-image budget is separate from file-marker and governed read-tool support. */
   readonly imageAttachmentLimits: SubscriptionImageAttachmentLimits | null;
   /** The normal Ave file marker + governed read-tool flow is available. */
   readonly files: boolean;
@@ -309,18 +276,7 @@ export interface SubscriptionRuntimeCapabilities {
   readonly subagent: boolean;
 }
 
-/**
- * The API-key vendor that reaches the same provider as a subscription runtime.
- *
- * A user recognises OpenAI, Anthropic, xAI, and Moonshot as one company each — the two
- * ways in are an API key or signing in to that company's runtime, not two
- * providers with similar names. Settings lists the provider once and offers
- * the authentication methods, and this is the join that makes that possible.
- *
- * Values are the ids the LLM vendor settings already use: a built-in vendor id
- * for OpenAI, an OpenAI-compatible preset id for the other two. A runtime with
- * no key-based route simply has no entry.
- */
+/** Join subscription runtimes to API routes by existing vendor IDs; omit runtimes with no key-based route. */
 export const SUBSCRIPTION_RUNTIME_API_COUNTERPART: Readonly<
   Partial<Record<SubscriptionRuntimeId, string>>
 > = Object.freeze({
@@ -329,6 +285,58 @@ export const SUBSCRIPTION_RUNTIME_API_COUNTERPART: Readonly<
   "grok-build": "xai",
   "kimi-code": "moonshot",
 });
+
+/**
+ * Runtimes that are another way into a provider row already owned by a primary runtime. ChatGPT plan usage is the
+ * third OpenAI sign-in beside the Codex CLI and the API key, so it joins the Codex row instead of adding a second
+ * "OpenAI" row.
+ */
+export const SUBSCRIPTION_RUNTIME_ROW_PARTNER: Readonly<
+  Partial<Record<SubscriptionRuntimeId, SubscriptionRuntimeId>>
+> = Object.freeze({
+  "chatgpt-plan": "codex",
+});
+
+/** The three ways chat reaches OpenAI. Exactly one is in effect, chosen by the persisted `activeChatRuntime`. */
+export type OpenAiLoginType = "codex-cli" | "api-key" | "chatgpt-plan";
+
+/**
+ * Which OpenAI login type a subscription runtime is, or null for another company's runtime. Exhaustive over
+ * `SubscriptionRuntimeId`: adding a runtime is a compile error here until it is classified.
+ */
+export function openAiLoginTypeOfRuntime(
+  runtimeId: SubscriptionRuntimeId,
+): Exclude<OpenAiLoginType, "api-key"> | null {
+  switch (runtimeId) {
+    case "codex":
+      return "codex-cli";
+    case "chatgpt-plan":
+      return "chatgpt-plan";
+    case "kimi-code":
+    case "grok-build":
+    case "claude-code":
+      return null;
+    default: {
+      const unclassified: never = runtimeId;
+      throw new Error(`unclassified subscription runtime: ${String(unclassified)}`);
+    }
+  }
+}
+
+/**
+ * Name the OpenAI sign-in a chat selection uses, or null when chat is not on OpenAI. This is derived from the one
+ * persisted selection (`activeChatRuntime` plus the API vendor), never stored separately, so the two cannot disagree:
+ * `{kind:"subscription", provider:"codex"}` is the Codex CLI, `{kind:"subscription", provider:"chatgpt-plan"}` is
+ * plan usage, and `{kind:"api"}` with vendor `openai` is the API key. Settings saved before plan usage existed hold
+ * one of the first two shapes and so keep their sign-in.
+ */
+export function openAiLoginTypeFor(
+  runtime: ActiveChatRuntime | undefined,
+  apiVendor: string | undefined,
+): OpenAiLoginType | null {
+  if (runtime?.kind === "subscription") return openAiLoginTypeOfRuntime(runtime.provider);
+  return apiVendor === "openai" ? "api-key" : null;
+}
 
 /** Safe capability projection when a runtime has not verified a feature. */
 export const DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES: SubscriptionRuntimeCapabilities = Object.freeze({
@@ -353,8 +361,6 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     planName: "ChatGPT",
     cliName: "Codex CLI",
     transport: "codex-app-server",
-    // The user's own `codex` CLI, found on PATH or in an official install
-    // location. Ave ships none, and the user never picks the file.
     executable: "discovered",
     loginMethods: ["browser", "device-code"],
     supportsManagedLogout: true,
@@ -372,6 +378,25 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
         Object.freeze({ label: "Homebrew", command: "brew install --cask codex" }),
       ]),
     }),
+    offersCliDefaultModel: false,
+  },
+  {
+    id: "chatgpt-plan",
+    label: "ChatGPT plan",
+    planName: "ChatGPT",
+    // No CLI is involved; the name the card shows for this way in.
+    cliName: "Sign in with ChatGPT",
+    transport: "chatgpt-plan-direct",
+    executable: "none",
+    loginMethods: ["browser"],
+    supportsManagedLogout: true,
+    // The account's own `GET /v1/models` list; there is no runtime default to fall back on.
+    supportsModelSelection: true,
+    offersCliDefaultModel: false,
+    requiresModelSelection: true,
+    usageSettingsUrl: "https://chatgpt.com/settings/usage",
+    imageInputFollowsModelOf: "openai",
+    offersReasoningSpeed: true,
   },
   {
     id: "kimi-code",
@@ -383,6 +408,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     loginMethods: ["device-code"],
     supportsManagedLogout: false,
     supportsModelSelection: false,
+    offersCliDefaultModel: false,
   },
   {
     id: "grok-build",
@@ -394,6 +420,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     loginMethods: ["device-code"],
     supportsManagedLogout: true,
     supportsModelSelection: false,
+    offersCliDefaultModel: false,
   },
   {
     id: "claude-code",
@@ -401,12 +428,12 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     planName: "Claude",
     cliName: "Claude Code CLI",
     transport: "claude-cli",
-    // The user's own `claude` CLI, found on PATH or in an official install
-    // location and qualified against the options Ave passes.
     executable: "discovered",
     loginMethods: ["browser"],
     supportsManagedLogout: true,
-    supportsModelSelection: false,
+    // No model selection leaves the CLI on its default; selected IDs come from provider models.
+    supportsModelSelection: true,
+    offersCliDefaultModel: true,
     installGuidance: Object.freeze({
       documentationUrl: "https://code.claude.com/docs/en/setup",
       commands: Object.freeze([
@@ -428,9 +455,23 @@ export function subscriptionRuntimeDescriptor(
 }
 
 /**
- * Safe status projection used by renderer IPC. Dynamic verification URLs,
- * access tokens, raw CLI output, and executable paths never appear here.
+ * Something the user should be told about a runtime's sign-in, until they dismiss it (ChatGPT plan usage only today).
+ * `welcome`: the first sign-in with plan usage enabled. `plan-usage-disabled`: signed in without the plan grant.
+ * `reconnect-required`: the session ended at the provider. `revocation-unconfirmed`: signed out locally but the
+ * provider did not confirm it. `declined`, `account-mismatch`, `state-mismatch`, `sign-in-failed`: why the last
+ * sign-in did not finish.
  */
+export type SubscriptionRuntimeNotice =
+  | "welcome"
+  | "plan-usage-disabled"
+  | "reconnect-required"
+  | "revocation-unconfirmed"
+  | "declined"
+  | "account-mismatch"
+  | "state-mismatch"
+  | "sign-in-failed";
+
+/** Never include verification URLs, access tokens, raw CLI output, or executable paths in renderer status. */
 export interface SubscriptionRuntimeStatus {
   provider: SubscriptionRuntimeId;
   runtime: SubscriptionRuntimeState;
@@ -440,12 +481,10 @@ export interface SubscriptionRuntimeStatus {
   pendingDeviceCode: string | null;
   canOpenVerificationUrl: boolean;
   version: string | null;
-  /**
-   * Host-verified feature availability. The renderer must treat an omitted or
-   * false value as unavailable; provider-native capability claims are not
-   * sufficient on their own.
-   */
+  /** Missing or false capability projections are unavailable; provider-native claims alone do not enable them. */
   capabilities: SubscriptionRuntimeCapabilities;
+  /** A fixed notice code for the card; omitted by runtimes that have none. */
+  notice?: SubscriptionRuntimeNotice | null;
 }
 
 export interface SubscriptionRuntimeModel {
@@ -459,6 +498,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-runtime-not-configured"
   | "subscription-runtime-unavailable"
   | "subscription-runtime-unsafe-location"
+  | "subscription-runtime-unsafe-npm-location"
   | "subscription-runtime-version-unsupported"
   | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"

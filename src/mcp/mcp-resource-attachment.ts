@@ -1,28 +1,5 @@
-/**
- * Render a resource read into the fenced block a USER attaches to their own turn.
- *
- * This is the user path from `docs/development/mcp-resources-policy.md` §6 — the
- * counterpart to the model path's tool result, and the two are shaped differently on
- * purpose:
- *
- *   - a tool result is something the MODEL fetched. It arrives in the tool channel,
- *     which the model already reads as data it asked for, so it needs no fence.
- *   - an attachment is something the USER put in front of the model. It enters the
- *     prompt as context, beside the user's own words, so it MUST be fenced and
- *     labeled — otherwise server-authored prose sits in the one place the model has
- *     the most reason to treat as the user speaking.
- *
- * The turn stays the user's (`user-keyboard`): they wrote the message and pointed at
- * some data. Marking the turn staged would revoke their authorship and force-ask
- * every write on a turn they genuinely authored — see policy §2 for why that is the
- * wrong trade. What the fence buys instead is that the model can tell the body from
- * the request, and the body cannot write either half of the frame: not the closing tag
- * (which would end the region and let the rest read as the user's own words), not an
- * opening one (which would forge frames past the turn's budget), and not an attribute
- * that breaks out of the header.
- *
- * Pure — no IPC, no filesystem, no logging.
- */
+/** Fence attached server data without revoking the user authorship of the surrounding turn.
+ * Escape both delimiters and header attributes to prevent fence escape or forged budget counts. */
 import {
   fenceAttrValue,
   neutralizeFenceClose,
@@ -43,35 +20,14 @@ export interface ResourceReadBlocks {
 }
 
 export interface RenderedResourceAttachment {
-  /** The fenced text, ready to ride as a `{ type: "text" }` user-content part. */
   text: string;
-  /** True when the read or this render clipped what the server returned. */
   truncated: boolean;
-  /** Blocks that were not text and became placeholders. */
   omittedBlocks: number;
-  /**
-   * Characters of rendered BODY, before the fence and the framing lines.
-   *
-   * The caller needs this rather than `text.length`: a read with nothing in it still
-   * renders a complete fence with its untrusted labeling, so the rendered string is
-   * never empty. Attaching that would put framing in front of the model with no
-   * material behind it — worse than refusing, because it reads as content.
-   *
-   * A placeholder standing in for non-text content COUNTS as body, so a resource
-   * that is entirely binary still attaches. That is the useful outcome: the model
-   * learns the user pointed at something it cannot read and can say so, which beats
-   * a refusal the user has to guess the reason for. Zero means the read produced
-   * nothing at all — no text, no blocks — and that is what the caller refuses.
-   */
+  /** Count placeholders as body, but not host framing; zero means the server returned no content. */
   bodyChars: number;
 }
 
-/**
- * Build the attachment. `serverId` and `uri` are host-side values (the caller resolved
- * the URI against the catalogue), but they are still bounded here: they are printed
- * INSIDE the fence, where an over-long value would push the actual content out of a
- * bounded render.
- */
+/** Bound host-resolved ids and URIs too, since they consume space inside the attachment fence. */
 export function renderResourceAttachment(
   serverId: string,
   uri: string,
@@ -87,8 +43,7 @@ export function renderResourceAttachment(
       lines.push(body);
       continue;
     }
-    // Never dropped silently: a server must not be able to make the host quietly omit
-    // part of what it returned, and undecoded bytes must not reach the model as text.
+    // Replace non-text blocks visibly; never leak encoded bytes or silently omit content.
     omittedBlocks += 1;
     lines.push(t("be_mcpResourceAttachment.omittedBlock", { kind: block.omittedKind ?? "unknown" }));
   }
@@ -112,10 +67,7 @@ export function renderResourceAttachment(
   return {
     text: [
       ...header,
-      // BOTH halves of the frame: the close so the body cannot end the region and
-      // continue outside it, the open so a body cannot forge extra frames — the turn
-      // chokepoint counts open tags to bound how much server text one turn carries,
-      // and a resource printing its own would spend the user's whole budget.
+      // Neutralize closing tags to prevent escape and opening tags to prevent forged attachment-budget counts.
       neutralizeFenceOpen(neutralizeFenceClose(body, "mcp-resource"), "mcp-resource"),
       "</mcp-resource>",
     ].join("\n"),

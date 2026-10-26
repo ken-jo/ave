@@ -1,12 +1,5 @@
-/**
- * The app-server protocol surface Ave depends on, checked against the JSON
- * Schema a user-installed `codex` binary generates for itself.
- *
- * Every entry names a request, notification or server request Ave sends or
- * handles, and the request shapes and literals it relies on. A binary
- * whose generated schema lacks any of them cannot run Ave's integration, so
- * the check reports every missing item and never guesses a substitute.
- */
+// Reject installed runtimes whose generated schema lacks any request, notification, field, or literal the integration requires.
+import { isRecord } from "../shared/is-record.js";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -14,31 +7,31 @@ type SchemaType = "string" | "boolean" | "integer" | "number" | "array" | "objec
 
 interface ValueRequirement {
   readonly type?: SchemaType;
-  /** String literals, or the `type` discriminators of object alternatives. */
+  // String literals, or the `type` discriminators of object alternatives.
   readonly values?: readonly string[];
   readonly value?: boolean;
   readonly fields?: readonly FieldRequirement[];
-  /** Every item shape the client can put in this array. */
+  // Every item shape the client can put in this array.
   readonly items?: readonly ValueRequirement[];
-  /** A value passed through as arbitrary JSON. */
+  // A value passed through as arbitrary JSON.
   readonly anyJson?: boolean;
 }
 
 interface FieldRequirement extends ValueRequirement {
-  /** Dotted path below the containing object; each segment is a property name. */
+  // Dotted path below the containing object; each segment is a property name.
   readonly path: string;
-  /** The client can omit this field while retaining the rest of the object. */
+  // The client can omit this field while retaining the rest of the object.
   readonly optional?: boolean;
-  /** This key is a map entry rather than a declared protocol field. */
+  // This key is a map entry rather than a declared protocol field.
   readonly mapEntry?: boolean;
-  /** Report parameter children without adding an envelope segment to their paths. */
+  // Report parameter children without adding an envelope segment to their paths.
   readonly inlineDiagnostics?: boolean;
 }
 
 interface MethodRequirement {
   readonly method: string;
   readonly fields?: readonly FieldRequirement[];
-  /** Separate request shapes, each of which must fit a complete union branch. */
+  // Separate request shapes, each of which must fit a complete union branch.
   readonly variants?: readonly (readonly FieldRequirement[])[];
 }
 
@@ -150,7 +143,7 @@ export const CODEX_PROTOCOL_REQUIREMENTS: CodexProtocolRequirements = Object.fre
   ]),
 });
 
-/** The generated schema documents a check reads, keyed by their file names. */
+// The generated schema documents a check reads, keyed by their file names.
 export interface CodexGeneratedSchemas {
   readonly clientRequest: unknown;
   readonly serverNotification: unknown;
@@ -163,15 +156,11 @@ export const CODEX_SCHEMA_FILES = Object.freeze({
   serverRequest: "ServerRequest.json",
 });
 
-function isSchema(value: unknown): value is JsonSchema {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function definitionsOf(document: JsonSchema): Record<string, unknown> {
-  return isSchema(document.definitions) ? document.definitions : {};
+  return isRecord(document.definitions) ? document.definitions : {};
 }
 
-/** One union branch contains all its intersecting constraints, never its siblings. */
+// One union branch contains all its intersecting constraints, never its siblings.
 interface SchemaBranch {
   readonly constraints: readonly JsonSchema[];
   readonly choices: readonly { readonly schema: JsonSchema; readonly index: number }[];
@@ -188,7 +177,7 @@ function intersectBranches(left: SchemaBranch[], right: SchemaBranch[]): SchemaB
 function alternatives(schema: unknown, definitions: Record<string, unknown>, depth = 0): SchemaBranch[] {
   if (depth > 32 || schema === false) return [];
   if (schema === true) return [{ constraints: [], choices: [] }];
-  if (!isSchema(schema)) return [];
+  if (!isRecord(schema)) return [];
   let branches: SchemaBranch[] = [{ constraints: [schema], choices: [] }];
   if (schema.$ref !== undefined) {
     const match = typeof schema.$ref === "string" ? /^#\/definitions\/([^/]+)$/.exec(schema.$ref) : null;
@@ -218,7 +207,7 @@ function propertySchema(branch: SchemaBranch, name: string, mapEntry = false): u
   let declared = false;
   const constraints: unknown[] = [];
   for (const schema of branch.constraints) {
-    const properties = isSchema(schema.properties) ? schema.properties : {};
+    const properties = isRecord(schema.properties) ? schema.properties : {};
     if (Object.hasOwn(properties, name)) {
       declared = true;
       constraints.push(properties[name]);
@@ -233,7 +222,7 @@ function propertySchema(branch: SchemaBranch, name: string, mapEntry = false): u
 function hasSchemaType(value: unknown, expected: SchemaType): boolean {
   if (expected === "null") return value === null;
   if (expected === "array") return Array.isArray(value);
-  if (expected === "object") return isSchema(value);
+  if (expected === "object") return isRecord(value);
   if (expected === "integer") return typeof value === "number" && Number.isInteger(value);
   if (expected === "number") return typeof value === "number" && Number.isFinite(value);
   return typeof value === expected;
@@ -273,7 +262,7 @@ function methodsOf(document: JsonSchema): Map<string, SchemaBranch[]> {
   return methods;
 }
 
-/** Group dotted paths before checking so sibling fields share one object branch. */
+// Group dotted paths before checking so sibling fields share one object branch.
 function nestedFields(fields: readonly FieldRequirement[]): FieldRequirement[] {
   const grouped = new Map<string, FieldRequirement>();
   for (const field of fields) {
@@ -359,17 +348,14 @@ function missingShape(
     ?? [`${path}${requirement.anyJson ? " (arbitrary JSON)" : requirement.type ? ` (type ${requirement.type})` : ""}`];
 }
 
-/**
- * List every requirement the generated schemas do not satisfy, as stable
- * strings such as `request thread/start.environments`. An empty list means
- * the declared request shapes and incoming method names match.
- */
+// List every requirement the generated schemas do not satisfy, as stable strings such as `request thread/start.environments`. An empty list means the
+// declared request shapes and incoming method names match.
 export function missingCodexProtocolRequirements(
   schemas: CodexGeneratedSchemas,
   requirements: CodexProtocolRequirements = CODEX_PROTOCOL_REQUIREMENTS,
 ): string[] {
   const missing: string[] = [];
-  if (!isSchema(schemas.clientRequest) || !isSchema(schemas.serverNotification) || !isSchema(schemas.serverRequest)) {
+  if (!isRecord(schemas.clientRequest) || !isRecord(schemas.serverNotification) || !isRecord(schemas.serverRequest)) {
     return ["schema documents"];
   }
   const clientDefinitions = definitionsOf(schemas.clientRequest);

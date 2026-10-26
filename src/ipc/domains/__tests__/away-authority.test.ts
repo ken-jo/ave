@@ -5,7 +5,6 @@ import { invokeFileIpcHandler } from "./test-helpers.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const intent = Object.freeze({ inputOrigin: "user-keyboard" as const, userActivation: true as const });
 const CONVERSATION_ID = "conv-away-1";
-/** A second tile, holding a conversation of its own. */
 const TILE_GROUP = "group-2";
 const TILE_CONVERSATION_ID = "conv-away-tile-2";
 
@@ -38,8 +37,6 @@ async function setup(options: {
   const auditLogger = { log: vi.fn() };
   const primaryLoop = { getSessionId: vi.fn(() => options.sessionId ?? CONVERSATION_ID) };
   const tileLoop = { getSessionId: vi.fn(() => TILE_CONVERSATION_ID) };
-  // Two tiles are open. Arming names one of them; a name the window is not
-  // showing resolves to nothing.
   const findChatGroupLoop = vi.fn((chatGroupId: string) => {
     if (chatGroupId === MAIN_CHAT_GROUP_ID) return primaryLoop;
     if (chatGroupId === TILE_GROUP) return tileLoop;
@@ -68,7 +65,6 @@ async function setupDisabled() {
   } as never);
 }
 
-/** A payload that is valid in every respect, so a test can spoil exactly one field. */
 function armPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     intent,
@@ -81,7 +77,6 @@ function armPayload(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
-/** An IPC event whose sender frame is a plugin shell, never the host renderer. */
 const PLUGIN_FRAME_EVENT = {
   frameId: 0,
   processId: 0,
@@ -327,8 +322,7 @@ describe("Away authority arm IPC boundary", () => {
         conversationId: CONVERSATION_ID,
         categories: ["read"],
         directories: ["/home/owner/project"],
-        // `awayAuthoritySnapshot` does no time check, so this is exactly the
-        // state that would otherwise be displayed as armed.
+        // The displayed snapshot does not check time; expiry must be enforced before returning it.
         expiresAt: Date.now() - 1,
         remaining: 5,
       },

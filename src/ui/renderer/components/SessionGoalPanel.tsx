@@ -1,14 +1,4 @@
-/**
- * SessionGoalPanel — the session's goal as a chip in the composer status row,
- * next to the tasks chip: the tasks are the steps, the goal is what the steps
- * are for and why the session keeps going after a turn ends.
- *
- * The chip carries the round counter because that number is the one thing a
- * self-reviving session does not otherwise announce, and one button whose
- * meaning follows the goal's state — stop while it is running, resume while it
- * is paused, continue once the revival budget is spent, dismiss once the goal
- * is met.
- */
+/** Goal controls follow its state: stop, resume, continue after budget exhaustion, or dismiss after completion. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Target, Pause, Play, X } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -34,10 +24,8 @@ export function SessionGoalPanel({
   sessionId,
 }: {
   api: AveApi;
-  /**
-   * Current chat session id. Incoming `:changed` pushes are filtered on it so
-   * another tile's goal cannot clobber this one, and it scopes every button.
-   */
+  /** Current chat session id. Incoming `:changed` pushes are filtered on it so another tile's goal cannot clobber this one,
+   * and it scopes every button. */
   sessionId?: string;
 }) {
   const { t } = useTranslation();
@@ -46,8 +34,8 @@ export function SessionGoalPanel({
   const hasLivePushRef = useRef(false);
   latestSessionIdRef.current = sessionId;
 
-  // The store is the SOT. A late initial fetch must not overwrite a goal a
-  // live push already applied — the same guard the tasks chip carries.
+  // The store is the SOT. A late initial fetch must not overwrite a goal a live push already applied — the same guard the
+  // tasks chip carries.
   const applyGoal = useCallback(
     (next: SessionGoal | null, source: "initial-fetch" | "push") => {
       if (source === "initial-fetch" && hasLivePushRef.current) return;
@@ -79,8 +67,7 @@ export function SessionGoalPanel({
     });
   }, [api, applyGoal, refresh, sessionId]);
 
-  // A tile that swaps conversations drops the previous goal at once, rather
-  // than showing it until the next push lands.
+  // A tile that swaps conversations drops the previous goal at once, rather than showing it until the next push lands.
   useEffect(() => {
     hasLivePushRef.current = false;
     setGoal(null);
@@ -115,8 +102,7 @@ export function SessionGoalPanel({
       else if (action === "resume") await api.resumeSessionGoal(sessionId);
       else await api.clearSessionGoal(sessionId);
     } catch (err) {
-      // Silent: the store's own push is what actually moves the chip, so a
-      // failed call correctly leaves it where it was.
+      // Silent: the store's own push is what actually moves the chip, so a failed call correctly leaves it where it was.
       console.warn("session-goal action failed:", err);
     }
   };

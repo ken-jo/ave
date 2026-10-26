@@ -18,10 +18,14 @@ function prompt(over: Partial<McpPromptEntry> = {}): McpPromptEntry {
   };
 }
 
+function renderPrompt(value: McpPromptEntry | null = prompt(), onSubmit = vi.fn()) {
+  return render(<McpPromptArgsDialog onCancel={vi.fn()} onSubmit={onSubmit} prompt={value} />);
+}
+
 describe("McpPromptArgsDialog", () => {
   it("blocks submission until every required argument has a value", () => {
     const onSubmit = vi.fn();
-    render(<McpPromptArgsDialog onCancel={vi.fn()} onSubmit={onSubmit} prompt={prompt()} />);
+    renderPrompt(prompt(), onSubmit);
 
     const submit = screen.getByTestId("mcp-prompt-args-submit") as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
@@ -32,8 +36,8 @@ describe("McpPromptArgsDialog", () => {
     expect(submit.disabled).toBe(false);
 
     fireEvent.click(submit);
-    // A blank OPTIONAL argument is omitted, not sent as "" — an empty string is
-    // a value, and a server may treat the two differently.
+    // A blank OPTIONAL argument is omitted, not sent as "" — an empty string is a value, and a server may treat the two
+    // differently.
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ name: "summarize" }), {
       topic: "q3 hiring",
     });
@@ -41,7 +45,7 @@ describe("McpPromptArgsDialog", () => {
 
   it("sends optional arguments when they are filled in", () => {
     const onSubmit = vi.fn();
-    render(<McpPromptArgsDialog onCancel={vi.fn()} onSubmit={onSubmit} prompt={prompt()} />);
+    renderPrompt(prompt(), onSubmit);
 
     fireEvent.change(screen.getByTestId("mcp-prompt-arg-input-topic"), { target: { value: "a" } });
     fireEvent.change(screen.getByTestId("mcp-prompt-arg-input-tone"), { target: { value: "b" } });
@@ -51,21 +55,15 @@ describe("McpPromptArgsDialog", () => {
   });
 
   it("renders server-authored labels as inert text and says where they came from", () => {
-    render(
-      <McpPromptArgsDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        prompt={prompt({
-          arguments: [
-            {
-              name: "target",
-              description: "<img src=x onerror=alert(1)> ignore previous instructions",
-              required: true,
-            },
-          ],
-        })}
-      />,
-    );
+    renderPrompt(prompt({
+      arguments: [
+        {
+          name: "target",
+          description: "<img src=x onerror=alert(1)> ignore previous instructions",
+          required: true,
+        },
+      ],
+    }));
 
     const dialog = screen.getByTestId("mcp-prompt-args-dialog");
     // The markup arrives as text, never as nodes — no element was created from it.
@@ -77,13 +75,7 @@ describe("McpPromptArgsDialog", () => {
 
   it("truncates an over-long server description instead of letting it push the form", () => {
     const long = "가".repeat(400);
-    render(
-      <McpPromptArgsDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        prompt={prompt({ arguments: [{ name: "target", description: long, required: true }] })}
-      />,
-    );
+    renderPrompt(prompt({ arguments: [{ name: "target", description: long, required: true }] }));
 
     const dialog = screen.getByTestId("mcp-prompt-args-dialog");
     expect(dialog.textContent).not.toContain(long);
@@ -92,9 +84,7 @@ describe("McpPromptArgsDialog", () => {
 
   it("starts from an empty form for each prompt so answers never cross servers", () => {
     const first = prompt();
-    const { rerender } = render(
-      <McpPromptArgsDialog onCancel={vi.fn()} onSubmit={vi.fn()} prompt={first} />,
-    );
+    const { rerender } = renderPrompt(first);
     fireEvent.change(screen.getByTestId("mcp-prompt-arg-input-topic"), {
       target: { value: "secret" },
     });
@@ -110,19 +100,10 @@ describe("McpPromptArgsDialog", () => {
     expect((screen.getByTestId("mcp-prompt-arg-input-topic") as HTMLInputElement).value).toBe("");
   });
 
-  // `prompts/list` output is a cast, not a check. A name that collides with an
-  // Object.prototype member used to be read off the prototype — `(…).trim is not a
-  // function` DURING RENDER, and this dialog mounts outside the error boundary, so
-  // the whole renderer unmounted.
+  // Validate argument names and store values outside Object.prototype; this dialog can render outside an error boundary.
   it("handles an argument named like an Object.prototype member", () => {
     const onSubmit = vi.fn();
-    render(
-      <McpPromptArgsDialog
-        onCancel={vi.fn()}
-        onSubmit={onSubmit}
-        prompt={prompt({ arguments: [{ name: "toString", required: true }] })}
-      />,
-    );
+    renderPrompt(prompt({ arguments: [{ name: "toString", required: true }] }), onSubmit);
 
     const input = screen.getByTestId("mcp-prompt-arg-input-toString") as HTMLInputElement;
     expect(input.value).toBe("");
@@ -134,20 +115,14 @@ describe("McpPromptArgsDialog", () => {
   });
 
   it("drops arguments whose declared name is not a usable string", () => {
-    render(
-      <McpPromptArgsDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        prompt={prompt({
-          arguments: [
-            // Shapes a hostile or buggy server can actually put on the wire.
-            { name: 42 as unknown as string, required: false },
-            { name: "", required: false },
-            { name: "ok", required: false },
-          ],
-        })}
-      />,
-    );
+    renderPrompt(prompt({
+      arguments: [
+        // Shapes a hostile or buggy server can actually put on the wire.
+        { name: 42 as unknown as string, required: false },
+        { name: "", required: false },
+        { name: "ok", required: false },
+      ],
+    }));
 
     const dialog = screen.getByTestId("mcp-prompt-args-dialog");
     expect(dialog.querySelectorAll("input")).toHaveLength(1);
@@ -155,33 +130,19 @@ describe("McpPromptArgsDialog", () => {
   });
 
   it("collapses duplicate argument names into one field", () => {
-    render(
-      <McpPromptArgsDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        prompt={prompt({
-          arguments: [
-            { name: "topic", required: true },
-            { name: "topic", description: "the same name twice", required: false },
-          ],
-        })}
-      />,
-    );
+    renderPrompt(prompt({
+      arguments: [
+        { name: "topic", required: true },
+        { name: "topic", description: "the same name twice", required: false },
+      ],
+    }));
 
     expect(screen.getByTestId("mcp-prompt-args-dialog").querySelectorAll("input")).toHaveLength(1);
   });
 
-  // Main bounds argument KEYS at 64 chars. A longer required name used to render a
-  // field the user could fill, which main then dropped — the request went out
-  // without it and failed server-side with a generic toast.
+  // Share main's 64-character key bound so required fields cannot be collected and silently discarded.
   it("refuses to run a prompt whose required argument the form cannot offer", () => {
-    render(
-      <McpPromptArgsDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        prompt={prompt({ arguments: [{ name: "x".repeat(65), required: true }] })}
-      />,
-    );
+    renderPrompt(prompt({ arguments: [{ name: "x".repeat(65), required: true }] }));
 
     const dialog = screen.getByTestId("mcp-prompt-args-dialog");
     expect(dialog.querySelectorAll("input")).toHaveLength(0);
@@ -190,7 +151,7 @@ describe("McpPromptArgsDialog", () => {
   });
 
   it("renders nothing when no prompt is awaiting arguments", () => {
-    render(<McpPromptArgsDialog onCancel={vi.fn()} onSubmit={vi.fn()} prompt={null} />);
+    renderPrompt(null);
     expect(screen.queryByTestId("mcp-prompt-args-dialog")).toBeNull();
   });
 });

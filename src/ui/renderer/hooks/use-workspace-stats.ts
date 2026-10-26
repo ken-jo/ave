@@ -1,7 +1,3 @@
-
-
-
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
 
@@ -37,9 +33,8 @@ export function useWorkspaceStats(api: AveApi): {
 } {
   const [stats, setStats] = useState<WorkspaceStats>(EMPTY);
   const [loading, setLoading] = useState(true);
-  // `aliveRef` guards against setState-after-unmount when the user closes
-  // the settings window mid-refresh. The combined Promise.allSettled below
-  // can resolve hundreds of ms after the tab unmounts on slow machines.
+  // `aliveRef` guards against setState-after-unmount when the user closes the settings window mid-refresh. The combined
+  // Promise.allSettled below can resolve hundreds of ms after the tab unmounts on slow machines.
   const aliveRef = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -67,8 +62,8 @@ export function useWorkspaceStats(api: AveApi): {
       next.pluginCount = pluginsRes.value.length;
     }
     if (cardsRes.status === "fulfilled") {
-      // Sum the per-plugin tool counts — `tools` on PluginCardSummary is
-      // the host-derived list of tool names registered for that plugin.
+      // Sum the per-plugin tool counts — `tools` on PluginCardSummary is the host-derived list of tool names registered for that
+      // plugin.
       next.toolCount = cardsRes.value.reduce(
         (sum, card) => sum + (Array.isArray(card.tools) ? card.tools.length : 0),
         0,
@@ -98,8 +93,8 @@ export function useWorkspaceStats(api: AveApi): {
 
   useEffect(() => {
     aliveRef.current = true;
-    // Fire-and-forget initial load. The depended-on `refresh` already
-    // captures `api`; this effect only needs to run once per api identity.
+    // Fire-and-forget initial load. The depended-on `refresh` already captures `api`; this effect only needs to run once per
+    // api identity.
     void refresh();
     return () => {
       aliveRef.current = false;

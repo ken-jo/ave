@@ -1,7 +1,3 @@
-/**
- * Boot §4.2 Step 7 — ConversationLoop + dependencies (hooks, approval gate,
- * permission manager, PostTurnHookChain, callLlm sanitiser).
- */
 import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager, PromptMemorySource } from "../memory/memory-manager.js";
 import type {
@@ -48,30 +44,16 @@ function authorizeWorkspaceProjectRoot(projectRoot: string, projectName?: string
 }
 
 export function createSystemPromptBuilder(opts: {
-  // Forwarded to the builder and read for nothing else, so the factory asks
-  // for exactly the builder's contract rather than the whole store.
+  // Use the builder’s dependency contract rather than requiring the whole store.
   memoryManager: PromptMemorySource;
   toolRegistry: ToolRegistry;
   pluginRuntime: PluginRuntime;
   getAvailableSkills?: () => SkillCatalogEntry[];
-  /**
-   * Session-scoped on-demand activation allow-list — see
-   * {@link SystemPromptBuilderDeps.getActivatablePluginIds}. Routine sessions
-   * pass their `allowedPluginIds` so an allow-listed-but-disabled plugin shows
-   * as requestable; main chat omits it.
-   */
+  /** Routine allow-lists make disabled plugins requestable without enabling them globally. */
   getActivatablePluginIds?: () => ReadonlySet<string>;
-  /**
-   * MCP-app `ui/update-model-context` reader — the active session's card slots, rendered
-   * as the `<mcp-app-context>` section. Optional: the routine / side-chat builders omit
-   * it (MCP-app cards live in the main chat), and the section then drops out entirely.
-   */
+  /** Main-chat card context only; omitted by routine and side-chat builders. */
   getAppModelContext?: (sessionId: string) => string;
-  /**
-   * MCP server-level guidance provider — the active MCP servers' discovery
-   * `instructions`, rendered as an inert untrusted section. Only the main chat
-   * wires it (from mcpManager); routine / side-chat sessions omit it.
-   */
+  /** Discovery instructions are inert, untrusted context; only main chat wires them. */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
 }): SystemPromptBuilder {
   const { memoryManager, toolRegistry, pluginRuntime, getAvailableSkills, getActivatablePluginIds, getAppModelContext, mcpServerGuidanceProvider,
@@ -80,10 +62,7 @@ export function createSystemPromptBuilder(opts: {
     memoryManager,
     toolRegistry,
 
-    // Registry-in, cards-out: the builder passes ITS OWN `deps.toolRegistry`,
-    // so a sub-agent's isolated builder (created with a `createScopedView`)
-    // advertises only plugins whose tools that child can actually call. Do not
-    // close over `toolRegistry` here — that reintroduces the two-authority split.
+    // Use the builder’s scoped registry so child prompts advertise only callable tools.
     getPluginCards: (registry) => pluginRuntime.listPluginCards(registry),
     getActivatablePluginIds,
     getAvailableSkills,
@@ -93,21 +72,11 @@ export function createSystemPromptBuilder(opts: {
 }
 
 export async function createPermissionManager(): Promise<PermissionManager> {
-  // Permission policy — register the 5-axis ToolCategory descriptors before any
-  // PermissionManager.checkDetailed() can run. Idempotent: re-calls
-  // simply overwrite the registry entries with the same values.
+  // Register category descriptors before any permission check; registration is idempotent.
   registerStandardCategories();
-  // §6.3: PermissionManager (Layer 2-3)
   const permissionManager = new PermissionManager();
 
-  // Layer 3 standing allows. Only tools that neither reach private data nor
-  // leave the machine belong here — `skill_list` and `agent_list` enumerate
-  // host-owned registries and nothing else.
-  //
-  // `web_fetch` and `web_search` were removed: both send a model-chosen string
-  // to a model-chosen destination, so a standing allow makes them an
-  // approval-free exfiltration channel for anything already in the turn's
-  // context. They now run under the `network` category like any other egress.
+  // Standing allows belong only to host-registry reads without private-data access or network egress.
   permissionManager.setRules([
     { pattern: "skill_list", action: "allow" },
     { pattern: "agent_list", action: "allow" },
@@ -122,14 +91,9 @@ export function createPostTurnHookChain(opts: {
   idleScheduler?: IdleSchedulerService;
   settingsService: SettingsService;
   memoryCaptureService?: AutomaticMemoryCaptureSubmitter;
-  /**
-   * Shared AuditLogger. When provided, PostTurnHookChain
-   * reuses the same instance as HostApi.logEvent so plugin + host audit
-   * trails stay unified. When omitted, a new logger is created.
-   */
+  /** Reuse the host audit logger to keep plugin and host trails unified. */
   auditLogger?: AuditLogger;
 }): { postTurnHookChain: PostTurnHookChain; auditLogger: AuditLogger } {
-
   const auditLogger = opts.auditLogger ?? new AuditLogger();
   const postTurnHookChain = new PostTurnHookChain({
     memoryManager: opts.memoryManager,
@@ -146,14 +110,9 @@ export async function createApprovalGate(
   surface: ApprovalSurfaceResolver | null,
   auditLogger: AuditLogger,
   notificationService?: NotificationService,
-  /**
-   * Tier 2 of the sub-agent approval chain. Omitted — in tests, and in any
-   * boot that has not wired a reviewer — the gate keeps the two-tier chain it
-   * had before: an eligible sub-agent ask goes straight to the user's dock.
-   */
+  /** Without a reviewer, eligible sub-agent approval requests go directly to the user. */
   parentAdjudication?: ParentAdjudicationGateDeps,
 ): Promise<ApprovalGate> {
-
 
   const bootPolicy = await loadPolicy();
   return new ApprovalGate(
@@ -172,14 +131,7 @@ export async function createApprovalGate(
 }
 
 export function createHookRunner(): HookRunner {
-  // Permission policy single hook path: production external hooks are loaded by
-  // wireHookSystem() from BOTH discrete pre/post/perm-*.sh files AND a
-  // declarative ~/.config/ave/hooks/hooks.json — but every one of them flows
-  // through the SAME TOFU quarantine/accept gate (#811). A new or changed
-  // hooks.json is quarantined to .disabled/ and its command entries NEVER run
-  // until the user runs `/permission hooks accept hooks.json`; only a trusted,
-  // unchanged config contributes runnable commands. The in-process HookRunner
-  // returned here is for internal/test hooks only and has no external surface.
+  // External hooks share TOFU quarantine; only accepted, unchanged configs may contribute commands.
   return new HookRunner();
 }
 
@@ -189,24 +141,15 @@ export interface ConversationDeps {
   inputClassifier: InputClassifier;
   routeEngine: RouteEngine;
   toolRegistry: ToolRegistry;
-  /**
-   * Boot-published factory for the guarded rationale path. Query-loop owns
-   * activation and retains the legacy flow when no concrete factory is ready.
-   */
+  /** Query-loop activates the guarded rationale path only when its factory is ready. */
   rationaleCoordinatorFactory?: RationaleCoordinatorFactory;
-  /** Invalidates host rationale authority before a session is discarded. */
   closeRationaleSession?: (sessionId: string) => void;
   /** See ConversationLoopDeps.sessionHeldElsewhere — supplied by the host that owns every loop. */
   sessionHeldElsewhere?: (sessionId: string) => boolean;
-  /**
-   * See ConversationLoopDeps.tracer. Declared here because these factories copy
-   * deps field by field: a key that is not named is a key that is dropped, and
-   * a caller's spread never trips the excess-property check that would say so.
-   */
+  /** Factories copy dependencies by name; callers’ spread keys can otherwise disappear silently. */
   tracer?: import("@opentelemetry/api").Tracer;
   /** Host-owned capability; defaults false when omitted. */
   supportsA2AParentDelivery?: boolean;
-  /** Whether this host process can present and settle local approvals. */
   approvalSurface?: ApprovalSurface;
   memoryManager: MemoryManager;
   /** Main-chat explicit saves use the host's common memory-review path. */
@@ -236,47 +179,24 @@ export interface ConversationDeps {
     projectName?: string,
   ) => { projectRoot: string; projectName?: string; isDefault?: boolean;
   } | null;
-  /**
-   * Fan-out hook for permission config mutations. Boot wires this from
-   * `ipc/domains/permissions.ts:broadcastPermissionConfigChanged` so the
-   * conversation loop's `addSessionAdditionalDirectory` (dialog-driven
-   * session grants) reaches multi-window PermissionsTab subscribers,
-   * not only slash-dispatch grants.
-   */
+  /** Broadcast session-directory grants to all permission views, including grants made outside slash dispatch. */
   broadcastPermissionConfigChanged?: () => void;
   /** Per-conversation read-skill registry, cleared on newConversation(). */
   skillOverlay?: { clear(sessionId: string): void };
   /** Whether `/<name>` names an indexed skill (routes a typed skill slash to the model). */
   isSkillName?: (name: string) => boolean;
-  /** Issue #260: optional notification service for turn-end auto-fire. */
   notificationService?: NotificationService;
   auditLogger?: AuditLogger;
-  /** Rebuild the Layer 5 reviewer after persisted reviewer settings change. */
   rewireReviewerAgent?: () => void;
-  /** Main-process fetch implementation for SDK-backed LLM calls. */
   llmFetch?: typeof fetch;
-  /** The host's outbound transport for guard-routed provider calls. */
   networkFetch: typeof fetch;
-  /** Main-owned factory for a subscription-authenticated LLM provider. */
   subscriptionProviderFactory?: (
     selection: SubscriptionChatRuntimeSelection,
     fallbackSelection?: SubscriptionChatRuntimeSelection,
   ) => LLMProvider | null;
 }
 
-/**
- * §7: Routine-isolated ConversationLoop factory.
- *
- * Routine execution must NOT share the interactive chat's ConversationLoop
- * instance — doing so would race with concurrent IPC chat turns and pollute
- * the user's session history with routine output.
- *
- * Each call returns a *fresh* ConversationLoop that shares stateless deps
- * (toolRegistry, settings, etc.) but owns its own ConversationHistory so
- * routine turns never appear in the user's chat transcript. Routine loops
- * still receive the approval gate + pre-tool hooks so background writes cannot
- * bypass the normal tool policy.
- */
+/** Each routine owns history and prompt state while sharing normal approval and pre-tool gates. */
 export type RoutineConversationLoopDeps = Pick<
   ConversationDeps,
   | "settingsService"
@@ -310,36 +230,23 @@ export function createRoutineConversationLoop(
   deps: RoutineConversationLoopDeps,
   opts: { scope?: import("../shared/routines-types.js").RoutineScope } = {},
 ): ConversationLoop {
-  // Permission policy Layer 4 — translate the discriminated scope into the loop's
-  // ConversationLoopDeps shape. The scope must already be normalized
-  // (no `inherit`) by the dispatcher before this factory runs. Computed BEFORE
-  // the prompt builder so the allow-list can be threaded into the requestable
-  // catalog predicate (session-scoped on-demand activation of disabled plugins).
+  // Normalize scope before building the prompt so requestable plugins match the session allow-list.
   const scope = opts.scope;
   let allowedPluginIds: Set<string>;
   if (!scope || scope.pluginIds.mode === "inherit") {
-    // Defensive default — should never hit production because the
-    // dispatcher normalizes inherit to a snapshot. Coerce to deny-all
-    // so we fail closed instead of opening up the full active set.
+    // An unresolved inherited scope fails closed to an empty allow-list.
     allowedPluginIds = new Set();
   } else if (scope.pluginIds.mode === "deny-all") {
     allowedPluginIds = new Set();
   } else {
     allowedPluginIds = new Set(scope.pluginIds.ids);
   }
-  // Layer 1 (UX hot-fix v3): each routine fire gets its *own* SystemPromptBuilder
-  // instance with routineMode=true so the LLM is instructed to append a
-  // <summary>…</summary> tag. A dedicated instance (not the shared main-chat
-  // builder) is used to prevent routineMode from leaking into main-chat turns
-  // even when concurrent routine fires and user chat turns overlap.
+  // Separate prompt builders keep routine summary mode from leaking into concurrent chat turns.
   const routineSystemPromptBuilder = createSystemPromptBuilder({
     memoryManager: deps.memoryManager,
     toolRegistry: deps.toolRegistry,
     pluginRuntime: deps.pluginRuntime,
-    // Session-scoped on-demand activation — surface allow-listed-but-disabled
-    // plugins in the requestable catalog so the routine LLM can request_plugin
-    // them. The session activates them non-persistently (registry stays
-    // enabled:false); main chat never sets this.
+    // Routine activation is session-local; persisted plugin enablement stays unchanged.
     getActivatablePluginIds: () => allowedPluginIds,
     // Skill overlay is interactive-only — routine sessions are headless.
   });
@@ -383,34 +290,11 @@ export function createRoutineConversationLoop(
     broadcastPermissionConfigChanged: deps.broadcastPermissionConfigChanged,
     approvalSurface: deps.approvalSurface,
     headless: true,
-    // postTurnHookChain / idleScheduler intentionally omitted — routine loops
-    // are isolated from interactive chat side effects. The fallback persistence
-    // path still saves the routine session through the normal session model.
+    // Routine loops omit interactive hooks; normal session persistence still applies.
   });
 }
 
-/**
- * Side-chat ConversationLoop factory (workspace-rail side chat).
- *
- * Like the routine factory, this returns a SECOND ConversationLoop that is fully
- * isolated from the interactive main chat — it owns its own ConversationHistory,
- * sessionId, and (crucially) its own {@link MemoryManager} rooted at
- * `~/.ave/side-chat/` (`sideChatMemoryManager`) so side-chat sessions never
- * appear in the main chat's session list and can be cleared as a single domain
- * (project CLAUDE.md storage-namespace rule).
- *
- * UNLIKE routine loops, side chat is INTERACTIVE and PERSISTENT:
- *   - `headless: false` — it streams to the renderer through the dedicated
- *     `CHANNELS.sidechat.*` sink (see `domains/sidechat.ts`).
- *   - a dedicated PostTurnHookChain persists each turn to the side-chat store.
- *   - a dedicated (non-routine) SystemPromptBuilder — routineMode stays false.
- *
- * Model + permissions are INHERITED from the main chat by sharing the same
- * stateless deps (`settingsService` → same vendor/model; `permissionManager` +
- * `approvalGate` → same rules + approval dock). Side chat is NOT scope-isolated
- * (no allow-list): it runs with the full active plugin/tool set, exactly like
- * the main chat.
- */
+/** Side chat owns history, storage, and prompt state while sharing the main chat’s model and permission policy. */
 export type SideChatConversationLoopDeps = Pick<
   ConversationDeps,
   | "settingsService"
@@ -454,17 +338,13 @@ export type SideChatConversationLoopDeps = Pick<
 export function createSideChatConversationLoop(
   deps: SideChatConversationLoopDeps,
 ): ConversationLoop {
-  // Dedicated SystemPromptBuilder bound to the side-chat MemoryManager so its
-  // memory/AGENTS.md context comes from the side-chat namespace, not the main
-  // one. routineMode stays false (default) — side chat is a normal interactive
-  // session, not a summarizing routine.
+  // Bind side-chat prompt memory to its own namespace and keep routine mode disabled.
   const sideChatSystemPromptBuilder = createSystemPromptBuilder({
     memoryManager: deps.sideChatMemoryManager,
     toolRegistry: deps.toolRegistry,
     pluginRuntime: deps.pluginRuntime,
   });
-  // Dedicated post-turn hook chain — persists each side-chat turn to the
-  // isolated store. No idleScheduler (side chat does not drive idle refresh).
+  // Persist side-chat turns separately; side chat does not drive idle refresh.
   const { postTurnHookChain } = createPostTurnHookChain({
     memoryManager: deps.sideChatMemoryManager,
     settingsService: deps.settingsService,
@@ -506,16 +386,13 @@ export function createSideChatConversationLoop(
     ...(deps.getAdditionalDirectories
       ? { getAdditionalDirectories: deps.getAdditionalDirectories }
       : {}),
-    // The rail and every pane chat run over the one side-chat store: a
-    // session one of them holds is not loaded into another.
+    // Rail and pane chats share storage but cannot load sessions held by another view.
     ...(deps.sessionHeldElsewhere ? { sessionHeldElsewhere: deps.sessionHeldElsewhere } : {}),
-    // headless defaults to false — interactive, streaming loop.
   });
 }
 
 export function createConversationLoop(deps: ConversationDeps,
 ): ConversationLoop {
-  // §4.5: ConversationLoop
   const loop = new ConversationLoop({
     settingsService: deps.settingsService,
     systemPromptBuilder: deps.systemPromptBuilder,
@@ -567,12 +444,7 @@ export function createConversationLoop(deps: ConversationDeps,
   return loop;
 }
 
-/**
- * §B-7 — per-pluginId token bucket (default 20 calls / 10 min) +
- * audit event on every call. The bucket is a sliding-window counter keyed by
- * pluginId. Exceeding plugins receive a thrown Error; the audit logger still
- * records the attempt so operators can spot runaway plugins.
- */
+/** Rate limits apply per plugin; rejected attempts still enter the audit log. */
 export interface CallLlmRateLimitOptions {
   /** Per-plugin max calls inside the window. Default 20. */
   maxCalls?: number;
@@ -586,10 +458,7 @@ type CallLlmOptions = {
   signal?: AbortSignal;
 };
 
-/**
- * Keeps the legacy/public `maxTokens` name at the plugin boundary while
- * translating it into the engine's host-owned background output ceiling.
- */
+/** Translate the public maxTokens field into the host-owned background output ceiling. */
 function callLlmWithOptionalOutputLimit(
   conversationLoop: ConversationLoop,
   prompt: string,
@@ -613,7 +482,6 @@ export function createCallLlmForPlugin(
   const buckets = new Map<string, number[]>();
 
   return async (pluginId, prompt, opts) => {
-    // Sliding window: drop timestamps outside the window, then count.
     const now = Date.now();
     const arr = buckets.get(pluginId) ?? [];
     const fresh = arr.filter((t) => now - t < windowMs);
@@ -646,10 +514,7 @@ export function createCallLlmForPlugin(
   };
 }
 
-/**
- * Back-compat entry point for non-plugin callers (e.g. RoutineEngine) that
- * don't carry a pluginId. These are not rate-limited.
- */
+/** Non-plugin callers have no pluginId and are not rate-limited. */
 export function createCallLlm(
   conversationLoop: ConversationLoop,
 ): (

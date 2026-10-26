@@ -104,8 +104,8 @@ describe("useTurnAttention", () => {
   it("leaves a conversation marked by hand alone until the user looks away and back", () => {
     const tiles = [tile("main", "s-1", false)];
     const { rerender, setUnread, unread } = harness({ tiles, focused: "main", visible: true });
-    // The user marks the conversation in front of them unread. Nothing about
-    // where they are looking changed, so nothing reads it back.
+    // The user marks the conversation in front of them unread. Nothing about where they are looking changed, so nothing reads
+    // it back.
     unread.add("s-1");
     rerender({ tiles, focused: "main", visible: true });
     expect(setUnread).not.toHaveBeenCalled();
@@ -135,8 +135,8 @@ describe("useCurrentSession — what a tile holds on mount", () => {
   });
 
   it("the primary tile keeps the conversation its loop holds even when the window's main-active pointer names another", async () => {
-    // A routine session is never the main-active pointer; a folded primary
-    // brought forward for it must show it, not the pointer's session.
+    // A routine session is never the main-active pointer; a folded primary brought forward for it must show it, not the
+    // pointer's session.
     const { api } = makeMockAveApi({
       mainActiveState: resumeState,
       history: { sessionId: "routine-held", sessionKind: "routine", messages: [{ role: "user", content: "held" }] },

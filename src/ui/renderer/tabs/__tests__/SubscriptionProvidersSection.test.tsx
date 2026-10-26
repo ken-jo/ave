@@ -15,6 +15,13 @@ import {
   type SubscriptionProviderView,
 } from "../SubscriptionProvidersSection.js";
 
+function renderProviders(
+  providers: readonly SubscriptionProviderView[],
+  actions: Parameters<typeof SubscriptionAuthControls>[0]["actions"],
+) {
+  return render(<SubscriptionProvidersSection providers={providers} actions={actions} />);
+}
+
 function runtimeCapabilities(
   overrides: Partial<SubscriptionRuntimeCapabilities> = {},
 ): SubscriptionRuntimeCapabilities {
@@ -73,12 +80,8 @@ afterEach(() => {
   setLocale(localeBeforeTest);
 });
 
-
-/**
- * The settings page draws the provider row itself — header, badges, state word,
- * sub-line and refresh — so what ships from this module is the sign-in half,
- * and that is what these tests drive.
- */
+/** The settings page draws the provider row itself — header, badges, state word, sub-line and refresh — so what ships from
+ * this module is the sign-in half, and that is what these tests drive. */
 function SubscriptionProvidersSection({
   providers,
   actions,
@@ -101,16 +104,10 @@ function SubscriptionProvidersSection({
 
 describe("SubscriptionAuthControls", () => {
   it("carries nothing but sign-in: no header, no state word, no refresh, no model controls", () => {
-    render(
-      <SubscriptionProvidersSection
-        providers={[connectedCodex()]}
-        actions={{ refreshStatus: vi.fn(), useForChat: vi.fn(), logout: vi.fn() }}
-      />,
-    );
+    renderProviders([connectedCodex()], { refreshStatus: vi.fn(), useForChat: vi.fn(), logout: vi.fn() });
 
-    // Every one of these belongs to the row the settings page draws, and having
-    // it here too is what gave one provider two headers, two state words and
-    // two refresh buttons — each computing its own answer.
+    // Every one of these belongs to the row the settings page draws, and having it here too is what gave one provider two
+    // headers, two state words and two refresh buttons — each computing its own answer.
     for (const testId of [
       "subscription-provider:codex:refresh",
       "subscription-provider:codex:connection",
@@ -132,19 +129,14 @@ describe("SubscriptionAuthControls", () => {
     const openLoginBrowser = vi.fn();
     const cancelLogin = vi.fn();
     const logout = vi.fn();
-    const { rerender } = render(
-      <SubscriptionProvidersSection
-        providers={[{
+    const { rerender } = renderProviders([{
           ...connectedCodex(),
           status: {
             runtime: "ready",
             connection: "signed-out",
             capabilities: runtimeCapabilities({ chat: false }),
           },
-        }]}
-        actions={{ beginLogin, openLoginBrowser, cancelLogin, logout }}
-      />,
-    );
+        }], { beginLogin, openLoginBrowser, cancelLogin, logout });
 
     fireEvent.click(screen.getByTestId("subscription-provider:codex:login-browser"));
     fireEvent.click(screen.getByTestId("subscription-provider:codex:login-device-code"));
@@ -206,12 +198,7 @@ describe("SubscriptionAuthControls", () => {
       },
     } as unknown as SubscriptionProviderView;
 
-    render(
-      <SubscriptionProvidersSection
-        providers={[unsafeProvider]}
-        actions={{}}
-      />,
-    );
+    renderProviders([unsafeProvider], {});
 
     expect(document.body).not.toHaveTextContent(authUrl);
     expect(document.body).not.toHaveTextContent(token);
@@ -219,9 +206,7 @@ describe("SubscriptionAuthControls", () => {
   });
 
   it("rejects a device code that looks like a URL or bearer token", () => {
-    render(
-      <SubscriptionProvidersSection
-        providers={[{
+    renderProviders([{
           ...connectedCodex(),
           status: {
             runtime: "ready",
@@ -230,10 +215,7 @@ describe("SubscriptionAuthControls", () => {
             pendingDeviceCode: "https://auth.example.test/secret-token",
             capabilities: runtimeCapabilities({ chat: false }),
           },
-        }]}
-        actions={{}}
-      />,
-    );
+        }], {});
 
     expect(screen.queryByTestId("subscription-provider:codex:device-code")).toBeNull();
     expect(document.body).not.toHaveTextContent("https://auth.example.test/secret-token");
@@ -261,18 +243,41 @@ describe("SubscriptionAuthControls", () => {
 
   const PICKER_TEST_IDS = ["configure-runtime", "change-runtime", "forget-runtime"] as const;
 
+  it.each(["claude-code", "kimi-code", "grok-build"] as const)(
+    "offers sign-in for a found signed-out runtime (%s)",
+    (runtimeId) => {
+      const beginLogin = vi.fn();
+      renderProviders([viewFor(runtimeId, { runtime: "unverified", connection: "signed-out" })], { beginLogin, verifyRuntime: vi.fn() });
+
+      expect(screen.queryByTestId(`subscription-provider:${runtimeId}:verify-runtime`)).toBeNull();
+      for (const method of subscriptionRuntimeDescriptor(runtimeId).loginMethods) {
+        fireEvent.click(screen.getByTestId(`subscription-provider:${runtimeId}:login-${method}`));
+        expect(beginLogin).toHaveBeenCalledWith(runtimeId, method);
+      }
+    },
+  );
+
+  it.each([
+    ["not-configured", "signed-out"],
+    ["unavailable", "signed-out"],
+    ["checking", "signed-out"],
+    ["unverified", "unknown"],
+    ["unverified", "connected"],
+  ] as const)("does not offer sign-in for %s and %s", (runtime, connection) => {
+    renderProviders([viewFor("claude-code", { runtime, connection })], { beginLogin: vi.fn(), verifyRuntime: vi.fn() });
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+    if (runtime === "unverified") {
+      expect(screen.getByTestId("subscription-provider:claude-code:verify-runtime")).toBeInTheDocument();
+    }
+  });
+
   it.each([
     ["codex", "Install the Codex CLI to sign in with your ChatGPT plan.", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
     ["claude-code", "Install the Claude Code CLI to sign in with your Claude plan.", "curl -fsSL https://claude.ai/install.sh | bash"],
   ] as const)("shows %s install guidance and Check again, never a file picker, while no CLI is found", (runtimeId, heading, command) => {
     const refreshStatus = vi.fn();
     const configureRuntime = vi.fn();
-    render(
-      <SubscriptionProvidersSection
-        providers={[viewFor(runtimeId, { runtime: "not-configured", connection: "signed-out" })]}
-        actions={{ refreshStatus, configureRuntime, forgetRuntime: vi.fn(), beginLogin: vi.fn() }}
-      />,
-    );
+    renderProviders([viewFor(runtimeId, { runtime: "not-configured", connection: "signed-out" })], { refreshStatus, configureRuntime, forgetRuntime: vi.fn(), beginLogin: vi.fn() });
 
     const guidance = screen.getByTestId(`subscription-provider:${runtimeId}:install-guidance`);
     expect(guidance).toHaveTextContent(heading);
@@ -292,24 +297,14 @@ describe("SubscriptionAuthControls", () => {
 
   it("names the required Codex CLI version in the install guidance", () => {
     const codex = subscriptionRuntimeDescriptor("codex");
-    render(
-      <SubscriptionProvidersSection
-        providers={[viewFor("codex", { runtime: "not-configured", connection: "signed-out" })]}
-        actions={{ refreshStatus: vi.fn() }}
-      />,
-    );
+    renderProviders([viewFor("codex", { runtime: "not-configured", connection: "signed-out" })], { refreshStatus: vi.fn() });
     expect(screen.getByTestId("subscription-provider:codex:install-guidance"))
       .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required.`);
   });
 
   it("says the found CLI and offers sign-in, with no runtime picker", () => {
     const beginLogin = vi.fn();
-    render(
-      <SubscriptionProvidersSection
-        providers={[viewFor("codex", { runtime: "ready", connection: "signed-out", version: "0.163.0" })]}
-        actions={{ beginLogin, configureRuntime: vi.fn(), forgetRuntime: vi.fn(), refreshStatus: vi.fn() }}
-      />,
-    );
+    renderProviders([viewFor("codex", { runtime: "ready", connection: "signed-out", version: "0.163.0" })], { beginLogin, configureRuntime: vi.fn(), forgetRuntime: vi.fn(), refreshStatus: vi.fn() });
     expect(screen.getByTestId("subscription-provider:codex:cli-found"))
       .toHaveTextContent("Using the sign-in tool on this computer (version 0.163.0).");
     for (const id of PICKER_TEST_IDS) expect(screen.queryByTestId(`subscription-provider:codex:${id}`)).toBeNull();
@@ -323,9 +318,7 @@ describe("SubscriptionAuthControls", () => {
     const refreshStatus = vi.fn();
     const view = (errorCode: "subscription-runtime-version-unsupported" | "subscription-runtime-incompatible" | "subscription-runtime-unsafe-location", version: string | null) =>
       viewFor("codex", { runtime: "unavailable", connection: "unknown", version, errorCode });
-    const { rerender } = render(
-      <SubscriptionProvidersSection providers={[view("subscription-runtime-version-unsupported", "0.151.0")]} actions={{ refreshStatus }} />,
-    );
+    const { rerender } = renderProviders([view("subscription-runtime-version-unsupported", "0.151.0")], { refreshStatus });
     expect(screen.getByTestId("subscription-provider:codex:error"))
       .toHaveTextContent("The installed CLI is older than Ave supports.");
     expect(screen.getByTestId("subscription-provider:codex:minimum-version"))
@@ -349,13 +342,14 @@ describe("SubscriptionAuthControls", () => {
     expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
   });
 
+  it("recommends the native Windows installer when an npm route is unsafe", () => {
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-unsafe-npm-location" })], { refreshStatus: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:claude-code:error"))
+      .toHaveTextContent("the native Claude Code installer (claude.exe) is recommended");
+  });
+
   it("shows a found Claude Code CLI that lacks what Ave passes as an update, not a picker", () => {
-    render(
-      <SubscriptionProvidersSection
-        providers={[viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-incompatible" })]}
-        actions={{ refreshStatus: vi.fn(), configureRuntime: vi.fn() }}
-      />,
-    );
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-incompatible" })], { refreshStatus: vi.fn(), configureRuntime: vi.fn() });
     expect(screen.getByTestId("subscription-provider:claude-code:update-guidance"))
       .toHaveTextContent("The Claude Code CLI on this computer is too old for Ave.");
     expect(screen.getByTestId("subscription-provider:claude-code:check-again")).toBeInTheDocument();
@@ -364,12 +358,7 @@ describe("SubscriptionAuthControls", () => {
 
   it("offers Check again when a found CLI could not be used for another reason", () => {
     const refreshStatus = vi.fn();
-    render(
-      <SubscriptionProvidersSection
-        providers={[viewFor("claude-code", { runtime: "unavailable", connection: "unknown" })]}
-        actions={{ refreshStatus }}
-      />,
-    );
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown" })], { refreshStatus });
     expect(screen.getByTestId("subscription-provider:claude-code:cli-unavailable"))
       .toHaveTextContent("The sign-in tool on this computer could not be used just now.");
     fireEvent.click(screen.getByTestId("subscription-provider:claude-code:check-again"));
@@ -379,7 +368,7 @@ describe("SubscriptionAuthControls", () => {
   it.each(["en", "ko"] as const)("keeps ordinary and transient sign-in states neutral in %s", async (locale) => {
     await loadLocaleMessages(locale);
     setLocale(locale);
-    const { rerender } = render(<SubscriptionProvidersSection providers={[]} actions={{ refreshStatus: vi.fn() }} />);
+    const { rerender } = renderProviders([], { refreshStatus: vi.fn() });
     for (const runtimeId of ["codex", "claude-code"] as const) {
       for (const connection of ["signed-out", "connected"] as const) {
         rerender(
@@ -421,12 +410,7 @@ describe("SubscriptionAuthControls", () => {
 
   it("keeps the official runtime picker for a runtime whose executable the user selects (control)", () => {
     const configureRuntime = vi.fn();
-    render(
-      <SubscriptionProvidersSection
-        providers={[viewFor("kimi-code", { runtime: "not-configured", connection: "signed-out" })]}
-        actions={{ configureRuntime, refreshStatus: vi.fn() }}
-      />,
-    );
+    renderProviders([viewFor("kimi-code", { runtime: "not-configured", connection: "signed-out" })], { configureRuntime, refreshStatus: vi.fn() });
     fireEvent.click(screen.getByTestId("subscription-provider:kimi-code:configure-runtime"));
     expect(configureRuntime).toHaveBeenCalledWith("kimi-code");
     expect(screen.queryByTestId("subscription-provider:kimi-code:check-again")).toBeNull();
@@ -450,9 +434,8 @@ describe("SignInMethodChoice", () => {
     rerender(<SignInMethodChoice rowId="codex" planName="ChatGPT" value="api" onChange={onChange} />);
     expect(apiKey).toHaveAttribute("aria-checked", "true");
     expect(subscription).toHaveAttribute("aria-checked", "false");
-    // Both options are buttons in one radio group, so Tab reaches the group
-    // and the arrow keys move between them (driven with real key events in
-    // the CDP check; jsdom does not run Radix's roving focus).
+    // Both options are buttons in one radio group, so Tab reaches the group and the arrow keys move between them (driven with
+    // real key events in the CDP check; jsdom does not run Radix's roving focus).
     expect(subscription.tagName).toBe("BUTTON");
     expect(apiKey.tagName).toBe("BUTTON");
   });
@@ -460,5 +443,102 @@ describe("SignInMethodChoice", () => {
   it("names the plan by the provider's brand", () => {
     render(<SignInMethodChoice rowId="claude" planName="Claude" value="subscription" onChange={vi.fn()} />);
     expect(screen.getByRole("radio", { name: "Claude subscription" })).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+describe("subscription account and credential disclosure", () => {
+  it("discloses the account and the installed CLI credential boundary", () => {
+    const claude: SubscriptionProviderView = {
+      descriptor: { id: "claude-code", label: "Claude Code", planName: "Claude", cliName: "Claude Code CLI", executable: "discovered", description: "", loginMethods: ["browser"], supportsLogout: true },
+      status: { runtime: "ready", connection: "connected", models: [], capabilities: runtimeCapabilities() },
+    };
+    renderProviders([claude, connectedCodex()], {});
+    expect(screen.getByTestId("subscription-provider:claude-code:billing-disclosure")).toHaveTextContent(
+      "Uses your own Claude subscription through the sign-in tool on this computer; Ave never sees or stores your Claude credentials.",
+    );
+    // Only the runtime reached through the user's own CLI carries it.
+    expect(screen.queryByTestId("subscription-provider:codex:billing-disclosure")).toBeNull();
+  });
+});
+
+describe("SubscriptionAuthControls for ChatGPT plan usage", () => {
+  const planView = (status: SubscriptionProviderStatus): SubscriptionProviderView => {
+    const descriptor = subscriptionRuntimeDescriptor("chatgpt-plan");
+    return {
+      descriptor: {
+        id: "chatgpt-plan",
+        label: descriptor.label,
+        planName: descriptor.planName,
+        cliName: descriptor.cliName,
+        executable: descriptor.executable,
+        description: "",
+        loginMethods: descriptor.loginMethods,
+        supportsLogout: descriptor.supportsManagedLogout,
+      },
+      status,
+    };
+  };
+
+  it("offers Continue with ChatGPT and explains plan billing, with no runtime picker", () => {
+    const beginLogin = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "signed-out" })], {
+      beginLogin,
+      configureRuntime: vi.fn(),
+      forgetRuntime: vi.fn(),
+    });
+    const login = screen.getByTestId("subscription-provider:chatgpt-plan:login-browser");
+    expect(login).toHaveTextContent("Continue with ChatGPT");
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:login-device-code")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:configure-runtime")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:change-runtime")).not.toBeInTheDocument();
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:billing-disclosure")).toHaveTextContent(/separate from API-key charges/);
+    fireEvent.click(login);
+    expect(beginLogin).toHaveBeenCalledWith("chatgpt-plan", "browser");
+  });
+
+  it("shows the plan in use with Manage usage once signed in", () => {
+    const manageUsage = vi.fn();
+    const logout = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ images: false }) })], {
+      manageUsage,
+      logout,
+    });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:plan-in-use")).toHaveTextContent("Using ChatGPT plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:manage-usage"));
+    expect(manageUsage).toHaveBeenCalledWith("chatgpt-plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:logout"));
+    expect(logout).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it("welcomes the first plan sign-in once, and Got it dismisses it", () => {
+    const acknowledgeNotice = vi.fn();
+    renderProviders([planView({
+      runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ images: false }), notice: "welcome",
+    })], { acknowledgeNotice });
+    const dialog = screen.getByTestId("subscription-provider:chatgpt-plan:welcome");
+    expect(dialog).toHaveTextContent("You're using your ChatGPT plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:welcome-got-it"));
+    expect(acknowledgeNotice).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it.each([
+    ["revocation-unconfirmed", /disconnect Ave in ChatGPT settings/],
+    ["reconnect-required", /sign in again/],
+    ["plan-usage-disabled", /allow plan usage/],
+    ["declined", /not allowed in the browser/],
+    ["account-mismatch", /different ChatGPT account or workspace/],
+    ["state-mismatch", /did not belong to this attempt/],
+  ] as const)("explains the %s notice and lets it be dismissed", (notice, text) => {
+    const acknowledgeNotice = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "signed-out", notice })], { acknowledgeNotice, beginLogin: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:notice")).toHaveTextContent(text);
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:notice-dismiss"));
+    expect(acknowledgeNotice).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it("says plainly when plan sign-in is not configured", () => {
+    renderProviders([planView({ runtime: "not-configured", connection: "unknown" })], { beginLogin: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:not-configured")).toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:login-browser")).not.toBeInTheDocument();
   });
 });

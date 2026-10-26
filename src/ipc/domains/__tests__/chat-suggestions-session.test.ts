@@ -1,20 +1,4 @@
-/**
- * The conversation-row actions on the dedicated Suggestions conversation.
- *
- * Every unrequested card waiting in the window names that conversation as its
- * origin, and a card addressed to a conversation the list does not hold is
- * drawn nowhere. So the two row actions that would take it out of the list
- * are held here, in main, where the user's confirm also lives:
- *
- *  - delete CLEARS it: the transcript goes and an empty one is created in the
- *    same handler, so the row is listed again before the renderer re-reads the
- *    list and no waiting card is stranded (a plugin card lives only in the
- *    renderer, which main cannot see — so this does not depend on asking it);
- *  - archive is refused, because the sidebar hides archived rows and every
- *    future suggestion, with its count, would be hidden with it.
- *
- * Driven through the real registered handlers against a real MemoryManager.
- */
+// Keep the Suggestions conversation in the list while staged cards still address it.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,8 +41,6 @@ async function register(): Promise<void> {
   registerChatHandlers({
     conversationLoop: {
       getHistory: vi.fn(() => ({ getMessages: () => [], truncate: vi.fn(), restore: vi.fn() })),
-      // The primary tile holds some other conversation: these deletes are of
-      // conversations no tile has loaded.
       getSessionId: vi.fn(() => "active-session"),
       getSessionKind: vi.fn(() => "main"),
       loadSession: vi.fn(() => true),
@@ -96,7 +78,6 @@ describe("deleting the Suggestions conversation", () => {
     );
 
     expect(result).toEqual({ ok: true, wasLoaded: false });
-    // The address every waiting card names is still in the list.
     expect(listed(SUGGESTIONS_SESSION_ID)).toBe(true);
     expect(mm.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([]);
   });

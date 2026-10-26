@@ -1,18 +1,6 @@
-/**
- * A push that updates no ref was refused as a parse error.
- *
- * `readPrePushInput` returned a bare string, so "git sent an empty list" and
- * "we could not read git's list" were the same value. The parser then treated
- * an empty list as incomplete, and the caller refuses an incomplete parse —
- * correctly, since nothing is known about the push.
- *
- * Both readings cannot be right. Refusing an unreadable input is the fail-
- * closed behaviour to keep; refusing a genuine no-op push is not, and it
- * surfaces as a failed push even though the branch is already on the remote at
- * the right commit — a confusing way to learn there was nothing to do.
- */
+// Unreadable push input must fail closed; a genuine empty ref list is a valid no-op.
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -24,9 +12,11 @@ import {
   isIntegrationBranchRef,
   parsePrePushUpdates,
   parseRemoteHeads,
+  resolveHeadUpdates,
   selectBaseCandidates,
 } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const ZERO = "0".repeat(40);
 const SHA = "5e544ff8f30aa915be9e0d9e66db564cf1e192f4";
@@ -34,16 +24,13 @@ const UPDATE = `refs/heads/topic ${SHA} refs/heads/topic ${ZERO}`;
 
 describe("pre-push ref updates", () => {
   it("accepts a push that updates no ref", () => {
-    // git had nothing to send. A push that changes no ref cannot violate a
-    // branch policy, so there is nothing for the caller to refuse.
+    // A no-op push cannot violate a ref-update policy.
     const result = parsePrePushUpdates({ readable: true, text: "" });
     expect(result.complete).toBe(true);
     expect(result.updates).toEqual([]);
   });
 
   it("refuses an input it could not read", () => {
-    // Same empty text, opposite verdict — this is the distinction the single
-    // string could not carry.
     expect(parsePrePushUpdates({ readable: false, text: "" }).complete).toBe(false);
   });
 
@@ -53,6 +40,18 @@ describe("pre-push ref updates", () => {
     expect(result.updates).toEqual([
       { localRef: "refs/heads/topic", localSha: SHA, remoteRef: "refs/heads/topic", remoteSha: ZERO },
     ]);
+  });
+
+  it("names the branch a HEAD push updates, and only when HEAD is that branch at the pushed commit", () => {
+    const head = parsePrePushUpdates({ readable: true, text: `HEAD ${SHA} refs/heads/topic ${ZERO}` });
+    expect(resolveHeadUpdates(head, () => ({ ref: "refs/heads/topic", sha: SHA })).updates[0]?.localRef)
+      .toBe("refs/heads/topic");
+    // Bind every pushed commit to checked-out HEAD, including detached checkouts.
+    expect(resolveHeadUpdates(head, () => null).updates[0]?.localRef).toBe("HEAD");
+    expect(resolveHeadUpdates(head, () => ({ ref: "refs/heads/topic", sha: "1".repeat(40) })).updates[0]?.localRef)
+      .toBe("HEAD");
+    const branch = parsePrePushUpdates({ readable: true, text: UPDATE });
+    expect(resolveHeadUpdates(branch, () => { throw new Error("not consulted"); })).toBe(branch);
   });
 
   it("parses several updates and ignores blank lines", () => {
@@ -67,8 +66,7 @@ describe("pre-push ref updates", () => {
     ["refs/heads/topic nothex refs/heads/topic " + ZERO, "a non-hex object id"],
     ["refs/heads/topic " + SHA.slice(0, 20) + " refs/heads/topic " + ZERO, "a truncated object id"],
   ])("refuses a line with %s (%s)", (line) => {
-    // One unreadable line makes the whole set unusable: the caller cannot
-    // enforce a branch policy against a list it only partly understands.
+    // One unreadable line makes the ref set incomplete and unusable for policy enforcement.
     expect(parsePrePushUpdates({ readable: true, text: line }).complete).toBe(false);
   });
 
@@ -84,13 +82,7 @@ describe("pre-push ref updates", () => {
   });
 });
 
-/**
- * Every sub-branch push used to take the full checks: a new branch was diffed
- * only against the default branch, and only when the local tracking ref
- * equalled the live tip. Writer clones carry a stale origin/main, and
- * sub-branches are cut from origin/integration/<category>, so the base was
- * either missing or dragged every integration commit into the diff.
- */
+// Measure sub-branches from the closest live default or integration tip, even with stale tracking refs.
 describe("new-branch base", () => {
   const A = "a".repeat(40);
   const B = "b".repeat(40);
@@ -126,7 +118,7 @@ describe("new-branch base", () => {
     expect(isIntegrationBranchRef(ref)).toBe(expected);
   });
 
-  it("measures a sub-branch from its integration branch while the default tracking ref is stale", () => {
+  it("measures a sub-branch from its integration branch while the default tracking ref is stale", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "pre-push-base-")));
     const env = gitFixtureEnv(root);
     const git = (cwd: string, args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" }).trim();
@@ -148,14 +140,12 @@ describe("new-branch base", () => {
       git(root, ["clone", "-q", remote, writer]);
       git(writer, ["config", "user.name", "Fixture"]);
       git(writer, ["config", "user.email", "fixture@example.invalid"]);
-      // An integration branch collects merged work, and main moves on.
       git(seed, ["checkout", "-qb", "integration/permissions"]);
       for (let index = 0; index < 3; index += 1) commit(seed, `integration-${index}.txt`, `${index}\n`);
       git(seed, ["push", "-q", remote, "integration/permissions"]);
       git(seed, ["checkout", "-q", "main"]);
       commit(seed, "main-only.txt", "main\n");
       git(seed, ["push", "-q", remote, "main"]);
-      // The writer fetches only its category: origin/main stays stale.
       git(writer, ["fetch", "-q", "origin", "integration/permissions:refs/remotes/origin/integration/permissions"]);
       const staleMain = git(writer, ["rev-parse", "refs/remotes/origin/main"]);
       expect(staleMain).not.toBe(git(seed, ["rev-parse", "main"]));
@@ -171,15 +161,13 @@ describe("new-branch base", () => {
       expect(heads).not.toBeNull();
       const candidates = selectBaseCandidates(heads!);
       expect(candidates.map(({ ref }) => ref)).toEqual(["refs/heads/main", "refs/heads/integration/permissions"]);
-      // The live main tip is not in the writer's object store.
       expect(findMissingCandidateTips(candidates, run).map(({ ref }) => ref)).toEqual(["refs/heads/main"]);
       const integrationTip = git(seed, ["rev-parse", "integration/permissions"]);
       expect(chooseNewBranchBase(localSha, candidates, run)).toEqual({
         ref: "refs/heads/integration/permissions", sha: integrationTip, count: 1,
       });
 
-      // The hook's one fetch brings the missing tips' objects without moving
-      // a tracking ref; the integration branch is still the closest base.
+      // Fetch missing tip objects without moving tracking refs; choose the closest base.
       expect(run(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", remote, "refs/heads/main"]).status).toBe(0);
       expect(findMissingCandidateTips(candidates, run)).toEqual([]);
       expect(git(writer, ["rev-parse", "refs/remotes/origin/main"])).toBe(staleMain);
@@ -187,14 +175,14 @@ describe("new-branch base", () => {
         ref: "refs/heads/integration/permissions", sha: integrationTip, count: 1,
       });
 
-      // A branch cut from main measures from main instead.
       git(writer, ["checkout", "-qb", "fix/main-topic", git(seed, ["rev-parse", "main"])]);
       commit(writer, "fix.txt", "fix\n");
       expect(chooseNewBranchBase(git(writer, ["rev-parse", "HEAD"]), candidates, run)).toMatchObject({
         ref: "refs/heads/main", count: 1,
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      // Async removal clears read-only loose-object attributes on Windows.
+      await cleanupTmpDir(root);
     }
   });
 
@@ -228,7 +216,7 @@ describe("new-branch base", () => {
       console: { log: (line: string) => logs.push(line) },
     });
     const result = findNewBranchBase("/fixture", { localRef: "refs/heads/feat/x", localSha: C }, "https://example.invalid/ave");
-    expect(result).toEqual({ sha: A });
+    expect(result).toEqual({ sha: A, tips: [A] });
     expect(logs).toContain(
       `[checks] skipping base candidate refs/heads/integration/permissions (${B.slice(0, 12)}): git fetch exited 128: fatal: could not read from remote`,
     );

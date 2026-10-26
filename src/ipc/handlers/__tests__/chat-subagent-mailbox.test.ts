@@ -70,8 +70,7 @@ describe("parent sub-agent mailbox turns", () => {
       mailboxEntry("message-2", "second", "[Sub-Agent: Two]", "Two"),
     ]);
     const mixedTurn = await prepareParentMailboxTurn(mixed.deps);
-    // Still a sub-agent report, but no single child owns it — the box renders
-    // unnamed rather than crediting one child for another's work.
+    // Combined child reports must not attribute one child's work to another.
     expect(mixedTurn?.childTitle).toBeUndefined();
   });
 
@@ -81,8 +80,7 @@ describe("parent sub-agent mailbox turns", () => {
     const mailboxTurn = await prepareParentMailboxTurn(fixture.deps);
     const instruction = wrapChildReportForParentJudgment("");
     expect(mailboxTurn?.initialGuidance.endsWith("child one")).toBe(true);
-    // Exactly one host instruction — the persisted entry text stays unwrapped so
-    // the mid-turn injection path cannot add a second copy.
+    // Persist unwrapped report text so each consumption path adds the host instruction only once.
     expect(mailboxTurn?.initialGuidance.split(instruction.trim()).length).toBe(2);
   });
 

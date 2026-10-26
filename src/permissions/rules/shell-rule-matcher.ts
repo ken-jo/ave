@@ -1,34 +1,12 @@
-/**
- * Shell rule matcher (issue #28, P1a).
- *
- * Matches `Bash(...)` rules against the host's typed shell AST
- * (`shared/shell-analysis.ts`, mvdan/sh grammar). Contract:
- *
- *  - deny > ask > allow, regardless of specificity; first match within a class.
- *  - Deny/ask look at EVERY simple command in the tree, including `$()` /
- *    backtick / process-substitution bodies, subshells, loop and conditional
- *    bodies, function bodies, and through wrapper programs (`sudo rm …`).
- *  - Allow requires EVERY simple command to be covered by some allow rule
- *    (different rules may cover different subcommands), and refuses whole
- *    inputs it cannot reason about: parse failure, unsupported syntax, opaque
- *    word expansions, substitutions, command-scoped assignments, write
- *    redirections, function definitions, assignment-only statements, and
- *    anything a floor catches (destructive, credential exfiltration, a
- *    sensitive path anywhere in the command).
- *  - When the tree hides code from deny/ask (unparseable, unsupported,
- *    dynamic program name, a shell/interpreter fed code by any route — `-c`,
- *    stdin pipe, here-string, here-document, `-s`, `-`, a script file — or a
- *    code carrier / code-executing option from `shell-prefix-policy.ts`) and
- *    the user has any deny/ask Bash rule, the result is `ask` unless a deny
- *    rule already matched a visible command: a deny rule the matcher could not
- *    evaluate must not be bypassed by the mode. Hidden code is never allowed.
- */
+// Deny outranks ask then allow, regardless of specificity; deny/ask inspect every command and nested body through wrappers. Allow requires every static command to be covered and rejects opaque syntax, substitutions, assignments, write redirects, functions and all floors.
+// Hidden code is never allowed, even by exact argv; when deny/ask rules cannot inspect it, ask unless a visible deny already matched so mode cannot bypass an unreadable rule.
 import {
   staticShellWord,
   type ShellStatement,
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
+import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
@@ -41,9 +19,7 @@ import {
   codeCarryingVariable,
   hiddenCodeReason,
   opaqueRunnerReason,
-  refusedShellPrefix,
   isShellWrapperProgram,
-  shellOptionEffect,
   stripGlobalOptions,
   wrapperCommand,
   wrapperPrefixLength,
@@ -52,10 +28,10 @@ import {
 type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
 
 interface ShellRuleCommand {
-  /** One entry per word; `undefined` where the word is not a static literal. */
+  // One entry per word; `undefined` where the word is not a static literal.
   argv: readonly (string | undefined)[];
   raw: string;
-  /** Reasons this simple command can never be covered by an allow rule. */
+  // Reasons this simple command can never be covered by an allow rule.
   allowBlockers: readonly string[];
 }
 
@@ -63,11 +39,11 @@ export type ShellRuleShape =
   | {
       ok: true;
       commands: readonly ShellRuleCommand[];
-      /** Reasons commands may be invisible to deny/ask matching. */
+      // Reasons commands may be invisible to deny/ask matching.
       hidden: readonly string[];
-      /** Caller applies this at category fallback; matching rules or saved grants may satisfy it. */
+      // Caller applies this at category fallback; matching rules or saved grants may satisfy it.
       ordinaryAsk?: string;
-      /** Whole-input reasons no allow rule can apply. */
+      // Whole-input reasons no allow rule can apply.
       allowBlockers: readonly string[];
     }
   | { ok: false; reason: string };
@@ -82,8 +58,7 @@ export function analyzeShellForRules(input: ShellCommandInput, cwd?: string): Sh
 }
 
 function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRuleShape {
-  // A broken parser runtime is an internal failure the matcher cannot
-  // reason around; report it as unparseable (asks, never allows).
+  // A broken parser runtime is an internal failure the matcher cannot reason around; report it as unparseable (asks, never allows).
   if (parsed.parserError !== undefined) return { ok: false, reason: `shell parser failed: ${errorMessage(parsed.parserError)}` };
   const analysis = parsed.analysis;
   if (!analysis.ok) return { ok: false, reason: analysis.reason };
@@ -146,9 +121,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           }
         }
         if (statement.words.length === 0) {
-          // Assignment-only statements change the environment of every later
-          // command (`PATH=/tmp/x; git status`). They are not a command a rule
-          // can name, so they block allow for the whole input.
+          // Assignment-only statements change the environment of every later command (`PATH=/tmp/x; git status`). They are not a command a rule can name, so they block allow for the whole input.
           if (statement.assignments.length > 0) globalBlockers.push("environment assignment");
           return;
         }
@@ -160,22 +133,16 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           ordinaryAsk ??= "dynamic program name";
           blockers.push("dynamic program name");
         } else {
-          // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`,
-          // `eval "…"`, `find -exec rm`, `sed 'e …'`: the code is a string,
-          // a file or stdin the matcher does not read, so deny/ask cannot
-          // see inside it and no allow rule covers it.
+          // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`, `eval "…"`: the code is a string, a file or stdin the matcher does not read, so deny/ask cannot see inside it. No allow rule covers that hidden execution.
           const hiddenCode = hiddenCodeReason(argv);
           if (hiddenCode) {
             hidden.push(hiddenCode);
             blockers.push(hiddenCode);
-            // A static code source stays a rule-visibility blocker. An
-            // unresolved binding still needs ordinary approval.
+            // Unresolved bindings also need ordinary approval.
             if (argv.includes(undefined)) ordinaryAsk ??= hiddenCode;
           }
           const inner = wrapperPrefixLength(argv);
           if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
-          const effect = shellOptionEffect(argv);
-          if (effect) blockers.push(effect.reason);
         }
         commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers });
         return;
@@ -242,22 +209,14 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }
 
-/** Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding). */
+// Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding).
 function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   if (argv.length < spec.tokens.length) return false;
   if (!spec.wildcard && argv.length !== spec.tokens.length) return false;
   return spec.tokens.every((token, index) => argv[index] === token);
 }
 
-/**
- * Deny/ask semantics: argv0 compares by program basename (`/bin/rm`); when
- * argv0 is a wrapper program (`sudo -u root rm`, `env A=1 rm`, `timeout 5 rm`,
- * `xargs rm`, `busybox rm`) the rule may start at ANY later word — wrapper
- * option grammars differ too much to skip them exactly; and a multi-verb
- * tool's global options are also tried stripped (`git -C . push` matches
- * `Bash(git push *)`). This only ever widens what a deny/ask rule sees; allow
- * matching never strips wrappers or options.
- */
+// Deny/ask semantics: argv0 compares by program basename (`/bin/rm`); when argv0 is a wrapper program (`sudo -u root rm`, `env A=1 rm`, `timeout 5 rm`, `xargs rm`, `busybox rm`) the rule may start at ANY later word — wrapper option grammars differ too much to skip them exactly; and a multi-verb tool's global options are also tried stripped (`git -C. push` matches `Bash(git push *)`). This only ever widens what a deny/ask rule sees; allow matching never strips wrappers or options.
 function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
   const starts = head !== undefined && isShellWrapperProgram(head)
@@ -303,9 +262,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const shape = analyzeShellForRules(parsed, cwd);
 
   if (hasRestrictions) {
-    // deny > ask: a deny rule that matches a visible command wins even when
-    // another part of the input is hidden; hidden code then asks, because a
-    // deny rule the matcher could not evaluate must not be bypassed.
+    // deny > ask: a deny rule that matches a visible command wins even when another part of the input is hidden; hidden code then asks, because a deny rule the matcher could not evaluate must not be bypassed.
     const visible = shape.ok ? shape.commands : [];
     const matching = (list: readonly ShellRuleInput[]): ShellRuleInput | undefined =>
       list.find((rule) => visible.some((cmd) => matchesBashRuleForRestriction(rule.spec, cmd.argv)));
@@ -328,8 +285,14 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   // Floor: destructive text anywhere is never covered by an allow rule.
-  if (isDestructiveShellText(command) || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw))) {
+  if (isDestructiveShellText(command)
+    || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
+  }
+  // Irreversible forms remain outside reusable command permission.
+  for (const cmd of shape.commands) {
+    const unreusable = noReusableRuleReason(cmd.argv);
+    if (unreusable) return { decision: null, reason: `${unreusable} (no allow rule covers it)` };
   }
   const exfiltration = shellExfiltrationSignal(parsed, cwd);
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
@@ -338,12 +301,9 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const incomplete = shellScanOrdinaryAsk(parsed, cwd);
   if (incomplete) return { decision: null, reason: incomplete };
   const patterns: string[] = [];
-  // Stored runner rules still need a literal command boundary.
-  const allowRules = rules.allow.filter((candidate) =>
-    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || refusedShellPrefix(candidate.spec.tokens) === null);
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
-    const rule = allowRules.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
+    const rule = rules.allow.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
     if (!rule) return { decision: null, reason: "a subcommand is not covered by any allow rule" };
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }

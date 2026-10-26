@@ -1,15 +1,5 @@
-/**
- * runTurn — the top-level turn orchestration, extracted from
- * conversation-loop.ts as a free function over `self: LoopContext`. It threads
- * the turn through classify/route, lifecycle hooks, queryLoop, the post-turn
- * hook chain, and the turn_summary projection. The lastRound/lastContext
- * token-projection fields it reads/writes live on the ConversationLoop
- * instance (via `self`), so turn_summary.tokensIn is computed exactly as before.
- */
+import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { randomUUID } from "node:crypto";
-// LoopContext — the turn-local mutable carrier these free functions operate
-// on. It IS the ConversationLoop instance: the class owns all turn state and
-// the extracted free functions read/write it through this alias.
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type {
   RunTurnOptions,
@@ -33,6 +23,7 @@ import type * as QueryLoopModule from "./query-loop.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
+import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
@@ -56,24 +47,14 @@ import type { MemoryCaptureTaintReason } from "../../memory/memory-capture-servi
 
 const log = createLogger("ave");
 
-/** The open turn span, the tracer that opens children under it, and those children. */
 interface TurnTrace {
   readonly tracer: Tracer;
   readonly span: Span;
-  /**
-   * Tool spans still open, keyed by tool-use id. A turn the user stops can
-   * leave a call with no `onToolEnd`, and a span that is never ended is a span
-   * that is never exported — so the turn's own exit closes what is left.
-   */
+  // Close leftover tool spans on turn exit; aborted tools may never emit onToolEnd.
   readonly toolSpans: Map<string, Span>;
 }
 
-/**
- * A span event never carries prompt text, tool input, or tool output. The
- * session transcript already holds those, it stays on the user's machine, and
- * a trace does not: it is written to a file or posted to a collector the user
- * may not own. Sizes and identifiers are what an exported span may say.
- */
+// Export only sizes and identifiers; traces must never contain prompt text or tool input/output.
 function toolSpanEndAttributes(
   result: string,
   isError: boolean,
@@ -91,21 +72,8 @@ function commitsHostInjectedMessages(stopReason: TurnStopReason | undefined,
   return stopReason === "end_turn" || stopReason === "input-required";
 }
 
-/**
- * Durability flush for the in-flight turn's transcript.
- *
- * The turn's normal persistence points (the post-turn hook chain, the
- * no-hook-chain fallback, and the turn_summary save) all sit AFTER `queryLoop`
- * returns, so any throw between the user append and those points used to leave
- * the whole turn — the user's own message included — in memory only. This flush
- * is what makes the record survive that path.
- *
- * `MemoryManager.saveSession` rewrites the session JSONL from the in-memory
- * history rather than appending, so calling it repeatedly within one turn is
- * idempotent: the last write wins and no retry path can duplicate a message.
- * Failures are logged, never rethrown — a durability flush must not replace the
- * error the turn is already reporting.
- */
+/** Flush accepted history even when queryLoop throws; repeated whole-session writes are idempotent.
+ * Log durability failures without replacing the turn error already being reported. */
 async function flushTranscript(self: LoopContext, reason: string): Promise<void> {
   if (self.deps.disableSessionPersistence) return;
   try {
@@ -118,15 +86,7 @@ async function flushTranscript(self: LoopContext, reason: string): Promise<void>
   }
 }
 
-
-/**
- * Open the turn span, if boot configured a tracer, and run the turn inside it.
- *
- * `startActiveSpan` is what puts the span on the async context, so the AI SDK's
- * own `invoke_agent` / `step` / `chat` spans nest under this one instead of
- * landing at the root. With no tracer the inner function runs directly and no
- * span object is ever created.
- */
+/** Run under an active turn span so generated spans inherit it; no tracer creates no span. */
 export async function runTurn(
   self: LoopContext,
   input: string,
@@ -180,16 +140,13 @@ async function runTurnInSpan(
     }
     const inputOrigin: ChatInputOrigin = options.inputOrigin;
     const isRemoteControllerTurn = options.remoteControllerAuthority !== undefined;
-    // Fail closed on a lookalike or a replay: only the host mints the
-    // unattended lane, it is spent on this one turn, and a value that reached
-    // this boundary any other way is a contract violation.
+    // Spend only host-minted unattended authority once; lookalikes and replay fail closed.
     if (
       options.unattendedAuthority !== undefined
       && !consumeUnattendedTurnAuthority(options.unattendedAuthority)
     ) {
       throw new Error("ConversationLoop.runTurn received an unattended authority this host did not issue for this turn");
     }
-    // Reassigned at most once: a custom slash command expands to its file body.
     let turnInput = isUserKeyboardOrigin(inputOrigin) ? input : stripLeadingSlash(input);
     let customCommandDisplayText: string | undefined;
     const attachmentParts = options.attachments ?? [];
@@ -214,19 +171,15 @@ async function runTurnInSpan(
         })
       : null;
 
-
     self.tracer.step("REQUEST_ENTRY", { inputLen: turnInput.length, inputOrigin,
   });
     let activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
     if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
       try {
-        // Settings IPC updates both loops synchronously before persistence, but
-        // this execution-boundary retry closes any stale instance that reached
-        // the loop through a non-IPC construction or an earlier failed refresh.
+        // Revalidate provider posture at execution for stale loops missed by settings refresh.
         self.refreshProvider();
       } catch {
-        // refreshProvider clears the old provider before building. Treat a
-        // rebuild failure as unconfigured rather than retaining an API client.
+        // Refresh clears the prior client first; rebuild failure leaves the route unconfigured.
       }
       activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
     }
@@ -236,7 +189,6 @@ async function runTurnInSpan(
       throw new Error(err);
     }
 
-    // B4: set up abort controller for this turn
     const ac = new AbortController();
     self.currentAbortController = ac;
     if (abortSignal?.aborted) {
@@ -253,19 +205,13 @@ async function runTurnInSpan(
     let agentMessageInputId: string | null = null;
     let retainHostInjectedMessages = false;
     let turnStateFinalized = false;
-    /** True once the user's message is in history — i.e. the turn was accepted. */
     let userTurnAppended = false;
-    /** True once the post-turn persistence path ran (hook chain or fallback). */
     let transcriptPersistedAfterLoop = false;
-    /** Appends each row as it lands in history; open from the accepted user message to the turn's end. */
     let journal: TurnJournal | null = null;
-    // The quit path aborts every running turn as `host-exit` and waits for it
-    // to settle; settled in the finally below, after the last write.
+    // Host exit aborts and waits for turns to settle after their final durability write.
     const runningTurn = registerRunningTurn((reason) => ac.abort(reason));
 
-    // Cleanup covers every path after the controller becomes observable:
-    // lifecycle hooks, prompt refusal, preflight, queryLoop, and post-turn
-    // processing. Detaching the queue before callbacks makes it idempotent.
+    // Cover every path after exposing the controller; detach guidance before callbacks for idempotent cleanup.
     const finalizeTurnState = async () => {
       if (turnStateFinalized) return;
       turnStateFinalized = true;
@@ -275,17 +221,13 @@ async function runTurnInSpan(
     };
 
     try {
-    // §4.5.2 step 2 — INPUT_CLASSIFY
     const classification = self.deps.inputClassifier.classify(turnInput);
     self.tracer.step("INPUT_CLASSIFY", { type: classification.type });
-    // §4.5.2 step 3 — ROUTE_RESOLVE
     let routeResult = self.deps.routeEngine.route(classification);
     self.tracer.step("ROUTE_RESOLVE", { route: routeResult.route });
 
     if (routeResult.route === "command") {
-      // Built-ins first; then a custom command file, which only the keyboard can
-      // invoke. Its body becomes this turn's input, while the trust origin and
-      // permission intent above stay derived from what the person typed.
+      // Builtins precede keyboard-only command files; expansion retains typed-input trust and permission intent.
       const customCommand = isUserKeyboardOrigin(inputOrigin) && !BUILTIN_SLASH_COMMANDS.has(routeResult.command)
         ? await loadCustomCommand(routeResult.command, self.getSessionProjectContext().projectRoot)
         : null;
@@ -297,11 +239,7 @@ async function runTurnInSpan(
         !BUILTIN_SLASH_COMMANDS.has(routeResult.command) &&
         self.deps.isSkillName?.(routeResult.command) === true
       ) {
-        // `/<skill-name> …` typed by the user is an explicit request to use that
-        // skill, not a host command: it runs as a normal model turn with the text
-        // as typed, and the skill index guidance makes the model read the skill
-        // with `skill_load` first (a visible tool step). Built-in commands and
-        // the person's own command files win over a skill of the same name.
+        // Skills run as model turns with visible loading; builtins and user command files win name collisions.
         routeResult = { route: "llm", input: turnInput };
       } else {
         self.currentAbortController = null;
@@ -310,29 +248,19 @@ async function runTurnInSpan(
       }
     }
 
-    // §4.5.2 step 4 — TURN_ORCHESTRATE
     self.tracer.step("TURN_ORCHESTRATE", { sessionId: self.sessionId });
 
-    // ── #811 m2: SessionStart (NON-BLOCKING) ──
-    // Fired ONCE per session, on its first real conversation turn (past the
-    // command-route short-circuit). OBSERVE-ONLY — the dispatch result is
-    // discarded. The once-per-session guard keeps "SessionStart" semantics even
-    // though runTurn runs every turn.
+    // Fire observe-only SessionStart once per session after command short-circuiting.
     if (!isRemoteControllerTurn && self.sessionStartFiredFor !== effectiveSessionId) {
       self.sessionStartFiredFor = effectiveSessionId;
       await self.fireLifecycleEvent(
         "SessionStart",
-        { sessionMeta: self.sessionMetaForLifecycle() },
+        { sessionMeta: self.sessionMetaForLifecycle(), sessionSource: self.sessionSource },
         effectiveSessionId,
       );
     }
 
-    // ── #811 m2: UserPromptSubmit (BLOCKING, FAIL-CLOSED) ──
-    // Fired AFTER classify/route (above) and BEFORE queryLoop. A trusted
-    // `hooks.json` UserPromptSubmit hook can REFUSE this prompt: on a `deny`
-    // (or a fail-closed timeout/error/bad-json/spawn-error) the turn is refused
-    // and queryLoop NEVER runs. With NO matching trusted hook the dispatch
-    // returns `allow` and the turn proceeds byte-identically to today.
+    // Blocking prompt hooks run before queryLoop and fail closed; unmatched trusted hooks allow.
     const promptGate = isRemoteControllerTurn
       ? { decision: "allow" as const, reason: "Remote-controller pre-approval prompt hook disabled" }
       : await self.fireUserPromptSubmit(
@@ -347,10 +275,7 @@ async function runTurnInSpan(
           effectiveSessionId,
         );
     if (promptGate.decision === "deny") {
-      // Refuse the turn. Mirror handleCommand's blocked return: surface the
-      // refusal text to the renderer, append nothing to history (the prompt
-      // was not accepted), and return a TurnResult marked `blocked`. queryLoop
-      // is never entered.
+      // Refused input is displayed but never accepted into history or query execution.
       self.currentAbortController = null;
       const refusal = t("be_conversationLoop.userPromptBlocked", {
         reason: promptGate.reason,
@@ -368,20 +293,11 @@ async function runTurnInSpan(
       };
     }
 
-    // Turn aggregate footer tracking — see TurnCallbacks.onTurnSummary.
-    // Wrap the caller-supplied tool callbacks so per-call durationMs (when
-    // available on the executor's `meta`) feeds into the cumulative slice
-    // without forcing every caller to instrument tool callbacks. The
-    // start-time map keys on `toolUseId` so parallel tool calls within a
-    // round don't clobber each other. When the executor PR (companion)
-    // attaches a `durationMs` field directly to `meta`, we prefer that;
-    // otherwise we synthesize ms from start→end wall-clock.
+    // Aggregate tool duration by call ID so parallel starts do not collide; prefer executor measurements.
     const turnStartedAt = Date.now();
     let turnTokensIn = 0;
     let turnTokensOut = 0;
-    // queryLoop 가 별 method 라 마지막 round 의 provider inputTokens 와
-    // request-input projection 을 instance field 로 share. runTurn 은 이
-    // provider 값에 post-turn projection delta 를 더해 context-fill SOT 를 만든다.
+    // Calibrate final projected context from the latest provider input and post-turn projection delta.
     self.lastRoundProviderInputTokens = 0;
     self.lastRoundInputProjection = null;
     let turnToolCount = 0;
@@ -458,10 +374,7 @@ async function runTurnInSpan(
                     ...(meta.pluginId ? { "ave.tool.plugin_id": meta.pluginId } : {}),
                   },
                 },
-                // The parent is named rather than taken from the ambient
-                // context: our own nesting must not depend on a context
-                // manager being installed. (One is, in production — that is
-                // what nests the AI SDK's spans — but this relation is ours.)
+                // Set tool-span parents explicitly; this relation must not rely on an installed context manager.
                 otelTrace.setSpan(otelContext.active(), turnTrace.span)),
               );
             }
@@ -470,11 +383,7 @@ async function runTurnInSpan(
           onToolEnd: (name, result, isError, meta, uiPayload, durationMs) => {
             const startedAt = turnToolStarts.get(meta.toolUseId);
             turnToolStarts.delete(meta.toolUseId);
-            // Prefer the executor-provided durationMs (companion PR
-            // `feat/tool-execution-duration-display`, now merged); fall
-            // back to wall-clock between start/end if absent. When start
-            // was never recorded (mid-turn instrumentation) we contribute
-            // 0 ms.
+            // Prefer executor duration, then start/end wall time; missing start contributes zero.
             const elapsed =
               typeof durationMs === "number" &&
               Number.isFinite(durationMs) &&
@@ -521,17 +430,8 @@ async function runTurnInSpan(
           ...(options.rolePrompt.origin ? { origin: options.rolePrompt.origin } : {}),
         }
       : undefined;
-    // Staged (non-user-authored) input renders as an `imported_trigger` marker, not a
-    // user bubble — for a plugin overlay trigger, an MCP App's confirmed `ui/message`,
-    // and an MCP server prompt. Each reads provenance from its own envelope; `source`
-    // is what the transcript shows (`overlay:…` / `app:…` / `mcp-prompt:…`).
-    // Table-driven: a per-origin ternary here defaulted to `null`, and a missing
-    // branch made server/app-authored text render as a genuine USER bubble.
-    //
-    // The parse is pinned to the CLAIMED origin's own envelope. `chat:send` binds the
-    // two, but direct `runTurn` callers (the routine engine) do not go through that
-    // gate — accepting any kind's envelope there would let a routine's prompt label
-    // its transcript row with someone else's provenance.
+    // Render staged input with provenance from its claimed origin envelope, never as genuine user text.
+    // Direct callers also need origin-envelope binding to prevent impersonating another source.
     const stagedKind = stagedOriginForInput(inputOrigin);
     const importedTrigger = stagedKind
       ? (() => {
@@ -542,19 +442,10 @@ async function runTurnInSpan(
     if (inputOrigin === "agent-message") {
       agentMessageInputId = randomUUID();
     }
-    // A resource attachment's body does NOT belong in the user's transcript bubble.
-    // Without this the bubble replays whatever the parts flatten to — up to a read's
-    // worth of server text per attachment, pasted under the user's name in their own
-    // message. The `[Resource #N]` marker they typed is already in `turnInput` and is
-    // what stands for it, exactly as an image's marker does.
-    //
-    // Reuses the fence counter rather than a second predicate, so "does this turn carry
-    // server-attached content" has one answer here and at the bound that enforces it.
+    // Show typed resource markers rather than server attachment bodies in the user transcript bubble.
     const carriesResourceAttachment = countResourceAttachmentFences(attachmentParts) > 0;
     const userMeta: MessageMeta = {
-      // Pre-minted by the caller that already announced this row. `append`
-      // mints one for rows that arrive without it, so the field is an
-      // agreement about WHICH id, never about whether there is one.
+      // Preserve a caller-announced row ID; append mints one only if absent.
       ...(options.userMessageId !== undefined ? { messageId: options.userMessageId } : {}),
       ...(agentMessageInputId ? { hostInjectionId: agentMessageInputId } : {}),
       ...(personaPromptMeta ? { activePersonaPrompt: personaPromptMeta } : {}),
@@ -581,13 +472,11 @@ async function runTurnInSpan(
         : {}),
     };
 
-    // A wake turn's INPUT is the child report itself; when the report instead
-    // rides a user turn, the guidance message below carries it. Stamp whichever
-    // one actually holds it so exactly one row replays as the report box.
+    // Stamp exactly the row holding a child report, whether turn input or guidance.
     if (options?.subAgentReport && !options.initialGuidance && inputOrigin === "agent-message") {
       userMeta.subAgentReport = options.subAgentReport;
     }
-    self.history.append({
+    const turnUserMessage = self.history.append({
       role: "user",
       content: userContent,
       ...(Object.keys(userMeta).length > 0 ? { meta: userMeta } : {}),
@@ -606,29 +495,20 @@ async function runTurnInSpan(
       });
     }
     userTurnAppended = true;
-    // §4.5.2 step 5 — HISTORY_APPEND
     self.tracer.step("HISTORY_APPEND", {
       role: "user",
       historySize: self.history.length,
     });
-    // The turn is accepted: make the user's message durable BEFORE the token
-    // preflight, prompt assembly, or the first provider call can throw. Without
-    // this the record of what the user asked exists only in renderer state until
-    // the turn reaches its post-turn persistence, so a crash or a mid-turn
-    // failure erases the question along with the answer.
+    // Persist accepted input before preflight or provider work can throw and erase the question.
     await flushTranscript(self, "turn-accepted");
-    // From here every row the turn adds is appended as it lands, and the text
-    // still streaming is snapshotted, so a process that dies mid-turn keeps
-    // all of it. The flush above is the baseline the first append extends.
+    // Start append journaling after the baseline flush; snapshot partial streaming text for crash recovery.
     if (!self.deps.disableSessionPersistence) {
       journal = new TurnJournal(self.deps.memoryManager, self.sessionId, self.history);
       await journal.begin();
       self.activeTurnJournal = journal;
     }
 
-    // Lazy Tool Scoping — 이 턴에서 노출할 plugin 집합 결정.
-    // SystemPromptBuilder Tool Schemas 섹션도 동일 scope로 필터링되도록
-    // build() 호출 전에 setToolScope 수행.
+    // Set tool scope before prompt building so advertised schemas match execution scope.
     const scope = self.resolveToolScope(input);
     const subscriptionRuntime = self.provider?.subscriptionRuntime;
     const isSubscriptionRuntime = subscriptionRuntime !== undefined;
@@ -637,11 +517,7 @@ async function runTurnInSpan(
       : undefined;
     const initialToolSchemas = self.rebuildToolSchemas(scope);
 
-    // ─── Token Preflight (same-session checkpoint compaction) ───
-    // step 5 (HISTORY_APPEND) 직후 / step 6 (PROMPT_ASSEMBLE) 직전. The
-    // projection is built from the same system prompt, provider-wire history,
-    // and tool schemas that the provider request will carry. If compaction
-    // mutates the summary preamble/history, prompt assembly runs again below.
+    // Preflight measures the outgoing prompt, wire history, and schemas; rebuild after compact mutation.
     if (self.provider && !self.deps.disableSessionPersistence) {
       await self.runPreflightGuard(
         self.createRequestProjectionContext(
@@ -662,25 +538,38 @@ async function runTurnInSpan(
       options?.rolePrompt,
       effectiveSessionId,
     );
-    // §4.5.2 step 6 — PROMPT_ASSEMBLE
     self.tracer.step("PROMPT_ASSEMBLE", {
       promptLen: systemPrompt.length,
       activePlugins: scope.activePluginIds.size,
     });
-    // The round loop is loaded on the first turn, not at app start: it is the
-    // largest piece of the engine and startup never runs it. A failed load
-    // rejects this turn through the surrounding try/finally like any other
-    // queryLoop failure; it is never skipped or replaced.
+    // Lazy-load the round loop on first turn; load failures reject through normal cleanup.
     const { queryLoop } = await import("./query-loop.js");
     let result: Awaited<ReturnType<typeof QueryLoopModule.queryLoop>>;
-    // Establish per-session ALS context so Gate 4 (plugin-runtime-delegate)
-    // can consult the CALLING session's on-demand activation set. The context
-    // uses effectiveSessionId (respects sessionIdOverride for sub-agents) and
-    // propagates through all await chains inside queryLoop, including the
-    // in-process MCP loopback path (LoopbackTransport → PluginMcpServer →
-    // pluginRuntimeToolDelegate). Clearing session B never wipes session A's
-    // activation because the Map is keyed per sessionId.
-    result = await sessionContext.run({ sessionId: effectiveSessionId }, () =>
+    // Clean root turns dispatch Stop; child runs dispatch SubagentStop; other nested turns observe only.
+    let stopHookDispatched = false;
+    const subagentStop = options?.subagentStop;
+    const onStopHook = subagentStop || !options?.spawnDepth
+      ? async ({ toolCount, stopHookActive }: { toolCount: number; stopHookActive: boolean }) => {
+          stopHookDispatched = true;
+          if (subagentStop) {
+            subagentStop.onDispatched();
+            return fireContinuableStop(self.deps, self.sessionId, "SubagentStop", {
+              ...(subagentStop.agentId !== undefined ? { agentId: subagentStop.agentId } : {}),
+              ...(subagentStop.agentType !== undefined ? { agentType: subagentStop.agentType } : {}),
+              stopReason: "end_turn",
+              stopHookActive,
+            }, effectiveSessionId);
+          }
+          return fireContinuableStop(self.deps, self.sessionId, "Stop", {
+            stopReason: "end_turn",
+            toolCount,
+            durationMs: Math.max(0, Date.now() - turnStartedAt),
+            stopHookActive,
+          }, effectiveSessionId);
+        }
+      : undefined;
+    // Bind async context to the effective session ID so delegates read isolated session activations.
+    const runQuery = () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
         self,
         systemPrompt,
@@ -703,9 +592,14 @@ async function runTurnInSpan(
           rolePrompt: options?.rolePrompt,
           onMemoryCaptureTaint: (reason) => memoryCaptureTaint.add(reason),
           memoryQuery: input,
+          ...(onStopHook ? { onStopHook } : {}),
         },
       ),
     );
+    if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
+    result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
+      ? await runQuery()
+      : await withCodeCheckpoint({ sessionId: effectiveSessionId, messageId: turnUserMessage.meta.messageId }, runQuery);
     await finalizeTurnState();
     if (!commitsHostInjectedMessages(result.stopReason) && initialGuidanceId) {
       self.history.removeByHostInjectionId(initialGuidanceId);
@@ -718,12 +612,9 @@ async function runTurnInSpan(
       self.history.removeByHostInjectionId(agentMessageInputId);
       agentMessageInputId = null;
     }
-    // lastTurnScope must reflect any request_plugin expansions so the next
-    // turn preserves the explicitly activated plugin scope.
+    // Carry newly activated plugin scope into the next turn.
     self.lastTurnScope = new Set(scope.activePluginIds);
-    // Tool-Level Deferral — carry only intentional plugin/MCP tool surface
-    // forward. Unused tool_search promotions should not stick to unrelated
-    // follow-up/meta questions as if they were builtins.
+    // Carry only intentional plugin/MCP tool surface, not unused search promotions.
     self.lastTurnToolNames = self.nextCarryForwardToolNames(
       scope,
       result.toolCalls,
@@ -739,12 +630,8 @@ async function runTurnInSpan(
       result.promotedToolNames,
     );
 
-    // ── #811 m2: Stop (NON-BLOCKING) ──
-    // Fired when the turn's query loop has resolved, BEFORE the internal
-    // post-turn hook chain — a user lifecycle hook must never block the
-    // hardcoded persistence chain (design §1.4). OBSERVE-ONLY: result discarded.
-    // Payload: stopReason, toolCount, durationMs.
-    await self.fireLifecycleEvent(
+    // Observe terminal Stop before persistence; a lifecycle hook cannot block the internal save chain.
+    if (!(stopHookDispatched && result.stopReason === "end_turn" && !subagentStop)) await self.fireLifecycleEvent(
       "Stop",
       {
         ...(result.stopReason !== undefined
@@ -756,21 +643,17 @@ async function runTurnInSpan(
       effectiveSessionId,
     );
 
-    // §4.5.2 step 11 — POST_TURN
     self.tracer.step("POST_TURN", {
       toolCallCount: result.toolCalls.length,
       stopReason: result.stopReason,
       ...postTurnToolExposure,
     });
-    // §4.5.5 Post-Turn Hook Chain (Agent 6: compact → saveSession → extractMemory → detect-checkpoint → update-title → audit → idle-poke)
     if (self.deps.postTurnHookChain) {
       const hookResult = await self.deps.postTurnHookChain.run({
         sessionId: self.sessionId,
         ...self.getSessionProjectContext(),
         messages: self.history.getMessages(),
-        // Only the original textual user input can ever be capture evidence.
-        // The assistant output, attachments, tool results, and staged guidance
-        // are excluded by the host gate below.
+        // Only original textual user input can be capture evidence, never attachments or generated content.
         input: turnInput,
         inputOrigin,
         memoryCaptureTaint: [...memoryCaptureTaint],
@@ -795,10 +678,7 @@ async function runTurnInSpan(
             }
           : {}),
       });
-      // PostTurnHookChain owns the durable transcript projection: the
-      // marker-stripped assistant output. Keep in-memory history aligned before
-      // the turn_summary final save, otherwise that final save can reintroduce
-      // raw <title>/[checkpoint] output over the cleaned transcript.
+      // Align memory with marker-stripped output before the final summary save can overwrite clean history.
       const shouldRestoreHookHistory = hookResult.detector.cleanedText !== result.text;
       if (shouldRestoreHookHistory) {
         const beforeCount = self.history.getMessages().length;
@@ -809,29 +689,19 @@ async function runTurnInSpan(
         self.history.clear();
         self.history.restore(hookResult.messagesForPersistence);
       }
-      // Cleaned text (markers stripped) replaces raw output for caller.
       if (hookResult.detector.cleanedText !== result.text) {
         result = { ...result, text: hookResult.detector.cleanedText };
       }
     } else {
-      // fallback: PostTurnHookChain 미주입 시 기존 inline 로직 유지.
-      // SubAgentRunner 의 child loop 가 이 경로를 사용 (`postTurnHookChain: undefined`)
-      // — isolation contract 보존 (parent session 의 audit/extractMemory/idle-poke 미터치).
-      // Memory extraction happens only in the hook chain's memory-extract step,
-      // on both paths. Old tool results are not stubbed after the turn: that
-      // rewrites the prefix the next request repeats. The round loop's
-      // micro-compaction and the token preflight bound a child's history.
+      // Child fallback saves stay isolated from parent audit and extraction hooks.
+      // Do not stub after the turn: preserving the reusable prefix avoids cache churn.
       if (!self.deps.disableSessionPersistence) {
         await self.deps.memoryManager.saveSession(
           self.sessionId,
           self.history.getMessages(),
         );
       }
-      // Mirror PostTurnHookChain's audit-route format so usage attribution
-      // stays consistent across both code paths. SubAgentRunner constructs
-      // child loops with `postTurnHookChain: undefined`, which would
-      // otherwise log every sub-agent LLM turn as the bare `"llm"` route
-      // and lose vendor/model granularity in `~/.ave/audit.jsonl`.
+      // Child fallback audits use the same vendor/model route format as post-turn hooks.
       const auditRoute = subscriptionAuditRoute
         ?? (result.usage && result.vendorProvider && result.vendorModel
           ? `${result.vendorProvider}/${result.vendorModel}`
@@ -871,53 +741,20 @@ async function runTurnInSpan(
       });
       self.deps.idleScheduler?.signalConversation();
     }
-    // Both branches above own the turn's durable projection, so the finally's
-    // safety-net flush is only needed for turns that never reached this point.
     transcriptPersistedAfterLoop = true;
 
-    // Same-session compact checkpoints run inside `runPreflightGuard`, which a
-    // turn evaluates here at its start and again in the round loop before every
-    // provider call after the first (`query-loop.ts`). No post-turn hook is
-    // needed: waiting for the next user turn to re-evaluate token usage was the
-    // gap that let a long agent turn run hundreds of rounds over the threshold
-    // without ever compacting.
-
-    // Turn aggregate footer — see TurnCallbacks.onTurnSummary doc above.
-    // Tokens come from the LLM provider's usage report (Vercel AI SDK
-    // exposes prompt_tokens + completion_tokens via the provider's
-    // streamText/onFinish equivalent — see `fullStreamToStreamEvent` in
-    // `engine/llm/vercel/adapter.ts` which forwards the values into the
-    // round stream's `usage` field). Suppressed for interrupted turns and for
-    // the error/authorization stop reasons below — those are dropped turns,
-    // not answers.
-    // The "did the turn produce an answer" test reads the turn-final assistant
-    // row rather than `result.text` alone: a turn can end with that row holding
-    // reasoning and no text (the model reasoned and emitted nothing), which is
-    // an answer's worth of spend and used to report the whole turn as zero
-    // usage on the badge and the ring, leaving no cost record. A row with
-    // neither text nor reasoning is a blank provider round and stays suppressed
-    // as before. Empty text alone is a shape the consumers already tolerate:
-    // `attachTurnSummaryToLastAssistant` keys on role, and `historyToEntries`
-    // emits the turn_summary entry off the attached meta, not the row's text.
-    // Production diagnostic — turn_summary 가 사용자 UI (TokenCostBadge 배지
-    // + TokenProgressRing) 의 단일 source 라 *emit 되지 않으면* 두 표면 모두
-    // 0 표시. 어느 단계에서 끊겼는지 정확히 가시화.
+    // Summarize completed text or reasoning spend; suppress interrupted, error, and authorization-only turns.
     const turnProducedAnswer =
       result.text.trim().length > 0 ||
       self.history.getLastAssistantThought().trim().length > 0;
     const willEmitSummary =
       result.stopReason !== "interrupted" &&
       result.stopReason !== "context-error" &&
-      // Stream errors push an *error* message as the assistant content;
-      // attaching turn-aggregate stats to it would render a TokenCostBadge
-      // under a user-facing failure notice with stats that belong to the
-      // PARTIAL (failed) round, not a completed turn. Exclude explicitly.
+      // Error notice rows must not receive completed-turn badges from partial failed-round usage.
       result.stopReason !== "stream-error" &&
       result.stopReason !== "authorization-required" &&
       turnProducedAnswer;
-    // Shape attributes are set for EVERY turn, including the ones whose summary
-    // is suppressed (interrupted, context error, stream error) — those are
-    // exactly the turns an attribution run needs to be able to see.
+    // Record diagnostic shape even when interrupted or failed turns suppress their summary.
     if (turnTrace) {
       turnTrace.span.setAttributes({
         "ave.turn.tool_count": turnToolCount,
@@ -936,16 +773,8 @@ async function runTurnInSpan(
       `turn_summary: emit decision — stopReason="${result.stopReason}" textLen=${result.text.trim().length} thoughtLen=${self.history.getLastAssistantThought().trim().length} usage=${billableTurnUsage ? `in=${billableTurnUsage.inputTokens} out=${billableTurnUsage.outputTokens}` : "MISSING"} → willEmit=${willEmitSummary}`,
     );
     if (willEmitSummary) {
-      // tokensIn = turn-end projected context input. It is calibrated from
-      //   provider-truth last-round raw input plus the local wire-shape delta
-      //   produced after that provider request. This is the single context-fill
-      //   SOT used by both TokenProgressRing and the footer.
-      // tokensOut / cacheRead / cacheWrite = turn 전체 합산 (billing 누적).
-      // freshInputTokens = turn 전체 fresh 합산 (TokenCostBadge headline +
-      //   cost 계산용 — 라운드별 (inputTokens − cacheRead − cacheWrite) 의 합).
-      //   `result.usage` 는 turn-aggregate (queryLoop:1098 turnUsage), 그러므로
-      //   여기서 단순 산수만 하면 정확. 이전 badge 버그는 last-round raw 와
-      //   turn-aggregate cache 를 빼느라 음수 → 0 으로 잘리던 mismatch.
+      // Input fullness is provider-calibrated final request context; output and cache usage aggregate every round.
+      // Fresh billing input subtracts per-round cache usage, never turn cache from last-round input.
       const postTurnProjection = self.projectProviderRequestInput({
         systemPrompt,
         messages: self.history.getMessages(),
@@ -1013,8 +842,7 @@ async function runTurnInSpan(
           ? {
               modelSettings: {
                 ...result.modelSettings,
-                // Diagnostics only: what the window still had room for after
-                // the turn's projected next input. No request is clamped by it.
+                // Remaining window is diagnostic; it does not clamp requests.
                 remainingContextOutputTokens: Math.max(0, result.modelSettings.contextWindow.tokens - turnTokensIn),
               },
             }
@@ -1028,18 +856,12 @@ async function runTurnInSpan(
           "ave.usage.fresh_input_tokens": turnFreshInput,
         });
       }
-      // Persist turn-aggregate stats onto the turn-final assistant message so
-      // a reload reconstructs the same TokenCostBadge / TurnSummaryFooter
-      // numbers without re-running the loop. historyToEntries reads this
-      // meta and emits a `kind: "turn_summary"` ChatEntry after the last
-      // assistant entry of the turn. Silent on history with no assistant
-      // (rare tool-only termination) — nothing to attach to.
+      // Persist summary on the final assistant row so reload reproduces usage and cost without rerunning.
       let attachedTurnSummary = false;
       try {
         attachedTurnSummary =
           self.history.attachTurnSummaryToLastAssistant(turnSummaryPayload);
       } catch {
-        // Meta attach must never break turn completion either.
       }
       let turnSummaryDurable =
         attachedTurnSummary && self.deps.disableSessionPersistence === true;
@@ -1058,33 +880,20 @@ async function runTurnInSpan(
         try {
           callbacks?.onTurnSummary?.(turnSummaryPayload);
         } catch {
-          // Summary emission must never break turn completion.
         }
       }
     }
 
     callbacks?.onTurnComplete?.(result.text);
 
-    // Re-arm recovery budgets after a clean turn. If the turn completed
-    // without a context_error / stream_error, the structural failure that
-    // exhausted force-recover or TPM recovery is resolved.
+    // Only clean turns re-arm exhausted context and TPM recovery budgets.
     if (
       result.stopReason !== "context-error" &&
       result.stopReason !== "stream-error" &&
       result.stopReason !== "interrupted" &&
       result.stopReason !== "authorization-required"
     ) {
-      // A genuinely-completed turn (not interrupted/aborted, not a
-      // context/stream error) means the structural failure that drove
-      // force-recover / TPM recovery is resolved. Reset the CONSECUTIVE
-      // force-recover counter so separate, each-recovered context errors over a
-      // long session do NOT accumulate to the cap and permanently block
-      // compaction. (Previously this reset was also gated behind
-      // recoveryExhausted||rateLimitRecoveryAttempted — which a single
-      // successful recovery never sets — so the counter stuck and 3 separate
-      // recoveries exhausted the budget mid-session.) Interrupted turns are
-      // EXCLUDED so a user / misbehaving UI cannot abort turns to reset the
-      // force-recover DoS hard-cap budget.
+      // Reset consecutive recovery counts after clean completion; aborted turns cannot reset the spending cap.
       self.contextErrorRecoveryCount = 0;
       if (self.recoveryExhausted || self.rateLimitRecoveryAttempted) {
         const wasRecoveryExhausted = self.recoveryExhausted;
@@ -1098,11 +907,7 @@ async function runTurnInSpan(
       }
     }
 
-    // Issue #260 — fire system notification on turn-end. Skip if the turn
-    // was interrupted (user aborted), hit context_error / stream_error, or
-    // produced no assistant text (rare tool-only termination). Body is the
-    // leading slice of the assistant response — NotificationService caps +
-    // ellipses it.
+    // Notify only completed text answers, excluding interruption and provider/context failures.
     if (
       result.stopReason !== "interrupted" &&
       result.stopReason !== "context-error" &&
@@ -1118,11 +923,9 @@ async function runTurnInSpan(
           body: result.text,
           contextRef: { sessionId: self.sessionId },
         });
-        // Notification lifecycle hook (#811) — observe-only; mirrors the
-        // turn-end message shown to the user so a hook can react to it.
-        await self.fireLifecycleEvent("Notification", { message: result.text });
+        // Notification hooks observe the same turn-end message shown to the user.
+        await self.fireLifecycleEvent("Notification", { message: result.text, notificationType: "agent_completed" });
       } catch {
-        // notification failure must never block turn completion
       }
     }
 
@@ -1139,18 +942,8 @@ async function runTurnInSpan(
       removedHostInjectionRows +=
         self.history.removeByHostInjectionId(agentMessageInputId);
     }
-    // A turn that escaped by throwing never reached the post-turn persistence
-    // path, so every round it completed lives only in memory. Flush the whole
-    // accumulated transcript — the user's message, each assistant round, and
-    // each tool_result — so the failure costs the answer, not the record.
-    //
-    // No synthetic end-of-turn marker is written: `historyToEntries` drops an
-    // empty assistant message on the replay path, so the row would be invisible
-    // on reload while still riding the wire on the next turn. An unpaired
-    // tool_use tail is repaired by `normalizeToolPairInvariant` at load.
-    // A turn the app's quit stopped records where it stopped, so the session
-    // reopens with Continue on offer. The rounds' own interrupted rows carry
-    // the cause already; this covers a stop that landed between rounds.
+    // Flush accepted history after throws; load repairs unpaired calls without synthetic end markers.
+    // Record host-exit interruption even when it lands between rounds.
     const hostExitMarked = userTurnAppended && isHostExitAbort(turnSignal.reason)
       && markHostExitInterruption(self);
     if (
@@ -1169,10 +962,7 @@ async function runTurnInSpan(
       await journal.end();
     }
     await finalizeTurnState();
-    // Last statement of the turn, after `dropPendingGuidance` has settled every
-    // guidance disposition and after post-turn persistence. An observer that
-    // starts work here — the A2A bus drains pending child deliveries — must not
-    // interleave with this turn's own tail.
+    // Notify settlement last, after persistence and guidance dispositions, before observers can start work.
     self.emitTurnSettled(effectiveSessionId);
     } finally {
       runningTurn.settle();
@@ -1180,13 +970,7 @@ async function runTurnInSpan(
   }
 }
 
-/**
- * Make sure a turn stopped by the app exiting ends in a row saying so. The
- * round that was streaming already appended its interrupted row (stamped with
- * the cause by the query loop); a stop between rounds, during tools, or before
- * the first round left none. Nothing is added after the user's own message —
- * nothing was produced, and Continue re-asks it.
- */
+// Mark host-exit stops lacking a streamed interrupted row; do not add prose after unanswered user input.
 function markHostExitInterruption(self: LoopContext): boolean {
   const messages = self.history.getMessages();
   const tail = messages[messages.length - 1];

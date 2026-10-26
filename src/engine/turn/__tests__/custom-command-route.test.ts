@@ -1,8 +1,4 @@
-/**
- * A typed `/<name>` that no built-in claims runs the matching command file as
- * the turn's input; built-ins keep their names, and only the keyboard can
- * invoke a file.
- */
+// Only keyboard input may invoke command files; builtins retain precedence over matching filenames.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

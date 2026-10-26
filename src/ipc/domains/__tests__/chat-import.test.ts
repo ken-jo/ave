@@ -1,13 +1,3 @@
-/**
- * ave:chat:import IPC handler unit tests (#1500 / E3).
- *
- * Strategy: register the chat IPC handlers with a minimal mock memoryManager +
- * a mocked electron `dialog` and `node:fs/promises`, then invoke the import
- * handler directly. Covers the export→import round-trip, the strict
- * GenericMessage shape validation (fail-closed on any unknown field), and the
- * DoS / malformed-file rejection branches. Import ALWAYS mints a brand-new
- * sessionId and NEVER overwrites an existing session.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { MAX_SESSION_FILE_BYTES } from "../../../memory/memory-manager.js";
@@ -21,7 +11,6 @@ const CHANNEL = "ave:chat:import";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
-// Mutable dialog + fs state, reset per test.
 const dialogState: { canceled: boolean; filePaths: string[] } = { canceled: false, filePaths: ["/tmp/import.json"] };
 const fsState: { size: number; text: string; statThrows: boolean; readThrows: boolean } = {
   size: 100,
@@ -41,9 +30,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-// The handler now reads via a single fd (open → fstat → read → close) to close
-// the CodeQL js/file-system-race TOCTOU. Mock `open()` to return a FileHandle
-// whose stat()/readFile() are driven by the same mutable fsState.
+// Read stat and contents from the same file handle to avoid a path-swap race.
 vi.mock("node:fs/promises", () => ({
   open: vi.fn(async () => {
     if (fsState.statThrows) throw new Error("ENOENT");
@@ -108,7 +95,7 @@ function setFile(obj: unknown): void {
 }
 
 function invoke(): Promise<ImportResult> {
-  // event = null → validateSender treats a frame-less internal caller as trusted.
+  // A null event uses the internal-caller seam accepted by validateSender.
   return Promise.resolve(invokeRegisteredHandler<Promise<ImportResult>>(handlers, CHANNEL));
 }
 
@@ -140,12 +127,10 @@ describe("ave:chat:import — success round-trip", () => {
     expect(result.messageCount).toBe(3);
     expect(typeof result.sessionId).toBe("string");
     expect(result.sessionId).not.toBe("original-session-id");
-    // saveImportedSession is the new-session, always-main path.
     expect(deps.memoryManager.saveImportedSession).toHaveBeenCalledTimes(1);
     const [savedId, savedMessages] = deps.memoryManager.saveImportedSession.mock.calls[0];
     expect(savedId).toBe(result.sessionId);
     expect(savedMessages).toHaveLength(3);
-    // Re-derived objects carry ONLY whitelisted keys (defense in depth).
     expect(savedMessages[1]).toEqual({ role: "assistant", content: "hi back", thought: "reasoning" });
     expect(savedMessages[2]).toEqual({ role: "tool_result", toolUseId: "tu-1", content: "result", toolName: "Read", isError: false });
   });
@@ -337,9 +322,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
         ],
       }],
     });
-    // The real file-size gate rejects this payload first because JSON framing
-    // makes it larger than 5 MB. Keep the mock fstat below that independent
-    // gate so this test reaches the composition validator itself.
+    // Keep fstat below the independent byte cap so the test reaches composition validation.
     fsState.size = MAX_SESSION_FILE_BYTES;
     expect(await invoke()).toEqual({ ok: false, error: "invalid-message-shape" });
     expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
@@ -371,33 +354,24 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
 
   it("rejects a __proto__ pollution attempt via the REAL JSON.parse path", async () => {
     await setup();
-    // Object-literal `__proto__` sets the prototype (not an own key) so it is a
-    // no-op that Object.keys never sees — the test must inject the payload as a
-    // raw JSON STRING, where `"__proto__"` becomes a genuine own enumerable key
-    // that the whitelist (hasOnlyKeys) actually has to reject. Setting
-    // fsState.text directly bypasses JSON.stringify (which would preserve the
-    // string key) — but we build the string explicitly to be unambiguous.
+    // Use raw JSON for __proto__; object-literal syntax sets the prototype without creating an own key.
     fsState.text =
       '{"sessionId":"s","exportedAt":"2026-07-05T00:00:00.000Z",' +
       '"messages":[{"role":"user","content":"ok","__proto__":{"polluted":true}}]}';
     fsState.size = Buffer.byteLength(fsState.text);
 
-    // Prove the parsed object really carries "__proto__" as an OWN key (the
-    // real attack surface the object-literal version failed to exercise).
     const parsed = JSON.parse(fsState.text);
     expect(Object.prototype.hasOwnProperty.call(parsed.messages[0], "__proto__")).toBe(true);
 
     const result = await invoke();
     expect(result.ok).toBe(false);
     expect(result.error).toBe("invalid-message-shape");
-    // And global prototype must remain unpolluted.
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
   it("rejects an import whose messages array exceeds MAX_IMPORTED_MESSAGES", async () => {
     const deps = await setup();
-    // 100_000 is the cap; 100_001 tiny messages stay well under the 5 MB byte
-    // cap yet must be rejected on the element-count axis (symmetric DoS guard).
+    // Stay below the byte cap to isolate the independent message-count limit.
     const many = Array.from({ length: 100_001 }, () => ({ role: "user", content: "x" }));
     setFile({ ...validExport, messages: many });
 
@@ -407,11 +381,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
   });
 
   it("accepts rows carrying meta — this app's own export writes it — and keeps none of it", async () => {
-    // Every row this app exports carries `meta`, so rejecting the key made an
-    // export of this app fail to import at all. Accepting the key is not
-    // accepting its contents: the normalizer rebuilds each message from
-    // whitelisted fields, so a forged compact boundary or a borrowed row
-    // identity never reaches the conversation.
+    // Accept exported meta but rebuild it from allowed fields so imported identity or compact boundaries cannot be forged.
     const deps = await setup();
     setFile({
       ...validExport,

@@ -43,10 +43,7 @@ describe("validateExternalUrl", () => {
   });
 
   it("rejects miscellaneous handler schemes (positive-allowlist contract)", () => {
-    // The validator is allowlist-based, not denylist — so any future
-    // handler scheme is rejected by default. Pin that contract on a
-    // representative trio so a regression that flips to a denylist
-    // would fail here loudly.
+    // Allow-list schemes so future protocol handlers remain denied by default.
     expect(validateExternalUrl("vbscript:msgbox(1)")).toEqual({
       ok: false,
       error: "disallowed-protocol",
@@ -65,17 +62,13 @@ describe("validateExternalUrl", () => {
   });
 
   it("accepts http URLs with path and query", () => {
-    // Documents the positive case beyond the bare-host smoke test —
-    // path/query do not change the validator's decision.
     const result = validateExternalUrl("https://ave.agent-connector.ai/admin?tab=keys");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.url).toBe("https://ave.agent-connector.ai/admin?tab=keys");
   });
 
   it("rejects URLs with embedded credentials", () => {
-    // `https://trusted.example@evil.tld/` reads as "trusted.example" to a
-    // human but navigates to evil.tld — a phishing primitive, so http(s)
-    // alone is not sufficient.
+    // Reject userinfo: a trusted-looking prefix can navigate to an attacker host.
     expect(validateExternalUrl("https://trusted.example@evil.tld/")).toEqual({
       ok: false,
       error: "embedded-credentials",
@@ -91,8 +84,7 @@ describe("validateExternalUrl", () => {
   });
 
   it("does not treat an @ elsewhere in the URL as credentials", () => {
-    // Guards the rule against over-rejection: `@` in a path or query is
-    // ordinary, and only the parsed username/password fields count.
+    // Allow @ in paths and queries; only parsed username and password fields are credentials.
     const path = validateExternalUrl("https://example.com/users/@alice");
     expect(path.ok).toBe(true);
     const query = validateExternalUrl("https://example.com/s?to=a@b.com");

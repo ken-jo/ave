@@ -1,11 +1,4 @@
-/**
- * Diagnostics bundle writer (#1499 E2) — the SECURITY-CRITICAL tests.
- *
- * The single most important property: a PII / secret injected into ANY source
- * (settings, audit trail, log file) must NOT appear anywhere in the produced
- * ZIP. These tests unzip the bundle and assert the raw bytes are clean, per
- * secret/PII class (API key, DSN, email, phone, SSN, CC).
- */
+/** Unzip diagnostics and check raw bytes so no planted secret or PII survives any source path. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,14 +18,10 @@ let auditDir: string;
 let logsDir: string;
 let crashDir: string;
 
-/** Minimal AppSettings fixture with secrets planted in every secret-bearing field. */
 function makeSettings(): AppSettings {
   const settings = {
     llm: {
-      // A vendor the store recognises: settings reach every reader through
-      // SettingsService, which coerces an unknown provider name at the file
-      // boundary, so a fixture naming one would be testing a state no caller
-      // can be handed.
+      // Use a recognized provider so settings normalization does not erase the fixture state.
       provider: "claude",
       streamSmoothing: "none",
       fallbackChain: [],
@@ -57,17 +46,13 @@ function makeSettings(): AppSettings {
     diagnostics: { includeCrashDumps: false, logRetentionDays: 7 },
     appearance: { schemaVersion: 2, bundleId: "violet-dark", language: "en" },
     webView: { preferredFlow: "in-app" },
-    system: { closeBehavior: "hide-to-tray", appMode: "work", pinnedProjectRoots: ["/Users/secretuser/private"] } as unknown as AppSettings["system"],
+    system: { closeBehavior: "hide-to-tray", appMode: "work", turnCompletionSoundEnabled: false, pinnedProjectRoots: ["/Users/secretuser/private"] } as unknown as AppSettings["system"],
     shortcuts: { toggleWindow: null, enabled: false } as unknown as AppSettings["shortcuts"],
     plugins: {},
     pluginConfigs: {},
     features: {},
   } as AppSettings;
-  // A settings file written by an older build can still carry llm keys that
-  // no longer exist in `LLMSettings` — e.g. the removed manual host-resolver
-  // map, whose value is a user-authored internal-hostname mapping. Planting
-  // one here keeps the deny-by-default allowlist under test for keys the
-  // current type system cannot even name.
+  // Plant legacy unknown settings keys to verify the export allow-list remains closed by default.
   (settings.llm as unknown as Record<string, unknown>).hostResolverMap =
     "10.0.0.1 secret-internal-host.corp";
   return settings;
@@ -123,11 +108,15 @@ describe("pickRedactedSettings — deny-by-default whitelist", () => {
     expect(json).not.toContain("secretuser"); // pinnedProjectRoots path
   });
 
+  it("keeps the turn completion sound preference for support triage", () => {
+    const out = pickRedactedSettings(makeSettings()) as { system: { turnCompletionSoundEnabled: boolean } };
+    expect(out.system.turnCompletionSoundEnabled).toBe(false);
+  });
+
   it("keeps safe provider/model shape", () => {
     const out = pickRedactedSettings(makeSettings()) as { llm: { provider: string; vendors: Record<string, { model?: string; hasBaseUrl: boolean }> } };
     expect(out.llm.provider).toBe("claude");
     expect(out.llm.vendors.claude.model).toBe("claude-x");
-    // baseUrl becomes a presence flag, never the value.
     expect(out.llm.vendors.claude.hasBaseUrl).toBe(true);
     expect(JSON.stringify(out)).not.toContain("api.example.com");
   });
@@ -159,15 +148,11 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     expect(allText).not.toContain("010-1234-5678");
     expect(allText).not.toContain("900101-1234567");
     expect(allText).not.toContain("4111 1111 1111 1111");
-    // The redaction markers ARE present (proof the line was processed, not dropped).
     expect(allText).toContain("[REDACTED:EMAIL]");
   });
 
   it("credential-class secrets in log lines are scrubbed (sk-/Bearer/JWT/x-api-key)", async () => {
-    // The PII pass (redactForLLM) does NOT cover tokens/keys; the bundle must
-    // ALSO apply scrubSecretsForLLM per line (security MAJOR M1). Inject the
-    // real secret shapes and assert they never reach the ZIP. The prior test
-    // only asserted email, masking this gap.
+    // PII redaction does not remove credentials; apply both scrubbers to each exported line.
     const jwt =
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
     writeFileSync(
@@ -187,7 +172,6 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     expect(allText).not.toContain(jwt);
     expect(allText).not.toContain("liveKEY9876543210value");
     expect(allText).not.toContain("SECRETPARAM123");
-    // The credential redaction markers ARE present (proof the line was scrubbed).
     expect(allText).toContain("[REDACTED:TOKEN]");
     expect(allText).toContain("[REDACTED:JWT]");
   });
@@ -207,9 +191,7 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
   });
 
   it("MCP stderr in the log file is redacted at the bundle chokepoint (§5d)", async () => {
-    // mcp-client pipes MCP server stderr into the app logger, so it lands in the
-    // log file. The bundle's line-level redactForLLM is the single point that
-    // covers it — no mcp-client change needed. Proven here.
+    // Server stderr reaches app logs and must be scrubbed during export.
     writeFileSync(
       join(logsDir, "ave-2025-06-02.log"),
       JSON.stringify({ level: 40, msg: "[mcp stderr] leaked admin@corp.com token" }) + "\n",
@@ -269,7 +251,6 @@ describe("buildDiagnosticsBundle — resilience", () => {
     );
     expect(manifest.appVersion).toBe("9.9.9-test");
     expect(manifest.truncated).toBe(false);
-    // settings-redacted always present.
     expect(allText).toContain("settings-redacted.json");
   });
 
@@ -283,7 +264,6 @@ describe("buildDiagnosticsBundle — resilience", () => {
   });
 
   it("size ceiling truncates and flags manifest", async () => {
-    // One large log line, tiny ceiling → truncated.
     writeFileSync(join(logsDir, "ave-2025-06-03.log"), "x".repeat(5000) + "\n", "utf-8");
     const buf = await build({ maxBytes: 500 });
     const manifest = JSON.parse(new AdmZip(buf).getEntry("manifest.json")!.getData().toString("utf-8"));
@@ -291,17 +271,7 @@ describe("buildDiagnosticsBundle — resilience", () => {
   });
 });
 
-/**
- * The window is picked in HOST-LOCAL civil days; the audit store partitions by
- * UTC day and the log files are NAMED for one. East of Greenwich the two
- * calendars disagree through the first hours of every local day, and a default
- * window built from UTC keys used to end on the local day BEFORE the current
- * one — losing the audit rows and the log file the support request is about.
- *
- * The clock is pinned to 01:00 on the 16th in Seoul (16:00Z on the 15th) so the
- * disagreement is present in both the UTC and the Asia/Seoul suite run, instead
- * of only during the hours the suite happens to be started in.
- */
+/** Pin an early local-morning instant to exercise local-day windows spanning UTC partitions. */
 describe("buildDiagnosticsBundle — default window over the local/UTC split", () => {
   const NOW = new Date("2026-06-15T16:00:00.000Z");
   let previousTz: string | undefined;
@@ -320,8 +290,6 @@ describe("buildDiagnosticsBundle — default window over the local/UTC split", (
   });
 
   it("keeps audit rows written after UTC midnight but before local midnight", async () => {
-    // 01:00 local on the 16th — inside the default window's last local day, and
-    // written into the PREVIOUS UTC partition.
     writeFileSync(
       join(auditDir, "2026-06-15.jsonl"),
       JSON.stringify({
@@ -339,9 +307,7 @@ describe("buildDiagnosticsBundle — default window over the local/UTC split", (
   });
 
   it("keeps the log files named for the UTC days the local window reaches into", async () => {
-    // The window's last local day (the 16th) runs to 15:00Z ON the 16th, so the
-    // file named for UTC the 16th holds part of it; the first local day (the
-    // 9th) begins at 15:00Z on the 8th, so the file named for the 8th does too.
+    // The first and last local days each overlap an additional UTC-named log file.
     writeFileSync(join(logsDir, "ave-2026-06-16.log"), "LAST-LOCAL-DAY-MARKER\n", "utf-8");
     writeFileSync(join(logsDir, "ave-2026-06-08.log"), "FIRST-LOCAL-DAY-MARKER\n", "utf-8");
     writeFileSync(join(logsDir, "ave-2026-06-07.log"), "OUTSIDE-MARKER\n", "utf-8");

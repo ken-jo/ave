@@ -42,6 +42,26 @@ function makeFixture(
   return { port: createConversationCommandPort(deps, runtime), runTurn, markMainActiveFresh };
 }
 
+function bridgeBindingFixture() {
+  return Object.freeze({
+    bridgeId: "11111111-1111-4111-8111-111111111111",
+    bridgeEpoch: 1,
+    routeId: "22222222-2222-4222-8222-222222222222",
+    routeEpoch: 2,
+    scope: "33333333-3333-4333-8333-333333333333",
+  });
+}
+
+function pairedShareFixture() {
+  return Object.freeze({
+    pairingId: "11111111-1111-4111-8111-111111111111",
+    pairingEpoch: 1,
+    shareId: "22222222-2222-4222-8222-222222222222",
+    shareEpoch: 2,
+    scope: "33333333-3333-4333-8333-333333333333",
+  });
+}
+
 describe("ConversationCommandPort", () => {
   it("mints surface-user provenance and discards external elevation claims", async () => {
     const { port, runTurn } = makeFixture();
@@ -97,13 +117,7 @@ describe("ConversationCommandPort", () => {
   });
   it("mints platform-bridge provenance and preserves only its host-owned remote authority", async () => {
     const { port, runTurn } = makeFixture();
-    const bridgeBinding = Object.freeze({
-      bridgeId: "11111111-1111-4111-8111-111111111111",
-      bridgeEpoch: 1,
-      routeId: "22222222-2222-4222-8222-222222222222",
-      routeEpoch: 2,
-      scope: "33333333-3333-4333-8333-333333333333",
-    });
+    const bridgeBinding = bridgeBindingFixture();
     const bridgeGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
     const actor = createPlatformBridgeActor("b".repeat(64), { bridgeBinding, bridgeGuard });
 
@@ -132,16 +146,9 @@ describe("ConversationCommandPort", () => {
 
   it("fences a revoked platform bridge before its deferred turn can reach the model", async () => {
     const { port, runTurn } = makeFixture();
-    const bridgeBinding = Object.freeze({
-      bridgeId: "11111111-1111-4111-8111-111111111111",
-      bridgeEpoch: 1,
-      routeId: "22222222-2222-4222-8222-222222222222",
-      routeEpoch: 2,
-      scope: "33333333-3333-4333-8333-333333333333",
-    });
+    const bridgeBinding = bridgeBindingFixture();
     let checks = 0;
-    // The final check inside the deferred lease factory must still run after
-    // command admission and persona resolution have both succeeded.
+    // The final check inside the deferred lease factory must still run after command admission and persona resolution have both succeeded.
     const bridgeGuard = Object.freeze({ isCurrent: vi.fn(() => ++checks < 6) });
     const actor = createPlatformBridgeActor("d".repeat(64), { bridgeBinding, bridgeGuard });
 
@@ -156,13 +163,7 @@ describe("ConversationCommandPort", () => {
 
   it("preserves a host-minted paired share binding and guard through the command boundary", async () => {
     const { port, runTurn } = makeFixture();
-    const pairedShare = Object.freeze({
-      pairingId: "11111111-1111-4111-8111-111111111111",
-      pairingEpoch: 1,
-      shareId: "22222222-2222-4222-8222-222222222222",
-      shareEpoch: 2,
-      scope: "33333333-3333-4333-8333-333333333333",
-    });
+    const pairedShare = pairedShareFixture();
     const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
     const actor = createTailnetControllerActor("e".repeat(64), {
       pairedShare,
@@ -194,13 +195,7 @@ describe("ConversationCommandPort", () => {
       observedSignal = args[2] as AbortSignal;
       rejectTurn = reject;
     }));
-    const pairedShare = Object.freeze({
-      pairingId: "11111111-1111-4111-8111-111111111111",
-      pairingEpoch: 1,
-      shareId: "22222222-2222-4222-8222-222222222222",
-      shareEpoch: 2,
-      scope: "33333333-3333-4333-8333-333333333333",
-    });
+    const pairedShare = pairedShareFixture();
     const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
     const actor = createTailnetControllerActor("e".repeat(64), { pairedShare, pairedShareGuard });
     const otherActor = createTailnetControllerActor("f".repeat(64), { pairedShare, pairedShareGuard });

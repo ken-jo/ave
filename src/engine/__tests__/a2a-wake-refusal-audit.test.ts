@@ -4,11 +4,7 @@ import type { ConversationLoop } from "../conversation-loop.js";
 import type { ResolvedSubAgentAddress } from "../a2a-subagent-message-bus.js";
 import { A2A_ROLE_AGENT } from "../../shared/a2a.js";
 
-/**
- * The field failure this pins: a child result reached the mailbox ("stored"
- * audit) and the parent was never woken, and NOTHING in the audit trail said
- * which wake condition failed. The refusal branch must name its reasons.
- */
+// Wake refusals must audit which conditions prevented delivery.
 function makeMessage() {
   return {
     messageId: "m-1",

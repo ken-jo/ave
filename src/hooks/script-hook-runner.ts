@@ -1,39 +1,6 @@
-/**
- * Permission policy — Layer 6 hook script runner.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6 +
- * docs/architecture/hook-runtime-expansion-design.md §4 / §6 (#811).
- *
- * Executes one hook handler — either a legacy `pre/post/perm-*.sh` file or a
- * declarative `hooks.json` `command` handler (Python / Node / shell + local
- * script). Both collapse to the SAME execution contract:
- *   - receives the wire-shape JSON on stdin
- *   - returns `{ action, reason }` JSON on stdout
- *   - exit !=0  → treated as deny (fail-safe)
- *   - timeout   → treated as deny
- *   - bad JSON  → treated as deny + warn
- *   - spawn err → treated as deny
- *
- * SECURITY INVARIANTS (do not regress — #811):
- *   - **Env allowlist**: the child sees ONLY `buildSafeChildEnv`'s generic
- *     non-secret allowlist plus the injected `AVE_HOOK_*` vars. No
- *     `ANTHROPIC_API_KEY` / `AWS_*` / `GITHUB_TOKEN` / `AVE_*` secret ever
- *     reaches a hook.
- *   - **No shell parser for generic commands**: a `hooks.json` `command` is an
- *     already-split argv — we spawn `argv[0]` directly with `argv.slice(1)` as
- *     args (NO `sh -c`), so a crafted matcher/arg can't inject a second shell
- *     command. The legacy `.sh` single-file path still goes through the resolved
- *     shell for Windows interpreter resolution (Git-Bash / WSL), unchanged.
- *   - **Fail-closed**: timeout / nonzero exit / bad JSON / spawn-error → deny.
- *
- * Composition rule (v1, §3 Layer 6):
- *   - hook *can* deny what upstream allowed (deny precedence)
- *   - hook *cannot* allow what upstream denied — enforced at the caller.
- *
- * DLP applied at the *caller* — input is already redacted before this module
- * sees it.
- */
-import { spawn } from "node:child_process";
+// Blocking hooks fail closed on command failures; successful commands may be silent or return decisions, and exit 2 uses stderr as denial feedback. Shell admission, sandbox policy, safe env and caller-side DLP apply; hook allows never upgrade upstream denies (docs/guides/user-hooks.md).
+// Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
+import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import {
   resolveShell,
@@ -45,6 +12,7 @@ import {
 import { createLogger } from "../lib/logger.js";
 import {
   assertManagedChildProcessAdmissionOpen,
+  forceKillManagedChildProcess,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import {
@@ -55,12 +23,25 @@ import {
   type ScriptHookStdin,
   type ScriptHookStdout,
 } from "./script-hook-types.js";
-import type { DiscoveredHook } from "./hook-discovery.js";
+import { defaultHooksDir, type DiscoveredHook } from "./hook-discovery.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
+import { hookEventName, hookJsonInput } from "./hook-contract.js";
+import { isRecord } from "../shared/is-record.js";
+import type { HookCommandAuthorizer } from "./hook-command-policy.js";
+import { MAX_TIMER_DELAY_MS } from "../shared/tool-timeout-policy.js";
+import { resolveScriptAnchor } from "./hook-config-trust.js";
+import { resolve } from "node:path";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { isPathWithin } from "../plugins/plugin-storage-containment.js";
+import { getHostShellExecutionPlan, getIssuedHostShellExecutionPlanGeneration, getSandboxGeneration, isIssuedHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
+import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import {
+  assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive,
+} from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import type { EgressInvocation, WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
   bundledWrappedEnv,
   spawnWindowsBundledProcess,
@@ -71,67 +52,39 @@ import {
 const log = createLogger("hook-runner");
 
 export interface RunOneHookOptions {
-  /** Per-hook timeout in ms. Defaults to {@link DEFAULT_HOOK_TIMEOUT_MS}. */
+  // Defaults to DEFAULT_HOOK_TIMEOUT_MS.
   timeoutMs?: number;
-  /** Working directory for the spawned hook. Defaults to `process.cwd()`. */
+  // Defaults to process.cwd().
   cwd?: string;
+  // Host-owned admission for a trusted user command; enrollment is not permission.
+  authorizeCommand?: HookCommandAuthorizer;
 }
 
-/**
- * The minimal shape the runner needs to execute one hook handler. Both a
- * legacy `.sh` `DiscoveredHook` and a declarative `hooks.json` `command`
- * handler normalize into this (see `hook-registry.ts`). Decoupling the runner
- * from `DiscoveredHook` is what lets a generic `command` argv run through the
- * SAME fail-closed / env-allowlist / timeout machinery as a `.sh` file.
- */
+// Legacy scripts and config argv share the same fail-closed runner, environment and timeout gates.
 export interface RunnableHook {
-  /** Stable identity for audit / logs (registry id or `.sh` fileName). */
   id: string;
-  /** Closed-set internal event (tool-use pre|post|perm OR a lifecycle event). */
   hookType: HookEvent;
-  /**
-   * argv to execute. A single-element argv ending in `.sh` is the legacy path
-   * (runs through the resolved shell for Windows interpreter resolution);
-   * anything else is spawned directly with NO shell (argv[0] = program).
-   */
+  // A lone .sh path uses the resolved interpreter; all other argv spawn directly without a shell.
   command: string[];
   env?: Record<string, string>;
-  /** Optional glob matcher — surfaced to the hook via `AVE_HOOK_MATCHER`. */
+  // Optional matcher — surfaced to the hook via `AVE_HOOK_MATCHER`.
   matcher?: string;
-  /** Path for audit/forensics — `.sh` abs path, or the resolved script arg. */
+  // Path for audit/forensics — `.sh` abs path, or the resolved script arg.
   hookPath: string;
-  /**
-   * Optional per-hook timeout (ms). Config entries carry their own clamped
-   * budget here; when set it takes precedence over `RunOneHookOptions.timeoutMs`
-   * so each hook in a mixed chain runs on its own ceiling. `.sh` hooks leave it
-   * unset and fall back to the option / default.
-   */
+  // Clamped per-hook timeout overrides the caller option, then the default.
   timeoutMs?: number;
-  /**
-   * Origin discriminant — `.sh` legacy hook vs declarative `hooks.json`
-   * `command` entry. Carried through onto every {@link ScriptHookInvocationResult}
-   * so the audit layer can tell config-hook vs `.sh`-hook denials apart.
-   * Defaults to `"sh"` for the legacy adapter.
-   */
+  // Runner results always carry origin for audit; legacy hooks default to sh.
   source?: "sh" | "config";
-  /**
-   * Trust identity of the executed code — the resolved local-script sha256 for a
-   * `.sh` hook, or a sha256 of the verbatim command argv for a generic command.
-   * The runner falls back to hashing `command` when this is absent so the result
-   * always carries a forensic anchor.
-   */
+  // Audit identity hashes trusted script bytes or verbatim argv; absent identities fall back to argv hashing.
   commandIdentity?: string;
   pluginOwner?: PluginHookOwner;
   confinement?: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
-/** sha256 (hex) of a verbatim command argv — the forensic anchor for a generic
- * `command` hook that has no on-disk local-script sha. */
 function hashCommandArgv(command: string[]): string {
   return sha256Hex(command.join("\0"));
 }
 
-/** Adapt a legacy `DiscoveredHook` to the {@link RunnableHook} shape. */
 export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
   return {
     id: hook.fileName,
@@ -140,84 +93,60 @@ export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     hookPath: hook.path,
     source: "sh",
-    // The `.sh` file IS the trusted local script — its content sha256 is the
-    // canonical command identity.
     commandIdentity: hook.sha256,
   };
 }
 
-/**
- * Is this a single legacy `.sh` file that must run through the resolved shell
- * (so Windows Git-Bash / WSL can pick the right interpreter)? Only a
- * single-element argv whose lone token ends in `.sh` qualifies — a generic
- * `command` (even `sh ./x.sh` or `python3 p.py`) is spawned directly.
- */
+// Only a lone .sh path uses interpreter resolution; generic argv, including sh ./x.sh, spawns directly.
 function isLegacyShellScript(command: string[]): boolean {
   return command.length === 1 && command[0].toLowerCase().endsWith(".sh");
 }
 
-/**
- * Build the injected hook env. PRESERVES the existing `AVE_HOOK_*` set and
- * ADDS `AVE_HOOK_EVENT` / `AVE_HOOK_MATCHER` (#811 §6.2). No secret vars are
- * ever added here — `buildSafeChildEnv` is the only env the child sees.
- */
+// Inject only hook metadata; buildSafeChildEnv supplies the secret-stripped environment.
 function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Record<string, string> {
-  // `event` is the closed-set surface (lifecycle events carry it explicitly;
-  // tool-use shapes leave it undefined → fall back to `hookType`).
+  // `event` is the closed-set surface (lifecycle events carry it explicitly; tool-use shapes leave it undefined → fall back to `hookType`).
   const event = payload.event ?? payload.hookType;
   return {
     AVE_HOOK_TYPE: payload.hookType,
-    // #811 — `AVE_HOOK_EVENT` is the closed-set event (alias of TYPE for the
-    // generic-command surface; the lifecycle event for lifecycle dispatches);
-    // `AVE_HOOK_MATCHER` exposes the configured glob.
+    // AVE_HOOK_EVENT carries the closed event; AVE_HOOK_MATCHER exposes the configured matcher.
     AVE_HOOK_EVENT: event,
     ...(matcher !== undefined ? { AVE_HOOK_MATCHER: matcher } : {}),
-    // `toolName` is present on tool-use + PostToolUseFailure/PermissionDenied
-    // lifecycle payloads; absent on session-only lifecycle events.
+    // `toolName` is present on tool-use + PostToolUseFailure/PermissionDenied lifecycle payloads; absent on session-only lifecycle events.
     ...(payload.toolName !== undefined ? { AVE_HOOK_TOOL_NAME: payload.toolName } : {}),
-    // sessionId is on every shape — lifecycle hooks key their policy on it.
     AVE_HOOK_SESSION_ID: payload.sessionId,
     AVE_HOOK_TRUST_ORIGIN: payload.trustOrigin,
-    // Per-request MCP-aligned origin (#811 hooks-on-mcp-calls): a hook can deny
-    // by the SPECIFIC server/plugin via env (the convenient path, alongside the
-    // full stdin JSON). Only present on the tool-use shape.
+    // Tool-use origin metadata lets hooks restrict a specific server or plugin via env or stdin.
     ...("mcpServerId" in payload && payload.mcpServerId !== undefined ? { AVE_HOOK_MCP_SERVER_ID: payload.mcpServerId } : {}),
     ...("pluginId" in payload && payload.pluginId !== undefined ? { AVE_HOOK_PLUGIN_ID: payload.pluginId } : {}),
   };
 }
 
-/**
- * Run a single hook handler. Pipes the canonical stdin payload, captures
- * stdout (capped), enforces the timeout, and parses the verdict.
- *
- * Accepts either a legacy `DiscoveredHook` (back-compat) or a normalized
- * {@link RunnableHook} (declarative `command` handler). Exit code !=0,
- * malformed stdout, timeout, or spawn error all collapse to `decision: "deny"`
- * per the spec's fail-safe rule.
- */
+// Timeout, spawn, nonzero exit and malformed output deny; observe-only callers record the result without changing control flow.
 export async function runOneHookScript(
   hook: DiscoveredHook | RunnableHook,
   payload: ScriptHookStdin,
   options: RunOneHookOptions = {},
 ): Promise<ScriptHookInvocationResult> {
-  const runnable = normalizeRunnable(hook);
-  // Per-hook timeout precedence: the runnable's own (clamped) budget wins, then
-  // the caller-supplied option, then the default. This lets a mixed chain run
-  // each config entry on its own ceiling.
+  const normalized = normalizeRunnable(hook);
+  // Seal the same expanded argv across asynchronous approval and actual spawn.
+  const runnable = { ...normalized, command: normalized.command.map(expandLeadingTilde),
+    timeoutMs: normalized.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
+    ...(normalized.env ? { env: { ...normalized.env } } : {}) };
+  Object.freeze(runnable.command);
+  if (runnable.env) Object.freeze(runnable.env);
+  Object.freeze(runnable);
+  // Timeout precedence is per-hook budget, caller option, then default.
   const timeoutMs = runnable.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   const confinement = runnable.confinement;
   const cwd = confinement?.generationRoot ?? options.cwd ?? process.cwd();
   const start = Date.now();
 
-  // Forensic anchors carried onto EVERY result this invocation produces. `source`
-  // discriminates `.sh` vs config; `commandIdentity` is the local-script sha (sh)
-  // or a hash of the verbatim argv (config). These let the audit layer tell
-  // config-hook from `.sh`-hook denials apart.
+  // Every result carries origin and the trusted script or argv hash for forensic attribution.
   const forensics = {
     hookPath: runnable.hookPath,
     hookType: runnable.hookType,
     source: runnable.source ?? "sh",
-    commandIdentity: runnable.commandIdentity ?? hashCommandArgv(runnable.command),
+    commandIdentity: normalized.commandIdentity ?? hashCommandArgv(normalized.command),
     ...(runnable.pluginOwner ? { pluginOwner: runnable.pluginOwner } : {}),
   } as const;
 
@@ -231,13 +160,42 @@ export async function runOneHookScript(
     ...extra,
   });
 
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
+    return deny("hook timeout must be a positive supported timer delay");
+  }
+  if (runnable.hookType !== payload.hookType || (payload.event !== undefined && payload.event !== payload.hookType)) {
+    return deny("hook event does not match its input");
+  }
+  let stdinJson: string;
+  try {
+    stdinJson = JSON.stringify(hookJsonInput(payload, cwd)) + "\n";
+  } catch (error) {
+    return deny(`failed to serialise hook payload: ${(error as Error).message}`);
+  }
+
   const hookEnv = buildHookEnv(payload, runnable.matcher);
+  let admittedPlan: HostShellExecutionPlan | undefined;
+  let assertCommandAllowed: (() => void) | undefined;
+  if (!confinement && options.authorizeCommand) {
+    try {
+      const admission = await options.authorizeCommand(runnable, payload, cwd);
+      if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
+      admittedPlan = admission.plan;
+      assertCommandAllowed = admission.assertAllowed;
+      if (admittedPlan && (!isIssuedHostShellExecutionPlan(admittedPlan)
+        || getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
+        || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+        return deny("hook shell execution policy changed during approval");
+      }
+    } catch (error) {
+      return deny(`hook command admission failed: ${(error as Error).message}`);
+    }
+  }
+
   const childEnvBase = buildSafeChildEnv({ ...runnable.env, ...hookEnv,
     ...(confinement ? { PLUGIN_ROOT: confinement.generationRoot, PLUGIN_DATA: confinement.dataDir } : {}),
   });
 
-  // Decide the spawn shape. Legacy single `.sh` → resolved shell (Windows
-  // interpreter resolution). Generic command → direct spawn, NO shell.
   let spawnCmd: string;
   let spawnArgs: string[];
   let spawnEnv: NodeJS.ProcessEnv;
@@ -251,17 +209,13 @@ export async function runOneHookScript(
       }
       throw err;
     }
-    // The hook file path is passed via `shellCommandForHookPath` so the script's
-    // own `$0` reflects its path. Env vars are injected as inline assignments
-    // (the shell consumes them) AND via the spawn env allowlist.
+    // Preserve the script path as $0; inject hook env through inline assignments and the spawn allowlist.
     const hookCommand = `${shellEnvAssignments(hookEnv)} ${shellCommandForHookPath(shell, runnable.command[0])}`;
     spawnCmd = shell.cmd;
     spawnArgs = shell.shellArgs(hookCommand);
     spawnEnv = shellEnvForChild(shell, childEnvBase);
   } else {
-    // Generic command-hook: spawn argv[0] directly with NO shell. Expand a
-    // leading `~` in each token (the shell would have done this; a direct
-    // spawn does not). NO shell quoting / parsing → no shell-injection surface.
+    // Expand leading ~ and spawn argv directly; shell quoting/parsing would introduce injection.
     const argv = runnable.command.map(expandLeadingTilde);
     spawnCmd = argv[0];
     spawnArgs = argv.slice(1);
@@ -269,21 +223,49 @@ export async function runOneHookScript(
   }
 
   assertManagedChildProcessAdmissionOpen("hook:script");
+  if (confinement) {
+    try {
+      assertExtensionStartAllowed();
+    } catch (error) {
+      return deny(`sandbox unavailable: ${(error as Error).message}`);
+    }
+  }
   let cleanupWrap: (() => void) | undefined;
+  let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
-  if (confinement && isAsrtSandboxActive() && process.platform === "win32") {
-    // srt-win: the hook runs through the stdio relay with an ACL grant on its
-    // own generation root (read) and data root (write); see
-    // `spawnWindowsBundledProcess`.
+  // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
+  const sandboxEnabled = confinement
+    ? isPluginWorkerConfinementActive()
+    : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
+  const scriptAnchor = resolveScriptAnchor(runnable.command);
+  const canonicalAnchor = scriptAnchor === null ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
+  // Only an exact script inside the protected hook directory gets a read exception. An arbitrary command argument must never relax a secret floor.
+  const userScriptReads = canonicalAnchor !== undefined && isPathWithin(
+    caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(canonicalAnchor),
+  ) ? [canonicalAnchor] : [];
+  // A user hook has no plugin, so its egress gets no extension allowlist.
+  const hookEgressOwner: WorkerEgressOwner = confinement
+    ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
+    : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
+  if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
+    // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
       windowsSpawn = await spawnWindowsBundledProcess({
-        label: `hook:${confinement.pluginId}`,
+        label: `hook:${confinement?.pluginId ?? "user"}`,
         command: spawnCmd,
         args: spawnArgs,
         baseEnv: spawnEnv,
         cwd,
-        allowRead: [confinement.generationRoot],
-        allowWrite: [confinement.dataDir],
+        allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
+        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        egressOwner: hookEgressOwner,
+        assertStillValid: () => {
+          if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
+            || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+            throw new Error("Hook shell execution policy changed before spawn");
+          }
+          assertCommandAllowed?.();
+        },
       });
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
@@ -297,12 +279,19 @@ export async function runOneHookScript(
       }
       releaseHold();
     };
-  } else if (confinement && isAsrtSandboxActive()) {
+  } else if (sandboxEnabled && process.platform !== "win32") {
     const sandboxHome = createSandboxProcessHome();
+    let wrappedAsrt = false;
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
-        sandboxHome, allowWrite: [confinement.dataDir], ownPluginReads: [confinement.generationRoot],
-        tempPrincipal: { kind: "plugin", id: confinement.pluginId } });
+        sandboxHome,
+        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
+        tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
+          : { kind: "hook", id: sha256Hex(runnable.id) },
+        egressOwner: hookEgressOwner });
+      wrappedEgress = wrapped.egress;
+      wrappedAsrt = true;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
       let cleaned = false;
@@ -313,23 +302,53 @@ export async function runOneHookScript(
         sandboxHome.cleanup();
       };
     } catch (error) {
+      wrappedEgress?.release();
+      if (wrappedAsrt) void cleanupAsrtSandboxAfterCommand();
       sandboxHome.cleanup();
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
 
+  if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
+    || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+    if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook shell policy changed");
+    wrappedEgress?.release();
+    cleanupWrap?.();
+    return deny("hook shell execution policy changed before spawn");
+  }
+  try {
+    assertCommandAllowed?.();
+  } catch (error) {
+    if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");
+    wrappedEgress?.release();
+    cleanupWrap?.();
+    return deny(`hook command denied before spawn: ${(error as Error).message}`);
+  }
+
   return new Promise<ScriptHookInvocationResult>((resolve) => {
-    const child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
-      cwd,
-      // Allowlist env — do not leak ANTHROPIC_API_KEY, AWS_*, GITHUB_TOKEN
-      // etc. to hook scripts. The hook receives only the AVE_HOOK_* vars.
-      env: spawnEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      // Run in a new process group so SIGKILL on timeout reaps the
-      // entire descendant tree (sh → script → sleep). Without this the
-      // child shell dies but its descendants keep running.
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcess;
+    try {
+      child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
+        windowsHide: true,
+        cwd,
+        // Forward only the stripped environment and host-owned hook variables.
+        env: spawnEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        // A detached group lets timeout termination include descendants.
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      wrappedEgress?.release();
+      cleanupWrap?.();
+      resolve(deny(`hook spawn error: ${(error as Error).message}`));
+      return;
+    }
+    if (wrappedEgress !== undefined) {
+      const egress = wrappedEgress;
+      child.once("exit", () => egress.release());
+      child.once("close", () => egress.release());
+      child.once("error", () => { if (child.pid === undefined) egress.release(); });
+    }
     // A Windows sandboxed hook is registered by `spawnConfinedChild`.
     if (windowsSpawn === undefined) {
       trackManagedChildProcess(child, {
@@ -337,12 +356,14 @@ export async function runOneHookScript(
         killProcessGroup: process.platform !== "win32",
       });
     }
-    // Through the relay the hook's input and output are the relay's streams,
-    // not the child's own pipes (`spawnWindowsBundledProcess`).
+    // Retain the invocation listener while the detached process group lives.
+    if (wrappedEgress !== undefined && process.platform !== "win32" && child.pid !== undefined) {
+      wrappedEgress.noteProcessGroup(child.pid);
+    }
+    // Relay streams, not child pipes, carry hook input and output.
     const hookStdin = windowsSpawn?.stdin ?? child.stdin;
     const hookStdout = windowsSpawn?.stdout ?? child.stdout;
-    // The relayed output is copied from the child's own and can trail its
-    // `close` by a turn; the verdict waits for it, never longer than a second.
+    // Relayed output can lag child close; wait up to one second before parsing the verdict.
     const outputDrained: Promise<void> = windowsSpawn === undefined
       ? Promise.resolve()
       : new Promise<void>((resolveDrained) => {
@@ -362,17 +383,19 @@ export async function runOneHookScript(
       if (stdoutBytes > MAX_HOOK_STDOUT_BYTES) {
         if (!stdoutCapped) {
           stdoutCapped = true;
-          // Keep what we already have; don't grow further.
           stdoutChunks.push(c.subarray(0, Math.max(0, MAX_HOOK_STDOUT_BYTES - (stdoutBytes - c.byteLength))));
         }
         return;
       }
       stdoutChunks.push(c);
     });
+    let stderrBytes = 0;
     child.stderr?.on("data", (c: Buffer) => {
-      // Cap stderr at the same byte budget; we use it only for diagnostic logging.
-      if (stderrChunks.reduce((s, b) => s + b.byteLength, 0) >= MAX_HOOK_STDOUT_BYTES) return;
-      stderrChunks.push(c);
+      const remaining = MAX_HOOK_STDOUT_BYTES - stderrBytes;
+      if (remaining <= 0) return;
+      const captured = c.subarray(0, remaining);
+      stderrChunks.push(captured);
+      stderrBytes += captured.byteLength;
     });
     hookStdin?.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EPIPE") return;
@@ -384,7 +407,7 @@ export async function runOneHookScript(
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timeoutFallback: ReturnType<typeof setTimeout> | undefined;
 
-    const finish = (code: number | null): void => {
+    const finish = (code: number | null, signal?: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
       cleanupWrap?.();
@@ -410,25 +433,26 @@ export async function runOneHookScript(
 
       if (code !== 0) {
         // Fail-safe: non-zero exit → deny. Stderr surfaces the cause.
-        const tail = stderr.length > 0 ? stderr.trim().slice(0, 200) : `exit ${code}`;
+        const tail = stderr.trim() || (signal ? `terminated by ${signal}` : `exit ${code}`);
         resolve({
           ...forensics,
           decision: "deny",
-          reason: `hook exited non-zero: ${tail}`,
+          reason: code === 2 ? `hook blocked (exit 2): ${tail}` : `hook exited non-zero (${code}): ${tail}`,
           rawStdout: stdout,
           exitCode: code ?? undefined,
           timedOut: false,
           durationMs,
+          ...(code === 2 ? { blockFeedback: tail } : {}),
         });
         return;
       }
 
-      const parsed = parseHookStdout(stdout);
+      const parsed = stdoutCapped ? null : parseHookStdout(stdout, runnable.hookType);
       if (!parsed) {
         resolve({
           ...forensics,
           decision: "deny",
-          reason: `hook stdout not valid {action,reason} JSON`,
+          reason: stdoutCapped ? "hook stdout exceeded capture limit" : "hook stdout not valid decision JSON",
           rawStdout: stdout,
           exitCode: code,
           timedOut: false,
@@ -444,28 +468,18 @@ export async function runOneHookScript(
         exitCode: code,
         timedOut: false,
         durationMs,
+        ...(parsed.block ? { blockFeedback: parsed.reason } : {}),
       });
     };
 
     timer = setTimeout(() => {
       timedOut = true;
-      try {
-        if (process.platform !== "win32" && child.pid !== undefined) {
-          // Kill the whole process group (negative pid). detached:true
-          // above made the child a group leader so this reaps any
-          // descendants spawned inside the script (e.g. `sleep 30`).
-          process.kill(-child.pid, "SIGKILL");
-        } else {
-          child.kill("SIGKILL");
-        }
-      } catch {
-        // Already exited or pid invalid.
-      }
+      forceKillManagedChildProcess(child, "hook timeout");
       timeoutFallback = setTimeout(() => finish(child.exitCode), 1000);
     }, timeoutMs);
 
-    child.on("close", (code: number | null) => {
-      void outputDrained.then(() => finish(code));
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      void outputDrained.then(() => finish(code, signal));
     });
 
     child.on("error", (err: Error) => {
@@ -485,12 +499,13 @@ export async function runOneHookScript(
     });
 
     try {
-      const json = JSON.stringify(payload);
-      hookStdin?.write(json);
+      hookStdin?.write(stdinJson);
       hookStdin?.end();
     } catch (err) {
+      settled = true;
       clearTimeout(timer);
-      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+      forceKillManagedChildProcess(child, "hook stdin write failed");
+      cleanupWrap?.();
       resolve({
         ...forensics,
         decision: "deny",
@@ -503,10 +518,7 @@ export async function runOneHookScript(
   });
 }
 
-/** Coerce a `DiscoveredHook` or `RunnableHook` into the runner's working shape. */
 function normalizeRunnable(hook: DiscoveredHook | RunnableHook): RunnableHook {
-  // A RunnableHook carries `command` (string[]); a DiscoveredHook carries
-  // `path` + `fileName`. Discriminate on `command`.
   if (Array.isArray((hook as RunnableHook).command)) {
     return hook as RunnableHook;
   }
@@ -519,15 +531,10 @@ function shellEnvAssignments(env: Record<string, string>): string {
     .join(" ");
 }
 
-/**
- * Parse a hook script's stdout into the canonical wire shape. Returns
- * null for any malformed input — caller treats null as deny.
- *
- * v1 enum is "allow" | "deny" only; "modify" deferred to hook-signing follow-up.
- */
-export function parseHookStdout(stdout: string): ScriptHookStdout | null {
+// Unsupported control fields reject stdout so mutation/context injection cannot silently succeed; no event retains the legacy parser contract.
+export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookStdout | null {
   const trimmed = stdout.trim();
-  if (trimmed.length === 0) return null;
+  if (trimmed.length === 0) return event === undefined ? null : { action: "allow", reason: "hook completed" };
   // Tolerate code-fence wrapping.
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
@@ -539,25 +546,60 @@ export function parseHookStdout(stdout: string): ScriptHookStdout | null {
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  const obj = parsed as Record<string, unknown>;
-  if (obj.action !== "allow" && obj.action !== "deny") return null;
-  if (typeof obj.reason !== "string") return null;
-  // v1 forbids "modify" — even if the script returned it, downgrade is
-  // not a thing we silently ignore. Treat as malformed → caller denies.
-  return {
-    action: obj.action,
-    reason: obj.reason.length > 280 ? obj.reason.slice(0, 280) : obj.reason,
-  };
+  if (!isRecord(parsed)) return null;
+  if (event === undefined || "action" in parsed) {
+    if (parsed.action !== "allow" && parsed.action !== "deny") return null;
+    if (typeof parsed.reason !== "string") return null;
+    // Legacy output retains its bounded reason and does not accept mixed decisions.
+    if (["decision", "hookSpecificOutput", "continue", "stopReason", "updatedInput", "updatedPermissions",
+      "permissionDecision", "additionalContext", "suppressOutput", "systemMessage", "async", "asyncTimeout"]
+      .some((key) => key in parsed)) return null;
+    return { action: parsed.action, reason: parsed.reason.slice(0, 280) };
+  }
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/u.exec(trimmed);
+  if ((fenced?.[1].trim() ?? trimmed) !== slice) return null;
+  if (Object.keys(parsed).some((key) => !["decision", "reason", "continue", "stopReason", "hookSpecificOutput"].includes(key))) return null;
+  if (parsed.reason !== undefined && typeof parsed.reason !== "string") return null;
+  if (parsed.stopReason !== undefined && typeof parsed.stopReason !== "string") return null;
+  if (parsed.continue !== undefined && typeof parsed.continue !== "boolean") return null;
+  let blocked = parsed.continue === false;
+  let reason = parsed.stopReason ?? parsed.reason ?? "hook completed";
+  if (parsed.decision !== undefined) {
+    if (parsed.decision !== "block" && parsed.decision !== "allow") return null;
+    if (parsed.decision === "block") {
+      blocked = true;
+      reason = parsed.reason ?? "hook blocked";
+    }
+  }
+  if (parsed.hookSpecificOutput !== undefined) {
+    const specific = parsed.hookSpecificOutput;
+    if (!isRecord(specific) || specific.hookEventName !== hookEventName(event)) return null;
+    if (event === "pre") {
+      if (Object.keys(specific).some((key) => !["hookEventName", "permissionDecision", "permissionDecisionReason"].includes(key))) return null;
+      if (specific.permissionDecision !== "allow" && specific.permissionDecision !== "deny") return null;
+      if (specific.permissionDecisionReason !== undefined && typeof specific.permissionDecisionReason !== "string") return null;
+      if (specific.permissionDecision === "deny") {
+        blocked = true;
+        reason = specific.permissionDecisionReason ?? "hook denied tool use";
+      }
+    } else if (event === "perm") {
+      if (Object.keys(specific).some((key) => !["hookEventName", "decision"].includes(key))) return null;
+      const decision = specific.decision;
+      if (!isRecord(decision) || (decision.behavior !== "allow" && decision.behavior !== "deny")) return null;
+      if (Object.keys(decision).some((key) => !["behavior", "message"].includes(key))) return null;
+      if (decision.message !== undefined && typeof decision.message !== "string") return null;
+      if (decision.behavior === "deny") {
+        blocked = true;
+        reason = decision.message ?? "hook denied permission request";
+      }
+    } else return null;
+  }
+  // `continue: false` stops outright, so only a bare block can ask a stop hook to continue the run.
+  const block = parsed.decision === "block" && parsed.continue !== false;
+  return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}) };
 }
 
-/**
- * Run a chain of hooks of the same type. Order = caller-supplied
- * (alphabetical from {@link discoverHooks}, then config file order). Stops at
- * the first deny — subsequent hooks are not invoked (deny precedence + don't
- * waste cycles). Each entry may be a legacy `.sh` `DiscoveredHook` or a
- * normalized {@link RunnableHook}.
- */
+// Preserve caller order and stop at the first denial; later hooks must not execute or override it.
 export async function runHookChain(
   hooks: Array<DiscoveredHook | RunnableHook>,
   payload: ScriptHookStdin,
@@ -583,7 +625,6 @@ export async function runHookChain(
   };
 }
 
-/** Human-readable identity for chain deny messages (`.sh` fileName or registry id). */
 function identityLabel(hook: DiscoveredHook | RunnableHook): string {
   if (Array.isArray((hook as RunnableHook).command)) {
     return (hook as RunnableHook).id;

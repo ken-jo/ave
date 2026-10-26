@@ -3,8 +3,7 @@ import {
   runPluginFactoryWithTimeout,
   runStartWithTimeout,
 } from "../index.js";
-// The in-process import's bound moved with the retained in-process factory
-// (§9.8 A1): no production path in main imports plugin code any more.
+// Only the retained in-process factory owns this import bound; production main never imports plugin code.
 import {
   importInProcessPluginFactory,
   PluginImportTimeoutError,
@@ -41,7 +40,6 @@ describe("runStartWithTimeout — plugin instance.start() host-enforced timeout"
 
   it("falls back to pluginStartupDefaultMs when manifest doesn't declare startupTimeoutMs", async () => {
     const start = () => new Promise<void>(() => {
-      // never resolves — simulates a hung plugin
     });
     const promise = runStartWithTimeout(start, undefined);
     const rejection = promise.catch((err: Error) => err);
@@ -56,12 +54,10 @@ describe("runStartWithTimeout — plugin instance.start() host-enforced timeout"
   it("clamps manifest-declared startupTimeoutMs to pluginStartupMaxMs", async () => {
     const wildlyLargeManifestValue = TOOL_TIMEOUT_POLICY.pluginStartupMaxMs * 10;
     const start = () => new Promise<void>(() => {
-      // never resolves
     });
     const promise = runStartWithTimeout(start, wildlyLargeManifestValue);
     const rejection = promise.catch((err: Error) => err);
-    // Advance past the clamped max — if the clamp works, this triggers
-    // rejection. If the clamp leaked, the test would hang here.
+    // Advance beyond the clamp so an unclamped timeout cannot pass.
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginStartupMaxMs + 50);
     const err = await rejection;
     expect(err).toBeInstanceOf(Error);
@@ -74,7 +70,6 @@ describe("runStartWithTimeout — plugin instance.start() host-enforced timeout"
     const declaredMs = 5_000;
     expect(declaredMs).toBeLessThan(TOOL_TIMEOUT_POLICY.pluginStartupMaxMs);
     const start = () => new Promise<void>(() => {
-      // never resolves
     });
     const promise = runStartWithTimeout(start, declaredMs);
     const rejection = promise.catch((err: Error) => err);
@@ -148,18 +143,12 @@ describe("runPluginImportWithTimeout", () => {
   });
 });
 
-/**
- * The retained, deprecated in-process arm (§9.8 A1, decision 50). It has no
- * production caller — `host-api-boundary-contract.test.ts` holds that — and
- * keeps these cases until Loader removal deletes it with them, so the code a
- * routing reversal would bring back is tested code.
- */
+/** The deprecated in-process factory has no production caller; keep its import behavior tested until removal. */
 describe("importInProcessPluginFactory", () => {
   it("imports the entry module into this process and returns its own default export", async () => {
     const dir = mkdtempSync(join(tmpdir(), "in-process-plugin-"));
     const entryPath = join(dir, "plugin.mjs");
-    // `import.meta.url` rather than an interpolated marker: the module names
-    // ITSELF, so the assertion proves the instance came from this exact file.
+    // Use import.meta.url to prove this exact fixture module produced the instance.
     writeFileSync(entryPath, "export default () => ({ handlers: {}, marker: import.meta.url });\n", "utf-8");
     try {
       const factory = await importInProcessPluginFactory(entryPath);

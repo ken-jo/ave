@@ -1,11 +1,4 @@
-/**
- * IPC Bridge — ave:runtime:counts, ave:runtime:env handler smoke tests
- * (PR #240).
- *
- * Strategy: mirrors ipc-bridge-permissions.test.ts — register handlers via
- * registerIpcHandlers with mocked services, then invoke each handler directly
- * with a synthetic IpcMainInvokeEvent.
- */
+/** Invoke captured runtime IPC handlers with synthetic sender events. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fakeLlmSettings } from "../shared/__tests__/fake-llm-settings.js";
 import {
@@ -18,8 +11,6 @@ import {
 } from "./test-helpers.js";
 import { unusedNetworkFetch } from "./support/network-fetch-stubs.js";
 
-// ─── Mock electron ────────────────────────────────────────────────────────────
-
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -31,8 +22,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ─── Mock policy-store ────────────────────────────────────────────────────────
-
 const mockLoadPolicy = vi.fn();
 const mockSavePolicy = vi.fn();
 
@@ -40,10 +29,6 @@ vi.mock("../permissions/policy-store.js", () => ({
   loadPolicy: mockLoadPolicy,
   savePolicy: mockSavePolicy,
 }));
-
-// ─── Mock PermissionManager ───────────────────────────────────────────────────
-
-// ─── Build AppServices stub ───────────────────────────────────────────────────
 
 function makeServices(
   pm = makeMockPermissionManager(),
@@ -97,19 +82,15 @@ function makeServices(
     } as any,
     conversationLoop: makeMockConversationLoop(pm) as any,
     approvalGate: gate as any,
-    mcpManager: { listServers: vi.fn(() => mcpServers), killSwitch: vi.fn() } as any,
+    mcpManager: { listServers: vi.fn(() => mcpServers), killSwitch: vi.fn(), setPackageTransactionProbe: vi.fn() } as any,
     toolRegistry: {
       setDenyRules: vi.fn(),
       size: toolRegistrySize,
-      // runtime.counts reports "the model's tools" — model-visible only, never the
-      // executable superset that now includes app-only tools (the auth trio etc.).
+      // Counts include model-visible tools, excluding app-only tools.
       getModelVisibleTools: () => Array.from({ length: toolRegistrySize }, () => ({})),
     } as any,
     auditLogger: { log: vi.fn() } as any,
-    // Every handler that reaches the network takes its transport from here.
-    // Defaulting to the throwing stub keeps the rest of the suite honest: a
-    // handler that starts making a request shows up as a failure, not as a
-    // real request from whatever machine runs the tests.
+    // A throwing transport makes unexpected network requests fail locally.
     singleHopNetworkFetch: unusedNetworkFetch,
     idleScheduler: undefined,
     bashAstValidator: {} as any,
@@ -117,8 +98,6 @@ function makeServices(
     postTurnHookChain: {} as any,
   };
 }
-
-// ─── Handler registration helper ─────────────────────────────────────────────
 
 async function setupHandlers(
   pm = makeMockPermissionManager(),
@@ -132,13 +111,6 @@ async function setupHandlers(
   return { pm, gate };
 }
 
-// ─── Invocation helpers ───────────────────────────────────────────────────────
-
-// Convenience: build a fake IpcMainInvokeEvent with an untrusted sender.
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ave:runtime:counts
-// ─────────────────────────────────────────────────────────────────────────────
 describe("ave:runtime:counts", () => {
   it("returns { tools, plugins, mcps } with correct numeric values", async () => {
     await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
@@ -160,7 +132,6 @@ describe("ave:runtime:counts", () => {
 
     expect(result.tools).toBe(7);
     expect(result.plugins).toBe(3);
-    // Only connected servers count.
     expect(result.mcps).toBe(3);
   });
 
@@ -176,16 +147,12 @@ describe("ave:runtime:counts", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ave:runtime:env
-// ─────────────────────────────────────────────────────────────────────────────
 describe("ave:runtime:env", () => {
   it("returns { platform, hostname, user } — no cwd, no release", async () => {
     await setupHandlers();
 
     const result = await invokeRegisteredHandler(handlers, "ave:runtime:env") as Record<string, unknown>;
 
-    // Required fields.
     expect(typeof result.platform).toBe("string");
     expect(result.platform).toBeTruthy();
     expect(typeof result.hostname).toBe("string");
@@ -193,7 +160,6 @@ describe("ave:runtime:env", () => {
     expect(typeof result.user).toBe("string");
     expect(result.user).toBeTruthy();
 
-    // Explicitly trimmed fields must NOT appear in the response.
     expect(result).not.toHaveProperty("cwd");
     expect(result).not.toHaveProperty("release");
   });
@@ -210,9 +176,6 @@ describe("ave:runtime:env", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Both handlers — unified unauthorized-frame guard
-// ─────────────────────────────────────────────────────────────────────────────
 describe("new runtime handlers — all reject unauthorized frames", () => {
   const channels = [
     "ave:runtime:counts",

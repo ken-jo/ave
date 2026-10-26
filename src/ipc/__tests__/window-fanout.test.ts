@@ -1,16 +1,3 @@
-/**
- * window-fanout tests — fan-out semantics on top of safe-send.
- *
- * Covers:
- *   - delivers the payload to every live window and returns the count.
- *   - skips null / destroyed windows (delegated to safe-send) without
- *     throwing.
- *   - one window's send race is swallowed, logged via the SafeSendLogger,
- *     and never blocks the others (per-window error path).
- *   - emits a single `info` audit row recording channel + delivered count
- *     when an auditLogger is supplied.
- *   - audit-logger throw never breaks the broadcast.
- */
 import { describe, expect, it, vi } from "vitest";
 import { fanOutToAllWindows } from "../window-fanout.js";
 import { liveWindow, type FakeBrowserWindow } from "../../__tests__/test-helpers.js";
@@ -116,8 +103,6 @@ describe("fanOutToAllWindows", () => {
   });
 
   it("does not emit an audit row when no auditLogger is supplied", () => {
-    // Smoke check that a logger-less, audit-less broadcast is a no-op
-    // beyond the sends themselves.
     const w1 = liveWindow();
     const delivered = fanOutToAllWindows([w1] as never, "ave:test", undefined);
     expect(delivered).toBe(1);

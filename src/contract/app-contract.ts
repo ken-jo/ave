@@ -379,6 +379,7 @@ export const CHANNELS = {
   mcp: {
     servers: "ave:mcp:servers",
     kill: "ave:mcp:kill",
+    authenticate: "ave:mcp:authenticate",
     configGet: "ave:mcp:config:get",
     configPath: "ave:mcp:config:path",
     configAdd: "ave:mcp:config:add",
@@ -560,6 +561,7 @@ export const CHANNELS = {
     subscriptionStartLogin: "ave:settings:subscription:start-login",
     subscriptionOpenLoginBrowser: "ave:settings:subscription:open-login-browser",
     subscriptionCancelLogin: "ave:settings:subscription:cancel-login",
+    subscriptionAcknowledgeNotice: "ave:settings:subscription:acknowledge-notice",
     subscriptionLogout: "ave:settings:subscription:logout",
     subscriptionListModels: "ave:settings:subscription:list-models",
     subscriptionUseForChat: "ave:settings:subscription:use-for-chat",
@@ -639,6 +641,7 @@ export const CHANNELS = {
   },
   app: {
     info: "ave:app:info",
+    relaunch: "ave:app:relaunch",
   },
   approval: {
     request: "ave:approval:request",
@@ -728,6 +731,10 @@ export const CHANNELS = {
   },
   preview: {
     readFile: "ave:preview:read-file",
+    // Documents use readFile's authority and an isolated parser. Returns a
+    // bounded sheet or page, never source bytes. The index selects a sheet
+    // for table formats or a page for presentations/PDF. INTERNAL.
+    readDocument: "ave:preview:read-document",
   },
   workspace: {
     pickRoot: "ave:workspace:pick-root",
@@ -781,6 +788,8 @@ export const CHANNELS = {
     pausePopup: "ave:browser:pause-popup", // invoke renderer→main  main-issued native popup handle
     resumePopup: "ave:browser:resume-popup", // invoke renderer→main  main-issued native popup handle
     getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
+    getSessionBindings: "ave:browser:get-session-bindings",
+    sessionBindingsChanged: "ave:browser:session-bindings-changed",
     tabOp: "ave:browser:tab-op", // event  main→renderer  new / select / close a tab
     control: "ave:browser:control", // event  main→renderer  which tabs the agent controls
   },
@@ -878,6 +887,7 @@ export function isPublicChannel(channel: string): channel is PublicChannel {
  * assert none of them ever leaks into {@link PUBLIC_CHANNELS}.
  */
 export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
+  [CHANNELS.app.relaunch]: "required",
   // ── public subset (reads + chat send) — gesture: none ──
   [CHANNELS.chat.send]: "none",
   [CHANNELS.chat.sessions]: "none",
@@ -891,14 +901,17 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.setMode]: "required",
   [PERMISSIONS.addRule]: "required",
   [PERMISSIONS.removeRule]: "required",
+  [PERMISSIONS.removeScopedRule]: "required",
   [PERMISSIONS.policySet]: "required",
   [PERMISSIONS.dirDispatch]: "required",
   [PERMISSIONS.reviewerDispatch]: "required",
+  [PERMISSIONS.judgeSet]: "required",
   [PERMISSIONS.deferredResolve]: "required",
   [PERMISSIONS.approvalSentenceSelect]: "required",
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
   [PERMISSIONS.sandboxWindowsInstall]: "required",
+  [PERMISSIONS.approveExtensionsWithoutIsolation]: "required",
   // Local-owner Tailnet sharing: all mutations are host-renderer-only and
   // require a current keyboard intent. The snapshot and change hint carry no
   // externally callable mutation capability, so they are deliberately omitted.

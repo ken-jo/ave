@@ -16,6 +16,12 @@ import {
 
 export { HEADLESS_FORBIDDEN_INHERITED_ENV };
 
+// Enforce the standalone runtime floor required by packaged dependencies.
+export function isSupportedHeadlessNodeVersion(version) {
+  const match = /^v22\.(\d+)\.\d+$/u.exec(version);
+  return match !== null && Number(match[1]) >= 12;
+}
+
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const HEADLESS_RUNTIME_CONTRACTS = Object.freeze({
   workloadBrokerCorrelation: "ave-workload-correlation/v1",
@@ -91,8 +97,7 @@ export function extractPackagedRuntime(archive, app) {
       throw new Error(`Runtime archive entry escapes its output: ${path}`);
     }
     const entry = asar.statFile(archive, filename, false);
-    // Post-pack pruning and native replacement change the physical sidecar;
-    // its stale archive headers are not the shipped unpacked inventory.
+    // Audit physical sidecars after pruning; stale archive headers are not the shipped inventory.
     if (entry.unpacked) continue;
     if ("files" in entry) mkdirSync(destination, { recursive: true });
     else if ("link" in entry) throw new Error(`Unsupported runtime payload entry: ${path}`);
@@ -133,8 +138,8 @@ function main() {
   const sourceIdentity = readBuildSourceIdentity(repository);
   const runtimeEnv = prepareHeadlessLaunchEnv({ ...process.env });
   const runtime = JSON.parse(execFileSync(options.node, ["-p", "JSON.stringify({version:process.version,platform:process.platform,arch:process.arch,modules:process.versions.modules,napi:process.versions.napi,electron:process.versions.electron??null})"], { encoding: "utf8", env: runtimeEnv }));
-  if (runtime.electron !== null || runtime.platform !== "linux" || !runtime.version.startsWith("v22.")) {
-    throw new Error("The server artifact requires the standalone Linux 22.x runtime");
+  if (runtime.electron !== null || runtime.platform !== "linux" || !isSupportedHeadlessNodeVersion(runtime.version)) {
+    throw new Error("The server artifact requires the standalone Linux Node 22.x runtime, 22.12 or later");
   }
   const sourcePackage = JSON.parse(asar.extractFile(archive, "package.json").toString("utf8"));
   const boundary = JSON.parse(asar.extractFile(archive, "dist/src/main/headless-manifest.json").toString("utf8"));
@@ -181,8 +186,7 @@ function main() {
   chmodSync(join(options.out, "bin/node"), 0o755);
   mkdirSync(join(options.out, "licenses"));
   cpSync(options["node-license"], join(options.out, "licenses/node-LICENSE"));
-  // Keep NODE_ENV for downstream compatibility; the app-root marker below is
-  // the only input that establishes the native runtime's packaged identity.
+  // Only the app-root marker establishes packaged identity; NODE_ENV remains compatibility metadata.
   writeHeadlessLauncher(options.out);
   const packagedMarker = writePackagedRuntimeMarker(app);
 

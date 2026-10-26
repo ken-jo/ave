@@ -48,9 +48,7 @@ describe("classifyProviderError", () => {
     expect(result.rawError).toBe(raw);
   });
 
-  // Regression lock — issue #900. OpenAI 의 "Request too large for ...
-  // Limit 200,000, Requested 271,630" (TPM 초과) 메시지가 context-length
-  // 의 "too many tokens" 패턴에 잘못 매치되던 회귀.
+  // TPM rate limits must not be classified as context-length failures.
   describe("issue #900 — TPM rate-limit vs context-length distinction", () => {
     it("OpenAI 'Request too large' (TPM 형식) classifies as rate-limit, NOT context-length", () => {
       const raw = "Request too large for gpt-5.4-nano in organization org-xxx on tokens per minute (TPM): Limit 200000, Requested 271630.";
@@ -78,13 +76,10 @@ describe("classifyProviderError", () => {
 
 describe("isDeterministicProviderRequestRejection", () => {
   it("recognizes the self-hosted grammar-compile refusals", () => {
-    // The exact llama.cpp text observed on a sub-agent resume, as LiteLLM
-    // wraps it.
     expect(isDeterministicProviderRequestRejection(
       "litellm.BadRequestError: OpenAIException - Failed to initialize samplers: "
       + "failed to parse grammar. Received Model Group=muse-glimmer-30b",
     )).toBe(true);
-    // The vLLM/xgrammar sibling.
     expect(isDeterministicProviderRequestRejection(
       "Grammar error: regex parse error: look-around is not supported",
     )).toBe(true);

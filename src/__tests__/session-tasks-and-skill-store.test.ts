@@ -1,6 +1,3 @@
-/**
- * Unit tests for SessionTasksStore + SkillStore.
- */
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
@@ -99,7 +96,6 @@ describe("SessionTasksStore", () => {
     ];
     const store = new SessionTasksStore(memoryPersistence({ resumed: seeded }).persistence);
     expect(store.list("resumed")).toEqual(seeded);
-    // Mutations continue from the loaded list, not from an empty one.
     expect((await store.complete("resumed", 2)).map((i) => i.status)).toEqual(["completed", "completed"]);
   });
 
@@ -152,10 +148,7 @@ describe("parseFrontmatter", () => {
 
 describe("SkillStore", () => {
   it("loads packaged report-writing skill from the seed source directory", async () => {
-    // Post-first-boot, `~/.ave/skills/` holds the seeded copies of every
-    // file shipped under `resources/skills/`. Pointing userDir at the
-    // resources dir simulates that on-disk state without depending on
-    // a real user home directory in tests.
+    // Use shipped resources to model seeded user skills without touching a real home.
     const store = new SkillStore({ userDir: BUILTIN_SKILLS_DIR });
     const list = await store.list();
     const names = list.map((s) => s.name);

@@ -16,14 +16,16 @@ import type {
  */
 
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import { assertSrtWinSpawnIntegrity } from "../permissions/srt-win-integrity.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve as pathResolve, win32 as win32Path } from "node:path";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 
 import { spawnWindowsJobProcess } from "../main/windows-job-launcher.js";
+import { t } from "../i18n/index.js";
 import {
   createDynamicTool,
   ZodTool,
@@ -33,9 +35,10 @@ import {
   type ToolExecutionResult,
 } from "./base.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } from "./safe-env.js";
-import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { getPolicyHome } from "../shared/policy-home.js";
 import { hostPathForShellPath } from "../lib/shell-resolver.js";
 import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
 import { clearShellSessionCwd, recordShellSessionCwd } from "./shell-session-cwd.js";
@@ -52,10 +55,18 @@ import {
 } from "./shell-path-policy.js";
 import {
   wrapToolCommand,
+  annotateWithSandboxViolations,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveWriteDenyPaths,
+  type SandboxWrapResult,
 } from "../permissions/asrt-sandbox.js";
+import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
+import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
+import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
+import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
+import { currentToolExecutionCwd } from "./execution-context.js";
 import {
   getHostShellExecutionPlan,
   isIssuedHostShellExecutionPlan,
@@ -72,9 +83,14 @@ import {
 } from "../permissions/execution-router.js";
 import {
   canonicalizeHostShellAllowedDirectories,
-  consumeHostShellExecutionPermit,
+  consumeHostShellExecutionPermitForSpawn,
+  HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   resolveHostShellWorkingDirectory,
+  withHostShellExecutionHandoff,
+  type HostShellSpawnAuthorization,
 } from "../permissions/host-shell-execution-permit.js";
+import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
+import { attachHostShellControlChannel } from "./host-shell-control-channel.js";
 import { deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
 import { resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -303,16 +319,18 @@ function watchShellLifetime(
 ) {
   let timedOut = false;
   let aborted = false;
+  let termination: void | Promise<void>;
   let notifyStopped: () => void;
   const stopped = new Promise<void>((resolve) => { notifyStopped = resolve; });
   const stop = (): void => {
     abortSandbox?.();
-    forceKillManagedChildProcess(child, timedOut ? "shell-timeout" : "shell-cancelled");
+    termination = forceKillManagedChildProcess(child, timedOut ? "shell-timeout" : "shell-cancelled");
     // An exited root can leave inherited pipes open in a detached descendant.
     // Interruption releases our pipe ends and settles without waiting for close.
     child.stdout?.destroy();
     child.stderr?.destroy();
-    notifyStopped();
+    if (termination) void termination.then(() => notifyStopped());
+    else notifyStopped();
   };
   const cancel = (): void => {
     if (timedOut || aborted) return;
@@ -328,6 +346,7 @@ function watchShellLifetime(
   if (signal?.aborted) cancel();
   return {
     stopped,
+    get termination() { return termination; },
     get timedOut() { return timedOut; },
     get aborted() { return aborted; },
     dispose(): void {
@@ -503,6 +522,7 @@ export interface BackgroundShellManager {
   read(sessionId: string, shellId: string): BackgroundShellReadResult | undefined;
   waitForOutput(sessionId: string, shellId: string, waitMs: number, signal?: AbortSignal, waitFor?: BackgroundShellWaitFor): Promise<void>;
   kill(sessionId: string, shellId: string): BackgroundShellReadResult | undefined;
+  waitForLocalCleanup(sessionId: string): Promise<void>;
   /** Kill + drop every shell owned by a session (call on session end). */
   disposeSession(sessionId: string): number;
   /** Begin cleanup for every still-live broker shell during process shutdown. */
@@ -684,6 +704,7 @@ function withBrokerTransportMetadata(result: ToolExecutionResult): ToolExecution
 
 function createManager(): BackgroundShellManager {
   const shells = new Map<string, BackgroundShellEntry>();
+  const localCleanup = new Map<string, Set<Promise<void>>>();
   const brokerShells = new Map<string, BrokerBackgroundShellEntry>();
   const brokerCleanup = new Map<string, MutableBrokerSessionCleanup>();
   let brokerRuntimeImport: Promise<typeof import("../workload/runtime.js")> | undefined;
@@ -936,7 +957,16 @@ function createManager(): BackgroundShellManager {
         // Never re-signal a released handle: its numeric PID may be reused.
         if (terminationRequested) return;
         terminationRequested = true;
-        forceKillManagedChildProcess(child, "background-shell-ended");
+        const termination = forceKillManagedChildProcess(child, "background-shell-ended");
+        if (termination) {
+          const pending = localCleanup.get(sessionId) ?? new Set<Promise<void>>();
+          localCleanup.set(sessionId, pending);
+          pending.add(termination);
+          void termination.then(() => {
+            pending.delete(termination);
+            if (pending.size === 0 && localCleanup.get(sessionId) === pending) localCleanup.delete(sessionId);
+          });
+        }
       };
       const entry: BackgroundShellEntry = {
         shellId,
@@ -1141,6 +1171,10 @@ function createManager(): BackgroundShellManager {
       return snapshot(entry);
     },
 
+    async waitForLocalCleanup(sessionId): Promise<void> {
+      while (localCleanup.has(sessionId)) await Promise.all([...localCleanup.get(sessionId)!]);
+    },
+
     disposeSession(sessionId): number {
       let disposed = 0;
       for (const entry of [...shells.values()]) {
@@ -1215,6 +1249,7 @@ function createManager(): BackgroundShellManager {
       }
       const entries = [...shells.values()];
       shells.clear();
+      localCleanup.clear();
       brokerShells.clear();
       brokerCleanup.clear();
       for (const entry of entries) notify(entry);
@@ -1235,6 +1270,7 @@ export const backgroundShellManager: BackgroundShellManager = createManager();
  */
 export async function endShellSession(sessionId: string): Promise<BrokerSessionCleanupReport | undefined> {
   backgroundShellManager.disposeSession(sessionId);
+  await backgroundShellManager.waitForLocalCleanup(sessionId);
   clearShellSessionCwd(sessionId);
   return await backgroundShellManager.settleSessionCleanup(sessionId);
 }
@@ -1399,7 +1435,18 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       };
     }
 
-    const resolvedCwd = resolveHostShellWorkingDirectory(ctx.cwd, input.cwd);
+    let resolvedCwd: string;
+    try {
+      if (isWorkloadBrokerActive()) {
+        const runtime = await import("../workload/runtime.js");
+        const capability = await runtime.acquireBrokeredWorkloadCapability(ctx.abortSignal);
+        resolvedCwd = runtime.resolveBrokeredWorkloadPath(capability, input.cwd ?? ".");
+      } else {
+        resolvedCwd = resolveHostShellWorkingDirectory(ctx.cwd, input.cwd);
+      }
+    } catch (error) {
+      return brokerFailureResult(error);
+    }
     // §691: the executor seals the host-shell substrate before permission
     // routing. The supplied plan must come from the live host provider; a
     // structural lookalike cannot downgrade an active ASRT route to plain spawn.
@@ -1499,11 +1546,13 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
 
 
-    // Explicit host requests and sandbox fallbacks both select a plain host child.
-    // Its opaque permit exists only after an allow-once approval for this exact
+    // Explicit host requests and the Windows Plan B select a plain host child.
+    // Its opaque permit exists only after an allow-once approval (or, for an
+    // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
+    let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
-      const permitAccepted = consumeHostShellExecutionPermit({
+      const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
         permit: ctx.hostShellExecutionPermit,
         plan: hostShellPlan,
         toolName: "bash",
@@ -1521,13 +1570,14 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         runInBackground: input.run_in_background ?? false,
         allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
-      if (!permitAccepted) {
+      if (spawnAuthorization === undefined) {
         return {
-          output: "spawn failed: this host shell execution requires a one-shot host approval permit.",
+          output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`,
           isError: true,
           metadata: { sandboxed: false, isolation: "none" },
         };
       }
+      hostSpawnAuthorization = spawnAuthorization;
     }
     if (!disposableExecution && hostShellPlan.mode === "blocked") {
       return {
@@ -1536,6 +1586,17 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
           "the active sandbox is only partially confined.",
         isError: true,
         metadata: { sandboxed: false, isolation: "none" },
+      };
+    }
+    if (!disposableExecution && hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc") {
+      // Git Bash (MSYS2) cannot start inside an MXC container: its runtime is
+      // denied the named-object directory it creates at startup (measured,
+      // 0xC0000022, in every session). The PowerShell tool runs contained;
+      // an explicit host request still runs Bash after approval.
+      return {
+        output: MXC_BASH_UNAVAILABLE_MESSAGE,
+        isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
       };
     }
     if (hostShellPlan.mode === "asrt") {
@@ -1569,9 +1630,11 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // sandbox is a process-global singleton (cleanupAfterCommand), so a
     // backgrounded ASRT command running concurrently with the next tool would
     // corrupt the shared sandbox state; background execution is therefore
-    // confined to the unsandboxed plain path, and the requested-sandbox
-    // approval-fallback (requiresExplicitUserApproval) is excluded so a
-    // one-shot-approved command cannot outlive its approval.
+    // confined to the unsandboxed plain path, and the one-shot-permit routes
+    // (explicit host, Windows Plan B: requiresExplicitUserApproval) are
+    // excluded so a one-shot-approved command cannot outlive its approval. A
+    // requested-but-unavailable sandbox follows the normal rules and may
+    // background like sandbox-off.
     if (
       input.run_in_background === true &&
       (!hostShellPlan.requiresExplicitUserApproval || disposableExecution)
@@ -1581,8 +1644,8 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
 
     const spawnedResult = await spawnWithTimeout(
-      input.command, resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+      input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
     );
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
@@ -1595,7 +1658,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         input.run_in_background === true,
       );
     }
-    if (!hostShellPlan.requiresExplicitUserApproval) {
+    if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) {
       return withBackgroundUnavailable(plainResult, input.run_in_background === true);
     }
     return withBackgroundUnavailable(
@@ -1614,6 +1677,21 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       disposePreparedShellInvocation(prepared);
     }
   }
+}
+
+/**
+ * A plain child that ran without the OS isolation the user asked for, or by
+ * explicit request, carries its public plan projection in the result so the
+ * chat and audit can name why ("sandbox unavailable", "explicit host"). An
+ * ordinary sandbox-off run does not: the user chose it.
+ */
+function recordsUnsandboxedExecutionPlan(plan: HostShellExecutionPlan): boolean {
+  if (plan.requiresExplicitUserApproval) return true;
+  // Not requested (setting off, or no sandbox on this platform) is the
+  // ordinary sandbox-off run; every other reason is a degradation to name.
+  return plan.fallbackReason !== "none"
+    && plan.fallbackReason !== "disabled-by-setting"
+    && plan.fallbackReason !== "platform-unsupported";
 }
 
 function withoutReportedCwd(result: SpawnResult): SpawnResult {
@@ -1952,20 +2030,34 @@ interface SpawnResult {
  *     On Linux the wrap withholds a root under a protected read deny, because
  *     a bubblewrap write bind would reopen the deny
  *     (asrt-sandbox.ts buildPerCommandSandboxCustomConfig).
- *   - read-jail HOME-leak fix: `denyRead: [$HOME]` then re-allow the cwd and
- *     the write paths via `allowRead`. ASRT's denyRead takes precedence over
- *     allowRead's parent, so this denies the broad home dir while keeping the
- *     working tree readable — closing the old bwrap/sandbox-exec leak where the
- *     entire HOME was mounted readable.
- *
- * Network egress is governed by the SHARED boot config, NOT per command: boot
- * sets `strictAllowlist: true` + the UNION of every loaded plugin's manifest
- * allow-list (see asrt-sandbox.ts NETWORK ENFORCEMENT MODEL header). Under
- * strict, any out-of-union host is HARD-DENIED at the egress proxy with NO
- * askCb fallthrough — there is no interactive prompt for unmatched hosts.
+ * Reads retain the sensitive and private-session floors; other files are
+ * broadly readable. The invocation's own proxy listener applies domain grants
+ * or asks the host approval callback for an unknown destination.
  *
  * @internal — only exported for testing.
  */
+function ambientShellEgressContext(): ShellEgressContext {
+  const gate = currentEffectGateContext();
+  return {
+    sessionId: gate?.sessionId,
+    workspaceRoot: currentToolExecutionCwd(),
+    approvalSurface: gate !== undefined && !gate.headless && gate.approvalSurface !== "unavailable" ? "interactive" : "unavailable",
+  };
+}
+
+async function annotateSandboxCommandResult(
+  commandId: string, wrapped: SandboxWrapResult, text: string, command: string, terminated: boolean,
+): Promise<{ output: string; sandboxCleanupFailed: boolean }> {
+  const outcome = wrapped.cleanupCompleted && !terminated
+    ? { failure: t("sandboxPolicy.cleanupPending") }
+    : await wrapped.cleanupCompleted;
+  const notices = [...(wrapped.notices ?? []), ...(outcome?.notice ? [outcome.notice] : []), ...(outcome?.failure ? [outcome.failure] : [])];
+  return {
+    output: await annotateWithSandboxViolations(commandId, text, command, notices),
+    sandboxCleanupFailed: outcome?.failure !== undefined,
+  };
+}
+
 export async function spawnWithSandbox(
   command: string,
   resolvedCwd: string,
@@ -1981,8 +2073,7 @@ export async function spawnWithSandbox(
   signal?.throwIfAborted();
   const { shell, homePath, hostHome: home } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
-  // Deny HOME and project invocation reads through the shared policy, which
-  // preserves protected denies while admitting scoped work and saved history.
+  // Compose broad reads while retaining protected paths and private sessions.
   const sandboxWritePaths = [...writePaths, homePath];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
     [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath,
@@ -1996,15 +2087,23 @@ export async function spawnWithSandbox(
   };
 
   const abortController = new AbortController();
-  let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
+  const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
+  const egress = openEgressInvocation(
+    { kind: "shell", toolName: "bash", toolUseId: preparedShellToolUseId(prepared), context: ambientShellEgressContext() },
+    { abortSignal: wrapAbortSignal },
+  );
+  let wrapped: SandboxWrapResult;
   try {
     const binShell = shell.cmd;
     wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
       filesystem,
-      abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
+      abortSignal: wrapAbortSignal,
+      commandId: egress.token,
+      denyUnixSockets: true,
       binShell,
     });
   } catch (err) {
+    egress.release();
     return {
       output: `spawn failed: ${(err as Error).message}`,
       isError: true,
@@ -2015,14 +2114,20 @@ export async function spawnWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     void cleanupAsrtSandboxAfterCommand();
-    return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
+    egress.release();
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
+    const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
+    return { output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } };
   }
   if (cmd === undefined) {
     void cleanupAsrtSandboxAfterCommand();
+    egress.release();
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "spawn failed: ASRT returned an empty argv", command, true);
+    const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return {
-      output: "spawn failed: ASRT returned an empty argv",
+      output: annotated.output,
       isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
 
@@ -2041,7 +2146,9 @@ export async function spawnWithSandbox(
     let child: PipedChild;
     try {
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
+      assertSrtWinSpawnIntegrity(cmd);
       child = spawn(cmd, args, {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd: resolvedCwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -2050,15 +2157,22 @@ export async function spawnWithSandbox(
       });
     } catch (err) {
       void cleanupAsrtSandboxAfterCommand();
-      resolveResult({
-        output: `spawn failed: ${(err as Error).message}`,
-        isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      egress.release();
+      void annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true).then(annotated => {
+        const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
+        resolveResult({
+          output: annotated.output,
+          isError: true,
+          metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+        });
       });
       return;
     }
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
+    // Detached, the child leads its own process group: the sandbox keeps the
+    // ended invocation's listener port while anything in that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
     const outputCollector = createOutputCollector(child, {
       captureFactory: outputCaptureFactory,
@@ -2076,31 +2190,36 @@ export async function spawnWithSandbox(
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return;
       lifecycleCleaned = true;
       void cleanupAsrtSandboxAfterCommand();
+      egress.release();
       cleanupPreparedAfterTermination();
+      egress.release();
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       cleanupAfterTermination();
       lifetime.dispose();
       if (settled) return;
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
-      const formatted = lifetime.output(outputCollector.format(
+      const { output: formatted, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      ));
+      )), command, lifecycleCleaned);
       if (lifetime.timedOut) {
         resolveResult({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true },
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true,
+            ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         });
       } else {
         resolveResult({
           output: formatted,
-          isError: lifetime.aborted || code !== 0,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true },
+          isError: lifetime.aborted || code !== 0 || sandboxCleanupFailed,
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
+            ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         });
       }
@@ -2115,10 +2234,13 @@ export async function spawnWithSandbox(
         const artifactMetadata = await outputCollector.finish(true);
         // Node can emit `error` for a failed process operation while the child
         // remains alive. The later `close` event owns ASRT/HOME finalization.
+        cleanupAfterTermination();
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned);
+        const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult({
-          output: `spawn failed: ${err.message}`,
+          output: annotated.output,
           isError: true,
-          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+          metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
         });
       })();
     });
@@ -2134,25 +2256,33 @@ async function spawnWithTimeout(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  spawnAuthorization?: HostShellSpawnAuthorization,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
   signal?.throwIfAborted();
-  return await new Promise((resolve) => {
-    const { shell, environment } = preparedShellCommand(prepared);
-    const { argv, probe } = preparedShellCwdProbe(prepared);
+  const { shell, environment } = preparedShellCommand(prepared);
+  const prelude = spawnAuthorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(spawnAuthorization.cwdIdentity, "bash", process.platform);
+  const { argv, probe } = preparedShellCwdProbe(prepared, prelude);
+  const launch = (): Promise<SpawnResult> => new Promise((resolve) => {
+    signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:bash");
-    const child: PipedChild = spawn(shell.cmd, [...argv], {
+    const child = spawn(shell.cmd, [...argv], {
+      windowsHide: true,
       detached: process.platform !== "win32",
       cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
       // Strip secrets (AVE_*, *_API_KEY, GITHUB_TOKEN, AWS_*, etc.) from
       // the child's environment. Only generic shell/locale vars pass through.
       env: { ...environment },
       shell: false,
-    });
+    }) as PipedChild;
+    const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
-    child.once("close", cleanupPreparedAfterTermination);
+    child.once("close", () => {
+      if (lifetime.termination) void lifetime.termination.then(cleanupPreparedAfterTermination);
+      else cleanupPreparedAfterTermination();
+    });
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress });
@@ -2164,9 +2294,12 @@ async function spawnWithTimeout(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       if (settled) return;
       settled = true;
+      const rejected = control?.rejected === true;
+      control?.dispose();
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       const formatted = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
@@ -2179,8 +2312,9 @@ async function spawnWithTimeout(
         });
       } else {
         resolve({
-          output: formatted,
-          isError: lifetime.aborted || code !== 0,
+          output: rejected
+            ? `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : formatted,
+          isError: rejected || lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         });
@@ -2193,6 +2327,7 @@ async function spawnWithTimeout(
       void (async () => {
         if (settled) return;
         settled = true;
+        control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
         resolve({
           output: `spawn failed: ${err.message}`,
@@ -2202,6 +2337,14 @@ async function spawnWithTimeout(
       })();
     });
   });
+  if (spawnAuthorization !== undefined && prelude === undefined) {
+    // Keep listener registration in the synchronous handoff, without holding
+    // the policy queue for the lifetime of the command's result promise.
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }));
+    return handoff === undefined
+      ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: {} } : await handoff.result;
+  }
+  return await launch();
   } finally { releaseClaim(); }
 }
 
@@ -2468,6 +2611,7 @@ export function createBashKillTool(
       if (!result) {
         return { output: `bash_kill: ${NOT_FOUND}.`, isError: true };
       }
+      await manager.waitForLocalCleanup(sessionIdOf(ctx));
       return present(result);
     },
   });
@@ -2689,11 +2833,13 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     ) {
       return { output: commandPathViolation.reason, isError: true };
     }
-    // Explicit host requests and sandbox fallbacks both select a plain host child.
-    // Its opaque permit exists only after an allow-once approval for this exact
+    // Explicit host requests and the Windows Plan B select a plain host child.
+    // Its opaque permit exists only after an allow-once approval (or, for an
+    // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
+    let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
-      const permitAccepted = consumeHostShellExecutionPermit({
+      const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
         permit: ctx.hostShellExecutionPermit,
         plan: hostShellPlan,
         toolName: "powershell",
@@ -2711,13 +2857,14 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         runInBackground: input.run_in_background ?? false,
         allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
-      if (!permitAccepted) {
+      if (spawnAuthorization === undefined) {
         return {
-          output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit.",
+          output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`,
           isError: true,
           metadata: { sandboxed: false, isolation: "none" },
         };
       }
+      hostSpawnAuthorization = spawnAuthorization;
     }
     // Native AST admission above also covers direct callers. It precedes the
     // one-shot permit consumption, so a refused command never spends approval.
@@ -2739,21 +2886,32 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           : {}),
         allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
       });
+      if (hostShellPlan.substrate === "mxc") {
+        return await spawnPowerShellInMxc(
+          input.command,
+          resolvedCwd,
+          writePaths,
+          input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
+          toolOutputProgressFromMetadata(ctx.metadata),
+          typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+        );
+      }
       return await spawnPowerShellWithSandbox(
         input.command,
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
         toolOutputProgressFromMetadata(ctx.metadata),
+        typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
       );
     }
 
     const plainResult = await spawnPowerShell(
-      input.command, resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+      input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
     );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
-    if (!hostShellPlan.requiresExplicitUserApproval) return plainResult;
+    if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) return plainResult;
     return {
       ...plainResult,
       metadata: {
@@ -2954,6 +3112,7 @@ async function parsePowerShellAst(command: string): Promise<PowerShellAstSummary
       executable,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWER_SHELL_AST_PARSER],
       {
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
         env: buildSafeChildEnv(),
       },
@@ -3017,13 +3176,13 @@ function posixSingleQuote(arg: string): string {
  *   command line for that path (preserving the established mac/linux behaviour).
  *
  * Filesystem jail mirrors bash.ts: `allowWrite` = the derived write-jail, and
- * the read-jail HOME-leak fix denies `$HOME` then re-allows cwd + write paths.
- * Windows ASRT is not shell-contained and ASRT 0.0.76 cannot accept the
+ * reads keep the existing sensitive and private-session floors.
+ * Windows ASRT is not shell-contained and ASRT 0.0.80 cannot accept the
  * per-exec allowRead/allowWrite grants this path needs, so executeTyped refuses
  * before this function on win32; the win32 binShell branch remains defensive
  * for future ASRT capability changes.
  *
- * @internal — called only when the ASRT sandbox is active (user opt-in).
+ * @internal — called only when the host has verified active OS confinement.
  */
 async function spawnPowerShellWithSandbox(
   command: string,
@@ -3033,6 +3192,7 @@ async function spawnPowerShellWithSandbox(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  toolUseId?: string,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
@@ -3073,7 +3233,7 @@ async function spawnPowerShellWithSandbox(
   // `/bin/bash -c` wrapping unchanged.
   const binShell = isWindows ? binShellForExecutable(executable) : undefined;
 
-  const home = process.env["HOME"];
+  const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home, sandboxHome.path);
   const filesystem = {
@@ -3085,14 +3245,22 @@ async function spawnPowerShellWithSandbox(
   };
 
   const abortController = new AbortController();
-  let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
+  const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
+  const egress = openEgressInvocation(
+    { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
+    { abortSignal: wrapAbortSignal },
+  );
+  let wrapped: SandboxWrapResult;
   try {
     wrapped = await wrapToolCommand(sandboxCommand, {
       filesystem,
-      abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
+      abortSignal: wrapAbortSignal,
+      commandId: egress.token,
+      denyUnixSockets: true,
       ...(binShell !== undefined ? { binShell } : {}),
     });
   } catch (err) {
+    egress.release();
     sandboxHome.cleanup();
     return {
       output: `PowerShell spawn failed: ${(err as Error).message}`,
@@ -3104,16 +3272,22 @@ async function spawnPowerShellWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     void cleanupAsrtSandboxAfterCommand();
+    egress.release();
     sandboxHome.cleanup();
-    return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
+    const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
+    return { output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } };
   }
   if (cmd === undefined) {
     void cleanupAsrtSandboxAfterCommand();
+    egress.release();
     sandboxHome.cleanup();
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "PowerShell spawn failed: ASRT returned an empty argv", command, true);
+    const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return {
-      output: "PowerShell spawn failed: ASRT returned an empty argv",
+      output: annotated.output,
       isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
 
@@ -3132,7 +3306,9 @@ async function spawnPowerShellWithSandbox(
     let child: PipedChild;
     try {
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
+      assertSrtWinSpawnIntegrity(cmd);
       child = spawn(cmd, args, {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -3141,15 +3317,22 @@ async function spawnPowerShellWithSandbox(
       });
     } catch (err) {
       void cleanupAsrtSandboxAfterCommand();
+      egress.release();
       sandboxHome.cleanup();
-      resolveResult({
-        output: `PowerShell spawn failed: ${(err as Error).message}`,
-        isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      void annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true).then(annotated => {
+        const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
+        resolveResult({
+          output: annotated.output,
+          isError: true,
+          metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+        });
       });
       return;
     }
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
+    // Detached, the child leads its own process group: the sandbox keeps the
+    // ended invocation's listener port while anything in that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);
@@ -3163,19 +3346,204 @@ async function spawnPowerShellWithSandbox(
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return;
       lifecycleCleaned = true;
       void cleanupAsrtSandboxAfterCommand();
+      egress.release();
       sandboxHome.cleanup();
+      egress.release();
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       cleanupAfterTermination();
       lifetime.dispose();
       if (settled) return;
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
-      const output = lifetime.output(outputCollector.format(
+      const { output, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      ));
+      )), command, lifecycleCleaned);
+      resolveResult({
+        output: lifetime.timedOut
+          ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
+          : output,
+        isError: lifetime.aborted || lifetime.timedOut || code !== 0 || sandboxCleanupFailed,
+        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
+          ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
+      });
+    };
+
+    void lifetime.stopped.then(() => finish(child.exitCode));
+    child.once("close", (code, signal) => { void finish(code, signal); });
+    child.on("error", (err) => {
+      void (async () => {
+        if (settled) return;
+        settled = true;
+        const artifactMetadata = await outputCollector.finish(true);
+        // `error` may be a failed operation on a live process. The definitive
+        // `close` event retains ASRT/HOME cleanup ownership.
+        cleanupAfterTermination();
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped,
+          err && "code" in err && err.code === "ENOENT"
+            ? `PowerShell executable not found: ${executable}`
+            : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned);
+        const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
+        resolveResult({
+          output: annotated.output,
+          isError: true,
+          metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+        });
+      })();
+    });
+  });
+}
+
+/**
+ * Execute a PowerShell command in its own Microsoft Execution Containers
+ * container (Windows hosts whose OS offers MXC's BaseContainer tier; see
+ * `permissions/mxc-windows.ts`).
+ *
+ * The container runs System32 Windows PowerShell 5.1 with the command
+ * `-EncodedCommand`-encoded. Its filesystem lists are the same per-command
+ * policy {@link spawnPowerShellWithSandbox} hands ASRT, ranked for MXC. Its
+ * network reaches only this invocation's proxy listener, which stamps the
+ * invocation's identity on every request it forwards to the ASRT proxy, so a
+ * refused host is recorded under this call's token exactly as on macOS and
+ * Linux. `wxc-exec.exe` relays stdout, stderr and the exit code; killing it on
+ * timeout or abort ends the container and every process in it.
+ *
+ * @internal — called only for a plan whose substrate is `mxc`.
+ */
+async function spawnPowerShellInMxc(
+  command: string,
+  cwd: string,
+  writePaths: readonly string[],
+  timeoutSeconds: number,
+  signal?: AbortSignal,
+  outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
+  toolUseId?: string,
+): Promise<ToolExecutionResult> {
+  signal?.throwIfAborted();
+  let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
+  try {
+    sandboxHome = createSandboxProcessHome();
+  } catch (err) {
+    return {
+      output: `PowerShell spawn failed: could not create isolated HOME: ${(err as Error).message}`,
+      isError: true,
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+    };
+  }
+  const systemRoot = process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows";
+  const sandboxWritePaths = [...writePaths, sandboxHome.path];
+  const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], hostHome, sandboxHome.path);
+  const egress = openEgressInvocation(
+    { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
+    signal ? { abortSignal: signal } : {},
+  );
+  let launch: MxcShellLaunch;
+  try {
+    // MXC bypasses the ASRT wrap, so it takes the same mandatory write floor
+    // the per-command ASRT config restates: workspace control files (.git
+    // controls, .vscode, .husky, .claude, .envrc, …) and Ave's permission,
+    // approval and egress grant stores. Ranking keeps a deny inside a granted
+    // directory as read-only (existing) or denied (absent).
+    const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths();
+    const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
+    launch = await prepareMxcShellLaunch({
+      egressToken: egress.token,
+      commandLine: powerShellMxcCommandLine(systemRoot, command),
+      cwd,
+      filesystem: {
+        allowWrite: mandatory.allowWrite,
+        allowRead,
+        denyRead,
+        denyWrite: [...new Set([
+          ...sensitiveDenyWrite,
+          ...mandatory.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path),
+        ])],
+        floorPierces,
+      },
+      env: buildSafeChildEnv({ ...sandboxHome.env }),
+      timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
+      exists: existsSync,
+    });
+  } catch (err) {
+    egress.release();
+    sandboxHome.cleanup();
+    return {
+      output: `PowerShell spawn failed: ${(err as Error).message}`,
+      isError: true,
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+    };
+  }
+  const [cmd, ...args] = launch.argv;
+  if (signal?.aborted || cmd === undefined) {
+    void launch.release();
+    sandboxHome.cleanup();
+    egress.release();
+    return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
+  }
+
+  return await new Promise<ToolExecutionResult>((resolveResult) => {
+    let child: PipedChild;
+    try {
+      assertManagedChildProcessAdmissionOpen("tool:powershell:mxc");
+      child = spawn(cmd, args, {
+        // The launcher runs from its own (per-machine, admin-only) directory, so
+        // nothing in the workspace sits beside it; the container's working
+        // directory travels in the request.
+        cwd: win32Path.dirname(cmd),
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        windowsHide: true,
+        // The launcher's own environment: the container's is in the request.
+        env: buildSafeChildEnv({}),
+      });
+    } catch (err) {
+      void launch.release();
+      sandboxHome.cleanup();
+      egress.release();
+      resolveResult({
+        output: `PowerShell spawn failed: ${(err as Error).message}`,
+        isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      });
+      return;
+    }
+    trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
+
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
+    child.stdout.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
+
+    let settled = false;
+    let lifecycleCleaned = false;
+    // After wxc-exec exits the container is gone, so the listener can close:
+    // nothing is left that could reach its port.
+    const cleanupAfterTermination = (): Promise<void> => {
+      if (lifecycleCleaned) return Promise.resolve();
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return Promise.resolve();
+      lifecycleCleaned = true;
+      sandboxHome.cleanup();
+      return launch.release().finally(() => egress.release());
+    };
+    const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
+
+    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      lifetime.dispose();
+      if (settled) {
+        await cleanupAfterTermination();
+        return;
+      }
+      settled = true;
+      const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      // Read the proxy's refusals under this call's token before releasing it.
+      const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
+        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+      )));
+      await cleanupAfterTermination();
       resolveResult({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
@@ -3189,15 +3557,19 @@ async function spawnPowerShellWithSandbox(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        // A spawn that fails (no pid) may never emit "close": release the
+        // listener, the egress token and the sandbox HOME here. A running
+        // child keeps its timeout and abort watch, and "close" releases its
+        // resources (cleanupAfterTermination's guard waits for the exit).
+        if (child.pid === undefined) {
+          lifetime.dispose();
+          await cleanupAfterTermination();
+        }
         if (settled) return;
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);
-        // `error` may be a failed operation on a live process. The definitive
-        // `close` event retains ASRT/HOME cleanup ownership.
         resolveResult({
-          output: err && "code" in err && err.code === "ENOENT"
-            ? `PowerShell executable not found: ${executable}`
-            : `PowerShell spawn failed: ${err.message}`,
+          output: `PowerShell spawn failed: ${err.message}`,
           isError: true,
           metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
         });
@@ -3213,22 +3585,27 @@ async function spawnPowerShell(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  spawnAuthorization?: HostShellSpawnAuthorization,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
-  return new Promise((resolve) => {
-    const executable = resolvePowerShellExecutable();
+  const executable = resolvePowerShellExecutable();
+  const prelude = spawnAuthorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(spawnAuthorization.cwdIdentity, "powershell", process.platform);
+  const launch = (): Promise<ToolExecutionResult> => new Promise((resolve) => {
+    signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:powershell");
-    const child: PipedChild = spawn(
+    const child = spawn(
       executable,
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", (prelude ?? "") + command],
       {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
         env: buildHostShellChildEnv(),
         shell: false,
       },
-    );
+    ) as PipedChild;
+    const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
@@ -3240,9 +3617,12 @@ async function spawnPowerShell(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       if (settled) return;
       settled = true;
+      const rejected = control?.rejected === true;
+      control?.dispose();
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       const output = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
@@ -3250,8 +3630,9 @@ async function spawnPowerShell(
       resolve({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
-          : output,
-        isError: lifetime.aborted || lifetime.timedOut || code !== 0,
+          : rejected
+            ? `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : output,
+        isError: rejected || lifetime.aborted || lifetime.timedOut || code !== 0,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut },
       });
     };
@@ -3262,6 +3643,7 @@ async function spawnPowerShell(
       void (async () => {
         if (settled) return;
         settled = true;
+        control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
         resolve({
           output: err && "code" in err && err.code === "ENOENT"
@@ -3273,6 +3655,12 @@ async function spawnPowerShell(
       })();
     });
   });
+  if (spawnAuthorization !== undefined && prelude === undefined) {
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }));
+    return handoff === undefined
+      ? { output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true } : handoff.result;
+  }
+  return launch();
 }
 
 /** @internal Native process lifetime seam; public calls must pass AST admission. */

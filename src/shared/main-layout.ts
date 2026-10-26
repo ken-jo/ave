@@ -1,27 +1,8 @@
-/**
- * The main window's saved layout — what comes back on the next launch.
- *
- * It holds the pane tree (geometry), which panes show a terminal or web page,
- * which panes had their side panel open, and each pane's terminal and browser
- * side tabs. Each terminal records the directory its shell last reported, and
- * each page its last address. It does NOT hold a terminal's process or
- * scrollback: those end with the app, so a restored terminal is a new shell
- * started in the saved directory, and it says so in its buffer.
- *
- * Both processes call ONE parser. Main checks the value's SHAPE when it is
- * stored or read back; the renderer checks it again with the window's limits
- * (the pane ceiling and the primary pane id, which live in the app contract)
- * before acting on it — the same split as `system.activeView`, whose stored
- * key main checks structurally and the renderer re-checks against what it
- * loaded. Keeping the contract out of this module keeps it out of the
- * settings store's import graph. A snapshot that
- * fails any rule is refused whole with a reason, and the window starts in the
- * default layout. A half-applied layout would point panes at surfaces that do
- * not exist.
- */
+/** Persist geometry and last directories or URLs, never processes or scrollback; reject invalid snapshots whole. */
 
 import { isRecord } from "./is-record.js";
 import { parseTabId } from "./tab-id.js";
+import { parseBrowserSessionActor, type SessionTabBindingMetadata } from "./browser-surface.js";
 
 export const MAIN_LAYOUT_VERSION = 1;
 
@@ -29,14 +10,15 @@ export type SavedSurfaceKind = "terminal" | "browser";
 
 export interface SavedSurface {
   kind: SavedSurfaceKind;
-  /** The tab id ("terminal:3fa91c0e-2", `shared/tab-id.ts`) — kept, so AVE_TERMINAL_ID is stable across launches. */
+  /** Keep tab ids stable across launches so terminal identity survives restore. */
   tabId: string;
-  /** "Terminal 3" — the number in the tab's name. */
   ordinal: number;
   /** A terminal's last directory (absolute), or null. Always null for a page. */
   cwd: string | null;
   /** A page's last http(s) address, or null. Always null for a terminal. */
   url: string | null;
+  /** Main-owned facts, never control authority. Empty means cleared; absence is the legacy format. */
+  binding?: SessionTabBindingMetadata;
 }
 
 export type SavedPaneNode =
@@ -49,15 +31,15 @@ export interface MainLayoutSnapshot {
   focusedId: string;
   /** Panes showing a terminal or page, keyed by pane id. A pane not listed shows its conversation. */
   surfaces: Record<string, SavedSurface>;
-  /** Panes whose side panel was open. */
   panelOpenIds: string[];
-  /** Each pane's terminal and browser side tabs, in tab order. */
+  /** Panes whose session thumbnails were open. Older layouts restore them closed. */
+  thumbnailOpenIds: string[];
   sideTabs: Record<string, SavedSurface[]>;
 }
 
 export type MainLayoutParse = { ok: true; layout: MainLayoutSnapshot } | { ok: false; reason: string };
 
-/** What only the window knows: how many panes it holds and which one is primary. */
+/** Renderer supplies window-specific pane limits; main checks shape only. */
 export interface MainLayoutLimits {
   maxPanes: number;
   primaryPaneId: string;
@@ -113,13 +95,19 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
     }
     if (protocol !== "http:" && protocol !== "https:") refuse(`${path}.url must be http or https`);
   }
-  return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null };
+  let binding: SessionTabBindingMetadata | undefined;
+  if (raw.binding !== undefined) {
+    if (!isRecord(raw.binding) || Object.keys(raw.binding).some((key) => key !== "owner" && key !== "paneSessionId")) refuse(`${path}.binding is invalid`);
+    const owner = raw.binding.owner === undefined ? undefined : parseBrowserSessionActor(raw.binding.owner);
+    if (owner === null || (owner !== undefined && kind !== "browser")) refuse(`${path}.binding.owner is invalid`);
+    const paneSessionId = raw.binding.paneSessionId;
+    if (paneSessionId !== undefined && (typeof paneSessionId !== "string" || paneSessionId.length === 0)) refuse(`${path}.binding.paneSessionId is invalid`);
+    binding = { ...(owner === undefined ? {} : { owner }), ...(paneSessionId === undefined ? {} : { paneSessionId: paneSessionId as string }) };
+  }
+  return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null, ...(binding === undefined ? {} : { binding }) };
 }
 
-/**
- * Check a stored layout. Every rule is all-or-nothing; the reason names the
- * first broken one. Without `limits` only the shape is checked.
- */
+/** Without limits validate shape only; any failed rule rejects the whole layout. */
 export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLayoutParse {
   try {
     if (!isRecord(raw)) refuse("the layout is not an object");
@@ -149,6 +137,9 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
     }
     if (!Array.isArray(raw.panelOpenIds) || !raw.panelOpenIds.every((id) => typeof id === "string")) refuse("panelOpenIds is not a list of pane ids");
     for (const id of raw.panelOpenIds as string[]) inTree(id, "panelOpenIds");
+    const thumbnailOpenIds = raw.thumbnailOpenIds === undefined ? [] : raw.thumbnailOpenIds;
+    if (!Array.isArray(thumbnailOpenIds) || !thumbnailOpenIds.every((id) => typeof id === "string")) refuse("thumbnailOpenIds is not a list of pane ids");
+    for (const id of thumbnailOpenIds as string[]) inTree(id, "thumbnailOpenIds");
     if (!isRecord(raw.sideTabs)) refuse("sideTabs is not an object");
     const sideTabs: Record<string, SavedSurface[]> = {};
     for (const [paneId, value] of Object.entries(raw.sideTabs)) {
@@ -168,6 +159,7 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
         focusedId: raw.focusedId,
         surfaces,
         panelOpenIds: [...new Set(raw.panelOpenIds as string[])],
+        thumbnailOpenIds: [...new Set(thumbnailOpenIds as string[])],
         sideTabs,
       },
     };

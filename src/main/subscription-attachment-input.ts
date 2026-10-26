@@ -1,13 +1,4 @@
-/**
- * Main-process-only normalized attachment payloads for subscription transports.
- *
- * The renderer and normal conversation model use main-issued image data URLs.
- * This is a distinct boundary from attach.ts's local-file inspection/mime
- * mapping: it accepts no filesystem path and strictly normalizes already-loaded
- * image bytes and data URLs. Subscription transports then share this one
- * protocol-neutral base64 representation so Codex can stage local images and
- * ACP can emit its standard image blocks without binary in the text envelope.
- */
+// Accept loaded image bytes and data URLs only, never filesystem paths; transports share a protocol-neutral base64 payload.
 import {
   MAX_COMPOSER_ATTACHMENT_COUNT,
   MAX_COMPOSER_IMAGE_BASE64_CHARS,
@@ -17,41 +8,31 @@ import {
 import { MCP_RESOURCE_ATTACHMENTS_PER_TURN } from "../shared/mcp-resource-bounds.js";
 import { normalizeMultimodalTokenEstimateDimension } from "../shared/multimodal-token-estimate.js";
 import type { SubscriptionImageAttachmentLimits } from "../shared/subscription-runtime.js";
-import type { UserContentPart } from "../engine/llm/types.js";
+import type { StreamEvent, UserContentPart } from "../engine/llm/types.js";
 
-/**
- * Original image bytes accepted by a subscription runtime's verified native
- * transport. Generic file payloads deliberately do not belong here: normal
- * Ave file attachments are paths plus the governed read-tool flow, not an
- * unreviewed binary-upload parity promise.
- */
+// Original image bytes accepted by a subscription runtime's verified native transport. Generic file payloads deliberately do not belong here: normal Ave
+// file attachments are paths plus the governed read-tool flow, not an unreviewed binary-upload parity promise.
 export type SubscriptionPromptAttachment = Readonly<{
   type: "image";
   mimeType: string;
-  /** Canonical base64 bytes, without a `data:` URL prefix. */
+  // Canonical base64 bytes, without a `data:` URL prefix.
   data: string;
 }>;
 
-/** Host-verified native prompt budget, independent of the input picker limit. */
+// Host-verified native prompt budget, independent of the input picker limit.
 export const MAX_SUBSCRIPTION_PROMPT_ATTACHMENTS = 5;
-/**
- * One composed turn has its text part plus independently bounded image and
- * resource attachment parts. Reject larger (including sparse) arrays before
- * iterating any element at IPC, import, restore, or provider boundaries.
- */
+// One composed turn has its text part plus independently bounded image and resource attachment parts. Reject larger (including sparse) arrays before
+// iterating any element at IPC, import, restore, or provider boundaries.
 export const MAX_LOCAL_USER_CONTENT_PARTS =
   1 + MAX_COMPOSER_ATTACHMENT_COUNT + MCP_RESOURCE_ATTACHMENTS_PER_TURN;
-/** Multipart user content has one authored text part plus at most one part per host-attached MCP resource. */
+// Multipart user content has one authored text part plus at most one part per host-attached MCP resource.
 export const MAX_LOCAL_USER_CONTENT_TEXT_PARTS =
   1 + MCP_RESOURCE_ATTACHMENTS_PER_TURN;
-/**
- * Aggregate text cap for one multipart user turn. It matches the existing
- * imported-session file gate, closing raw IPC text multiplication without
- * narrowing normal exported-session input.
- */
+// Aggregate text cap for one multipart user turn. It matches the existing imported-session file gate, closing raw IPC text multiplication without
+// narrowing normal exported-session input.
 export const MAX_LOCAL_USER_CONTENT_TEXT_CHARS = 5_000_000;
 export const MAX_SUBSCRIPTION_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-/** Default native transport budget shared by projection, capabilities, and dispatch. */
+// Default native transport budget shared by projection, capabilities, and dispatch.
 export const DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS: SubscriptionImageAttachmentLimits = Object.freeze({
   maxCount: MAX_SUBSCRIPTION_PROMPT_ATTACHMENTS,
   maxBytesPerImage: MAX_SUBSCRIPTION_ATTACHMENT_BYTES,
@@ -72,7 +53,7 @@ export type SubscriptionAttachmentTransportErrorCode =
   | "subscription-attachment-not-supported"
   | "subscription-attachment-too-large";
 
-/** Stable transport-boundary failure; it never carries third-party detail. */
+// Stable transport-boundary failure; it never carries third-party detail.
 export class SubscriptionAttachmentTransportError extends Error {
   constructor(readonly code: SubscriptionAttachmentTransportErrorCode) {
     super(code);
@@ -80,10 +61,33 @@ export class SubscriptionAttachmentTransportError extends Error {
   }
 }
 
+export const SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED = "subscription-attachments-not-supported";
+export const SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE = "subscription-attachment-too-large";
+export const SUBSCRIPTION_ATTACHMENT_UNAVAILABLE = "The selected subscription runtime cannot send this attachment.";
+const SUBSCRIPTION_ATTACHMENT_TOO_LARGE = "The selected subscription runtime cannot send an attachment this large.";
+
+/** The fixed, renderer-safe error every subscription transport reports for an attachment it refused locally. */
+export function subscriptionAttachmentTransportFailure(
+  failure: SubscriptionAttachmentTransportError,
+): Extract<StreamEvent, { type: "error" }> {
+  const tooLarge = failure.code === "subscription-attachment-too-large";
+  const code = tooLarge ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED;
+  return {
+    type: "error",
+    error: tooLarge ? SUBSCRIPTION_ATTACHMENT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
+    classification: code,
+    providerError: {
+      origin: "unknown",
+      statusCode: 400,
+      providerCode: code,
+      messagePreview: tooLarge ? "subscription attachment input too large" : "subscription attachment input rejected",
+    },
+  };
+}
+
 function normalizedMimeType(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  // MIME tokens are ASCII. Locale-sensitive lowercasing can change I/i under
-  // a Turkish default locale and make a valid protocol token fail spuriously.
+  // MIME tokens are ASCII. Locale-sensitive lowercasing can change I/i under a Turkish default locale and make a valid protocol token fail spuriously.
   const mimeType = value.trim().toLowerCase();
   return mimeType.length > 0
     && mimeType.length <= MAX_MIME_TYPE_LENGTH
@@ -112,8 +116,7 @@ function canonicalBase64(value: unknown): DecodedBase64 | null {
   const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
   const dataLength = value.length - padding;
   if (dataLength === 0) return null;
-  // Avoid a backtracking regex over up to 25MiB of image data. Validate the
-  // canonical ASCII alphabet in one bounded linear scan before decoding.
+  // Avoid a backtracking regex over up to 25MiB of image data. Validate the canonical ASCII alphabet in one bounded linear scan before decoding.
   for (let index = 0; index < dataLength; index += 1) {
     if (!isBase64Character(value.charCodeAt(index))) return null;
   }
@@ -168,15 +171,8 @@ function normalizedInlineDataUrl(
     : null;
 }
 
-/**
- * Normalize an inline local data URL before it reaches an API-key provider.
- *
- * This deliberately accepts only the existing bounded canonical base64 format
- * and a syntactically valid, explicitly matching media type. It is shared by
- * image and generic file IPC so a string can never be reinterpreted as a URL
- * by the AI SDK's provider mapper.
- */
-export function normalizeInlineLocalDataUrl(
+// Require bounded canonical base64 data URLs with matching media types so provider mapping cannot reinterpret input as a remote URL.
+function normalizeInlineLocalDataUrl(
   dataUrl: unknown,
   declaredMimeType?: unknown,
 ): Readonly<{ mimeType: string; data: string }> | null {
@@ -196,7 +192,7 @@ function normalizedImageAttachment(
   return Object.freeze({ type: "image", mimeType: expectedFormat.mimeType, data: decoded.data });
 }
 
-/** Normalize already-loaded image data without reading a path or fetching a URL. */
+// Normalize already-loaded image data without reading a path or fetching a URL.
 export function normalizeSubscriptionPromptAttachment(value: unknown): SubscriptionPromptAttachment | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const candidate = value as { type?: unknown; mimeType?: unknown; data?: unknown };
@@ -206,7 +202,7 @@ export function normalizeSubscriptionPromptAttachment(value: unknown): Subscript
   return mimeType && data ? normalizedImageAttachment(mimeType, data) : null;
 }
 
-/** Convert a normal Ave image data URL into a strict protocol payload. */
+// Convert a normal Ave image data URL into a strict protocol payload.
 export function normalizeSubscriptionImageAttachment(
   dataUrl: unknown,
   declaredMimeType?: unknown,
@@ -217,11 +213,8 @@ export function normalizeSubscriptionImageAttachment(
     : null;
 }
 
-/**
- * Normalize already-streamed image bytes at a host transport boundary.
- * The output uses the same canonical data representation as local composer
- * images, so remote staging never has a second provider input format.
- */
+// Normalize already-streamed image bytes at a host transport boundary. The output uses the same canonical data representation as local composer images,
+// so remote staging never has a second provider input format.
 export function normalizeSubscriptionImageBytes(
   mimeType: unknown,
   bytes: unknown,
@@ -242,12 +235,7 @@ export function normalizeSubscriptionImageBytes(
   );
 }
 
-/**
- * Normalize renderer/imported user content before it reaches an API-key
- * provider. Binary parts must be canonical inline local data URLs: URL-shaped
- * strings are rejected instead of being delegated to the AI SDK fetch path.
- * Total-part and binary-candidate caps run before element data is read or decoded.
- */
+// Reject URL-shaped binary inputs and cap part/candidate counts before reading or decoding elements.
 export function normalizeLocalUserContentParts(raw: unknown): UserContentPart[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   let rawLength = 0;
@@ -332,19 +320,11 @@ export function normalizeLocalUserContentParts(raw: unknown): UserContentPart[] 
   return out.length > 0 ? out : undefined;
 }
 
-/** Validate an internal attachment again at every process transport boundary. */
-export function isSubscriptionPromptAttachment(value: unknown): value is SubscriptionPromptAttachment {
-  return normalizeSubscriptionPromptAttachment(value) !== null;
-}
-
 export function subscriptionAttachmentByteLength(attachment: SubscriptionPromptAttachment): number {
   return Buffer.byteLength(attachment.data, "base64");
 }
 
-/**
- * Revalidate every value at the process boundary. Images may be large enough
- * to be useful, but a prompt remains bounded before staging or JSONL encoding.
- */
+// Revalidate every value at the process boundary. Images may be large enough to be useful, but a prompt remains bounded before staging or JSONL encoding.
 export function assertSubscriptionPromptAttachments(
   attachments: readonly SubscriptionPromptAttachment[] | undefined,
   limits: SubscriptionImageAttachmentLimits = DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
@@ -368,8 +348,7 @@ export function assertSubscriptionPromptAttachments(
     if (totalBytes > limits.maxTotalBytes) {
       throw new SubscriptionAttachmentTransportError("subscription-attachment-too-large");
     }
-    // Return independent frozen values so later caller mutation cannot change
-    // what this transport boundary validated.
+    // Return independent frozen values so later caller mutation cannot change what this transport boundary validated.
     validated.push(normalized);
   }
   return Object.freeze(validated);

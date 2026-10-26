@@ -1,14 +1,4 @@
-/**
- * The generator rule that keeps an exclusive union exclusive on the wire
- * (docs/design/plugin-hostapi-protocol.md §9.7 P3, decision 33).
- *
- * `ts-json-schema-generator` drops a property declared `never`, so the two
- * branches of `{ a: string; b?: never } | { b: string; a?: never }` would each
- * just omit the other key and, with `additionalProperties: true`, accept an
- * object carrying both. The rule writes `false` for every such property, read
- * off the source; a `never` property on an interface that is not emitted is an
- * error rather than a silent skip.
- */
+// Excluded never-valued properties must be forbidden even without additionalProperties.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +22,6 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Project `type` from `source` the way the generator does, and the declarations it reads the rule from. */
 function project(source: string, type: string): {
   root: Record<string, unknown>;
   definitions: Record<string, unknown>;
@@ -77,7 +66,7 @@ export type Manifest = WithEntry | WithProcess;
 describe("the never-to-false rule", () => {
   it("writes false for each never member, so the union rejects both keys and neither", () => {
     const { root, definitions, named } = project(EXCLUSIVE, "Manifest");
-    // What the generator emits on its own: the excluded key is simply absent.
+    // Preserve excluded keys that the base generator omits.
     expect((definitions.WithEntry as { properties: Record<string, unknown> }).properties).not.toHaveProperty("process");
 
     excludeNeverProperties(named, definitions);
@@ -115,7 +104,7 @@ describe("the never-to-false rule", () => {
 
   it("exempts exactly the declarations the generator reads as data tables", () => {
     expect(TABLE_DECLARATIONS).toEqual(["HostApiEventPayloads"]);
-    // A table, where never is a value ("pushes nothing"), is read and not emitted.
+    // A never-valued table emits no values.
     const { definitions, named } = project(
       `${EXCLUSIVE}\nexport interface HostApiEventPayloads { resolveApiKey: never; "config.onChange": string }\n`,
       "Manifest",

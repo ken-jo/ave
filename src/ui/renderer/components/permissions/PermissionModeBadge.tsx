@@ -1,20 +1,4 @@
-/**
- * Permission policy mode badge.
- *
- * Compact mode indicator displayed in the chat header. Shows the
- * active permission mode (default | strict | auto | allow) with color coding
- * + tooltip explaining the mode's behavior.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3
- * Layer 8 — runtime mode switching via `/permission mode ...`.
- *
- * Polls `window.ave.permission.getMode()` on mount + on a custom
- * `ave:permissions:mode-changed` events so user gestures elsewhere
- * (Settings window, slash) reflect immediately.
- *
- * Keep this component visual-only. Mode mutation lives in the slash
- * dispatcher + Settings tab; the badge is read-only.
- */
+/** Visual-only permission mode indicator; mutation stays in settings and slash dispatch. */
 import { Inbox } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -23,11 +7,9 @@ import { useTranslation } from "../../../../i18n/react.js";
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../../shared/permission-mode.js";
 
 export interface PermissionModeBadgeProps {
-  /** Override mode resolution for tests/storybook. */
   mode?: ExecutionModeDisplay;
   /** Override fetcher. Defaults to window.ave.permission.getMode(). */
   fetcher?: () => Promise<{ mode: string }>;
-  /** Override deferred approval fetcher for tests/storybook. */
   deferredFetcher?: () => Promise<{ ok: boolean; pending?: unknown[]; error?: string }>;
   /** Override deferred approval subscription for tests/storybook. */
   deferredSubscriber?: (handler: (summary: { pending: number }) => void) => () => void;
@@ -198,12 +180,8 @@ export function PermissionModeBadge({
   );
 }
 
-/**
- * Default subscription path — wires the preload IPC event plus the legacy
- * local `mode-changed` window event so
- * the badge updates without prop-drilling state through every chat
- * surface that hosts it.
- */
+/** Default subscription path — wires the preload IPC event plus the legacy local `mode-changed` window event so the badge
+ * updates without prop-drilling state through every chat surface that hosts it. */
 function defaultModeSubscriber(handler: (mode: ExecutionModeDisplay) => void): () => void {
   const unsubscribeIpc = window.ave?.permission?.onModeChanged?.((mode) => {
     handler(normalizeExecutionMode(mode));

@@ -1,11 +1,5 @@
-/**
- * Live public-turn ownership for the one mutable conversation runtime.
- *
- * A durable receipt protects admission/replay across restarts. This registry is
- * deliberately process-local: it owns the sole AbortController that can stop a
- * live remote turn, proves exact actor/share ownership, and never attempts to
- * revive a model call after a process restart.
- */
+/** Keep live cancellation process-local and bound to exact actor/share ownership.
+ * Durable receipts survive restart; model calls are never revived. */
 
 type ConversationTurnCancelResult =
   | "cancel-requested"
@@ -17,26 +11,19 @@ export interface ConversationPublicTurnControl {
   readonly turnId: string;
   /** Exact host-minted actor plus share-binding key, never sent over the wire. */
   readonly actorId: string;
-  /** The only cancellation capability for this live turn. */
   readonly abortController: AbortController;
   /** Re-evaluates the backing paired-share binding after a durable change. */
   readonly isCurrent: () => boolean;
 }
 
 interface ConversationTurnRegistration {
-  /** Remove the entry once the accepted turn reaches any terminal outcome. */
   complete(): void;
 }
 
 export interface ConversationTurnRegistry {
-  /**
-   * Register the one currently cancellable public turn. The shared activity
-   * coordinator still owns execution exclusivity; this only adds ownership.
-   */
+  // This registry owns cancellation identity; the activity coordinator owns execution exclusivity.
   register(control: ConversationPublicTurnControl): ConversationTurnRegistration | null;
-  /** Request cancellation only for the caller's currently-live public turn. */
   cancelOwned(actorId: string, turnId: string): ConversationTurnCancelResult;
-  /** Abort the live entry only if a durable paired-share guard became stale. */
   invalidateStale(): void;
   /** Read-only test/lifecycle visibility; it never exposes actor identity. */
   hasActiveTurn(turnId: string): boolean;
@@ -50,7 +37,6 @@ interface ActiveTurn {
   cancelled: boolean;
 }
 
-/** Create the in-memory companion to the durable remote ownership store. */
 export function createConversationTurnRegistry(): ConversationTurnRegistry {
   let active: ActiveTurn | null = null;
 

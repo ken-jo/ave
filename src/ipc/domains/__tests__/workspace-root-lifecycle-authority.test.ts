@@ -1,20 +1,4 @@
-/**
- * ONE workspace-root lifecycle authority — driven from the REAL producer.
- *
- * `ipc/domains/workspace.ts` builds the host's permission-directory lifecycle
- * and publishes it once through `setWorkspaceRootLifecycle`. Every consumer —
- * chat loop, side-chat loop, routine loop, sub-agent child loop, and the
- * plugin-surface executor — resolves it through `getWorkspaceRootLifecycle` at
- * approval time.
- *
- * This suite starts at `registerWorkspaceHandlers` (the producer) and asserts
- * the consumer-visible outcome on a ConversationLoop built the way
- * `SubAgentRunner.buildChildDeps` builds one: a plain deps bag that nobody ever
- * wired the lifecycle into. That surface used to offer the user "allow-always"
- * in the modal and then fail the tool with `workspace lifecycle unavailable`,
- * because the lifecycle was delivered by hand-written per-holder assignments
- * and child loops got none of them.
- */
+// Workspace root changes must reach child loops through the single published lifecycle authority.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,13 +51,9 @@ const workspaceDeps = {
   },
 } as never;
 
-/** A child loop's deps: exactly what `buildChildDeps` spreads — no lifecycle. */
 function makeSubAgentShapedLoop(gate: ApprovalGate, executeSpy: (input: unknown) => Promise<string>) {
   const registry = new ToolRegistry();
-  // A WRITE tool, because the out-of-allowed-dir approval this test drives is
-  // the write boundary: reads are not confined to the authorized directories,
-  // so a read outside them is admitted and never reaches an approval. The
-  // subject here is the grant lifecycle, not which effect triggers it.
+  // Use a write tool to reach directory approval; reads do not share that confinement boundary.
   registry.register(createDynamicTool({
     name: "write_file",
     description: "Writes a file.",
@@ -117,7 +97,6 @@ beforeAll(() => {
   process.env.AVE_HOME = home;
   grantRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-grant-"));
   writeFileSync(join(grantRoot, "notes.md"), "content\n");
-  // THE PRODUCER. Nothing else in this file publishes a lifecycle.
   registerWorkspaceHandlers(workspaceDeps);
 });
 
@@ -164,8 +143,6 @@ describe("workspace-root lifecycle authority", () => {
 
     const results = await callPromise;
 
-    // Consumer-visible: the tool ran, and the durable widening the user
-    // consented to actually landed in the persisted allow-list.
     expect(results[0].content).not.toContain("workspace lifecycle unavailable");
     expect(results[0].is_error).toBeUndefined();
     expect(executeSpy).toHaveBeenCalledTimes(1);

@@ -1,19 +1,8 @@
 import { test, expect } from './fixtures';
 
-/**
- * Custom titlebar E2E tests.
- *
- * On macOS: a drag-only band renders (data-testid="custom-titlebar-darwin"),
- *           no minimize/maximize/close buttons are present.
- * On Win/Linux: the full control bar renders (data-testid="custom-titlebar")
- *               with minimize, maximize, and close buttons.
- *
- * Platform-specific button assertions are skipped in headless CI when the
- * platform cannot be determined from the rendered DOM.
- */
+// macOS uses a drag band and native controls; other platforms render app window controls.
 
 test('CustomTitleBar renders on all platforms', async ({ mainWindow }) => {
-  // At least one of the two titlebar variants must be mounted.
   const darwinBar = mainWindow.locator('[data-testid="custom-titlebar-darwin"]');
   const winBar = mainWindow.locator('[data-testid="custom-titlebar"]');
 
@@ -28,7 +17,6 @@ test('macOS titlebar has no window-control buttons', async ({ mainWindow }) => {
   const isDarwin = (await darwinBar.count()) > 0;
   test.skip(!isDarwin, 'macOS-only assertion — skipping on Win/Linux');
 
-  // No minimize/maximize/close buttons on macOS
   await expect(mainWindow.locator('[data-testid="titlebar-minimize"]')).toHaveCount(0);
   await expect(mainWindow.locator('[data-testid="titlebar-maximize"]')).toHaveCount(0);
   await expect(mainWindow.locator('[data-testid="titlebar-close"]')).toHaveCount(0);

@@ -1,8 +1,4 @@
-/**
- * Permission policy P4 Area B — script-hook manager tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- */
+// (docs/architecture/permission-policy-design.md)
 import { describe, expect, it } from "vitest";
 import { ScriptHookManager, dlpRedactInput } from "../script-hook-manager.js";
 import type { HookDispatchPayload } from "../script-hook-types.js";
@@ -71,19 +67,17 @@ describe("Permission policy P4 ScriptHookManager", () => {
     expect(out.reason).toContain("strict perm policy");
   });
 
-  // #811 hooks-on-mcp-calls — a hook with a matcher runs only for matching tools.
-  it("runs a matcher'd hook only for tools whose name matches the glob", async () => {
+  // Matchers limit hooks to the intended tools.
+  it("runs a matched hook only for tools whose name matches the regex", async () => {
     const m = new ScriptHookManager();
-    m.setTrustedHooks([{ ...hookFixture("pre-deny.sh", "pre"), matcher: "mcp_*" }]);
+    m.setTrustedHooks([{ ...hookFixture("pre-deny.sh", "pre"), matcher: "^mcp_.*$" }]);
 
-    // An MCP tool matches `mcp_*` → the deny hook runs.
     const mcpCall = await m.runPreToolUse(
       { ...basePayload, toolName: "mcp_hr_query", source: "mcp" },
       shellIntegrationOptions,
     );
     expect(mcpCall.decision).toBe("deny");
 
-    // A builtin tool does NOT match → the hook is skipped (no matching hooks).
     const builtinCall = await m.runPreToolUse(
       { ...basePayload, toolName: "fs_write" },
       shellIntegrationOptions,
@@ -92,8 +86,7 @@ describe("Permission policy P4 ScriptHookManager", () => {
     expect(builtinCall.results).toEqual([]);
   });
 
-  // #811 hooks-on-mcp-calls — per-request MCP identity reaches the hook so a
-  // policy can deny by the SPECIFIC server, not just the coarse source.
+  // Per-request origin identity lets hooks restrict a specific server, beyond the coarse source.
   it("propagates mcpServerId so a hook can deny by MCP origin", async () => {
     const m = new ScriptHookManager();
     m.setTrustedHooks([hookFixture("pre-mcp-origin.sh", "pre")]);
@@ -137,8 +130,7 @@ describe("Permission policy P4 dlpRedactInput", () => {
     const nested = { deep: { ssn: "123456-1234567" } };
     const out = dlpRedactInput({ enabled: true, nested });
     expect(out.enabled).toBe(true);
-    // Nested objects intentionally not walked — caller redacts at the
-    // call boundary, never trusts deep recursion.
+    // Nested objects intentionally not walked — caller redacts at the call boundary, never trusts deep recursion.
     expect(out.nested).toBe(nested);
   });
 });

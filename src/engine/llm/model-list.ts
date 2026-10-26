@@ -1,5 +1,6 @@
 import type { SettingsService } from "../../data/settings-store.js";
 import type {
+  LlmModelListCache,
   LlmModelListEntry,
   LlmModelListPricing,
   LlmModelListRequest,
@@ -44,15 +45,77 @@ const MAX_MODEL_ID_LENGTH = 256;
 
 const STANDARD_MODEL_LIST_BASE_URLS: Partial<Record<LLMVendor, string>> = {
   openai: "https://api.openai.com/v1",
+  claude: "https://api.anthropic.com/v1",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
 };
 
+/** A bounded paginated listing remains incomplete when its page cap is reached. */
+const MAX_MODEL_LIST_PAGES = 10;
+const VENDOR_MODEL_LIST_PAGE_SIZE = 1_000;
+
+function modelListAuthHeaders(vendor: LLMVendor, apiKey: string): Record<string, string> {
+  if (!apiKey) return {};
+  if (vendor === "claude") return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+  if (vendor === "gemini") return { "x-goog-api-key": apiKey };
+  return { Authorization: `Bearer ${apiKey}` };
+}
+
+function modelListPageUrl(vendor: LLMVendor, endpoint: string, cursor: string | null): string {
+  if (vendor !== "claude" && vendor !== "gemini") return endpoint;
+  const url = new URL(endpoint);
+  if (vendor === "claude") {
+    url.searchParams.set("limit", String(VENDOR_MODEL_LIST_PAGE_SIZE));
+    if (cursor !== null) url.searchParams.set("after_id", cursor);
+  } else {
+    url.searchParams.set("pageSize", String(VENDOR_MODEL_LIST_PAGE_SIZE));
+    if (cursor !== null) url.searchParams.set("pageToken", cursor);
+  }
+  return url.toString();
+}
+
+/** A continuation without a usable cursor is a malformed listing. */
+function modelListNextCursor(vendor: LLMVendor, payload: unknown): string | null {
+  if (vendor !== "claude" && vendor !== "gemini") return null;
+  const record = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  if (vendor === "claude") {
+    if (record.has_more !== true) return null;
+    if (typeof record.last_id === "string" && record.last_id.trim() !== "") return record.last_id;
+    throw new ModelListError("invalid-model-list-response", "model list says has_more without a last_id");
+  }
+  const token = record.nextPageToken;
+  return typeof token === "string" && token.trim() !== "" ? token : null;
+}
+
+function modelListPageRows(vendor: LLMVendor, payload: unknown): unknown[] {
+  const rows = modelListRows(payload);
+  if (vendor === "claude") {
+    return rows.filter((row) => {
+      const lifecycle = optionalRecord(row)?.lifecycle;
+      return lifecycle !== "retired";
+    });
+  }
+  if (vendor !== "gemini") return rows;
+  const chatRows: unknown[] = [];
+  for (const row of rows) {
+    if (row === null || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    const methods = record.supportedGenerationMethods;
+    if (!Array.isArray(methods) || !methods.includes("generateContent")) continue;
+    if (typeof record.name !== "string") continue;
+    chatRows.push({
+      ...record,
+      id: record.name.replace(/^models\//u, ""),
+      context_length: record.inputTokenLimit,
+      max_output_tokens: record.outputTokenLimit,
+    });
+  }
+  return chatRows;
+}
+
 export type LlmModelListFetchOptions = {
-  /**
-   * The transport the catalogue request runs on. REQUIRED: this module cannot
-   * import Electron (every test that loads the engine would break), so the
-   * caller that owns the main process owes it the stack that reads the
-   * machine's proxy configuration and trust store.
-   */
+  // The caller must supply the host proxy and trust-store transport; this engine module cannot import it.
   fetchImpl: typeof fetch;
   fetchPublicHttpResponseImpl?: typeof fetchPublicHttpResponse;
   timeoutMs?: number;
@@ -76,16 +139,7 @@ type ResolvedModelListBaseUrl = {
   isDraftEndpoint: boolean;
 };
 
-/**
- * The endpoint this route is configured with, as stored.
- *
- * A marketplace preset's address belongs to the preset registry, NOT to the
- * `openai-compatible` vendor block — that block is the generic custom
- * provider's own endpoint, and the two are different rows on the settings
- * page. A scoped request is asking about the preset's address, so answering it
- * from the vendor block would hand back another row's endpoint: the handshake
- * would be classified as a draft and the preset's stored key withheld.
- */
+// Preset endpoints belong to their registry, not the unrelated generic custom-provider block.
 function configuredModelListBaseUrl(
   settingsService: SettingsService,
   vendor: LLMVendor,
@@ -98,15 +152,10 @@ function configuredModelListBaseUrl(
   return vendorModelListBaseUrl(settingsService.get("llm").vendors, vendor);
 }
 
-/** The saved vendor blocks, as far as the model-list address is concerned. */
 type ModelListVendorBlocks = Readonly<Partial<Record<LLMVendor, { readonly baseUrl?: string }>>>;
 
-/**
- * A vendor block's endpoint (stored, else the vendor default), else the standard catalogue address.
- * A stored blank baseUrl still overrides the vendor default, so it falls straight to the standard address.
- */
+// Stored blank baseUrl overrides the vendor default and falls through to the standard catalog address.
 function vendorModelListBaseUrl(vendors: ModelListVendorBlocks | undefined, vendor: LLMVendor): string | null {
-  // getLlmVendorSettings reads only what each block carries; the model it would add is not consulted here.
   const block = getLlmVendorSettings(vendors as LLMVendorSettingsMap | undefined, vendor);
   return block.baseUrl?.trim() || STANDARD_MODEL_LIST_BASE_URLS[vendor] || null;
 }
@@ -119,13 +168,7 @@ function sameModelListEndpoint(a: string, b: string): boolean {
   }
 }
 
-/**
- * Whether `endpoint` is the `/models` endpoint the vendor's route resolves to
- * for these saved blocks — the same resolver the fetch uses: the block's
- * baseUrl, else the vendor default's address, else the standard catalogue
- * address. A stored blank baseUrl overrides the vendor default and skips to
- * the standard address. False when nothing resolves.
- */
+/** Compare against the same saved endpoint resolution used by dispatch, including blank overrides. */
 export function isDefaultModelListEndpoint(
   vendors: ModelListVendorBlocks | undefined,
   vendor: LLMVendor,
@@ -133,6 +176,23 @@ export function isDefaultModelListEndpoint(
 ): boolean {
   const base = vendorModelListBaseUrl(vendors, vendor);
   return base ? sameModelListEndpoint(endpoint, base) : false;
+}
+
+/** Read only cached IDs from a handshake matching the route endpoint. */
+export function cachedLiveModelIds(
+  llm: {
+    readonly vendors?: ModelListVendorBlocks;
+    readonly modelListCache?: LlmModelListCache;
+  },
+  vendor: LLMVendor,
+): string[] {
+  const ids = new Set<string>();
+  for (const entry of Object.values(llm.modelListCache ?? {})) {
+    if (entry.vendor !== vendor) continue;
+    if (!isDefaultModelListEndpoint(llm.vendors, vendor, entry.endpoint)) continue;
+    for (const model of entry.models) ids.add(model);
+  }
+  return [...ids];
 }
 
 function resolveModelListBaseUrl(
@@ -498,21 +558,19 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   const topProvider = optionalRecord(record.top_provider);
   const limits = optionalRecord(record.limits);
   const pricing = pricingFromRecord(record.pricing);
-  const name = optionalString(record.name);
+  const name = optionalString(record.display_name) ?? optionalString(record.displayName) ?? optionalString(record.name);
   const provider = optionalString(record.provider) ?? optionalString(record.publisher);
   const ownedBy = optionalString(record.owned_by);
   const description = optionalString(record.description) ?? optionalString(record.summary);
-  // Catalogues name the prompt ceiling differently: an OpenRouter-shaped row
-  // uses `context_length`, a LiteLLM gateway reports `max_input_tokens`, and
-  // vLLM reports `max_model_len`. All three answer the same question. A row
-  // carrying none of them leaves the window to the next source.
+  // Accept catalog prompt-limit aliases; absent limits defer to the next source.
   const contextLength = optionalNumber(record.context_length)
     ?? optionalNumber(record.contextLength)
     ?? optionalNumber(topProvider?.context_length)
     ?? optionalNumber(limits?.max_input_tokens)
     ?? optionalNumber(record.max_input_tokens)
     ?? optionalNumber(record.max_model_len);
-  const maxOutputTokens = optionalNumber(record.max_output_tokens)
+  const maxOutputTokens = optionalNumber(record.max_tokens)
+    ?? optionalNumber(record.max_output_tokens)
     ?? optionalNumber(limits?.max_output_tokens);
   const inputModalities = optionalStringArray(architecture?.input_modalities)
     ?? optionalStringArray(record.supported_input_modalities);
@@ -537,12 +595,7 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   return entry;
 }
 
-/**
- * Whether a `/models` payload is the endpoint's whole list. A paginated answer
- * says so — Anthropic's `has_more`, `next_page_token` or Google's
- * `nextPageToken` — and a page cannot prove a model gone. Neither can a list
- * the cache would truncate.
- */
+/** Paginated or cache-truncated listings cannot prove a model retired. */
 export function modelListPayloadIsComplete(payload: unknown, modelCount: number): boolean {
   if (modelCount >= MAX_CACHED_LLM_MODEL_IDS) return false;
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return true;
@@ -663,10 +716,7 @@ export async function listLlmModelsFromSettings(
     request.baseUrl,
     request.credentialScope,
   );
-  // The credential-scope refusal comes first. A scope naming a provider that
-  // is not installed, or one that is not the active route, has to say exactly
-  // that: the endpoint for such a scope cannot resolve either, and reporting
-  // "this provider exposes no model list" would name the wrong problem.
+  // Report credential-scope refusal before unresolved endpoint errors so the actual boundary is clear.
   const credentialScopeError = validateModelListCredentialScope(
     settingsService,
     request.vendor,
@@ -698,10 +748,7 @@ export async function listLlmModelsFromSettings(
     resolved,
     request.credentialScope,
   );
-  // A persisted self-hosted provider is a user-owned trust boundary. Private
-  // and credentialed HTTP access never applies to commercial vendors, drafts,
-  // or marketplace presets. Keyless marketplace presets retain loopback-only
-  // discovery through their existing explicit policy.
+  // Private and credentialed HTTP trust applies only to saved self-hosted routes, never drafts or presets.
   const isSavedSelfHostedEndpoint = isSavedSelfHostedModelListEndpoint(
     settingsService,
     request.vendor,
@@ -725,61 +772,71 @@ export async function listLlmModelsFromSettings(
       message: "Credentialed model list endpoints must use https.",
     };
   }
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...modelListAuthHeaders(request.vendor, apiKey),
+  };
 
   let requestEndpoint = endpoint;
   try {
-    // Model-list sync intentionally sends a user/provider-configured LLM URL
-    // to the network. Validate every stored or draft endpoint through the same
-    // DNS-aware SSRF guard before the request wrapper revalidates redirect hops.
+    // DNS-validate configured endpoints; the request wrapper must also guard redirects.
     requestEndpoint = (await (options.ensurePublicUrl ?? ensurePublicHttpUrl)(
       endpoint,
       {
         ...networkAccess,
       },
     )).toString();
-    const response = await (
-      options.fetchPublicHttpResponseImpl ?? fetchPublicHttpResponse
-    )(requestEndpoint, {
-      method: "GET",
-      headers,
-      fetchImpl: options.fetchImpl,
-      maxRedirects: 0,
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      ...networkAccess,
-    });
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: "model-list-fetch-failed",
-        endpoint: requestEndpoint,
-        status: response.status,
-        message: `Model list request failed with HTTP ${response.status}.`,
-      };
-    }
+    const rows: unknown[] = [];
+    let cursor: string | null = null;
+    let lastPayload: unknown;
+    for (let page = 0; page < MAX_MODEL_LIST_PAGES; page += 1) {
+      const pageUrl = modelListPageUrl(request.vendor, requestEndpoint, cursor);
+      const response = await (
+        options.fetchPublicHttpResponseImpl ?? fetchPublicHttpResponse
+      )(pageUrl, {
+        method: "GET",
+        headers,
+        fetchImpl: options.fetchImpl,
+        maxRedirects: 0,
+        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...networkAccess,
+      });
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: "model-list-fetch-failed",
+          endpoint: requestEndpoint,
+          status: response.status,
+          message: `Model list request failed with HTTP ${response.status}.`,
+        };
+      }
 
-    const text = await readResponseTextLimited(
-      response,
-      options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
-    );
-    let payload: unknown;
-    try {
-      payload = JSON.parse(text) as unknown;
-    } catch {
-      throw new ModelListError(
-        "invalid-model-list-response",
-        "model list response must be valid JSON",
+      const text = await readResponseTextLimited(
+        response,
+        options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
       );
+      try {
+        lastPayload = JSON.parse(text) as unknown;
+      } catch {
+        throw new ModelListError(
+          "invalid-model-list-response",
+          "model list response must be valid JSON",
+        );
+      }
+      rows.push(...modelListPageRows(request.vendor, lastPayload));
+      cursor = modelListNextCursor(request.vendor, lastPayload);
+      if (cursor === null || rows.length >= MAX_MODEL_IDS) break;
     }
-    const modelEntries = parseStandardModelListEntries(payload);
+    const modelEntries = parseStandardModelListEntries({ data: rows });
+    // Page or ID caps leave a listing incomplete and cannot prove retirement.
+    const complete = cursor === null && modelListPayloadIsComplete(lastPayload, modelEntries.length);
     return {
       ok: true,
       vendor: request.vendor,
       endpoint: requestEndpoint,
       models: modelEntries.map((entry) => entry.id),
       modelEntries,
-      ...(modelListPayloadIsComplete(payload, modelEntries.length) ? { complete: true as const } : {}),
+      ...(complete ? { complete: true as const } : {}),
       fetchedAt: new Date().toISOString(),
     };
   } catch (err) {
@@ -806,21 +863,11 @@ export async function listLlmModelsFromSettings(
   }
 }
 
-// ─── Host-side catalogue refresh ────────────────────────────────────────────
-
-/**
- * How long a route's `/models` answer is trusted before the host asks again.
- *
- * The answer is a model's declared capacity, which changes when the operator
- * redeploys, not minute to minute. Six hours keeps a long-running session on
- * one probe while still picking up a redeploy the same day.
- */
+// Cache reported capacity for six hours to limit probes while noticing same-day redeploys.
 export const MODEL_LIST_REFRESH_TTL_MS = 6 * 60 * 60 * 1000;
 
-/** Routes this process has already probed, so one miss is one request. */
 const modelListProbeAttempted = new Set<string>();
 
-/** Test seam — the probe set is process-wide and would leak between cases. */
 export function resetModelListProbeStateForTesting(): void {
   modelListProbeAttempted.clear();
 }
@@ -835,36 +882,20 @@ function modelListEntryIsFresh(
   return now - fetchedAt < MODEL_LIST_REFRESH_TTL_MS;
 }
 
-/**
- * Ask the active route's endpoint what it serves, and persist the answer.
- *
- * The catalogue cache used to be written only by the settings page, so a run
- * with no window open — a scheduled routine, a sub-agent, a headless
- * evaluation — could never reach the provider-reported context window and
- * budgeted every one of its turns against the conservative fallback. This is
- * the same request that page makes, issued from the process that owns the
- * transport.
- *
- * Returns whether a fresh answer was stored. Never throws: a route whose
- * endpoint is unreachable simply keeps the window it already had.
- */
+/** Refresh capacity from the active endpoint without requiring a settings window.
+ * Unreachable endpoints retain existing knowledge and never throw from this probe. */
 export async function refreshRouteModelList(params: {
   settingsService: SettingsService;
-  /** The same transport and guard seams the settings page's sync runs on. */
   fetchOptions: LlmModelListFetchOptions;
   address: LlmRouteCatalogAddress;
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
   now?: number;
 }): Promise<boolean> {
   const { settingsService, fetchOptions, address } = params;
-  // This SDK selects its endpoint from project/location. The standard model
-  // list reader would instead resolve an unrelated stored baseUrl.
+  // Project/location selects this endpoint; the standard reader would resolve an unrelated baseUrl.
   if (address.vendor === "vertex-ai") return false;
   const now = params.now ?? Date.now();
-  // A preset that declares a static or manually configured model list is
-  // saying it does not answer /models. Checked before anything is spent:
-  // burning the probe slot for a route that must never be probed would also
-  // hide a later policy change.
+  // Static and manual presets forbid probing; check before consuming the route probe slot.
   if (!modelDiscoveryPolicyAllowsFetch(params.modelDiscoveryPolicy)) return false;
   const key = llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope);
   if (modelListProbeAttempted.has(key)) return false;
@@ -887,10 +918,7 @@ export async function refreshRouteModelList(params: {
     log.info(`model list: ${address.vendor} did not answer (${result.error})`);
     return false;
   }
-  // Re-read: the network round trip above is seconds long, and the settings
-  // page may have synced another route in the meantime. `patch` shallow-merges
-  // one block, so writing the cache this call started with would erase whatever
-  // landed while it was waiting.
+  // Re-read after network I/O so a shallow patch cannot erase concurrent cache updates.
   const cache = settingsService.get("llm").modelListCache ?? {};
   await settingsService.patch({
     llm: {

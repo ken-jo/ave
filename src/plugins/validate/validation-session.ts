@@ -1,16 +1,4 @@
-/**
- * The validation-only entry to the plugin protocol
- * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- * It opens the production protocol session over a link the CALLER owns — the
- * validator's own child, or a pair of in-memory streams in a conformance
- * suite — against the validation host, with the base envelope as its
- * authority. It spawns nothing and confines nothing: the production factory is
- * the only place a confined child is spawned, and this is the only other
- * caller of `openPluginProtocolSession` among production modules. Nothing the
- * runtime, the boot sequence or the main process loads imports this directory
- * (`validate-boundary.test.ts`).
- */
+/** Validation-only session binds real dispatch to scripted host answers and remains unreachable from app runtime. */
 import type { PluginManifest, PluginRuntimeContext } from "../types.js";
 import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
 import type { ChildLink } from "../isolation/plugin-child-transport.js";
@@ -29,30 +17,20 @@ import { validationConfinement, type ValidationHost } from "./validation-host.js
 export interface ValidationSessionInput {
   readonly manifest: PluginManifest;
   readonly host: ValidationHost;
-  /** The child, on a link the caller spawned or paired and still owns. */
   readonly link: ChildLink;
-  /** The resolved, real entry path of the plugin the child imports. */
   readonly entryPath: string;
   readonly pluginRoot: string;
   readonly pluginDataDir: string;
-  /** Tears the session down at any point, construct included. */
+  /** Abort must tear down even during construct. */
   readonly signal?: AbortSignal;
 }
 
-/**
- * The whole protocol session — channel and `teardown` included — plus the
- * envelope its table was bound to, so a report can say what was enforced.
- */
+/** Return the enforced envelope beside the session so reports can state its actual authority. */
 export interface ValidationSession extends PluginProtocolSession {
   readonly confinement: DelegatedWorkerConfinement;
 }
 
-/**
- * The context a validated plugin is constructed with: its own two roots, the
- * validation host's fixed roots, and the config the host resolves for the
- * keys its manifest declares — read from the same host the later snapshots
- * are read from, so construction and re-push agree.
- */
+/** Construction and later pushes read the same validation host snapshots. */
 function validationRuntimeContext(
   manifest: PluginManifest,
   host: ValidationHost,
@@ -73,18 +51,13 @@ function validationRuntimeContext(
     userHome: host.roots.userHome,
     aveHome: host.roots.aveHome,
     config,
-    // The out-of-process session never calls the context's logger: the
-    // child's own log lines cross as notifications and reach the transport.
+    // Child logs cross notifications; the session does not invoke the context logger.
     log: () => undefined,
     hostApi: host.api,
   };
 }
 
-/**
- * Open a validation session: refuse an undeclared or unserved protocol before
- * any frame is written, bind the real dispatch table to the validation host
- * under the base envelope, and construct the plugin over the caller's link.
- */
+/** Refuse unsupported protocol before traffic, then bind only the validation host and base envelope. */
 export async function openValidationSession(
   input: ValidationSessionInput,
 ): Promise<ValidationSession> {
@@ -102,9 +75,7 @@ export async function openValidationSession(
     context: validationRuntimeContext(input.manifest, input.host, input.pluginRoot, input.pluginDataDir),
     entryPath: input.entryPath,
     table,
-    // The caller owns the link and whatever process is behind it, and the
-    // validation host registers nothing per child, so there is nothing of the
-    // session's own to clean up.
+    // The caller owns link/process cleanup; validation adds no per-child registrations.
     onClosed: async () => undefined,
     ...(input.signal ? { signal: input.signal } : {}),
   });

@@ -1,15 +1,6 @@
 // @vitest-environment jsdom
-/**
- * The 추천 작업 band on the Work Board.
- *
- * What matters here is what the START button actually does. The plugin hands
- * over text and a key and nothing executable, so starting a proposal is two
- * host actions in order: promote it into an ordinary work item through the
- * ordinary create path, then hand THAT item id to the host's own
- * `runWorkBoardItem` (plan → approve → execute). Nothing the plugin supplied is
- * passed to the run, and the run is stubbed here because the point under test
- * is the wiring, not the engine.
- */
+/** Proposal Start creates an ordinary work item, then runs its id through the host's plan/approve/execute flow; plugin text
+ * is never executable. */
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -87,8 +78,7 @@ describe("Work Board — recommended-work cards", () => {
     await screen.findByTestId("work-board-proposal-card");
     expect(screen.getByTestId("work-board-proposal-title").textContent).toBe(PROPOSAL.title);
     expect(screen.getByTestId("work-board-proposal-summary").textContent).toBe(PROPOSAL.summary);
-    // The source is always named: a card inside the host's own board would
-    // otherwise read as the host's own recommendation.
+    // The source is always named: a card inside the host's own board would otherwise read as the host's own recommendation.
     expect(screen.getByTestId("work-board-proposal-source").textContent).toContain("Indexer");
     expect(screen.getByTestId("work-board-proposal-start")).toBeTruthy();
     // The detail is collapsed until asked for.
@@ -120,8 +110,7 @@ describe("Work Board — recommended-work cards", () => {
 
     await waitFor(() => expect(run).toHaveBeenCalled());
     expect(accept).toHaveBeenCalledWith(PROPOSAL.id, undefined);
-    // The run is addressed by the ITEM id the host just created — the only
-    // thing that crosses is a number the host allocated.
+    // The run is addressed by the ITEM id the host just created — the only thing that crosses is a number the host allocated.
     expect(run.mock.calls[0]).toEqual([7]);
   });
 

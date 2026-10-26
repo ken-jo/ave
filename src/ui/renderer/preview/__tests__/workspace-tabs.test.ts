@@ -189,7 +189,7 @@ describe("useWorkspaceTabs", () => {
   it("closeTab removes the tab and falls back to the previous tab when closing the active one", () => {
     const { result } = renderHook(() => useWorkspaceTabs());
     act(() => result.current.addTab("browser"));
-    act(() => result.current.addTab("terminal")); // active
+    act(() => result.current.addTab("terminal"));
     const firstId = result.current.tabs[0]!.id;
     const activeId = result.current.activeTabId!;
     act(() => result.current.closeTab(activeId));
@@ -201,7 +201,7 @@ describe("useWorkspaceTabs", () => {
   it("closeContainerTab closes the launcher tab of that kind and leaves content tabs alone", () => {
     const { result } = renderHook(() => useWorkspaceTabs());
     act(() => result.current.addTab("terminal"));
-    act(() => result.current.ensureContainerTab("subagent")); // active
+    act(() => result.current.ensureContainerTab("subagent"));
     act(() => result.current.closeContainerTab("subagent"));
     expect(result.current.tabs.map((tab) => tab.kind)).toEqual(["terminal"]);
     expect(result.current.activeTabId).toBe(result.current.tabs[0]!.id);
@@ -408,8 +408,8 @@ describe("useWorkspaceTabs", () => {
 
     it("does not leak session A preview-content tabs into session B, while browser + container tabs persist", () => {
       const { result } = renderHook(() => useWorkspaceTabs());
-      // Session A workspace: a preview-content tab (session-scoped target id), a
-      // browser-content tab (self-contained url), and a launcher container tab.
+      // Session A workspace: a preview-content tab (session-scoped target id), a browser-content tab (self-contained url), and a
+      // launcher container tab.
       act(() => result.current.openPinned({ source: "preview", targetId: "search-hit:tA:/a.md:" }));
       act(() => result.current.openPinned({ source: "browser", url: "https://kept.example/" }));
       act(() => result.current.addTab("terminal"));

@@ -19,7 +19,7 @@ function mainWindow(windowId: number): BrowserWindow | undefined {
   return getMainWindows().find((window) => window.id === windowId && !window.isDestroyed());
 }
 
-/** Created only when the browser workspace is first used. */
+// Created only when the browser workspace is first used.
 export function getBrowserWorkspaceService(): BrowserWorkspaceService {
   return service ??= createBrowserWorkspaceService({
     liveTab: (windowId, rendererTabId) => {
@@ -53,7 +53,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
   });
 }
 
-/** Main-owned identity for permission and download callbacks, never a renderer claim. */
+// Main-owned identity for permission and download callbacks, never a renderer claim.
 export function browserWorkspaceGuestWindowId(contents: WebContents | null): number | null {
   if (!contents || contents.isDestroyed() || contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) return null;
   const entry = guests.get(contents.id);
@@ -94,7 +94,7 @@ export function observeBrowserWorkspaceGuest(contents: WebContents, owner: Brows
   contents.once("destroyed", dispose);
 }
 
-/** Called only after the existing native Save/rate policy admits the download. */
+// Called only after the existing native Save/rate policy admits the download.
 export function observeBrowserWorkspaceDownload(contents: WebContents, item: DownloadItem): void {
   const windowId = browserWorkspaceGuestWindowId(contents);
   if (windowId !== null) getBrowserWorkspaceService().observeDownload(windowId, item);
@@ -140,7 +140,7 @@ function nativeTitle(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "").slice(0, 160);
 }
 
-/** Refreshes trusted native titles after the registry publishes its revisioned state. */
+// Refreshes trusted native titles after the registry publishes its revisioned state.
 export function refreshBrowserPopupControl(windowId: number, state: BrowserTabControlState): void {
   for (const [handle, popup] of popups) {
     if (popup.owner.id !== windowId || popup.window.isDestroyed()) continue;
@@ -150,7 +150,7 @@ export function refreshBrowserPopupControl(windowId: number, state: BrowserTabCo
   }
 }
 
-/** The caller must first verify the native child's session and owning main window. */
+// The caller must first verify the native child's session and owning main window.
 export function registerBrowserWorkspacePopup(openerGuestId: number, child: BrowserWindow, owner: BrowserWindow): string | null {
   if (child.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner) return null;
   const contents = child.webContents;
@@ -198,7 +198,7 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
   return handle;
 }
 
-/** Shutdown owns disposal; no renderer event can invoke it. */
+// Shutdown owns disposal; no renderer event can invoke it.
 export function disposeBrowserWorkspaceService(): void {
   for (const window of [...windows.values()]) window.dispose();
   for (const popup of [...popups.values()]) popup.dispose();

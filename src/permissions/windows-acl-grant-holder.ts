@@ -1,22 +1,4 @@
-/**
- * The Windows filesystem grant a confined plugin process holds for its
- * lifetime: a plugin child's own directories, or a delegated worker's.
- *
- * ASRT 0.0.76's `srt-win exec` takes per-execution denies only, so a confined
- * process reaches a path through an explicit ACL grant to the one
- * `srt-sandbox` account, refcounted by a HOLDER process id
- * ({@link grantWindowsWorkerFilesystemAccess}). The holder here is a
- * dedicated System32 `more.com` the host starts and owns: the grant lives
- * exactly as long as the host keeps it, and its ACEs are revoked when the
- * host releases it — or, if the host dies, by srt-win's crash recovery on the
- * next ACL operation, which prunes the grants of a dead holder.
- *
- * WHAT THIS DOES NOT GIVE: isolation between plugins. Every confined process
- * runs as that one account, so while plugin A's grant is held, plugin B's
- * processes can reach A's directories too (owner decision 2026-10-10,
- * `plugin-hostapi-protocol.md` §9.8 A2, decision 64). It gives each plugin its
- * own directories, and nothing beyond what its caller names.
- */
+// A host-owned holder PID keeps explicit filesystem grants alive; release revokes them and crash recovery prunes dead holders. All confined processes share one account, so concurrent plugins can reach each other's held grants: this provides no inter-plugin isolation (docs/design/plugin-hostapi-protocol.md).
 import { spawn, type ChildProcess } from "node:child_process";
 
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
@@ -50,7 +32,7 @@ function windowsHolderEnv(): NodeJS.ProcessEnv {
   };
 }
 
-/** Terminate a child unless it already exited, clearing the force timer on exit. */
+// Terminate a child unless it already exited, clearing the force timer on exit.
 export function terminateChildBestEffort(child: ChildProcess): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
   try {
@@ -63,11 +45,7 @@ export function terminateChildBestEffort(child: ChildProcess): void {
   }
 }
 
-/**
- * Start the holder process a grant is refcounted against: a pinned System32
- * binary, never resolved through `PATH`, that does nothing but stay alive
- * until its stdin is closed or it is terminated.
- */
+// Start the holder process a grant is refcounted against: a pinned System32 binary, never resolved through `PATH`, that does nothing but stay alive until its stdin is closed or it is terminated.
 export function startWindowsAclGrantHolder(label: string): ChildProcess {
   const system32 = windowsSystem32Path();
   assertManagedChildProcessAdmissionOpen(label);
@@ -80,8 +58,7 @@ export function startWindowsAclGrantHolder(label: string): ChildProcess {
   });
   if (child.pid === undefined) {
     child.once("error", () => {
-      // The synchronous throw below is the fail-closed signal for this path.
-      // Keep the later async spawn error from becoming an unhandled event.
+      // The synchronous throw below is the fail-closed signal for this path. Keep the later async spawn error from becoming an unhandled event.
     });
     try {
       child.kill("SIGTERM");
@@ -103,25 +80,17 @@ export function stopWindowsAclGrantHolder(child: ChildProcess): void {
   terminateChildBestEffort(child);
 }
 
-/** A held grant: revoke it with {@link HeldWindowsGrant.release}, exactly once or more. */
+// A held grant: revoke it with HeldWindowsGrant.release, exactly once or more.
 export interface HeldWindowsGrant {
-  /** Throws the reason the holder is gone if it died before release. */
+  // Throws the reason the holder is gone if it died before release.
   assertAlive(): void;
-  /**
-   * Called once if the holder exits or errors before {@link release} — the
-   * grant is then no longer guaranteed, and the process it served must stop.
-   */
+  // Called once if the holder exits or errors before release — the grant is then no longer guaranteed, and the process it served must stop.
   onLost(listener: (reason: Error) => void): void;
-  /** Revoke the grant and stop the holder. Idempotent; never throws. */
+  // Revoke the grant and stop the holder. Idempotent; never throws.
   release(): void;
 }
 
-/**
- * Start a holder and grant it `allowRead` (read and execute) and `allowWrite`
- * (modify) for the `srt-sandbox` account. Every path must already exist: ASRT
- * drops a grant on a missing path rather than refusing it. On any failure the
- * holder is stopped and whatever was granted is revoked before the throw.
- */
+// Start a holder and grant it `allowRead` (read and execute) and `allowWrite` (modify) for the `srt-sandbox` account. Every path must already exist: ASRT drops a grant on a missing path rather than refusing it. On any failure the holder is stopped and whatever was granted is revoked before the throw.
 export async function holdWindowsFilesystemGrant(opts: {
   readonly label: string;
   readonly allowRead: readonly string[];

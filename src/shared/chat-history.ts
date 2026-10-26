@@ -8,7 +8,7 @@ import {
 } from "./tool-name-aliases.js";
 import type { ToolCategory, ToolSource } from "./permission-review-status.js";
 
-export type SerializedHistoryToolCall = {
+type SerializedHistoryToolCall = {
   id: string;
   name: string;
   input?: Record<string, unknown>;
@@ -18,41 +18,25 @@ export type SerializedHistoryToolCall = {
   mcpServerId?: string;
 };
 
-/**
- * Turn-aggregate stats carried on the turn-final assistant message. Mirrors
- * `MessageMeta.turnSummary` 1:1 so the renderer can reconstruct a
- * `kind: "turn_summary"` ChatEntry from persisted state without re-running
- * the conversation loop.
- */
-export type SerializedTurnSummary = NonNullable<MessageMeta["turnSummary"]>;
+/** Persist turn-final aggregates so renderer reload can reconstruct summaries without rerunning the loop. */
+type SerializedTurnSummary = NonNullable<MessageMeta["turnSummary"]>;
 
 /** Checkpoint metrics carried on the compactBoundary user message. */
-export type SerializedCheckpointMeta = NonNullable<MessageMeta["checkpointMeta"]>;
+type SerializedCheckpointMeta = NonNullable<MessageMeta["checkpointMeta"]>;
 /** Sub-agent report provenance carried on an injected child-delivery message. */
 type SerializedSubAgentReportMeta = NonNullable<MessageMeta["subAgentReport"]>;
-export type SerializedImportedTriggerMeta = NonNullable<MessageMeta["importedTrigger"]>;
-export type SerializedToolDisplayMeta = {
+type SerializedImportedTriggerMeta = NonNullable<MessageMeta["importedTrigger"]>;
+type SerializedToolDisplayMeta = {
   durationMs?: number;
-  /**
-   * The user stopped the turn while this call was running. Replayed so a
-   * reloaded transcript draws the halt the same way the live one did, instead
-   * of degrading it back to a failure.
-   */
+  /** Replay cancellation distinctly from failure so stopped calls keep their halt badge. */
   cancelled?: boolean;
 };
-/** Permission review verdict replayed onto the tool row on session reload. */
 type SerializedPermissionReviewMeta = NonNullable<MessageMeta["permissionReview"]>;
 
-// Exact IPC payload emitted by serializeHistoryMessage() for renderer history
-// replay: multimodal content is flattened at the boundary, while persisted
-// assistant/tool structure remains available for turn/work reconstruction.
+// Flatten multimodal display text at IPC while preserving assistant/tool structure for reconstruction.
 export type SerializedHistoryMessage = {
   index: number;
-  /**
-   * Durable row identity (see MessageMeta.messageId). The renderer carries this
-   * onto the entry it builds and sends it back when addressing the row, so a
-   * later compaction cannot make a stale position point at the wrong message.
-   */
+  /** Use durable row ids so compaction cannot retarget stale positional actions. */
   messageId?: string;
   role: "user" | "assistant" | "tool_result";
   content: string;
@@ -67,7 +51,6 @@ export type SerializedHistoryMessage = {
   displayText?: string;
   /** Proactive/plugin imported-trigger provenance for card replay. */
   importedTrigger?: SerializedImportedTriggerMeta;
-  /** Tool result display metadata for live/reload parity. */
   toolDisplay?: SerializedToolDisplayMeta;
   /** Permission review verdict for this tool call — tool_result rows only. */
   permissionReview?: SerializedPermissionReviewMeta;
@@ -77,8 +60,7 @@ export type SerializedHistoryMessage = {
   checkpointMeta?: SerializedCheckpointMeta;
   /** Sub-agent report provenance — only on injected child-delivery messages. */
   subAgentReport?: SerializedSubAgentReportMeta;
-  /** Issue #911 system-notice marker — assistant entries that are host
-   *  notifications, rendered with destructive styling in the UI. */
+  /** Host notification assistant rows render with destructive styling. */
   systemNotice?: NonNullable<MessageMeta["systemNotice"]>;
   /** User aborted the turn mid-stream; rendered as a badge, never as prose. */
   interrupted?: boolean;
@@ -95,10 +77,7 @@ export function serializeHistoryMessage(
       ? userContentText(m.content)
       : m.role === "tool_result"
         ? normalizeProviderToolAliasText(
-            // Renderer history payload only — the machine channel keeps the raw
-            // tool result. Masking here is the same tool-output display surface
-            // `privacy.piiRedactEnabled` governs at execution time, so a reload
-            // must not re-mask what the live turn left intact.
+            // Mask renderer history under the same live privacy setting; retain raw results on the machine channel.
             maskSensitiveData(m.content, { pii: isPiiRedactionEnabled() }).masked,
           )
         : normalizeProviderToolAliasText(m.content);
@@ -129,9 +108,7 @@ export function serializeHistoryMessage(
   const base = {
     index,
     role: m.role,
-    // Renderer history replay operates on visible text. Multimodal user
-    // content is flattened to the same placeholders used by export/search,
-    // while assistant/tool structural fields below are passed through intact.
+    // Use export/search placeholders for user multimodal content while retaining assistant/tool structure.
     content,
     ...metaFields,
   };
@@ -173,11 +150,7 @@ function serializeImportedTrigger(
   importedTrigger: MessageMeta["importedTrigger"] | undefined,
 ): SerializedImportedTriggerMeta | undefined {
   if (!importedTrigger) return undefined;
-  // Any REGISTERED staged origin is persisted, not just overlay triggers: the
-  // provenance row is what makes a reloaded transcript still show that the
-  // turn came from a plugin / app / MCP server rather than the keyboard.
-  // An unregistered tag is still dropped, so a hand-edited JSONL cannot
-  // invent provenance.
+  // Persist only registered staged-origin tags so writable transcripts cannot invent provenance.
   if (!isStagedTurnSource(importedTrigger.source)) return undefined;
   if (
     typeof importedTrigger.sessionId !== "string" ||
@@ -204,19 +177,14 @@ function serializeToolDisplay(
   toolDisplay: MessageMeta["toolDisplay"] | undefined,
 ): SerializedToolDisplayMeta | undefined {
   if (!toolDisplay) return undefined;
-  // Persisted JSONL is user-writable. Replaying uiPayload would mount MCP UI
-  // resources and cross back into host IPC without proof that this row came from
-  // an actual tool execution, so persisted replay keeps only inert timing data.
+  // Replay inert metadata only; writable transcripts must not mount UI resources or trigger IPC.
   const durationMs =
     typeof toolDisplay.durationMs === "number" &&
     Number.isFinite(toolDisplay.durationMs) &&
     toolDisplay.durationMs >= 0
       ? toolDisplay.durationMs
       : undefined;
-  // `cancelled` is inert in the same sense `durationMs` is — it selects a badge
-  // and nothing else, mounts nothing, and crosses back into no IPC — so it is
-  // safe to replay from a user-writable transcript. Without it a reload turns
-  // every stopped call back into a failure.
+  // Cancellation selects only a badge, so it is safe to replay from writable transcripts.
   const cancelled = toolDisplay.cancelled === true ? true : undefined;
   if (durationMs !== undefined || cancelled !== undefined) {
     return {
@@ -231,17 +199,7 @@ function serializePermissionReview(
   permissionReview: MessageMeta["permissionReview"] | undefined,
 ): SerializedPermissionReviewMeta | undefined {
   if (!permissionReview) return undefined;
-  // Persisted JSONL is user-writable, so replay accepts only the outcomes the
-  // permission chain can actually produce. The two parent-agent outcomes are
-  // among them: a call the parent decided is one the user never saw a dock for,
-  // so dropping it on reload would erase the only record that anyone other than
-  // the user answered it.
-  //
-  // Accepting them grants a label and nothing else — no consumer of this status
-  // branches on it outside rendering. The transcript is a record of what the
-  // user was shown, never the audit trail: who answered a call is settled by
-  // the `[approval:parent-adjudicated] answeredBy=…` rows in `~/.ave/audit.log`,
-  // which this file cannot write.
+  // Replay only valid permission outcomes, including parent decisions; labels grant no authority or audit provenance.
   if (
     permissionReview.status !== "reviewing" &&
     permissionReview.status !== "needs_approval" &&

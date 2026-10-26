@@ -1,44 +1,15 @@
-/**
- * Wire types between a main window's renderer and the main-process registry
- * of the browser tabs (guest `<webview>`s) and workspace surfaces it hosts.
- *
- * Main is authoritative for what agent tools may touch; the renderer mirrors
- * it. Tab ids are opaque strings the renderer mints and keeps unique within
- * its window; where a tab is mounted (side panel, main area) is the
- * renderer's business and never part of this contract.
- *
- * Channels (CHANNELS.browser / CHANNELS.surface in contract/app-contract.ts):
- *   bindTab      invoke  renderer→main  {@link BrowserTabBindRequest} → {@link BrowserTabBindResult}
- *   stop         invoke  renderer→main  {@link BrowserTabStopRequest} (stop or user navigation)
- *   tabOp        event   main→renderer  {@link BrowserTabOpRequest}
- *   control      event   main→renderer  {@link BrowserTabControlState}
- *   setActive    invoke  renderer→main  {@link ActiveWorkspaceSurface} | null
- */
+/** Main owns tab authority; renderer-issued ids are unique per window and omit UI placement. */
+import { hasOnlyKeys, isRecord } from "./is-record.js";
 
-/** The workspace surfaces a window can show and agent tools can default to. */
 type WorkspaceSurfaceKind = "browser" | "terminal";
 
-/**
- * The surface the user is looking at in one window — a HINT, not an
- * authority. A tool that is not told which tab to use defaults to the active
- * tab of its kind; an explicit tab id always wins, and every listing still
- * shows all tabs. `null` clears it.
- */
+/** Active surface is a default-selection hint, never authority; explicit tab ids win. */
 export interface ActiveWorkspaceSurface {
   readonly kind: WorkspaceSurfaceKind;
   readonly tabId: string;
 }
 
-/**
- * Bind a browser tab to the guest `<webview>` that renders it. Sent after the
- * webview attaches (its `getWebContentsId()`), and again whenever the tab is
- * remounted with a new guest. Main accepts only a live guest of the side
- * browser's partition hosted by the sender's own window.
- *
- * `requestId` is set when the tab was created in answer to a
- * {@link BrowserTabOpRequest} `new` — that is how main knows the agent
- * opened it. A renderer never claims agent provenance otherwise.
- */
+/** Accept only live guests in the expected partition and sender window; requestId proves agent-created tab provenance. */
 export interface BrowserTabBindRequest {
   readonly tabId: string;
   readonly webContentsId: number;
@@ -57,11 +28,7 @@ export interface BrowserTabStopRequest {
   readonly tabId: string;
 }
 
-/**
- * Main asks the window's renderer to change its tab UI. Main resolves the
- * agent's request when it observes the result: a bind carrying `requestId`
- * (new), the guest going away (close), or the tab bound and active (select).
- */
+/** Complete operations from observed bind, activation, or destruction rather than renderer claims. */
 export type BrowserTabOpRequest =
   /**
    * `sessionId` names the conversation the tab is opened for (a sub-agent's
@@ -72,14 +39,9 @@ export type BrowserTabOpRequest =
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
   /** Focus this existing renderer slot without selecting or moving another surface. */
   | { readonly requestId: string; readonly op: "focus"; readonly tabId: string }
-  /**
-   * The agent's action in `tabId` is done: give keyboard focus back to what
-   * held it in the window before the action took it. Not awaited by main;
-   * main sees it land as the page losing focus.
-   */
+  /** Restore the window’s prior keyboard focus after tool actions without awaiting a renderer acknowledgement. */
   | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string };
 
-/** Validate a main→renderer {@link BrowserTabOpRequest}; null when malformed. */
 export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | null {
   if (!isRecord(value)) return null;
   const record = value as { requestId?: unknown; op?: unknown; url?: unknown; active?: unknown; tabId?: unknown };
@@ -113,6 +75,42 @@ export interface BrowserSessionActor {
   readonly directParentSessionId?: string;
 }
 
+/** Durable tab facts. Creator identity and a pane's own chat are distinct roles. */
+export interface SessionTabBindingMetadata {
+  readonly owner?: BrowserSessionActor;
+  readonly paneSessionId?: string;
+}
+
+interface SessionTabBinding {
+  readonly sessionId: string;
+  /** Renderer slot ids. A direct child's tab also appears under its existing parent identity. */
+  readonly browserTabIds: readonly string[];
+  readonly terminalTabIds: readonly string[];
+}
+
+/** Window-scoped full snapshot; subscribe before querying and compare revisions. */
+export interface SessionTabBindingsState {
+  readonly revision: number;
+  readonly bindings: readonly SessionTabBinding[];
+}
+
+export function parseSessionTabBindingsState(value: unknown): SessionTabBindingsState | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["revision", "bindings"])
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !Array.isArray(value.bindings)) return null;
+  const sessions = new Set<string>();
+  const bindings: SessionTabBinding[] = [];
+  for (const item of value.bindings) {
+    if (!isRecord(item) || !hasOnlyKeys(item, ["sessionId", "browserTabIds", "terminalTabIds"])
+      || typeof item.sessionId !== "string" || item.sessionId.length === 0 || sessions.has(item.sessionId)) return null;
+    const ids = (value: unknown): value is string[] => Array.isArray(value)
+      && value.every((id) => typeof id === "string" && id.length > 0) && new Set(value).size === value.length;
+    if (!ids(item.browserTabIds) || !ids(item.terminalTabIds)) return null;
+    sessions.add(item.sessionId);
+    bindings.push({ sessionId: item.sessionId, browserTabIds: [...item.browserTabIds], terminalTabIds: [...item.terminalTabIds] });
+  }
+  return { revision: value.revision as number, bindings };
+}
+
 export interface BrowserControlLease {
   readonly id: string;
   readonly actor: BrowserSessionActor;
@@ -121,14 +119,11 @@ export interface BrowserControlLease {
 }
 
 export interface BrowserTabControlView {
-  /** Main-issued tool handle. */
   readonly tabId: string;
   /** Embedded chrome slot id; native popup windows have no renderer slot. */
   readonly rendererTabId: string | null;
   readonly url: string;
   readonly title: string;
-  /** Bounded raster metadata; remote image addresses never reach host image elements. */
-  readonly faviconDataUrl: string | null;
   readonly mode: BrowserControlMode;
   /** Durable creator, preserved across pause and release; null for a user resource. */
   readonly owner: BrowserSessionActor | null;
@@ -139,33 +134,7 @@ export interface BrowserTabControlView {
   readonly openerTabId: string | null;
 }
 
-export const BROWSER_FAVICON_LIMITS = Object.freeze({
-  dataUrlBytes: 16 * 1024,
-  dimension: 32,
-  sourceBytes: 128 * 1024,
-  concurrentLoads: 4,
-});
-
-/** Only small PNG rasters can be displayed in the privileged host document. */
-export function isBrowserFaviconDataUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > BROWSER_FAVICON_LIMITS.dataUrlBytes
-    || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
-  try {
-    const bytes = atob(value.slice("data:image/png;base64,".length));
-    if (bytes.length < 33 || bytes.slice(0, 8) !== "\x89PNG\r\n\x1a\n"
-      || bytes.slice(8, 16) !== "\x00\x00\x00\rIHDR") return false;
-    const dimensionAt = (offset: number) => new DataView(Uint8Array.from(bytes.slice(offset, offset + 4), (char) => char.charCodeAt(0)).buffer).getUint32(0);
-    const width = dimensionAt(16);
-    const height = dimensionAt(20);
-    return width > 0 && height > 0 && width <= BROWSER_FAVICON_LIMITS.dimension && height <= BROWSER_FAVICON_LIMITS.dimension;
-  } catch { return false; }
-}
-
-/**
- * Full authoritative snapshot scoped to the caller's main window. Revision
- * increases on each published change for that window's lifetime. Subscribe
- * before fetching and discard snapshots older than the latest received one.
- */
+/** Subscribe before fetching state and discard stale revisions; snapshots are authoritative only within their window. */
 export interface BrowserTabControlState {
   readonly revision: number;
   readonly tabs: readonly BrowserTabControlView[];
@@ -175,6 +144,8 @@ export interface BrowserTabControlState {
 export interface BrowserTabsApi {
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
   getState(): Promise<BrowserTabControlState>;
+  getSessionBindings(): Promise<SessionTabBindingsState>;
+  onSessionBindingsChanged(handler: (state: SessionTabBindingsState) => void): () => void;
   /** Embedded chrome operations take renderer slot ids, never tool handles. Stop also clears origin provenance. */
   stop(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
   pause(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
@@ -188,15 +159,7 @@ export interface BrowserTabsApi {
   onControl(handler: (state: BrowserTabControlState) => void): () => void;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
-}
-
-function parseActor(value: unknown): BrowserSessionActor | null {
+export function parseBrowserSessionActor(value: unknown): BrowserSessionActor | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ["sessionId", "directParentSessionId"])) return null;
   if (typeof value.sessionId !== "string" || value.sessionId.length === 0) return null;
   if (value.directParentSessionId !== undefined
@@ -213,10 +176,9 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
   const handles = new Set<string>();
   const rendererIds = new Set<string>();
   for (const item of value.tabs) {
-    if (!isRecord(item) || !hasOnlyKeys(item, ["tabId", "rendererTabId", "url", "title", "faviconDataUrl", "mode", "owner", "lease", "generation", "kind", "openerTabId"])) return null;
+    if (!isRecord(item) || !hasOnlyKeys(item, ["tabId", "rendererTabId", "url", "title", "mode", "owner", "lease", "generation", "kind", "openerTabId"])) return null;
     if (typeof item.tabId !== "string" || item.tabId.length === 0 || handles.has(item.tabId)
       || typeof item.url !== "string" || typeof item.title !== "string"
-      || (item.faviconDataUrl !== null && !isBrowserFaviconDataUrl(item.faviconDataUrl))
       || !Number.isSafeInteger(item.generation) || (item.generation as number) < 0
       || (item.mode !== "human" && item.mode !== "agent-active" && item.mode !== "human-paused")
       || (item.kind !== "embedded" && item.kind !== "popup")
@@ -226,14 +188,14 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
         || item.openerTabId !== null) return null;
       rendererIds.add(item.rendererTabId);
     } else if (item.rendererTabId !== null || item.openerTabId === null || item.openerTabId === item.tabId) return null;
-    const owner = item.owner === null ? null : parseActor(item.owner);
+    const owner = item.owner === null ? null : parseBrowserSessionActor(item.owner);
     if (item.owner !== null && owner === null) return null;
     let lease: BrowserControlLease | null = null;
     if (item.lease !== null) {
       if (!isRecord(item.lease) || !hasOnlyKeys(item.lease, ["id", "actor", "lifetime"])
         || typeof item.lease.id !== "string" || item.lease.id.length === 0
         || (item.lease.lifetime !== "owned" && item.lease.lifetime !== "borrowed")) return null;
-      const actor = parseActor(item.lease.actor);
+      const actor = parseBrowserSessionActor(item.lease.actor);
       if (actor === null || (item.lease.lifetime === "owned") !== (owner !== null)
         || item.mode === "human"
         || (owner !== null && owner.sessionId !== actor.sessionId
@@ -243,7 +205,6 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
     handles.add(item.tabId);
     tabs.push({
       tabId: item.tabId, rendererTabId: item.rendererTabId as string | null, url: item.url, title: item.title,
-      faviconDataUrl: item.faviconDataUrl as string | null,
       mode: item.mode, owner, lease, generation: item.generation as number, kind: item.kind,
       openerTabId: item.openerTabId as string | null,
     });

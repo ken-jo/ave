@@ -38,7 +38,6 @@ const syntheticMetafile = {
   },
 };
 
-/** The outputs an entry loads before any dynamic import resolves, keyed by absolute path. */
 function staticallyLoadedOutputs(
   result: { metafile: Metafile; outputFiles: OutputFile[] },
   entryPoint: string,
@@ -85,8 +84,7 @@ describe("main bundle budget", () => {
     const eagerInputs = [...initial].flatMap((path) => Object.entries(outputs.get(path)!.inputs)
       .filter(([, value]) => value.bytesInOutput > 0)
       .map(([input]) => input.replaceAll("\\", "/")));
-    // Turn-time code the startup budget does not pay for: the loop itself and
-    // the model-capability, reasoning and stream helpers only it reaches.
+    // Turn-time work is excluded from startup.
     const deferredInputs = [
       "engine/turn/query-loop.ts", "engine/turn/stream-collector.ts", "engine/turn/round-llm-settings.ts",
       "engine/llm/vendor-capabilities.ts", "engine/llm/reasoning-plan.ts", "shared/model-capability-settings.ts",
@@ -415,11 +413,7 @@ describe("main bundle budget", () => {
     const createWindowAt = mainSource.indexOf("createWindow({");
     const loadBootAt = mainSource.indexOf('import("./desktop-boot.js")');
     const attachStartupAt = mainSource.indexOf("loadMainStartupDependencies(", createWindowAt);
-    // Matched from the boot import onwards, and by identifier rather than by a
-    // bare `name,` reference: the CA argument is a wrapper now (it reads the
-    // persisted settings first). What this pins is unchanged — the boot import
-    // is the FIRST argument, so it is in flight while the certificate work
-    // runs, which is the whole reason these are one call.
+    // First-boot arguments must demonstrate overlapping certificate work.
     const loadCorporateCaAt = mainSource.indexOf("ensureCorporateCaInjected", loadBootAt);
     expect(createWindowAt).toBeGreaterThan(-1);
     expect(createWindowAt).toBeLessThan(attachStartupAt);

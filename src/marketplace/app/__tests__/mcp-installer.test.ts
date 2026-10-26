@@ -1,8 +1,4 @@
-/**
- * The git marketplace's MCP installer (design §5.2, §8.1): it owns only the
- * servers it recorded, swaps files and config together, keeps `$DATA_DIR`
- * across updates, and restores the previous server when a step fails.
- */
+/** Verifies server ownership, atomic replacement, data retention and rollback. */
 import AdmZip from "adm-zip";
 import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -13,10 +9,11 @@ import type { McpServerConfig } from "../../../mcp/types.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import type { ResolvedMcpServer } from "../../resolve/mcp.js";
 import { McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
+import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
+import { hasMarketplaceInstallInFlight } from "../install-lifecycle.js";
 
 const SNAPSHOT = "a".repeat(40);
 
-/** Set to make the next record writes fail, as a full disk would. */
 const recordWrites = vi.hoisted(() => ({ fail: false }));
 vi.mock("../../../main/storage/feature-namespace.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../main/storage/feature-namespace.js")>();
@@ -32,7 +29,6 @@ vi.mock("../../../main/storage/feature-namespace.js", async (importOriginal) => 
 class FakeManager {
   configs = new Map<string, McpServerConfig>();
   failNextAdd = false;
-  /** The next add saves the config but its connection fails with this message. */
   disconnectedNextAdd: string | null = null;
   blocked = new Set<string>();
   validateConfig(config: McpServerConfig) {
@@ -109,7 +105,47 @@ describe("McpInstaller", () => {
   });
 
   afterEach(async () => {
+    setAppRelaunchRequested(false);
     await rm(home, { recursive: true, force: true });
+  });
+
+  it("classifies every installer member and refuses every record mutator during relaunch", async () => {
+    await installer.install(resolved("1.0.0"), { switchSource: false });
+    const before = await readFile(recordsPath(), "utf8");
+    const configs = [...manager.configs.values()];
+    const mutators = {
+      install: () => installer.install(resolved("2.0.0"), { switchSource: false }),
+      installUnbound: () => installer.installUnbound("weather", { transport: "http", url: "https://weather.example/mcp" }),
+      uninstall: () => installer.uninstall("notes", { removeData: true }),
+    };
+    const reads = ["baseline", "admit", "list"];
+    const internal = ["serial", "dataDir", "configFor", "write", "owned", "swapConfig", "apply", "register"];
+    expect(Object.getOwnPropertyNames(McpInstaller.prototype).filter((name) => name !== "constructor").sort())
+      .toEqual([...reads, ...internal, ...Object.keys(mutators)].sort());
+    setAppRelaunchRequested(true);
+    for (const mutate of Object.values(mutators)) {
+      await expect(mutate()).rejects.toMatchObject({ code: "relaunch-in-progress" });
+      expect(await readFile(recordsPath(), "utf8")).toBe(before);
+      expect([...manager.configs.values()]).toEqual(configs);
+    }
+  });
+
+  it("counts direct server admission before its queue yields and through connection setup", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(manager, "addConfig").mockImplementationOnce(async () => { entered(); await held; return { connected: true }; });
+    const pending = installer.install(resolved("1.0.0"), { switchSource: false });
+    try {
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+      await started;
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
   });
 
   it("installs package files with their execute bit, fills the tokens, and records the origin", async () => {
@@ -132,7 +168,6 @@ describe("McpInstaller", () => {
     const skipping = new McpInstaller({
       recordsPath: recordsPath(),
       dataRoot: join(home, "mcp-data"),
-      // An extractor that dropped the executable entry: the mode bits must not be applied to some other path.
       files: {
         installDirFor: () => installDir,
         extractZipWithCommit: async (_name, _zip, commit) => ({ result: await commit(installDir, ["server/README.md"]) }),

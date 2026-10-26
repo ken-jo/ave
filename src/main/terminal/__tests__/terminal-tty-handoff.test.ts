@@ -1,16 +1,12 @@
-/**
- * The workspace terminal's own-tty grant (terminal-tty-handoff.ts), EXECUTED:
- * the real patched ASRT profile, the real node-pty, the real fifo handoff.
- *
- * Without the grant a sandboxed zsh cannot turn off ECHO, so each typed line
- * shows twice, and cannot set its foreground process group, so job control is
- * off. With it, the shell owns its own terminal and still cannot set another.
- */
+/** The workspace terminal's own-tty grant (terminal-tty-handoff.ts), EXECUTED: the real patched ASRT profile, the real node-pty, the real fifo handoff. Without the grant a sandboxed zsh
+ * cannot turn off ECHO, so each typed line shows twice, and cannot set its foreground process group, so job control is off. With it, the shell owns its own terminal and still cannot set another. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IPty } from "node-pty";
+import { TEST_COMMAND_ID } from "../../../__tests__/support/egress-fixture.js";
+import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 import {
   getDefaultSensitiveWriteDenyPaths,
@@ -100,8 +96,7 @@ describe("the fifo handoff (real fifo)", () => {
     const handoff = await createTerminalTtyHandoff();
     try {
       await expect(handoff.deliver("exec true\n", { timeoutMs: 50 })).rejects.toThrow(/did not take its command/);
-      // The give-up opened and closed the read end once; a late write would
-      // now block or land. Read with a fresh reader and a short-lived writer.
+      // The give-up opened and closed the read end once; a late write would now block or land. Read with a fresh reader and a short-lived writer.
       const fifo = handoff.trampoline.args[0]!;
       const readFd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
       try {
@@ -131,8 +126,6 @@ describe("terminalNeedsOwnTtyGrant", () => {
     expect(terminalNeedsOwnTtyGrant("win32")).toBe(false);
   });
 });
-
-// ─── real sandbox, real pty ────────────────────────────────────────────────
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -165,7 +158,7 @@ const lines = (text: string, line: string) =>
 
 interface Shell {
   output: () => string;
-  type: (input: string, settleMs?: number) => Promise<void>;
+  type: (input: string, complete?: number | ((output: string) => boolean)) => Promise<void>;
   ownTty: string;
   close: () => void;
 }
@@ -189,20 +182,22 @@ async function startShell(grantOwnTty: boolean): Promise<Shell> {
   const ownTty = ownPtySlavePath(pty);
   const filesystem = { allowWrite: [workDir], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() };
   const { argv, env } = grantOwnTty
-    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { filesystem, ownTty })
-    : await wrapWorkerCommand("exec /bin/zsh -f -i", { filesystem });
+    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { commandId: TEST_COMMAND_ID, filesystem, ownTty })
+    : await wrapWorkerCommand("exec /bin/zsh -f -i", { commandId: TEST_COMMAND_ID, filesystem });
   const childEnv: Record<string, string> = { PATH: "/usr/bin:/bin", HOME: workDir, TERM: "xterm-256color", PS1: "%# " };
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined && (/PROXY$/i.test(key) || key === "SANDBOX_RUNTIME" || key === "TMPDIR")) childEnv[key] = value;
   }
   await handoff.deliver(renderHandoffScript(argv, childEnv));
   handoff.dispose();
-  await sleep(1000);
+  await waitForTerminal(() => /[%#] $/.test(stripAnsi(out)));
   return {
     output: () => stripAnsi(out),
-    type: async (input, settleMs = 500) => {
+    type: async (input, complete = 500) => {
+      const start = out.length;
       pty.write(input);
-      await sleep(settleMs);
+      if (typeof complete === "number") await sleep(complete);
+      else await waitForTerminal(() => complete(stripAnsi(out.slice(start))));
     },
     ownTty,
     close: () => {
@@ -222,13 +217,15 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       if (!canRun) return;
       const shell = await startShell(true);
       try {
-        await shell.type("echo marker\r");
-        await shell.type("stty -a >/dev/null && echo STTY_OK\r");
+        // Keep this real: terminal echo, tty access and job control require the confined shell and its actual foreground process group.
+        await shell.type("echo marker\r", (out) => lines(out, "marker") === 1);
+        await shell.type("stty -a >/dev/null && echo STTY_OK || echo STTY_DENIED\r", (out) => lines(out, "STTY_OK") + lines(out, "STTY_DENIED") === 1);
+        expect(lines(shell.output(), "STTY_OK"), shell.output()).toBe(1);
         await shell.type("sleep 30\r");
-        await shell.type("\x1a", 800);
+        await shell.type("\x1a", (out) => /suspended/.test(out));
         await shell.type("fg\r", 800);
-        await shell.type("\x03");
-        await shell.type("echo AFTER_FG\r");
+        await shell.type("\x03", (out) => /[%#] $/.test(out));
+        await shell.type("echo AFTER_FG\r", (out) => lines(out, "AFTER_FG") === 1);
         const out = shell.output();
         expect(out.match(/echo marker/g)?.length, out).toBe(1);
         expect(lines(out, "marker"), out).toBe(1);
@@ -253,7 +250,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       try {
         const otherTty = ownPtySlavePath(other);
         expect(otherTty).not.toBe(shell.ownTty);
-        await shell.type(`stty -echo <${otherTty} 2>/dev/null && echo OTHER_SET || echo OTHER_DENIED\r`, 800);
+        await shell.type(`stty -echo <${otherTty} 2>/dev/null && echo OTHER_SET || echo OTHER_DENIED\r`, (out) => lines(out, "OTHER_DENIED") + lines(out, "OTHER_SET") === 1);
         const out = shell.output();
         expect(lines(out, "OTHER_DENIED"), out).toBe(1);
         expect(lines(out, "OTHER_SET"), out).toBe(0);
@@ -271,7 +268,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       if (!canRun) return;
       const shell = await startShell(false);
       try {
-        await shell.type("echo marker\r");
+        await shell.type("echo marker\r", (out) => lines(out, "marker") === 1);
         const out = shell.output();
         expect(out.match(/echo marker/g)?.length, out).toBe(2);
         expect(out).toMatch(/can't set tty pgrp/);
@@ -285,7 +282,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
   it.runIf(process.platform === "darwin")("refuses a malformed tty at the wrap", async () => {
     if (!canRun) return;
     await expect(
-      wrapTerminalCommand("true", { filesystem: { allowWrite: [home], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() }, ownTty: "/dev/ttys*" }),
+      wrapTerminalCommand("true", { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [home], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() }, ownTty: "/dev/ttys*" }),
     ).rejects.toThrow(/not a pty slave/);
   });
 });

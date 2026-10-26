@@ -1,19 +1,4 @@
-/**
- * Permission SOT V2 — PermissionManager.checkPathScope.
- *
- * Pure unit coverage of the Layer 0 (sensitive-path hard-block) + Layer 1
- * (allowed-directories) path-scope predicate that P1-d moved out of
- * `src/tools/executor.ts` into the PermissionManager SOT. The move is
- * behavior-neutral: these cases pin the EXACT predicate the executor evaluated
- * inline before the move (first sensitive target wins for Layer 0; first
- * out-of-allowed target wins for Layer 1), so they double as the
- * behavior-neutrality proof.
- *
- * The method is a pure static predicate over ALREADY-canonicalized paths
- * (frozen-canonical contract): it does no realpath I/O. Tests build canonical
- * inputs with the same `caseFoldForMatch(canonicalizePathForMatch(...))` the
- * executor uses.
- */
+// Path checks consume already-canonical/case-folded inputs without filesystem I/O; return the first sensitive target before the first out-of-scope target.
 import { describe, it, expect } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import { foldPathForMatch as fold } from "./test-helpers.js";
@@ -22,13 +7,7 @@ function target(raw: string): { filePath: string; canonicalPath: string } {
   return { filePath: raw, canonicalPath: fold(raw) };
 }
 
-/**
- * The pre-asymmetry call shape — every effect confined to the directory list.
- *
- * The cases below it pin the WRITE half of the effect matrix, which is exactly
- * the behaviour the read/write split did NOT change: a write is still refused
- * outside the authorized directories. The read half is its own describe block.
- */
+// The pre-asymmetry call shape — every effect confined to the directory list. The cases below it pin the WRITE half of the effect matrix, which is exactly the behaviour the read/write split did NOT change: a write is still refused outside the authorized directories. The read half is its own describe block.
 function checkWrite(args: {
   canonicalTargets: readonly { filePath: string; canonicalPath: string }[];
   allowedDirectories: readonly string[];
@@ -127,9 +106,7 @@ describe("PermissionManager.checkPathScope", () => {
 
   describe("combined — sensitive AND out-of-allowed", () => {
     it("reports both hits independently (executor consumes sensitiveHit first)", () => {
-      // A ~/.ssh key that is also outside the allowed dirs: Layer 0 and Layer 1
-      // both fire in the predicate; the executor's layer-0 deny returns before
-      // it ever consults outOfAllowed, but the predicate stays honest.
+      // A ~/.ssh key that is also outside the allowed dirs: Layer 0 and Layer 1 both fire in the predicate; the executor's layer-0 deny returns before it ever consults outOfAllowed, but the predicate stays honest.
       const t = target("/Users/example/.ssh/id_rsa");
       const res = checkWrite({
         canonicalTargets: [t],
@@ -140,12 +117,7 @@ describe("PermissionManager.checkPathScope", () => {
     });
   });
 
-  // ── Effect matrix — reads are wide, writes stay confined ──────────────
-  //
-  // A directory list answers "what may this agent CHANGE". Answering "what may
-  // it LOOK AT" with the same list is what refused `ls /` on a machine the user
-  // had already handed over, so the predicate now takes the effect the operand
-  // carries and only confines a write.
+  // Effect matrix — reads are wide, writes stay confined A directory list answers "what may this agent CHANGE". Answering "what may it LOOK AT" with the same list is what refused `ls /` on a machine the user had already handed over, so the predicate now takes the effect the operand carries and only confines a write.
   describe("effect matrix", () => {
     const outside = target("/var/tmp/random-area/file.txt");
     const inside = target("/Users/example/work/proj/src/index.ts");
@@ -183,9 +155,7 @@ describe("PermissionManager.checkPathScope", () => {
       expect(check("write", false, inside).outOfAllowed).toBeNull();
     });
 
-    // Layer 0 runs before the effect is consulted and is not part of the
-    // asymmetry: widening reads widened the DIRECTORY boundary, not the
-    // deny-list, and a protected path stays unreadable either way.
+    // Layer 0 runs before the effect is consulted and is not part of the asymmetry: widening reads widened the DIRECTORY boundary, not the deny-list, and a protected path stays unreadable either way.
     it("keeps the Layer 0 deny for a read of a sensitive path", () => {
       const res = PermissionManager.checkPathScope({
         canonicalTargets: [target("/Users/example/.ssh/id_rsa")],
@@ -197,8 +167,7 @@ describe("PermissionManager.checkPathScope", () => {
     });
   });
 
-  // The admission a wide read produces leaves no dialog and no grant behind it,
-  // so `readOutsideScope` is the only thing the audit row can be built from.
+  // The admission a wide read produces leaves no dialog and no grant behind it, so `readOutsideScope` is the only thing the audit row can be built from.
   describe("readOutsideScope — the auditable admission", () => {
     it("names the read the directory list would have refused", () => {
       const res = PermissionManager.checkPathScope({

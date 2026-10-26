@@ -1,16 +1,3 @@
-/**
- * html-preview-partition unit tests
- *
- * Verifies:
- *  - installHtmlPreviewPartitionBlock() registers the strict inline-only gate on
- *    `ave-render-html` and NO LONGER touches any `ave-mcp-app` partition (the
- *    boot-time shared MCP-app install was removed in #885 b1);
- *  - installMcpAppPartitionPolicy(serverId) lazily installs the per-server policy
- *    (declared-origin network gate + sandbox-proxy protocol handler + relay preload)
- *    on the `ave-mcp-app:<hex>` partition and is idempotent;
- *  - installPluginPartitionPolicy() still wires the sandboxed <webview> preload +
- *    network block.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -24,7 +11,6 @@ const __dirnameLocal = dirname(fileURLToPath(import.meta.url));
 const pluginShellHtmlUrl = pathToFileURL(resolve(__dirnameLocal, "..", "..", "plugin-ui-shell.html")).toString();
 const pluginShellJsUrl = pathToFileURL(resolve(__dirnameLocal, "..", "..", "plugin-ui-shell.js")).toString();
 
-// ─── Mock electron ────────────────────────────────────────────────────────────
 const mockOnBeforeRequest = vi.fn();
 const mockOnBeforeRequestMcp = vi.fn();
 const mockOnBeforeRequestPlugin = vi.fn();
@@ -42,14 +28,12 @@ const mockMcpSession = {
   webRequest: {
     onBeforeRequest: mockOnBeforeRequestMcp,
   },
-  // The MCP-app partition now also carries the sandbox-proxy relay preload and
-  // the `ave-mcp-app://` protocol handler that serves the proxy document.
+  // The MCP-app partition now also carries the sandbox-proxy relay preload and the `ave-mcp-app://` protocol handler that serves the proxy document.
   registerPreloadScript: mockRegisterPreloadScriptMcp,
   protocol: {
     handle: mockProtocolHandleMcp,
   },
-  // …and the deny-by-default powerful-feature gate (installDeclaredPermissionGate):
-  // both handlers are installed on the per-server session, so the mock must expose them.
+  // …and the deny-by-default powerful-feature gate (installDeclaredPermissionGate): both handlers are installed on the per-server session, so the mock must expose them.
   setPermissionRequestHandler: vi.fn(),
   setPermissionCheckHandler: vi.fn(),
 };
@@ -77,42 +61,19 @@ const mockSessionApi = {
   }),
 };
 
-// Helper: invoke the registered handler and return callback result
-function invokeHandler(url: string): { cancel: boolean } {
-  const handler = mockOnBeforeRequest.mock.calls[0][0] as (
+function invokeRegisteredHandler(mock: typeof mockOnBeforeRequest, url: string): { cancel: boolean } {
+  const handler = mock.mock.calls[0][0] as (
     details: { url: string },
     callback: (result: { cancel: boolean }) => void,
   ) => void;
   let result!: { cancel: boolean };
-  handler({ url }, (r) => {
-    result = r;
-  });
+  handler({ url }, (r) => { result = r; });
   return result;
 }
 
-function invokeMcpHandler(url: string): { cancel: boolean } {
-  const handler = mockOnBeforeRequestMcp.mock.calls[0][0] as (
-    details: { url: string },
-    callback: (result: { cancel: boolean }) => void,
-  ) => void;
-  let result!: { cancel: boolean };
-  handler({ url }, (r) => {
-    result = r;
-  });
-  return result;
-}
-
-function invokePluginHandler(url: string): { cancel: boolean } {
-  const handler = mockOnBeforeRequestPlugin.mock.calls[0][0] as (
-    details: { url: string },
-    callback: (result: { cancel: boolean }) => void,
-  ) => void;
-  let result!: { cancel: boolean };
-  handler({ url }, (r) => {
-    result = r;
-  });
-  return result;
-}
+const invokeHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequest, url);
+const invokeMcpHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequestMcp, url);
+const invokePluginHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequestPlugin, url);
 
 describe("installHtmlPreviewPartitionBlock", () => {
   beforeEach(() => {
@@ -122,8 +83,7 @@ describe("installHtmlPreviewPartitionBlock", () => {
 
   it("installs ONLY the strict inline-only gate on ave-render-html (no boot-time mcp-app install)", () => {
     expect(mockSessionApi.fromPartition).toHaveBeenCalledWith("ave-render-html");
-    // The bare `ave-mcp-app` boot install is GONE — per-server partitions are
-    // installed lazily in the readUiResource chokepoint instead.
+    // The bare `ave-mcp-app` boot install is GONE — per-server partitions are installed lazily in the readUiResource chokepoint instead.
     const partitions = mockSessionApi.fromPartition.mock.calls.map((c) => c[0] as string);
     expect(partitions).toEqual(["ave-render-html"]);
     expect(partitions.some((p) => p.startsWith(MCP_APP_PARTITION_PREFIX))).toBe(false);
@@ -159,16 +119,14 @@ describe("installMcpAppPartitionPolicy (#885 b1 — lazy per-server partition po
   });
 
   it("installs the network gate on the per-server ave-mcp-app:<hex> partition", () => {
-    // Unique serverId avoids the module-level installedMcpAppPartitions Set
-    // short-circuit from other tests.
+    // Unique serverId avoids the module-level installedMcpAppPartitions Set short-circuit from other tests.
     installMcpAppPartitionPolicy("github-a", mockSessionApi);
     expect(mockSessionApi.fromPartition).toHaveBeenCalledWith(mcpAppPartitionName("github-a"));
     expect(mockOnBeforeRequestMcp).toHaveBeenCalledOnce();
   });
 
   it("is deny-by-default: blocks UNDECLARED https hosts, including the old hardcoded CDNs", () => {
-    // The gate used to hardcode 5 CDNs, which GRANTED hosts no app had declared —
-    // the spec's No-Loosening MUST says the host MUST NOT allow undeclared domains.
+    // The gate used to hardcode 5 CDNs, which GRANTED hosts no app had declared — the spec's No-Loosening MUST says the host MUST NOT allow undeclared domains.
     installMcpAppPartitionPolicy("github-b", mockSessionApi);
     expect(invokeMcpHandler("https://cdn.jsdelivr.net/npm/vue")).toEqual({ cancel: true });
     expect(invokeMcpHandler("https://unpkg.com/x")).toEqual({ cancel: true });
@@ -177,14 +135,12 @@ describe("installMcpAppPartitionPolicy (#885 b1 — lazy per-server partition po
     expect(invokeMcpHandler("file:///etc/passwd")).toEqual({ cancel: true });
     // Local inline schemes stay open — not exfiltration channels.
     expect(invokeMcpHandler("data:text/html,x")).toEqual({ cancel: false });
-    // The host-owned sandbox-proxy document. Without this the gate cancels the proxy
-    // navigation and the card never loads (caught by the real-webview e2e).
+    // The host-owned sandbox-proxy document. Without this the gate cancels the proxy navigation and the card never loads (caught by the real-webview e2e).
     expect(invokeMcpHandler("ave-mcp-app://abc/proxy.html?t=tok")).toEqual({ cancel: false });
   });
 
   it("opens ONLY the origins that server's own resource declared (CSP ↔ network lockstep)", () => {
-    // Previously the CSP could permit a declared `connectDomains` host while this gate
-    // silently cancelled it, so declared network access could never actually work.
+    // Previously the CSP could permit a declared `connectDomains` host while this gate silently cancelled it, so declared network access could never actually work.
     _resetMcpAppProxySessions();
     createMcpAppProxySession("github-declared", {
       connectDomains: ["https://api.example.com"],
@@ -199,9 +155,8 @@ describe("installMcpAppPartitionPolicy (#885 b1 — lazy per-server partition po
   });
 
   it("registers the host-owned relay frame preload (sandboxed <webview> requirement)", () => {
-    // The `preload=` ATTRIBUTE is silently ignored under sandbox=yes and is stripped
-    // by the will-attach-webview guards, so the session-level preload is the only path.
-    // The path must be host-resolved — an MCP server can never nominate a preload.
+    // The `preload=` ATTRIBUTE is silently ignored under sandbox=yes and is stripped by the will-attach-webview guards, so the session-level preload is the
+    // only path. The path must be host-resolved — an MCP server can never nominate a preload.
     installMcpAppPartitionPolicy("github-preload", mockSessionApi);
     expect(mockRegisterPreloadScriptMcp).toHaveBeenCalledOnce();
     expect(mockRegisterPreloadScriptMcp).toHaveBeenCalledWith({
@@ -216,10 +171,8 @@ describe("installMcpAppPartitionPolicy (#885 b1 — lazy per-server partition po
   });
 
   it("installs BOTH deny-by-default permission handlers on the per-server session", () => {
-    // The powerful-feature gate needs the request handler (answers getUserMedia /
-    // getCurrentPosition) AND the check handler (answers navigator.permissions.query and
-    // Chromium's pre-prompt check). Installing only one leaves the other at Electron's
-    // default, which is NOT deny-all.
+    // The powerful-feature gate needs the request handler (answers getUserMedia / getCurrentPosition) AND the check handler (answers
+    // navigator.permissions.query and Chromium's pre-prompt check). Installing only one leaves the other at Electron's default, which is NOT deny-all.
     installMcpAppPartitionPolicy("github-perms", mockSessionApi);
     expect(mockMcpSession.setPermissionRequestHandler).toHaveBeenCalledOnce();
     expect(mockMcpSession.setPermissionCheckHandler).toHaveBeenCalledOnce();

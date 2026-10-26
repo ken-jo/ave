@@ -1,41 +1,20 @@
 import { createAlertMigrationPorts } from "../../__tests__/support/alert-migration.js";
 import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
-/**
- * Construction of the REAL plugin hostApi object, and the traversal every
- * hostApi-surface gate runs over.
- *
- * Two gates walk this surface — effect classification
- * (`hostapi-effect-completeness.test.ts`) and marshalling classification
- * (`hostapi-serialization-conformance.test.ts`). They must agree on WHICH
- * members exist, so the object they inspect and the traversal that enumerates it
- * live here rather than being restated per gate: a divergence between the two
- * enumerations would let a member be classified by one gate and invisible to the
- * other.
- *
- * The electron / PluginRuntime / registry module mocks stay in each test file —
- * `vi.mock` is hoisted per file — and supply the `harness` passed in here.
- */
+// Effect and serialization gates must enumerate the same real host API; share construction and traversal. Keep hoisted module mocks in each test file.
 import { expect, vi } from "vitest";
 
 import { initPluginRuntime } from "../../boot/steps/plugin-runtime.js";
 import { KNOWN_CAPABILITIES } from "../../plugins/capabilities.js";
 import { isPlainNamespace } from "../hostapi-effect-recorder.js";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { AlertsService } from "../../alerts/service.js";
 import type { AlertSettings } from "../../shared/alerts-types.js";
 import type { PluginHostApi } from "../../plugins/types.js";
 import { pluginDataDirIn } from "../../plugins/__tests__/test-helpers.js";
+import type { PermissionTestResources } from "./test-resources.js";
 
-/**
- * The one field this module needs from the caller's `vi.hoisted` harness: the
- * `PluginRuntime` constructor mock records the options `initPluginRuntime`
- * passed it, and `createHostApi` is the production factory hiding in there.
- * Declared as the minimum so a test file can carry whatever additional mock
- * state its own factories need.
- */
+// The one field this module needs from the caller's `vi.hoisted` harness: the `PluginRuntime` constructor mock records the options `initPluginRuntime` passed it, and `createHostApi` is the production factory hiding in there. Declared as the minimum so a test file can carry whatever additional mock state its own factories need.
 export interface RealHostApiHarness {
   capturedRuntimeOptions: Record<string, unknown> | null;
 }
@@ -57,11 +36,7 @@ type CreateHostApi = (
   installPluginId: string | null,
 ) => PluginHostApi;
 
-/**
- * Read back the factory `initPluginRuntime` handed to the `PluginRuntime`
- * constructor. Behind a function because the caller nulls the field first, and
- * the mock that refills it is invisible to the compiler from here.
- */
+// Read back the factory `initPluginRuntime` handed to the `PluginRuntime` constructor. Behind a function because the caller nulls the field first, and the mock that refills it is invisible to the compiler from here.
 function capturedCreateHostApi(
   harness: RealHostApiHarness,
 ): CreateHostApi | undefined {
@@ -70,28 +45,19 @@ function capturedCreateHostApi(
     | undefined;
 }
 
-/**
- * Build a REAL hostApi object via the production `createHostApi` factory
- * captured from `initPluginRuntime`.
- *
- * Built with the FULL capability vocabulary, not a sampled subset: a
- * namespace/method wired ONLY under a capability absent from the fixture would
- * never be enumerated, and would therefore escape every assertion made about
- * this surface. Declare the maximal capability set so conditionally-wired
- * members are present.
- */
+// Build a REAL hostApi object via the production `createHostApi` factory captured from `initPluginRuntime`. Built with the FULL capability vocabulary, not a sampled subset: a namespace/method wired ONLY under a capability absent from the fixture would never be enumerated, and would therefore escape every assertion made about this surface. Declare the maximal capability set so conditionally-wired members are present. Every scratch directory — the plugin's data directory and the alerts and board stores behind it — comes from `resources`, so the caller's `afterEach` removes them with the rest of its directories.
 export async function buildRealHostApi(
   harness: RealHostApiHarness,
-  pluginDataDir: string,
+  resources: PermissionTestResources,
+  pluginDataPrefix: string,
 ): Promise<PluginHostApi> {
   harness.capturedRuntimeOptions = null;
   const bootAuditLogger = { log: vi.fn() };
-  // A real alerts service over a temp directory, for the same reason as the
-  // board below: `raiseAlert` must return a genuine envelope, and the probe's
-  // kind is undeclared so it refuses before anything is rendered or stored.
-  const alertsDir = mkdtempSync(join(tmpdir(), "ave-probe-alerts-"));
+  // A real alerts service over a temp directory, for the same reason as the board below: `raiseAlert` must return a genuine envelope, and the probe's kind is undeclared so it refuses before anything is rendered or stored.
+  const alertsDir = resources.makeTmpDir("ave-probe-alerts-");
   let alertSettings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
-  const alertsService = new AlertsService({
+  // Flushed before the directory goes: a write still queued would recreate it.
+  const alertsService = resources.trackFlushable(new AlertsService({
     migration: createAlertMigrationPorts(),
     dir: () => alertsDir,
     settings: { get: () => alertSettings, set: async (next) => { alertSettings = next; } },
@@ -103,7 +69,7 @@ export async function buildRealHostApi(
     notifications: { isFocusGateActive: () => false, fire: vi.fn() },
     emit: vi.fn(),
     audit: vi.fn(),
-  });
+  }));
   await alertsService.load();
   await initPluginRuntime({
     host: createBootHostFixture(),
@@ -140,11 +106,9 @@ export async function buildRealHostApi(
     shellOpenExternal: vi.fn(),
     approvalGate: { requestAndWait: vi.fn(), resolve: vi.fn() } as never,
     routinesStore: { list: () => [] } as never,
-    // A real store over a temp path: `proposeWork` must return a genuine
-    // envelope for the JSON-representability probe, and the probe's kind is
-    // undeclared so it refuses before it ever touches the file.
+    // A real store over a temp path: `proposeWork` must return a genuine envelope for the JSON-representability probe, and the probe's kind is undeclared so it refuses before it ever touches the file.
     getWorkBoardStore: () =>
-      new WorkBoardStore(join(mkdtempSync(join(tmpdir(), "ave-probe-wb-")), "board.json")),
+      new WorkBoardStore(join(resources.makeTmpDir("ave-probe-wb-"), "board.json")),
     getAlertsService: () => alertsService,
   });
 
@@ -160,7 +124,7 @@ export async function buildRealHostApi(
       config: {},
       capabilities: [...KNOWN_CAPABILITIES],
     },
-    pluginDataDirIn(pluginDataDir),
+    pluginDataDirIn(resources.makeTmpDir(pluginDataPrefix)),
     {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,
@@ -171,16 +135,7 @@ export async function buildRealHostApi(
   );
 }
 
-/**
- * Recursively collect every function-valued leaf method PATH (dotted) into
- * `out`, AND every non-plain namespace path into `nonPlainNamespaces`. The
- * effect-recording wrapper only INSTRUMENTS plain namespaces (the shared
- * {@link isPlainNamespace} predicate); a non-plain namespace (class instance /
- * custom prototype) would pass a path-completeness check yet be copied verbatim
- * and left UNINSTRUMENTED by the wrapper — a silent fail-open one level up.
- * Flagging it here keeps the callers and the wrapper on the SAME traversal
- * surface so such a namespace fails CI and must be handled.
- */
+// Recursively collect every function-valued leaf method PATH (dotted) into `out`, AND every non-plain namespace path into `nonPlainNamespaces`. The effect-recording wrapper only INSTRUMENTS plain namespaces (the shared isPlainNamespace predicate); a non-plain namespace (class instance / custom prototype) would pass a path-completeness check yet be copied verbatim and left UNINSTRUMENTED by the wrapper — a silent fail-open one level up. Flagging it here keeps the callers and the wrapper on the SAME traversal surface so such a namespace fails CI and must be handled.
 export function collectFunctionPaths(
   obj: unknown,
   prefix: string,

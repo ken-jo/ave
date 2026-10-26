@@ -1,8 +1,3 @@
-
-
-
-
-
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -21,7 +16,6 @@ import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 
 const log = createLogger("compact");
 
-
 export const SUMMARY_TEMPLATE_HEADERS_V1 = [
   "Goal",
   "Constraints & Preferences",
@@ -37,10 +31,7 @@ export const SUMMARY_TEMPLATE_HEADERS_V1 = [
   "Last Tool Boundary",
 ] as const;
 
-export type SummarySectionName = (typeof SUMMARY_TEMPLATE_HEADERS_V1)[number];
-
-
-
+type SummarySectionName = (typeof SUMMARY_TEMPLATE_HEADERS_V1)[number];
 
 export interface ParsedCompactSummary {
   templateVersion: 1;
@@ -48,9 +39,6 @@ export interface ParsedCompactSummary {
 
   raw?: string;
 }
-
-
-
 
 export interface CompactBoundary {
   templateVersion: 1;
@@ -66,25 +54,19 @@ export interface CompactBoundary {
   compactNum: number;
 }
 
-export type VendorOpaqueState =
+type VendorOpaqueState =
   | { vendor: "openai"; openaiCompactionItem: OpenAICompactionItem }
 
   ;
 
-
-
-
-export interface OpenAICompactionItem {
+interface OpenAICompactionItem {
   type: "compaction";
   encrypted_content: string;
 
   [k: string]: unknown;
 }
 
-
-
-
-export interface ToolCallSummary {
+interface ToolCallSummary {
   round: number;
   toolName: string;
 
@@ -92,18 +74,10 @@ export interface ToolCallSummary {
   isError?: boolean;
 }
 
-
-
-
 export const SUMMARY_TEMPLATE_PROMPT_V1: string = t("be_structuredCompact.summaryTemplatePrompt");
-
-
-
 
 export function parseSummary(text: string): ParsedCompactSummary {
   const sections: Partial<Record<SummarySectionName, string>> = {};
-
-
 
   const validHeaders = new Set<string>(SUMMARY_TEMPLATE_HEADERS_V1);
   const lines = text.split("\n");
@@ -131,7 +105,6 @@ export function parseSummary(text: string): ParsedCompactSummary {
   }
   flushCurrent();
 
-
   const allPresent = SUMMARY_TEMPLATE_HEADERS_V1.every((h) => sections[h] !== undefined);
   if (!allPresent) {
     return {
@@ -147,9 +120,6 @@ export function parseSummary(text: string): ParsedCompactSummary {
   };
 }
 
-
-
-
 function deepFreeze<T>(obj: T): T {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") return obj;
@@ -161,28 +131,13 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-
-
-
 export function freezeBoundary(boundary: CompactBoundary): Readonly<CompactBoundary> {
   deepFreeze(boundary);
   return boundary;
 }
 
-// ─── compactWithBoundary (LLM call) ─────────────────────
-
-
-/**
- * The model-facing text of a compact boundary row: the summary of everything
- * the compaction removed, carried in the conversation where the removed turns
- * were. It lives in the message stream rather than the system prompt so a
- * compaction rewrites only the history it replaced and the system prompt
- * stays a reusable prefix.
- *
- * The summary is generated from earlier conversation content, which may hold
- * text shaped like an instruction. The fence and its guard keep it context:
- * the model uses it to answer, but acts only on messages outside the fence.
- */
+/** Keep summaries in history so compaction preserves the cached system prefix.
+ * Fence prior content as context; only messages outside that fence may direct action. */
 function renderCompactSummaryMessage(compactNum: number, summary: string): string {
   return [
     t("be_structuredCompact.boundaryStub", { n: String(compactNum) }),
@@ -197,13 +152,7 @@ function renderCompactSummaryMessage(compactNum: number, summary: string): strin
   ].join("\n");
 }
 
-/**
- * A session saved while the summary still rode in the system prompt keeps it
- * only in its metadata, and its latest boundary row holds the bare marker.
- * Loading such a session writes the summary into that row so the resumed
- * conversation carries it in the message stream like a new compaction does.
- * Rows that already carry a summary are returned unchanged.
- */
+/** Migrate metadata-only summaries into their existing boundary row without rewriting populated rows. */
 function withCompactSummaryInLatestBoundary(
   messages: GenericMessage[],
   summary: string | undefined,
@@ -220,15 +169,7 @@ function withCompactSummaryInLatestBoundary(
   return messages;
 }
 
-/**
- * The boundary row is the one place a compaction summary reaches the model.
- * A history that owns a summary — a fork copying its source checkpoint's, or
- * a session whose summary predates that rule and sits only in metadata —
- * must carry it there: an existing boundary row receives it, and a history
- * with none (a fork slice, or an older fork saved before forks wrote one)
- * gets a boundary row at its head in the compaction's form. Idempotent: a
- * boundary row that already holds a summary is left alone.
- */
+/** Ensure forked or legacy history carries its summary in one boundary row; repeated application is inert. */
 export function withSummaryBoundary(
   messages: GenericMessage[],
   source: { compactNum: number; summary: string | undefined; trigger?: "auto-compact" | "manual"; createdAt?: string },
@@ -246,7 +187,6 @@ export function withSummaryBoundary(
       compactBoundary: true,
       compactNum: source.compactNum,
       ...(Number.isFinite(createdAt) ? { createdAt } : {}),
-      // Nothing was removed from this history; the divider names the checkpoint.
       checkpointMeta: {
         removedMessages: 0,
         freedTokens: 0,
@@ -259,29 +199,20 @@ export function withSummaryBoundary(
   return [boundaryRow, ...messages];
 }
 
-
 const MAX_PARSE_RETRY = 1;
 
-/** Bound on a user-supplied `/compact` focus; a focus is a phrase, not a document. */
+// Bound user-supplied compact focus as a phrase rather than a document.
 const MAX_COMPACT_FOCUS_CHARS = 2_000;
-
 
 const TOOL_BOUNDARY_LEDGER_K = 5;
 
-
 const LEDGER_RESULT_MAX = 200;
 
-/** Recent user turns that must survive compaction verbatim. */
 export const DEFAULT_PRESERVE_RECENT_TURNS = 5;
 
-/** See {@link CompactWithBoundaryArgs.preserveUnit}. */
 type PreserveUnit = "user-turns" | "tool-rounds";
 
-/**
- * The only capability structured compaction needs from the common Memory
- * Reviewer lane. Keeping this recap-only prevents callers from substituting a
- * direct provider transport.
- */
+// Recap generation must use the common no-tool reviewer capability, never a direct transport.
 export interface CompactRecapReviewer {
   review(
     task: "recap",
@@ -295,56 +226,25 @@ export interface CompactRecapReviewer {
 
 export interface CompactWithBoundaryArgs {
   messages: GenericMessage[];
-  /**
-   * Required common no-tool reviewer path for recap generation.
-   */
   memoryReviewer: CompactRecapReviewer;
 
   preserveRecentTokens: number;
-  /**
-   * Minimum number of recent user turns to keep verbatim regardless of the token
-   * ceiling. If compaction runs immediately after a new user question is
-   * appended, that pending question is preserved in addition to the previous
-   * completed turns.
-   */
+  // Preserve the pending question in addition to the configured completed-user-turn floor.
   preserveRecentTurns?: number;
-  /**
-   * What a "recent unit" is for the preserve floor.
-   *
-   * `user-turns` (default) is right BETWEEN turns: keep the last
-   * `preserveRecentTurns` user questions and everything after them.
-   *
-   * `tool-rounds` is right INSIDE one. An agent turn appends no user message,
-   * so the user-turn floor puts everything that turn produced inside the
-   * preserve region — the compactor then has nothing of this turn to work on
-   * and returns NOOP no matter how far over the threshold the turn has grown.
-   * Counting assistant tool rounds instead makes the turn's own earlier rounds
-   * reducible, which is the only thing that can bring a long agent turn back
-   * under its budget.
-   */
+  /** Use user-turn floors between turns and tool-round floors inside active turns.
+   * A user-turn floor inside a tool loop protects the whole turn and prevents reduction. */
   preserveUnit?: PreserveUnit;
   compactNum: number;
 
-
-
   sessionId: string;
-
-
 
   preflightTokens: number;
   abortSignal?: AbortSignal;
-  /**
-   * What the user asked the summary to keep (`/compact <focus>`). It reaches
-   * the summarizer fenced as data, after the template, and never alters which
-   * messages are compacted.
-   */
+  // Fence compact focus as data; it cannot change which messages are selected.
   focus?: string;
 }
 
 export interface CompactWithBoundaryResult {
-
-
-
   status: CompressionStatus;
 
   boundary: Readonly<CompactBoundary> | null;
@@ -358,9 +258,6 @@ export interface CompactWithBoundaryResult {
 
   truncatedCount: number;
 }
-
-
-
 
 async function truncateOversizeMessages(
   messages: GenericMessage[],
@@ -405,7 +302,6 @@ async function truncateOversizeMessages(
   return { messages: result, truncatedCount, truncatedDir };
 }
 
-/** Extract a single text representation of a message for truncation. */
 function extractMessageText(msg: GenericMessage): string {
   if (msg.role === "user") return userContentText(msg.content);
   if (msg.role === "assistant") {
@@ -414,14 +310,11 @@ function extractMessageText(msg: GenericMessage): string {
       : "";
     return `${msg.content}${tool}`;
   }
-  // tool_result — include toolName + isError marker for provenance so the
-  // archive file is self-describing without cross-referencing the assistant's
-  // toolCalls metadata.
+  // Archive tool names and error state so results remain understandable without assistant call metadata.
   const provenance = `[tool_result: tool=${msg.toolName ?? "?"}${msg.isError ? " error" : ""}]\n`;
   return `${provenance}${msg.content}`;
 }
 
-/** Rebuild a message with new text content, preserving role + tool metadata. */
 function rebuildMessageWithText(msg: GenericMessage, newText: string): GenericMessage {
   if (msg.role === "user") {
     return { ...msg, content: newText };
@@ -432,17 +325,7 @@ function rebuildMessageWithText(msg: GenericMessage, newText: string): GenericMe
   return { ...msg, content: newText };
 }
 
-/**
- * Archive a slice of messages to `~/.ave/sessions/<id>/truncated/` as a JSON
- * file. Used by:
- *   - History-wide reverse-budget truncation: oldest messages
- *     beyond the LLM's input budget are archived rather than fed to the LLM.
- *   - REDUCED_INSUFFICIENT_FORCED path: oldest preserve slice that gets
- *     dropped is archived rather than silently destroyed.
- *
- * Returns the truncatedDir (always set if `messages.length > 0`), so callers
- * can surface the location to the user via the compact_notice banner.
- */
+/** Archive budget and forced-drop slices for recovery; return their path for the compact notice. */
 async function archiveDroppedMessages(
   messages: GenericMessage[],
   sessionId: string,
@@ -459,20 +342,7 @@ async function archiveDroppedMessages(
   return truncatedDir;
 }
 
-/**
- * History-wide reverse-budget truncation.
- *
- * After `splitForBoundary` produces `toCompact`, this pass guarantees
- * `toCompact` fits into the LLM's input budget before the summary call.
- * Walks from oldest forward, dropping messages until the cumulative token
- * count is under `budget`. Dropped messages are archived to disk so users
- * can recover originals if needed.
- *
- * Resolves the "many medium messages accumulating to >budget" case that
- * per-message truncation (`truncateOversizeMessages`) cannot solve alone —
- * each message is under the per-message threshold (30K) but their sum
- * exceeds the LLM input window.
- */
+/** Archive oldest messages until their combined input fits; per-message limits cannot bound their sum. */
 async function dropOldestUntilUnderBudget(
   toCompact: GenericMessage[],
   budget: number,
@@ -482,10 +352,7 @@ async function dropOldestUntilUnderBudget(
   if (budget <= 0 || toCompact.length === 0) {
     return { messages: toCompact, droppedCount: 0, truncatedDir: "" };
   }
-  // Precompute per-message token counts once. The naive implementation
-  // re-ran `estimateMessagesTokens(surviving)` after every shift (O(N²)
-  // serialization cost on 200+ message histories while holding `isCompacting`
-  // lock). Maintain a running total instead — O(N).
+  // Maintain a running token total to avoid quadratic serialization while compaction holds its lock.
   const perMessageTokens = toCompact.map((message) => estimateMessageTokensForWire(message));
   let currentTotal = perMessageTokens.reduce((a, b) => a + b, 0);
   if (currentTotal <= budget) {
@@ -493,16 +360,9 @@ async function dropOldestUntilUnderBudget(
   }
   const dropped: GenericMessage[] = [];
   const surviving = [...toCompact];
-  // `cursor` indexes into the *precomputed* `perMessageTokens` array, which
-  // is in the original `toCompact` order. We rely on the invariant that
-  // `surviving.shift()` drops the oldest, which maps 1:1 with `perMessageTokens[cursor]`
-  // — this is fragile to future edits that change the drop order (e.g.,
-  // drop-from-middle), so keep the array indexing consistent if reworked.
+  // Token cursor order must stay aligned with oldest-first message removal.
   let cursor = 0;
-  // Keep at least 1 message — `surviving.length > 1` invariant stops the loop
-  // before emptying toCompact (which would then trigger NOOP / no LLM call).
-  // If a single message is genuinely huge, per-message truncation
-  // already clipped it.
+  // Keep one summarizable message; the per-message pre-pass already clips an oversized singleton.
   while (currentTotal > budget && surviving.length > 1) {
     const oldest = surviving.shift();
     if (oldest === undefined) break;
@@ -514,21 +374,8 @@ async function dropOldestUntilUnderBudget(
   return { messages: surviving, droppedCount: dropped.length, truncatedDir };
 }
 
-/**
- * Structured compact with LLM call + opaque-state slot.
- *
- * 알고리즘:
- *   1. preserveRecentTokens + preserveRecentTurns 로 split (toCompact / toPreserve), tool_use/tool_result 무결성 보존
- *   2. SUMMARY_TEMPLATE_PROMPT_V1 LLM call — 동일 vendor 동급 모델
- *   3. parseSummary (실패 시 1회 재시도, 그래도 실패 시 raw fallback)
- *   4. pinnedArtifacts 수집 (skill / lock=true)
- *   5. toolBoundaryLedger 생성 (마지막 K 라운드)
- *   6. CompactBoundary assemble + freezeBoundary
- *   7. newHistory = [stub user message + boundary meta, ...toPreserve]
- *
- * The boundary row carries the rendered summary itself
- * (`renderCompactSummaryMessage`), so restoring `newHistory` is the whole apply.
- */
+/** Preserve safe recent boundaries, summarize through the reviewer, and freeze the resulting checkpoint.
+ * The returned history carries its summary, so restoring it applies the whole result. */
 export async function compactWithBoundary(
   args: CompactWithBoundaryArgs,
 ): Promise<CompactWithBoundaryResult> {
@@ -545,12 +392,9 @@ export async function compactWithBoundary(
     focus,
   } = args;
 
-  // 0. Per-message truncation pre-pass.
-  //    단일 거대 메시지 (>30K tokens) 가 LLM input context 초과하는 케이스 방지.
   const { messages: workingMessages, truncatedCount, truncatedDir: perMessageTruncDir } =
     await truncateOversizeMessages(messages, sessionId, compactNum);
 
-  // 1. Split — token budget plus protected recent user-turn floor, tool 페어 안전.
   const { toCompact, toPreserve, protectedPreserveCount } = splitForBoundary(
     workingMessages,
     preserveRecentTokens,
@@ -560,7 +404,6 @@ export async function compactWithBoundary(
 
   if (toCompact.length === 0) {
     if (truncatedCount > 0) {
-      // CONTENT_TRUNCATED — per-message truncation 만으로 충분히 reduce (LLM 호출 skip).
       const estimatedAfter = estimateMessagesTokens(workingMessages);
       log.info(`compact: status=content_truncated truncated=${truncatedCount} estimatedAfter=${estimatedAfter} compactNum=${compactNum}`);
       return {
@@ -573,7 +416,6 @@ export async function compactWithBoundary(
         truncatedCount,
       };
     }
-    // NOOP — history 가 충분히 작음. 정상 small-history 경로.
     const noopEstimatedAfter = estimateMessagesTokens(messages);
     log.info(`compact: status=noop estimatedAfter=${noopEstimatedAfter} compactNum=${compactNum}`);
     return {
@@ -586,11 +428,7 @@ export async function compactWithBoundary(
     };
   }
 
-  // 1a. History-wide reverse-budget truncation.
-  //     Per-message truncation handles ONE huge
-  //     message, but many medium messages (예: 200 × 1K tokens) summing
-  //     to > preflight will still overflow the LLM input context. Drop
-  //     oldest from `toCompact` (archive to disk) until total <= 90% preflight.
+  // Archive excess combined input before summary generation, even when each message fits individually.
   const llmInputBudget = preflightTokens > 0 ? Math.floor(preflightTokens * 0.9) : Infinity;
   const reverseBudgetResult = await dropOldestUntilUnderBudget(
     toCompact,
@@ -602,7 +440,6 @@ export async function compactWithBoundary(
   const reverseBudgetDir = reverseBudgetResult.truncatedDir;
   const totalTruncatedCount = truncatedCount + reverseBudgetResult.droppedCount;
 
-  // 2-3. LLM call + parse with retry-once.
   const conversationText = renderConversation(finalToCompact);
   let summary: ParsedCompactSummary | null = null;
   let lastRawText = "";
@@ -625,12 +462,10 @@ export async function compactWithBoundary(
     summary = { templateVersion: 1, sections: {}, raw: lastRawText };
   }
 
-  // 4-5. Pinned artifacts + tool boundary ledger — finalToCompact 기준
-  //     (reverse-budget archive 이후 LLM 에 실제로 들어간 메시지들).
+  // Derive pinned artifacts and tool ledger from the post-archive messages actually summarized.
   const pinnedArtifacts = collectPinned(finalToCompact);
   const toolBoundaryLedger = makeToolLedger(finalToCompact, TOOL_BOUNDARY_LEDGER_K);
 
-  // 6. Build + freeze boundary (동일 reference 보장).
   const boundary = freezeBoundary({
     templateVersion: 1,
     structuredSummary: summary,
@@ -641,15 +476,8 @@ export async function compactWithBoundary(
     compactNum,
   });
 
-  // 7. Stub boundary message + preserved → newHistory.
-  // `createdAt` parsed from the boundary ISO string so the renderer can place
-  // the boundary on the calendar's day index after reload. `checkpointMeta`
-  // is the renderer-facing summary the historyToEntries reconstruction
-  // consumes to rebuild a `kind: "checkpoint"` divider on session reload —
-  // without this the boundary would render as a raw user bubble showing the
-  // stub template text. `freedTokens` here is the pre→post compact delta of
-  // the messages that the LLM summarized; the conversation-loop's
-  // onCompactOccurred emits the same number for the live UI path.
+  // Persist checkpoint metadata so reload renders a divider rather than a raw user bubble.
+  // Use the same pre/post token delta as the live compact notice.
   const boundaryContent = renderCompactSummaryMessage(compactNum, renderBoundaryAsPreamble(boundary));
   const stubEstimatedAfter = estimateMessagesTokens([
     { role: "user" as const, content: boundaryContent },
@@ -659,9 +487,6 @@ export async function compactWithBoundary(
     estimateMessagesTokens(finalToCompact) - stubEstimatedAfter,
   );
   const stubRemovedMessages = finalToCompact.length + reverseBudgetResult.droppedCount;
-  // Hoist the ISO→epoch conversion so the persisted `meta.createdAt` and the
-  // in-memory `meta.compactedAt` are derived from the same parse — avoids
-  // double-parsing the ISO string at construction time.
   const boundaryCreatedAtMs = new Date(boundary.createdAt).getTime();
   const stubMessage: GenericMessage = {
     role: "user",
@@ -685,16 +510,11 @@ export async function compactWithBoundary(
   let newHistory: GenericMessage[] = [stubMessage, ...toPreserve];
   let estimatedAfter = estimateMessagesTokens(newHistory);
 
-  // 7a. REDUCED_INSUFFICIENT_FORCED — post-compact 이 preflight × 0.8 초과.
-  //     last-resort 로 toPreserve 의 oldest 50% 를 강제 drop 하되, 최근
-  //     preserveRecentTurns user turn 은 보호한다. **사용자 contract "원본 보존"
-  //     충족 위해 dropped slice 도 archive 파일로 격리.**
+  // If summarized history still exceeds budget, archive an older preserve slice while protecting recent turns.
   const forcedDropCap = Math.max(0, toPreserve.length - protectedPreserveCount);
   if (preflightTokens > 0 && estimatedAfter > preflightTokens * 0.8 && forcedDropCap > 0) {
     const rawDropCount = Math.min(Math.ceil(toPreserve.length / 2), forcedDropCap);
-    // Tool-pair safety: surviving 의 첫 메시지가 orphan tool_result 가 되지
-    // 않도록 dropCount 를 앞으로 민다. 그렇지 않으면 provider 가 400
-    // (tool_use_id 미스매치) 으로 거부 — 원래 C1 deadlock fix 의도 회귀.
+    // Advance past orphan tool results or the next provider request will fail pair validation.
     const boundarySafeDropCount = adjustForwardToToolBoundary(toPreserve, rawDropCount);
     const protectedSafeDropCount = boundarySafeDropCount <= forcedDropCap ? boundarySafeDropCount : 0;
     const dropCount = clampDropBeforeLatestRenderableUser(toPreserve, protectedSafeDropCount);
@@ -726,10 +546,6 @@ export async function compactWithBoundary(
     log.warn(`compact: forced-drop skipped to preserve last ${preserveRecentTurns} turn(s) and latest user message (estimatedAfter=${estimatedAfter} preflight=${preflightTokens} compactNum=${compactNum})`);
   }
 
-  // SUMMARIZED — 정상 경로. CONTENT_TRUNCATED 는 위쪽 early-return 에서 이미
-  // 처리됐고 (toCompact.length === 0 분기), dropOldestUntilUnderBudget 는
-  // surviving.length > 1 invariant 를 유지하므로 여기 도달 시 finalToCompact 가
-  // 비어있을 가능성 없음.
   const summarizedTruncDir = reverseBudgetDir || perMessageTruncDir || "";
   const summarizedRemoved = finalToCompact.length + reverseBudgetResult.droppedCount;
   log.info(`compact: status=summarized removed=${summarizedRemoved} truncated=${totalTruncatedCount} estimatedAfter=${estimatedAfter} compactNum=${compactNum}`);
@@ -744,12 +560,7 @@ export async function compactWithBoundary(
   };
 }
 
-/**
- * CompactBoundary → summary text. The boundary row wraps it in the
- * `<prior-context-summary>` fence (`renderCompactSummaryMessage`); session
- * metadata and the checkpoint record keep it unwrapped for display.
- * raw fallback 경우 raw 그대로 반환.
- */
+/** Metadata keeps display text unwrapped; model-facing boundary rows add the context fence. */
 export function renderBoundaryAsPreamble(boundary: CompactBoundary): string {
   if (boundary.structuredSummary.raw !== undefined && boundary.structuredSummary.raw.length > 0) {
     return boundary.structuredSummary.raw;
@@ -783,24 +594,8 @@ export function renderBoundaryAsPreamble(boundary: CompactBoundary): string {
   return [header, "", ...sectionLines].join("\n").trimEnd();
 }
 
-// ─── Private helpers ────────────────────────────────
-
-/**
- * Token-aware split — 끝에서부터 preserveRecentTokens 까지 보존하되, 최근
- * preserveRecentTurns user turn 은 반드시 보존하고 나머지는 compact.
- *
- * Contract (compact 가 어떤 input 에도 reduce 보장하기 위한 의미):
- *   - preserveRecentTokens 는 **ceiling** — preserve 영역의 누적 토큰이 이 값을
- *     초과하면 더 이상 메시지를 포함시키지 않는다.
- *   - 단일 메시지가 preserveRecentTokens 를 단독으로 초과하면 preserve 는 빈
- *     배열이 되고 그 메시지를 포함한 전체가 compact 대상이 된다.
- *   - 단, 최근 user turn floor 는 token ceiling 보다 우선한다. 마지막 메시지가
- *     pending user question 이면 그 질문은 이전 5 completed turns 에 더해 보존한다.
- *   - tool_use/tool_result 페어가 boundary 에 의해 갈리는 경우
- *     `adjustToToolBoundary` 가 최대 3 step backward walk 하여 페어를 같은
- *     쪽으로 정렬한다. 더 깊은 tool chain 이면 partial-pair 허용 (LLM summary
- *     의 raw fallback 이 처리).
- */
+/** The recent-turn floor outranks the token ceiling; an oversized singleton may otherwise leave no tail.
+ * Align tool pairs with bounded backward adjustment, then remove orphan result prefixes. */
 function splitForBoundary(
   messages: GenericMessage[],
   preserveRecentTokens: number,
@@ -830,19 +625,10 @@ function splitForBoundary(
   }
   preserveStart = Math.min(preserveStart, turnPreserveStart);
   preserveStart = adjustToToolBoundary(messages, preserveStart);
-  // 추가 안전망 — backward walk 가 bounded (3 step) 이라 더 깊은 tool chain
-  // 에서 preserveStart 가 여전히 orphan tool_result 를 가리킬 수 있음. forward
-  // walk 로 tool_result prefix 를 toCompact 쪽으로 넘겨 toPreserve[0] 이
-  // 절대 orphan tool_result 가 되지 않게 한다 — 그렇지 않으면 다음 turn 의
-  // provider 호출이 tool_use_id 미스매치로 400.
+  // Deep chains can exceed backward adjustment; move orphan result prefixes into the compacted slice.
   preserveStart = adjustForwardToToolBoundary(messages, preserveStart);
   if (preserveUnit === "tool-rounds") {
-    // The question the turn is answering. Between turns the user-turn floor
-    // keeps it by construction and `runPreflightGuard` adds a token allowance
-    // for a just-typed one; inside a turn neither applies, and after enough
-    // rounds the round floor leaves it behind — a reloaded transcript would
-    // show the turn's answer with no question above it. Pinned to the head of
-    // the preserve region instead of summarized.
+    // Pin the current question before preserved tool rounds so compaction cannot remove the task itself.
     const pinned = latestRenderableUserIndex(messages, preserveStart);
     if (pinned >= 0) {
       return {
@@ -851,9 +637,7 @@ function splitForBoundary(
           ...messages.slice(pinned + 1, preserveStart),
         ],
         toPreserve: [messages[pinned], ...messages.slice(preserveStart)],
-        // Counted as protected so the forced-drop pass cannot take it; that
-        // pass already stands down rather than drop the latest user row, and
-        // logs when it does.
+        // Count the pinned question as protected so forced dropping cannot remove it.
         protectedPreserveCount: protectedPreserveCount + 1,
       };
     }
@@ -865,7 +649,6 @@ function splitForBoundary(
   };
 }
 
-/** The most recent real user row strictly before `end`, or -1. */
 function latestRenderableUserIndex(messages: GenericMessage[], end: number): number {
   for (let i = Math.min(end, messages.length) - 1; i >= 0; i--) {
     const message = messages[i];
@@ -874,19 +657,7 @@ function latestRenderableUserIndex(messages: GenericMessage[], end: number): num
   return -1;
 }
 
-/**
- * Where the last `keepRounds` assistant tool rounds start.
- *
- * A round begins at the assistant message that carried the tool calls; its
- * results follow. Counting from the end and stopping at the `keepRounds`-th
- * such assistant leaves every earlier round of the turn reducible, which is
- * what {@link findRecentTurnPreserveStart} cannot do inside a turn that has
- * appended no user message of its own.
- *
- * A history with fewer than `keepRounds` rounds preserves everything and the
- * caller gets its NOOP — correct, because there is nothing older than the
- * protected window to summarize.
- */
+/** Count assistant tool-call rounds so older work in one active turn remains reducible. */
 function findRecentToolRoundPreserveStart(messages: GenericMessage[], keepRounds: number): number {
   const keep = Math.max(0, Math.floor(keepRounds));
   if (keep === 0) return messages.length;
@@ -897,8 +668,6 @@ function findRecentToolRoundPreserveStart(messages: GenericMessage[], keepRounds
     seen += 1;
     if (seen === keep) return i;
   }
-  // Fewer rounds than the floor asks for: the whole history is inside the
-  // protected window.
   return 0;
 }
 
@@ -922,22 +691,8 @@ function findRecentTurnPreserveStart(messages: GenericMessage[], preserveRecentT
   return userIndices[startIndex] ?? messages.length;
 }
 
-/**
- * tool_use/tool_result 페어 무결성 보존 — **bounded backward walk only**.
- *
- * 기본 전략: idx 에서 backward 로 최대 3 step 까지만 walk. tool_result /
- * assistant+toolCalls 가 연속되면 그 만큼 뒤로 밀고, 그 외엔 즉시 break.
- *
- * **No forward fallback** — 이전 구현은 backward 가 0 으로 collapse 시
- * forward walk 로 fallback 했지만, 이는 `backward === 0` 만 트리거 조건으로
- * 사용해 entire-prefix-is-tool 와 deep-history-coincidentally-zero 두 케이스를
- * 구분 못 함 → non-deadlock 케이스에 forward walk 가 misfire 하여 toCompact
- * 가 의도 외로 비어지는 회귀 발생.
- *
- * 대신 backward 를 3-step 으로 bound — 더 깊은 tool chain 이면 partial-pair
- * 허용. LLM summary 는 orphan tool_use/tool_result 가 있어도 12-section
- * 생성 가능 (raw fallback 과 동일 원리).
- */
+/** Bound backward adjustment to avoid collapsing all useful input into the preserve region.
+ * Summary input can contain partial pairs; provider replay cannot. */
 function adjustToToolBoundary(messages: GenericMessage[], idx: number): number {
   const minIdx = Math.max(0, idx - 3);
   let cur = idx;
@@ -954,21 +709,8 @@ function adjustToToolBoundary(messages: GenericMessage[], idx: number): number {
   return cur;
 }
 
-/**
- * FORCED 분기 + splitForBoundary 의 안전망 — surviving / toPreserve 의 첫
- * 메시지가 orphan `tool_result` 가 되지 않도록 idx 를 forward 로 민다.
- *
- * 시나리오: `messages[idx-1]` = `assistant+toolCalls` (drop / compact 쪽),
- *   `messages[idx]` = `tool_result` (preserve / surviving 쪽) — assistant tool_use
- *   가 reduce 됐는데 tool_result 만 history 에 남음 → Anthropic/OpenAI 400
- *   invalid_request (tool_use_id mismatch). 해결: tool_result 가 보이면 계속
- *   forward walk.
- *
- * **Unbounded forward walk**: backward sibling 은 3-step bound 가 있지만 forward
- * 는 안전한 방향이라 bound 없음. 극단적으로 모든 메시지가 `tool_result` 면
- * `messages.length` 반환 — toPreserve 가 빈 배열이 되지만 `[stubMessage]` 만으로
- * 유효한 history. orphan 보다 빈 preserve 가 항상 안전.
- */
+/** Advance without a bound past orphan result prefixes in replayed history.
+ * An empty preserve tail is valid and safer than an unmatched result. */
 function adjustForwardToToolBoundary(messages: GenericMessage[], idx: number): number {
   let cur = idx;
   while (cur < messages.length) {
@@ -992,7 +734,6 @@ function clampDropBeforeLatestRenderableUser(messages: GenericMessage[], dropCou
   return dropCount;
 }
 
-/** Conversation 직렬화 — LLM 프롬프트 본문용. trimmed per-message + role marker. */
 function renderConversation(messages: GenericMessage[]): string {
   const lines: string[] = [];
   for (const msg of messages) {
@@ -1011,7 +752,6 @@ function renderConversation(messages: GenericMessage[]): string {
   return lines.join("\n");
 }
 
-/** SUMMARY_TEMPLATE를 공통 no-tool Memory Reviewer recap lane으로 전달한다. */
 async function callSummaryLLM(args: {
   memoryReviewer: CompactRecapReviewer;
   conversationText: string;
@@ -1047,7 +787,6 @@ async function callSummaryLLM(args: {
   })).trim();
 }
 
-/** skill route 도구 출력 + `meta.lock=true` 메시지의 압축 면제 — 정확한 paths/IDs 수집. */
 function collectPinned(messages: GenericMessage[]): string[] {
   const pinned = new Set<string>();
   for (const msg of messages) {
@@ -1067,7 +806,6 @@ function collectPinned(messages: GenericMessage[]): string[] {
   return Array.from(pinned);
 }
 
-/** 마지막 K 라운드 tool_use/tool_result 쌍을 ledger 로 저장. */
 function makeToolLedger(messages: GenericMessage[], k: number): ToolCallSummary[] {
   const entries: ToolCallSummary[] = [];
   let round = 0;

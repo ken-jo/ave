@@ -1,24 +1,5 @@
-/**
- * Compile-time assertions over the plugin-isolation seam
- * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- * Types only, and inside the root `tsconfig.json` `include`, so `bun run
- * typecheck` — and CI with it — fails when one of them stops holding. Nothing
- * imports this file; `knip.jsonc` names it as an entry.
- *
- * - The factory's spec has exactly these members. Restoring a way to hand the
- *   factory a child (`connect`), or adding any member, fails here until the
- *   set is edited in review.
- * - A protocol session's authority is a REQUIRED bound table, so a session can
- *   neither run without one nor be handed an unbound record.
- * - The transport's `request` takes instance methods only, so an MCP request
- *   cannot bypass the one producer of its metadata.
- * - The session's channel is the non-destructive set and nothing else: a
- *   member that could end the child belongs to `teardown`, not here.
- * - The signature types the frozen functions take and return keep the shape
- *   the downstream slices are written against: the MCP methods `requestMcp`
- *   sends, the two arms of a probe reply, and the validation session's input.
- */
+// Compile-time assertions preserve factory shape, bound authority and non-destructive session contracts.
+// Transport requests remain instance-only so metadata cannot bypass its producer.
 import type { OutOfProcessPluginSpec } from "../../src/plugins/isolation/out-of-process-plugin.js";
 import type {
   PluginProtocolChannel,
@@ -55,7 +36,7 @@ export type SessionTableIsBound = Expect<
   Equal<PluginProtocolSessionSpec["table"], BoundHostApiDispatchTable>
 >;
 
-// `{}` is the probe: a required member makes `{}` not assignable to the pick.
+// A required member prevents the empty object from satisfying the pick.
 export type SessionTableIsRequired = Expect<{} extends Pick<PluginProtocolSessionSpec, "table"> ? false : true>;
 
 export type TransportRequestTakesInstanceMethods = Expect<

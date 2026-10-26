@@ -32,7 +32,7 @@
  *   work-board    ave:work-board:* (CRUD, lifecycle, run, run-transcript,
  *                 generate-report)
  *   attach        ave:attach:*
- *   preview       ave:preview:read-file
+ *   preview       ave:preview:read-file, ave:preview:read-document
  *   workspace     ave:workspace:*
  *   ui            ave:ui:*
  *   terminal      ave:terminal:*
@@ -65,6 +65,7 @@ import { registerPluginStudioHandlers } from "./domains/plugin-studio.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
+import { registerPermissionJudgeHandlers } from "./domains/permission-judge.js";
 import { registerWindowHandlers } from "./domains/window.js";
 import { registerRoutineHandlers } from "./domains/routines.js";
 import { registerSessionTasksHandlers } from "./domains/session-tasks.js";
@@ -146,6 +147,8 @@ export function registerIpcHandlers(
   registerHomeDocsHandlers(deps);
   registerUsageHandlers(deps);
   registerGitRuntimeHandlers(deps);
+  // Bundled sign-in pruning waits while a package install, update or uninstall is open.
+  deps.mcpManager.setPackageTransactionProbe(() => gitMarketplaceRegistration?.packageTransactionsIdle() ?? true);
   const installedContent = registerMarketplaceContentHandlers(deps);
   registerPluginStudioHandlers(deps, installedContent);
   const gitMarketplace = registerGitMarketplaceHandlers(deps, installedContent);
@@ -153,6 +156,7 @@ export function registerIpcHandlers(
   registerAuditHandlers(deps);
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);
+  registerPermissionJudgeHandlers(deps);
   registerWindowHandlers(deps);
   registerRoutineHandlers(deps);
   registerSessionTasksHandlers(deps);

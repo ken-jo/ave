@@ -1,12 +1,5 @@
-/**
- * Derived, share-safe state for remote/read-only conversation surfaces.
- *
- * This is deliberately not another event hub. It subscribes to the one
- * platform timeline and retains only the explicit shared projection, giving a
- * reconnecting remote observer a bounded safe tail and snapshot without ever
- * retaining owner detail (tool input/result, reasoning, UI resources, paths,
- * or memory content).
- */
+// Retain only explicitly shared events from the canonical timeline for bounded replay and snapshots.
+// Never retain owner-only tools, reasoning, resources, paths, or memory.
 import {
   projectSharedConversationEvent,
   type PlatformConversationEventEnvelope,
@@ -15,36 +8,31 @@ import {
 } from "./conversation-platform-protocol.js";
 import { requirePositiveInteger } from "../shared/safe-integer.js";
 
-/**
- * Re-exported so downstream safe surfaces (bridge delivery, providers) can
- * validate a turn-failure summary without importing the owner event module.
- */
+// Safe surfaces can validate failure summaries without importing owner-detail contracts.
 export { toSafeTurnFailureSummary } from "./turn-failure-summary.js";
 export type { TurnFailureCategory, TurnFailureSummary } from "./turn-failure-summary.js";
 
-/** Version of the safe remote observer wire shape. */
 export const SHARED_CONVERSATION_PROTOCOL_VERSION = 1 as const;
 
 export interface SharedConversationEventEnvelope {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly conversationId: string;
-  /** Projection-local cursor; unshared source events never consume a value. */
+  // Dense projection cursors advance only for shared events.
   readonly cursor: number;
   readonly emittedAt: number;
   readonly event: SharedConversationProjectionEvent;
 }
 
-export interface SharedConversationReplay {
+interface SharedConversationReplay {
   readonly conversationId: string;
   readonly afterCursor: number | null;
   readonly oldestRetainedCursor: number | null;
   readonly latestCursor: number;
-  /** True means the caller must obtain a new safe snapshot before resuming. */
+  // Missing replay continuity requires a new safe snapshot.
   readonly snapshotRequired: boolean;
   readonly events: readonly SharedConversationEventEnvelope[];
 }
 
-/** A current view intentionally restricted to explicitly shareable state. */
 export interface SharedConversationSnapshot {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly conversationId: string;
@@ -63,9 +51,7 @@ export interface SharedConversationProjectionSubscription {
 }
 
 export interface SharedConversationProjectionStore {
-  /** Start the single timeline subscription. Idempotent. */
   start(): void;
-  /** Detach from the timeline. Idempotent; retained safe state is left intact. */
   stop(): void;
   isStarted(): boolean;
   read(conversationId: string, options?: { readonly afterCursor?: number }): SharedConversationReplay;
@@ -79,11 +65,11 @@ export interface SharedConversationProjectionStore {
 }
 
 export interface SharedConversationProjectionStoreOptions {
-  /** Maximum safe replay events per conversation. Defaults to 256. */
+  // Default replay retention is 256 events per conversation.
   readonly replayLimitPerConversation?: number;
-  /** Maximum tracked conversation states. Defaults to 32. */
+  // Default tracked-state cap is 32 conversations.
   readonly maxTrackedConversations?: number;
-  /** Maximum shareable assistant text retained per conversation. Defaults to 16 KiB. */
+  // Default assistant-text retention is 16 KiB per conversation.
   readonly maxAssistantTextChars?: number;
 }
 
@@ -125,8 +111,7 @@ export function createSharedConversationProjectionStore(
   const subscribers = new Set<Subscriber>();
   let unsubscribeTimeline: (() => void) | undefined;
   const touch = (conversationId: string, state: ConversationState) => {
-    // Map insertion order is the LRU order; replacing an existing key alone
-    // does not refresh its position.
+    // Delete before replacing a Map key to refresh its LRU position.
     states.delete(conversationId);
     states.set(conversationId, state);
   };
@@ -156,8 +141,7 @@ export function createSharedConversationProjectionStore(
         afterCursor,
         oldestRetainedCursor: null,
         latestCursor: 0,
-        // A caller carrying a cursor for state we no longer retain must reset
-        // from a host snapshot, never infer continuity from an empty tail.
+        // A cursor for evicted state requires a snapshot, never an inferred empty catch-up.
         snapshotRequired: afterCursor !== null && afterCursor > 0,
         events: [],
       };
@@ -210,8 +194,7 @@ export function createSharedConversationProjectionStore(
       throw new TypeError("Shared conversation listener must be a function.");
     }
     start();
-    // JS execution does not yield between this read and Set insertion, so a
-    // live canonical event cannot interleave ahead of the returned replay.
+    // Synchronous read-and-subscribe prevents live events from overtaking replay.
     const replay = read(conversationId, subscribeOptions);
     const subscriber: Subscriber = { conversationId, listener, active: true };
     subscribers.add(subscriber);
@@ -231,10 +214,7 @@ export function createSharedConversationProjectionStore(
     const projected = projectSharedConversationEvent(envelope.event);
     if (!projected) return;
 
-    // Do not reuse the semantic timeline cursor: its gaps reveal how many
-    // owner-only events occurred (for example reasoning or private tool data).
-    // The safe store owns a dense cursor that advances only for an allowlisted
-    // shared event.
+    // Use dense safe cursors; semantic cursor gaps disclose counts of owner-only events.
     const state = getOrCreateState(envelope.conversationId);
     state.latestCursor += 1;
     state.updatedAt = envelope.emittedAt;
@@ -255,8 +235,7 @@ export function createSharedConversationProjectionStore(
       try {
         subscriber.listener(clone(shared));
       } catch {
-        // A remote surface cannot block the canonical timeline or another
-        // observer. Its HTTP adapter owns disconnection/backpressure policy.
+        // Remote observers cannot block the timeline; adapters own backpressure and disconnect policy.
       }
     }
   };

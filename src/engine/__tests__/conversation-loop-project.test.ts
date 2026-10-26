@@ -71,10 +71,7 @@ describe("ConversationLoop project identity", () => {
       projectName: "workspace",
       includeUnscoped: true,
     });
-    // getSessionProjectIsDefault() is the UI-facing signal (chat.new domain
-    // handler, markMainActiveAfterTurn) that a session's project binding is
-    // the ambient default rather than an explicit selection — 2026-07
-    // "remove Current Project labeling".
+    // Default project binding is ambient; explicit project selection must remain distinguishable.
     expect(loop.getSessionProjectIsDefault()).toBe(true);
     expect(loop.getSessionExecutionCwd()).toBe(defaultRoot);
   });
@@ -277,8 +274,7 @@ describe("ConversationLoop project identity", () => {
     const controller = new AbortController();
     loop.currentAbortController = controller;
 
-    // The settings list has already shrunk, so the caller carries the
-    // pre-persist global-scope snapshot explicitly.
+    // Carry the pre-persist snapshot because the settings list has already shrunk.
     loop.revokeWorkspaceRoot(removedRoot, { globalScopeWasAuthorized: true });
 
     expect(controller.signal.aborted).toBe(true);

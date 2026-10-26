@@ -1,7 +1,3 @@
-/**
- * TurnJournal: throttled partial snapshots, append ordering, and what one
- * append costs on a 60-round turn compared with a whole-session save.
- */
 import { mkdtempSync, readFileSync } from "node:fs";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
@@ -56,11 +52,10 @@ describe("TurnJournal partial snapshots", () => {
       now += 10;
       await vi.advanceTimersByTimeAsync(10);
     }
-    // 3 s of deltas every 10 ms → the first snapshot immediately, then one per second.
     expect(store.writeTurnPartial.mock.calls.length).toBeGreaterThanOrEqual(3);
     expect(store.writeTurnPartial.mock.calls.length).toBeLessThanOrEqual(4);
     expect(render.mock.calls.length).toBe(store.writeTurnPartial.mock.calls.length);
-    // The newest snapshot loses at most one interval of text.
+    // Throttled recovery may lose at most one snapshot interval of text.
     const last = store.writeTurnPartial.mock.calls.at(-1)![2] as { content: string };
     expect(text.length - last.content.length).toBeLessThanOrEqual(100);
   });
@@ -76,7 +71,6 @@ describe("TurnJournal partial snapshots", () => {
     const roundId = journal.currentRoundRowId();
     expect((store.writeTurnPartial.mock.calls[0][2] as { messageId: string }).messageId).toBe(roundId);
     history.append({ role: "assistant", content: "a", meta: { messageId: roundId } });
-    // The next round gets a new id.
     expect(journal.currentRoundRowId()).not.toBe(roundId);
   });
 
@@ -94,7 +88,6 @@ describe("TurnJournal partial snapshots", () => {
     await journal.begin();
     journal.notePartial(() => ({ content: "부분" }));
     await new Promise((resolve) => setTimeout(resolve, 5));
-    // A stream-error notice ends the round under a different id.
     history.append({ role: "assistant", content: "오류", meta: { systemNotice: "stream-error" } });
     await journal.settled();
     expect(order).toEqual(["snapshot", "append", "clear"]);
@@ -156,7 +149,6 @@ describe("append cost on a 60-round turn", () => {
     try {
       const mm = new MemoryManager({ aveDir: dir });
       const history = new ConversationHistory();
-      // A realistic prior conversation: 200 rows of ~2 KB.
       for (let i = 0; i < 200; i += 1) {
         history.append({ role: i % 2 === 0 ? "user" : "assistant", content: `prior ${i} ${"y".repeat(2_000)}` });
       }
@@ -164,8 +156,6 @@ describe("append cost on a 60-round turn", () => {
       await mm.saveSession(SESSION, history.getMessages());
 
       const appendMs: number[] = [];
-      // How long the event loop — the thing delivering stream frames — was
-      // held up while the 60 appends ran.
       const loopDelay = monitorEventLoopDelay({ resolution: 1 });
       loopDelay.enable();
       for (let round = 0; round < 60; round += 1) {
@@ -186,9 +176,7 @@ describe("append cost on a 60-round turn", () => {
         + `p99=${(loopDelay.percentile(99) / 1e6).toFixed(2)}ms\n`,
       );
 
-      // The streaming-side cost: one partial snapshot of a 20 KB answer, at most
-      // once per second. Async — the disk wait runs on the libuv pool — so the
-      // number below is latency, not main-thread time.
+      // Snapshot disk latency runs asynchronously and is not main-thread blocking time.
       const partialMs: number[] = [];
       for (let i = 0; i < 20; i += 1) {
         const started = performance.now();
@@ -206,8 +194,7 @@ describe("append cost on a 60-round turn", () => {
       const sorted = [...appendMs].sort((x, y) => x - y);
       const median = sorted[Math.floor(sorted.length / 2)];
       const p95 = sorted[Math.floor(sorted.length * 0.95)];
-      // Recorded for the PR; the assertions below are generous bounds so the
-      // test measures rather than flakes on a loaded CI host.
+      // Keep timing assertions broad enough to measure loaded hosts without flakes.
       process.stderr.write(
         `[turn-journal bench] 60 rounds: append median=${median.toFixed(2)}ms p95=${p95.toFixed(2)}ms `
         + `max=${sorted.at(-1)!.toFixed(2)}ms total=${appendMs.reduce((s, v) => s + v, 0).toFixed(1)}ms; `
@@ -267,7 +254,7 @@ describe("parallel result append cost", () => {
       const initial = readFileSync(path);
       let previous = initial;
       let priorContentReads = 0;
-      // Reading row ids is allowed; processing the already-persisted content is not.
+      // Row IDs may be read, but already-persisted content must not be reprocessed.
       const restoreContents: Array<() => void> = [];
       const trackPersistedContent = (message: { content: unknown }) => {
         const descriptor = Object.getOwnPropertyDescriptor(message, "content")!;
@@ -286,14 +273,18 @@ describe("parallel result append cost", () => {
       const open = vi.mocked(fsPromises.open).mockImplementation(async (...args) => {
         const handle = await actualAsync.open(...args);
         if (args[0] !== path) return handle;
-        // Observe real writes and completed durability calls on the transcript only.
         const appendFile = handle.appendFile.bind(handle);
         const datasync = handle.datasync.bind(handle);
         const pending: typeof writes = [];
         handle.appendFile = async (...appendArgs) => {
           const [data, options] = appendArgs;
           const encoding = typeof options === "string" ? options : options?.encoding;
-          const payload = typeof data === "string" ? Buffer.from(data, encoding ?? "utf8") : Buffer.from(data);
+          if (typeof data !== "string" && !ArrayBuffer.isView(data)) {
+            throw new TypeError("Expected transcript text or bytes");
+          }
+          const payload = typeof data === "string"
+            ? Buffer.from(data, encoding ?? "utf8")
+            : Buffer.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
           await appendFile(...appendArgs);
           const write = { payload, durable: false };
           writes.push(write);
@@ -327,7 +318,6 @@ describe("parallel result append cost", () => {
           const current = readFileSync(path);
           expect(current.subarray(0, previous.length).equals(previous)).toBe(true);
           const added = current.subarray(previous.length);
-          // One new JSON line, not a serialization or write of the prior history.
           expect(JSON.parse(added.toString("utf8"))).toMatchObject({
             role: "tool_result", toolUseId: call.id, content,
             meta: { messageId: result.meta.messageId },
@@ -367,7 +357,7 @@ describe("parallel result append cost", () => {
         const raw = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
         expect(raw.filter((row) => row.role === "tool_result").map((row) => row.toolUseId))
           .toEqual((reversed ? [...calls].reverse() : calls).map((call) => call.id));
-        // Live readers see call order before the final rewrite normalizes the file.
+        // Live readers see call order before final rewrite normalizes the file.
         expect((mm.loadSession(SESSION) as Array<{ role: string; toolUseId?: string }>).filter((row) => row.role === "tool_result").map((row) => row.toolUseId)).toEqual(expected);
         await mm.saveSession(SESSION, history.getMessages());
         const saved = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -399,7 +389,6 @@ describe("parallel result append cost", () => {
       expect(sample.writtenBytes).toBe(sample.newResultBytes);
       expect(sample.priorContentReads).toBe(0);
     }
-    // Timer maxima include scheduling and observation costs. Keep them diagnostic;
-    // the regression gate is the real byte work, async durability and sync-I/O counts.
+    // Timing is diagnostic; gate actual byte work, async durability, and synchronous I/O counts.
   });
 });

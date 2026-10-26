@@ -1,11 +1,4 @@
-/**
- * Arrival on a settings deep link: scroll, focus, ring, then let go.
- *
- * The ring is the only part a reader can see, and the part most easily broken
- * by a refactor — it is added by one effect and removed by another, and the
- * consuming `onApplied` runs in between. Fuse the two and the ring is torn off
- * in the tick it appeared, which looks exactly like "nothing happened".
- */
+/** Keep arrival-ring cleanup separate from onApplied so consuming the link does not remove the ring in the same tick. */
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -93,8 +86,8 @@ describe("useSettingsSectionArrival", () => {
   });
 
   it("keeps the ring on after the caller has dropped the one-shot", () => {
-    // The window clears its target the moment `onApplied` fires. Were the ring
-    // owned by the same effect, that clear would remove it immediately.
+    // The window clears its target the moment `onApplied` fires. Were the ring owned by the same effect, that clear would
+    // remove it immediately.
     const node = anchor("permissions-os-sandbox");
     const { rerender } = renderHook(
       ({ section }: { section: string | null }) =>
@@ -115,15 +108,14 @@ describe("useSettingsSectionArrival", () => {
 
     flushFrame();
 
-    // The stylesheet turns the transition off for this class; the hook's own
-    // share is the scroll, which must not animate either.
+    // The stylesheet turns the transition off for this class; the hook's own share is the scroll, which must not animate
+    // either.
     expect(scrolled).toEqual([{ block: "start", behavior: "auto" }]);
   });
 
   it("does not arrive a second time when the OS motion setting flips", () => {
-    // The preference is subscribed, so it can change while the panel is open.
-    // Arrival is an event, not a state: re-running it would scroll and re-ring
-    // a section the reader had already moved past.
+    // The preference is subscribed, so it can change while the panel is open. Arrival is an event, not a state: re-running it
+    // would scroll and re-ring a section the reader had already moved past.
     anchor("permissions-os-sandbox");
     const onApplied = vi.fn();
     renderHook(() => useSettingsSectionArrival("permissions-os-sandbox", onApplied));

@@ -1,18 +1,4 @@
-/**
- * Host Risk Inspector unit tests — pins the host-classifies-risk
- * classification contract (project_permission_review_redesign):
- *
- *   (a) DEFAULT-STRICT — anything not confidently read-only is write-equivalent.
- *   (b) Shell commands are parsed host-side: a fully read-only compound → read;
- *       any mutating/unknown leaf → shell. Wrapper commands are stripped.
- *   (c) Filesystem path args are write-equivalent whether they escape the
- *       allowed scope or sit inside it — the inspector does not answer
- *       containment (single authority: `isPathAllowed`), it just never
- *       classifies a path-bearing call down.
- *   (d) Network targets (URL-shaped args / host-mediated egress) → network.
- *
- * The inspector reads ONLY host-owned signals — never the declared category.
- */
+// Only positive host-owned evidence earns read classification; unknown/mutating commands and path-bearing calls stay write-equivalent. Network signals remain network; containment belongs solely to isPathAllowed.
 import { describe, it, expect } from "vitest";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,9 +14,7 @@ function signals(overrides: Partial<Parameters<typeof inspectHostRisk>[0]>) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // Basic classification
-// ---------------------------------------------------------------------------
 
 describe("inspectHostRisk — shell command classification", () => {
   it("classifies a single read-only command as read", () => {
@@ -121,9 +105,7 @@ describe("inspectHostRisk — shell command classification", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // M1 — glued/cluster short-flag detection (sed -i forms)
-// ---------------------------------------------------------------------------
 
 describe("M1 — mutating-flag cluster/glue detection (sed -i and related)", () => {
   it("sed -i (exact token) → shell", () => {
@@ -173,8 +155,7 @@ describe("M1 — mutating-flag cluster/glue detection (sed -i and related)", () 
 
   // dollar-expansion vector (M1 mode 4)
   it("sed with dollar-expanded arg → shell (IFS word-splitting vector closed)", () => {
-    // `sed $IFS-i f` — IFS could expand to whitespace, making `-i` a separate
-    // token that the old scanner would miss. Fail closed on any $ in args.
+    // `sed $IFS-i f` — IFS could expand to whitespace, making `-i` a separate token that the old scanner would miss. Fail closed on any $ in args.
     expect(isReadOnlyCommand("sed $IFS-i f")).toBe(false);
     expect(isReadOnlyCommand("sed ${IFS}-i f")).toBe(false);
     expect(isReadOnlyCommand("sed $VAR f")).toBe(false);
@@ -198,9 +179,7 @@ describe("M1 — mutating-flag cluster/glue detection (sed -i and related)", () 
   });
 });
 
-// ---------------------------------------------------------------------------
-// M1b — sed in-program write/exec detection (#1473)
-// ---------------------------------------------------------------------------
+// M1b — sed in-program write/exec detection
 
 describe("M1b — sed script write/exec commands classify shell", () => {
   it("keeps common read-only sed scripts classified as read", () => {
@@ -237,12 +216,9 @@ describe("M1b — sed script write/exec commands classify shell", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // M2 — git write-subcommand forms
-// ---------------------------------------------------------------------------
 
 describe("M2 — git write-subcommand forms now classify shell", () => {
-  // Read-only forms that should still be read
   it("git status / log / diff / show → read", () => {
     expect(signals({ finalInput: { command: "git status" } })).toBe("read");
     expect(signals({ finalInput: { command: "git log --oneline" } })).toBe("read");
@@ -266,9 +242,7 @@ describe("M2 — git write-subcommand forms now classify shell", () => {
   });
 
   it("git config -e / --edit → shell (spawns editor, permits config mutation)", () => {
-    // `-e`/`--edit` open the config in $GIT_EDITOR/$EDITOR (arbitrary process)
-    // and leave the file writable (alias / core.pager install). Neither is a
-    // read, so both must escalate rather than pass on the flag name alone.
+    // `-e`/`--edit` open the config in $GIT_EDITOR/$EDITOR (arbitrary process) and leave the file writable (alias / core.pager install). Neither is a read, so both must escalate rather than pass on the flag name alone.
     expect(isReadOnlyCommand("git config -e")).toBe(false);
     expect(isReadOnlyCommand("git config --edit")).toBe(false);
     expect(isReadOnlyCommand("git config --global -e")).toBe(false);
@@ -325,11 +299,25 @@ describe("M2 — git write-subcommand forms now classify shell", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // M3 — MUTATING_FLAGS additions (sort -o, split, find -ok/-okdir)
-// ---------------------------------------------------------------------------
 
 describe("M3 — MUTATING_FLAGS gap coverage", () => {
+  it.each([
+    "-T ../..", "-T_/../..", "-T../..",
+    "--temporary-directory ../..", "--temporary-directory=../..",
+  ])("classifies temporary-file selection as a write: %s", (option) => {
+    expect(isReadOnlyCommand(`sort ${option} f`)).toBe(false);
+    expect(isReadOnlyCommand("sort -t, -k2 -S10M f")).toBe(true);
+  });
+
+  it.each([
+    "", "-f 1", "-s 1", "-w 1", "-f1", "-s1", "-w1",
+    "--skip-fields 1", "--skip-chars=1", "--check-chars 1", "-cf 1", "--",
+  ])("classifies the second uniq operand as a write: %s", (options) => {
+    expect(isReadOnlyCommand(`uniq ${options} f inside.out`)).toBe(false);
+    expect(isReadOnlyCommand(`uniq ${options} f`)).toBe(true);
+  });
+
   it("sort -o FILE → shell (writes output file)", () => {
     expect(isReadOnlyCommand("sort -o out.txt input.txt")).toBe(false);
     expect(isReadOnlyCommand("sort --output=out.txt input.txt")).toBe(false);
@@ -371,22 +359,10 @@ describe("M3 — MUTATING_FLAGS gap coverage", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // M4 — differential / property test (tighten-only guard)
-// ---------------------------------------------------------------------------
 
 describe("M4 — differential / property test (tighten-only invariant)", () => {
-  /**
-   * Reconstruct what the OLD main-branch isReadOnlyCommand would have returned.
-   *
-   * OLD logic (before this PR):
-   *  1. Fail closed if /[<>`]|\$\(/.test(command)
-   *  2. Split on /(?:&&|\|\||[;|&\n])/ into leaves
-   *  3. For each leaf: split(/\s+/), strip VAR= assignments, strip wrapper
-   *     commands (option flags + one duration), check verb in READ_ONLY_COMMANDS
-   *     or READ_ONLY_GIT_SUBCOMMANDS (old set included config/tag/branch/remote
-   *     unconditionally). No mutating-flag check.
-   */
+// Differential baseline uses a raw expansion/redirect guard, naive leaf/word splits, assignment/wrapper stripping and verb allowlists without mutating-flag checks.
   function oldIsReadOnlyCommand(command: string): boolean {
     if (/[<>`]|\$\(/.test(command)) return false;
     const oldReadOnlyCommands = new Set([
@@ -432,12 +408,7 @@ describe("M4 — differential / property test (tighten-only invariant)", () => {
     });
   }
 
-  /**
-   * Enumerated correction set: commands that the OLD logic mis-classified as
-   * `shell` but are genuinely side-effect-free. Each is documented with WHY
-   * the old logic got it wrong. The new logic correctly classifies them `read`.
-   * Any shell→read transition NOT in this set is a regression.
-   */
+  // Enumerated correction set: commands that the OLD logic mis-classified as `shell` but are genuinely side-effect-free. Each is documented with WHY the old logic got it wrong. The new logic correctly classifies them `read`. Any shell→read transition NOT in this set is a regression.
   const INTENDED_CORRECTIONS: readonly { cmd: string; reason: string }[] = [
     {
       cmd: 'grep "a && b" f',
@@ -465,12 +436,7 @@ describe("M4 — differential / property test (tighten-only invariant)", () => {
     },
   ];
 
-  /**
-   * Adversarial corpus — commands spanning quoted metachars, escaped separators,
-   * fd redirects, wrapper+mutating combos, M1/M2/M3 cases, and the correction
-   * set. The differential property test applies the tighten-only guard over
-   * every command in this list.
-   */
+  // Adversarial corpus — commands spanning quoted metachars, escaped separators, fd redirects, wrapper+mutating combos, M1/M2/M3 cases, and the correction set. The differential property test applies the tighten-only guard over every command in this list.
   const CORPUS: readonly string[] = [
     // Basic read
     "ls -la", "cat f", "grep foo f", "wc -l f", "echo hello",
@@ -492,9 +458,7 @@ describe("M4 — differential / property test (tighten-only invariant)", () => {
     "sed 'W /tmp/out' f", "sed '1e echo boom' f", "sed 's/a/b/e' f",
     "sed 'r /tmp/in' f", "sed -f script.sed f",
     "awk -iinplace '{p}' f", "awk -i inplace '{p}' f",
-    // awk tool-internal mini-language: in-program >, |, system() are opaque to
-    // shell tokenization but the verb exclusion keeps these as shell in new code.
-    // Old code caught them via the > char-class guard. Both old+new → shell.
+    // awk tool-internal mini-language: in-program >, |, system are opaque to shell tokenization but the verb exclusion keeps these as shell in new code. Old code caught them via the > char-class guard. Both old+new → shell.
     `awk 'BEGIN{print "x" > "/tmp/pwn"}'`,
     `awk '{print > "out"}' f`,
     `awk 'BEGIN{printf "x">>"/home/u/.bashrc"}'`,
@@ -513,11 +477,7 @@ describe("M4 — differential / property test (tighten-only invariant)", () => {
     // Redirects → shell (file-target and fd-dup both stay shell via hasOutputRedirect)
     "echo hi > out", "cat < in", "cat foo >> log",
     "ls 2>&1", "ls >&2",
-    // Note: ls 2>&1 / ls >&2 are in the corpus but NOT in INTENDED_CORRECTIONS —
-    // they remain shell because hasOutputRedirect is set even for fd-dups.
-    // The old code also classified them shell (via the > char-class guard), so
-    // they are neither a regression nor a correction.
-    // Substitution → shell
+    // Note: ls 2>&1 / ls >&2 are in the corpus but NOT in INTENDED_CORRECTIONS — they remain shell because hasOutputRedirect is set even for fd-dups. The old code also classified them shell (via the > char-class guard), so they are neither a regression nor a correction. Substitution → shell
     "ls $(rm -rf /)", "echo `rm -rf /`",
     // Dollar-expansion vectors (mutating-capable verbs)
     "sed $IFS-i f", "sed ${IFS}-i f", "sed $VAR f",
@@ -573,7 +533,7 @@ describe("M4 — differential / property test (tighten-only invariant)", () => {
   });
 
   it("new tightens: commands that were read in OLD but are now correctly shell", () => {
-    // These are the actual new read→shell tightens introduced by this PR.
+  // These mutating forms must escalate from read to shell.
     const newTightens: readonly { cmd: string; reason: string }[] = [
       { cmd: "sed -i 's/a/b/' f",         reason: "sed -i is mutating (exact flag)" },
       { cmd: "sed -i.bak 's/a/b/' f",     reason: "sed -i.bak glued suffix (cluster match)" },
@@ -608,15 +568,10 @@ describe("M4 — differential / property test (tighten-only invariant)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // NIT — fd-dup redirect tokenizer correctness
-// ---------------------------------------------------------------------------
 
 describe("NIT — fd-dup redirects: shell classification preserved, no spurious target", () => {
-  // fd-dup operators (`2>&1`, `>&2`) are output-redirect operators that
-  // duplicate a file descriptor rather than naming a file. The SOT tokenizer
-  // correctly sets hasOutputRedirect=true (keeping the inspector closed) while
-  // adding NO entry to redirectTargets (no spurious "1"/"2" file target).
+  // fd-dup operators (`2>&1`, `>&2`) are output-redirect operators that duplicate a file descriptor rather than naming a file. The SOT tokenizer correctly sets hasOutputRedirect=true (keeping the inspector closed) while adding NO entry to redirectTargets (no spurious "1"/"2" file target).
   it("ls 2>&1 stays shell (hasOutputRedirect) and has no spurious redirect target", async () => {
     expect(isReadOnlyCommand("ls 2>&1")).toBe(false);
     const { tokenizeShell } = await import("../../shared/shell-tokenizer.js");
@@ -636,9 +591,7 @@ describe("NIT — fd-dup redirects: shell classification preserved, no spurious 
   });
 });
 
-// ---------------------------------------------------------------------------
 // Existing non-shell classification tests (unchanged)
-// ---------------------------------------------------------------------------
 
 describe("inspectHostRisk — network classification", () => {
   it("classifies a URL-shaped arg as network", () => {
@@ -665,10 +618,7 @@ describe("inspectHostRisk — foreign-peer (mcp) source", () => {
 });
 
 describe("inspectHostRisk — filesystem classification", () => {
-  // The inspector answers no containment question — `isPathAllowed` is the
-  // single authority for that, on the enforcement path. What it DOES guarantee
-  // is that no filesystem-shaped call classifies down, whichever side of the
-  // allowed scope the path is on.
+  // The inspector answers no containment question — `isPathAllowed` is the single authority for that, on the enforcement path. What it DOES guarantee is that no filesystem-shaped call classifies down, whichever side of the allowed scope the path is on.
   it("classifies a path escaping any plausible allowed scope as write", () => {
     expect(signals({ finalInput: { path: "/etc/passwd" } })).toBe("write");
     expect(signals({ finalInput: { file_path: "/etc/shadow" } })).toBe("write");
@@ -679,8 +629,7 @@ describe("inspectHostRisk — filesystem classification", () => {
   });
 
   it("does not classify down on a read-flavoured path call", () => {
-    // A read-looking non-shell call has no host-owned read-only PROOF: `mode`
-    // is plugin-supplied text, not a host signal. Default-strict wins.
+    // A read-looking non-shell call has no host-owned read-only PROOF: `mode` is plugin-supplied text, not a host signal. Default-strict wins.
     expect(signals({ finalInput: { path: `${TMP}/a.txt`, mode: "read" } })).toBe("write");
     expect(signals({ finalInput: { nested: { path: `${TMP}/a.txt` } } })).toBe("write");
   });

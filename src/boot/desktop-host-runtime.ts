@@ -5,7 +5,7 @@ import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
 import { adaptPowerMonitor } from "../main/idle-scheduler.js";
 import { getAppWindows } from "../main/main-window.js";
-import { isAppShutdownStarted, findSessionMainWindowContents, getMainWindows, mainWindowForContents } from "../main/app-state.js";
+import { isAppShutdownStarted, findSessionMainWindowContents, findTerminalMainWindowContents, getMainWindows, mainWindowForContents } from "../main/app-state.js";
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
 import { unregisterAllGlobalShortcuts } from "../main/global-shortcuts.js";
 import { openAuthWindow, clearAuthPartition } from "../main/auth-window-service.js";
@@ -19,6 +19,7 @@ import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floati
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import type { BootHost } from "./host-runtime.js";
+import { relaunchDesktopHost } from "./desktop-relaunch.js";
 
 export function createDesktopBootHost(projectRoot: string): BootHost {
   return {
@@ -30,11 +31,13 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
     ...createDesktopNetworkFetch(),
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),
     exit: (code) => app.exit(code),
+    relaunch: () => relaunchDesktopHost(app),
     close: async () => {},
     desktop: {
       getAppWindows,
       getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
       findSessionSurface: findSessionMainWindowContents,
+      findTerminalSurface: findTerminalMainWindowContents,
       getAuthPartition: (partition) => session.fromPartition(partition),
       openAuthWindowService: openAuthWindow,
       openLinkWindowService: openLinkWindow,
@@ -52,8 +55,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
           void run().finally(() => app.quit());
         });
       },
-      // `isSupported()` creates Electron's notification presenter; see the
-      // contract on `DesktopHostCapabilities.initializeNotificationPresenter`.
+      // Notification support detection creates the OS presenter; see initializeNotificationPresenter.
       initializeNotificationPresenter: () => Notification.isSupported(),
       notificationOptions: {
         isReady: () => app.isReady(),

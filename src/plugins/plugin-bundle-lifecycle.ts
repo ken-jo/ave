@@ -9,7 +9,7 @@ import type { SkillOverlay } from "../main/skill-overlay.js";
 import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import { parseAgentPluginRoutineTemplates } from "../marketplace/content/agent-plugin-components.js";
 import type { AgentPluginRoutineTemplate } from "../shared/agent-plugin-routine-template.js";
-import type { McpManager, PreparedBundledMcpGeneration } from "../mcp/mcp-manager.js";
+import type { BundledCredentialSource, McpManager, PreparedBundledMcpGeneration } from "../mcp/mcp-manager.js";
 import type { PluginLoopbackManager, PreparedPluginLoopbackGeneration } from "../mcp/plugin-loopback-manager.js";
 import { PluginMcpTrustStore, preparePluginMcpGeneration, type PreparedPluginMcpProjection } from "../mcp/plugin-mcp-projection.js";
 import { pluginArtifactGenerationId } from "./plugin-artifact-identity.js";
@@ -152,42 +152,29 @@ export interface PluginContributionTrustRow {
   kind: "hook" | "mcpServer";
   pluginId: string;
   pluginVersion: string;
-  /** The projection's artifact generation id: the reviewed artifact an approval binds to (§18.7.5). */
+  /** Artifact generation ID the reviewed approval binds to. */
   generationId: string;
   localId: string;
   fingerprint: string;
-  /** What an approval of this component covers (§18.7.3); null when it cannot be determined. */
+  /** Null means approval coverage cannot be determined. */
   approvalDigest: string | null;
   status: "approved" | "approval_required";
 }
 
-/**
- * What an approval of an installed component is bound to (design §18.7.5):
- * the artifact generation the review showed and the component's approval
- * digest there.
- */
+/** Bind approval to the reviewed artifact generation and component digest. */
 export interface ReviewedContributionBinding {
   generationId: string;
   approvalDigest: string | null;
 }
 
-/**
- * Consent to one bundled component of an extension being installed (design
- * §18.7.3 "Extension components"): its kind and local id, and the approval
- * digest the update review showed, which the installed component must have.
- */
+/** Install consent names component kind, local ID and exact reviewed approval digest. */
 export interface ExtensionComponentConsent {
   kind: "hook" | "mcpServer";
   localId: string;
   approvalDigest: string | null;
 }
 
-/**
- * Converges the three plugin-owned projections on one verified generation.
- * Operations for one plugin are serialized; malformed candidates are prepared
- * entirely before the active generation changes. Hook/MCP authority remains
- * fail-closed until an exact trust record is supplied.
- */
+/** Prepare all projections before publishing one generation; hook and server authority requires exact trust. */
 export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   readonly hookTrust: PluginHookTrustStore;
   readonly mcpTrust: PluginMcpTrustStore;
@@ -199,7 +186,6 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   private readonly healthJournal: PluginGenerationHealthJournal;
   private readonly retirementTasks = new Set<Promise<void>>();
   private readonly retirementProgress = new Map<string, Set<RetirementPhase>>();
-  /** Component consents the install now running for a plugin carries, consumed by its next generation. */
   private readonly pendingConsents = new Map<string, readonly ExtensionComponentConsent[]>();
 
   constructor(private readonly deps: PluginBundleLifecycleDeps) {
@@ -367,12 +353,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     }
   }
 
-  /**
-   * Run `install` with consents to the bundled components of the generation
-   * it installs (design §18.7.3): that generation approves each named
-   * component whose approval digest equals the consent's, and a consent
-   * that matches no component of it fails the install.
-   */
+  /** Apply install consent only to components with matching approval digests; unmatched consent fails installation. */
   async withComponentConsents<T>(pluginId: string, consents: readonly ExtensionComponentConsent[], install: () => Promise<T>): Promise<T> {
     if (consents.length === 0) return install();
     if (this.pendingConsents.has(pluginId)) throw new Error(`plugin '${pluginId}' already has an install with component consents in progress`);
@@ -384,7 +365,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     }
   }
 
-  /** Approve an installed hook as reviewed: `binding` must name the active generation and digest (design §18.7.5). */
+  /** Require the reviewed active generation and digest for installed-hook approval. */
   async approveHook(pluginId: string, localId: string, binding: ReviewedContributionBinding): Promise<void> {
     await this.updateHookTrust(pluginId, localId, binding);
   }
@@ -393,7 +374,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     await this.updateHookTrust(pluginId, localId, null);
   }
 
-  /** Approve an installed MCP server as reviewed: `binding` must name the active generation and digest (design §18.7.5). */
+  /** Require the reviewed active generation and digest for installed-server approval. */
   async approveMcpServer(pluginId: string, localId: string, binding: ReviewedContributionBinding): Promise<void> {
     await this.updateMcpTrust(pluginId, localId, binding);
   }
@@ -422,12 +403,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     ]);
   }
 
-  /**
-   * The approval state of each bundled component of the active generation
-   * (§18.7.2): whether it is approved, and the approval digest its record
-   * holds (null for an approval from an earlier Ave version that could not
-   * be matched to its bytes, which does not carry).
-   */
+  /** Legacy approvals lacking a digest do not carry forward. */
   componentApprovals(pluginId: string): Array<{ kind: "hook" | "mcpServer"; localId: string; approvalDigest: string | null; approved: boolean; recordDigest: string | null }> {
     const generation = this.coordinator.getActive(pluginId);
     if (!generation) return [];
@@ -443,12 +419,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     ];
   }
 
-  /**
-   * `binding` approves, bound to the reviewed generation and digest; null
-   * revokes, which only narrows trust and needs no binding. The binding is
-   * checked here, under the serialization a new generation's publication
-   * takes, so a generation that replaced the reviewed one is never approved.
-   */
+  /** Check the reviewed generation and digest under publication serialization; revocation only narrows trust. */
   private async updateHookTrust(pluginId: string, localId: string, binding: ReviewedContributionBinding | null): Promise<void> {
     const approve = binding !== null;
     await this.serialize(pluginId, async () => {
@@ -479,7 +450,6 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     });
   }
 
-  /** As {@link updateHookTrust}, for a bundled MCP server. */
   private async updateMcpTrust(pluginId: string, localId: string, binding: ReviewedContributionBinding | null): Promise<void> {
     const approve = binding !== null;
     await this.serialize(pluginId, async () => {
@@ -490,46 +460,74 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       const wasApproved = this.mcpTrust.isApproved(projection);
       if (approve) this.mcpTrust.approve(projection);
       else this.mcpTrust.revoke(projection);
-      let prepared: PreparedBundledMcpGeneration | undefined;
-      try {
-        const candidate = await this.deps.mcpManager.prepareBundledGeneration(
-          { pluginId, generationId: generation.generationId },
-          generation.state.mcpServers,
-          this.mcpTrust,
-        );
-        prepared = candidate;
-        await this.coordinator.quiesce(
-          pluginId,
-          generation.generationId,
-          async () => undefined,
-          () => this.deps.mcpManager.publishBundledGeneration(candidate),
-        );
-      } catch (error) {
-        if (prepared?.published) {
-          this.recordPostCommitFault(
-            pluginId,
-            generation.generationId,
-            "mcp-publication",
-            error,
-          );
-          this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
-          return;
-        }
+      await this.republishMcpLocked(pluginId, generation, () => {
         if (wasApproved) this.mcpTrust.approve(projection);
         else this.mcpTrust.revoke(projection);
-        if (prepared) await this.deps.mcpManager.discardBundledGeneration(prepared);
-        throw error;
-      }
-      if (!prepared) throw new Error("bundled MCP preparation completed without a candidate");
-      this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
+      });
     });
   }
 
-  /**
-   * Approve, for `candidate`, each component the install running for this
-   * plugin consented to (design §18.7.3). The candidate's component must have
-   * the consent's approval digest: the review approved those bytes.
-   */
+  /** Serialize projection refresh; rollback caller changes if preparation fails before publication. */
+  private async republishMcpLocked(
+    pluginId: string,
+    generation: ActivePluginGeneration<HostPluginGenerationState>,
+    rollback?: () => void,
+  ): Promise<void> {
+    let prepared: PreparedBundledMcpGeneration | undefined;
+    try {
+      const candidate = await this.deps.mcpManager.prepareBundledGeneration(
+        { pluginId, generationId: generation.generationId },
+        generation.state.mcpServers,
+        this.mcpTrust,
+      );
+      prepared = candidate;
+      await this.coordinator.quiesce(
+        pluginId,
+        generation.generationId,
+        async () => undefined,
+        () => this.deps.mcpManager.publishBundledGeneration(candidate),
+      );
+    } catch (error) {
+      if (prepared?.published) {
+        this.recordPostCommitFault(
+          pluginId,
+          generation.generationId,
+          "mcp-publication",
+          error,
+        );
+        this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
+        return;
+      }
+      rollback?.();
+      if (prepared) await this.deps.mcpManager.discardBundledGeneration(prepared);
+      throw error;
+    }
+    if (!prepared) throw new Error("bundled MCP preparation completed without a candidate");
+    this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
+  }
+
+  /** Reconnect credential-backed servers by preparing the active generation; install identity comes from durable records. */
+  bundledMcpCredentialSource(installedPluginIds: () => Promise<ReadonlySet<string> | undefined>): BundledCredentialSource {
+    return {
+      list: () => [...this.coordinator.listActive()].flatMap((generation) =>
+        generation.state.mcpServers.flatMap((projection) => {
+          const config = projection.config;
+          if (config.transport !== "http" || config.auth !== "oauth") return [];
+          return [{ packageName: generation.pluginId, serverName: projection.owner.localId, transport: "http" as const,
+            url: config.url, auth: "oauth" as const, ...(config.oauth ? { oauth: config.oauth } : {}) }];
+        })),
+      reconnect: (packageName, serverName) => this.serialize(packageName, async () => {
+        const generation = this.requireActive(packageName);
+        if (!generation.state.mcpServers.some((projection) => projection.owner.localId === serverName)) {
+          throw new Error(`plugin MCP '${packageName}:${serverName}' is not active`);
+        }
+        await this.republishMcpLocked(packageName, generation);
+      }),
+      installedPackages: installedPluginIds,
+    };
+  }
+
+  /** Approve only the candidate components whose digests match the install consent. */
   private approveConsented(
     pluginId: string,
     candidate: ActivePluginGeneration<HostPluginGenerationState>,
@@ -573,10 +571,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           try {
             await this.holdCommittedCompletion(token, error.committed);
           } catch {
-            // The typed publication failure remains the primary post-linearization
-            // outcome. Its committed completion retains the retirement failure
-            // for storage cleanup/recovery ownership without disguising the
-            // original synchronous publication cause.
+            // Preserve the typed publication cause; committed completion carries retirement failures for recovery.
           }
         }
         throw error;
@@ -686,8 +681,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       receiptRaw,
       runtime.installId ?? pluginId,
     );
-    // Approvals this preparation writes for the candidate (carried forward, or
-    // consented by the install): revoked if it is never published (§18.7.3).
+    // Revoke preparation-written approvals if the candidate never publishes.
     const provisional: Array<() => void> = [];
     const revokeProvisional = (cleanupErrors: unknown[]) => {
       for (const revoke of provisional.splice(0).reverse()) {
@@ -708,7 +702,6 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       try {
         const contributions =
           await materializePluginContributions(payloadRoot, manifest);
-        // Each bundled component's approval digest, read from the retained bytes (§18.7.3).
         const digests = extensionComponentDigests(JSON.parse(manifestRaw) as unknown, await readPayloadFiles(payloadRoot));
         const digestsOf = (kind: "hook" | "mcpServer") =>
           new Map(digests.filter((item) => item.kind === kind).map((item) => [item.localId, item.approvalDigest]));
@@ -746,10 +739,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           }),
         };
         const prepared = candidate;
-        // An approval of exactly this generation that predates approval digests gets the digest of these, its running bytes.
+        // Backfill legacy approval digests only from the exact running generation bytes.
         for (const projection of prepared.state.hooks) this.hookTrust.recordDigest(projection);
         for (const projection of prepared.state.mcpServers) this.mcpTrust.recordDigest(projection);
-        // Approval carry-forward: an unchanged component keeps the approval it had in the active generation.
+        // Carry approval only when component coverage is unchanged.
         if (predecessorBeforePreparation && predecessorBeforePreparation.artifactGenerationId !== prepared.artifactGenerationId) {
           carriedHooks = carryApprovals(this.hookTrust, predecessorBeforePreparation.state.hooks, prepared.state.hooks);
           for (const { to } of carriedHooks) provisional.push(() => this.hookTrust.revoke(to));
@@ -757,7 +750,6 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           for (const { to } of carriedMcp) provisional.push(() => this.mcpTrust.revoke(to));
         }
         this.approveConsented(pluginId, prepared, provisional);
-        // Validate cross-file template IDs before committing a generation.
         extensionRoutineTemplates(candidate);
         candidate.state.runtime.hostEffects?.bindGeneration(
           this,
@@ -780,8 +772,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             candidate.generationId,
             predecessorMcpServerIds,
           );
-        // Another plugin can publish while discovery awaits. Validate live
-        // runtime ownership under the reservation, before durable commit.
+        // Recheck live runtime ownership under reservation before durable commit.
         const preparedRuntime =
           this.deps.pluginRuntime.prepareRuntimeGeneration(
             candidate.state.runtime,
@@ -843,8 +834,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     let result!: T;
     try {
       const publish = () => {
-        // Under this plugin's serialization, before the active generation changes: a carried
-        // approval holds only while its source does and the generation it came from is still active.
+        // Revalidate carried approvals under publication serialization against the still-active source generation.
         if (carriedHooks.length + carriedMcp.length > 0 && this.coordinator.getActive(pluginId)?.generationId !== predecessorBeforePreparation?.generationId) {
           throw new Error(`plugin '${pluginId}' changed generation while its update was prepared`);
         }
@@ -858,8 +848,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         (predecessor) => this.retireWithRetries(predecessor),
         pluginId,
         () => {
-          // The coordinator pointer names the candidate now: ownership of the
-          // runtime projection moves before any publication step can fail.
+          // Transfer runtime ownership immediately when the coordinator pointer commits.
           preparedRuntime.handOver();
           this.deps.loopbackManager.publishGeneration(preparedLoopback);
           preparedRuntime.publish();
@@ -894,12 +883,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
           throw committedError;
         }
-        // Committed and published, but a post-commit step (the contributions
-        // notification) failed before readiness was scheduled. Nothing else
-        // will ever open or reject the candidate's dispatch barrier, so settle
-        // it here: calls fail visibly with this fault instead of waiting. The
-        // predecessor's retirement is still under way; track it like the
-        // committed-publication branch above, so retirement waiters see it.
+        // A postcommit notification failure must still settle candidate dispatch and retirement waiters.
         if (published) {
           published.markDispatchUnavailable(error);
           this.trackRetirement(published.retired);
@@ -938,7 +922,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           cleanupErrors.push(cleanupError);
         }
       }
-      // Callers use primary error identity to decide which recovery is safe.
+      // Primary error identity determines safe recovery.
       for (const cleanupError of cleanupErrors) {
         log.error(
           `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed: ${errorMessage(cleanupError)}`,
@@ -952,8 +936,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     const retirement = hasPredecessor ? published.retired : Promise.resolve();
     const finalizePostCommit = async (): Promise<void> => {
       let dispatchReady = true;
-      // Admission closed (host shutdown): dispatch never opens, nothing more
-      // starts, and a step refused for that reason is not a fault.
+      // Closed admission is shutdown, not a fault; no new dispatch or startup follows.
       const stoppedByShutdown = (): boolean => {
         const closed = this.coordinator.admissionClosedError(pluginId);
         if (!closed) return false;
@@ -962,10 +945,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       };
       if (hasPredecessor) {
         try {
-          // A replacement's onPublished hook may start write-capable workers.
-          // Do not overlap those effects with the predecessor: its graceful
-          // stop must release sockets, sandbox markers, and shared durable state
-          // before the new generation begins externally observable startup.
+          // Wait for predecessor retirement before starting replacement effects that share sockets or durable state.
           await retirement;
         } catch (error) {
           dispatchReady = false;
@@ -981,16 +961,11 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
         }
       }
-      // Admission closed while the predecessor retired: none of the deferred
-      // work below — startup, loopback post-publication, MCP connection and
-      // publication — may begin.
+      // If admission closes during retirement, do not start deferred publication work.
       if (stoppedByShutdown()) return;
       if (dispatchReady) {
         try {
-          // Only host-owned generation-fence faults reach this catch. A plugin
-          // whose own onPublished() failed is published, dispatchable, and
-          // recorded as degraded by the runtime — it does not arrive here, so
-          // the health journal's "internal post-commit fault" stays truthful.
+          // Only host-owned postcommit faults reach this catch; plugin startup failures remain dispatchable degraded state.
           await this.coordinator.runPostCommitWithGeneration(
             pluginId,
             candidate.generationId,
@@ -1010,13 +985,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         this.recordPostCommitFault(pluginId, candidate.generationId, "loopback-post-publish", error);
       }
       try {
-        // Provider/connect failures are already represented by McpManager as a
-        // typed same-generation degraded record. Reaching this catch is an
-        // internal publication/contract fault and receives durable health state.
+        // Provider connection failures already have typed degraded records; this catch records internal publication faults.
         await this.projectApprovedMcp(candidate);
       } catch (error) {
-        // A publication refused because admission closed while it waited
-        // (quiesce) is shutdown, not an internal publication fault.
+        // Refusal after admission closes is shutdown, not an internal fault.
         if (stoppedByShutdown()) return;
         this.recordPostCommitFault(pluginId, candidate.generationId, "mcp-publication", error);
       }
@@ -1131,15 +1103,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     });
   }
 
-  /**
-   * External MCP work is deliberately post-pointer. Exact trust is evaluated
-   * only after the immutable generation is active; connection/discovery failure
-   * leaves that generation active with a typed zero-tool degraded projection.
-   */
+  /** Connect externally only after pointer commit; failed discovery leaves the generation active with a zero-tool degraded projection. */
   private async projectApprovedMcp(
     generation: ActivePluginGeneration<HostPluginGenerationState>,
   ): Promise<void> {
-    // No MCP connection or publication once admission has closed (shutdown).
     if (this.coordinator.isAdmissionClosed()) return;
     let prepared: Awaited<ReturnType<McpManager["prepareBundledGeneration"]>> | undefined;
     try {
@@ -1164,9 +1131,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       await this.deps.mcpManager.retirePublishedMcpReplacement(publication);
     } catch (error) {
       if (prepared) await this.deps.mcpManager.discardBundledGeneration(prepared);
-      // Expected provider/connect failures are represented as typed degraded
-      // records by prepareBundledGeneration. Everything reaching this catch is
-      // an internal contract or publication failure and must remain visible.
+      // Record unexpected publication faults; expected provider failures already have typed degraded records.
       throw error;
     }
   }
@@ -1184,9 +1149,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       if (completed.has(phase)) return;
       try {
         await operation();
-        // Update the in-process checkpoint first. If durable journal writing
-        // itself fails, a retry must still not rerun a completed non-idempotent
-        // teardown phase such as plugin stop().
+        // Checkpoint memory before journal writes so a failed journal cannot repeat non-idempotent stop phases.
         completed.add(phase);
         this.retirementJournal.completePhase(
           generation.pluginId,
@@ -1203,10 +1166,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     });
     await runPhase("skills", () => {
       this.deps.skillStore.removePluginGeneration(generation.pluginId, generation.generationId);
-      // Same phase, same identity: the conversations that read one of these
-      // skills lose the skill_read authorization it granted. The read body
-      // already sits in their history as a tool_result; skill_load holds its
-      // generation lease only for the read itself, so nothing here waits on it.
+      // Revoke generation-owned skill_read grants during retirement; history already contains the read text.
       this.deps.skillOverlay.clearPluginGeneration(generation.pluginId, generation.generationId);
     });
     await runPhase("hooks", () => {
@@ -1334,7 +1294,6 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   }
 }
 
-/** A trust row's owner fields: the durable identity, without the activation id. */
 function trustRowOwner(owner: { pluginId: string; pluginVersion: string; generationId: string; localId: string; fingerprint: string }) {
   return {
     pluginId: owner.pluginId,
@@ -1345,11 +1304,7 @@ function trustRowOwner(owner: { pluginId: string; pluginVersion: string; generat
   };
 }
 
-/**
- * The approval binding of design §18.7.5: the active projection's artifact
- * generation id (`owner.generationId`, never the activation-bound
- * coordinator id) and its approval digest must be the reviewed ones.
- */
+/** Compare reviewed artifact generation identity, never activation ID, and the exact approval digest. */
 function assertReviewedBinding(
   pluginId: string,
   localId: string,

@@ -1,16 +1,4 @@
-/**
- * Permission policy — `/permission` slash parser + dispatcher helpers.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 1
- * (slash commands), §11 v2.1 binding decisions.
- *
- * This module returns structured results so callers can render command
- * results without re-parsing and can enforce trust origin at one boundary.
- *
- * Trust origin gate (spec C2 fix): only `user-keyboard` may dispatch
- * `/permission` mutations. This module enforces that boundary and returns
- * structured outcomes so callers do not re-parse command text.
- */
+// Only user-keyboard origin may dispatch permission mutations; enforce once before returning structured outcomes (docs/architecture/permission-policy-design.md).
 import {
   validateDirectoryAddition,
   buildAllowedScope,
@@ -61,11 +49,11 @@ export type PermissionDirVerb = "allow" | "deny" | "list";
 
 export interface PermissionDirCommand {
   verb: PermissionDirVerb;
-  /** Path argument for allow/deny. Empty string for `list`. */
+  // Path argument for allow/deny. Empty string for `list`.
   path: string;
-  /** `--session` flag for in-memory-only allow (allow-once). */
+  // `--session` flag for in-memory-only allow (allow-once).
   session: boolean;
-  /** Required before persisting paths with adjacency warnings. */
+  // Required before persisting paths with adjacency warnings.
   acknowledgeWarnings: boolean;
 }
 
@@ -86,17 +74,7 @@ export interface PermissionDirectoryLifecycle {
   ): Promise<string[]>;
 }
 
-/**
- * Parse a `/permission dir ...` invocation. Accepts the full subcommand
- * string AFTER `/permission dir` (so the dispatcher can hand off the
- * remainder).
- *
- * Examples:
- *   "allow ~/Documents/old-project"
- *   "allow ~/foo --session"
- *   "deny /tmp/staging"
- *   "list"
- */
+// Parse a `/permission dir...` invocation. Accepts the full subcommand string AFTER `/permission dir` (so the dispatcher can hand off the remainder). Examples: "allow ~/Documents/old-project" "allow ~/foo --session" "deny /tmp/staging" "list"
 export function parsePermissionDirCommand(
   rawArgs: string,
 ): PermissionDirCommand | { ok: false; error: string } {
@@ -178,17 +156,7 @@ function tokenizePermissionArgs(rawArgs: string): { ok: true; tokens: string[] }
   return { ok: true, tokens };
 }
 
-/**
- * Dispatch a parsed command. Side effects:
- *   - `allow` (no --session) → persist to ~/.ave/settings.json.
- *   - `allow --session` → no persist; caller owns live-scope mutation.
- *   - `deny` → remove from ~/.ave/settings.json (settings-level).
- *     Layer 0 sensitive-paths is the actual hard-deny — `deny` here is
- *     just removing from the user's own list.
- *   - `list` → read current state.
- *
- * `pathOverride` is for tests (settings file location).
- */
+// Dispatch a parsed command. Side effects: - `allow` (no --session) → persist to ~/.ave/settings.json. - `allow --session` → no persist; caller owns live-scope mutation. - `deny` → remove from ~/.ave/settings.json (settings-level). Layer 0 sensitive-paths is the actual hard-deny — `deny` here is just removing from the user's own list. - `list` → read current state. `pathOverride` is for tests (settings file location).
 export async function dispatchPermissionDirCommand(
   cmd: PermissionDirCommand,
   pathOverride?: string,
@@ -198,9 +166,7 @@ export async function dispatchPermissionDirCommand(
     const current = readPermissionSettings(pathOverride);
     const userAdditions = current.permissions.additionalDirectories;
     const effective = buildAllowedScope(userAdditions).directories;
-    // The defaults are the entries in `effective` that are NOT in
-    // `userAdditions` after sanitize. Surfacing both helps the UI
-    // distinguish provenance.
+    // The defaults are the entries in `effective` that are NOT in `userAdditions` after sanitize. Surfacing both helps the UI distinguish provenance.
     const defaults = effective.filter((d) => !userAdditions.includes(d));
     return { ok: true, verb: "list", defaults, userAdditions, effective };
   }
@@ -216,9 +182,7 @@ export async function dispatchPermissionDirCommand(
       };
     }
     if (cmd.session) {
-      // Directory additions are plumbed into the in-memory scope. For now we
-      // surface a structured response so the dispatcher can update the
-      // live executor context.
+      // Directory additions are plumbed into the in-memory scope. For now we surface a structured response so the dispatcher can update the live executor context.
       return {
         ok: true,
         verb: "allow",
@@ -262,7 +226,7 @@ export async function dispatchPermissionDirCommand(
   return { ok: true, verb: "deny", persisted: next };
 }
 
-// ─── /permission reviewer slash ───────────────────────────────────────
+// /permission reviewer slash
 
 export type PermissionReviewerVerb =
   | "mode"
@@ -273,13 +237,9 @@ export type PermissionReviewerVerb =
 
 export interface PermissionReviewerCommand {
   verb: PermissionReviewerVerb;
-  /** For mode/fallback/interactive/adjudication: the new value. Empty string for `show`. */
+  // For mode/fallback/interactive/adjudication: the new value. Empty string for `show`.
   value: string;
-  /**
-   * For `adjudication` only — which field of the parent-adjudication block the
-   * value belongs to. The block is a set of independent ceilings, so the verb
-   * carries a field rather than splitting into six verbs.
-   */
+  // For `adjudication` only — which field of the parent-adjudication block the value belongs to. The block is a set of independent ceilings, so the verb carries a field rather than splitting into six verbs.
   field?: ParentAdjudicationField;
 }
 
@@ -291,7 +251,7 @@ export type PermissionReviewerResult =
   | { ok: true; verb: "adjudication"; settings: ReviewerSettingsBlock }
   | { ok: false; error: string };
 
-/** Writable fields of the parent-adjudication block. */
+// Writable fields of the parent-adjudication block.
 type ParentAdjudicationField =
   | "maxVerdict"
   | "timeoutMs"
@@ -333,13 +293,7 @@ const PARENT_ADJUDICATION_NUMERIC_BOUNDS: Readonly<
   },
 };
 
-/**
- * Resolve one `adjudication <field> <value>` pair into the block patch it
- * writes. Rejects rather than clamps: the read path clamps a hand-edited file
- * because a file is an external boundary, but a write arrives from a caller
- * that can be told it was wrong, and silently storing a different number than
- * the one asked for is the worse answer.
- */
+// Resolve one `adjudication <field> <value>` pair into the block patch it writes. Rejects rather than clamps: the read path clamps a hand-edited file because a file is an external boundary, but a write arrives from a caller that can be told it was wrong, and silently storing a different number than the one asked for is the worse answer.
 function parentAdjudicationFieldPatch(
   field: ParentAdjudicationField,
   value: string,
@@ -405,17 +359,7 @@ const VALID_REVIEWER_INTERACTIVE_AUTO_APPROVES: ReadonlySet<ReviewerInteractiveA
   "medium",
 ]);
 
-/**
- * Parse `/permission reviewer ...` (the substring AFTER the prefix).
- *
- * Examples:
- *   "show"
- *   "mode disabled"
- *   "mode rule"
- *   "mode llm"
- *   "fallback deny"
- *   "adjudication maxVerdict low"
- */
+// Parse `/permission reviewer...` (the substring AFTER the prefix). Examples: "show" "mode disabled" "mode rule" "mode llm" "fallback deny" "adjudication maxVerdict low"
 export function parsePermissionReviewerCommand(
   rawArgs: string,
 ): PermissionReviewerCommand | { ok: false; error: string } {
@@ -427,14 +371,7 @@ export function parsePermissionReviewerCommand(
         "missing subcommand — usage: /permission reviewer <show|mode|fallback|interactive|adjudication> [value]",
     };
   }
-  const rawVerb = args[0];
-  if (rawVerb === "provider" || rawVerb === "model") {
-    return {
-      ok: false,
-      error: "reviewer provider/model follows the active LLM settings; change provider/model in Intelligence settings",
-    };
-  }
-  const verb = rawVerb as PermissionReviewerVerb;
+  const verb = args[0] as PermissionReviewerVerb;
   if (
     verb !== "mode" &&
     verb !== "fallback" &&
@@ -479,23 +416,11 @@ export function parsePermissionReviewerCommand(
   return { verb, value: args[1] };
 }
 
-/**
- * Dispatch a parsed reviewer command. Persists to ~/.ave/settings.json
- * via {@link setReviewerSettingsPersist}.
- *
- * `pathOverride` is for tests.
- */
+// Dispatch a parsed reviewer command. Persists to ~/.ave/settings.json via setReviewerSettingsPersist. `pathOverride` is for tests.
 export async function dispatchPermissionReviewerCommand(
   cmd: PermissionReviewerCommand,
   pathOverride?: string,
 ): Promise<PermissionReviewerResult> {
-  const legacyVerb = (cmd as { verb: string }).verb;
-  if (legacyVerb === "provider" || legacyVerb === "model") {
-    return {
-      ok: false,
-      error: "reviewer provider/model follows the active LLM settings; change provider/model in Intelligence settings",
-    };
-  }
   if (cmd.verb === "show") {
     const current = readPermissionSettings(pathOverride);
     return { ok: true, verb: "show", settings: current.permissions.reviewer };
@@ -558,9 +483,7 @@ export async function dispatchPermissionReviewerCommand(
     const patch = parentAdjudicationFieldPatch(cmd.field, cmd.value);
     if ("ok" in patch) return patch;
     try {
-      // The reviewer patch merges shallowly, so the whole block is rewritten
-      // from the persisted one with a single field replaced — a bare
-      // `{ [field]: value }` would drop the five ceilings it did not name.
+      // The reviewer patch merges shallowly, so the whole block is rewritten from the persisted one with a single field replaced — a bare `{ [field]: value }` would drop the five ceilings it did not name.
       const current = readPermissionSettings(pathOverride).permissions.reviewer;
       const settings = await setReviewerSettingsPersist(
         { parentAdjudication: { ...current.parentAdjudication, ...patch } },
@@ -571,7 +494,7 @@ export async function dispatchPermissionReviewerCommand(
       return { ok: false, error: (err as Error).message };
     }
   }
-  return { ok: false, error: `unknown reviewer command '${legacyVerb}'` };
+  return { ok: false, error: `unknown reviewer command '${(cmd as { verb: string }).verb}'` };
 }
 
 export async function dispatchPermissionReviewerCommandWithRewire(
@@ -607,24 +530,17 @@ export async function dispatchPermissionReviewerCommandWithRewire(
   }
 }
 
-// ─── /permission audit ─────────────────────────────────────────────────
+// /permission audit
 
 export type PermissionAuditVerb = "show" | "verify";
 
 export interface PermissionAuditCommand {
   verb: PermissionAuditVerb;
-  /** For `show`: how many entries to surface (default 50, max 1000). */
+  // For `show`: how many entries to surface (default 50, max 1000).
   last: number;
 }
 
-/**
- * Parse `/permission audit ...` (the substring AFTER the prefix).
- *
- * Examples:
- *   "show"
- *   "show --last=100"
- *   "verify"
- */
+// Parse `/permission audit...` (the substring AFTER the prefix). Examples: "show" "show --last=100" "verify"
 export function parsePermissionAuditCommand(
   rawArgs: string,
 ): PermissionAuditCommand | { ok: false; error: string } {
@@ -701,7 +617,7 @@ export function dispatchPermissionAuditCommand(
   };
 }
 
-// ─── /permission mode ──────────────────────────────────────────────────
+// /permission mode
 
 export interface PermissionModeCommand {
   verb: "mode";
@@ -736,7 +652,7 @@ export function parsePermissionModeCommand(
   return { verb: "mode", mode: candidate, durable };
 }
 
-// ─── /permission rules / hooks ─────────────────────────────────────────
+// /permission rules / hooks
 
 export type PermissionRulesCommand =
   | { verb: "rules"; sub: "list" }
@@ -814,31 +730,13 @@ export async function dispatchPermissionHooksCommand(
   }
 }
 
-// ─── /allow <sentence> ─────────────────────────────────────────────────
+// /allow <sentence>
 
-/**
- * `/allow <sentence>` — the submit gesture for describing which pending
- * approval scope you mean in your own words.
- *
- * It is a slash command, not context-dependent Enter, and not freeform prose.
- * Of seven shipping agent hosts surveyed, zero accept natural language as a
- * permission approval. Resolving a *pending* permission state through an
- * explicit slash verb is the established pattern, and it matches this app's
- * existing vocabulary — `/load` and `/permission dir allow|deny` already read
- * this way.
- *
- * The parser deliberately does almost nothing: it does not interpret the
- * sentence, tokenize it, or look for path-like or negation-like substrings.
- * Every past defect in the hand-written lexicon this replaces came from doing
- * exactly that. The sentence is carried, whole and untouched, to a selector
- * that may only pick from a table the host built. See
- * {@link ./reviewer/approval-sentence-selector.js}.
- */
-// Not exported: consumers narrow on the exported `PermissionSlashOutcome`
-// union, which carries this shape structurally.
+// Carry the whole /allow sentence unchanged to the host-option selector; do not hand-parse negation, paths or phrases. Only the explicit slash submit initiates selection.
+// Not exported: consumers narrow on the exported `PermissionSlashOutcome` union, which carries this shape structurally.
 interface PermissionAllowCommand {
   verb: "allow";
-  /** The user's words, verbatim. Untrusted; the selector sanitizes and masks. */
+  // The user's words, verbatim. Untrusted; the selector sanitizes and masks.
   sentence: string;
 }
 
@@ -852,21 +750,12 @@ function parsePermissionAllowCommand(
   return { verb: "allow", sentence };
 }
 
-// ─── Top-level /permission dispatcher (trust-origin gated) ─────────────
+// Top-level /permission dispatcher (trust-origin gated)
 
-/**
- * Permission policy trust-origin set as defined in spec §9. Slash dispatch
- * is gated on `user-keyboard` only; everything else short-circuits
- * to plain-text echo (per spec §3 Layer 8).
- */
+// Permission policy trust-origin set as defined in spec. Slash dispatch is gated on `user-keyboard` only; everything else short-circuits to plain-text echo (per spec Layer 8).
 export type SlashTrustOrigin = TrustOriginWithUnknown;
 
-/**
- * Top-level dispatch result. The slash handler turns this into either a
- * parsed internal command + side-effect or plain-text echo. Built-in slash
- * commands are their own user-keyboard approval surface; they do not request a
- * second confirmation prompt.
- */
+// Top-level dispatch result. The slash handler turns this into either a parsed internal command + side-effect or plain-text echo. Built-in slash commands are their own user-keyboard approval surface; they do not request a second confirmation prompt.
 export type PermissionSlashOutcome =
   | { kind: "rejected-non-user-origin"; sanitized: string }
   | { kind: "show-current"; needsModal: false }
@@ -876,27 +765,11 @@ export type PermissionSlashOutcome =
   | { kind: "mode"; cmd: PermissionModeCommand; needsModal: boolean }
   | { kind: "rules"; cmd: PermissionRulesCommand; needsModal: false }
   | { kind: "hooks"; cmd: PermissionHooksCommand; needsModal: boolean }
-  /**
-   * `/allow <sentence>`. `needsModal` is false because the sentence grants
-   * nothing: it only proposes which of the pending approval's own buttons the
-   * user meant, and that button still has to be pressed.
-   */
+  // `/allow <sentence>`. `needsModal` is false because the sentence grants nothing: it only proposes which of the pending approval's own buttons the user meant, and that button still has to be pressed.
   | { kind: "allow"; cmd: PermissionAllowCommand; needsModal: false }
   | { kind: "parse-error"; error: string };
 
-/**
- * Permission policy central dispatcher entry point. The renderer calls this
- * with the raw input string + the propagated trust origin. The
- * dispatcher's contract:
- *
- *   1. If trustOrigin !== "user-keyboard" → return rejected with
- *      a sanitized version (leading `/` stripped, per spec §3 Layer 8).
- *   2. If the input doesn't start with `/permission` → caller-error
- *      (the dispatcher is only reached when the prefix matched).
-   *   3. Otherwise parse the subcommand and return an outcome. Internal
-   *      user-keyboard slash commands do not request permission modals; durable
-   *      mode changes are still audited and persisted by the executor.
- */
+// Permission policy central dispatcher entry point. The renderer calls this with the raw input string + the propagated trust origin. The dispatcher's contract: 1. If trustOrigin !== "user-keyboard" → return rejected with a sanitized version (leading `/` stripped, per spec Layer 8). 2. If the input doesn't start with `/permission` → caller-error (the dispatcher is only reached when the prefix matched). 3. Otherwise parse the subcommand and return an outcome. Internal user-keyboard slash commands do not request permission modals; durable mode changes are still audited and persisted by the executor.
 export function dispatchPermissionSlash(
   rawInput: string,
   trustOrigin: SlashTrustOrigin,
@@ -908,9 +781,7 @@ export function dispatchPermissionSlash(
     };
   }
   const trimmed = rawInput.trim();
-  // `/allow` shares this dispatcher, and therefore this trust-origin gate:
-  // agent output, tool results and remote-controller text reach the composer,
-  // and none of them may submit an approval sentence on the user's behalf.
+  // `/allow` shares this dispatcher, and therefore this trust-origin gate: agent output, tool results and remote-controller text reach the composer, and none of them may submit an approval sentence on the user's behalf.
   if (trimmed === "/allow" || trimmed.startsWith("/allow ")) {
     const parsed = parsePermissionAllowCommand(trimmed.slice("/allow".length));
     if ("ok" in parsed && parsed.ok === false) {
@@ -977,9 +848,7 @@ export function dispatchPermissionSlash(
         return { kind: "parse-error", error: parsed.error };
       }
       const cmd = parsed as PermissionHooksCommand;
-      // Hook trust changes are explicit typed trust registration: the
-      // user-keyboard slash command is the approval surface. Production
-      // intentionally has no renderer approval prompt for untrusted hooks.
+      // Hook trust changes are explicit typed trust registration: the user-keyboard slash command is the approval surface. Production intentionally has no renderer approval prompt for untrusted hooks.
       return { kind: "hooks", cmd, needsModal: false };
     }
     default:

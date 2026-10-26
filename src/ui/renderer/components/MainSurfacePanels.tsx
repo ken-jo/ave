@@ -1,18 +1,4 @@
-/**
- * Terminal and web panels in the main area — a pane whose content is a
- * surface (`ViewLocation.view` `terminal` / `web` with its `surface` id).
- *
- * The pane draws the same frame every pane draws; what differs is the body.
- * A terminal body is the PTY view for the surface's tab id (`PtyTerminalView`,
- * single-mounted, so the same tab shown elsewhere hands over rather than
- * duplicating). A web body is an address row over a `WebSurfaceSlot`: the page
- * itself lives in the window's surface layer and is only laid over the slot,
- * so a routed-away or hidden web pane keeps its page.
- *
- * Each surface pane has its own chat panel beside its body (the header's
- * panel toggle): the side chat, bound to this pane's tab, so what the user
- * asks there acts on the page or terminal they are looking at.
- */
+/** Terminal views hand over a single mount; web pages remain in the window layer when their panes are hidden. */
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, PanelRightClose, PanelRightOpen, RotateCw } from "lucide-react";
@@ -167,10 +153,8 @@ type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "chi
 /** The pane chat's share of the tile: room for a transcript, never most of the page. */
 const PANE_CHAT_WIDTH = "clamp(280px, 38%, 440px)";
 
-/**
- * A surface pane's own chat, docked in the tile's aside slot beside the page
- * or terminal. It is the side chat, bound to this pane's tab.
- */
+/** A surface pane's own chat, docked in the tile's aside slot beside the page or terminal. It is the side chat, bound to
+ * this pane's tab. */
 function PaneChatPanel({
   api,
   surface,
@@ -208,11 +192,8 @@ function PaneChatPanel({
   );
 }
 
-/**
- * A pane showing a terminal or a web page. `frame` carries what every pane is
- * as a tile (focus, split, maximize, close); this component adds the title,
- * glyph and body that the surface decides.
- */
+/** A pane showing a terminal or a web page. `frame` carries what every pane is as a tile (focus, split, maximize, close);
+ * this component adds the title, glyph and body that the surface decides. */
 export function SurfacePane({
   api,
   surface,

@@ -1,14 +1,3 @@
-/**
- * Side-chat IPC domain — engine isolation + trust boundary.
- *
- * Asserts the load-bearing guarantees of the companion PR:
- *   1. send drives the SIDE-CHAT loop (never the main loop) and publishes its
- *      stream frames to the DEDICATED `ave:sidechat:stream` channel — never
- *      `ave:chat:stream` (main/side stream isolation).
- *   2. abort aborts the SIDE-CHAT loop only.
- *   3. every mutating channel rejects an unauthorized frame.
- *   4. when the side-chat loop is absent, handlers fail closed.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { IpcMainInvokeEvent } from "electron";
@@ -17,7 +6,7 @@ import {
   MCP_RESOURCE_FENCE_OPEN,
 } from "../../../shared/mcp-resource-bounds.js";
 
-/** A real 1×1 PNG: the image normalizer decodes and sniffs the bytes. */
+// Use a decodable PNG because normalization checks the bytes.
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -31,8 +20,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-// Capture every (channel, payload) the domain publishes so we can assert the
-// stream fan-out lands on the dedicated side-chat channel.
 const sent: Array<{ channel: string; payload: unknown }> = [];
 vi.mock("../../safe-send.js", () => ({
   sendToWebContents: vi.fn((_wc: unknown, channel: string, payload: unknown) => {
@@ -40,7 +27,6 @@ vi.mock("../../safe-send.js", () => ({
   }),
 }));
 
-// The window a sender belongs to: renderer contents with id 1 are window 7's.
 vi.mock("../../../main/app-state.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../main/app-state.js")>();
   return {
@@ -71,8 +57,6 @@ function ev(url?: string, senderId = 1, sender = rendererContents(senderId)): Ip
 function makeSideLoop() {
   let transitioning = false;
   const loop = {
-    // runTurn emits one text delta + a done frame through the injected callbacks
-    // so the stream sink is exercised, then resolves the TurnResult.
     runTurn: vi.fn(async (_input: string, callbacks: Record<string, (...a: unknown[]) => void>) => {
       callbacks.onTextDelta?.("hi");
       return { route: "chat" };
@@ -116,7 +100,6 @@ function makeSideChatStore(existing?: Record<string, unknown>) {
   };
 }
 
-/** The pane chats' loops, as boot keeps them: one per window and tab, made on first use. */
 function makePanePool(make: () => ReturnType<typeof makeSideLoop> = makeSideLoop) {
   const entries = new Map<string, { windowId: number; tabId: string; loop: ReturnType<typeof makeSideLoop> }>();
   const key = (windowId: number, tabId: string) => `${windowId}/${tabId}`;
@@ -215,10 +198,8 @@ describe("side-chat IPC domain", () => {
     const result = await handler(ev("file:///index.html"), { input: "hello" });
 
     expect(result).toMatchObject({ ok: true });
-    // The SIDE loop ran the turn; the MAIN loop was never touched.
     expect(side.runTurn).toHaveBeenCalledTimes(1);
     expect(main.runTurn).not.toHaveBeenCalled();
-    // Every published frame went to the dedicated side-chat stream channel.
     expect(sent.length).toBeGreaterThan(0);
     for (const frame of sent) {
       expect(frame.channel).toBe(CHANNELS.sidechat.stream);
@@ -226,11 +207,7 @@ describe("side-chat IPC domain", () => {
     }
   });
 
-  // Side chat is a second send site into the same provider, and redaction lives at
-  // the send sites rather than inside the loop — so this path simply did not have
-  // one. With `piiRedactEnabled` on, the raw text the user typed went out on the
-  // wire. These two assert the DLP boundary from the PRODUCER side: what the loop
-  // actually received, not what the sanitizer returns in isolation.
+  // Side-chat send sites must apply the same PII policy as main chat.
   it("redacts side-chat input before it reaches the loop when PII redaction is on", async () => {
     const side = makeSideLoop();
     register(side, makeMainLoop(), true);
@@ -253,9 +230,7 @@ describe("side-chat IPC domain", () => {
     const forwarded = side.runTurn.mock.calls[0]![0] as string;
     expect(forwarded).toBe("email me at alice@example.com");
   });
-  // Side chat parses its own payload — it never passes through `parseChatSendPayload`
-  // — so a per-turn bound enforced at either send gate would simply not exist here.
-  // It holds because the bound lives at the turn-entry chokepoint both paths share.
+  // Enforce attachment limits at turn entry because side-chat bypasses the main send parser.
   it("enforces the resource-attachment bound on the side loop too", async () => {
     const side = makeSideLoop();
     const main = makeMainLoop();
@@ -397,19 +372,14 @@ describe("side-chat IPC domain", () => {
       input: "Own request", sendRequestId: "own-request",
     });
     try {
-      // A peer renderer's departure, in-document or subframe navigation, and a
-      // main-frame navigation the window's will-navigate policy then cancels
-      // (an external link click) leave the owning document alive.
+      // Cancelled main-frame, in-page, and subframe navigation retain the turn's owning document.
       peer.emit(eventName, ...args);
       owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
       owner.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
       owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
       owner.emit("did-navigate-in-page", {});
       owner.emit("did-frame-navigate", {});
-      // A failed subframe keeps the document too, and so does every main-frame
-      // `did-fail-load` without a committed error page (probed on Electron 44):
-      // a stopped load, a `loadURL` refused as invalid, and a committed
-      // document whose own load fails after commit.
+      // Only a committed main-frame error page replaces ownership; aborted loads and subframe failures do not.
       owner.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", "file:///index.html", true);
       owner.emit("did-fail-provisional-load", {}, -6, "ERR_FILE_NOT_FOUND", "file:///frame.html", false);
       owner.emit("did-fail-load", {}, -3, "ERR_ABORTED", "file:///index.html", true);
@@ -444,7 +414,6 @@ describe("side-chat IPC domain", () => {
     await send(ev("file:///index.html", 1, owner), { input: "first", sendRequestId: "first-request" });
     expect(watches(owner)).toBe(0);
 
-    // A later turn belongs to its own sender; the earlier owner leaving does not reach it.
     const turn = deferred<{ route: string }>();
     side.runTurn.mockReturnValueOnce(turn.promise);
     const pending = send(ev("file:///index.html", 2, peer), { input: "peer", sendRequestId: "peer-request" });
@@ -480,8 +449,6 @@ describe("side-chat IPC domain", () => {
   });
 
   it("new aborts + awaits an in-flight turn BEFORE starting the fresh session", async () => {
-    // A side loop whose turn stays in-flight until we release it, so we can
-    // observe the ordering: abort → turn settles → newConversation.
     let releaseTurn!: () => void;
     const order: string[] = [];
     const side = makeSideLoop();
@@ -496,25 +463,21 @@ describe("side-chat IPC domain", () => {
     );
     side.abortCurrentTurn = vi.fn(() => {
       order.push("abort");
-      // A real abort makes the in-flight runTurn settle.
       releaseTurn?.();
     });
     side.newConversation = vi.fn(() => order.push("newConversation"));
     register(side, makeMainLoop());
 
-    // Start a turn (do NOT await — it is deliberately in-flight).
     const sendHandler = handlers.get(CHANNELS.sidechat.send)!;
     const sendPromise = sendHandler(ev("file:///index.html"), { input: "long turn" });
 
-    // While it streams, request a new session.
     const newHandler = handlers.get(CHANNELS.sidechat.new)!;
     const newRequest = newHandler(ev("file:///index.html"));
     expect(side.isSessionTransitioning()).toBe(true);
     const result = await newRequest;
 
     expect(result).toEqual({ ok: true, sessionId: "34fd6270-309d-4e47-878b-75c0742a6ac2" });
-    // The in-flight turn was aborted + awaited BEFORE the loop was mutated —
-    // no new-session-receives-prior-turn-frames leak.
+    // Abort and await the prior turn before mutating the session to prevent cross-session frames.
     expect(order).toEqual(["abort", "turn-settled", "newConversation"]);
     expect(side.abortCurrentTurn).toHaveBeenCalledTimes(1);
     await sendPromise;
@@ -574,9 +537,7 @@ describe("side-chat IPC domain", () => {
     expect(side.runTurn).not.toHaveBeenCalled();
   });
 
-  // The shared composer offers an attachment-only send on this surface, and the
-  // main chat accepts one. Refusing it here produced an empty user bubble
-  // followed by an error entry — the renderer had already committed the turn.
+  // Attachment-only sends are valid on the shared composer and must not leave an error bubble here.
   it("accepts an attachment-only send (no text)", async () => {
     const side = makeSideLoop();
     register(side, makeMainLoop());
@@ -597,10 +558,7 @@ describe("side-chat IPC domain", () => {
     expect(options.attachments).toHaveLength(1);
   });
 
-  // Two turns on one ConversationLoop interleave into a single history. The
-  // handler runs `runStreamedTurn` directly, so nothing else refuses the second
-  // send: a queue drain fired by a superseded turn's trailing `done` would have
-  // landed here on top of the live turn.
+  // Refuse concurrent turns on the same loop; interleaved histories cannot be repaired by queue draining.
   it("refuses a second send while a side turn is still streaming", async () => {
     let releaseTurn!: () => void;
     const side = makeSideLoop();
@@ -621,8 +579,6 @@ describe("side-chat IPC domain", () => {
     releaseTurn();
     await first;
 
-    // …and the loop is free again once the turn settles. Swap in a turn that
-    // completes on its own so this send is not held by the same latch.
     const settledTurn = vi.fn(async () => ({ route: "chat" }));
     side.runTurn = settledTurn;
     const third = await handler(ev("file:///index.html"), { input: "third", sendRequestId: "third-request" });
@@ -789,9 +745,7 @@ describe("side-chat turns bound to a pane", () => {
   });
 });
 
-// A side loop that really holds one session at a time: `new` mints one, `load`
-// moves onto a stored one (false for a session with no file), and its history
-// is the held session's. Minted ids are unique across every loop of a test.
+// Model one held session per loop and unique ids so pane isolation tests cannot share accidental state.
 let mintedSessions = 0;
 const mintSession = () => `00000000-0000-4000-8000-${String(++mintedSessions).padStart(12, "0")}`;
 function makeSessionLoop(files: Record<string, unknown[]>, start = mintSession()) {
@@ -815,7 +769,6 @@ function makeSessionLoop(files: Record<string, unknown[]>, start = mintSession()
   return Object.assign(loop, { sessionOfTurn });
 }
 
-/** The side-chat store over `files`; `paneOf` says which pane's chat a stored session is. */
 function makePaneStore(files: Record<string, unknown[]>, paneOf: Record<string, string> = {}) {
   const metadata = new Map<string, Record<string, unknown>>(
     Object.entries(paneOf).map(([sessionId, tabId]) => [sessionId, { paneTabId: tabId }]),
@@ -882,10 +835,8 @@ describe("pane chats are their own conversations", () => {
     pane(PANE_A)!.runTurn.mockImplementationOnce(async () => holdA.promise);
     const turnA = sendFrom({ input: "slow page", surface: PANE_A });
     await vi.waitFor(() => expect(pane(PANE_A)!.runTurn).toHaveBeenCalledTimes(2));
-    // While A's turn is still running, B and the rail run theirs.
     await expect(sendFrom({ input: "terminal", surface: PANE_B })).resolves.toMatchObject({ ok: true });
     await expect(sendFrom({ input: "rail" })).resolves.toMatchObject({ ok: true });
-    // A second send on A's own loop still waits for A's turn.
     await expect(sendFrom({ input: "again", surface: PANE_A })).resolves.toEqual({ ok: false, error: "streaming-active" });
     holdA.resolve({ route: "chat" });
     await expect(turnA).resolves.toMatchObject({ ok: true });
@@ -901,12 +852,19 @@ describe("pane chats are their own conversations", () => {
     const paneSession = paneLoop.getSessionId();
     files[paneSession] = [];
     await expect(endPane(PANE_A, reason)).resolves.toMatchObject({ ok: true, sessionId: paneSession });
-    // A rail view that just started a chat names a session no file holds yet.
     const freshRailView = "44444444-4444-4444-8444-444444444444";
     await expect(sendFrom({ input: "from the rail", sessionId: freshRailView })).resolves.toMatchObject({ ok: true });
     expect(rail.sessionOfTurn).toHaveLength(1);
     expect(rail.sessionOfTurn[0]).not.toBe(paneSession);
     expect(paneLoop.sessionOfTurn).toEqual([paneSession]);
+  });
+
+  it("refuses a delayed send to a closed pane and releases its unused loop", async () => {
+    const { pane } = setup();
+    await sendFrom({ input: "page", surface: PANE_A });
+    await endPane(PANE_A, "closed");
+    await expect(sendFrom({ input: "late", surface: PANE_A })).resolves.toEqual({ ok: false, error: "pane-chat-ended" });
+    expect(pane(PANE_A)).toBeUndefined();
   });
 
   it("runs a rail turn in the session its view shows, not the one the rail loop last held", async () => {
@@ -936,6 +894,40 @@ describe("pane chats are their own conversations", () => {
     expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
   });
 
+  it("reopens from the unified binding when the session row has no pane hint", async () => {
+    const stored = [{ role: "user", content: "continue this pane" }];
+    const { pane } = setup({ [STORED_PANE_SESSION]: stored });
+    browserTabRegistry.bindConversationSurface(STORED_PANE_SESSION, { windowId: 7, surface: PANE_A });
+    expect(handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId }))
+      .toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION, messages: stored });
+    await sendFrom({ input: "continue", surface: PANE_A });
+    expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
+  });
+
+  it("resumes a stored pane through the row hint in a non-primary window", async () => {
+    const stored = [{ role: "user", content: "continue this pane" }];
+    const { store, pane } = setup({ [STORED_PANE_SESSION]: stored }, { [STORED_PANE_SESSION]: PANE_A.tabId });
+    const load = vi.fn((windowId: number) => windowId === 1 ? {
+      version: 1 as const, tree: { kind: "leaf" as const, chatGroupId: "main" }, focusedId: "main",
+      surfaces: {}, sideTabs: {}, panelOpenIds: ["main"], thumbnailOpenIds: [],
+    } : undefined);
+    const save = vi.fn(async () => {});
+    browserTabRegistry.setBindingPersistence({
+      savedWindowId: () => 1, load, save,
+      sessionExists: store.hasSessionTranscript,
+    });
+    expect(handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId }))
+      .toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION, messages: stored });
+    await expect(sendFrom({ input: "continue", surface: PANE_A })).resolves.toMatchObject({ ok: true });
+    expect(load).toHaveBeenCalledWith(7);
+    expect(load).toHaveBeenCalledWith(1);
+    expect(store.findPaneSession).toHaveBeenCalledWith(PANE_A.tabId);
+    expect(pane(PANE_A)!.loadSession).toHaveBeenCalledWith(STORED_PANE_SESSION, expect.anything());
+    expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(STORED_PANE_SESSION);
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it("reads a pane's live history from its loop once it holds the pane's conversation", async () => {
     const files: Record<string, unknown[]> = {};
     const { store, pane } = setup(files);
@@ -959,7 +951,6 @@ describe("pane chats are their own conversations", () => {
     const { store } = setup({ [STORED_PANE_SESSION]: [] }, { [STORED_PANE_SESSION]: PANE_B.tabId });
     const read = handlers.get(CHANNELS.sidechat.paneHistory)!;
     const end = handlers.get(CHANNELS.sidechat.endPaneChat)!;
-    // Window 7 asks; window 8's terminal is PANE_B's.
     terminalOwners.set(PANE_B.tabId, 8);
     try {
       expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toEqual({ ok: false, error: "invalid-surface" });
@@ -968,14 +959,11 @@ describe("pane chats are their own conversations", () => {
     } finally {
       terminalOwners.delete(PANE_B.tabId);
     }
-    // A page pane window 8 holds.
     browserTabRegistry.bindConversationSurface("55555555-5555-4555-8555-555555555555", { windowId: 8, surface: PANE_A });
     expect(read(ev("file:///index.html"), { tabId: PANE_A.tabId })).toEqual({ ok: false, error: "invalid-surface" });
-    // Not a workspace tab id at all.
     for (const tabId of ["terminal:1", "browser:pane", "../x"]) {
       expect(read(ev("file:///index.html"), { tabId })).toEqual({ ok: false, error: "invalid-surface" });
     }
-    // The sender's own restored pane, held by no window yet, still reads.
     expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION });
   });
 
@@ -1012,12 +1000,10 @@ describe("pane chats are their own conversations", () => {
       files[first] = [];
       const running = deferred<{ route: string }>();
       loop.runTurn.mockImplementationOnce(async () => running.promise);
-      // The finished turn's row write is slow: the turn has let go of the pane
-      // (no active turn) but has not settled, so the reset is still waiting.
+      // Reset waits for durable row writes after the active turn has released the pane.
       const rowWrite = deferred<void>();
       store.saveSessionMetadata.mockImplementationOnce(async () => rowWrite.promise);
       const writesBefore = store.saveSessionMetadata.mock.calls.length;
-      // Its first origin makes the turn write its row.
       const turn = sendFrom({ input: "page", surface: PANE_A, originSessionId: RAIL_SESSION });
       await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(2));
       const ending = endPane(PANE_A, "new");
@@ -1071,8 +1057,6 @@ describe("pane chats are their own conversations", () => {
       await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(2));
       const closedByAgent = vi.spyOn(browserTabRegistry, "isClosedByAgent").mockReturnValue(true);
       try {
-        // The pane's view unmounts with the page (its teardown abort) and the
-        // window says the pane closed: neither stops the turn.
         await expect(handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html"), { sendRequestId: "closer" })).resolves.toEqual({ ok: true });
         await expect(endPane(PANE_A, "closed")).resolves.toMatchObject({ ok: true });
         expect(loop.abortCurrentTurn).not.toHaveBeenCalled();
@@ -1092,7 +1076,6 @@ describe("pane chats are their own conversations", () => {
       const send = sendFrom({ input: "page", surface: PANE_A });
       const loop = pane(PANE_A)!;
       loop.loadSession.mockImplementationOnce(async () => { await loading.promise; return true; });
-      // The load above is the one the send is awaiting, so swap it in before it runs.
       await expect(endPane(PANE_A, "closed")).resolves.toMatchObject({ ok: true });
       loading.resolve();
       await expect(send).resolves.toEqual({ ok: false, error: "pane-chat-ended" });
@@ -1123,7 +1106,6 @@ describe("pane chats are their own conversations", () => {
     const result = handlers.get(CHANNELS.sidechat.getSubAgentTranscript)!(ev("file:///index.html"), {
       originSessionId: pane(PANE_A)!.getSessionId(), childSessionId: "55555555-5555-4555-8555-555555555555",
     });
-    // Accepted as an active origin; the runner is what is missing here.
     expect(result).toEqual({ ok: false, error: "sub-agent-runner-unavailable" });
   });
 });

@@ -1,11 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
-/**
- * Boot §4.2 Step 0–1+5 — Core service wiring.
- *
- * Instantiates services that have no plugin dependency and must exist
- * before plugin loading (settings, memory, audit, python runtime coordinator,
- * input classification, route/tool registry, and native builtin tools).
- */
+/** Create core services before loading plugins. */
 import type { BrowserWindow } from "electron";
 import { SettingsService } from "../data/settings-store.js";
 import { initPiiRedactionPolicy } from "../audit/dlp-filter.js";
@@ -42,21 +36,9 @@ import { getAveAppVersion } from "../shared/app-version.js";
 import { join } from "node:path";
 const log = createLogger("ave");
 
-/**
- * Production log file sink signal (#1499 PR-0). The pino file destination is
- * ATTACHED only for a packaged/production run — an unpackaged dev run keeps the
- * console-only behaviour so `~/.ave/logs/` is not polluted during development.
- * `AVE_LOG_FILE=1` force-enables it for local diagnosis of the file path.
- *
- * "Packaged" is dev-flags' cached `app.isPackaged`: `main.ts` seeds it before
- * `boot.ts` reaches this step, and a packaged binary launched with AVE_DEV=1
- * keeps its log file — the flag is user-controllable and packaged builds
- * ignore it.
- */
+/** Packaged runs keep a file sink regardless of development flags; AVE_LOG_FILE=1 enables local diagnosis. */
 function shouldEnableFileLogSink(): boolean {
-  if (process.env.AVE_LOG_FILE === "1") return true;
-  if (process.env.NODE_ENV === "production") return true;
-  return getIsPackaged();
+  return process.env.AVE_LOG_FILE === "1" || process.env.NODE_ENV === "production" || getIsPackaged();
 }
 
 export interface CoreServices {
@@ -72,20 +54,7 @@ export interface CoreServices {
   routeEngine: RouteEngine;
 }
 
-/**
- * Install the reader that every PII-masking surface consults for
- * `privacy.piiRedactEnabled`.
- *
- * This belongs to the boot step that creates the settings service, not to the
- * IPC layer: a headless `--exec` / `--set-secret` launch performs its turn
- * against the freshly booted service graph and quits before any IPC handler is
- * registered. Installed there, the reader would stay at its uninjected default
- * on exactly the runs that produce audit records unattended, and a user who
- * turned redaction on would get unmasked ones.
- *
- * The closure reads the setting at each masking call rather than capturing it,
- * so flipping the toggle takes effect without a restart.
- */
+/** Install the live PII-policy reader during service boot so headless runs redact before IPC exists. */
 export function applyBootPiiRedactionPolicy(
   settingsService: Pick<SettingsService, "get">,
 ): void {
@@ -97,13 +66,7 @@ export function applyBootPiiRedactionPolicy(
 export async function applyBootLocale(
   settingsService: Pick<SettingsService, "get">,
 ): Promise<void> {
-  // `appearance.language` is the language the app's SURFACES are drawn in, and
-  // a headless turn draws none. What it does have is a system prompt
-  // assembled entirely through `t()`: under a non-English setting the model was
-  // handed a prompt in the machine's language and answered in it, regardless of
-  // what language the request on stdin was written in. Pinning the default here
-  // keeps the prompt neutral so the request decides; the per-run instruction
-  // that says so is in the system prompt's environment section.
+  // Headless prompts use the default catalog so the request determines response language.
   if (execTurnRequested(process.argv)) {
     setLocale(DEFAULT_LOCALE);
     return;
@@ -116,16 +79,7 @@ export async function applyBootLocale(
 
 export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, host: BootHost,
 ): Promise<CoreServices> {
-  // #1499 PR-0: production log file sink — attach FIRST, before any other core
-  // service. It depends only on `aveHome()` (no SettingsService / locale), so
-  // hoisting it to the very top of bootstrap shrinks the window where early
-  // boot log lines (settings load, locale apply, audit start) would be lost to
-  // the console-only sink. Destination: `~/.ave/logs/ave-<date>.log`
-  // (0o700 dir + 0o600 file). createLogFileSink prunes files older than
-  // LOG_RETENTION_DAYS at attach time; the console stream is unaffected. Failure
-  // is swallowed inside initFileLogSink (logging is best-effort, never bricks
-  // boot). Teardown is the LAST step of runAppShutdownCleanup (see below), not a
-  // `before-quit` listener, so shutdown-step logs still reach the file.
+  // Attach the sink before core boot logs; close it last so shutdown logs are captured.
   if (shouldEnableFileLogSink()) {
     const sink = initFileLogSink({
       retentionDays: LOG_RETENTION_DAYS,
@@ -137,39 +91,23 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     }
   }
 
-  // Before anything that can resolve a model: compaction budgets, the context
-  // ring and the developer panel all read the catalog synchronously, and read
-  // before install is a startup-order defect that throws. Desktop and headless
-  // boot both come through here.
+  // Install the catalog before model resolution; synchronous readers throw if boot order is wrong.
   await installBootModelCatalog();
 
-  // Python runtime coordination is app-owned, but runtime assets and plugin
-  // dependencies are materialized lazily by plugin-level async prepare.
+  // Runtime assets and plugin dependencies are prepared lazily by plugins.
   const pythonRuntime = new PythonRuntimeBootstrapper({
-    // `uv` downloads a CPython build and the locked wheels. It is a plain
-    // spawn (deliberately outside the ASRT sandbox — see asrt-sandbox.ts), so
-    // it already has unrestricted egress; what it lacks is the ADDRESS of the
-    // path this machine actually uses. Chromium's resolver is the same source
-    // the host's own requests follow, which keeps one answer to "how does this
-    // machine reach the internet" rather than two.
+    // The unsandboxed runtime downloader needs the same configured proxy route as host requests.
     ...(host.resolveProxy ? { resolveOsProxy: host.resolveProxy } : {}),
   });
   let pythonPath: string | undefined;
   void mainWindow;
 
-  // §4.2 Step 0.5: Governance Services (Agent 6)
   const bashAstValidator = new BashAstValidator({ mode: "deny" });
 
   const auditService = new AuditService();
   await auditService.start();
 
-  // §4.2 Step 1: Config
-  // Pass the OS locale so a fresh install seeds the UI language from the
-  // system rather than defaulting to English. getPreferredSystemLanguages()
-  // returns BCP-47 tags ordered by user preference (e.g. ["ko-KR", "en-US"]);
-  // normalizeLocale inside SettingsService coerces to a supported locale.
-  // app.getPreferredSystemLanguages() requires app.whenReady() — bootstrapCoreServices
-  // is always called after that point (see boot/index.ts).
+  // Seed fresh installs from supported OS language preferences; query only after app readiness.
   const settingsService = new SettingsService({
     userDataPath: host.userDataPath,
     systemLocale: host.systemLocale,
@@ -183,16 +121,10 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   await settingsService.deleteRetiredLlmVendorApiKeys();
   applyBootPiiRedactionPolicy(settingsService);
 
-  // Set the main-process UI locale from persisted settings (or system-detected
-  // locale on fresh install) so dialog titles, native menus, tray, and
-  // notifications render in the user's language. See src/i18n.
+  // Apply persisted UI locale before native surfaces are created.
   await applyBootLocale(settingsService);
 
-  // Apply the user's diagnostics.logRetentionDays to the log tree.
-  // The file sink pruned at LOG_RETENTION_DAYS (the SOT default) before settings
-  // were loaded — hoisted so early boot lines are captured. Now that settings
-  // exist, honour a tightened/loosened window (no-op if unchanged). Best-effort —
-  // reprunePersistedRetention never throws, so a prune failure can't affect boot.
+  // Reapply retention after settings load; initial sink attachment uses the default window.
   try {
     reprunePersistedRetention(
       join(aveHome(), "logs"),
@@ -202,7 +134,6 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     /* non-fatal */
   }
 
-  // §4.2 Step 5: Core Engines
   const memoryManager = new MemoryManager({
     defaultWorkspaceRoot: getDefaultWorkspaceRoot(),
   });
@@ -213,9 +144,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     memoryManager.closeSearchIndex();
   });
   log.info("boot: memory loaded from %s", memoryManager.getDir());
-  // FTS5 search index integrity check → rebuild-from-JSONL if
-  // corrupt/missing. No-Fallback — this is the only recovery path; search
-  // never falls back to a linear scan.
+  // Recover corrupt or missing search indexes from JSONL; never scan linearly as a fallback.
   await memoryManager.verifyOrRebuildSearchIndex().catch((err: unknown) => {
     log.warn("boot: search index verify/rebuild failed: %s", (err as Error).message,
     );
@@ -227,29 +156,20 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
 
   const inputClassifier = new InputClassifier();
   const toolRegistry = new ToolRegistry();
-  // BashTool registers directly — it implements the canonical
-  // Tool contract via ZodTool and is tagged source="builtin" + category
-  // "shell" so the §6.3 permission stack handles approval correctly
-  // (Layer 3 + Bash AST validation gate at executor Step 2.5).
+  // Register shell tools with canonical permission metadata so approval and AST validation apply.
   toolRegistry.register(new BashTool());
   toolRegistry.register(new PowerShellTool());
   toolRegistry.register(createReadToolResultChunkTool());
   for (const tool of createFileTools()) {
     toolRegistry.register(tool);
   }
-  // memory_write: model-directed local long-term memory. Its narrowly scoped
-  // built-in policy auto-allows ordinary local saves while retaining explicit
-  // deny, strict-mode, and staged-origin gates in PermissionManager.
+  // Local memory saves retain explicit-deny, strict-mode, and staged-origin gates.
   toolRegistry.register(createMemoryWriteTool({ memoryManager }));
-  // memory_search / memory_read (read) and memory_delete (write, candidates
-  // only, not auto-approved): recall companions on the same store and scope.
+  // Memory deletion is candidate-scoped and is not auto-approved.
   for (const tool of createMemoryRecallTools({ memoryManager })) {
     toolRegistry.register(tool);
   }
-  // Background-shell companions to `bash` (run_in_background): read incremental
-  // output and terminate by shell id. The shell registry is a module singleton
-  // (like managed-child-processes); these tools scope every lookup to the
-  // caller's session.
+  // Background-shell lookups must stay scoped to the caller’s session.
   toolRegistry.register(createBashOutputTool());
   toolRegistry.register(createBashKillTool());
   const routeEngine = new RouteEngine();

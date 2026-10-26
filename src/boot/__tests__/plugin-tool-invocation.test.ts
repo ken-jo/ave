@@ -188,18 +188,7 @@ describe("plugin app-only runtime invocation", () => {
   });
 });
 
-// #1553 (relocated + wiring guard) — the app-only dispatch ceiling now lives
-// STRUCTURALLY inside `PluginRuntime.callDeclaredAppOnlyTool` (proven directly at
-// the runtime level in plugins/runtime/__tests__/ui-action-ceiling.test.ts).
-// This block adds the wiring-level regression guard the cluster review asked
-// for: a FAITHFUL reproduction of the production `invokePluginTool` app-only
-// branch (boot/steps/plugin-tool-executor.ts) — runWithInvocationOrigin →
-// isAppOnlyRuntimeInvocation → dispatchAppOnlyRuntimeInvocation — driven against a
-// REAL PluginRuntime. It proves the boot dispatch path reaches that structural
-// ceiling, so a hung app-only handler rejects at the global ceiling instead of
-// blocking the renderer forever — even if this dispatch were ever reverted to a
-// direct `pluginRuntime.callDeclaredAppOnlyTool(...)` call. (The analogous OTHER
-// executor branch is reproduced in tools/__tests__/executor-effect-ledger.test.ts.)
+// The boot dispatch path must reach the runtime ceiling for hung app-only handlers.
 // Fake timers advance to the SOT ceiling so the test does not wait the real 120s.
 describe("invokePluginTool app-only branch — reaches the structural ceiling (#1553 wiring guard)", () => {
   const HOST_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..",
@@ -221,7 +210,6 @@ describe("invokePluginTool app-only branch — reaches the structural ceiling (#
     return rt;
   }
 
-  // Faithful reproduction of the production invokePluginTool app-only branch.
   function invokePluginToolRepro(
     rt: PluginRuntime,
     toolName: string,
@@ -248,7 +236,6 @@ describe("invokePluginTool app-only branch — reaches the structural ceiling (#
           manifestTool("meeting_stage_upload_begin", ["app"]),
         ],
         "meeting_stage_upload_begin",
-        // Never resolves — simulates a hung app-only handler.
         () => new Promise<never>(() => {}),
       );
       const pending = invokePluginToolRepro(
@@ -257,8 +244,7 @@ describe("invokePluginTool app-only branch — reaches the structural ceiling (#
         {},
         { origin: "ui", ownerPluginId: "test.plugin", userAction: true },
       );
-      // Attach the rejection expectation BEFORE advancing so the ceiling
-      // rejection is never an unhandled rejection.
+      // Attach rejection handlers before advancing fake timers to avoid unhandled rejections.
       const rejection = expect(pending).rejects.toThrow(
         new RegExp(
           `exceeded global ceiling \\(${TOOL_TIMEOUT_POLICY.globalCeilingMs}ms\\): meeting_stage_upload_begin`,
@@ -274,11 +260,7 @@ describe("invokePluginTool app-only branch — reaches the structural ceiling (#
   });
 });
 
-// #1556 — a nested plugin-origin `ctx.callTool` dispatches with
-// `origin: "plugin"` and never forwards `userAction`, even while riding a
-// UI-rooted chain via `parentOrigin: "ui"`) targeting an app-only-visibility
-// non-status method must throw an error naming the REAL manifest constraint,
-// not the generic user-activation error which misleads the plugin author.
+// Nested plugin calls must report the manifest constraint rather than a missing UI gesture.
 describe("dispatchAppOnlyRuntimeInvocation — nested plugin-origin ctx.callTool clarity (#1556)", () => {
   it("throws the explicit app-only-visibility constraint error for a nested plugin-origin call (not the generic activation error)", async () => {
     let handlerCalled = false;
@@ -302,7 +284,6 @@ describe("dispatchAppOnlyRuntimeInvocation — nested plugin-origin ctx.callTool
       runtime,
       "meeting_stage_upload_begin",
       {},
-      // nested hop: origin "plugin" but effective chain is UI (parentOrigin).
       { origin: "plugin", ownerPluginId: "meeting", parentOrigin: "ui" },
     ).then(
       () => undefined,
@@ -313,11 +294,9 @@ describe("dispatchAppOnlyRuntimeInvocation — nested plugin-origin ctx.callTool
     expect((err as Error).message).toMatch(
       /app-only-visibility method .* cannot be invoked from a plugin-origin ctx\.callTool/,
     );
-    // Must NOT be the old, misleading generic activation error.
     expect((err as Error).message).not.toMatch(
       /requires an active user activation/,
     );
-    // The constraint is detected before dispatch — the handler is never run.
     expect(handlerCalled).toBe(false);
   });
 
@@ -340,17 +319,13 @@ describe("dispatchAppOnlyRuntimeInvocation — nested plugin-origin ctx.callTool
         runtime,
         "meeting_stage_upload_begin",
         {},
-        { origin: "ui", ownerPluginId: "meeting" }, // direct UI, no userAction
+        { origin: "ui", ownerPluginId: "meeting" },
       ),
     ).rejects.toThrow(/requires an active user activation/);
   });
 });
 
-// Defense-in-depth (cluster-review security LOW) — dispatchAppOnlyRuntimeInvocation
-// is exported and must re-assert the app-only routing invariant at the boundary,
-// not merely trust the caller's isAppOnlyRuntimeInvocation predicate. A caller
-// that mis-routes a model-visible method here must be refused BEFORE the
-// reviewer-skipping app-only dispatch bypass runs.
+// The exported dispatch boundary must reject model-visible tools before bypassing review.
 describe("dispatchAppOnlyRuntimeInvocation — boundary routing gate (security defense-in-depth)", () => {
   it("refuses a model-visible tool even when the caller mis-routes it to the bypass", async () => {
     let handlerCalled = false;
@@ -379,7 +354,6 @@ describe("dispatchAppOnlyRuntimeInvocation — boundary routing gate (security d
     ).rejects.toThrow(
       /is a model-visible tool; refusing ungoverned app-only dispatch/,
     );
-    // The bypass handler is never reached — the boundary gate fails closed.
     expect(handlerCalled).toBe(false);
   });
 
@@ -464,16 +438,7 @@ describe("dispatchAppOnlyRuntimeInvocation — boundary routing gate (security d
   });
 });
 
-// ─── MCP App origin ("mcp-app") — the app-only bypass is UNREACHABLE ───────────
-//
-// An MCP App is untrusted HTML in a sandboxed iframe; it is NOT the plugin's
-// first-party React panel. It therefore dispatches with its OWN origin, and the
-// app-only dispatch predicate answers "ui" and nothing else. The point of testing
-// the PREDICATE (rather than only the runtime deny) is that this is the structural
-// half of the fix: even if a future manifest/visibility change made an app-only
-// tool look dispatchable, an app-origin chain still cannot select the bypass — and
-// therefore cannot reach the `auth.statusTool` user-activation carve-out, which is
-// what the verified exploit rode.
+// Untrusted app-origin chains must never select the trusted panel bypass.
 describe("isAppOnlyRuntimeInvocation — an MCP App origin never selects the ungoverned bypass", () => {
   const appOnlyRuntime = () =>
     runtimeWithManifest(
@@ -494,7 +459,6 @@ describe("isAppOnlyRuntimeInvocation — an MCP App origin never selects the ung
         "mcp-app",
       ),
     ).toBe(false);
-    // Same tool, trusted panel origin → still true (the panel path is NOT regressed).
     expect(
       isAppOnlyRuntimeInvocation(
         appOnlyRuntime(),
@@ -506,17 +470,14 @@ describe("isAppOnlyRuntimeInvocation — an MCP App origin never selects the ung
   });
 
   it("REGRESSION PIN: is false for the manifest's auth.statusTool called from an app", () => {
-    // The exploited tool. `appOnlyRuntimeInvocationRequiresUserAction` returns
-    // FALSE for it (status polling has no gesture), so if an app-origin call could
-    // reach the app-only dispatch path, NOTHING would stop it. The origin check is
-    // what stops it — one level earlier, structurally.
+    // Status polling skips user activation, so origin checks must block apps before dispatch.
     expect(
       appOnlyRuntimeInvocationRequiresUserAction(
         appOnlyRuntime(),
         "auth_status",
         { origin: "mcp-app", ownerPluginId: "meeting" },
       ),
-    ).toBe(false); // ← the carve-out still exists…
+    ).toBe(false);
     expect(
       isAppOnlyRuntimeInvocation(
         appOnlyRuntime(),
@@ -524,7 +485,7 @@ describe("isAppOnlyRuntimeInvocation — an MCP App origin never selects the ung
         { origin: "mcp-app", ownerPluginId: "meeting", userAction: false },
         "mcp-app",
       ),
-    ).toBe(false); // ← …and is unreachable from an app: the bypass is never selected.
+    ).toBe(false);
   });
 
   it("is false for a dual-visibility tool called from an app (it takes the governed executor)", () => {
@@ -541,14 +502,11 @@ describe("isAppOnlyRuntimeInvocation — an MCP App origin never selects the ung
   });
 });
 
-// The chain must not be able to LAUNDER an app origin into the panel origin: if an
-// app-rooted chain could inherit "ui" from an outer frame (or decay to "plugin" on
-// a nested ctx.callTool), the structural guarantee above would hold only at depth 0.
+// Nested calls must preserve an app origin rather than laundering it into a trusted panel origin.
 describe("runWithInvocationOrigin — an mcp-app chain cannot be laundered", () => {
   it("keeps 'mcp-app' through a nested plugin-origin ctx.callTool hop", async () => {
     await runWithInvocationOrigin("mcp-app", undefined, async () => {
       expect(currentInvocationOrigin()).toBe("mcp-app");
-      // The inner ctx.callTool hop uses origin "plugin", with no parentOrigin.
       await runWithInvocationOrigin("plugin", undefined, async () => {
         expect(currentInvocationOrigin()).toBe("mcp-app");
       });
@@ -578,9 +536,6 @@ describe("runWithInvocationOrigin — an mcp-app chain cannot be laundered", () 
   });
 });
 
-// End-to-end through the production dispatch shape (the same faithful repro of
-// boot/steps/plugin-tool-executor.ts's `invokePluginTool` used above), driven
-// against a REAL PluginRuntime: which BRANCH does an app-origin call take?
 describe("invokePluginTool routing — app-origin calls land on the governed executor, never the bypass", () => {
   const HOST_ROOT_2 = resolve(
     dirname(fileURLToPath(import.meta.url)),
@@ -612,7 +567,6 @@ describe("invokePluginTool routing — app-origin calls land on the governed exe
     return rt;
   }
 
-  /** Faithful reproduction of the production invokePluginTool BRANCH selection. */
   function routeOf(
     rt: PluginRuntime,
     toolName: string,
@@ -655,11 +609,7 @@ describe("invokePluginTool routing — app-origin calls land on the governed exe
     await expect(routeOf(rt, "meeting_stage_upload_begin", ctx)).resolves.toBe(
       "governed-executor",
     );
-    // …and that branch is where the app arm actually sends it: an app-only tool is a
-    // §6.4 registry Tool (the loopback projects it), so PluginRuntime.callFromApp
-    // hands it to the executor — risk → reviewer/approval → audit — rather than
-    // denying it for want of a gate. What it never gets is the panel's ungoverned
-    // dispatch. (Proven in plugins/runtime/__tests__/call-from-app.test.ts.)
+    // App-only tools invoked by apps still pass through executor risk, approval, and audit gates.
   });
 
   it("app origin + auth.statusTool → governed executor branch (the bypass is not selected)", async () => {

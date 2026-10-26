@@ -55,10 +55,7 @@ export function useSessionList(api: AveApi) {
 
   const refreshSessions = useCallback(async () => {
     try {
-      // Every family, and the widest page the handler allows. One page now
-      // carries four families where it used to carry one, so the old default of
-      // 20 rows would have pushed conversations out of the list to make room
-      // for the routine runs and side chats that were added to it.
+      // Request all session families with the widest allowed page so routine and side-chat rows do not crowd out conversations.
       const r = await api.chatSessions({
         families: [...SESSION_FAMILIES],
         limit: SESSION_LIST_MAX_LIMIT,
@@ -80,10 +77,8 @@ export interface CurrentSessionDeps {
    * entries, so a restored conversation and a switched-to one behave alike.
    */
   restoreSubAgents?: (rows: readonly RestoredSubAgentRow[]) => void;
-  /**
-   * Tell the window its list is stale. A fork creates a session, and the
-   * sidebar has to learn about it — but the LIST is not this hook's to hold.
-   */
+  /** Tell the window its list is stale. A fork creates a session, and the sidebar has to learn about it — but the LIST is not
+   * this hook's to hold. */
   onSessionsChanged?: () => void | Promise<void>;
   /**
    * Whether this tile is the one the window's "main active" state addresses.
@@ -100,39 +95,21 @@ export interface CurrentSessionDeps {
    * "chats" tab while the user is looking at the project's group.
    */
   freshProject?: { projectRoot?: string; projectName?: string };
-  /**
-   * Main refused the `chatNew` hydration asked for (e.g. the project left the
-   * workspace). The loop stays where it was and so does the tile; this says
-   * why, so the refusal is not a silently blank tile.
-   */
+  /** Main refused the `chatNew` hydration asked for (e.g. the project left the workspace). The loop stays where it was and so
+   * does the tile; this says why, so the refusal is not a silently blank tile. */
   onChatNewRefused?: (error: string) => void;
-  /**
-   * A session this tile asked for is held by another chat group — one that
-   * may be folded away by chat mode, so the renderer's mounted tiles cannot
-   * find it. Returns whether that group was brought forward.
-   */
+  /** A session this tile asked for is held by another chat group — one that may be folded away by chat mode, so the
+   * renderer's mounted tiles cannot find it. Returns whether that group was brought forward. */
   focusSessionHolder?: (chatGroupId: string) => boolean;
 }
 
-/**
- * Which conversation ONE tile is holding, plus the load and fork actions that
- * change it.
- *
- * `api` is the tile's group-bound surface, so every read here answers about
- * that tile's ConversationLoop and two tiles never see each other's session.
- *
- * The streaming guard on load lives here; callers pass `streaming` so we don't
- * swap history mid-turn (ConversationLoop.runTurn has no concurrency guard).
- *
- * Fork needs to truncate renderer entries (which include reasoning/tool_group
- * rows the backend history doesn't track) — so the caller passes the resolved
- * history index and a `setEntries` truncator.
- */
+/** Use the tile-bound API and block session loads during streaming; fork truncation uses renderer history indices because
+ * backend history omits reasoning/tool rows. */
 export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
   const { applyInitialSession, onLoadedSession, restoreSubAgents, onSessionsChanged, focusSessionHolder } = deps;
   const resumeWindowActiveSession = deps.resumeWindowActiveSession ?? true;
-  // Read at hydration time, not a dependency of it: the window's active
-  // project changing must not re-hydrate a tile that is holding a conversation.
+  // Read at hydration time, not a dependency of it: the window's active project changing must not re-hydrate a tile that is
+  // holding a conversation.
   const freshProjectRef = useRef(deps.freshProject);
   freshProjectRef.current = deps.freshProject;
   const onChatNewRefusedRef = useRef(deps.onChatNewRefused);
@@ -163,9 +140,8 @@ export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
       current: Awaited<ReturnType<AveApi["chatGetHistory"]>>,
       project?: { projectRoot?: string; projectName?: string },
     ) => {
-      // A loop already on an empty main session is the fresh state — unless
-      // the conversation has to be created under a project, which only
-      // chatNew records.
+      // A loop already on an empty main session is the fresh state — unless the conversation has to be created under a project,
+      // which only chatNew records.
       const alreadyUnderProject = !project
         || projectRootEquals(sessionProjectFromHistory(current).projectRoot, project.projectRoot);
       // Only an empty loop reaches here: a held conversation was adopted above.
@@ -180,8 +156,8 @@ export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
       }
       const created = await api.chatNew(project);
       if (token !== sessionReadTokenRef.current) return;
-      // A refused chatNew left the loop on its old session; emptying the
-      // transcript here would show a conversation the loop does not hold.
+      // A refused chatNew left the loop on its old session; emptying the transcript here would show a conversation the loop does
+      // not hold.
       if (!created.ok) {
         onChatNewRefusedRef.current?.(created.error);
         return;
@@ -270,8 +246,8 @@ export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
         const h = await api.chatSessionHistory(sessionId);
         if (token !== sessionReadTokenRef.current) return false;
         if (!h.ok) return false;
-        // Reset first: the reset clears the sub-agent rows, so restoring
-        // before it would hand the incoming conversation an empty panel.
+        // Reset first: the reset clears the sub-agent rows, so restoring before it would hand the incoming conversation an empty
+        // panel.
         onLoadedSession?.();
         restoreSubAgents?.(h.restoredSubAgents ?? []);
         applyLoadedSession(sessionHistoryToEntries(h));
@@ -334,33 +310,21 @@ export function sessionHistoryToEntries(history: Awaited<ReturnType<AveApi["chat
   ];
 }
 
-/**
- * Where the user is looking: the focused tile, and whether the conversation
- * surface is on screen at all (Settings and plugin views cover it).
- */
+/** Where the user is looking: the focused tile, and whether the conversation surface is on screen at all (Settings and
+ * plugin views cover it). */
 export interface Attention {
   focusedChatGroupId: string;
   conversationVisible: boolean;
 }
 
-/**
- * The conversations whose turn just ended somewhere the user was not looking.
- *
- * A turn ending under the user's eyes needs no mark — they saw it. One that
- * ends in another tile, or while Settings covers the conversation, is what a
- * chat app bolds: something happened that has not been seen. A tile that
- * moved to a different conversation between the two readings is skipped;
- * the turn that ended belonged to a session the tile no longer shows, and
- * marking it would point at history the user already left.
- */
+/** Mark unseen completed turns only if the tile still holds the same session; do not mark a replacement conversation. */
 export function turnsEndedUnseen(
   previous: readonly TileSession[],
   current: readonly TileSession[],
   attention: Attention,
 ): string[] {
-  // "Looking" is a property of the conversation, not the tile, and the user
-  // sees its turn end through the focused tile — provided that tile is drawn.
-  // A hidden one is mounted only so its turn survives; nobody is watching it.
+  // "Looking" is a property of the conversation, not the tile, and the user sees its turn end through the focused tile —
+  // provided that tile is drawn. A hidden one is mounted only so its turn survives; nobody is watching it.
   const watched = attention.conversationVisible
     ? current.find((tile) =>
       tile.chatGroupId === attention.focusedChatGroupId && !tile.hidden)?.sessionId
@@ -390,26 +354,15 @@ export function turnsEnded(
   return ended;
 }
 
-/**
- * Keeps the unread mark honest against what is on screen: a turn that ends
- * unseen marks its conversation, and looking at a conversation reads it.
- *
- * "Looking" is a transition — focusing the tile, returning to the conversation
- * view, or loading a session into the focused tile — not a standing condition.
- * A conversation the user marks unread by hand while it is in front of them
- * therefore stays marked until they look away and back, which is what the
- * manual mark is for.
- */
+/** Read marks clear on a transition into the conversation; manually marking the visible chat unread must survive until the
+ * user leaves and returns. */
 export function useTurnAttention(input: {
   tiles: readonly TileSession[];
   attention: Attention;
   isUnread: (sessionId: string) => boolean;
   setUnread: (sessionId: string, unread: boolean) => void | Promise<void>;
-  /**
-   * Every turn end, seen or not. The window's conversation list is read, not
-   * pushed, and a turn is what gives a fresh tile's session a file and a
-   * title — without this the list learns about it only by chance.
-   */
+  /** Every turn end, seen or not. The window's conversation list is read, not pushed, and a turn is what gives a fresh tile's
+   * session a file and a title — without this the list learns about it only by chance. */
   onTurnsEnded?: (sessionIds: readonly string[]) => void | Promise<void>;
 }): void {
   const { tiles, attention } = input;

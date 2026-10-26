@@ -1,25 +1,11 @@
-/**
- * The ssh remote's address check (design §18.2.4): a preflight, not a pin.
- *
- * ssh resolves and connects on its own, and pinning it (`HostName`,
- * `HostKeyAlias`, `CheckHostIP`) would change the user's host-key and
- * certificate identity, which is the trust anchor for SSH. So the runner
- * reads the effective configuration with `ssh -G`, which evaluates `Host`
- * and `Match` blocks, resolves the printed `hostname` once, and refuses the
- * call before git starts when any answer violates a hard refusal or a managed
- * block: ssh may connect to any of them. With `proxycommand` or `proxyjump`
- * set, ssh reaches the target beyond the proxy, so nothing is resolved here.
- *
- * Residual, stated: an answer that changes between this lookup and ssh's own
- * is not bound.
- */
+/** SSH preflight preserves host-key identity and checks all effective-host answers before git.
+ * SSH resolves again, so rebinding after preflight remains possible; configured proxies resolve their own targets. */
 import { execFile } from "node:child_process";
 import { isIP } from "node:net";
 import { selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
 import { MarketplaceError } from "../errors.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 
-/** Runs `ssh <args>` with the git call's environment and answers its stdout. */
 export type SshConfigReader = (args: readonly string[], env: Readonly<Record<string, string>>) => Promise<string>;
 
 export const readSshConfig: SshConfigReader = (args, env) =>
@@ -32,11 +18,9 @@ export const readSshConfig: SshConfigReader = (args, env) =>
 
 export interface EffectiveSshConfig {
   hostname: string;
-  /** Set when ssh reaches the target through another program or host. */
   proxied: boolean;
 }
 
-/** The lines of `ssh -G` this check needs. */
 export function parseSshConfig(text: string): EffectiveSshConfig {
   let hostname: string | null = null;
   let proxied = false;
@@ -52,7 +36,6 @@ export function parseSshConfig(text: string): EffectiveSshConfig {
   return { hostname, proxied };
 }
 
-/** The arguments of `ssh -G` for a remote: `[-p <port>] [<user>@]<host>`. */
 export function sshConfigArgs(url: NormalizedSourceUrl): string[] {
   const host = url.host.startsWith("[") && url.host.endsWith("]") ? url.host.slice(1, -1) : url.host;
   return ["-G", ...(url.port !== null ? ["-p", String(url.port)] : []), `${url.user ? `${url.user}@` : ""}${host}`];
@@ -63,7 +46,7 @@ export interface SshPreflightDeps {
   lookup: (host: string) => Promise<readonly string[]>;
 }
 
-/** Throws the refusal, block or confirmation the remote's answers call for; git is not started then. */
+/** Refusal prevents git from starting. */
 export async function sshPreflight(url: NormalizedSourceUrl, policy: AddressPolicy, env: Readonly<Record<string, string>>, deps: SshPreflightDeps): Promise<void> {
   let text: string;
   try {

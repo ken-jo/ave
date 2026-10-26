@@ -34,7 +34,7 @@ const EFFECT_ENVELOPE_VERSION = "effect-envelope/v1" as const;
 const EXECUTION_CAPABILITY_VERSION = "execution-capability/v1" as const;
 const EXECUTION_GRANT_VERSION = "execution-grant/v1" as const;
 
-/** Route names describe execution substrates, not permission decisions. */
+// Route names describe execution substrates, not permission decisions.
 export type ExecutionRoute =
   | "workspace-sandbox"
   | "disposable-container"
@@ -81,10 +81,7 @@ export interface ExecutionRuntimeLimits {
   readonly background: boolean;
 }
 
-/**
- * Host-normalized effect identity. The raw request is hashed and discarded so
- * route/audit metadata never becomes a second command or secret-bearing log.
- */
+// Host-normalized effect identity. The raw request is hashed and discarded so route/audit metadata never becomes a second command or secret-bearing log.
 export interface EffectEnvelope {
   readonly version: typeof EFFECT_ENVELOPE_VERSION;
   readonly digest: string;
@@ -94,7 +91,7 @@ export interface EffectEnvelope {
   readonly runtimeLimits: Readonly<ExecutionRuntimeLimits>;
 }
 
-/** Availability is host-issued and generation-bound; it grants no authority. */
+// Availability is host-issued and generation-bound; it grants no authority.
 export interface ExecutionCapability {
   readonly version: typeof EXECUTION_CAPABILITY_VERSION;
   readonly identity: string;
@@ -114,10 +111,7 @@ type ExecutionFallback =
   | "analysis-uncertain"
   | "route-unavailable";
 
-/**
- * Immutable route decision. `selected` still means only that a substrate was
- * chosen; the existing permission stack remains the authority in this slice.
- */
+// Immutable route decision. `selected` still means only that a substrate was chosen; the existing permission stack remains the authority in this slice.
 export interface ExecutionPlan {
   readonly version: typeof EXECUTION_ROUTER_VERSION;
   readonly identity: string;
@@ -134,7 +128,7 @@ export interface ExecutionPlan {
   readonly fallback: ExecutionFallback;
 }
 
-/** Public-safe, serializable receipt for the route decision. */
+// Public-safe, serializable receipt for the route decision.
 export interface ExecutionPlanAuditProjection {
   readonly version: typeof EXECUTION_ROUTER_VERSION;
   readonly identity: string;
@@ -151,7 +145,7 @@ export interface ExecutionPlanAuditProjection {
   readonly fallback: ExecutionFallback;
 }
 
-/** Immutable one-shot execution authority for a fully selected route. */
+// Immutable one-shot execution authority for a fully selected route.
 export interface ShellExecutionGrant {
   readonly version: typeof EXECUTION_GRANT_VERSION;
   readonly action: "shell";
@@ -258,8 +252,7 @@ function freezeRequirements(
 }
 
 function freezeLimits(limits: ExecutionRuntimeLimits): Readonly<ExecutionRuntimeLimits> {
-  // Match the existing shell parser exactly: retries may deliberately carry a
-  // very large positive integer and this observational layer must not narrow it.
+  // Match the existing shell parser exactly: retries may deliberately carry a very large positive integer and this observational layer must not narrow it.
   if (!Number.isInteger(limits.timeoutSeconds) || limits.timeoutSeconds < 1) {
     throw new Error("Execution runtime timeout must be a positive integer");
   }
@@ -270,7 +263,7 @@ function freezeLimits(limits: ExecutionRuntimeLimits): Readonly<ExecutionRuntime
 }
 
 export function issueEffectEnvelope(input: {
-  /** Host-private normalized request; only its digest survives. */
+  // Host-private normalized request; only its digest survives.
   request: unknown;
   cwd: string;
   unresolvedRequirements?: readonly AnalysisUncertainRequirement[];
@@ -400,7 +393,7 @@ export function issueExecutionCapability(input: {
   return capability;
 }
 
-/** Pure compatibility mapping for the current host-shell substrate contract. */
+// Pure compatibility mapping for the current host-shell substrate contract.
 export function executionRouteForHostShellPlan(
   plan: Pick<HostShellExecutionPlan, "mode" | "capability">,
 ): ExecutionRoute | null {
@@ -470,8 +463,7 @@ export function buildExecutionPlan(input: {
     input.effect.unresolvedRequirements.length > 0 &&
     input.legacyPlan.executionRequest !== "host"
   ) {
-    // An uncertain effect may be re-analysed, isolated in a future container,
-    // or explicitly approved. It must never fall through to host by default.
+    // An uncertain effect may be re-analysed, isolated in a future container, or explicitly approved. It must never fall through to host by default.
     route = null;
     decision = "analysis-required";
     fallback = "analysis-uncertain";
@@ -548,8 +540,7 @@ export function buildHostShellExecutionRoute(input: {
   });
   const availableRoutes: ExecutionRoute[] = [];
   if (input.brokeredWorkloadCapability !== undefined) {
-    // A configured workload broker is an exclusive task substrate. Advertising
-    // a local route here would turn a broker outage into host execution.
+    // A configured workload broker is an exclusive task substrate. Advertising a local route here would turn a broker outage into host execution.
     availableRoutes.push("disposable-container");
   } else {
     if (legacyRoute === "workspace-sandbox") availableRoutes.push("workspace-sandbox");
@@ -573,7 +564,7 @@ export function buildHostShellExecutionRoute(input: {
   return Object.freeze({ plan, audit: getExecutionPlanAuditProjection(plan) });
 }
 
-/** Current host-shell adapter; kept here so callers do not duplicate mapping. */
+// Current host-shell adapter; kept here so callers do not duplicate mapping.
 export function buildHostShellExecutionRouteProjection(input: {
   legacyPlan: HostShellExecutionPlan;
   toolName: "bash" | "powershell";
@@ -693,11 +684,7 @@ export function issueExecutionGrant(
   return grant;
 }
 
-/**
- * Consume a host-issued route proof for the exact shell action. A structural
- * lookalike, replay, changed request, stale sandbox snapshot, or replaced
- * operator capability returns no route and therefore cannot relax policy.
- */
+// Consume a host-issued route proof for the exact shell action. A structural lookalike, replay, changed request, stale sandbox snapshot, or replaced operator capability returns no route and therefore cannot relax policy.
 export function consumeExecutionGrantForShellInvocation(input: {
   grant: ExecutionGrant | undefined;
   legacyPlan: HostShellExecutionPlan;
@@ -829,11 +816,7 @@ function brokerOperationForBuiltinTool(toolName: string): WorkloadToolOperation 
   return operation;
 }
 
-/**
- * Mint a one-shot route proof for a canonical builtin whose implementation
- * will execute through the workload broker. The caller must have completed a
- * fresh handshake immediately before this synchronous issuance step.
- */
+// Mint a one-shot route proof for a canonical builtin whose implementation will execute through the workload broker. The caller must have completed a fresh handshake immediately before this synchronous issuance step.
 export function issueBrokeredToolExecutionGrant(input: {
   capability: BrokeredWorkloadCapability;
   toolName: string;
@@ -882,7 +865,7 @@ export function issueBrokeredToolExecutionGrant(input: {
   return grant;
 }
 
-/** Consume an exact, current broker proof once. Failure never implies local execution. */
+// Consume an exact, current broker proof once. Failure never implies local execution.
 export function consumeExecutionGrantForBuiltinToolInvocation(input: {
   grant: ExecutionGrant | undefined;
   toolName: string;

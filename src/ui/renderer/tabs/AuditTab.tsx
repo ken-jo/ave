@@ -53,9 +53,8 @@ const TYPE_BADGE: Record<string, string> = {
 
 export function AuditTab() {
   const { t } = useTranslation();
-  // The picker shows host-local civil days: "today" is the day on the
-  // person's calendar, not the UTC day the store partitions by. The search
-  // side maps these keys back onto the UTC partitions.
+  // The picker shows host-local civil days: "today" is the day on the person's calendar, not the UTC day the store
+  // partitions by. The search side maps these keys back onto the UTC partitions.
   const [dateFrom, setDateFrom] = useState(() =>
     shiftLocalDateKey(localDateKey(new Date()), -DEFAULT_RANGE_DAYS),
   );
@@ -131,9 +130,8 @@ export function AuditTab() {
   const maxCount = top3[0]?.[1] ?? 1;
 
   return (
-    // No inner scroll wrapper — SettingsContent's right pane owns the
-    // single dialog scroll (always-visible gutter for G2). Wrapping the
-    // tab in its own ScrollArea here would create a double scrollbar.
+    // No inner scroll wrapper — SettingsContent's right pane owns the single dialog scroll (always-visible gutter for G2).
+    // Wrapping the tab in its own ScrollArea here would create a double scrollbar.
     <div className="pr-1">
       <div className="space-y-6">
         <SettingsPageHeader
@@ -283,14 +281,7 @@ export function AuditTab() {
                 <tbody>
                   {result.entries.map((entry, i) => {
                     const isExpanded = expandedIdx === i;
-                    // Audit results mix two record shapes in a single stream:
-                    // (1) telemetry AuditEntry (timestamp/type/route/input/output)
-                    // (2) permission HMAC-chain AuditCommon (ts/auditId/trustOrigin/
-                    //     decision/prevHash/tool). The row used to read only (1)'s
-                    // fields, so every (2) row rendered as blank skeleton cells.
-                    // Normalize once per row with a small fallback chain — the
-                    // expanded JSON view below still shows the raw entry so power
-                    // users see everything.
+                    // Normalize telemetry and permission-chain audit rows for display; keep expanded JSON unchanged.
                     const e = entry as unknown as Record<string, unknown>;
                     const ts = (e.timestamp ?? e.ts) as string | undefined;
                     const rowType = (e.type ?? e.decision ?? "—") as string;

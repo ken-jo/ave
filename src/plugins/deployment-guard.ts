@@ -1,14 +1,4 @@
-/**
- * Which plugins the user may not uninstall or disable (design §10.1, §10.2).
- *
- * No package locks itself: there are no managed packages, and neither a
- * manifest field nor the registry's `installSource` protects a plugin. Only
- * the machine's system policy file can, through `marketplaces.requiredInstalls`:
- * a plugin an entry there names, installed from the source the entry names,
- * cannot be uninstalled or disabled. The same rule guards the marketplace's
- * own uninstall (`assertNotRequiredByPolicy`), so the Plugins tab and the
- * marketplace answer alike.
- */
+/** Only system-policy requiredInstalls can prevent uninstall or disable, matching both plugin and bound source. */
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { lockedByPolicy, requiredByPolicyReason } from "../marketplace/boot-installs/run.js";
 import type { PackageKey } from "../marketplace/sources/policy.js";
@@ -19,13 +9,7 @@ export interface GuardResult {
   reason?: string;
 }
 
-/**
- * Thrown when a {@link PluginDeploymentGuard} decision denies a lifecycle
- * mutation. Callers that need to distinguish a policy denial from an
- * operational failure (the IPC layer maps it to its own error code) must use
- * `instanceof` — never a message-prefix match, so the denial wording stays a
- * single authority here.
- */
+/** Distinguish policy denials with instanceof, never message prefixes; IPC maps the error separately. */
 export class PluginDeploymentDeniedError extends Error {
   constructor(reason: string) {
     super(reason);
@@ -34,11 +18,9 @@ export class PluginDeploymentDeniedError extends Error {
 }
 
 export interface DeploymentGuardOptions {
-  /** Absolute path to plugin registry (plugins/registry.json) */
   registryPath: string;
-  /** The single plugin root, `~/.ave/plugins/`. */
   pluginsRoot: string;
-  /** The system policy file's `requiredInstalls`, read at each check. */
+  /** Read requiredInstalls afresh for every check. */
   requiredInstalls(): Promise<readonly PackageKey[]>;
 }
 
@@ -71,8 +53,7 @@ export class PluginDeploymentGuard {
     const manifestAbs = isAbsolute(entry.manifestPath)
       ? resolve(entry.manifestPath)
       : resolve(dirname(this.registryPath), entry.manifestPath);
-    // Uninstall removes `pluginsRoot/<id>`; an entry whose manifest lives
-    // elsewhere is not one this app installed there.
+    // Only entries installed under pluginsRoot are owned by this uninstall path.
     if (!this.isUnderPluginsRoot(manifestAbs)) {
       return {
         allowed: false,
@@ -94,19 +75,8 @@ export class PluginDeploymentGuard {
   }
 }
 
-/**
- * Deployment policy for the LIVE disable writer.
- *
- * `setPluginEnabled()` is the one method that mutates the registry `enabled`
- * field, and what the renderer toggle reaches through
- * `CHANNELS.plugins.setEnabled`. It checks here, so a required plugin cannot be
- * switched off from the settings tab.
- *
- * `installClaim` is the registry row id this guard looks entries up by, NOT the
- * canonical manifest id, which it would fail to find. A static manifest
- * (`installClaim === null`) has no registry row to classify, and its toggle is
- * session-local and persists nothing.
- */
+// installClaim is the registry row ID, not the canonical manifest ID.
+// A null claim is static and its enabled toggle persists no registry state.
 export async function assertDisableAllowed(
   enabled: boolean,
   installClaim: string | null,

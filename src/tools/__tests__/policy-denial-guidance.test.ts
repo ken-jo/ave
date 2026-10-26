@@ -1,18 +1,4 @@
-/**
- * Host policy refusals must read as refusals, not as failures.
- *
- * All four bracketed block kinds — `Directory policy blocked`, `Shell path
- * policy blocked`, `Bash AST blocked`, `Sensitive path blocked` — reach the
- * model as an ordinary `isError` tool result, the same shape a command that
- * merely failed produces. In an 89-task agentic run they were 458 of 770 tool
- * errors and consumed 21.9% of all rounds, because the only response a plain
- * failure invites is "rewrite the command and try again", which a policy
- * decision never rewards.
- *
- * These tests pin the three things the shared guidance has to carry: WHAT was
- * judged and under which rule, whether a retry can change the answer, and which
- * directories a call could legitimately target instead.
- */
+// Policy refusals must name the rule, state whether retries can help, and identify legitimate alternative directories.
 import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,8 +26,7 @@ describe("buildPolicyDenialGuidance", () => {
   });
 
   it("falls back to naming only the rule when no operand was judged", () => {
-    // The bash AST layer refuses a command SHAPE, so there is no single token
-    // to point at; the message must still say which rule spoke.
+    // Structural refusals identify a command shape and rule, not a single target token.
     const guidance = buildPolicyDenialGuidance({
       rule: "bash-ast/recursive-delete",
       retry: "never",
@@ -118,9 +103,7 @@ describe("buildPolicyDenialGuidance", () => {
     });
     expect(scope).toContain("/work");
 
-    // A structural refusal is not about where the command points. Listing
-    // directories there tells the model to re-target, which is the one retry
-    // guaranteed to be refused again.
+    // Retargeting cannot resolve a structural refusal; do not suggest alternative directories.
     const structural = buildPolicyDenialGuidance({
       rule: "bash-ast/rm-rf-root",
       retry: "never",
@@ -129,8 +112,7 @@ describe("buildPolicyDenialGuidance", () => {
     });
     expect(structural).not.toContain("/work");
 
-    // No grant reaches a Layer-0 path, so the model must not be pointed at
-    // asking for one.
+    // Protected paths cannot be granted; never suggest requesting an exception.
     const protectedPath = buildPolicyDenialGuidance({
       rule: "sensitive-paths/**/.ssh/**",
       operand: "/home/u/.ssh/id_rsa",
@@ -143,7 +125,6 @@ describe("buildPolicyDenialGuidance", () => {
   });
 });
 
-/** A plugin tool carrying a shell command string, as the containment tests use. */
 function makeCommandBearingTool(spy: { ran: boolean }): Tool {
   return createDynamicTool({
     name: "plugin_run_command",
@@ -178,10 +159,9 @@ async function runUnattended(
       undefined,
       undefined,
       undefined,
-      () => true, // hostClassifiesRisk — the shipped default
+      () => true,
     );
-    // headless — nobody is there to answer a prompt, which is the mode the
-    // measured run used and the one where a wrong retry costs the most rounds.
+    // Headless calls have no interactive approval surface.
     const permissionContext: ToolPermissionContext = {
       trustOrigin: "user-keyboard",
       headless: true,
@@ -205,8 +185,7 @@ describe("policy denials carry their guidance through to the tool result", () =>
     const result = await runUnattended("cat $PROJECT_SECRET/file.txt");
     expect(result.isError).toBe(true);
     expect(result.ran).toBe(false);
-    // The prefix is localized like the rest of the block message; the suite
-    // runs in the Korean locale, so that is the form asserted here.
+    // Match the suite's Korean locale.
     expect(result.content).toContain("[Shell 경로 정책 차단]");
   });
 
@@ -224,9 +203,7 @@ describe("policy denials carry their guidance through to the tool result", () =>
   });
 
   it("tells the model that the filesystem root can never be authorized", async () => {
-    // A WRITE at the root. `ls /` only reads it, and a read is bounded by the
-    // sensitive-path deny-list rather than by the directory list, so it never
-    // reaches a grant request to be told the root is not grantable.
+    // Root writes reach directory policy; root reads only reach the sensitive-path deny-list.
     const result = await runUnattended("chmod u+w /");
     expect(result.isError).toBe(true);
     expect(result.ran).toBe(false);
@@ -237,10 +214,7 @@ describe("policy denials carry their guidance through to the tool result", () =>
   it("says, on a write refusal, that reading outside those directories is still allowed", async () => {
     const result = await runUnattended("chmod u+w /var/tmp/ave-denial-guidance-outside/x");
     expect(result.isError).toBe(true);
-    // Without this sentence the directory list reads as the answer to "what may
-    // I touch", and a model that just had a write refused stops issuing the
-    // wide reads the host does admit.
-    // The suite runs in the Korean locale, like the bracketed prefixes above.
+    // Clarify that directory grants bound writes and execution, preserving permitted wide reads.
     expect(result.content).toContain("쓰기와 명령 실행에만 적용됩니다");
   });
 

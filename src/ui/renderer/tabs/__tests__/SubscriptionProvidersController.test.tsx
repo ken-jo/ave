@@ -2,24 +2,19 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
 import type {
+  SubscriptionRuntimeActionResult,
   SubscriptionRuntimeId,
   SubscriptionRuntimeStatus,
   SubscriptionRuntimeStatusUpdatedEvent,
 } from "../../../../shared/subscription-runtime.js";
 import type { AppSettings, AveApi } from "../../types.js";
 import { useSubscriptionProviders } from "../SubscriptionProvidersController.js";
+import { SUBSCRIPTION_RUNTIME_DESCRIPTORS } from "../../../../shared/subscription-runtime.js";
 import { SubscriptionAuthControls } from "../SubscriptionProvidersSection.js";
 
-/**
- * What the settings tab does with the hook, in one place.
- *
- * The hook used to BE this component. It became a hook because the model
- * chooser needs subscription state beside the API-vendor state, and a component
- * could only hand its state downward. These tests still exercise the same pair
- * — the state and the section it feeds — so the pairing lives here rather than
- * as a production component with no production caller.
- */
+/** Render the subscription state hook with its section to verify the composed model-chooser boundary. */
 function SubscriptionProvidersController({ api }: { api: AveApi }) {
   const { props } = useSubscriptionProviders(api);
   return (
@@ -168,6 +163,40 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
+  it.each(["en", "ko"] as const)("shows a verify failure on the card when the status refresh also fails in %s", async (locale) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const { api } = controllerApi();
+    let verified = false;
+    api.subscriptionRuntimeStatus = vi.fn(async (provider: SubscriptionRuntimeId): Promise<SubscriptionRuntimeActionResult> => {
+      if (verified && provider === "codex") {
+        return { ok: false, error: "subscription-operation-failed" };
+      }
+      return { ok: true, status: {
+        ...connectedStatus(provider),
+        runtime: "unverified",
+        connection: "unknown",
+        capabilities: { ...connectedStatus(provider).capabilities, chat: false },
+      } };
+    });
+    api.subscriptionVerifyRuntime = vi.fn(async (): Promise<SubscriptionRuntimeActionResult> => {
+      verified = true;
+      return { ok: false, error: "subscription-runtime-unavailable" };
+    });
+    render(<SubscriptionProvidersController api={api} />);
+    fireEvent.click(await screen.findByTestId("subscription-provider:codex:verify-runtime"));
+
+    const error = await screen.findByTestId("subscription-provider:codex:error");
+    expect(error).toBeVisible();
+    expect(error).toHaveAttribute("role", "alert");
+    expect(error).toHaveTextContent(locale === "en"
+      ? "The subscription runtime is unavailable."
+      : "구독 런타임을 사용할 수 없습니다.");
+    expect(api.subscriptionVerifyRuntime).toHaveBeenCalledWith("codex");
+    expect(screen.getByTestId("subscription-provider:codex")).toContainElement(error);
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).toBeNull();
+  });
+
   it("loads every common provider status and uses the generic selected chat runtime", async () => {
     const {
       api,
@@ -184,9 +213,8 @@ describe("SubscriptionProvidersController", () => {
       expect(subscriptionRuntimeStatus).toHaveBeenCalledWith("claude-code");
     });
 
-    // Asked for on its own, as soon as the provider reports itself connected:
-    // the chooser cannot offer what nothing fetched, and there is no longer a
-    // button on the card to fetch it with.
+    // Asked for on its own, as soon as the provider reports itself connected: the chooser cannot offer what nothing fetched,
+    // and there is no longer a button on the card to fetch it with.
     fireEvent.click(await screen.findByTestId("subscription-chooser:codex:gpt-5.6-codex"));
     await waitFor(() => {
       expect(subscriptionListModels).toHaveBeenCalledWith("codex");
@@ -225,9 +253,8 @@ describe("SubscriptionProvidersController", () => {
     await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledWith("codex"));
 
     act(() => emitStatusUpdated?.({ provider: "codex", revision: 1 }));
-    // One status read per registered provider on mount, then one more for the
-    // invalidated Codex card.
-    await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledTimes(5));
+    // One initial read per runtime, then the invalidated Codex re-read.
+    await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledTimes(SUBSCRIPTION_RUNTIME_DESCRIPTORS.length + 1));
     await waitFor(() => {
       expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("connected");
     });
@@ -309,9 +336,8 @@ describe("SubscriptionProvidersController", () => {
 
     render(<SubscriptionProvidersController api={api} />);
     const useApiForChat = await screen.findByTestId("subscription-providers:use-api-for-chat");
-    // Wait for the initial subscription setting to land. Clicking while the
-    // controller still has its default API projection races the initial
-    // refresh, which legitimately clears the newly rendered API error.
+    // Wait for the initial subscription setting to land. Clicking while the controller still has its default API projection
+    // races the initial refresh, which legitimately clears the newly rendered API error.
     await waitFor(() => expect(useApiForChat).not.toBeDisabled());
     fireEvent.click(useApiForChat);
     await waitFor(() => {
@@ -333,8 +359,8 @@ describe("SubscriptionProvidersController", () => {
       expect(subscriptionUseForChat).toHaveBeenCalledWith("kimi-code", undefined);
     });
 
-    // One renderer must not issue a second, conflicting API/provider choice
-    // while the first selection is still awaiting main-process completion.
+    // One renderer must not issue a second, conflicting API/provider choice while the first selection is still awaiting
+    // main-process completion.
     await waitFor(() => {
       expect(screen.getByTestId("subscription-providers:use-api-for-chat")).toBeDisabled();
       expect(screen.getByTestId("subscription-chooser:codex:provider-default")).toBeDisabled();

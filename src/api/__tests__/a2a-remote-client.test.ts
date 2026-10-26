@@ -170,8 +170,7 @@ describe("A2A remote exact initial replay", () => {
     expect((disk as { attempts: Array<{ prepared: Record<string, unknown> }> }).attempts
       .find((entry) => entry.prepared.attemptId === "first")?.prepared)
       .not.toHaveProperty("payloadRecordId");
-    // A late owner from the pre-replay socket cannot re-settle or resurrect
-    // the atomically deleted ciphertext.
+    // A stale pre-replay socket owner cannot settle or resurrect deleted ciphertext.
     await expect(store.transition("first", ["in-flight"], "settled", {
       outcomeCode: "late-success",
       deletePayload: true,
@@ -188,13 +187,7 @@ describe("A2A remote exact initial replay", () => {
   });
 
   it("surfaces retention-expired at the second replay bind, not a flattened unknown-manual outcome", async () => {
-    // Both replay-bind callsites now consume one bindReplaySource helper. The
-    // second bind used to hardcode `unknown-manual-reconciliation-required`,
-    // silently dropping the retention-expired classification the first bind
-    // could report. Here the first bind passes (resolved predecessor present)
-    // and the predecessor then ages out before the second bind — a TOCTOU the
-    // second bind must classify from the latest operation stage, exactly like
-    // the first.
+    // The predecessor may expire between replay binds; both binds must classify the latest store state.
     const authorization = { ownerId: "owner", projectRoot: "/project", profileId: "profile", origin: "user", depth: 0, targetAgentId: 1, interfaceUrl: lineage.interfaceUrl };
     const replaySource = {
       prepared: {
@@ -211,7 +204,6 @@ describe("A2A remote exact initial replay", () => {
     let resolvedCalls = 0;
     const latestResolvedAttempt = vi.fn(async () => {
       resolvedCalls += 1;
-      // First bind sees a resolved predecessor; by the second bind it has aged out.
       return resolvedCalls === 1 ? { resolved: { credentialRevisionId: 11 } } : null;
     });
     const latestOperation = vi.fn(async () => ({ stage: "RETENTION_EXPIRED" }));
@@ -232,11 +224,8 @@ describe("A2A remote exact initial replay", () => {
       request: { id: 999, method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: "message-1", role: "ROLE_USER", parts: [{ text: "x" }] } } },
       messageId: "message-1",
     });
-    // The stronger classification (retention-expired + record) reaches the caller.
     expect(result).toMatchObject({ ok: false, outcome: "retention-expired", record: { stage: "RETENTION_EXPIRED" } });
-    // Proof the failure was detected at the SECOND bind: the first bind consumed
-    // the resolved predecessor, and only the failing (second) bind consults the
-    // latest operation stage.
+    // Only the second bind consults the latest operation stage after the predecessor expires.
     expect(latestResolvedAttempt).toHaveBeenCalledTimes(2);
     expect(latestOperation).toHaveBeenCalledTimes(1);
   });

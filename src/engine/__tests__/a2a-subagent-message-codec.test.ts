@@ -280,8 +280,6 @@ describe("canonicalizeAgentMessage — parent-facing body", () => {
     expect(result.emptyBody).toBe(true);
     const [header, ...bodyLines] = result.formattedText.split("\n");
     expect(header).toBe("[Sub-Agent: Contract audit] (task child-1, message child-message-1)");
-    // The whole point: a body the parent can act on, naming the state and the
-    // way back into the child.
     const body = bodyLines.join("\n");
     expect(body.trim().length).toBeGreaterThan(0);
     expect(body).toContain("COMPLETED");

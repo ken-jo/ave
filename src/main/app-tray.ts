@@ -1,10 +1,3 @@
-/**
- * System tray icon + context menu, and the "show or re-create the main
- * window" entry point the tray, menu, and macOS `activate` handler share.
- *
- * The tray instance lives in `app-state.ts`; this module owns its creation,
- * menu template, and click wiring.
- */
 import { Menu, nativeImage, Tray } from "electron";
 import { t } from "../i18n/index.js";
 import { createAveTrayIcon } from "./tray-icon.js";
@@ -21,15 +14,7 @@ export function showOrCreateMainWindow(reason: string): void {
   surfaceOrCreateMainWindow(getMainWindow(), reason);
 }
 
-/**
- * Bring the primary window — the one showing the app's primary conversation —
- * back, restored and focused, or open a fresh one when the primary was closed
- * (secondary windows may still be open; they are left as they are). Used by a
- * relaunch without a deep link (dock, taskbar, launcher), as a normal desktop
- * app does: repeated relaunches never pile up windows, since after the first
- * one a primary exists again. Only an explicit "New Window" action opens a
- * window beside the primary ({@link openNewMainWindow}).
- */
+// Relaunch restores or recreates the primary window without disturbing secondary windows.
 export function showOrCreatePrimaryMainWindow(reason: string): void {
   surfaceOrCreateMainWindow(getPrimaryMainWindow(), reason);
 }
@@ -44,15 +29,7 @@ function surfaceOrCreateMainWindow(existing: ReturnType<typeof getMainWindow>, r
   createAndLoadMainWindow(reason);
 }
 
-/**
- * Open one more main window — the explicit "New Window" action (menu, tray).
- *
- * Two cases surface an existing window instead: until bootstrap has registered
- * IPC there is no interface to load into a new one, and when every main
- * window is hidden (a hidden auto-launch, or the last window closed to the
- * tray) the user is asking for the app back, not for a second window beside
- * an invisible one.
- */
+// Before IPC registration or when all main windows are hidden, surface an existing window instead of creating another.
 export function openNewMainWindow(reason: string): void {
   const windows = getMainWindows();
   const noneVisible = windows.length > 0 && windows.every((win) => !win.isVisible());

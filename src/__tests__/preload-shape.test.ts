@@ -81,6 +81,16 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
+  it("attaches fresh click intent to an internal relaunch request", async () => {
+    const api = exposed.get("aveApi") as AveApi;
+    mockUserActivation.isActive = true;
+    mockInvoke.mockResolvedValueOnce({ ok: true });
+    await expect(api.relaunchApp()).resolves.toEqual({ ok: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith("ave:app:relaunch", { intent: { inputOrigin: "user-keyboard", userActivation: true } });
+    mockUserActivation.isActive = false;
+    await api.relaunchApp();
+    expect(mockInvoke).toHaveBeenLastCalledWith("ave:app:relaunch", { intent: { inputOrigin: "user-keyboard", userActivation: false } });
+  });
   it("exposes alert Settings and tears down kind-change listeners without forwarding the event object", async () => {
     const alerts = (exposed.get("aveApi") as AveApi).alerts!;
     await alerts.listKinds();
@@ -153,6 +163,7 @@ describe("preload contextBridge world shape lock", () => {
             "addConfig",
             "attachResource",
             "attachResourceTemplate",
+            "authenticate",
             "callTool",
             "disposeUiSession",
             "downloadFile",
@@ -172,14 +183,21 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "permission": [
             "addRule",
+            "approveExtensionsWithoutIsolation",
             "auditShow",
             "auditVerify",
             "deferredList",
             "deferredResolve",
             "dirDispatch",
+            "egressDenialsRecent",
+            "egressGrantRevoke",
+            "egressGrantsList",
             "getMode",
             "hookTrustList",
+            "judgeGet",
+            "judgeSet",
             "listRules",
+            "listScopedRules",
             "onConfigChanged",
             "onDeferredPending",
             "onManifestViolation",
@@ -187,12 +205,14 @@ describe("preload contextBridge world shape lock", () => {
             "onReviewSuggestion",
             "onUserApprovalHit",
             "removeRule",
+            "removeScopedRule",
             "reviewerDispatch",
-            "reviewerProviderHasKey",
             "sandboxCapability",
             "sandboxWindowsInstall",
             "sandboxWindowsStatus",
             "setMode",
+            "upstreamProxyGet",
+            "upstreamProxySet",
           ],
           "pluginConfig": [
             "get",
@@ -209,6 +229,7 @@ describe("preload contextBridge world shape lock", () => {
             "set",
           ],
           "preview": [
+            "readDocument",
             "readFile",
           ],
           "ui": [
@@ -219,6 +240,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "userApproval": [
             "list",
+            "listSession",
             "record",
             "revokeByKey",
           ],
@@ -273,8 +295,10 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "browserTabs": [
             "bindTab",
+            "getSessionBindings",
             "getState",
             "onControl",
+            "onSessionBindingsChanged",
             "onTabOp",
             "pause",
             "pausePopup",
@@ -451,6 +475,7 @@ describe("preload contextBridge world shape lock", () => {
             "addConfig",
             "attachResource",
             "attachResourceTemplate",
+            "authenticate",
             "callTool",
             "disposeUiSession",
             "downloadFile",
@@ -539,14 +564,21 @@ describe("preload contextBridge world shape lock", () => {
           "pauseSessionGoal": "function",
           "permission": [
             "addRule",
+            "approveExtensionsWithoutIsolation",
             "auditShow",
             "auditVerify",
             "deferredList",
             "deferredResolve",
             "dirDispatch",
+            "egressDenialsRecent",
+            "egressGrantRevoke",
+            "egressGrantsList",
             "getMode",
             "hookTrustList",
+            "judgeGet",
+            "judgeSet",
             "listRules",
+            "listScopedRules",
             "onConfigChanged",
             "onDeferredPending",
             "onManifestViolation",
@@ -554,12 +586,14 @@ describe("preload contextBridge world shape lock", () => {
             "onReviewSuggestion",
             "onUserApprovalHit",
             "removeRule",
+            "removeScopedRule",
             "reviewerDispatch",
-            "reviewerProviderHasKey",
             "sandboxCapability",
             "sandboxWindowsInstall",
             "sandboxWindowsStatus",
             "setMode",
+            "upstreamProxyGet",
+            "upstreamProxySet",
           ],
           "pingAiProvider": "function",
           "pluginPreloadUrl": "string",
@@ -591,6 +625,7 @@ describe("preload contextBridge world shape lock", () => {
           "previewClaudeDesktopMcpImport": "function",
           "readPluginUiModule": "function",
           "registerPluginWebview": "function",
+          "relaunchApp": "function",
           "remoteA2a": [
             "action",
             "send",
@@ -629,6 +664,7 @@ describe("preload contextBridge world shape lock", () => {
           "starredList": "function",
           "starredRemove": "function",
           "submitFeedback": "function",
+          "subscriptionAcknowledgeNotice": "function",
           "subscriptionCancelLogin": "function",
           "subscriptionChooseRuntime": "function",
           "subscriptionForgetRuntime": "function",
@@ -693,6 +729,7 @@ describe("preload contextBridge world shape lock", () => {
           "updateWorkBoardItem": "function",
           "userApproval": [
             "list",
+            "listSession",
             "record",
             "revokeByKey",
           ],

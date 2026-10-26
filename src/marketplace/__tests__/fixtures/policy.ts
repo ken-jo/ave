@@ -1,17 +1,12 @@
-/** Test fixture: a readable managed policy with the given overrides on top of "no restrictions". */
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad, type PolicySource, type PolicyUpdate } from "../../sources/policy.js";
 
-/** Where the fixture policy says it was read from; policy messages name it. */
 export const FIXTURE_POLICY_PATH = "/fixture/ave-policy.json";
 
 export function policyLoad(overrides: Partial<MarketplacePolicy> = {}): PolicyLoad {
   return { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, ...overrides }, path: FIXTURE_POLICY_PATH };
 }
 
-/**
- * A {@link PolicySource} held in memory: `change` stands for the policy file
- * being rewritten, which the next `check` reports.
- */
+/** Changes are reported by the next policy check. */
 export class TestPolicySource implements PolicySource {
   private current: PolicyUpdate;
   private pending: PolicyLoad | null = null;
@@ -45,7 +40,6 @@ export class TestPolicySource implements PolicySource {
   }
 }
 
-/** A policy source under `load`, or a readable policy with these overrides. */
 export function policySource(load: PolicyLoad | Partial<MarketplacePolicy> = {}): TestPolicySource {
   return new TestPolicySource("ok" in load ? (load as PolicyLoad) : policyLoad(load as Partial<MarketplacePolicy>));
 }

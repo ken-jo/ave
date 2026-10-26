@@ -1,23 +1,4 @@
-/**
- * NSIS installer ↔ ASRT proxy-port-range drift guard.
- *
- * The Windows OS-sandbox backend (srt-win) is provisioned at APP-INSTALL time:
- * `build/installer.nsh`'s `customInstall` macro runs
- * `srt-win.exe install --proxy-port-range LO-HI`, which stamps a WFP filter
- * permitting exactly that loopback port range. At runtime the srt-win egress
- * proxy BINDS that same range (buildSandboxConfig → windows.proxyPortRange). If
- * the two desync, the proxy binds a port the WFP filter blocks and ALL sandboxed
- * egress hard-fails.
- *
- * Both runtime paths already converge on the local SOT constant
- * DEFAULT_WINDOWS_PROXY_PORT_RANGE (pinned to ASRT's real export by
- * asrt-sandbox.test.ts). This test closes the THIRD path — the installer literal
- * baked into installer.nsh, which is plain NSIS text no compiler checks — by
- * parsing the literal out of the .nsh and asserting it equals BOTH the host SOT
- * re-export AND ASRT's real exported constant. An ASRT update that changes the
- * range (or an installer edit that desyncs it) fails CI here instead of shipping
- * a silently-broken egress bind.
- */
+// Installer permits, runtime bind ports and the package export must agree; parse the installer literal because compilation cannot detect drift that blocks all egress.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -31,8 +12,7 @@ const INSTALLER_NSH = join(REPO_ROOT, "build", "installer.nsh");
 
 function extractInstallerProxyPortRange(): [number, number] {
   const nsh = readFileSync(INSTALLER_NSH, "utf8");
-  // Match the ACTUAL command invocation, not the surrounding comments: an
-  // `nsExec`/`ExecWait` line carrying `--proxy-port-range LO-HI`.
+  // Match the ACTUAL command invocation, not the surrounding comments: an `nsExec`/`ExecWait` line carrying `--proxy-port-range LO-HI`.
   const matches = [
     ...nsh.matchAll(/--proxy-port-range\s+(\d+)-(\d+)/g),
   ].filter((m) => {

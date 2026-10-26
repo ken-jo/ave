@@ -1,11 +1,4 @@
-/**
- * PersonaPromptStore — user-editable main-agent persona prompts.
- *
- * Personas live under `~/.ave/prompts/` as markdown files with frontmatter.
- * The main composer can select one persona per turn. Agent profiles and skills
- * are intentionally not part of this store: agents belong to `agent_spawn`,
- * while skills are loaded by `skill_load` after the normal approval path.
- */
+// Persona bodies are per-turn prompts; agent profiles and approval-gated skills have separate stores.
 import { readFile, readdir, realpath, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -82,7 +75,7 @@ export class PersonaPromptStore {
     this.userDir = opts.userDir ?? USER_PROMPTS_NAMESPACE.dir;
   }
 
-  /** Replace package personas from the installed content store's verified bytes. */
+  // Replace package personas from the installed content store's verified bytes.
   setInstalledAgentPlugins(packages: readonly InstalledAgentPlugin[]): void {
     const next = new Map<string, PersonaPrompt>();
     const nextTemplates = new Map<string, AgentPluginTemplatePrompt>();
@@ -122,10 +115,9 @@ export class PersonaPromptStore {
     this.agentPluginTemplates = nextTemplates;
   }
 
-  /** Prepare prompt replacement for one receipt-covered extension generation. */
+  // Prepare prompt replacement for one receipt-covered extension generation.
   preparePluginGeneration(generation: ActivePluginGeneration): { publish(): void } {
-    // Only this plugin's prompts: ids are plugin-scoped, and publish applies
-    // them to the live maps so a plugin published in between is kept.
+    // Only this plugin's prompts: ids are plugin-scoped, and publish applies them to the live maps so a plugin published in between is kept.
     const personas = new Map<string, PersonaPrompt>();
     const templates = new Map<string, AgentPluginTemplatePrompt>();
     for (const contribution of generation.contributions) {

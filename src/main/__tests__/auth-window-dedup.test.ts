@@ -1,14 +1,4 @@
-/**
- * openAuthWindow idempotency guard (portal double-login-window fix).
- *
- * A single VISIBLE auth window per (partition, title): a second concurrent call
- * for the same key focuses + awaits the in-flight window instead of spawning a
- * duplicate BrowserWindow. `show:false` silent warmups are exempt.
- *
- * MUTATION CONTRACT: reverting the dedup guard makes the "twice → ONE window"
- * assertion fail (two BrowserWindows constructed). Reverting the show:false
- * exemption makes the warmup test fail (warmup reuses the visible window).
- */
+// Concurrent visible logins share one window per partition/title; silent warmups remain independent.
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Cookie } from "electron";
 
@@ -132,8 +122,7 @@ describe("openAuthWindow — visible-window dedup", () => {
     const first = openAuthWindow(p, opts);
     const firstOutcome = first.then((v) => ({ ok: true as const, v }), (e) => ({ ok: false as const, e }));
     await flush(1);
-    // The parent window itself was constructed; the FIRST auth window is the
-    // most recent construction after that.
+    // The parent window itself was constructed; the FIRST auth window is the most recent construction after that.
     const authWindowsAfterFirst = constructed.filter((w) => w !== (p as unknown as FakeBrowserWindow));
     expect(authWindowsAfterFirst).toHaveLength(1);
     const firstWindow = authWindowsAfterFirst[0];

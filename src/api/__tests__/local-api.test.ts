@@ -1,15 +1,4 @@
-/**
- * local-api dispatcher — #1409 C12 boundary proof.
- *
- * Asserts the three fail-closed guarantees of the external-surface seam:
- *   (1) a PUBLIC read channel dispatches to its C10 handler,
- *   (2) a `gesture:"required"` mutating channel (permission set-mode) is
- *       REJECTED for origin 'local-api' AND 'cli' with the gated error,
- *   (3) a non-public channel is rejected.
- *
- * These are the security proof that mutating gesture-gated channels are
- * un-invokable by api/cli in this commit.
- */
+// External callers must clear both the public-channel allowlist and the gesture gate.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -140,6 +129,7 @@ describe("local-api dispatch — gesture-gated mutating channels are blocked", (
       PERMISSIONS.removeRule,
       PERMISSIONS.policySet,
       PERMISSIONS.sandboxWindowsInstall,
+      PERMISSIONS.approveExtensionsWithoutIsolation,
     ];
     for (const channel of gated) {
       for (const origin of ["local-api", "cli"] as const) {
@@ -169,19 +159,12 @@ describe("local-api dispatch — origin is fail-closed", () => {
     const api = createLocalApi(makeDeps());
     const result = await api.dispatch({
       channel: PERMISSIONS.getMode,
-      // Simulate a JS call site bad-casting an unsupported origin.
       origin: "renderer" as unknown as "local-api",
     });
     expect(result).toEqual({ ok: false, error: LOCAL_API_ORIGIN_UNSUPPORTED });
   });
 });
 
-// ── #1409 approval-mediated external mutation ────────────────────────────────
-
-/**
- * A fake main window whose `webContents.send` is a spy — lets a test assert the
- * post-apply broadcast was attempted without a real Electron window.
- */
 function makeFakeWindow() {
   const send = vi.fn();
   return {
@@ -193,13 +176,7 @@ function makeFakeWindow() {
   };
 }
 
-/**
- * Deps sufficient for `handleSetPermissionMode` to run end-to-end: a permission
- * manager (getMode + setModePersist for durable), an audit logger whose chain is
- * ready, and a main window for the mode-changed broadcast. `approvalGate` is
- * present but its `requestAndWait` is a spy that MUST NOT be called on the
- * approved external path (the widened bypass skips the second modal).
- */
+// The external approval already grants consent; requestAndWait must not open a second modal.
 function makeMutationDeps(
   approver: ExternalMutationApprover | undefined,
   fakeWin: ReturnType<typeof makeFakeWindow>,
@@ -233,7 +210,6 @@ function makeMutationDeps(
 
 describe("local-api dispatch — external mutation default posture (no approver)", () => {
   it("set-mode is still rejected 'gesture-required-origin-unsupported' when NO approver is wired", async () => {
-    // Byte-identical to the pre-#1409 default — verified against the same code.
     const api = createLocalApi(makeDeps());
     const result = await api.dispatch({
       channel: PERMISSIONS.setMode,
@@ -263,7 +239,6 @@ describe("local-api dispatch — external mutation with approver wired", () => {
       args: { mode: "auto" },
       origin: "local-api",
     });
-    // Denied → the mutating handler never ran → no broadcast.
     expect(fakeWin.send).not.toHaveBeenCalled();
   });
 
@@ -297,12 +272,9 @@ describe("local-api dispatch — external mutation with approver wired", () => {
       origin: "local-api",
     });
 
-    // The mutating handler ran and applied the durable mode change...
     expect(result).toEqual({ ok: true, data: { ok: true, mode: "auto" } });
-    // ...persisting the mode and attempting the mode-changed broadcast.
     expect(fakeWin.send).toHaveBeenCalledWith(PERMISSIONS.modeChanged, { mode: "auto" });
-    // No SECOND in-app modal: the widened bypass means the handler's own
-    // approval-gate ask was skipped (the ApprovalGate consent already happened).
+    // External consent must bypass the second in-app prompt.
     expect((deps.ipc.approvalGate as unknown as { requestAndWait: ReturnType<typeof vi.fn> }).requestAndWait)
       .not.toHaveBeenCalled();
   });
@@ -320,23 +292,12 @@ describe("local-api dispatch — external mutation with approver wired", () => {
     });
 
     expect(result).toEqual({ ok: false, error: LOCAL_API_GESTURE_REQUIRED });
-    // The approver was never consulted for a non-allowlisted channel.
     expect(approver).not.toHaveBeenCalled();
   });
 });
 
-/**
- * The external channel's ONE approval click buys ONE session, not a
- * standing grant.
- *
- * `makeMutationDeps` above models the permission manager as a single in-memory
- * `mode`, which cannot tell a session change from a persisted one. These deps
- * split the two the way `PermissionManager` really does: `setModePersist`
- * writes `permissionsFile.mode` (what a restart reads back) AND the runtime
- * mode, `setMode` touches only the runtime. `reload()` is the restart.
- */
+// Separate runtime and persisted modes to prove one external approval grants only a session-scoped change.
 function makeDurabilityDeps(fakeWin: ReturnType<typeof makeFakeWindow>) {
-  // What permissions.json holds — the ONLY thing that survives a restart.
   let persistedMode = "default";
   let runtimeMode = "default";
   const setMode = vi.fn((next: string) => {
@@ -364,7 +325,6 @@ function makeDurabilityDeps(fakeWin: ReturnType<typeof makeFakeWindow>) {
     deps: { ipc, conversationCommandPort, externalMutationApprover: async () => true } as LocalApiDeps,
     setMode,
     setModePersist,
-    /** Restart / settings reload: the runtime mode comes back from the file. */
     reload: () => {
       runtimeMode = persistedMode;
       return runtimeMode;
@@ -385,10 +345,8 @@ describe("local-api dispatch — external set-mode is session-scoped", () => {
     });
 
     expect(result).toEqual({ ok: true, data: { ok: true, mode: "auto" } });
-    // Applied to the live session...
     expect(setMode).toHaveBeenCalledWith("auto");
     expect(fakeWin.send).toHaveBeenCalledWith(PERMISSIONS.modeChanged, { mode: "auto" });
-    // ...but never written to permissions.json, so a restart is back to default.
     expect(setModePersist).not.toHaveBeenCalled();
     expect(reload()).toBe("default");
   });

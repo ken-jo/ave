@@ -111,15 +111,13 @@ describe("SlashPicker", () => {
     const categories = payload.sections[0]!;
     expect(categories.items.every((item) => (item.submenu?.length ?? 0) > 0)).toBe(true);
 
-    // An empty category is left out rather than shown empty: a row that never
-    // opens teaches the user the menu is broken.
+    // An empty category is left out rather than shown empty: a row that never opens teaches the user the menu is broken.
     const categoryIds = categories.items.map((item) => item.id);
     expect(categoryIds).toContain("category:command");
     expect(categoryIds).toContain("category:plugin");
     expect(categoryIds).not.toContain("category:mcp");
     expect(categoryIds).not.toContain("category:skills");
-    // The persona leads: it is the one row that is a state, not an insertion,
-    // and the current one is the checked radio row.
+    // The persona leads: it is the one row that is a state, not an insertion, and the current one is the checked radio row.
     expect(categoryIds[0]).toBe("category:persona");
     expect(categories.items[0]!.submenu!.map((row) => [row.id, row.checked])).toEqual([
       ["persona:default", true],
@@ -157,8 +155,7 @@ describe("SlashPicker", () => {
     act(() => { bridge.fire({ requestId: payload.requestId, id: "plugin:meeting" }); });
     expect(onSelectPlugin).toHaveBeenCalledOnce();
 
-    // …and the pending entry is single-shot: the row that already reported is
-    // not re-runnable.
+    // …and the pending entry is single-shot: the row that already reported is not re-runnable.
     act(() => { bridge.fire({ requestId: payload.requestId, id: "command:/new" }); });
     expect(onInsert).not.toHaveBeenCalled();
 
@@ -202,13 +199,11 @@ describe("SlashPicker", () => {
       </TooltipProvider>,
     );
     await waitFor(() => expect(bridge.showDynamicMenu).toHaveBeenCalledOnce());
-    // The OS owns the menu once it is up, so the flag is released immediately —
-    // it exists to raise the menu, not to track it.
+    // The OS owns the menu once it is up, so the flag is released immediately — it exists to raise the menu, not to track it.
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 
-    // `onOpenChange` is a spy here, so `open` stays true — exactly the window the
-    // real app is in between popping the menu and the parent clearing the flag.
-    // Any re-render in that window must NOT pop a second menu.
+    // `onOpenChange` is a spy here, so `open` stays true — exactly the window the real app is in between popping the menu and
+    // the parent clearing the flag. Any re-render in that window must NOT pop a second menu.
     rerender(
       <TooltipProvider>
         <SlashPicker
@@ -225,8 +220,8 @@ describe("SlashPicker", () => {
         />
       </TooltipProvider>,
     );
-    // `openMenu` is async, so a second pop would land a tick later — waiting for
-    // "still once" without flushing would pass against a picker that pops twice.
+    // `openMenu` is async, so a second pop would land a tick later — waiting for "still once" without flushing would pass
+    // against a picker that pops twice.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(bridge.showDynamicMenu).toHaveBeenCalledOnce();
   });

@@ -1,10 +1,4 @@
-/**
- * Engine adapter for isolated subscription-backed chat.
- *
- * This is intentionally not an API-key vendor adapter. It accepts only the
- * host's governed conversation boundary and delegates transport ownership to
- * the main-process SubscriptionRuntimeService.
- */
+// Only governed conversation input reaches the main-owned subscription transport; credentials stay outside API-key adapters.
 import type {
   GenericMessage,
   LLMProvider,
@@ -25,6 +19,7 @@ import {
 import { rejectedToolNameFromError } from "../engine/llm/rejected-tool-schema.js";
 import {
   normalizeSubscriptionUsageTelemetry,
+  openAiLoginTypeOfRuntime,
   type SubscriptionChatRuntimeSelection,
   type SubscriptionImageAttachmentLimits,
 } from "../shared/subscription-runtime.js";
@@ -48,23 +43,24 @@ import {
   DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
   normalizeSubscriptionImageAttachment,
   normalizeSubscriptionPromptAttachment,
+  SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
+  SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE,
+  SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
   SubscriptionAttachmentTransportError,
+  subscriptionAttachmentTransportFailure,
   type SubscriptionPromptAttachment,
 } from "./subscription-attachment-input.js";
 import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 import { projectSubscriptionImageHistory } from "./subscription-image-history.js";
 import { projectedSubscriptionTransportDiagnosticsFromError } from "./subscription-transport-error-diagnostics.js";
+import { ChatGptPlanTransport } from "./chatgpt-plan/transport.js";
 
 const MAX_SERIALIZED_INPUT_BYTES = 700 * 1024;
 const MAX_ACP_SERIALIZED_INPUT_BYTES = 512 * 1024;
 
-/**
- * User and governed tool images cross this boundary as strict native attachments.
- * Normal Ave files keep their existing path-marker plus governed read-tool
- * flow; a generic raw file payload never gains an unreviewed upload path here.
- */
-export const SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED = "subscription-attachments-not-supported";
-export const SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE = "subscription-attachment-too-large";
+// User and governed tool images cross this boundary as strict native attachments. Normal Ave files keep their existing path-marker plus governed
+// read-tool flow; a generic raw file payload never gains an unreviewed upload path here.
+export { SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED, SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE };
 
 export class SubscriptionAttachmentInputRejectedError extends Error {
   readonly code = SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED;
@@ -75,7 +71,7 @@ export class SubscriptionAttachmentInputRejectedError extends Error {
   }
 }
 
-/** A local envelope-size rejection; it must never consume transport retries. */
+// A local envelope-size rejection; it must never consume transport retries.
 class SubscriptionInputTooLargeError extends Error {
   readonly code = "subscription-input-too-large";
 
@@ -86,22 +82,20 @@ class SubscriptionInputTooLargeError extends Error {
 }
 
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
-/** Fixed renderer-safe response for every rejected boundary or runtime fault. */
+// Fixed renderer-safe response for every rejected boundary or runtime fault.
 const SUBSCRIPTION_CHAT_UNAVAILABLE = "Subscription runtime could not complete. Verify the connected runtime and try again.";
-const SUBSCRIPTION_ATTACHMENT_UNAVAILABLE = "The selected subscription runtime cannot send this attachment.";
-const SUBSCRIPTION_ATTACHMENT_TOO_LARGE = "The selected subscription runtime cannot send an attachment this large.";
 
 export interface SubscriptionLlmProviderOptions {
-  /** A settings-normalized selection; it is never an API-key vendor config. */
+  // A settings-normalized selection; it is never an API-key vendor config.
   readonly selection: SubscriptionChatRuntimeSelection;
-  /** Parent selection for a transient sub-agent Codex model candidate. */
+  // Parent selection for a transient sub-agent Codex model candidate.
   readonly fallbackSelection?: SubscriptionChatRuntimeSelection;
-  /** Main-owned opener used only if the singleton has not already been created. */
+  // Main-owned opener used only if the singleton has not already been created.
   readonly openExternal?: SubscriptionOpenExternal;
-  /** Main-test seam; production resolves the process singleton. */
+  // Main-test seam; production resolves the process singleton.
   readonly service?: Pick<SubscriptionRuntimeService, "openTextSession">
-    & Partial<Pick<SubscriptionRuntimeService, "listModels">>;
-  /** Optional redacted audit hook forwarded only at singleton creation. */
+    & Partial<Pick<SubscriptionRuntimeService, "listModels" | "requireChatGptPlan">>;
+  // Optional redacted audit hook forwarded only at singleton creation.
   readonly runtimeServiceOptions?: GetSubscriptionRuntimeServiceOptions;
 }
 
@@ -161,36 +155,13 @@ function safeTpmDiagnostics(
   };
 }
 
-/**
- * Preserve only recovery signals the engine can act on. The raw third-party
- * error remains confined to this function: renderer-facing `error` is always
- * the fixed subscription message below, while diagnostics contain either a
- * declared tool name or bounded numeric rate-limit facts.
- */
+// Preserve only recovery signals the engine can act on. The raw third-party error remains confined to this function: renderer-facing `error` is always
+// the fixed subscription message below, while diagnostics contain either a declared tool name or bounded numeric rate-limit facts.
 function subscriptionFailure(
   failure: unknown,
   tools: readonly { name: string }[] | undefined,
 ): ErrorStreamEvent {
-  if (failure instanceof SubscriptionAttachmentTransportError) {
-    const tooLarge = failure.code === "subscription-attachment-too-large";
-    return {
-      type: "error",
-      error: tooLarge ? SUBSCRIPTION_ATTACHMENT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
-      classification: tooLarge
-        ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE
-        : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
-      providerError: {
-        origin: "unknown",
-        statusCode: 400,
-        providerCode: tooLarge
-          ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE
-          : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
-        messagePreview: tooLarge
-          ? "subscription attachment input too large"
-          : "subscription attachment input rejected",
-      },
-    };
-  }
+  if (failure instanceof SubscriptionAttachmentTransportError) return subscriptionAttachmentTransportFailure(failure);
 
   if (failure instanceof SubscriptionAttachmentInputRejectedError) {
     return {
@@ -206,8 +177,7 @@ function subscriptionFailure(
     };
   }
 
-  // This is an already-computed host input boundary, not a remote transport
-  // failure. Keep the renderer text generic, but let FallbackProvider stop
+  // This is an already-computed host input boundary, not a remote transport failure. Keep the renderer text generic, but let FallbackProvider stop
   // immediately instead of serializing the same oversized history five times.
   if (failure instanceof SubscriptionInputTooLargeError) {
     return {
@@ -224,10 +194,7 @@ function subscriptionFailure(
     };
   }
 
-  // A host-owned unavailable result is already a deterministic local state
-  // (for example, an expired login or a runtime that failed verification).
-  // It must reach the renderer through the same generic safe text, but must
-  // not consume the transient network retry budget in FallbackProvider.
+  // Host-owned unavailable results use safe renderer text and bypass transient network retry budgets.
   if (
     failure instanceof SubscriptionRuntimeServiceError
     && failure.code === "subscription-chat-unavailable"
@@ -282,8 +249,7 @@ function subscriptionFailure(
         statusCode: 400,
         providerCode: "invalid_function_parameters",
         classification: "unknown",
-        // The name was matched against an Ave-declared tool, so it is safe
-        // to retain for the query loop's bounded schema-drop recovery.
+        // The name was matched against an Ave-declared tool, so it is safe to retain for the query loop's bounded schema-drop recovery.
         messagePreview: `Invalid schema for function '${rejectedTool}'.`,
       },
     };
@@ -327,24 +293,18 @@ function serializedUserContent(
   includesCurrentTurnAttachments: boolean,
 ): string | ReadonlyArray<Record<string, unknown>> {
   if (typeof content === "string") return content;
-  // The engine sends full history for every model round. Native image input is
-  // scoped to the newest user message only, which keeps the current logical
-  // turn (including tool-result continuations) visual while older images use
-  // the canonical non-raw history marker and cannot exhaust prompt limits.
+  // Native images belong only to the newest user message, including tool continuations; older images use non-raw history markers to bound prompts.
   if (!includesCurrentTurnAttachments) return userContentText(content);
   return content.map((part) => {
     if (part.type === "text") return { type: "text", text: part.text };
-    // The ordinary renderer never produces a raw file part: FileAttachment is
-    // represented in the text as a path marker and read through Ave's normal
-    // governed tool flow. Do not turn an unexpected current payload into a new
-    // external binary transport.
+    // The ordinary renderer never produces a raw file part: FileAttachment is represented in the text as a path marker and read through Ave's normal
+    // governed tool flow. Do not turn an unexpected current payload into a new external binary transport.
     if (part.type !== "image") throw new SubscriptionAttachmentInputRejectedError();
     const attachment = normalizeSubscriptionImageAttachment(part.image, part.mimeType);
     if (!attachment) throw new SubscriptionAttachmentInputRejectedError();
     const attachmentIndex = attachments.length;
     attachments.push(attachment);
-    // Keep the conversation envelope free of raw image bytes. The native
-    // protocol receives the original bytes out-of-band in the same order.
+    // Keep the conversation envelope free of raw image bytes. The native protocol receives the original bytes out-of-band in the same order.
     return { type: "image", mimeType: attachment.mimeType, attachmentIndex };
   });
 }
@@ -369,8 +329,7 @@ function serializedMessage(
           : {}),
       };
     case "tool_result": {
-      // History owns image retention. Keep every retained image attached to
-      // its tool result, including when a later host instruction is a user row.
+      // History owns image retention. Keep every retained image attached to its tool result, including when a later host instruction is a user row.
       let image: Record<string, unknown> | undefined;
       if (message.image !== undefined) {
         const attachment = normalizeSubscriptionPromptAttachment({
@@ -395,20 +354,15 @@ function serializedMessage(
 }
 
 export interface SerializedSubscriptionConversation {
-  /** Text-only history envelope sent alongside the native image blocks. */
+  // Text-only history envelope sent alongside the native image blocks.
   readonly text: string;
-  /** Strict image payloads in the same order as envelope attachment indexes. */
+  // Strict image payloads in the same order as envelope attachment indexes.
   readonly attachments: readonly SubscriptionPromptAttachment[];
-  /** Estimated pixels for the exact image selection sent with this envelope. */
+  // Estimated pixels for the exact image selection sent with this envelope.
   readonly imageTokens: number;
 }
 
-/**
- * Subscription transport protocols accept one structured native prompt. Keep
- * normal Ave history/tool-result/continuation state inside an explicit text
- * envelope, while user and retained tool images travel through the verified native
- * image channel. This avoids base64 expansion inside the history JSONL frame.
- */
+// Keep history and tool state in a text envelope while verified images use the native image channel, avoiding base64 expansion in history JSONL.
 function buildSubscriptionConversationPayload(
   params: StreamTurnParams,
   imageLimits: SubscriptionImageAttachmentLimits,
@@ -475,7 +429,7 @@ export function serializeSubscriptionConversationPayload(
   return payload;
 }
 
-/** Backward-compatible text projection for callers that do not use images. */
+// Backward-compatible text projection for callers that do not use images.
 export function serializeSubscriptionConversation(
   params: StreamTurnParams,
   maxBytes = MAX_SERIALIZED_INPUT_BYTES,
@@ -483,7 +437,7 @@ export function serializeSubscriptionConversation(
   return serializeSubscriptionConversationPayload(params, maxBytes).text;
 }
 
-/** Count the newest user images and every tool image retained for this request. */
+// Count the newest user images and every tool image retained for this request.
 function estimateNativeImageTokens(messages: GenericMessage[]): number {
   let latestUser: Extract<GenericMessage, { role: "user" }> | undefined;
   for (const message of messages) {
@@ -504,17 +458,13 @@ function estimateNativeImageTokens(messages: GenericMessage[]): number {
   return estimateMultimodalTokenOverhead(images);
 }
 
-/**
- * Counts only the tool schema shape the active transport can make model-visible.
- * Codex receives bridge-normalized function definitions at thread/start; Kimi
- * receives the same normalized schema from Ave's MCP discovery endpoint.
- */
+// Counts only the tool schema shape the active transport can make model-visible. Codex receives bridge-normalized function definitions at thread/start;
+// Kimi receives the same normalized schema from Ave's MCP discovery endpoint.
 function estimateSubscriptionToolSidecarTokens(
   selection: SubscriptionChatRuntimeSelection,
   tools: readonly ToolSchema[],
 ): number | undefined {
-  // Grok remains unsupported until its native profile/tool input is attested;
-  // preserve generic fallback rather than claim partial projection coverage.
+  // Grok remains unsupported until its native profile/tool input is attested; preserve generic fallback rather than claim partial projection coverage.
   if (selection.provider === "grok-build") return undefined;
   if (tools.length === 0) return 0;
   const bridgedTools = new SubscriptionToolBridge(tools).tools;
@@ -528,18 +478,14 @@ function estimateSubscriptionToolSidecarTokens(
     return estimateTokens(JSON.stringify({ dynamicTools }));
   }
   if (selection.provider === "kimi-code") {
-    // ACP framing remains runtime-owned, but this is the exact Ave bridge
-    // payload exposed to its MCP tool-discovery path.
+    // ACP framing remains runtime-owned, but this is the exact Ave bridge payload exposed to its MCP tool-discovery path.
     return estimateTokens(JSON.stringify({ tools: bridgedTools }));
   }
   return undefined;
 }
 
-/**
- * A private main-process LLMProvider marker. `vendor` preserves the preexisting
- * interface only; engine routing must use `subscriptionRuntime`, never vendor,
- * for capability, fallback, pricing, or tool decisions.
- */
+// A private main-process LLMProvider marker. `vendor` preserves the preexisting interface only; engine routing must use `subscriptionRuntime`, never
+// vendor, for capability, fallback, pricing, or tool decisions.
 export class SubscriptionLlmProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   readonly subscriptionRuntime: SubscriptionChatRuntimeSelection;
@@ -552,11 +498,8 @@ export class SubscriptionLlmProvider implements LLMProvider {
       : undefined;
   }
 
-  /**
-   * Reuses the exact text-envelope builder and bridge normalization used by
-   * streamTurn. Codex provider reports calibrate the remaining tokenizer drift
-   * after a completed round without entering API-key billing.
-   */
+  // Reuses the exact text-envelope builder and bridge normalization used by streamTurn. Codex provider reports calibrate the remaining tokenizer drift
+  // after a completed round without entering API-key billing.
   projectRequestInput(
     input: ProviderRequestInputProjectionParams,
   ): ProviderRequestInputProjection | undefined {
@@ -581,17 +524,15 @@ export class SubscriptionLlmProvider implements LLMProvider {
       const messageTokens =
         estimateTokens(payload.text) + payload.imageTokens;
       return {
-        // Subscription transports embed the system prompt in their controlled
-        // envelope, so this component intentionally represents the complete
-        // envelope rather than pretending it was a separate provider field.
+        // Subscription transports embed the system prompt in their controlled envelope, so this component intentionally represents the complete envelope rather
+        // than pretending it was a separate provider field.
         systemPromptTokens: 0,
         messageTokens,
         toolSchemaTokens,
         totalTokens: messageTokens + toolSchemaTokens,
       };
     } catch {
-      // Preserve the actual stream's fail-closed attachment/size errors. A
-      // projection must never create a new preflight failure surface.
+      // Preserve the actual stream's fail-closed attachment/size errors. A projection must never create a new preflight failure surface.
       return undefined;
     }
   }
@@ -604,9 +545,8 @@ export class SubscriptionLlmProvider implements LLMProvider {
         this.subscriptionRuntime.provider === "codex" ? MAX_SERIALIZED_INPUT_BYTES : MAX_ACP_SERIALIZED_INPUT_BYTES,
         getSubscriptionImageAttachmentLimits(this.subscriptionRuntime.provider),
       );
-      // Native ACP image blocks share the same JSONL frame as this envelope.
-      // Leave a conservative buffer so a valid 256KiB image cannot be
-      // rejected only after a costly runtime startup/write attempt.
+      // Native ACP image blocks share the same JSONL frame as this envelope. Leave a conservative buffer so a valid 256KiB image cannot be rejected only after
+      // a costly runtime startup/write attempt.
       if (
         this.subscriptionRuntime.provider !== "codex"
         && serialized.attachments.length > 0
@@ -632,9 +572,8 @@ export class SubscriptionLlmProvider implements LLMProvider {
           return;
         }
         if (event.type === "message_complete") {
-          // Subscription transports never expose API-key billing `usage`.
-          // The separate, validated telemetry retains token provenance without
-          // allowing the API pricing path to observe it.
+          // Subscription transports never expose API-key billing `usage`. The separate, validated telemetry retains token provenance without allowing the API
+          // pricing path to observe it.
           const subscriptionUsage = event.subscriptionUsage
             ? normalizeSubscriptionUsageTelemetry(event.subscriptionUsage)
             : undefined;
@@ -654,7 +593,7 @@ export class SubscriptionLlmProvider implements LLMProvider {
     }
   }
 
-  /** The live Codex catalog `openTextSession` re-checks a selected model against. */
+  // The live Codex catalog `openTextSession` re-checks a selected model against.
   async listSubscriptionModels(): Promise<readonly string[]> {
     if (this.subscriptionRuntime.provider !== "codex") {
       throw new Error("subscription-runtime-has-no-model-catalog");
@@ -681,8 +620,7 @@ export class SubscriptionLlmProvider implements LLMProvider {
     try {
       await session.stop();
     } catch {
-      // The service owns process cleanup; an already-failing text stream must
-      // never expose a third-party runtime error or keep the turn alive.
+      // The service owns process cleanup; an already-failing text stream must never expose a third-party runtime error or keep the turn alive.
     }
   }
 }
@@ -690,12 +628,40 @@ export class SubscriptionLlmProvider implements LLMProvider {
 export function createSubscriptionLlmProvider(
   options: SubscriptionLlmProviderOptions,
 ): SubscriptionLlmProvider | OpenAiProvider {
-  const transport = new SubscriptionLlmProvider(options);
-  return transport.subscriptionRuntime.provider === "codex"
-    ? createOpenAiProvider({
+  const loginType = openAiLoginTypeOfRuntime(options.selection.provider);
+  switch (loginType) {
+    case "chatgpt-plan": {
+      // Plan usage never opens a CLI text session; it is the OpenAI Responses wire with the session's token.
+      // There is no runtime default model; a selection without one is not configured, and nothing falls back to an API key.
+      if (!options.selection.model) throw new Error("subscription-chat-unavailable");
+      const selection = { ...immutableSelection(options.selection), provider: "chatgpt-plan" as const };
+      return createOpenAiProvider({
+        kind: "chatgpt-plan",
+        selection,
+        transport: new ChatGptPlanTransport(selection, async () => {
+          const service = options.service?.requireChatGptPlan
+            ? options.service
+            : options.openExternal
+              ? await getSubscriptionRuntimeService(options.openExternal, options.runtimeServiceOptions)
+              : undefined;
+          if (!service?.requireChatGptPlan) throw new Error("subscription-runtime-opener-missing");
+          return service.requireChatGptPlan();
+        }),
+      });
+    }
+    case "codex-cli": {
+      const transport = new SubscriptionLlmProvider(options);
+      return createOpenAiProvider({
         kind: "codex-subscription",
         selection: { ...transport.subscriptionRuntime, provider: "codex" },
         transport,
-      })
-    : transport;
+      });
+    }
+    case null:
+      return new SubscriptionLlmProvider(options);
+    default: {
+      const unhandled: never = loginType;
+      throw new Error(`unhandled OpenAI login type: ${String(unhandled)}`);
+    }
+  }
 }

@@ -19,7 +19,7 @@ import {
 } from "./rationale-control.js";
 import { isRecord } from "../../shared/is-record.js";
 
-/** Frozen PR(1) contracts only. This module grants no execution authority. */
+// Frozen rationale contracts grant no execution authority.
 export type ReviewerReevaluationOutcome = Exclude<ReviewerDispatchOutcome, "cache" | "approval-memory" | "host-determined">;
 
 export type ReviewerReevaluationFailureOutcome = Exclude<
@@ -32,11 +32,7 @@ readonly ReviewerReevaluationFailureOutcome[] = Object.freeze([
   "unavailable", "error", "timeout", "malformed", "sandbox-state-changed",
 ]);
 
-/**
- * Outcome of the one-shot rationale generation round. This is intentionally
- * separate from reviewer reevaluation: generation can fail before a reviewer
- * request exists, and a reviewer can fail after generation was accepted.
- */
+// Generation and reviewer outcomes are separate: either can fail before or after accepted generation.
 export type RationaleGenerationOutcome =
   | "accepted-rationale"
   | "generation-unavailable"
@@ -298,22 +294,8 @@ export interface ReviewerScopeReevaluation {
   modalFallbackRequired: boolean;
 }
 
-/**
- * Pure terminal predicate for the reviewer auto-approve-on-aligned path.
- *
- * Auto-approve requires a POSITIVE fresh + aligned + non-high reviewer
- * re-evaluation; everything else (unclear/outside/non-fresh/high) falls through
- * to the existing user modal, fail-closed.
- *
- * SECURITY: this gates on `reevaluatedVerdict`, never `effectiveVerdict`.
- * `effectiveVerdict = max(initialVerdict, reevaluatedVerdict)` and the initial
- * verdict that triggered negotiation is high, so `effectiveVerdict` is always
- * high — gating on it would never fire (or would be wrong). The reviewer, now
- * given the model's intent-anchored justification, has judged the action
- * in-scope (`aligned`) AND not intrinsically dangerous (`reevaluatedVerdict`
- * <= medium). If the reviewer still rates it `high` knowing the intent, the
- * action is intrinsically dangerous and must go to the modal, never auto.
- */
+// Auto-approval requires positive fresh, aligned, non-high reevaluatedVerdict; all other outcomes fail closed to the modal.
+// Never gate on effectiveVerdict: max(initial, reevaluated) retains the initial high verdict.
 export function isReviewerAutoApproveEligible(r: ReviewerScopeReevaluation): boolean {
   return r.outcome === "fresh" &&
     r.scopeAlignment === "aligned" &&

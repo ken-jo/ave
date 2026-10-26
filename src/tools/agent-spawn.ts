@@ -1,13 +1,5 @@
-/**
- * `agent_spawn` LLM tool — spin up a sub-agent with restricted tools and
- * a turn cap. The sub-agent runs inline (await) and the assistant gets the
- * final summary string + tool call count.
- *
- * Renderer integration: per-spawn lifecycle events stream to the workspace-rail
- * sub-agent viewer (start → turn → done|error) so the user sees what the
- * sub-agent is doing.
- */
-import { createDynamicTool, type Tool } from "./base.js";
+// Stream spawn lifecycle frames to the originating conversation's sub-agent viewer.
+import { createDynamicTool, toolSessionId, type Tool } from "./base.js";
 import {
   exactToolScope,
   PARENT_ALL_TOOL_SCOPE,
@@ -40,26 +32,15 @@ import {
   issueAuthorizationRequiredControl,
 } from "../shared/authorization-required.js";
 
-/**
- * Guidance for a resume that WAS authorized and did run, then failed.
- *
- * This population used to get one text: "retry the SAME resumeId, transient
- * provider errors clear on retry". That is true only for failures whose cause
- * can change between attempts. When the provider REFUSED the request — a tool
- * schema its grammar compiler cannot translate, a strict-mode schema rejection
- * — the next attempt sends the same frozen tool scope and gets the same
- * refusal, so the retry text drives the parent around a loop that can never
- * exit.
- *
- * It is deliberately NOT modelled as a `resumeRefusal` value. That field means
- * "the runner refused before spending a turn", and it carries the promise that
- * the host made the decision. Here the host authorized the resume, the turn
- * ran, and a REMOTE system rejected the payload — a different fact that must
- * not be laundered through a host-refusal discriminant. So the caller still
- * gets `resumeId` (the child is intact and becomes resumable again once the
- * model, provider, or tool scope changes) plus an explicit marker that the
- * cause is deterministic.
- */
+function spawnFailure(error: string, state: "rejected" | "error" = "rejected") {
+  return {
+    output: JSON.stringify({ error, taskState: projectSubAgentRunState(state) }),
+    isError: true,
+  };
+}
+
+// Authorized turns can fail through deterministic remote rejection; retry guidance must distinguish that from transient failure.
+// Keep the child's resumeId, but reserve resumeRefusal for host decisions made before a turn runs.
 function resumeRanGuidance(error: string): Record<string, unknown> {
   return isDeterministicProviderRequestRejection(error)
     ? {
@@ -70,27 +51,12 @@ function resumeRanGuidance(error: string): Record<string, unknown> {
 }
 
 
-/**
- * A terminal outcome as the emit/delivery path sees it. Identical to
- * `SubAgentSpawnResult` except that `childSessionId` is optional: a run that
- * rejected before the runner ever linked a child has no id to report, and the
- * authorized id the delivery path actually addresses is passed separately.
- */
+// Refusal before linking has no authorized child ID; delivery receives the authorized link separately.
 type SubAgentTerminalOutcome =
   Omit<SubAgentSpawnResult, "childSessionId">
   & { childSessionId?: string };
 
-/**
- * A terminal delivery must always carry something the parent can act on.
- *
- * `summary` is the child's last assistant text, which is empty whenever a run
- * ends without producing one (a resumed child that only ran tools, for example).
- * Delivering that verbatim produced an id-only envelope — header, no body — that
- * the parent LLM could not respond to, so name the final state and the way back
- * in instead. The way back in is the AUTHORIZED link the caller passes, not
- * `result.childSessionId`: a refusal that never linked reports the unvalidated
- * id it was handed, which is no route back to anything.
- */
+// Empty summaries still need actionable state; use only the authorized child link, never an unvalidated result ID.
 function backgroundResultText(
   result: SubAgentTerminalOutcome,
   childSessionId: string,
@@ -113,7 +79,7 @@ function createBackgroundResultMessage(
   result: SubAgentTerminalOutcome,
   parentSessionId: string,
   spawnId: string,
-  /** The AUTHORIZED child link — the same id the delivery addresses. */
+  // Use the authorized child link that delivery addresses.
   childSessionId: string,
 ): A2AMessage {
   const suspension = result.suspension;
@@ -144,7 +110,6 @@ export type AgentSpawnEvent = SharedAgentSpawnEvent<ChatEntry>;
 export interface AgentSpawnToolDeps {
   getRunner: () => SubAgentRunner | undefined;
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
-  /** Renderer event sink — emitted on each lifecycle phase. */
   emit: (event: AgentSpawnEvent) => void;
 }
 
@@ -156,12 +121,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
     category: "meta",
     decisionOverride: "ask",
     parallelSafe: true,
-    // The executor's default wall clock bounds a single tool call; this one
-    // supervises a whole sub-agent loop whose length the user configures and
-    // which has no maximum. Sizing the deadline from that same budget is what
-    // keeps "unlimited rounds" from meaning "unlimited rounds until 600s".
-    // When no runner is wired the tool refuses at execute() anyway, so the
-    // shipped floor is the honest bound for that case.
+    // Scale the ceiling with the uncapped user round budget; without a runner, retain the minimum bound.
     resolveHostCeilingMs: () =>
       resolveSubAgentCeilingMs(
         deps.getRunner()?.roundBudget() ?? SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -198,10 +158,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
       },
     },
     execute: async (rawInput, ctx) => {
-      // C3(b): defense-in-depth — even if SubAgentRunner forgets to strip
-      // agent_spawn from the child registry, this guard refuses any
-      // invocation when the executor's metadata reports we are inside an
-      // already-spawned sub-agent.
+      // Refuse nested spawning even if registry filtering accidentally exposes the tool to a child.
       const depth = typeof ctx.metadata?.spawnDepth === "number"
         ? (ctx.metadata.spawnDepth as number)
         : 0;
@@ -214,12 +171,8 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
           isError: true,
         };
       }
-      // A spawn is always requested from inside a conversation, and its frames
-      // are addressed to that conversation's tile. Without the id there is no
-      // tile to draw progress in and no owner for the child's own approvals, so
-      // the spawn is refused here rather than emitted unaddressed.
-      const originSessionId =
-        typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
+      // Require an originating conversation to own progress frames and child approvals.
+      const originSessionId = toolSessionId(ctx);
       if (originSessionId === undefined) {
         return {
           output: JSON.stringify({
@@ -230,78 +183,38 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         };
       }
       const a = (rawInput ?? {}) as Record<string, unknown>;
-      // Sub-agents ALWAYS run in the background on a surface that can deliver
-      // their results (user directive 2026-08-14, superseding the earlier
-      // model-picks design). Foreground blocked the parent on `await` for the
-      // child's whole run, making the A2A channel inert for that spawn — the
-      // parent could not read or answer anything until the child finished.
-      // With autonomous wake on by default, background results always reach
-      // the parent. The model's `background` flag is ignored; surfaces without
-      // parent delivery fall back to foreground, the only coherent posture
-      // there.
-      // A windowless owner cannot settle a child approval after this tool has
-      // already returned its background handle. Keep that child inline so its
-      // host-issued authorization terminal can become this invocation's
-      // terminal control before the parent model receives another round.
+      // Use background execution only when results can reach the parent, keeping parent-child messaging live.
+      // Windowless owners keep children inline so authorization terminal control can settle before the next parent round.
       const background = ctx.metadata?.supportsA2AParentDelivery === true
         && ctx.metadata?.approvalSurface !== "unavailable";
       const runner = deps.getRunner();
       if (!runner) {
-        return {
-          output: JSON.stringify({
-            error: "agent_spawn runner not configured",
-            taskState: projectSubAgentRunState("error"),
-          }),
-          isError: true,
-        };
+        return spawnFailure("agent_spawn runner not configured", "error");
       }
       const agentName = typeof a.agentName === "string" ? a.agentName.trim() : "";
       if (agentName && !AGENT_NAME_ALLOWLIST.test(agentName)) {
-        return {
-          output: JSON.stringify({
-            error: `invalid agentName: must match ${AGENT_NAME_ALLOWLIST.source}`,
-            taskState: projectSubAgentRunState("rejected"),
-          }),
-          isError: true,
-        };
+        return spawnFailure(`invalid agentName: must match ${AGENT_NAME_ALLOWLIST.source}`);
       }
       const profile = agentName && deps.getAgentProfile
         ? await deps.getAgentProfile(agentName)
         : null;
       if (agentName && !profile) {
-        return {
-          output: JSON.stringify({ error: `agent profile not found: ${agentName}`, taskState: projectSubAgentRunState("rejected") }),
-          isError: true,
-        };
+        return spawnFailure(`agent profile not found: ${agentName}`);
       }
       const title = typeof a.title === "string" && a.title.trim()
         ? a.title.trim()
         : profile?.name ?? "";
       const instructions =
         typeof a.instructions === "string" ? a.instructions.trim() : "";
-      // Resume path: a `resumeId` re-hydrates a previously-spawned sub-agent and
-      // continues it with `instructions` as the follow-up prompt (its tool scope
-      // stays frozen to the original spawn — permission is NOT re-granted). The
-      // title still labels approval requests but is not otherwise required for a
-      // resume (the profile/allowlist come from persisted metadata), so the
-      // title-required rule below is relaxed when resuming.
+      // Resume uses persisted profile and frozen tool scope without re-granting permission; title is optional.
       const resumeId = typeof a.resumeId === "string" && a.resumeId.trim()
         ? a.resumeId.trim()
         : undefined;
 
       if (!instructions || (!resumeId && !title)) {
-        return {
-          output: JSON.stringify({
-            error: "instructions are required; title is required when agentName is not provided (unless resumeId is set)",
-            taskState: projectSubAgentRunState("rejected"),
-          }),
-          isError: true,
-        };
+        return spawnFailure("instructions are required; title is required when agentName is not provided (unless resumeId is set)");
       }
-      // The scope is decided ONCE, here, from what the caller actually said: a
-      // usable name list, else the named profile's, else the parent's whole
-      // registry. Downstream never re-reads an array to work out which of the
-      // three was meant — see SubAgentToolScope.
+      // Resolve scope once: explicit usable names, then profile scope, then the parent's registry.
       const requestedSourceTools = Array.isArray(a.sourceTools)
         ? (a.sourceTools as unknown[]).filter(
             (t): t is string => typeof t === "string" && t.trim().length > 0,
@@ -316,10 +229,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         typeof ctx.metadata?.toolUseId === "string"
           ? (ctx.metadata.toolUseId as string)
           : undefined;
-      // The one place this spawn's frames leave: every frame names the
-      // conversation that spawned it, so the tile showing that conversation —
-      // and only that tile — keeps it. Stamping per call site is how a frame
-      // escapes unlabelled.
+      // Stamp every frame with its originating conversation so only the owning tile retains it.
       const emit = (event: Omit<AgentSpawnEvent, "parentSessionId">) =>
         deps.emit({ ...event, parentSessionId: originSessionId });
       const spawnId = createDlpSafeUuid();
@@ -327,41 +237,12 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         ? projectSubAgentRunState("waiting")
         : projectSubAgentRunState("submitted");
       const promptPayload = instructions ? { instructions } : {};
-      // A known resumeId is not an authorized parent-delivery link. The runner
-      // calls onLinked only after exact origin + durable INPUT_REQUIRED checks.
+      // onLinked authorizes delivery only after origin and durable INPUT_REQUIRED checks.
       let linkedChildSessionId: string | undefined;
       const linkedPayload = () => linkedChildSessionId ? { childSessionId: linkedChildSessionId } : {};
       let terminalFrameEmitted = false;
-      /**
-       * The single place a TERMINAL renderer frame is emitted for this spawn.
-       *
-       * Three sites used to hand-roll this object — the background
-       * `terminalize`, the foreground success return, and the foreground error
-       * return — and they had drifted on the join key: the background frames
-       * carried `linkedChildSessionId` while the foreground ones carried
-       * `result.childSessionId`. Those are not the same id. `onLinked` fires
-       * only AFTER the runner's origin + durable-state checks pass, so a
-       * structurally refused resume has no link but still reports the
-       * caller-supplied `resumeId` as `result.childSessionId`. The foreground
-       * frames were therefore handing the viewer an unvalidated join key.
-       *
-       * The helper resolves it once, to the AUTHORIZED link only, and returns
-       * the projected state so callers do not re-derive it.
-       *
-       * WHO CALLS IT: the runner's completion step, through `onTerminal`, for
-       * every outcome that reaches a tracked run — which is every outcome the
-       * runner RETURNS, structural refusals included. Emitting from there and
-       * not from after `await run()` is what makes the frame land no later than
-       * the terminal state `agent_status` reads back; the two are one
-       * uninterruptible step inside `finalizeRun`.
-       *
-       * The call sites further down cover only what never reaches that step: a
-       * throw out of the runner. Such an outcome leaves no tracked terminal
-       * state for `agent_status` to observe, so it carries no ordering hazard —
-       * but it still owes the panel an end to the row `start` opened. The latch
-       * makes that a fallback for the untracked case rather than a second
-       * frame: no outcome is announced twice.
-       */
+      // Emit terminal frames once, using only the authorized link, with the terminal-state write.
+      // Throws outside tracked completion use this same latched helper to close the panel without duplicate frames.
       const emitTerminalFrame = (result: SubAgentTerminalOutcome) => {
         const taskState = projectSubAgentResultState(result);
         const status = subAgentRunStatusFromTaskState(taskState);
@@ -431,21 +312,12 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
               ...linkedPayload(),
             }),
           onReady: () => markSetupReady(),
-          // `onError` is diagnostic and may precede a structurally returned
-          // INPUT_REQUIRED/REJECTED result. Only `onTerminal` below may emit a
-          // terminal renderer event for this spawnId.
-          //
-          // The runner fires this from the completion step that writes the
-          // run's terminal state, so the panel is told in the same step
-          // `agent_status` starts reporting `done` — never after it.
+          // onError is diagnostic; only onTerminal emits alongside the runner's terminal-state write.
           onTerminal: (result: SubAgentSpawnResult) => {
             emitTerminalFrame(result);
           },
         };
-        // Resume RE-HYDRATES a frozen sub-agent; spawn starts a fresh one. The
-        // resume path takes NO tool scope or profile from the tool call — both
-        // are read from the persisted metadata so a resume cannot re-scope the
-        // child.
+        // Resume restores persisted profile and scope; tool arguments cannot re-scope the child.
         const run = async () => resumeId
           ? await runner.resume(
               resumeId,
@@ -462,10 +334,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
                 instructions: profile
                   ? renderAgentProfilePrompt(profile, instructions)
                   : instructions,
-                // The same text, before the profile body is rendered around it.
-                // This is the half a parent adjudicating its own child's tool
-                // call needs; the rendered prompt above leads with a role
-                // charter that would stand in for the task.
+                // Parent adjudication needs the original task text before the profile charter is rendered around it.
                 parentAuthoredTask: instructions,
                 spawnId,
                 toolUseId,
@@ -473,13 +342,9 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
                 originSessionId,
                 background,
                 projectRoot: ctx.cwd,
-                // #1112: profile's `model:` frontmatter (complexity tier or
-                // explicit model ID). SubAgentRunner resolves it against the
-                // active vendor; undefined leaves the child on the parent model.
+                // Resolve profile model tiers against the active provider; absence inherits the parent model.
                 profileModel: profile?.model,
-                // #1113: profile's `mode:` frontmatter (execute/plan/research/
-                // explore). SubAgentRunner prepends a working-posture preamble +
-                // auto-skill recommendation; undefined → inert default mode.
+                // Profile mode adds working posture and skill guidance; absence leaves the default inert.
                 profileMode: profile?.mode,
               },
               callbacks,
@@ -511,20 +376,14 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
                     authorizedChildSessionId,
                   ),
                 },
-                // This message carries the run's completion report — the same
-                // content `agent_status` returns once the run is terminal. The
-                // runner records which message that was, so a parent that
-                // already read the report through `agent_status` does not open
-                // its next turn with a steering row repeating it.
+                // Track completion-report delivery so a report read through agent_status is not replayed as steering.
                 { terminalReport: true },
               );
             } catch {
               // Delivery owns its audit path. The renderer terminal state is final.
             }
           };
-          // A rejection is just a failure-shaped result: `terminalize` already
-          // owns the emit latch and skips parent delivery when there is no
-          // authorized link, so the unlinked case needs no separate frame.
+          // The terminal latch prevents duplicates and withholds delivery when no authorized child link exists.
           const terminalizeRejection = async (err: unknown): Promise<void> => {
             const message = (err as Error).message ?? "agent_spawn failed";
             await terminalize({
@@ -540,9 +399,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
 
           const backgroundRun = run();
           void backgroundRun.then(terminalize, terminalizeRejection);
-          // A resumed run must publish a handle only after it owns the active
-          // child lease and the tracked/durable state is WORKING. Otherwise an
-          // async session load lets this snapshot return the prior WAITING row.
+          // Publish resumed handles only after child-lease ownership and WORKING state, never from a prior WAITING snapshot.
           if (resumeId) {
             await Promise.race([
               setupReady,
@@ -568,8 +425,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         }
 
         const result = await run();
-        // FAILED and REJECTED are errors even when runTurn returned a result,
-        // for example a UserPromptSubmit stopReason of blocked.
+        // FAILED and REJECTED remain errors even when runTurn returns a result.
         const { taskState, status } = emitTerminalFrame(result);
         const authorizationRequired = authorizationRequiredStateForOutput(
           result.authorizationRequired,
@@ -588,25 +444,8 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
           };
         }
         if (status === "error") {
-          // A failed RESUME must hand the parent its way back to the SAME
-          // child. Observed failure mode without this: a transient provider
-          // error surfaced as a bare string, the parent had nothing telling it
-          // the child was still resumable, and it respawned FRESH agents —
-          // silently discarding the suspended child's entire context.
-          //
-          // The refusal discriminant picks exactly one guidance text. Retry-
-          // same-id guidance is for TRANSIENT failures only (`resumeRefusal`
-          // absent); both refusal kinds are permanent for that id, so
-          // repeating the retry text for either guides the model into an
-          // infinite loop. As one switch on one field the three texts cannot
-          // collide — the previous shape spread two independent booleans into
-          // the same `resumeGuidance` key and relied on spread ORDER to pick a
-          // winner if both were ever set.
-          //
-          // `resumeRefusal` absent does NOT by itself mean transient: it means
-          // the resume was authorized and actually ran, and the turn then died.
-          // `resumeRanGuidance` splits that population on the only property
-          // that decides whether retrying helps — see its doc comment.
+          // Preserve the same child for authorized resume failures; only transient causes invite identical retries.
+          // Host refusals are permanent, while deterministic remote rejection requires changed request conditions.
           const resumeFields = ((): Record<string, unknown> => {
             switch (result.resumeRefusal) {
               case "exhausted":
@@ -623,28 +462,8 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
                 if (resumeId !== undefined) {
                   return { resumeId, ...resumeRanGuidance(result.error ?? result.summary) };
                 }
-                // A failed FRESH spawn used to return nothing but the error
-                // string. The parent then had no fact to act on and did the
-                // only thing left: spawn the same work again — the very
-                // respawn-loses-context failure the resume branch above exists
-                // to prevent, arriving through the other door.
-                //
-                // It deliberately does NOT hand back a resumeId. Resume is
-                // built on SUSPENSION — `resumeWithPolicy` wants the parked
-                // state, the suspension reason, and the resume counters — and a
-                // run that died never parked, so there is no point to resume
-                // from. Advertising one would recreate the documented failure
-                // where an id was offered that the gate then refused and the
-                // retry guidance turned into a guided infinite loop (see
-                // `isResumableSubAgentTaskState`).
-                //
-                // What it gives instead is the truth: which child died, and
-                // whether the cause can change on another attempt.
-                //
-                // A run the host REFUSED (stopReason "blocked") is excluded: it
-                // never started, so it is not a lost child, and telling the
-                // parent to narrow its tool scope would send it tuning a request
-                // that policy — not the provider — turned away.
+                // Failed fresh runs never suspended and must not advertise a resumeId; report the child and whether the cause can change.
+                // Exclude host-blocked runs: they never started and are policy refusals, not provider failures.
                 if (result.stopReason === "blocked") return {};
                 return {
                   ...(linkedChildSessionId ? { childSessionId: linkedChildSessionId } : {}),
@@ -678,9 +497,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
             ...(result.incomplete
               ? {
                   incomplete: true,
-                  // The id is interpolated into the notice, not just returned
-                  // beside it: a parent that reads the prose and not the
-                  // sibling field is the failure mode this exists to prevent.
+                  // Include the ID in prose for callers that do not inspect sibling fields.
                   incompleteReason: t("be_agentSpawn.incompleteNotice", {
                     resumeId: result.childSessionId,
                   }),
@@ -691,9 +508,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
           isError: false,
         };      } catch (err) {
         const message = (err as Error).message ?? "agent_spawn failed";
-        // A throw is the one outcome the runner's completion step never sees,
-        // so the frame for it leaves from here — through the same helper, which
-        // stays a no-op if a completion step already spoke for this spawn.
+        // Untracked throws still need a terminal frame; the shared latch suppresses duplicates.
         const { taskState } = emitTerminalFrame({
           summary: message,
           error: message,
@@ -707,10 +522,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
           output: JSON.stringify({
             error: message,
             taskState,
-            // A throw never marks the resume chain exhausted, so a resume that
-            // died here (provider error, transport) is still continuable — but
-            // only retryable when the provider did not refuse the request
-            // itself, which is what `resumeRanGuidance` decides.
+            // Throws do not exhaust the resume chain; retryability still depends on whether the remote request was refused.
             ...(resumeId ? { resumeId, ...resumeRanGuidance(message) } : {}),
           }),
           isError: true,
@@ -723,29 +535,10 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
 export function createAgentStatusTool(deps: Pick<AgentSpawnToolDeps, "getRunner">): Tool {
   return createDynamicTool({
     name: "agent_status",
-    // Says what this list is NOT, because the empty version of it is the one
-    // that gets misread: a restart leaves the live runs behind while the
-    // conversation's children stay on disk, and "no live runs" has been read
-    // as "the work finished". The same fact the restored-runs hint states
-    // after the call, stated where the model reads before making it.
+    // Describe persisted-child lookup before an empty live-run list can be mistaken for completed work.
     description: t("be_agentSpawn.statusToolDescription"),
     source: "builtin",
-    // A read, declared as one — same as its sibling `agent_list`. It returns
-    // host-owned sub-agent bookkeeping scoped by the HOST-supplied origin
-    // session id; its single optional `id` is a lookup key, it takes no path,
-    // command, or network argument, and it mutates nothing.
-    //
-    // It used to declare `meta` + `decisionOverride: "always-allow-with-audit"`,
-    // which reads as the same permission (allow, with audit) and is not: `meta`
-    // is the host's control-flow category, and the gates downstream treat it as
-    // one. A turn carrying cross-agent provenance re-elevates every call that is
-    // not a builtin `read` to a modal (`invocation-authorization.ts`), so a
-    // parent woken by its own child's report blocked on a human for each status
-    // poll — and because the always-allow branch never consults the reviewer,
-    // the card carried no verdict and `resolveUserApprovalVerdict` labelled a
-    // verdict-less `meta` ask MEDIUM. Declaring the category truthfully is what
-    // makes every one of those gates agree; the alternative was teaching each of
-    // them a name-scoped exception.
+    // Host-scoped status polling is a builtin read, not meta control flow, so cross-agent report paging can auto-review.
     category: "read",
     isReadOnly: () => true,
     jsonSchema: {
@@ -765,10 +558,7 @@ export function createAgentStatusTool(deps: Pick<AgentSpawnToolDeps, "getRunner"
           isError: true,
         };
       }
-      const originSessionId =
-        typeof ctx.metadata?.sessionId === "string"
-          ? (ctx.metadata.sessionId as string)
-          : "";
+      const originSessionId = toolSessionId(ctx) ?? "";
       if (!originSessionId) {
         return {
           output: JSON.stringify({ error: "agent_status requires a session id" }),
@@ -777,16 +567,7 @@ export function createAgentStatusTool(deps: Pick<AgentSpawnToolDeps, "getRunner"
       }
       const input = (rawInput ?? {}) as Record<string, unknown>;
       const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : "";
-      // Both reads below hand the snapshot — summary, error, transcript — to
-      // the parent LLM, which is the sub-agent's completion report in full. The
-      // flag says so, and the runner uses it to retire the queued mailbox copy
-      // of that same report rather than replay it as steering on the next turn.
-      //
-      // This does not cost the tool its `read` declaration above. What it
-      // records is bookkeeping ABOUT the read — that the parent has now been
-      // shown this report — not an effect on anything outside the host's own
-      // run tracking. The one durable write it leads to belongs to the next
-      // turn's mailbox fold, which is where that write is declared and audited.
+      // Full snapshot reads retire duplicate mailbox reports through host bookkeeping, preserving the read category.
       if (id) {
         const run = runner.getRunStatus(id, originSessionId, {
           deliversReportToParent: true,
@@ -799,12 +580,7 @@ export function createAgentStatusTool(deps: Pick<AgentSpawnToolDeps, "getRunner"
       const runs = runner.listRunStatuses(originSessionId, {
         deliversReportToParent: true,
       });
-      // Live runs are process-local; persisted spawns are not. After an app
-      // restart this list is empty while the conversation's sub-agents are
-      // still sitting on disk, and the observed reading of that empty list was
-      // "no active sub-agents, so the work is done" — a wrong conclusion drawn
-      // from a true fact. Name the other list rather than restate this one:
-      // `agent_list` is where the restored children appear, with resumeId.
+      // Live runs vanish on restart; direct callers to agent_list for persisted children and resume IDs.
       const restoredCount = runs.length === 0
         ? runner.listPersistedSpawnsForOrigin(originSessionId).length
         : 0;
@@ -854,10 +630,7 @@ export function createAgentInterruptTool(deps: Pick<AgentSpawnToolDeps, "getRunn
           isError: true,
         };
       }
-      const originSessionId =
-        typeof ctx.metadata?.sessionId === "string"
-          ? (ctx.metadata.sessionId as string)
-          : "";
+      const originSessionId = toolSessionId(ctx) ?? "";
       if (!originSessionId) {
         return {
           output: JSON.stringify({ error: "agent_interrupt requires a session id" }),

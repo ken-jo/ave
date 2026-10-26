@@ -1,31 +1,25 @@
-/**
- * B4 — ConversationLoop abort tests (§4.5.3 Streaming Architecture)
- */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+import { NotificationService } from "../../main/notification-service.js";
+import { issueAuthorizationRequiredControl } from "../../shared/authorization-required.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
-function makeHarness(): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
+function makeHarness(notificationService?: NotificationService): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
   const toolRegistry = new ToolRegistry();
   const inputClassifier = new InputClassifier();
   const routeEngine = new RouteEngine();
 
-  const loop = new ConversationLoop({
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: { build: () => "system" },
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
+    notificationService,
     inputClassifier,
     routeEngine,
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
 
   return { loop, toolRegistry };
 }
@@ -37,10 +31,7 @@ function makeLoop(): ConversationLoop {
 describe("ConversationLoop currentAbortController lifecycle", () => {
   it("clears currentAbortController and surfaces a stream error when provider iteration throws", async () => {
     const loop = makeLoop();
-    // Provider that throws partway through the stream — simulates a network
-    // / API failure inside queryLoop. This should take the same user-visible
-    // stream_error path as provider-emitted error events instead of rejecting
-    // the IPC turn and leaving renderer state ambiguous.
+    // Mid-stream provider throws must emit stream_error rather than reject the IPC turn.
     (loop as { provider: LLMProvider }).provider = {
       vendor: "openai" as const,
       // eslint-disable-next-line require-yield
@@ -91,13 +82,6 @@ describe("ConversationLoop abort (B4)", () => {
       vendor: "openai" as const,
       async *streamTurn(params) {
         yield { type: "text_delta", text: "Hello " } as StreamEvent;
-        // Use the AbortController that owns this signal to actually abort
-        // We simulate the abort controller being triggered externally
-        // by aborting via the signal's controller reference if available,
-        // or simply having the loop call abortCurrentTurn() in parallel.
-        // For test purposes: yield then check — but we need signal.aborted=true.
-        // Signal abort via the loop's currentAbortController (set by runTurn).
-        // We can't easily get that here; instead pass an external AC and abort it.
         yield { type: "text_delta", text: "world" } as StreamEvent;
         yield { type: "message_complete", stopReason: "end_turn",
         } as StreamEvent;
@@ -105,7 +89,6 @@ describe("ConversationLoop abort (B4)", () => {
     };
 
     const ac = new AbortController();
-    // Abort immediately so signal is already aborted when runTurn starts
     ac.abort();
 
     const textDeltas: string[] = [];
@@ -115,8 +98,7 @@ describe("ConversationLoop abort (B4)", () => {
     );
 
     expect(result.stopReason).toBe("interrupted");
-    // The boundary is display state, never prose: the text stays exactly what
-    // the model streamed, and the marker rides on meta for the renderer badge.
+    // Preserve streamed prose; interruption belongs in renderer metadata.
     expect(result.text).not.toContain("[중단됨]");
 
     const history = loop.getHistory().getMessages();
@@ -132,7 +114,6 @@ describe("ConversationLoop abort (B4)", () => {
     (loop as { provider: LLMProvider }).provider = {
       vendor: "openai" as const,
       async *streamTurn() {
-        // abortCurrentTurn() was called before runTurn, so signal is pre-aborted
         yield { type: "tool_call", id: "t1", name: "noop_tool", input: {},
         } as StreamEvent;
         yield { type: "message_complete", stopReason: "tool_use",
@@ -141,8 +122,6 @@ describe("ConversationLoop abort (B4)", () => {
       },
     };
 
-    // Pre-abort the loop's controller by calling abortCurrentTurn
-    // We simulate this by passing a pre-aborted signal
     const ac = new AbortController();
     ac.abort();
 
@@ -192,9 +171,7 @@ describe("ConversationLoop abort (B4)", () => {
     expect(toolEntered).toBe(true);
     expect(streamCalls).toBe(1);
     expect(result.stopReason).toBe("interrupted");
-    // A tool-phase abort has no streamed prose. The persisted assistant entry
-    // is empty text plus the interrupted marker — the badge carries the whole
-    // meaning, and nothing synthetic ever reaches the delta stream.
+    // Tool-phase interruptions persist an empty assistant row with metadata, never synthetic prose.
     expect(result.text).toBe("");
     expect(textDeltas.join("")).not.toContain("[중단됨]");
 
@@ -221,8 +198,7 @@ describe("ConversationLoop abort (B4)", () => {
 
     const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
     });
-    // abort after — no-op
-    loop.abortCurrentTurn(); // currentAbortController is null here
+    loop.abortCurrentTurn();
 
     expect(result.text).toContain("Done.");
     expect(result.stopReason).not.toBe("interrupted");
@@ -234,7 +210,6 @@ describe("ConversationLoop abort (B4)", () => {
     (loop as { provider: LLMProvider }).provider = {
       vendor: "openai" as const,
       async *streamTurn() {
-        // Simulate a provider throwing an error with name=AbortError (no signal aborted)
         const err = new Error("The operation was aborted.");
         err.name = "AbortError";
         throw err;
@@ -255,7 +230,6 @@ describe("ConversationLoop abort (B4)", () => {
     (loop as { provider: LLMProvider }).provider = {
       vendor: "openai" as const,
       async *streamTurn() {
-        // Error message contains "abort" but name is not AbortError
         const err = new Error("Surgical abortion operation timeout");
         err.name = "TimeoutError";
         throw err;
@@ -274,13 +248,82 @@ describe("ConversationLoop abort (B4)", () => {
   it("abortCurrentTurn() aborts in-flight controller", () => {
     const loop = makeLoop();
 
-    // no turn in flight — should be no-op
     expect(() => loop.abortCurrentTurn()).not.toThrow();
 
-    // inject a fake controller and verify abort propagates
     const ac = new AbortController();
     (loop as { currentAbortController: AbortController | null }).currentAbortController = ac;
     loop.abortCurrentTurn();
     expect(ac.signal.aborted).toBe(true);
+  });
+});
+
+describe("turn completion notification sound delivery", () => {
+  it.each([
+    { outcome: "complete", masterEnabled: true, enabled: true, focused: false, count: 1, silent: false },
+    { outcome: "complete", masterEnabled: true, enabled: false, focused: false, count: 1, silent: true },
+    { outcome: "complete", masterEnabled: false, enabled: true, focused: false, count: 0 },
+    { outcome: "complete", masterEnabled: false, enabled: false, focused: false, count: 0 },
+    { outcome: "complete", masterEnabled: true, enabled: true, focused: true, count: 0 },
+    { outcome: "interrupted", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "stream-error", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "context-error", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "authorization-required", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "empty", masterEnabled: true, enabled: true, focused: false, count: 0 },
+  ])("$outcome, master=$masterEnabled, sound=$enabled, focused=$focused", async ({ outcome, masterEnabled, enabled, focused, count, silent }) => {
+    const show = vi.fn();
+    const notificationFactory = vi.fn(() => ({ show, on: vi.fn() }));
+    const notificationService = new NotificationService({
+      getMainWindow: () => ({ isDestroyed: () => false, isMinimized: () => false }) as Electron.BrowserWindow,
+      notificationFactory,
+      isTurnCompletionSoundEnabled: () => enabled,
+      isOsNotificationsEnabled: () => masterEnabled,
+      isAnyWindowFocused: () => focused,
+      isReady: () => true,
+      isTestEnv: () => false,
+    });
+    const { loop, toolRegistry } = makeHarness(notificationService);
+    toolRegistry.register(createDynamicTool({
+      name: "authorization_probe",
+      description: "Return a host-issued authorization terminal",
+      source: "builtin",
+      category: "read",
+      jsonSchema: { type: "object", properties: {} },
+      execute: async () => ({
+        output: "Authorization required",
+        isError: true,
+        authorizationRequired: issueAuthorizationRequiredControl({
+          kind: "tool",
+          toolName: "authorization_probe",
+          source: "builtin",
+          category: "read",
+          reason: "approval-surface-unavailable",
+        }),
+      }),
+    }));
+    const abort = new AbortController();
+    (loop as { provider: LLMProvider }).provider = {
+      vendor: "openai",
+      async *streamTurn(): AsyncIterable<StreamEvent> {
+        if (outcome !== "empty") yield { type: "text_delta", text: "Completed response" };
+        if (outcome === "interrupted") { abort.abort(); return; }
+        if (outcome === "stream-error") { yield { type: "error", error: "synthetic stream failure" }; return; }
+        if (outcome === "context-error") {
+          yield { type: "error", error: "prompt is too long for this model" };
+          return;
+        }
+        if (outcome === "authorization-required") {
+          yield { type: "tool_call", id: "authorization-probe", name: "authorization_probe", input: {} };
+          yield { type: "message_complete", stopReason: "tool_use" };
+          return;
+        }
+        yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    const result = await loop.runTurn("hi", {}, abort.signal, { inputOrigin: "user-keyboard" });
+    if (["interrupted", "stream-error", "context-error", "authorization-required"].includes(outcome)) expect(result.stopReason).toBe(outcome);
+    if (outcome === "authorization-required") expect(result.text).not.toBe("");
+    expect(notificationFactory).toHaveBeenCalledTimes(count);
+    expect(show).toHaveBeenCalledTimes(count);
+    if (count) expect(notificationFactory).toHaveBeenCalledWith(expect.objectContaining({ silent, urgency: "normal" }));
   });
 });

@@ -1,18 +1,5 @@
-/**
- * Kept plugin artifacts (design §7.5, §16.2: `offlineCacheEnabled` means
- * "keep downloaded artifacts").
- *
- * A release or archive zip is pinned by its sha256 in git, so the pin names
- * the bytes: a kept zip is stored under its digest and read back only when it
- * still hashes to it. A reinstall of a version already fetched — Doctor's
- * repair, a switch back, an install while the host is offline — then needs no
- * download. The tree rung is not kept: it is built from git objects the
- * snapshot already holds.
- *
- * The cache is an optimization at a filesystem boundary. A file that cannot
- * be read or written is a miss, never an install failure; a file that does
- * not hash to its name is deleted and missed.
- */
+/** Revalidate cached artifacts against their digest; corrupt or unreadable entries are misses.
+ * Cache failures never fail installation, and tree delivery uses git objects instead. */
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { mkdir, readdir, readFile, rm, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,24 +8,17 @@ import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 
-/** The oldest-used zips go first once the kept total passes this. */
 const KEPT_ARTIFACTS_MAX_BYTES = 500 * 1024 * 1024;
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 
-/**
- * `marketplace.offlineCacheEnabled` combined with `AVE_MARKETPLACE_USE_CACHE`:
- * the environment decides in both directions when set, the setting when not,
- * and unset means keep.
- */
+/** An explicit environment setting overrides the stored cache setting in either direction. */
 export function resolveKeepArtifacts(settingEnabled: boolean | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
   return resolveEnvBackedBoolean("marketplace.offlineCacheEnabled", settingEnabled, env);
 }
 
 export interface ArtifactCache {
-  /** The kept zip for this digest, or `null` when keeping is off or none is kept. */
   read(sha256: string): Promise<Buffer | null>;
-  /** Keep a zip that hashed to `sha256`; nothing when keeping is off. */
   keep(sha256: string, zip: Buffer): Promise<void>;
 }
 
@@ -62,7 +42,6 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
     return join(options.dir, `${digest}.zip`);
   };
 
-  /** Drop the least recently used zips until the rest fit. */
   const evict = async (): Promise<void> => {
     const files: Array<{ path: string; size: number; used: number }> = [];
     for (const name of await readdir(options.dir)) {
@@ -81,8 +60,7 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
 
   return {
     async read(sha256) {
-      // A key that is not a digest is a miss, as with keeping off: the rung
-      // that downloads reports the bad pin the same way either way.
+      // Invalid digest keys miss so the download rung reports the same bad-pin failure.
       if (!options.enabled() || !SHA256.test(sha256.toLowerCase())) return null;
       const path = pathOf(sha256);
       try {
@@ -123,12 +101,10 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
   };
 }
 
-/** Remove every kept zip: keeping was turned off, so they go now rather than at the next install. */
 export async function clearKeptArtifacts(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true });
 }
 
-/** Keeping off: every read misses and nothing is written. */
 export const NO_ARTIFACT_CACHE: ArtifactCache = {
   read: async () => null,
   keep: async () => undefined,

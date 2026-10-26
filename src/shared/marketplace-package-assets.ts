@@ -1,6 +1,6 @@
 import {
-  isMarketplaceEligibleLocale,
-  type MarketplaceEligibleLocale,
+  isOfficialPackageLocale,
+  type OfficialPackageLocale,
 } from "../i18n/locale.js";
 import {
   type MarketplacePackageType,
@@ -53,24 +53,10 @@ export const MARKETPLACE_PROVIDER_MODEL_DISCOVERY_POLICIES = [
 export type MarketplaceProviderModelDiscoveryPolicy =
   (typeof MARKETPLACE_PROVIDER_MODEL_DISCOVERY_POLICIES)[number];
 
-/**
- * What each discovery policy permits. Two independent columns, not one flag:
- * "may the host fetch the model list over the network" and "does this preset
- * ship its own model list" are separate questions. Today's four values happen
- * to occupy the diagonal (every fetching policy is unseeded and vice versa),
- * which is exactly why three hand-written predicates could disagree only in
- * the abstract — and why collapsing them to a single boolean would destroy
- * expressible behaviour.
- *
- * `satisfies Record<...>` is the point of this table: adding a member to
- * `MARKETPLACE_PROVIDER_MODEL_DISCOVERY_POLICIES` is a compile error until its
- * behaviour is declared here, so a new policy can no longer be accepted at
- * ingest (`cleanEnum`, below) while the deciding predicates are never revisited.
- */
+/** Model fetching and seeded choices are independent columns; every discovery-policy variant must declare both. */
 export interface MarketplaceProviderModelDiscoveryBehavior {
-  /** The host may fetch this provider's model list over the network. */
   allowsFetch: boolean;
-  /** The preset supplies its model options; a cached fetched list is meaningless. */
+  /** Fetched cache entries are meaningless for presets that ship their own options. */
   usesSeededOptions: boolean;
 }
 
@@ -84,12 +70,7 @@ export const MARKETPLACE_PROVIDER_MODEL_DISCOVERY_BEHAVIOR = {
   MarketplaceProviderModelDiscoveryBehavior
 >;
 
-/**
- * An absent policy is the legacy default: a plain provider with no marketplace
- * preset opinion, which discovers its models over the network. Both ingest
- * paths normalize an out-of-union string to `undefined`, so unrecognized input
- * lands here rather than in the table.
- */
+/** Absent or invalid policy uses the legacy network-discovery default. */
 const UNDECLARED_MODEL_DISCOVERY_BEHAVIOR: MarketplaceProviderModelDiscoveryBehavior = {
   allowsFetch: true,
   usesSeededOptions: false,
@@ -105,14 +86,12 @@ function marketplaceProviderModelDiscoveryBehavior(
   );
 }
 
-/** The host may fetch this provider's model list over the network. */
 export function modelDiscoveryPolicyAllowsFetch(
   policy: MarketplaceProviderModelDiscoveryPolicy | undefined,
 ): boolean {
   return marketplaceProviderModelDiscoveryBehavior(policy).allowsFetch;
 }
 
-/** The preset supplies its model options rather than discovering them. */
 export function modelDiscoveryPolicyUsesSeededOptions(
   policy: MarketplaceProviderModelDiscoveryPolicy | undefined,
 ): boolean {
@@ -138,7 +117,6 @@ export type MarketplaceThemeShellMode = "light" | "dark" | "system";
 
 export interface MarketplaceThemePackageAsset {
   type: "theme";
-  /** A theme package name; the compiled bundles are never delivered. */
   bundleId: string;
   displayName?: string;
   description?: string;
@@ -149,7 +127,7 @@ export interface MarketplaceThemePackageAsset {
 
 export interface MarketplaceLanguagePackPackageAsset {
   type: "language-pack";
-  locale: MarketplaceEligibleLocale;
+  locale: OfficialPackageLocale;
   displayName?: string;
   nativeName?: string;
   englishName?: string;
@@ -157,25 +135,13 @@ export interface MarketplaceLanguagePackPackageAsset {
   messages?: Record<string, string>;
 }
 
-/**
- * How the owner proves to the messaging service that the account on the other
- * side is theirs. Only what the host can actually drive is admitted; a row
- * naming a scheme this build cannot run is rejected rather than installed and
- * left unusable.
- */
+/** Reject authentication schemes this host cannot drive rather than installing an unusable connection. */
 const MARKETPLACE_MESSAGING_CONNECTION_PAIRINGS = ["one-time-code"] as const;
 
 type MarketplaceMessagingConnectionPairing =
   (typeof MARKETPLACE_MESSAGING_CONNECTION_PAIRINGS)[number];
 
-/**
- * One credential the connection will ask its owner for.
- *
- * A DECLARATION, never a value: this is what the catalog says the connection
- * needs, so the owner can read it before installing. Entry happens in the
- * connection's own surface, and a field marked `secret` is written to the
- * encrypted secret store from there — never to settings, and never here.
- */
+/** Credential fields are declarations only; values enter encrypted storage from the connection’s own UI. */
 interface MarketplaceMessagingConnectionCredentialField {
   readonly key: string;
   readonly label: string;
@@ -191,7 +157,6 @@ interface MarketplaceMessagingConnectionPackageAsset {
   summary: string;
   pairing: MarketplaceMessagingConnectionPairing;
   credentials: readonly MarketplaceMessagingConnectionCredentialField[];
-  /** Hosts the connection reaches, as the catalog discloses them. */
   egress?: readonly string[];
   trust?: MarketplaceProviderPackageTrustMetadata;
   docsUrl?: string;
@@ -203,12 +168,7 @@ export type MarketplacePackageAsset =
   | MarketplaceLanguagePackPackageAsset
   | MarketplaceMessagingConnectionPackageAsset;
 
-/**
- * An installed messaging connection as the host records it — the asset without
- * its discriminant, mirroring {@link MarketplaceInstalledProviderPreset}. It
- * holds the connection's declaration only; the credentials it names are stored
- * by the connection itself, in the encrypted secret store.
- */
+/** Installed connections retain declarations, never credential values. */
 export type MarketplaceInstalledMessagingConnection =
   Omit<MarketplaceMessagingConnectionPackageAsset, "type">;
 
@@ -233,15 +193,7 @@ const MAX_LANGUAGE_MESSAGES = 10_000;
 const MARKETPLACE_PROVIDER_PRESET_ID_PATTERN =
   new RegExp(`^${MARKETPLACE_PROVIDER_PRESET_ID_PATTERN_SOURCE}$`);
 
-/**
- * The token grammar every marketplace asset identifier shares.
- *
- * A provider-preset id, a messaging-connection id and a credential key all end
- * up in the same three places — a settings key, a secret-store key segment, and
- * a `packageSpec` suffix — so they are judged by one rule. Only the bound
- * differs, and each caller states its own: the preset id's is pinned to the
- * plugin-manifest schema, which a connection id has no reason to inherit.
- */
+/** Share token grammar across settings keys, secret segments, and package specs; each domain owns its length bound. */
 function isMarketplaceAssetIdToken(
   value: unknown,
   maxLength: number,
@@ -292,7 +244,6 @@ function usesHttpsUrl(value: string): boolean {
     return false;
   }
 }
-
 
 function isAllowedProviderBaseUrl(value: string, requiresApiKey: boolean): boolean {
   return usesHttpsUrl(value) || (!requiresApiKey && isLoopbackHttpUrl(value));
@@ -506,34 +457,10 @@ export function marketplaceProviderPresetSecretKey(providerId: string): string {
 /** `llm.apiKey.<vendor>` — the non-marketplace host-secret key family. */
 const LLM_API_KEY_PATTERN = /^llm\.apiKey\.[a-z]+(?:-[a-z]+)*$/;
 
-/**
- * Per-item bound from `schemas/plugin-manifest.schema.json`
- * (`hostSecrets.read.items.maxLength`). The marketplace branch is additionally
- * bounded by {@link MARKETPLACE_PROVIDER_PRESET_ID_MAX_LENGTH} via
- * {@link isMarketplaceProviderPresetId}; this caps the vendor branch too, the
- * way AJV does.
- */
+/** Mirror schema per-item bounds for both vendor keys and preset ids. */
 const HOST_SECRET_KEY_MAX_LENGTH = 111;
 
-/**
- * THE shape gate for a `hostSecrets.read[]` entry — "is this a well-formed
- * host-secret key a plugin is permitted to name?".
- *
- * One definition, used by plugin manifest validation
- * (`src/plugins/runtime/manifest-validation.ts`); the signed whitelist that
- * once carried a byte-identical private copy is gone.
- *
- * Deliberately validates the RAW preset-id segment. Both former copies routed
- * this branch through a `marketplaceProviderPresetIdFromSecretKey` helper that
- * `.trim()`ed the segment — correct when RESOLVING an id, wrong when
- * VALIDATING a declared key. The trim made the runtime gate accept
- * `llm.marketplaceProvider.<spaces>foo<spaces>.apiKey`, which the JSON schema
- * rejects, i.e. the TS mirror was LOOSER than the schema it exists to mirror.
- * That helper had no other consumer and is gone. Slicing the raw segment and
- * asking {@link isMarketplaceProviderPresetId} is also exactly what the Tier-4
- * cross-check in `host-api-factory.ts` does, so the declared key and the key
- * the gate later compares are now judged by one rule.
- */
+/** Validate raw secret-key segments without trimming so runtime acceptance cannot exceed the manifest schema. */
 export function isAllowedHostSecretKey(value: unknown): value is string {
   if (typeof value !== "string" || value.length > HOST_SECRET_KEY_MAX_LENGTH) {
     return false;
@@ -553,32 +480,14 @@ export function isAllowedHostSecretKey(value: unknown): value is string {
   );
 }
 
-/**
- * Collection bound from `schemas/plugin-manifest.schema.json`
- * (`hostSecrets.read.maxItems`). Declared rather than imported from the schema
- * JSON: this module is renderer-reachable and the schema is a ~38 KB JSON
- * module. The two values are pinned to each other by an executed test
- * (`src/plugins/runtime/__tests__/host-secrets-manifest.test.ts`), which reads
- * the schema from disk — so a schema edit that is not mirrored here fails CI.
- */
+/** Mirror the schema’s collection cap without bundling its JSON into renderer code; tests pin equality. */
 export const HOST_SECRET_READ_MAX_ITEMS = 32;
 
-/** What {@link findHostSecretReadListViolation} found, if anything. */
 export type HostSecretReadListViolation =
   | { readonly kind: "maxItems"; readonly count: number }
   | { readonly kind: "duplicate"; readonly index: number; readonly key: string };
 
-/**
- * THE collection gate for a `hostSecrets.read[]` array — the counterpart of
- * {@link isAllowedHostSecretKey}, which judges one entry at a time and so can
- * see neither `maxItems` nor `uniqueItems`.
- *
- * AJV enforces the same two bounds against the vendored manifest schema, so
- * this is defence-in-depth on the manifest path (#1939).
- *
- * Reports the first violation rather than throwing, so the caller raises its
- * own error shape; a manifest over either bound is rejected, never trimmed.
- */
+/** Reject the whole list on duplicate or excess entries; never trim authority declarations. */
 export function findHostSecretReadListViolation(
   keys: readonly string[],
 ): HostSecretReadListViolation | undefined {
@@ -696,7 +605,7 @@ function languagePackAsset(
   locale: unknown,
   metadata?: Record<string, unknown>,
 ): MarketplaceLanguagePackPackageAsset | undefined {
-  if (!isMarketplaceEligibleLocale(locale)) return undefined;
+  if (!isOfficialPackageLocale(locale)) return undefined;
   if (!metadata) return { type: "language-pack", locale };
   const displayName = cleanString(
     metadata.displayName ?? metadata.display_name ?? metadata.name,
@@ -764,8 +673,7 @@ function messagingConnectionCredentials(
   const seen = new Set<string>();
   for (const entry of value) {
     const field = messagingConnectionCredentialField(entry);
-    // Refuse the whole list on one bad entry. Skipping it would show the owner
-    // a shorter list of what the connection asks for than the truth.
+    // Reject any malformed declaration; dropping one would understate the access the connection requests.
     if (!field || seen.has(field.key)) return undefined;
     seen.add(field.key);
     fields.push(field);
@@ -773,27 +681,14 @@ function messagingConnectionCredentials(
   return Object.freeze(fields);
 }
 
-/**
- * The hosts the connection reaches, as the catalog discloses them.
- *
- * Three outcomes, not two: `undefined` is "nothing declared", `null` is
- * "declared and unreadable". A malformed disclosure must not read as an absent
- * one — that would understate the connection's network reach on the very card
- * the owner uses to decide whether to install it.
- *
- * Two shapes, one reading: the catalog nests the list under `network`, and the
- * record this parser emits carries it flat. Normalization re-reads its own
- * output, so a shape it could not read back would silently drop the disclosure
- * the first time an installed connection was loaded from settings.
- */
+/** Undefined means absent disclosure; null means malformed. Read both catalog-nested and normalized-flat host lists. */
 function messagingConnectionEgress(
   metadata: Record<string, unknown>,
 ): readonly string[] | null | undefined {
   let declared: unknown;
   if (metadata.network !== undefined) {
     const network = asRecord(metadata.network);
-    // A `network` block that names no hosts is a disclosure this host cannot
-    // read, not an absent one.
+    // A network block without readable hosts is malformed, not absent.
     if (!network || network.egress === undefined) return null;
     declared = network.egress;
   } else {
@@ -812,8 +707,7 @@ function messagingConnectionEgress(
     const hosts = normalizeAllowedHosts(declared as string[]);
     return hosts.length > 0 ? Object.freeze(hosts) : null;
   } catch {
-    // `normalizeAllowedHosts` throws on a wildcard, a URL, or a bare public
-    // suffix. Here that is a catalog the host refuses to read, not a crash.
+    // Invalid hosts refuse catalog ingestion rather than crashing.
     return null;
   }
 }
@@ -825,9 +719,7 @@ function messagingConnectionAsset(
   if (!isMarketplaceAssetIdToken(connectionId, MAX_MESSAGING_CONNECTION_ID_LENGTH)) {
     return undefined;
   }
-  // Unlike a theme or a locale, a messaging connection has no host-side
-  // registry to fill the rest in from: the catalog is the only description of
-  // it, so a bare `messaging-connection:<id>` spec names nothing showable.
+  // Connection specs require their full catalog declaration; no host registry can fill missing details.
   if (!metadata) return undefined;
   const label = cleanString(metadata.label, MAX_PROVIDER_LABEL_LENGTH);
   const summary = cleanString(metadata.summary, MAX_MESSAGING_CONNECTION_SUMMARY_LENGTH);
@@ -853,13 +745,7 @@ function messagingConnectionAsset(
   };
 }
 
-/**
- * Strip an installed messaging connection back to its declaration.
- *
- * Rebuilt through the parser rather than spread, so a record read off disk or
- * sent by a renderer can only ever carry the fields this contract names — a
- * credential VALUE smuggled into the record never survives the round trip.
- */
+/** Rebuild through the parser so extra disk or IPC fields, including credential values, cannot survive. */
 export function marketplaceMessagingConnectionFromAsset(
   asset: MarketplacePackageAsset | undefined,
 ): MarketplaceInstalledMessagingConnection | undefined {
@@ -1065,11 +951,7 @@ export function assetFromMarketplaceCatalogFields(
   return assetFromMarketplacePackageSpec(pluginType, packageSpec, fields);
 }
 
-/**
- * ISO-8601 instant as the signed marketplace documents carry it — the subset
- * `Date.parse` round-trips. Admission, revocation and whitelist schemas all
- * gate `issuedAt`/`expiresAt` on this one predicate.
- */
+/** Accept only signed-document timestamp forms that round-trip through Date.parse. */
 export function isValidIsoTimestamp(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0) return false;
   return Number.isFinite(Date.parse(value));

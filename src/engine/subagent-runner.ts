@@ -1,43 +1,16 @@
-/**
- * SubAgentRunner — host-side orchestrator for the `agent_spawn` tool.
- *
- * Spawns a child {@link ConversationLoop} with:
- *   - A fresh history (instructions become the initial user message; the
- *     parent's system prompt builder still runs but the child's session is
- *     isolated).
- *   - A scoped {@link ToolRegistry} restricted by the caller-supplied
- *     {@link SubAgentToolScope}, which states which of the three grants this
- *     run gets instead of leaving it to be inferred from a list's emptiness.
- *     The `agent_spawn` tool itself is ALWAYS stripped from the child registry
- *     whatever the scope says — sub-agents cannot recurse.
- *   - A host-assigned round budget (the user's configured
- *     `chat.subAgentMaxRounds`, else {@link MAX_TURNS_DEFAULT}; a host caller
- *     running a fixed-shape task may pass its own, and no per-mode budget
- *     exists to consult) — runTurn(`maxRounds: cappedRounds`) terminates
- *     queryLoop cleanly between rounds, and the executor's per-round
- *     fan-out cap (5 calls/round) bounds total tool execution count.
- *   - An ApprovalGate wrapper that prepends "[Sub-Agent: <title>]" to the
- *     user-facing approval reason so users know an approval request originated
- *     from a sub-agent.
- *
- * Per-turn updates are streamed back as events so the renderer can show a
- * live workspace-rail sub-agent viewer. Final summary is delivered as `summary`
- * in the result.
- *
- * Rationale (vs. mutating the main loop): a sub-loop helper file keeps the
- * primary ConversationLoop unchanged, avoids reentrancy hazards on the
- * shared state (`sessionId`, `history`, `cumulativeUsage`), and lets each
- * spawn audit-log under a child sessionId tagged with the origin session id.
- */
+/** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
+ * Never expose agent_spawn to children or mutate the parent loop's state. */
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/memory-manager.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
 } from "../shared/subagent-policy.js";
 import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop.js";
+import { trackCodeCheckpointChild } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type {
+  TurnCallbacks,
   TurnInputRequired,
   TurnStopReason,
   WorkspaceRootRevocationOptions,
@@ -80,6 +53,7 @@ import { maskSensitiveData } from "../shared/dlp.js";
 import { createDlpSafeUuid, createNamespacedSessionId } from "../shared/dlp-safe-id.js";
 import { renderAgentProfilePrompt } from "./agent-profile-prompt.js";
 import type { GenericMessage } from "./llm/types.js";
+import { cachedLiveModelIds } from "./llm/model-list.js";
 import type {
   A2ASubAgentMessageBus,
   DeliverToParentInput,
@@ -144,35 +118,8 @@ function maskSubAgentText(text: string): string {
   return maskSensitiveData(text).masked;
 }
 
-/**
- * What a sub-agent's tool surface is. THE specification of the grant: every
- * other comment about sub-agent tool scope in this repository points here.
- *
- * One `string[]` used to carry three opposite meanings, and which one applied
- * depended on the code path rather than on the value: absent or empty granted
- * the parent's whole registry on the spawn path, granted nothing on the A2A
- * wire path, and meant "this metadata is unreadable, refuse to run" on the
- * resume path. Each meaning is a separate inhabitant here, and an `exactly`
- * scope cannot be constructed empty ({@link exactToolScope} throws), so neither
- * the widening nor the narrowing a misread used to produce is reachable.
- *
- * - `parent-all` — every tool the parent registry holds, minus
- *   {@link SUB_AGENT_TOOL_BLOCKLIST}. The spawn that names no tools.
- * - `exactly` — those names and nothing else, minus the blocklist. At least one
- *   name: an empty grant is `deny-all` and has to say so.
- * - `deny-all` — no source tool at all. The A2A wire path uses it when the
- *   bound profile names none, so a remote-triggered run gets nothing rather
- *   than everything.
- *
- * `agent_send` is not part of this scope. It is the child's channel back to its
- * parent, registered separately from `includeAgentSend`, so even a `deny-all`
- * child can answer whoever started it.
- *
- * A resume takes no scope from its caller: it decodes the one its spawn froze
- * to disk ({@link fromPersistedToolScope}). The parent registry is never
- * consulted a second time, so a resume cannot gain tools the parent gained
- * after the spawn.
- */
+/** Tool scopes are explicit: parent-all minus the blocklist, nonempty exactly minus the blocklist, or deny-all.
+ * agent_send is granted separately; resume uses only the frozen persisted scope and never expands from the current parent registry. */
 export type SubAgentToolScope =
   | { readonly kind: "parent-all" }
   | { readonly kind: "exactly"; readonly names: readonly string[] }
@@ -196,15 +143,8 @@ export const DENY_ALL_TOOL_SCOPE: PersistedSubAgentToolScope = Object.freeze({
   kind: "deny-all",
 } as const);
 
-/**
- * A scope naming exactly these tools. Empty is a construction-time error rather
- * than a quiet `deny-all` or a quiet `parent-all`: those two traded places for
- * as long as one array carried both, and a caller that derives its names from a
- * registry query has to learn that the query returned nothing, not run with
- * whatever the empty result happens to mean at the site it reaches.
- *
- * @see SubAgentToolScope
- */
+/** A scope naming exactly these tools. Empty is a construction-time error rather than a quiet `deny-all` or a quiet `parent-all`: those two traded places for as long as one array carried both, and a
+ * caller that derives its names from a registry query has to learn that the query returned nothing, not run with whatever the empty result happens to mean at the site it reaches. @see SubAgentToolScope */
 export function exactToolScope(names: readonly string[]): PersistedSubAgentToolScope {
   if (names.length === 0) {
     throw new Error(
@@ -214,28 +154,14 @@ export function exactToolScope(names: readonly string[]): PersistedSubAgentToolS
   return Object.freeze({ kind: "exactly", names: Object.freeze([...names]) } as const);
 }
 
-/**
- * Encode a frozen grant as the `sourceTools` field of sub-agent session
- * metadata. Paired with {@link fromPersistedToolScope}: these two are the only
- * places the on-disk shape and the meaning are converted into each other.
- *
- * @see SubAgentToolScope
- */
+/** Encode a frozen grant as the `sourceTools` field of sub-agent session metadata. Paired with {@link
+ * fromPersistedToolScope}: these two are the only places the on-disk shape and the meaning are converted into each other. @see SubAgentToolScope */
 export function toPersistedToolScope(scope: PersistedSubAgentToolScope): string[] {
   return scope.kind === "deny-all" ? [] : [...scope.names];
 }
 
-/**
- * Decode persisted `sourceTools` back into a scope. `null` means the record
- * cannot be read as one at all, and a resume refuses rather than guessing.
- *
- * `wireBound` supplies the one thing the stored array cannot say about itself:
- * an empty list is a deliberate `deny-all` for an A2A-wire task, because the
- * wire path is the only one that can spawn with no tools, and is corruption or
- * tampering for anything else.
- *
- * @see SubAgentToolScope
- */
+/** Decode persisted `sourceTools` back into a scope. `null` means the record cannot be read as one at all, and a resume refuses rather than guessing. `wireBound` supplies the one thing the stored array cannot say
+ * about itself: an empty list is a deliberate `deny-all` for an A2A-wire task, because the wire path is the only one that can spawn with no tools, and is corruption or tampering for anything else. @see SubAgentToolScope */
 export function fromPersistedToolScope(
   persisted: readonly string[] | undefined,
   wireBound: boolean,
@@ -252,68 +178,34 @@ export interface SubAgentSpawnInput {
   spawnId?: string;
   /** Parent `agent_spawn` tool_use id, persisted as the reload join key. */
   toolUseId?: string;
-  /**
-   * The child's tool grant. Required, and with no default: which of the three
-   * grants a run gets is the caller's decision to state, not the runner's to
-   * infer from an omission. See {@link SubAgentToolScope}.
-   */
+  /** The child's tool grant. Required, and with no default: which of the three grants a run gets is the
+   * caller's decision to state, not the runner's to infer from an omission. See {@link SubAgentToolScope}. */
   toolScope: SubAgentToolScope;
-  /**
-   * Host-assigned round budget for the child loop, in assistant rounds.
-   * The LLM cannot pick this: the `agent_spawn` tool no longer exposes a
-   * `maxTurns` schema field. It is set ONLY by host callers that run a
-   * sub-agent for a FIXED-shape task (e.g. WorkBoardEngine's plan/execute
-   * phases) and know the right budget for that phase. When absent, the
-   * budget is the user's configured `chat.subAgentMaxRounds` and finally
-   * `MAX_TURNS_DEFAULT` — see `spawn()`. This is host policy, not an
-   * LLM-tunable knob, so it is intentionally not surfaced in the tool schema.
-   */
+  /** Host-assigned round budget for the child loop, in assistant rounds. The LLM cannot pick this: the `agent_spawn` tool no longer exposes a `maxTurns` schema field. It is set ONLY by host callers that run a sub-agent for a FIXED-shape task (e.g. WorkBoardEngine's plan/execute
+   * phases) and know the right budget for that phase. When absent, the budget is the user's configured `chat.subAgentMaxRounds` and finally `MAX_TURNS_DEFAULT`; see `spawn()`. This is host policy, not an LLM-tunable knob, so it is intentionally not surfaced in the tool schema. */
   maxRounds?: number;
-  /**
-   * Origin session id — audit attribution, and the conversation a tier-2
-   * approval answer is attributed to when this run has one.
-   */
+  /** Origin session id; audit attribution, and the conversation a tier-2 approval answer is attributed to when this run has one. */
   originSessionId?: string;
-  /**
-   * The task the PARENT wrote, before any agent-profile body is rendered around
-   * it. Only a caller that can vouch for that sets it, and only a run that has
-   * it can have its child's approvals routed to its parent.
-   *
-   * Separate from `instructions` because `instructions` is what the CHILD is
-   * given, which for a profile spawn is the profile body followed by the task.
-   * A judgement made against the profile body is a judgement against a role
-   * description that justifies almost anything.
-   */
+  /** The task the PARENT wrote, before any agent-profile body is rendered around it. Only a caller that can vouch for that sets it, and only a run that has it can have its child's approvals routed to its parent. Separate from `instructions`
+   * because `instructions` is what the CHILD is given, which for a profile spawn is the profile body followed by the task. A judgement made against the profile body is a judgement against a role description that justifies almost anything. */
   parentAuthoredTask?: string;
   /** Authorized project root inherited from the spawning conversation/work item. */
   projectRoot?: string;
   /** Human-readable project name paired with the project root. */
   projectName?: string;
-  /**
-   * Agent profile's `model:` frontmatter. May be a complexity tier
-   * ("low" / "mid" / "high"), an explicit vendor-specific model ID, or
-   * undefined. Resolved against the active vendor in `spawn()`; an
-   * unresolvable value leaves the child on the parent's model (design-
-   * intent fallback, logged for audit).
-   */
+  /** Agent profile's `model:` frontmatter. May be a complexity tier ("low" / "mid" / "high"), an explicit vendor-specific model ID, or undefined.
+   * Resolved against the active vendor in `spawn()`; an unresolvable value leaves the child on the parent's model (design- intent fallback, logged for audit). */
   profileModel?: string;
-  /**
-   * Agent profile's `mode:` frontmatter (execute / plan / research /
-   * explore, or undefined). Resolved in `spawn()` to a working-posture
-   * preamble + auto-skill recommendation prepended to the instructions.
-   * Unknown / absent → the `default` mode (inert), logged for audit.
-   */
+  /** Agent profile's `mode:` frontmatter (execute / plan / research / explore, or undefined). Resolved in `spawn()` to a working-posture
+   * preamble + auto-skill recommendation prepended to the instructions. Unknown / absent → the `default` mode (inert), logged for audit. */
   profileMode?: string;
   /** Trusted host execution mode; never accepted from the child model. */
   background?: boolean;
 }
 
 export interface SubAgentActivityUpdate {
-  /**
-   * Full child transcript snapshot as `ChatEntry[]` (the shared chat model).
-   * Idempotent replace — the consumer overwrites the spawn's entries with this
-   * array rather than appending. Already DLP-masked at the accumulator source.
-   */
+  /** Full child transcript snapshot as `ChatEntry[]` (the shared chat model). Idempotent replace; the consumer
+   * overwrites the spawn's entries with this array rather than appending. Already DLP-masked at the accumulator source. */
   entries: ChatEntry[];
   toolCallCount: number;
 }
@@ -323,91 +215,32 @@ export interface SubAgentSpawnResult {
   toolCallCount: number;
   turnCount: number;
   childSessionId: string;
-  /**
-   * Final child transcript as `ChatEntry[]`. Embedded verbatim in the
-   * `agent_spawn` tool result so a reloaded session can rebuild the sub-agent
-   * tab's full transcript without any live event stream (persistence parity).
-   * Already DLP-masked.
-   */
+  /** Final child transcript as `ChatEntry[]`. Embedded verbatim in the `agent_spawn` tool result so a reloaded session can
+   * rebuild the sub-agent tab's full transcript without any live event stream (persistence parity). Already DLP-masked. */
   entries: ChatEntry[];
-  /**
-   * Structural success signal. `true` only when the child loop completed a
-   * clean `runTurn` (the `summary` is the agent's final message). `false` when
-   * the run could not produce a real result — the LLM provider was not
-   * configured, or the child loop threw — in which case `summary` carries the
-   * error text and {@link error} repeats it. Callers (WorkBoardEngine,
-   * agent_spawn) MUST branch on this rather than treating any returned
-   * `summary` as a completed run: a failed run that surfaced its error string
-   * as `summary` must not be recorded as success.
-   */
+  /** Structural success signal. `true` only when the child loop completed a clean `runTurn` (the `summary` is the agent's final message). `false` when the run could not produce a real result; the LLM provider was not configured, or the child loop threw; in which case
+   * `summary` carries the error text and {@link error} repeats it. Callers (WorkBoardEngine, agent_spawn) MUST branch on this rather than treating any returned `summary` as a completed run: a failed run that surfaced its error string as `summary` must not be recorded as success. */
   ok: boolean;
   /** Failure reason when `ok === false`. Absent on a clean completion. */
   error?: string;
-  /**
-   * Why the child loop stopped, forwarded verbatim from the child's
-   * `runTurn`. Undefined when the child threw before returning a turn result
-   * (in that case `ok === false` already signals the failure).
-   */
+  /** Why the child loop stopped, forwarded verbatim from the child's `runTurn`. Undefined when the
+   * child threw before returning a turn result (in that case `ok === false` already signals the failure). */
   stopReason?: import("./turn/types.js").TurnStopReason;
-  /**
-   * Live, host-issued authorization terminal from the child loop. This field
-   * is intentionally not reconstructed from persisted metadata: process-local
-   * issuer identity is what lets the trusted agent_spawn builtin propagate it
-   * without accepting child text or stored JSON as authority.
-   */
+  /** Live, host-issued authorization terminal from the child loop. This field is intentionally not reconstructed from persisted metadata:
+   * process-local issuer identity is what lets the trusted agent_spawn builtin propagate it without accepting child text or stored JSON as authority. */
   authorizationRequired?: AuthorizationRequiredState;
-  /**
-   * A resumable terminate-and-return wait. Budget and question waits share
-   * the same mechanism; the typed reason tells the caller how to continue.
-   */
+  /** A resumable terminate-and-return wait. Budget and question waits share the same mechanism; the typed reason tells the caller how to continue. */
   suspension?: SubAgentSuspension;
-  /**
-   * Temporary compatibility alias derived from suspension.
-   *
-   * `true` when the child hit its host-assigned round budget (stopReason
-   * "round-cap") before producing a natural end_turn — i.e. the sub-agent ran
-   * out of rounds with WORK STILL PENDING. `summary` then holds the PARTIAL
-   * output (last assistant text), not a finished answer. This is distinct from
-   * `ok === false` (a failed spawn): an incomplete run is a SUCCESSFUL run that
-   * simply did not finish. The parent (agent_spawn tool result) surfaces this
-   * so the parent LLM can decide whether to re-spawn / continue the task rather
-   * than treating the truncated summary as complete. Absent/false on a clean
-   * end_turn or any non-budget stop.
-   */
+  /** Temporary compatibility alias derived from suspension. `true` when the child hit its host-assigned round budget (stopReason "round-cap") before producing a natural end_turn; i.e. the sub-agent ran out of rounds with WORK STILL PENDING. `summary` then holds the PARTIAL output (last assistant text), not a finished answer. This is distinct
+   * from `ok === false` (a failed spawn): an incomplete run is a SUCCESSFUL run that simply did not finish. The parent (agent_spawn tool result) surfaces this so the parent LLM can decide whether to re-spawn / continue the task rather than treating the truncated summary as complete. Absent/false on a clean end_turn or any non-budget stop. */
   incomplete?: boolean;
-  /**
-   * Why a `resume()` was REFUSED before running any turn. ABSENT means the
-   * failure is transient (or the result is not a resume at all), so retrying
-   * the SAME resumeId is the correct move.
-   *
-   *  - `"exhausted"` — a resume-axis loop guard fired
-   *    (`budgetResumeCount >= MAX_RESUMES` or
-   *    `cumulativeRounds >= cumulativeRoundsCeiling()`). Distinct from
-   *    `incomplete` (a run that STARTED and hit its per-turn round budget):
-   *    an exhausted refusal never ran a turn at all.
-   *  - `"invalid"` — a structural policy check that can never pass for this
-   *    resumeId: wrong task state, origin mismatch, missing or tampered
-   *    persisted metadata.
-   *
-   * Both refusals are permanent for that id, so the caller must NOT emit
-   * retry-same-id guidance; they differ only in the recovery advice. A single
-   * discriminant instead of two optional booleans makes the impossible
-   * "both true" state unrepresentable — that combination used to be masked
-   * only by the object-spread ORDER in agent_spawn's error path, where the
-   * second guidance key silently overwrote the first. Always paired with
-   * `ok === false`; absent on spawn results and on resumes allowed to run.
-   */
+  /** Permanent exhausted or invalid refusals run no turn and must never suggest retrying the same ID.
+   * Absent refusal means transient failure or a non-resume result; the discriminant accompanies ok === false. */
   resumeRefusal?: "invalid" | "exhausted";
 }
 
-/**
- * SOT for "can this persisted child be resumed": the resume gate in
- * `resumeWithPolicy` accepts only INPUT_REQUIRED, and it consumes this same
- * predicate. `agent_list` advertises resumability through it too, so the two
- * can never drift. (They did once: agent_list offered SUBMITTED/WORKING ids
- * the gate then rejected, and the error path's retry guidance turned that
- * into a guided infinite retry.)
- */
+/** SOT for "can this persisted child be resumed": the resume gate in `resumeWithPolicy` accepts only INPUT_REQUIRED, and it consumes this same predicate. `agent_list` advertises resumability through
+ * it too, so the two can never drift. (They did once: agent_list offered SUBMITTED/WORKING ids the gate then rejected, and the error path's retry guidance turned that into a guided infinite retry.) */
 export function isResumableSubAgentTaskState(
   taskState: string | undefined,
 ): boolean {
@@ -415,50 +248,22 @@ export function isResumableSubAgentTaskState(
 }
 
 export interface SubAgentSpawnCallbacks {
-  /**
-   * Fired as soon as a fresh spawn has an addressable child session id. This
-   * happens before the first child LLM round, so background `agent_spawn` can
-   * return a durable handle immediately and the live viewer can join later
-   * activity against the same persisted session.
-   */
+  /** Fired as soon as a fresh spawn has an addressable child session id. This happens before the first child LLM round, so background
+   * `agent_spawn` can return a durable handle immediately and the live viewer can join later activity against the same persisted session. */
   onLinked?: (link: { childSessionId: string }) => void;
   /** Resume setup reached a durable WORKING state and its active lease exists. */
   onReady?: (link: { childSessionId: string }) => void;
-  /**
-   * Fired whenever the child loop produces new transcript content (tool
-   * start/end, permission review, completed assistant round). Carries the full
-   * `ChatEntry[]` snapshot so the consumer swaps the whole child transcript.
-   */
+  /** Fired whenever the child loop produces new transcript content (tool start/end, permission review, completed
+   * assistant round). Carries the full `ChatEntry[]` snapshot so the consumer swaps the whole child transcript. */
   onActivity?: (update: SubAgentActivityUpdate) => void;
   onError?: (message: string) => void;
-  /**
-   * The run reached its terminal state.
-   *
-   * Fired from {@link SubAgentRunner.finalizeRun} — the single completion step
-   * that writes the tracked run's terminal status — synchronously and before
-   * that step returns. The caller therefore cannot construct a moment in which
-   * `agent_status` reports a terminal run that the renderer has not been told
-   * about: the state write and this notification are one uninterruptible step.
-   *
-   * Two paths publish a terminal task state WITHOUT firing this, on purpose:
-   * `interruptRun` and `cancelActiveWireChildForWorkspaceRoot`. Both record an
-   * abort REQUEST, not an outcome — the run is still in flight, its result has
-   * not been produced, and the caller that asked for the interrupt is handed
-   * the snapshot synchronously. The child then unwinds and reaches
-   * `finalizeRun`, which fires this with the actual outcome, so the renderer
-   * still gets exactly one terminal frame and it carries a real result.
-   *
-   * Fires at most once per tracked run; the runner drops the reference after
-   * calling it, so a second finalize on the same run cannot double-report.
-   */
+  /** Finalize synchronously publishes result and terminal notification at most once.
+   * Interrupt requests may mark cancellation earlier but must not publish an outcome before the child unwinds. */
   onTerminal?: (result: SubAgentSpawnResult) => void;
 }
 
 export interface A2AWireSpawnCallbacks extends SubAgentSpawnCallbacks {
-  /**
-   * Required wire-only barrier. The runner awaits this after child metadata is
-   * durable and before exposing the link or touching the provider.
-   */
+  /** Required wire-only barrier. The runner awaits this after child metadata is durable and before exposing the link or touching the provider. */
   onDurablyLinked: (link: { childSessionId: string }) => void | Promise<void>;
 }
 /** Remote-controlled portion of a new A2A wire task. */
@@ -514,8 +319,7 @@ export type A2AWireCancelResult =
 
 const A2A_WIRE_APPROVAL_REASON_PREFIX = "[A2A Wire]" as const;
 const A2A_WIRE_ID_MAX_CHARS = 256;
-// Brackets on top of the control class: a label is spliced into the bracketed
-// `[A2A Wire]` approval prefix, so one in the value could forge a second tag.
+// Brackets on top of the control class: a label is spliced into the bracketed `[A2A Wire]` approval prefix, so one in the value could forge a second tag.
 const A2A_WIRE_LABEL_BRACKET = /[\[\]]/;
 
 interface SubAgentExecutionPolicy {
@@ -673,24 +477,7 @@ export interface SubAgentRunSnapshot {
   suspension?: SubAgentSuspension;
 }
 
-/**
- * How a caller reading tracked run state intends to use what it reads.
- *
- * `agent_status` hands the whole snapshot — summary, error, transcript — to the
- * parent LLM, which IS the completion report. Other readers take the same
- * snapshot for narrower purposes: `agent_spawn` reads one line of it to fill
- * the run handle it returns, and the renderer reads it to draw a row. Only the
- * first has been told what the mailbox copy would tell, so only the first may
- * mark that copy spent. Defaulting to a plain read keeps a new call site from
- * silently swallowing a report nobody read.
- *
- * `agent_list` is deliberately NOT such a call site. It answers "which
- * sub-agents does this conversation have", listing title, resume id, and task
- * state from persisted rows — it never carries a report body, so reading it
- * cannot count as reading the report. Retiring the mailbox on it would drop
- * content the parent was never shown, trading a duplicated report for a lost
- * one.
- */
+/** Only a status read carrying the complete report may retire its mailbox copy; list, handle, and renderer reads never consume it. */
 export interface SubAgentRunReadOptions {
   deliversReportToParent?: boolean;
 }
@@ -728,45 +515,16 @@ interface TrackedSubAgentRun {
   stopReason?: import("./turn/types.js").TurnStopReason;
   suspension?: SubAgentSuspension;
   abort?: () => void;
-  /**
-   * Renderer-facing completion observer, held here rather than threaded
-   * through the dozen call sites that finalize a run. `finalizeRun` clears it
-   * as it fires, which is what makes the terminal frame single-shot.
-   */
+  /** Renderer-facing completion observer, held here rather than threaded through the dozen call sites that
+   * finalize a run. `finalizeRun` clears it as it fires, which is what makes the terminal frame single-shot. */
   onTerminal?: (result: SubAgentSpawnResult) => void;
-  /**
-   * The terminal report this run handed to the parent mailbox, once one was
-   * accepted. Identified by message id so a mid-run `agent_send` message from
-   * the same child is never mistaken for the completion report.
-   */
+  /** The terminal report this run handed to the parent mailbox, once one was accepted. Identified by message
+   * id so a mid-run `agent_send` message from the same child is never mistaken for the completion report. */
   terminalReport?: { messageId: string };
-  /**
-   * The completion step's result actually LANDED on this run — the summary,
-   * error, and transcript a reader gets back are the ones the report carries.
-   *
-   * Not the same as "the task state is terminal", which is what makes it worth
-   * a separate flag. `interruptRun` and the workspace-revocation cancel write
-   * CANCELED the instant an abort is REQUESTED, and `persistFinalResult`
-   * claims the terminal commit before its awaits — so while a run unwinds it
-   * reads as terminal with no summary and no error attached. A snapshot in
-   * that shape has told the parent nothing, and retiring the mailbox copy
-   * against it would lose the child's answer.
-   *
-   * `updateRun` is the arbiter: this flips only when the patch it was handed
-   * survived its transition check. That also covers a result the A2A state
-   * machine refuses outright — CANCELED -> COMPLETED — which is defence in
-   * depth rather than a live path: both run loops normalize an aborted run's
-   * result to `interrupted` before finalizing, so a COMPLETED result cannot
-   * arrive behind a CANCELED state today.
-   */
+  /** Set only when updateRun accepts the actual final result; terminal task state alone can precede summary and error publication. */
   terminalReportPublished?: boolean;
-  /**
-   * The parent has already read this run's published result — and with it the
-   * summary, error, and transcript the completion report carries — through
-   * `agent_status`. The queued mailbox copy of that same report is therefore
-   * spent, and {@link SubAgentRunner.peekParentMailbox} consumes it instead of
-   * injecting it into a later turn.
-   */
+  /** The parent has already read this run's published result; and with it the summary, error, and transcript the completion report carries; through `agent_status`.
+   * The queued mailbox copy of that same report is therefore spent, and {@link SubAgentRunner.peekParentMailbox} consumes it instead of injecting it into a later turn. */
   terminalReportObserved?: boolean;
   terminalCommitClaimed?: boolean;
   cancellationPersistencePending?: boolean;
@@ -823,52 +581,24 @@ export interface SubAgentRunnerDeps {
   /** Parent's ConversationLoopDeps. We clone but swap toolRegistry to a scoped view. */
   parentDeps: ConversationLoopDeps;
   toolRegistry: ToolRegistry;
-  /**
-   * Isolated MemoryManager rooted at `~/.ave/subagent/` (via
-   * `openFeatureNamespace("subagent")` in boot). Sub-agent runs persist here,
-   * NOT to the parent's `~/.ave/sessions/` main-chat store. Reusing the
-   * parent MemoryManager is exactly what leaked orphan sub-agent JSONL into
-   * the main session list; the child loop is composed with THIS store so its
-   * transcript lands in the subagent namespace under an addressable, regex-
-   * valid session id. Mirrors the `sideChatMemoryManager` isolation pattern.
-   */
+  /** Isolated MemoryManager rooted at `~/.ave/subagent/` (via `openFeatureNamespace("subagent")` in boot). Sub-agent runs persist here, NOT to the parent's `~/.ave/sessions/` main-chat store. Reusing the parent MemoryManager is exactly what leaked
+   * orphan sub-agent JSONL into the main session list; the child loop is composed with THIS store so its transcript lands in the subagent namespace under an addressable, regex- valid session id. Mirrors the `sideChatMemoryManager` isolation pattern. */
   subAgentMemoryManager: MemoryManager;
   /** Optional until boot wiring is constructed; all absent-bus delivery fails closed. */
   messageBus?: A2ASubAgentMessageBus;
   /** Child-to-parent and sibling A2A message bus. */
   agentMessageBus?: A2AAgentMessageBus;
-  /**
-   * Durable parent-to-child directive queue.
-   *
-   * Optional for the same reason `agentMessageBus` is — boot wires it, and every
-   * caller without it fails closed (`mailbox-unavailable`) instead of delivering
-   * a directive nothing could make durable.
-   */
+  /** Durable parent-to-child directive queue. Optional for the same reason `agentMessageBus` is; boot wires it, and every
+   * caller without it fails closed (`mailbox-unavailable`) instead of delivering a directive nothing could make durable. */
   parentDirectiveMailbox?: ParentDirectiveMailbox;
 }
 
-// Sub-agent round budget — ONE number, not a per-posture split. The child runs
-// on the same ConversationLoop, which honours this host-assigned budget instead
-// of narrowing it to its own default bound, so what the user configures is what
-// runs. The budget is HOST-ASSIGNED, not LLM-picked:
-// `agent_spawn` exposes no `maxTurns` schema field. Resolution order (see
-// `spawn()`): explicit host `input.maxRounds` (fixed-shape host callers like
-// WorkBoardEngine) → the user's configured budget → MAX_TURNS_DEFAULT.
-//
-// A per-mode split (explore=15, execute=20, research=25) used to seed this and
-// was REMOVED, field and all. Those per-mode numbers were the direct cause of
-// agents dying mid-investigation: an "explore" agent got 15 rounds for work
-// that needed far more, hit `round-cap`, and returned partial output that read
-// as a silent failure. A single budget is both more generous and easier to
-// reason about — and it is now user-configurable, which is the right lever.
+// The host chooses one round budget: explicit caller override, configured budget, then default.
+// The child honors it; models cannot choose their own budget.
 const MAX_TURNS_DEFAULT = SUBAGENT_MAX_ROUNDS_DEFAULT;
 
-/**
- * Normalize a resolved round budget. Type sanity only — a non-finite or
- * sub-minimum value cannot be run, but there is NO upper clamp: an absolute
- * ceiling above the configured budget can only surface as an agent that stops
- * mid-task with partial work.
- */
+/** Normalize a resolved round budget. Type sanity only; a non-finite or sub-minimum value cannot be run, but there is NO upper
+ * clamp: an absolute ceiling above the configured budget can only surface as an agent that stops mid-task with partial work. */
 function normalizeRoundBudget(requested: number): number {
   return Number.isFinite(requested)
     ? Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(requested))
@@ -884,57 +614,24 @@ const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
   "agent_spawn",
   "agent_status",
   "agent_interrupt",
-  // Parent-only: `agent_guide` addresses the caller's OWN children, and a
-  // sub-agent has none. Its execute() already refuses a non-root caller; the
-  // blocklist keeps it out of the child's registry so the refusal is never a
-  // tool the child can see and try.
+  // Parent-only: `agent_guide` addresses the caller's OWN children, and a sub-agent has none. Its execute() already refuses a
+  // non-root caller; the blocklist keeps it out of the child's registry so the refusal is never a tool the child can see and try.
   "agent_guide",
   "memory_write",
   // Withdrawing a parent's memory candidate is not a child's job; reads stay available.
   "memory_delete",
 ]);
 
-/**
- * Resume-axis loop guards (Commit 2 — security-required to land WITH the resume
- * entry point). A sub-agent can be re-hydrated and continued via `resume()`, but
- * an unbounded resume chain is a fork-bomb on the resume axis and blows past the
- * global round budget the per-turn `maxRounds` cap enforces per turn.
- *
- *   - MAX_RESUMES: how many times a single sub-agent session may be resumed.
- *   - cumulative rounds ceiling: total assistant rounds across the original
- *     spawn plus every resume segment. Pinned to
- *     CUMULATIVE_ROUNDS_BUDGET_MULTIPLIER × the CONFIGURED round budget, so the
- *     protection stays proportional (a spawn + MAX_RESUMES resumes cannot
- *     exceed it) while never binding below what the user asked a single agent
- *     to be able to run.
- *
- * A resume that would breach either guard is refused BEFORE any turn runs
- * (`{ ok:false, resumeRefusal:"exhausted" }`), so no LLM round is spent.
- */
+/** Refuse before running a turn when resume count or cumulative rounds reach their ceiling; repeated resumes must not bypass the per-turn budget. */
 const MAX_RESUMES = 3;
 const CUMULATIVE_ROUNDS_BUDGET_MULTIPLIER = 4;
 const MAX_TRACKED_RUNS = 100;
-/**
- * Minimum spacing between activity emissions driven by reasoning deltas.
- *
- * Every emission serializes the WHOLE child transcript over IPC, and reasoning
- * deltas arrive at token rate — forwarding one per delta would send the entire
- * snapshot hundreds of times per round for text the user reads as a spinner.
- * ~100ms is below the threshold at which streaming stops looking continuous
- * while cutting the emission count by orders of magnitude.
- */
+/** Minimum spacing between activity emissions driven by reasoning deltas. Every emission serializes the WHOLE child transcript over IPC, and reasoning deltas arrive at token rate; forwarding one per delta would send
+ * the entire snapshot hundreds of times per round for text the user reads as a spinner. ~100ms is below the threshold at which streaming stops looking continuous while cutting the emission count by orders of magnitude. */
 const REASONING_STREAM_EMIT_INTERVAL_MS = 100;
 
-/**
- * Rate-limit `emit` to one call per `intervalMs`, leading and trailing.
- *
- * Leading, so the panel reacts to the first delta at once rather than after a
- * blank interval. Trailing, so the last delta before a pause is never the one
- * dropped — a coalescer without it leaves the visible thought truncated
- * whenever the model stops mid-interval. `cancel()` drops a pending trailing
- * call, which round boundaries use so their own unthrottled emission is the
- * final word rather than racing a stale snapshot behind it.
- */
+/** Rate-limit `emit` to one call per `intervalMs`, leading and trailing. Leading, so the panel reacts to the first delta at once rather than after a blank interval. Trailing, so the last delta before a pause is never the one dropped; a coalescer
+ * without it leaves the visible thought truncated whenever the model stops mid-interval. `cancel()` drops a pending trailing call, which round boundaries use so their own unthrottled emission is the final word rather than racing a stale snapshot behind it. */
 function createCoalescedEmitter(
   emit: () => void,
   intervalMs: number,
@@ -955,8 +652,7 @@ function createCoalescedEmitter(
         return;
       }
       timer = setTimeout(fire, intervalMs - waited);
-      // The child loop keeps the process alive on its own; this timer must not
-      // be what holds it open if the run ends between deltas.
+      // The child loop keeps the process alive on its own; this timer must not be what holds it open if the run ends between deltas.
       timer.unref?.();
     },
     cancel: () => {
@@ -1021,32 +717,13 @@ function isSuccessfulSubAgentStopReason(
     || (stopReason === "input-required" && inputRequired?.reason === "question");
 }
 
-/**
- * Whether a finished resume segment CONSUMED the parent directive injected
- * into it.
- *
- * The rule is "the turn that carried it reached a conclusion", and a round-cap
- * conclusion counts: the segment ran, the child saw the directive in its
- * initial guidance, and it produced real partial work. What it did NOT do is
- * finish the task — which is a reason to resume again, not a reason to treat
- * the directive as undelivered. Leaving it pending re-injects the SAME text at
- * the top of the next segment, so a parent that guided a long-running child
- * would have its one message replayed once per round-cap for the rest of the
- * resume chain.
- *
- * A failed or interrupted segment does NOT report it consumed: there the turn
- * may never have reached the LLM at all. That is only an acknowledgement
- * decision — what the mailbox then holds is decided separately by
- * `cleanupTerminalChildSession`, which discards every pending directive
- * once the child's projection is terminal.
- */
+/** A concluded segment consumes its injected directive even on round cap; failed or interrupted turns do not acknowledge delivery.
+ * Terminal-session cleanup separately discards remaining directives. */
 function resumeSegmentConsumedGuidance(result: SubAgentSpawnResult): boolean {
   if (!result.ok) return false;
   return result.stopReason === "end_turn"
     || result.stopReason === "input-required"
-    // ok + round-cap always carries the budget suspension built above; the
-    // suspension is asserted rather than assumed so a future stop reason
-    // cannot quietly inherit this branch.
+    // ok + round-cap always carries the budget suspension built above; the suspension is asserted rather than assumed so a future stop reason cannot quietly inherit this branch.
     || (result.stopReason === "round-cap" && result.suspension?.reason === "budget");
 }
 
@@ -1059,25 +736,8 @@ function subAgentStopFailureReason(
   return text.trim() || `sub-agent ${operation} stopped with ${stopReason ?? "unknown-stop"}`;
 }
 
-/**
- * Build the child loop's session id: `sub-<origin tag>-<uuid>`, the
- * namespaced shape `isValidSessionId` (memory-manager) accepts, so
- * `saveSession` persists it (that method throws on an invalid id) and
- * `loadSession` can later re-hydrate it. The previous `${origin}::${uuid}`
- * form contained `::`, which failed validation — so the child silently fell
- * back to persisting under its bare constructor UUID into the MAIN chat
- * namespace (orphan + pollution). The `sub-` namespace also keeps the id OUT
- * of the UUID-shaped filters (`^[0-9a-f-]{8,}$`) the main session list uses,
- * so even a misrouted file would never surface there — defense in depth.
- *
- * The origin tag is a short SHA-256 hash of the origin session id, NOT a raw
- * slice of it. A raw slice let the child filename correlate directly to the
- * parent session id (an info-leak: anyone reading `~/.ave/subagent/` could
- * tie a child back to a specific parent chat by prefix match). The hash keeps
- * the tag deterministic (same parent → same tag, useful for grouping) and
- * bounded to the id charset while breaking that correlation. A child with no
- * origin hashes the empty string, so the shape is the same in every case.
- */
+/** Use sub-<hashed-origin>-<uuid> so IDs pass validation, stay outside main-session filters, and avoid exposing parent-ID prefixes.
+ * Hash the empty string for originless children to retain the same shape. */
 function buildChildSessionId(originSessionId?: string): string {
   return createNamespacedSessionId("sub", originSessionTag(originSessionId ?? ""));
 }
@@ -1086,30 +746,13 @@ function originSessionTag(originSessionId: string): string {
   return sha256Hex(originSessionId).slice(0, 8);
 }
 
-/**
- * Resolve an agent profile's `model:` frontmatter to a concrete model ID
- * for the child loop, against the parent's active vendor:
- *   1. undefined / empty   → null (child stays on the parent model)
- *   2. Codex subscription  → a clean explicit candidate is sent to the
- *                             main-owned live subscription catalog; ACP keeps
- *                             its persisted default and complexity tiers have
- *                             no static Codex mapping, so both retain it.
- *   3. API-key complexity   → MODEL_COMPLEXITY_MAP[vendor][tier]; null when
- *                             the vendor lacks that tier (design-intent
- *                             parent-model fallback, logged)
- *   4. API-key explicit ID  → used only when it is selectable for the active
- *                             vendor (LLM_VENDOR_MODEL_OPTIONS); otherwise
- *                             null (parent-model fallback, logged).
- *
- * Returning null means "no override" — the active runtime retains its
- * persisted model. A non-null Codex subscription result is only a bounded
- * candidate; the main-owned runtime independently revalidates its live
- * catalog before transport.
- */
+/** Resolve model overrides against the active provider; null retains its model and explicit IDs need catalog support.
+ * Subscription candidates require independent main-owned live-catalog validation before transport. */
 export function resolveSubAgentModel(
   profileModel: string | undefined,
   activeVendor: string,
-  subscriptionRuntime?: SubscriptionChatRuntimeSelection,
+  subscriptionRuntime: SubscriptionChatRuntimeSelection | undefined,
+  liveModels: readonly string[],
 ): string | null {
   const trimmed = profileModel?.trim();
   if (!trimmed) return null;
@@ -1132,8 +775,7 @@ export function resolveSubAgentModel(
       );
       return null;
     }
-    // The selectable Codex catalog is subscription-scoped and live in main,
-    // so never validate this candidate against the inactive API-key vendor.
+    // The selectable Codex catalog is subscription-scoped and live in main, so never validate this candidate against the inactive API-key vendor.
     return trimmed;
   }
 
@@ -1150,11 +792,9 @@ export function resolveSubAgentModel(
     return resolved;
   }
 
-  // Explicit vendor-specific model ID. Use it only when the active vendor
-  // can actually serve it; an unavailable ID resolves to null (parent-model
-  // fallback, logged) rather than reaching the provider and hard-failing the
-  // child with a non-retryable model-not-found.
-  if (isModelAvailableForVendor(activeVendor, trimmed)) {
+  // Explicit vendor-specific model ID. Use it only when the active vendor can actually serve it; an unavailable ID resolves to null
+  // (parent-model fallback, logged) rather than reaching the provider and hard-failing the child with a non-retryable model-not-found.
+  if (isModelAvailableForVendor(activeVendor, trimmed, liveModels)) {
     return trimmed;
   }
   log.warn(
@@ -1165,14 +805,8 @@ export function resolveSubAgentModel(
   return null;
 }
 
-/**
- * Build the mode preamble prepended to a sub-agent's instructions:
- *   - working-posture line (mode.reasoningHint)
- *   - auto-skill RECOMMENDATION (not a force-load — Ave gates every skill
- *     behind a body-hash approval; the LLM must call `skill_load` so the
- *     normal approval dock runs. See agent-mode-map.ts SECURITY MODEL).
- * Returns "" for the default/inert mode so the profile body is unchanged.
- */
+/** Build the mode preamble prepended to a sub-agent's instructions: - working-posture line (mode.reasoningHint) - auto-skill RECOMMENDATION (not a force-load; Ave gates every skill behind a
+ * body-hash approval; the LLM must call `skill_load` so the normal approval dock runs. See agent-mode-map.ts SECURITY MODEL). Returns "" for the default/inert mode so the profile body is unchanged. */
 export function buildModePreamble(config: AgentModeConfig): string {
   const parts: string[] = [];
   if (config.reasoningHint) {
@@ -1193,15 +827,10 @@ export function buildModePreamble(config: AgentModeConfig): string {
   return parts.join("\n\n");
 }
 
-/**
- * Longest spawn-task summary attached to a child's approval asks.
- *
- * The parent's instructions can be pages long; the adjudicating side turn needs
- * enough of them to recognise what it asked for, not all of them. Truncation
- * only makes the parent less certain, and an uncertain parent escalates.
- */
+/** Longest spawn-task summary attached to a child's approval asks. The parent's instructions can be pages long; the adjudicating side turn needs
+ * enough of them to recognise what it asked for, not all of them. Truncation only makes the parent less certain, and an uncertain parent escalates. */
 const MAX_SPAWN_TASK_SUMMARY_CHARS = 600;
-/** Split of that budget when the task is longer — see {@link boundSpawnTaskSummary}. */
+/** Split of that budget when the task is longer; see {@link boundSpawnTaskSummary}. */
 const SPAWN_TASK_SUMMARY_HEAD_CHARS = 400;
 const SPAWN_TASK_SUMMARY_TAIL_CHARS = 200;
 
@@ -1211,26 +840,13 @@ interface SubAgentApprovalProvenance {
   originSessionId: string;
   /** The parent-authored task, masked and truncated by the host. */
   spawnTaskSummary: string;
-  /**
-   * Whether the host started this run in the background — nobody is watching
-   * its turn, so an approval it raises would paint a dock for no one. The
-   * host's own execution posture, never anything the child model says.
-   */
+  /** Whether the host started this run in the background; nobody is watching its turn, so an approval it
+   * raises would paint a dock for no one. The host's own execution posture, never anything the child model says. */
   background: boolean;
 }
 
-/**
- * Build the provenance an approval ask carries, when this run has a parent that
- * could answer for it.
- *
- * `null` for the two cases where it could not. A run with no origin session has
- * no parent conversation to attribute the answer to. And a run spawned or
- * resumed over the A2A wire has a REMOTE agent behind it: its "task" is text a
- * remote controller wrote, its origin is a synthetic host-minted id rather than
- * a conversation, and asking a model to judge a call against remote-authored
- * framing is the shape this feature exists to keep away from. Those asks stay
- * with the user.
- */
+/** Build the provenance an approval ask carries, when this run has a parent that could answer for it. `null` for the two cases where it could not. A run with no origin session has no parent conversation to attribute the answer to. And a run spawned or resumed over the A2A wire has a
+ * REMOTE agent behind it: its "task" is text a remote controller wrote, its origin is a synthetic host-minted id rather than a conversation, and asking a model to judge a call against remote-authored framing is the shape this feature exists to keep away from. Those asks stay with the user. */
 function buildSubAgentApprovalProvenance(input: {
   childSessionId: string;
   originSessionId: string | undefined;
@@ -1241,12 +857,8 @@ function buildSubAgentApprovalProvenance(input: {
   background: boolean;
 }): SubAgentApprovalProvenance | null {
   if (input.wireBound) return null;
-  // A conversation id, not merely a truthy string. Host-orchestrated runs label
-  // their origin with things like `work-board:<item>`, which names a work item
-  // rather than a conversation: there is no parent turn behind it to answer for
-  // the call, and the work-board's own prompt promises the user that each tool
-  // call is theirs to approve. `isValidSessionId` is the existing definition of
-  // "an actual session", so this stays true as new host callers appear.
+  // A conversation id, not merely a truthy string. Host-orchestrated runs label their origin with things like `work-board:<item>`, which names a work item rather than a conversation: there is no parent turn behind it to answer
+  // for the call, and the work-board's own prompt promises the user that each tool call is theirs to approve. `isValidSessionId` is the existing definition of "an actual session", so this stays true as new host callers appear.
   if (!input.originSessionId || !isValidSessionId(input.originSessionId)) {
     return null;
   }
@@ -1261,15 +873,8 @@ function buildSubAgentApprovalProvenance(input: {
   };
 }
 
-/**
- * Bound a task summary without cutting its end off.
- *
- * A plain head slice is not a neutral shortening of an instruction: the
- * constraints are usually at the END ("...and do not touch anything outside
- * docs/"), so head-truncation reliably deletes the half that would make a call
- * out of scope. Keeping both ends costs a few characters and preserves the part
- * a judgement actually turns on.
- */
+/** Bound a task summary without cutting its end off. A plain head slice is not a neutral shortening of an instruction: the constraints are usually at the END ("...and do not touch anything
+ * outside docs/"), so head-truncation reliably deletes the half that would make a call out of scope. Keeping both ends costs a few characters and preserves the part a judgement actually turns on. */
 function boundSpawnTaskSummary(masked: string): string {
   if (masked.length <= MAX_SPAWN_TASK_SUMMARY_CHARS) return masked;
   const head = masked.slice(0, SPAWN_TASK_SUMMARY_HEAD_CHARS).trim();
@@ -1277,51 +882,27 @@ function boundSpawnTaskSummary(masked: string): string {
   return `${head}\n…\n${tail}`;
 }
 
-/**
- * Both halves of the provenance policy, exposed for the suite that pins it.
- *
- * The policy is a security boundary — who may state which run is asking, and
- * which runs have no parent that may answer for them — and testing it through
- * a full spawn would test the scaffolding instead of the rule.
- */
+/** Both halves of the provenance policy, exposed for the suite that pins it. The policy is a security boundary; who may state which run is
+ * asking, and which runs have no parent that may answer for them; and testing it through a full spawn would test the scaffolding instead of the rule. */
 export const buildSubAgentApprovalProvenanceForTest =
   buildSubAgentApprovalProvenance;
 
-/**
- * ApprovalGate wrapper that prepends `[Sub-Agent: <title>] ` to the
- * `reason` text shown in the user-facing approval dock so users can
- * distinguish parent-loop approvals from sub-agent approvals at a glance.
- *
- * It is also where an ask acquires the two host-only facts the gate's tier-2
- * stage needs: which run raised it, and that the run's permission lane makes it
- * a candidate at all. Both are attached here rather than upstream because this
- * is the one place that holds the tracked run — a value the child, its tools
- * and the renderer cannot reach, let alone author. `eligible` is the caller
- * assertion the gate treats as necessary and never sufficient; the gate
- * re-derives every condition it can observe for itself.
- *
- * No other behavior changes — the underlying gate handles HMAC/nonce, S1
- * sensitive-path block, S4 read-only short-circuit, etc.
- */
+/** Label child approvals and attach host-only run identity and eligibility from tracked state.
+ * Eligibility is necessary, never sufficient; the gate rechecks its own conditions and retains integrity and permission checks. */
 export function makeSubAgentApprovalAdapter(
   base: ApprovalGate,
   title: string,
   provenance: SubAgentApprovalProvenance | null,
 ): ApprovalGate {
-  // We expose the same interface ConversationLoop / ToolExecutor uses via
-  // duck-typing — only `requestAndWait` is actually called from the tool
-  // executor, plus `policy` / `setPolicy` from IPC bridge. The wrapper
-  // forwards everything else to the original instance.
+  // We expose the same interface ConversationLoop / ToolExecutor uses via duck-typing; only `requestAndWait` is actually called from
+  // the tool executor, plus `policy` / `setPolicy` from IPC bridge. The wrapper forwards everything else to the original instance.
   const wrapper = Object.create(base) as ApprovalGate;
   wrapper.requestAndWait = function wrappedRequestAndWait(
     req: ApprovalRequestInput,
   ): Promise<ApprovalDecision> {
     const labeledReason = `[Sub-Agent: ${title}] ${req.reason}`;
-    // Dropped before the spread, not overwritten after it. Overwriting only
-    // covers the runs that HAVE provenance; the runs that deliberately have
-    // none — a remote wire run, a host-orchestrated one — are exactly the ones
-    // a forged field would smuggle into tier 2, and the gate's only entry
-    // condition is that the field is present.
+    // Dropped before the spread, not overwritten after it. Overwriting only covers the runs that HAVE provenance; the runs that deliberately have none; a remote wire
+    // run, a host-orchestrated one; are exactly the ones a forged field would smuggle into tier 2, and the gate's only entry condition is that the field is present.
     const { childProvenance: _callerSupplied, ...safeReq } = req;
     return base.requestAndWait({
       ...safeReq,
@@ -1376,12 +957,8 @@ export class SubAgentRunner {
     this.deps.subAgentMemoryManager.allowProjectRoot(root);
   }
 
-  /**
-   * Detach the removed project from the isolated sub-agent session store while
-   * preserving transcripts. Once that durable boundary commits, cancel every
-   * matching live wire child before returning so the workspace coordinator's
-   * later settings write cannot leave a removed project executing in between.
-   */
+  /** Detach the removed project from the isolated sub-agent session store while preserving transcripts. Once that durable boundary commits, cancel every
+   * matching live wire child before returning so the workspace coordinator's later settings write cannot leave a removed project executing in between. */
   async detachSessionsFromProject(root: string): Promise<number> {
     const detached = await this.deps.subAgentMemoryManager.detachSessionsFromProject(root);
     let canonicalRoot: string;
@@ -1445,12 +1022,8 @@ export class SubAgentRunner {
     return errors;
   }
 
-  /**
-   * Remove a workspace root from every child loop that is live right now.
-   * Iterate a snapshot and isolate failures so one child cannot prevent the
-   * remaining scopes from shrinking. Once every child has been attempted,
-   * surface an aggregate failure so the workspace removal intent stays pending.
-   */
+  /** Remove a workspace root from every child loop that is live right now. Iterate a snapshot and isolate failures so one child cannot prevent the
+   * remaining scopes from shrinking. Once every child has been attempted, surface an aggregate failure so the workspace removal intent stays pending. */
   revokeWorkspaceRoot(
     root: string,
     options?: WorkspaceRootRevocationOptions,
@@ -1497,12 +1070,8 @@ export class SubAgentRunner {
   async deliverToParent(
     input: DeliverToParentInput,
     options?: {
-      /**
-       * This message IS the run's completion report — the same content
-       * `agent_status` hands back once the run is terminal. Recording which
-       * message that was is what lets a report the parent already read be
-       * consumed instead of replayed as a steering row on the next turn.
-       */
+      /** This message IS the run's completion report; the same content `agent_status` hands back once the run is terminal. Recording which
+       * message that was is what lets a report the parent already read be consumed instead of replayed as a steering row on the next turn. */
       terminalReport?: boolean;
     },
   ): Promise<DeliverToParentResult> {
@@ -1554,21 +1123,7 @@ export class SubAgentRunner {
     }
   }
 
-  /**
-   * The parent's pending child reports, minus the ones it has already read.
-   *
-   * A completed sub-agent reports twice by construction: once as the terminal
-   * snapshot `agent_status` returns to the parent mid-turn, and once as the
-   * durable mailbox entry the next turn folds in as host steering. Both are
-   * legitimate — a parent that never polls must still receive the report — but
-   * a parent that DID poll would otherwise be handed the same report a second
-   * time, as an instruction to review work it already answered.
-   *
-   * The completion step owns both halves: it publishes the terminal state (and
-   * the renderer frame) and records which mailbox message carries that state's
-   * report. Here that record decides the entry's fate, so consumption stays
-   * single-shot in either direction.
-   */
+  /** Retire a durable mailbox report only when the parent has read that run's published completion; polling and delivery must remain single-shot. */
   async peekParentMailbox(parentSessionId: string): Promise<ParentMailboxEntry[]> {
     const bus = this.deps.messageBus;
     if (!bus) return [];
@@ -1581,17 +1136,8 @@ export class SubAgentRunner {
     try {
       await bus.acknowledgeParentMailbox(parentSessionId, [...consumedIds]);
     } catch (err) {
-      // Withholding the second delivery is unconditional — that decision is
-      // already made above and this failure does not revisit it. What the
-      // failure costs is DURABILITY of that decision: the read mark lives on
-      // the tracked run, which is process-local and evictable by
-      // `pruneTrackedRuns`, while the entry it retires is on disk. So the
-      // retry on the next peek is the only thing standing between a failed
-      // acknowledgement and the report reappearing after a restart. Persisting
-      // the mark onto the entry instead was considered and rejected: it is the
-      // same mailbox write that just failed, so it buys no durability the
-      // retry does not, and it would leave a second definition of "consumed"
-      // to keep in step with the first.
+      // Withholding the second delivery is unconditional; that decision is already made above and this failure does not revisit it. What the failure costs is DURABILITY of that decision: the read mark lives on the tracked run, which is process-local and evictable by `pruneTrackedRuns`, while the entry it retires is on disk. So the retry on the next peek is
+      // the only thing standing between a failed acknowledgement and the report reappearing after a restart. Persisting the mark onto the entry instead was considered and rejected: it is the same mailbox write that just failed, so it buys no durability the retry does not, and it would leave a second definition of "consumed" to keep in step with the first.
       log.warn(
         { parentSessionId, errorName: err instanceof Error ? err.name : "UnknownError" },
         "sub-agent completion mailbox acknowledgement failed for an already-read report",
@@ -1624,10 +1170,7 @@ export class SubAgentRunner {
     this.deps.messageBus?.setWakeHandler(handler);
   }
 
-  /**
-   * Resolve a host-minted child address from persisted metadata. The bus checks
-   * parentSessionId equality and audits cross-origin drops before delivery.
-   */
+  /** Resolve a host-minted child address from persisted metadata. The bus checks parentSessionId equality and audits cross-origin drops before delivery. */
   async resolveSubAgentAddress(
     parentSessionId: string,
     childSessionId: string,
@@ -1733,29 +1276,26 @@ export class SubAgentRunner {
     return true;
   }
 
-  /**
-   * Per-`childSessionId` in-flight lock. `resume()` loads metadata, runs a
-   * turn, then rewrites the metadata (`resumeCount`/`cumulativeRounds`). That
-   * load→run→save is a LOGICAL transaction; `withFileLock` (memory-manager)
-   * only serializes the individual file WRITE, not the whole read-modify-write.
-   * Two concurrent resumes of the same session would each load the same
-   * pre-increment metadata, run, and last-writer-wins the counter (a lost
-   * update that defeats MAX_RESUMES). This in-memory map fail-closes the
-   * second concurrent resume of the same id. Single main-process, so a Map
-   * keyed on the session id is sufficient — no cross-process contention.
-   */
+  /** Per-`childSessionId` in-flight lock. `resume()` loads metadata, runs a turn, then rewrites the metadata (`resumeCount`/`cumulativeRounds`). That load→run→save is a LOGICAL transaction; `withFileLock` (memory-manager) only serializes the individual file WRITE, not the whole read-modify-write. Two concurrent resumes of
+   * the same session would each load the same pre-increment metadata, run, and last-writer-wins the counter (a lost update that defeats MAX_RESUMES). This in-memory map fail-closes the second concurrent resume of the same id. Single main-process, so a Map keyed on the session id is sufficient; no cross-process contention. */
   private readonly inFlight = new Map<string, InFlightResumeAttempt>();
   private readonly trackedRuns = new Map<string, TrackedSubAgentRun>();
 
   private readonly activeChildren = new Map<string, ActiveSubAgentChild>();
 
-  /**
-   * The conversation that spawned a running child, while it runs — the
-   * session whose scope the child inherits (terminal_read reads the parent's
-   * window). Undefined for a session that is not a live child.
-   */
+  /** The conversation that spawned a running child, while it runs; the session whose scope the child
+   * inherits (terminal_read reads the parent's window). Undefined for a session that is not a live child. */
   liveOriginSessionId(childSessionId: string): string | undefined {
     return this.activeChildren.get(childSessionId)?.originSessionId;
+  }
+
+  /** Host-recorded spawn ownership, including children restored after restart. */
+  resolveOriginSessionId(childSessionId: string): string | undefined {
+    if (!isValidSessionId(childSessionId)) return undefined;
+    const liveOrigin = this.liveOriginSessionId(childSessionId);
+    if (liveOrigin !== undefined) return liveOrigin;
+    const metadata = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    return metadata?.sessionKind === "subagent" ? metadata.originSessionId : undefined;
   }
 
   isSubAgentOriginActive(originSessionId: string): boolean {
@@ -1920,9 +1460,8 @@ export class SubAgentRunner {
     }
 
     const active = this.activeChildren.get(recipientChildSessionId);
-    // A freshly-created child is registered before metadata persistence so
-    // workspace revocation can see it, but it is not message-routable until
-    // runTurn owns an active turn (the pre-run routing invariant).
+    // A freshly-created child is registered before metadata persistence so workspace revocation can see
+    // it, but it is not message-routable until runTurn owns an active turn (the pre-run routing invariant).
     const recipientIsActive = active?.originSessionId === sender.originSessionId
       && active.loop.hasActiveTurn();
     return {
@@ -1943,35 +1482,8 @@ export class SubAgentRunner {
     };
   }
 
-  /**
-   * A parent's mid-run directive to one of ITS OWN sub-agents.
-   *
-   * The other three A2A edges already existed — parent starts a child, child
-   * reports to its parent, child messages a sibling — and the parent could
-   * reach a SUSPENDED child by resuming it. What it could not do was tell a
-   * child that is still running to change direction or stop; the only lever was
-   * `agent_interrupt`, which throws the run away. This is that edge.
-   *
-   * AUTHORIZATION is the host-written spawn record (`isPersistedSpawnOfOrigin`),
-   * never the parent's transcript: compaction can strip the linking tool_result,
-   * and a claim in the model's context is not evidence of ownership. ONE HOP,
-   * downward only — a sub-agent cannot direct anything (it is not a root
-   * session, so `nested-parent` refuses it before ownership is even consulted),
-   * and there is no `to: "parent"` here because that direction is `agent_send`.
-   *
-   * DELIVERY is durable-first, exactly as sibling A2A delivery is: the directive
-   * is stored before the running child's guidance queue is touched, and the
-   * store is acknowledged only from `onInjected`. A turn that ends before the
-   * guidance reaches a round boundary therefore keeps the directive for the
-   * child's next resume instead of dropping it with the queue.
-   *
-   * A child that is neither live nor resumable is REFUSED rather than queued.
-   * `isResumableSubAgentTaskState` is the SOT the resume gate itself consumes:
-   * queuing for a WORKING-but-not-live (interrupted, or restored across a
-   * restart) child would store a message no code path can ever deliver, and a
-   * TTL would only decide how long that lie stays on disk. The parent is told
-   * the child is not resumable, which is actionable and true.
-   */
+  /** Authorize downward directives from host-written spawn ownership, never transcript claims; nested parents are refused.
+   * Persist before queueing and acknowledge only on injection; retain undelivered guidance for resume and refuse children that are neither live nor resumable. */
   async queueParentMessageToChild(
     originSessionId: string,
     childSessionId: string,
@@ -1991,8 +1503,7 @@ export class SubAgentRunner {
       return refuse("unknown-recipient");
     }
     if (originSessionId === childSessionId) return refuse("self-send");
-    // Hop guard, checked BEFORE ownership: a sub-agent session directing anything
-    // would be a second hop on the parent axis, whatever it happens to own.
+    // Hop guard, checked BEFORE ownership: a sub-agent session directing anything would be a second hop on the parent axis, whatever it happens to own.
     if (
       this.deps.subAgentMemoryManager.loadSessionMetadata(originSessionId)?.sessionKind
         === "subagent"
@@ -2001,11 +1512,8 @@ export class SubAgentRunner {
     }
     const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
     if (!this.isPersistedSpawnOfOrigin(originSessionId, childSessionId)) {
-      // One verdict, two reasons — the same split sibling A2A already reports:
-      // "no such child" and "someone else's child" are different facts to an
-      // operator, and telling the parent which one it hit is what keeps it from
-      // retrying an address that will never become its own. No disclosure here
-      // that `agent_list` does not already make: every session is this user's.
+      // One verdict, two reasons; the same split sibling A2A already reports: "no such child" and "someone else's child" are different facts to an operator, and telling the parent
+      // which one it hit is what keeps it from retrying an address that will never become its own. No disclosure here that `agent_list` does not already make: every session is this user's.
       return refuse(meta?.sessionKind === "subagent" ? "cross-origin" : "unknown-recipient");
     }
     if (typeof text !== "string" || text.length > PARENT_DIRECTIVE_MAX_CHARS) {
@@ -2027,19 +1535,13 @@ export class SubAgentRunner {
     const taskState = meta?.subAgentTaskState ?? A2ATaskState.SUBMITTED;
     if (!live) {
       if (isA2ATerminalTaskState(taskState)) return refuse("terminal-recipient");
-      // Registered but not yet holding a turn: the run exists and will accept a
-      // directive shortly, so this is a RETRY, not the "start it again" advice
-      // `child-not-resumable` carries. The two look identical in persisted
-      // metadata (both WORKING), which is why the live registry decides here.
+      // Registered but not yet holding a turn: the run exists and will accept a directive shortly, so this is a RETRY, not the "start it again"
+      // advice `child-not-resumable` carries. The two look identical in persisted metadata (both WORKING), which is why the live registry decides here.
       if (active?.originSessionId === originSessionId) {
         return refuse("recipient-unavailable");
       }
-      // Every half of the resume gate: the state SOT, the suspension reason
-      // `resumeWithPolicy` also requires, and the two resume-axis counters it
-      // checks before running a turn. Accepting on any subset would store a
-      // directive whose only delivery path refuses structurally — and an
-      // exhausted child's refusal is permanent, so the directive would sit in
-      // the mailbox until the child's terminal cleanup discarded it unread.
+      // Every half of the resume gate: the state SOT, the suspension reason `resumeWithPolicy` also requires, and the two resume-axis counters it checks before running a turn. Accepting on any subset would store
+      // a directive whose only delivery path refuses structurally; and an exhausted child's refusal is permanent, so the directive would sit in the mailbox until the child's terminal cleanup discarded it unread.
       if (
         !isResumableSubAgentTaskState(taskState)
         || !meta?.subAgentSuspensionReason
@@ -2063,14 +1565,8 @@ export class SubAgentRunner {
       return { ok: true, disposition: "mailbox", childSessionId, messageId };
     }
 
-    // No `approvalReasonPrefix`, deliberately. That field is the sibling path's
-    // force-ask trigger, and it belongs there: a sibling is a peer whose text
-    // the receiver never agreed to act on. The parent is this child's PRINCIPAL
-    // — it authored the task the child is already running, and a spawn's
-    // instructions raise no force-ask. Making a mid-run amendment stricter than
-    // the instructions it amends would put a modal in front of every directive,
-    // which is how a real gate gets clicked through. The child's own tool calls
-    // remain gated exactly as they were.
+    // No `approvalReasonPrefix`, deliberately. That field is the sibling path's force-ask trigger, and it belongs there: a sibling is a peer whose text the receiver never agreed to act on. The parent is this child's PRINCIPAL; it authored the task the child is already running,
+    // and a spawn's instructions raise no force-ask. Making a mid-run amendment stricter than the instructions it amends would put a modal in front of every directive, which is how a real gate gets clicked through. The child's own tool calls remain gated exactly as they were.
     const queued = active!.loop.queueGuidanceWithDisposition(envelope, {
       onInjected: () => mailbox
         .acknowledge(childSessionId, [entryId])
@@ -2086,10 +1582,8 @@ export class SubAgentRunner {
       return { ok: true, disposition: "queued", childSessionId, messageId };
     }
 
-    // The child stopped accepting guidance between the liveness check and the
-    // enqueue. The stored directive is only kept when the child landed somewhere
-    // a resume can still deliver it from; otherwise it is removed, because an
-    // entry no path will read is worse than an error the parent can act on.
+    // The child stopped accepting guidance between the liveness check and the enqueue. The stored directive is only kept when the child landed
+    // somewhere a resume can still deliver it from; otherwise it is removed, because an entry no path will read is worse than an error the parent can act on.
     const settledState = this.deps.subAgentMemoryManager
       .loadSessionMetadata(childSessionId)?.subAgentTaskState ?? A2ATaskState.SUBMITTED;
     if (queued !== "queue-full" && isResumableSubAgentTaskState(settledState)) {
@@ -2238,9 +1732,7 @@ export class SubAgentRunner {
     taskState: A2AProjectedTaskState,
   ): Promise<void> {
     if (!isA2ATerminalTaskState(taskState)) return;
-    // The child's tool calls ran under its own session id, so its background
-    // shells and saved shell directory end with it, through the same teardown
-    // a parent session uses.
+    // The child's tool calls ran under its own session id, so its background shells and saved shell directory end with it, through the same teardown a parent session uses.
     try {
       const report = await endShellSession(childSessionId);
       if (report?.state === "cleanup-unproven") {
@@ -2249,9 +1741,7 @@ export class SubAgentRunner {
     } catch {
       log.warn("sub-agent terminal shell cleanup failed for %s", childSessionId);
     }
-    // A finished child reads nothing more, so an undelivered parent directive
-    // addressed to it is now garbage that would otherwise hold a slot against
-    // the per-child cap forever.
+    // A finished child reads nothing more, so an undelivered parent directive addressed to it is now garbage that would otherwise hold a slot against the per-child cap forever.
     try {
       await this.deps.parentDirectiveMailbox?.discardForChild(childSessionId);
     } catch {
@@ -2287,8 +1777,7 @@ export class SubAgentRunner {
     const lease = Symbol(args.childSessionId);
     this.activeChildren.set(args.childSessionId, {
       ...args,
-      // Workspace removal supplies the same filesystem-canonical form. Freeze
-      // it here so symlink and dot-segment aliases cannot evade live aborts.
+      // Workspace removal supplies the same filesystem-canonical form. Freeze it here so symlink and dot-segment aliases cannot evade live aborts.
       ...(args.wireProjectRoot
         ? { wireProjectRoot: canonicalizePathForMatch(args.wireProjectRoot) }
         : {}),
@@ -2301,23 +1790,17 @@ export class SubAgentRunner {
     const active = this.activeChildren.get(childSessionId);
     if (active?.lease !== lease) return;
     this.activeChildren.delete(childSessionId);
-    // The child shares the parent's SkillOverlay keyed by its own session id,
-    // and no `newConversation` ever fires for a child loop. Drop its entries
-    // here so a finished run does not leave its skill_read authorization (and
-    // the map slot) behind for the rest of the app's life. A later resume
-    // re-establishes it with a fresh `skill_load`.
+    // The child shares the parent's SkillOverlay keyed by its own session id, and no `newConversation` ever fires for a child loop. Drop its entries here so a finished
+    // run does not leave its skill_read authorization (and the map slot) behind for the rest of the app's life. A later resume re-establishes it with a fresh `skill_load`.
     this.deps.parentDeps.skillOverlay?.clear(childSessionId);
-    // The run that held this lease is over, spawn and resume alike, so the
-    // per-run parent-adjudication state it built up (budget, denial streaks)
-    // goes with it. Only the lease holder releases it: a mismatched lease
-    // means a newer run owns the session and is still spending that budget.
+    // The run that held this lease is over, spawn and resume alike, so the per-run parent-adjudication state it built up (budget, denial streaks)
+    // goes with it. Only the lease holder releases it: a mismatched lease means a newer run owns the session and is still spending that budget.
     const gate = this.deps.parentDeps.approvalGate;
     if (!gate) return;
     try {
       gate.forgetChildRun(childSessionId);
     } catch (err) {
-      // Releasing bookkeeping must not turn a finished run into a failed one;
-      // the maps stay bounded by their own eviction if this ever throws.
+      // Releasing bookkeeping must not turn a finished run into a failed one; the maps stay bounded by their own eviction if this ever throws.
       log.warn(
         {
           childSessionId,
@@ -2357,56 +1840,27 @@ export class SubAgentRunner {
     return this.snapshotRun(run);
   }
 
-  /**
-   * Record that the parent has now read this run's completion report.
-   *
-   * A terminal snapshot carries the same summary, error, and transcript the
-   * mailbox report carries, so a parent that read one has been told everything
-   * the other would tell it. Marking it here is what lets
-   * {@link peekParentMailbox} consume the queued copy rather than open the
-   * parent's next turn with a steering row repeating work it already answered.
-   *
-   * Gated on `terminalReportPublished`, NOT on the task state reading terminal.
-   * A run reads terminal from the moment an abort is requested and from the
-   * moment `persistFinalResult` claims the commit, both of which happen while
-   * the result is still missing; a snapshot with no summary and no error in it
-   * has told the parent nothing. Only a landed result may retire the queued
-   * copy.
-   *
-   * Order between this and the delivery does not matter: the parent may poll
-   * the finished run before the report is even enqueued (that is the reported
-   * race). The two facts are recorded separately and combined only at peek.
-   */
+  /** Only terminalReportPublished may retire a mailbox report; terminal task state can precede the actual result.
+   * Record read and delivery independently so polling before enqueue cannot lose or duplicate the report. */
   private markTerminalReportRead(run: TrackedSubAgentRun): void {
     if (run.terminalReportPublished !== true) return;
     run.terminalReportObserved = true;
   }
 
-  /**
-   * Sub-agent rows persisted under one parent session, newest first.
-   *
-   * Must go through the runner rather than the main MemoryManager: children
-   * live in their OWN namespace (`~/.ave/subagent/`, wired in
-   * `createIsolatedConversationMemoryManagers`), so the main manager's sessions
-   * directory contains none of them. `getPersistedTranscript` below reaches the
-   * same store the same way.
-   *
-   * Rows only — a child's transcript is fetched separately, on demand.
-   */
+  /** Sub-agent rows persisted under one parent session, newest first. Must go through the runner rather than the main MemoryManager: children live in their OWN namespace (`~/.ave/subagent/`, wired in
+   * `createIsolatedConversationMemoryManagers`), so the main manager's sessions directory contains none of them. `getPersistedTranscript` below reaches the same store the same way. Rows only; a child's transcript is fetched separately, on demand. */
   listPersistedSpawnsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!isValidSessionId(originSessionId)) return [];
     return this.deps.subAgentMemoryManager.listSubAgentSessionsForOrigin(originSessionId);
   }
 
-  /**
-   * The sub-agent sessions work-board items spawned, newest first — the rows
-   * the sidebar's conversation list shows beside the main sessions.
-   *
-   * Same reason as above for routing through the runner: the children live in
-   * the sub-agent namespace, which only this class holds. The memory manager
-   * owns the classification (which origin names an item); this method only
-   * carries the page window through.
-   */
+  /** Transcript existence, independent of row metadata and current run state. */
+  hasPersistedSession(sessionId: string): boolean {
+    return this.deps.subAgentMemoryManager.hasSessionTranscript(sessionId);
+  }
+
+  /** The sub-agent sessions work-board items spawned, newest first; the rows the sidebar's conversation list shows beside the main sessions. Same reason as above for routing through the runner: the
+   * children live in the sub-agent namespace, which only this class holds. The memory manager owns the classification (which origin names an item); this method only carries the page window through. */
   listWorkBoardRunSessions(
     options: Pick<ListSessionsOptions, "limit" | "before" | "beforeId" | "after"> = {},
   ): SessionListEntry[] {
@@ -2417,15 +1871,8 @@ export class SubAgentRunner {
     });
   }
 
-  /**
-   * Whether `childSessionId` is a sub-agent this exact parent spawned.
-   *
-   * Answers ownership from the record the HOST wrote at spawn time rather than
-   * from the parent's transcript, which compaction may have stripped the linking
-   * tool_result out of. Both ids must be well-formed and the child must actually
-   * be a sub-agent session: a main session id must never satisfy this, or it
-   * would become a way to read another conversation.
-   */
+  /** Whether `childSessionId` is a sub-agent this exact parent spawned. Answers ownership from the record the HOST wrote at spawn time rather than from the parent's transcript, which compaction may have stripped
+   * the linking tool_result out of. Both ids must be well-formed and the child must actually be a sub-agent session: a main session id must never satisfy this, or it would become a way to read another conversation. */
   isPersistedSpawnOfOrigin(originSessionId: string, childSessionId: string): boolean {
     if (!isValidSessionId(originSessionId) || !isValidSessionId(childSessionId)) return false;
     const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
@@ -2618,23 +2065,11 @@ export class SubAgentRunner {
     delete run.abort;
     this.updateRun(run, patch);
     run.terminalCommitClaimed = isA2ATerminalTaskState(run.taskState);
-    // Ask `updateRun` whether it took the patch: on refusal the summary, error,
-    // and transcript above never reached the run either, and only a landed
-    // result is a report a reader can be told it has already seen. This is also
-    // what separates a finished run from one that merely READS terminal while
-    // it unwinds — an abort request and the pre-await terminal claim both get
-    // there first.
+    // Ask `updateRun` whether it took the patch: on refusal the summary, error, and transcript above never reached the run either, and only a landed result is a report a reader can be told it
+    // has already seen. This is also what separates a finished run from one that merely READS terminal while it unwinds; an abort request and the pre-await terminal claim both get there first.
     if (run.taskState === taskState) run.terminalReportPublished = true;
-    // The renderer frame leaves from HERE, inside the step that publishes the
-    // terminal state, and never from the caller that later awaits the run.
-    // Between those two points a parent polling `agent_status` used to be able
-    // to read `done` and answer from it while the sub-agent panel still showed
-    // the run as live. Emitting synchronously after the state write closes that
-    // window: no other code can observe the run between the two lines.
-    //
-    // Fired even when the patch was refused: the frame reports the outcome the
-    // runner is returning to its caller, and a run whose result the state
-    // machine turned away still has to stop drawing as live.
+    // The renderer frame leaves from HERE, inside the step that publishes the terminal state, and never from the caller that later awaits the run. Between those two points a parent polling `agent_status` used to be able to read `done` and answer from it while the sub-agent panel still showed the run as live.
+    // Emitting synchronously after the state write closes that window: no other code can observe the run between the two lines. Fired even when the patch was refused: the frame reports the outcome the runner is returning to its caller, and a run whose result the state machine turned away still has to stop drawing as live.
     const onTerminal = run.onTerminal;
     if (onTerminal === undefined) return;
     delete run.onTerminal;
@@ -2664,64 +2099,34 @@ export class SubAgentRunner {
     }
   }
 
-  /**
-   * The user's configured sub-agent round budget, or `null` when it is unset or
-   * not a usable number. Returning `null` rather than a substituted default
-   * keeps the resolution order in `spawn()` readable as a single `??` chain and
-   * leaves MAX_TURNS_DEFAULT as the one place the fallback value is written.
-   * The caller normalizes it (minimum of 1); it is never narrowed downward.
-   */
+  /** The user's configured sub-agent round budget, or `null` when it is unset or not a usable number. Returning `null` rather than a substituted default keeps the resolution order in
+   * `spawn()` readable as a single `??` chain and leaves MAX_TURNS_DEFAULT as the one place the fallback value is written. The caller normalizes it (minimum of 1); it is never narrowed downward. */
   private configuredRoundBudget(): number | null {
     const configured = this.deps.parentDeps.settingsService.get("chat")?.subAgentMaxRounds;
     if (typeof configured !== "number" || !Number.isFinite(configured)) return null;
     return Math.floor(configured);
   }
 
-  /**
-   * The normalized round budget one invocation may run — the same resolution
-   * `spawn()` and `resume()` use. The `agent_spawn` tool reads it to size its
-   * executor wall clock: the round setting has no maximum, so a FIXED ceiling
-   * silently reinstates the bound that setting exists to remove, killing a
-   * long agent by the clock instead of by its budget.
-   */
+  /** The normalized round budget one invocation may run; the same resolution `spawn()` and `resume()` use. The `agent_spawn` tool reads it to size its executor wall clock: the
+   * round setting has no maximum, so a FIXED ceiling silently reinstates the bound that setting exists to remove, killing a long agent by the clock instead of by its budget. */
   roundBudget(): number {
     return normalizeRoundBudget(this.configuredRoundBudget() ?? MAX_TURNS_DEFAULT);
   }
 
-  /**
-   * The parent registry every child is scoped from — the same one
-   * `buildChildDeps` narrows with a {@link SubAgentToolScope}.
-   *
-   * A caller that needs a SUBSET of the parent surface reads the registry's own
-   * per-tool `category` through this and derives the names, instead of writing
-   * a name list that has to be edited whenever a tool is added. Deriving is
-   * what keeps host code free of plugin-specific names: a plugin tool joins a
-   * derived set because of what it declares, not because the host learned it
-   * exists.
-   */
+  /** The parent registry every child is scoped from; the same one `buildChildDeps` narrows with a {@link SubAgentToolScope}. A caller that needs a SUBSET of the parent surface reads the registry's own per-tool `category` through this and derives the
+   * names, instead of writing a name list that has to be edited whenever a tool is added. Deriving is what keeps host code free of plugin-specific names: a plugin tool joins a derived set because of what it declares, not because the host learned it exists. */
   parentToolRegistry(): ToolRegistry {
     return this.deps.toolRegistry;
   }
 
-  /**
-   * Resume-axis cumulative ceiling, scaled to the CONFIGURED budget so the
-   * resume-loop protection stays proportional instead of becoming an absolute
-   * ceiling that binds below what one spawn is allowed to run.
-   */
+  /** Resume-axis cumulative ceiling, scaled to the CONFIGURED budget so the resume-loop protection stays
+   * proportional instead of becoming an absolute ceiling that binds below what one spawn is allowed to run. */
   private cumulativeRoundsCeiling(): number {
     return CUMULATIVE_ROUNDS_BUDGET_MULTIPLIER * this.roundBudget();
   }
 
-  /**
-   * Which resume-axis guard this suspended child has already spent, if any.
-   *
-   * ONE predicate for the two guards `resume()` enforces before it runs a
-   * turn, so the ACCEPTANCE side (`queueParentMessageToChild`, `agent_list`'s
-   * `resumable` flag) and the DELIVERY side cannot drift. Both axes are
-   * deterministic — nothing a later resume does can lower a spent counter —
-   * which is what makes "already exhausted" a fact the acceptance side may
-   * act on rather than a race it would be guessing at.
-   */
+  /** Which resume-axis guard this suspended child has already spent, if any. ONE predicate for the two guards `resume()` enforces before it runs a turn, so the ACCEPTANCE side (`queueParentMessageToChild`, `agent_list`'s `resumable` flag) and
+   * the DELIVERY side cannot drift. Both axes are deterministic; nothing a later resume does can lower a spent counter; which is what makes "already exhausted" a fact the acceptance side may act on rather than a race it would be guessing at. */
   private spentResumeAxis(meta: {
     subAgentSuspensionReason?: string;
     budgetResumeCount?: number;
@@ -2744,50 +2149,30 @@ export class SubAgentRunner {
     return null;
   }
 
-  /**
-   * Whether a resume of this child would be refused before running a turn.
-   *
-   * Read by `agent_list` so the `resumable` flag it advertises means what it
-   * says: a child whose resume budget is spent is INPUT_REQUIRED forever, and
-   * offering it as resumable spends a parent round on a guaranteed refusal.
-   */
+  /** Whether a resume of this child would be refused before running a turn. Read by `agent_list` so the `resumable` flag it advertises means what it
+   * says: a child whose resume budget is spent is INPUT_REQUIRED forever, and offering it as resumable spends a parent round on a guaranteed refusal. */
   isResumeExhausted(childSessionId: string): boolean {
     const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
     if (!meta) return false;
     return this.spentResumeAxis(meta) !== null;
   }
 
-  /**
-   * Shared child-loop reconstruction used by BOTH `spawn()` and `resume()`.
-   * Returns the composed {@link ConversationLoopDeps}, the grant the child
-   * ended up with (its frozen permission surface, ready to persist), and the
-   * wrapped ApprovalGate.
-   *
-   * The tool surface comes ONLY from `toolScope`; what each kind grants is
-   * specified once on {@link SubAgentToolScope}. The blocklist (`agent_spawn`)
-   * is ALWAYS stripped so a sub-agent — spawned or resumed — cannot recurse.
-   */
+  /** Shared child-loop reconstruction used by BOTH `spawn()` and `resume()`. Returns the composed {@link ConversationLoopDeps}, the grant the child ended up with (its frozen permission surface, ready to persist), and the wrapped
+   * ApprovalGate. The tool surface comes ONLY from `toolScope`; what each kind grants is specified once on {@link SubAgentToolScope}. The blocklist (`agent_spawn`) is ALWAYS stripped so a sub-agent; spawned or resumed; cannot recurse. */
   private buildChildDeps(args: {
     /** @see SubAgentToolScope */
     toolScope: SubAgentToolScope;
     includeAgentSend?: boolean;
     title: string;
     profileModel: string | undefined;
-    /**
-     * The parent behind this run, when it has one that could answer for it.
-     * `null` leaves the child's approvals on the path they took before tier 2
-     * existed: straight to the user.
-     */
+    /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
   }): {
     childDeps: ConversationLoopDeps;
     grantedScope: PersistedSubAgentToolScope;
   } {
-    // Build the sub-agent's tool surface. The blocklist (agent_spawn) is
-    // stripped on every branch, including `parent-all`, which starts from the
-    // full registry and intersects with it. `agent_send` is dropped here and
-    // re-registered below, because it is the parent channel rather than a
-    // source tool: see SubAgentToolScope.
+    // Build the sub-agent's tool surface. The blocklist (agent_spawn) is stripped on every branch, including `parent-all`, which starts from the full registry and
+    // intersects with it. `agent_send` is dropped here and re-registered below, because it is the parent channel rather than a source tool: see SubAgentToolScope.
     const scope = args.toolScope;
     const exposeAgentSend = args.includeAgentSend === true
       || (scope.kind === "exactly" && scope.names.includes("agent_send"));
@@ -2820,8 +2205,7 @@ export class SubAgentRunner {
       ? new Set(scopedTools.map((tool) => tool.name))
       : undefined;
 
-    // Wrap the parent ApprovalGate so approval requests from this sub-agent's
-    // tool calls show "[Sub-Agent: <title>]" in their reason text.
+    // Wrap the parent ApprovalGate so approval requests from this sub-agent's tool calls show "[Sub-Agent: <title>]" in their reason text.
     const wrappedApprovalGate = this.deps.parentDeps.approvalGate
       ? makeSubAgentApprovalAdapter(
           this.deps.parentDeps.approvalGate,
@@ -2830,13 +2214,8 @@ export class SubAgentRunner {
         )
       : undefined;
 
-    // Compose deps for the child loop. We share the parent's permissionManager,
-    // hookRunner so the child plays by the same security rules.
-    // History is fresh because ConversationLoop.constructor instantiates a new
-    // ConversationHistory (spawn); resume re-hydrates it via loadSession.
-    // API keys resolve through the configured vendor catalog. Codex
-    // subscription selection has its own live catalog in main, while ACP
-    // subscriptions intentionally retain their persisted default model.
+    // Compose deps for the child loop. We share the parent's permissionManager, hookRunner so the child plays by the same security rules. History is fresh because ConversationLoop.constructor instantiates a new ConversationHistory (spawn);
+    // resume re-hydrates it via loadSession. API keys resolve through the configured vendor catalog. Codex subscription selection has its own live catalog in main, while ACP subscriptions intentionally retain their persisted default model.
     const llmSettings = this.deps.parentDeps.settingsService.get("llm");
     const subscriptionRuntime = llmSettings.activeChatRuntime?.kind === "subscription"
       ? llmSettings.activeChatRuntime
@@ -2845,11 +2224,11 @@ export class SubAgentRunner {
       args.profileModel,
       llmSettings.provider,
       subscriptionRuntime,
+      isLLMVendor(llmSettings.provider) ? cachedLiveModelIds(llmSettings, llmSettings.provider) : [],
     );
 
-    // A builder carries mutable project/session overlay state. Never share it
-    // with a child: doing so can make the child read the parent's project
-    // memory, or leave child state behind for the next parent turn.
+    // A builder carries mutable project/session overlay state. Never share it with a child: doing so can
+    // make the child read the parent's project memory, or leave child state behind for the next parent turn.
     const childSystemPromptBuilder = this.deps.parentDeps.systemPromptBuilder.createIsolated({
       memoryManager: this.deps.subAgentMemoryManager,
       toolRegistry: scopedRegistry,
@@ -2859,35 +2238,25 @@ export class SubAgentRunner {
       ...this.deps.parentDeps,
       toolRegistry: scopedRegistry,
       systemPromptBuilder: childSystemPromptBuilder,
-      // Route the child's session persistence to the ISOLATED subagent store
-      // (`~/.ave/subagent/`), never the parent's main-chat MemoryManager.
-      // Reusing the parent store is what leaked orphan sub-agent JSONL into
-      // the main `~/.ave/sessions/` list; the child's saveSession/loadSession
-      // (via `self.deps.memoryManager` in run-turn) now target the subagent
-      // namespace under the regex-valid childSessionId set by the caller.
+      // Route the child's session persistence to the ISOLATED subagent store (`~/.ave/subagent/`), never the parent's main-chat MemoryManager. Reusing the parent store is what leaked orphan sub-agent JSONL into
+      // the main `~/.ave/sessions/` list; the child's saveSession/loadSession (via `self.deps.memoryManager` in run-turn) now target the subagent namespace under the regex-valid childSessionId set by the caller.
       memoryManager: this.deps.subAgentMemoryManager,
       approvalGate: wrappedApprovalGate,
-      // Sub-agent runs are fire-and-forget — no post-turn hook chain to keep
-      // the parent session unaffected.
+      // Sub-agent runs are fire-and-forget; no post-turn hook chain to keep the parent session unaffected.
       postTurnHookChain: undefined,
-      // The child's sessions live in the sub-agent namespace; the parent's
-      // predicate scans the window's main loops and must not judge them.
+      // The child's sessions live in the sub-agent namespace; the parent's predicate scans the window's main loops and must not judge them.
       sessionHeldElsewhere: undefined,
       // Sub-agent does not request_plugin (its tool surface is fixed at spawn).
       pluginRuntime: undefined,
       forcedActivePluginIds,
       ...(forcedActiveToolNames ? { forcedActiveToolNames } : {}),
-      // The sub-agent shares the parent's read-skill registry; its reads are
-      // keyed by the child's own session id, so `skill_read` authorization
-      // never crosses between parent and child.
+      // The sub-agent shares the parent's read-skill registry; its reads are keyed by the child's own session id, so `skill_read` authorization never crosses between parent and child.
       skillOverlay: this.deps.parentDeps.skillOverlay,
-      // #1112: per-profile model override. Undefined keeps the active
-      // runtime's persisted model selection.
+      // #1112: per-profile model override. Undefined keeps the active runtime's persisted model selection.
       modelOverride: resolvedModel ?? undefined,
     };
-    // The grant as resolved, not as requested: what a resume must re-scope to
-    // exactly, and the only form that reaches disk. A registry view that
-    // yielded nothing is `deny-all` — the one kind an empty name list means.
+    // The grant as resolved, not as requested: what a resume must re-scope to exactly, and the only form that
+    // reaches disk. A registry view that yielded nothing is `deny-all`; the one kind an empty name list means.
     const grantedNames = scopedTools.map((tool) => tool.name);
     const grantedScope: PersistedSubAgentToolScope = grantedNames.length > 0
       ? exactToolScope(grantedNames)
@@ -2895,9 +2264,7 @@ export class SubAgentRunner {
     return { childDeps, grantedScope };
   }
 
-  /**
-   * Spawn a sub-agent and run it inline. Returns the final summary text.
-   */
+  /** Spawn a sub-agent and run it inline. Returns the final summary text. */
   async spawn(
     input: SubAgentSpawnInput,
     callbacks?: SubAgentSpawnCallbacks,
@@ -2905,11 +2272,8 @@ export class SubAgentRunner {
     return await this.runSpawn(input, callbacks);
   }
 
-  /**
-   * Host-only A2A ingress. The remote-controlled request is intentionally
-   * limited to message text; profile, tools, project, handler, origin, and
-   * execution provenance all come from the host binding or are minted here.
-   */
+  /** Host-only A2A ingress. The remote-controlled request is intentionally limited to message text; profile,
+   * tools, project, handler, origin, and execution provenance all come from the host binding or are minted here. */
   async spawnFromA2AWire(
     request: A2AWireSpawnRequest,
     binding: A2AWireHostBinding,
@@ -2935,9 +2299,8 @@ export class SubAgentRunner {
       {
         title: binding.profile.name.trim(),
         instructions: renderAgentProfilePrompt(binding.profile, messageText),
-        // A wire-bound run gets the profile's tools and NOTHING else. A profile
-        // that names none grants none: the remote peer chose the profile, so
-        // the empty case must not be the one that hands it the whole registry.
+        // A wire-bound run gets the profile's tools and NOTHING else. A profile that names none grants none: the
+        // remote peer chose the profile, so the empty case must not be the one that hands it the whole registry.
         toolScope: binding.profile.sourceTools.length > 0
           ? exactToolScope(binding.profile.sourceTools)
           : DENY_ALL_TOOL_SCOPE,
@@ -2967,6 +2330,14 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
   ): SubAgentSpawnResult {
     callbacks?.onError?.(message);
+    return this.buildFailureResult(childSessionId, message);
+  }
+
+  private buildFailureResult(
+    childSessionId: string,
+    message: string,
+    extra?: Partial<SubAgentSpawnResult>,
+  ): SubAgentSpawnResult {
     return {
       summary: message,
       toolCallCount: 0,
@@ -2975,10 +2346,112 @@ export class SubAgentRunner {
       entries: [],
       ok: false,
       error: message,
+      ...extra,
+    };
+  }
+
+  private buildTurnCallbacks(args: {
+    transcript: SubAgentTranscriptAccumulator;
+    emitActivity: () => void;
+    reasoningStreamEmitter: ReturnType<typeof createCoalescedEmitter>;
+    onToolEnd: () => void;
+    onAssistantRound: NonNullable<TurnCallbacks["onAssistantRound"]>;
+    callbacks: SubAgentSpawnCallbacks | undefined;
+  }): TurnCallbacks {
+    const { transcript, emitActivity, reasoningStreamEmitter } = args;
+    return {
+      onReasoningDelta: (text) => {
+        transcript.onReasoningDelta(text);
+        reasoningStreamEmitter.schedule();
+      },
+      onLlmStatus: (status) => {
+        if (transcript.onLlmStatus(status)) emitActivity();
+      },
+      onToolStart: (name, input, meta) => {
+        transcript.onToolStart(name, input, meta);
+        emitActivity();
+      },
+      onPermissionReview: (event) => {
+        transcript.onPermissionReview(event);
+        emitActivity();
+      },
+      onToolEnd: (name, toolResult, isError, meta, uiPayload, durationMs) => {
+        args.onToolEnd();
+        transcript.onToolEnd(name, toolResult, isError, meta, uiPayload, durationMs);
+        emitActivity();
+      },
+      onAssistantRound: (round) => {
+        args.onAssistantRound(round);
+        // The completed round supersedes any queued mid-stream snapshot.
+        reasoningStreamEmitter.cancel();
+        transcript.onAssistantRound(
+          round.thought,
+          round.text,
+          round.stopReason,
+          round.hasToolCalls,
+        );
+        emitActivity();
+      },
+      onError: (message) => {
+        args.callbacks?.onError?.(maskSubAgentText(message));
+      },
+    };
+  }
+
+  private buildTurnResult(args: {
+    summary: string;
+    toolCallCount: number;
+    turnCount: number;
+    childSessionId: string;
+    entries: ChatEntry[];
+    ok: boolean;
+    failureReason: string | undefined;
+    stopReason: TurnStopReason | undefined;
+    authorizationRequired: AuthorizationRequiredState | undefined;
+    inputRequired: TurnInputRequired | undefined;
+    suspensionSessionId: string;
+  }): SubAgentSpawnResult {
+    return {
+      summary: args.summary,
+      toolCallCount: args.toolCallCount,
+      turnCount: args.turnCount,
+      childSessionId: args.childSessionId,
+      entries: args.entries,
+      ok: args.ok,
+      ...(args.ok ? {} : { error: args.failureReason ?? args.summary }),
+      ...(args.stopReason ? { stopReason: args.stopReason } : {}),
+      ...(args.authorizationRequired
+        ? { authorizationRequired: args.authorizationRequired }
+        : {}),
+      ...(args.ok && args.stopReason === "round-cap"
+        ? {
+            suspension: createBudgetSuspension(args.suspensionSessionId),
+            // Derived compatibility alias for pre-suspension consumers.
+            incomplete: true,
+          }
+        : {}),
+      ...(args.ok && args.stopReason === "input-required" && args.inputRequired
+        ? { suspension: createQuestionSuspension(args.suspensionSessionId, args.inputRequired) }
+        : {}),
     };
   }
 
   private async runSpawn(
+    input: SubAgentSpawnInput,
+    callbacks?: SubAgentSpawnCallbacks,
+    executionPolicy?: SubAgentExecutionPolicy,
+    durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+  ): Promise<SubAgentSpawnResult> {
+    const checkpointChild: { release?: () => void } = {};
+    try {
+      return await this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier);
+    } finally {
+      checkpointChild.release?.();
+    }
+  }
+
+  private async runSpawnChild(
+    checkpointChild: { release?: () => void },
     input: SubAgentSpawnInput,
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
@@ -3009,9 +2482,8 @@ export class SubAgentRunner {
 
     const setupResult = (() => {
       try {
-        // Resolve the profile's mode → working-posture preamble + round-budget hint.
-        // Unknown / absent mode resolves to the inert `default` mode; a non-empty
-        // unmatched mode is logged so the audit trail captures the typo.
+        // Resolve the profile's mode → working-posture preamble + round-budget hint. Unknown / absent mode resolves
+        // to the inert `default` mode; a non-empty unmatched mode is logged so the audit trail captures the typo.
         const modeResult = resolveAgentMode(input.profileMode);
         if (!modeResult.matched) {
           log.warn(
@@ -3020,11 +2492,8 @@ export class SubAgentRunner {
           );
         }
 
-        // Host-assigned round budget. Resolution: an explicit host `maxRounds`
-        // wins; otherwise the user's configured budget; otherwise the default.
-        // The LLM cannot change this policy because agent_spawn exposes no raw
-        // maxTurns field, and the profile's mode carries no budget of its own —
-        // see MAX_TURNS_DEFAULT for why the per-mode split was removed.
+        // Host-assigned round budget. Resolution: an explicit host `maxRounds` wins; otherwise the user's configured budget; otherwise the default. The LLM cannot change this
+        // policy because agent_spawn exposes no raw maxTurns field, and the profile's mode carries no budget of its own; see MAX_TURNS_DEFAULT for why the per-mode split was removed.
         const requestedRounds =
           input.maxRounds ?? this.configuredRoundBudget() ?? MAX_TURNS_DEFAULT;
         const cappedRounds = normalizeRoundBudget(requestedRounds);
@@ -3037,10 +2506,8 @@ export class SubAgentRunner {
           approvalProvenance: buildSubAgentApprovalProvenance({
             childSessionId,
             originSessionId: input.originSessionId,
-            // NOT `instructions`. By the time a profile-based spawn reaches
-            // here, `instructions` is the RENDERED prompt — profile body first,
-            // the parent's task last — so any bound on it keeps the role
-            // charter and drops the task. A charter argues for every call.
+            // NOT `instructions`. By the time a profile-based spawn reaches here, `instructions` is the RENDERED prompt; profile body
+            // first, the parent's task last; so any bound on it keeps the role charter and drops the task. A charter argues for every call.
             task: input.parentAuthoredTask,
             wireBound: executionPolicy !== undefined,
             background: input.background === true,
@@ -3082,32 +2549,17 @@ export class SubAgentRunner {
       const message = interrupted
         ? "sub-agent run interrupted"
         : (setupResult.error as Error).message ?? "sub-agent setup failed";
-      const result: SubAgentSpawnResult = {
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
+      const result = this.buildFailureResult(childSessionId, message, {
         ...(interrupted ? { stopReason: "interrupted" as const } : {}),
-      };
+      });
       this.finalizeRun(trackedRun, result);
       if (!interrupted) callbacks?.onError?.(maskSubAgentText(message));
       return result;
     }
 
     const { modeResult, cappedRounds, grantedScope, child } = setupResult;
-    // Persist resume metadata alongside the child JSONL before provider
-    // validation and the first turn, into the SAME isolated subagent namespace (child loop's
-    // MemoryManager). run-turn's saveSession writes the JSONL; this writes the
-    // .meta.json sibling. `sessionKind: "subagent"` lets listing/rotation
-    // distinguish sub-agent sessions from main/routine. `grantedScope` is the
-    // grant as RESOLVED, encoded by the one codec that writes this field, and
-    // is the exact set a resume must re-scope to — permission is frozen at
-    // spawn, not re-granted on resume. `resumeCount`/`cumulativeRounds` init to
-    // 0 for the resume-loop guards. No resume logic here — this is metadata
-    // foundation.
+    // Persist resume metadata alongside the child JSONL before provider validation and the first turn, into the SAME isolated subagent namespace (child loop's MemoryManager). run-turn's saveSession writes the JSONL; this writes the .meta.json sibling. `sessionKind: "subagent"` lets listing/rotation distinguish sub-agent sessions from
+    // main/routine. `grantedScope` is the grant as RESOLVED, encoded by the one codec that writes this field, and is the exact set a resume must re-scope to; permission is frozen at spawn, not re-granted on resume. `resumeCount`/`cumulativeRounds` init to 0 for the resume-loop guards. No resume logic here; this is metadata foundation.
     const spawnMetadata: Parameters<MemoryManager["saveSessionMetadata"]>[1] = {
       sessionKind: "subagent",
       ...(executionPolicy
@@ -3137,10 +2589,8 @@ export class SubAgentRunner {
       subAgentSuspensionReason: undefined,
       subAgentSuspensionPrompt: undefined,
     };
-    // Register the addressable child before the first asynchronous boundary.
-    // Workspace removal snapshots `activeChildren`; registering only after the
-    // initial metadata write left a window where a fully-constructed child kept
-    // stale project directories but was invisible to live-scope revocation.
+    // Register the addressable child before the first asynchronous boundary. Workspace removal snapshots `activeChildren`; registering only after the
+    // initial metadata write left a window where a fully-constructed child kept stale project directories but was invisible to live-scope revocation.
     const activeLease = this.registerActiveChild({
       childSessionId,
       originSessionId: input.originSessionId,
@@ -3164,6 +2614,7 @@ export class SubAgentRunner {
         spawnMetadata,
       );
       initialMetadataPersisted = true;
+      checkpointChild.release = await trackCodeCheckpointChild(input.originSessionId);
       if (
         executionPolicy
         && !this.hasAuthoritativeA2AWireProjectBinding(
@@ -3189,16 +2640,9 @@ export class SubAgentRunner {
         : initialMetadataPersisted
           ? "sub-agent durable binding failed"
           : (err as Error).message ?? "sub-agent metadata setup failed";
-      const result: SubAgentSpawnResult = {
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
+      const result = this.buildFailureResult(childSessionId, message, {
         ...(interrupted ? { stopReason: "interrupted" as const } : {}),
-      };
+      });
       if (initialMetadataPersisted) {
         try {
           await this.deps.subAgentMemoryManager.saveSessionMetadata(childSessionId, {
@@ -3226,12 +2670,10 @@ export class SubAgentRunner {
     const persistFinalResult = async (
       terminalResult: SubAgentSpawnResult,
     ): Promise<SubAgentSpawnResult> => {
-      // Pre-loop terminal paths (cancellation/provider setup failure) do not
-      // enter runTurn's finally block. Release the same lease here; the helper
-      // is idempotent and also preserves any staged question owned by it.
+      // Pre-loop terminal paths (cancellation/provider setup failure) do not enter runTurn's finally block.
+      // Release the same lease here; the helper is idempotent and also preserves any staged question owned by it.
       unregisterSpawnChild();
-      // Claim the terminal transition before the first async preparation yield.
-      // Cancellation and final persistence therefore have a single winner.
+      // Claim the terminal transition before the first async preparation yield. Cancellation and final persistence therefore have a single winner.
       trackedRun.terminalCommitClaimed = true;
       delete trackedRun.abort;
       let stableResult = await this.prepareQuestionStageForPersistence(
@@ -3304,16 +2746,9 @@ export class SubAgentRunner {
 
     if (cancellation.signal.aborted) {
       const message = "sub-agent run interrupted";
-      return await persistFinalResult({
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
+      return await persistFinalResult(this.buildFailureResult(childSessionId, message, {
         stopReason: "interrupted",
-      });
+      }));
     }
     if (
       executionPolicy
@@ -3322,29 +2757,13 @@ export class SubAgentRunner {
       const message =
         "sub-agent A2A project binding rejected (a2a-project-binding-rejected)";
       callbacks?.onError?.(maskSubAgentText(message));
-      return await persistFinalResult({
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
-      });
+      return await persistFinalResult(this.buildFailureResult(childSessionId, message));
     }
 
     if (!child.hasProvider()) {
       const message = "sub-agent: LLM provider not configured";
       callbacks?.onError?.(maskSubAgentText(message));
-      return await persistFinalResult({
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
-      });
+      return await persistFinalResult(this.buildFailureResult(childSessionId, message));
     }
     this.updateRun(trackedRun, { taskState: projectSubAgentRunState("running") });
 
@@ -3352,10 +2771,8 @@ export class SubAgentRunner {
     let lastText = "";
     let turn = 0;
 
-    // Accumulates the child's activity into a `ChatEntry[]` via the shared
-    // chat-stream-state reducers (DLP-masked at the source). Snapshots are
-    // forwarded on every activity so the sub-agent tab renders live through the
-    // same TranscriptRenderer the main chat uses.
+    // Accumulates the child's activity into a `ChatEntry[]` via the shared chat-stream-state reducers (DLP-masked at the source).
+    // Snapshots are forwarded on every activity so the sub-agent tab renders live through the same TranscriptRenderer the main chat uses.
     const transcript = new SubAgentTranscriptAccumulator();
     const emitActivity = () => {
       const entries = transcript.snapshot();
@@ -3373,96 +2790,48 @@ export class SubAgentRunner {
       emitActivity,
       REASONING_STREAM_EMIT_INTERVAL_MS,
     );
-    // Track whether the child loop completed cleanly. Starts false; flips true
-    // only after `runTurn` returns without throwing. The catch leaves it false
-    // so the error text surfaced as `summary` is reported as a FAILED spawn,
-    // never a completed run.
+    // Track whether the child loop completed cleanly. Starts false; flips true only after `runTurn` returns without throwing.
+    // The catch leaves it false so the error text surfaced as `summary` is reported as a FAILED spawn, never a completed run.
     let ok = false;
     let failureReason: string | undefined;
     let childStopReason: import("./turn/types.js").TurnStopReason | undefined;
     let childInputRequired: TurnInputRequired | undefined;
     let childAuthorizationRequired: AuthorizationRequiredState | undefined;
 
-    // Prepend the mode preamble (posture + auto-skill recommendation) to the
-    // instructions. The preamble is empty for the default mode, leaving the
-    // profile body to drive the sub-agent unchanged.
+    // Prepend the mode preamble (posture + auto-skill recommendation) to the instructions. The
+    // preamble is empty for the default mode, leaving the profile body to drive the sub-agent unchanged.
     const modePreamble = buildModePreamble(modeResult.config);
     const initialPrompt = modePreamble
       ? `${modePreamble}\n\n${input.instructions}`
       : input.instructions;
     let assistantRounds = 0;
+    let subagentStopDispatched = false;
 
     try {
-      // Subagent lifecycle parity (#811): fire SubagentStart on the child loop
-      // before its spawn run and SubagentStop in the finally. Observe-only and
-      // fail-soft (runLifecycleEvent swallows-and-continues), so a hook can
-      // never wedge or fail the spawn.
+      // Subagent lifecycle parity : fire SubagentStart on the child loop before its spawn run and SubagentStop in the
+      // finally. Observe-only and fail-soft (runLifecycleEvent swallows-and-continues), so a hook can never wedge or fail the spawn.
       await child.fireLifecycleEvent("SubagentStart", {
         agentId: input.spawnId,
         agentType: input.profileMode,
       });
-      // C3(a): pass `maxRounds` so queryLoop terminates cleanly between
-      // rounds — the previous abortCurrentTurn() approach only halted the
-      // next streaming response, leaving in-flight tool calls to run.
-      // C3(c): pass childSessionId so audit entries from tool calls fire
-      // under the child's session id, not the parent's.
-      // C3(b): spawnDepth=1 so any agent_spawn invocation that slipped
-      // past the registry strip refuses with a clear error.
+      // C3(a): pass `maxRounds` so queryLoop terminates cleanly between rounds; the previous abortCurrentTurn() approach only halted the next streaming response, leaving in-flight tool calls to run. C3(c): pass
+      // childSessionId so audit entries from tool calls fire under the child's session id, not the parent's. C3(b): spawnDepth=1 so any agent_spawn invocation that slipped past the registry strip refuses with a clear error.
       const result = await child.runTurn(
         initialPrompt,
-        {
-          // Forward the FULL child activity — tool calls, permission reviews,
-          // reasoning, and assistant rounds — into the shared ChatEntry model.
-          // `toolCallCount:0` hardcode removed: real tool counts flow from the
-          // accumulator's tool_start/tool_end rows.
-          onReasoningDelta: (text) => {
-            transcript.onReasoningDelta(text);
-            reasoningStreamEmitter.schedule();
-          },
-          onLlmStatus: (status) => {
-            if (transcript.onLlmStatus(status)) emitActivity();
-          },
-          onToolStart: (name, input, meta) => {
-            transcript.onToolStart(name, input, meta);
-            emitActivity();
-          },
-          onPermissionReview: (event) => {
-            transcript.onPermissionReview(event);
-            emitActivity();
-          },
-          onToolEnd: (name, toolResult, isError, meta, uiPayload, durationMs) => {
-            totalToolCalls += 1;
-            transcript.onToolEnd(name, toolResult, isError, meta, uiPayload, durationMs);
-            emitActivity();
-          },
+        this.buildTurnCallbacks({
+          transcript,
+          emitActivity,
+          reasoningStreamEmitter,
+          onToolEnd: () => { totalToolCalls += 1; },
           onAssistantRound: (round) => {
             assistantRounds += 1;
             turn = assistantRounds;
             lastText = round.text;
-            // Drop any queued delta emission first: the fold below is the
-            // authoritative state for this round, and a trailing snapshot
-            // landing after it would replace the finalized thought with the
-            // mid-stream one.
-            reasoningStreamEmitter.cancel();
-            transcript.onAssistantRound(
-              round.thought,
-              round.text,
-              round.stopReason,
-              round.hasToolCalls,
-            );
-            emitActivity();
           },
-          onError: (e) => {
-            callbacks?.onError?.(maskSubAgentText(e));
-          },
-        },
-        // The run's cancellation signal, exactly as the resume path passes it.
-        // The `abortCurrentTurn()` closure registered above cannot cover the
-        // window between `interruptRun` firing and this call: it is documented
-        // as a no-op when no turn is in flight, so an interrupt that lands
-        // during spawn setup was reported as CANCELED while the child went on
-        // to burn its full `cappedRounds` — and the second interrupt returns
-        // "not running", so the user could not even retry.
+          callbacks,
+        }),
+        // The run's cancellation signal, exactly as the resume path passes it. The `abortCurrentTurn()` closure registered above cannot cover the window between `interruptRun` firing and this call: it is documented as a no-op when no
+        // turn is in flight, so an interrupt that lands during spawn setup was reported as CANCELED while the child went on to burn its full `cappedRounds`; and the second interrupt returns "not running", so the user could not even retry.
         cancellation.signal,
         {
           maxRounds: cappedRounds,
@@ -3472,11 +2841,16 @@ export class SubAgentRunner {
             ? { approvalReasonPrefix: executionPolicy.approvalReasonPrefix }
             : {}),
           inputOrigin: executionPolicy?.inputOrigin ?? "llm-tool-arg",
+          // A clean end dispatches SubagentStop inside the run, where a deliberate block continues the child; the finally then skips it.
+          subagentStop: {
+            ...(input.spawnId !== undefined ? { agentId: input.spawnId } : {}),
+            ...(input.profileMode !== undefined ? { agentType: input.profileMode } : {}),
+            onDispatched: () => { subagentStopDispatched = true; },
+          },
         },
       );
-      // `result.toolCalls.length` is the authoritative final count (the
-      // incremental `totalToolCalls` matches it round-by-round; pin to the
-      // engine's number in case a round dropped a callback).
+      // `result.toolCalls.length` is the authoritative final count (the incremental `totalToolCalls`
+      // matches it round-by-round; pin to the engine's number in case a round dropped a callback).
       totalToolCalls = result.toolCalls.length;
       lastText = result.text;
       childStopReason = result.stopReason;
@@ -3501,18 +2875,18 @@ export class SubAgentRunner {
         failureReason = message;
       }
     } finally {
-      // A run aborted mid-stream has deltas with no round boundary behind
-      // them, so a queued trailing emission could still land after this run
-      // has gone terminal. Drop it here rather than let an activity frame
-      // trail the terminal one.
+      // A run aborted mid-stream has deltas with no round boundary behind them, so a queued trailing emission could
+      // still land after this run has gone terminal. Drop it here rather than let an activity frame trail the terminal one.
       reasoningStreamEmitter.cancel();
       unregisterSpawnChild();
-      // SubagentStop — fires once whether the run completed, errored, or
-      // aborted (the subagent has stopped either way). Observe-only/fail-soft.
-      await child.fireLifecycleEvent("SubagentStop", {
-        agentId: input.spawnId,
-        agentType: input.profileMode,
-      });
+      // SubagentStop; fires once whether the run completed, errored, or aborted (the subagent has
+      // stopped either way). Observe-only/fail-soft here; a clean end already dispatched it inside the run.
+      if (!subagentStopDispatched) {
+        await child.fireLifecycleEvent("SubagentStop", {
+          agentId: input.spawnId,
+          agentType: input.profileMode,
+        });
+      }
     }
 
     if (cancellation.signal.aborted) {
@@ -3522,76 +2896,28 @@ export class SubAgentRunner {
       ok = false;
     }
     if (transcript.finish()) emitActivity();
-    const result: SubAgentSpawnResult = {
+    const result = this.buildTurnResult({
       summary: lastText,
       toolCallCount: totalToolCalls,
       turnCount: turn,
       childSessionId,
-      // Final DLP-masked transcript, embedded so a reloaded session rebuilds
-      // the sub-agent tab without any live stream.
+      // Final DLP-masked transcript, embedded so a reloaded session rebuilds the sub-agent tab without any live stream.
       entries: transcript.snapshot(),
       ok,
-      ...(ok ? {} : { error: failureReason ?? lastText }),
-      ...(childStopReason ? { stopReason: childStopReason } : {}),
-      ...(childAuthorizationRequired
-        ? { authorizationRequired: childAuthorizationRequired }
-        : {}),
-      ...(ok && childStopReason === "round-cap"
-        ? {
-            suspension: createBudgetSuspension(child.sessionId),
-            // Derived compatibility alias for pre-suspension consumers.
-            incomplete: true,
-          }
-        : {}),
-      ...(ok && childStopReason === "input-required" && childInputRequired
-        ? { suspension: createQuestionSuspension(child.sessionId, childInputRequired) }
-        : {}),
-    };
+      failureReason,
+      stopReason: childStopReason,
+      authorizationRequired: childAuthorizationRequired,
+      inputRequired: childInputRequired,
+      suspensionSessionId: child.sessionId,
+    });
     return await persistFinalResult(result);
   }
 
-  /**
-   * Resume a previously-spawned sub-agent in the SAME instance by RE-HYDRATING
-   * its persisted history and running one fresh-budget continuation turn.
-   *
-   * ── Security invariant: RE-HYDRATE, never RE-AUTHORIZE ──
-   * A resume reconstructs the child from the metadata the ORIGINAL spawn froze
-   * to disk. It does NOT re-grant permissions:
-   *   - Tool scope is `meta.sourceTools`, decoded by
-   *     {@link fromPersistedToolScope} into the {@link SubAgentToolScope} the
-   *     spawn froze, minus the blocklist. The parent registry is NEVER
-   *     consulted, so a resume cannot gain a tool the parent registered after
-   *     the spawn: no `parent-all` inhabitant can reach this path, and a record
-   *     that decodes to nothing refuses the run rather than defaulting to a
-   *     grant.
-   *   - `agent_spawn` is stripped from the registry (blocklist) AND the turn
-   *     runs at `spawnDepth: 1`, so a resumed child cannot recurse — the same
-   *     byte-identical double defense a fresh spawn gets.
-   *   - Depth stays 1 (hard-coded); the child persists only to the isolated
-   *     `~/.ave/subagent/` store (child deps' MemoryManager).
-   *   - Origin binding: `resumeId` is validated against the calling origin tag
-   *     extracted from the id itself. A cross-session resume (conversation B
-   *     passing conversation A's childSessionId) is refused fail-closed before
-   *     any history is loaded. Untagged ids (no origin prefix) are only
-   *     resumable by a no-origin caller, keeping the invariant consistent.
-   *
-   * ── Loop guards (Commit 2) ──
-   * Refused BEFORE any turn (`{ ok:false, resumeRefusal:"exhausted" }`) when the
-   * session already hit `MAX_RESUMES` or the cumulative-rounds ceiling. A
-   * per-`childSessionId` in-flight lock fail-closes a second concurrent resume
-   * of the same id (the load→run→save transaction is not covered by the
-   * file-level write lock).
-   *
-   * @param resumeId  The `childSessionId` returned by the original spawn (also
-   *                  surfaced to the parent LLM via the incomplete tool result).
-   * @param continuationInstructions  The follow-up prompt for the fresh turn.
-   * @param title     Sub-agent title for the approval-dock label. Not stored
-   *                  in metadata, so the caller (agent_spawn) forwards it; a
-   *                  resume without a title uses the raw reason text.
-   * @param originSessionId  The calling session's id (ctx.metadata.sessionId
-   *                  in agent-spawn.ts). Matched against the tag embedded in
-   *                  `resumeId` to refuse cross-session hijack attempts.
-   */
+  /** Resume rehydrates frozen authorization; never consult the current parent registry or grant tools from unreadable metadata.
+   * Keep the recursion blocklist and spawnDepth 1, and persist only in the isolated child store.
+   * Validate origin binding before loading history; originless IDs require originless callers.
+   * Refuse exhausted budgets and concurrent resumes before any turn; file locks alone do not cover load-run-save.
+   * The caller supplies the approval title because metadata does not retain it. */
   async resume(
     resumeId: string,
     continuationInstructions: string,
@@ -3923,9 +3249,8 @@ export class SubAgentRunner {
     background = false,
     executionPolicy?: SubAgentExecutionPolicy,
   ): Promise<SubAgentSpawnResult> {
-    // In-flight lock: fail-closed if a resume for THIS session is already
-    // running. Checked before any load so two concurrent resumes cannot both
-    // read the same pre-increment metadata (lost-update on the counters).
+    // In-flight lock: fail-closed if a resume for THIS session is already running. Checked before any load so
+    // two concurrent resumes cannot both read the same pre-increment metadata (lost-update on the counters).
     const existing = this.inFlight.get(resumeId);
     if (existing) {
       const message = "sub-agent resume: a resume for this session is already in flight";
@@ -3952,7 +3277,7 @@ export class SubAgentRunner {
       return result;
     }
 
-    const attempt: InFlightResumeAttempt = {};
+    const attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void } = {};
     const runPromise = this.runResume(
       resumeId,
       continuationInstructions,
@@ -3969,11 +3294,12 @@ export class SubAgentRunner {
     try {
       return await runPromise;
     } finally {
+      attempt.releaseCheckpointChild?.();
       this.inFlight.delete(resumeId);
     }
   }
 
-  /** Inner resume body — wrapped by {@link resume} with the in-flight lock. */
+  /** Inner resume body; wrapped by {@link resume} with the in-flight lock. */
   private async runResume(
     resumeId: string,
     continuationInstructions: string,
@@ -3983,7 +3309,7 @@ export class SubAgentRunner {
     spawnId: string | undefined,
     background: boolean,
     executionPolicy: SubAgentExecutionPolicy | undefined,
-    attempt: InFlightResumeAttempt,
+    attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void },
   ): Promise<SubAgentSpawnResult> {
     const cancellation = new AbortController();
     let child: ConversationLoop | null = null;
@@ -4019,27 +3345,11 @@ export class SubAgentRunner {
       extra?: Partial<SubAgentSpawnResult>,
     ): SubAgentSpawnResult => {
       if (cancellation.signal.aborted) {
-        return {
-          summary: "sub-agent run interrupted",
-          toolCallCount: 0,
-          turnCount: 0,
-          childSessionId: resumeId,
-          entries: [],
-          ok: false,
-          error: "sub-agent run interrupted",
+        return this.buildFailureResult(resumeId, "sub-agent run interrupted", {
           stopReason: "interrupted",
-        };
+        });
       }
-      return {
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId: resumeId,
-        entries: [],
-        ok: false,
-        error: message,
-        ...extra,
-      };
+      return this.buildFailureResult(resumeId, message, extra);
     };
     const finishAttemptFailure = (
       message: string,
@@ -4051,11 +3361,8 @@ export class SubAgentRunner {
       return result;
     };
 
-    // Structural policy refusals: retrying the SAME resumeId can never
-    // succeed, so each carries the `resumeRefusal: "invalid"` marker that
-    // suppresses agent_spawn's retry guidance. Contrast the question-answer
-    // length check below, which stays UNMARKED on purpose — fixing the answer
-    // and retrying the same id is the correct move there.
+    // Structural policy refusals: retrying the SAME resumeId can never succeed, so each carries the `resumeRefusal: "invalid"` marker that suppresses agent_spawn's retry
+    // guidance. Contrast the question-answer length check below, which stays UNMARKED on purpose; fixing the answer and retrying the same id is the correct move there.
     const refuseStructurally = (message: string) =>
       finishAttemptFailure(message, { resumeRefusal: "invalid" });
 
@@ -4068,8 +3375,7 @@ export class SubAgentRunner {
     {
       const tagged = /^sub-([0-9a-f]{8})-[0-9a-f]{8}-/.exec(resumeId);
       const idTag = tagged?.[1] ?? "";
-      // The same derivation `buildChildSessionId` used, so a child spawned
-      // without an origin (tag of the empty string) resumes without one.
+      // The same derivation `buildChildSessionId` used, so a child spawned without an origin (tag of the empty string) resumes without one.
       if (idTag !== originSessionTag(originSessionId ?? "")) {
         return refuseStructurally(
           "sub-agent resume: resumeId does not belong to this session",
@@ -4159,8 +3465,7 @@ export class SubAgentRunner {
     ): Promise<SubAgentSpawnResult> => {
       unregisterResumeChild();
       const result = failureResult(message, extra);
-      // Terminal commit point: after this synchronous detach, a late interrupt
-      // is rejected and cannot race the single durable terminal write.
+      // Terminal commit point: after this synchronous detach, a late interrupt is rejected and cannot race the single durable terminal write.
       trackedRun.terminalCommitClaimed = true;
       delete trackedRun.abort;
       const taskState = projectSubAgentResultState(result);
@@ -4193,8 +3498,7 @@ export class SubAgentRunner {
     const priorCumulativeRounds = meta.cumulativeRounds ?? 0;
 
     const cumulativeRoundsCeiling = this.cumulativeRoundsCeiling();
-    // Same predicate `queueParentMessageToChild` and `agent_list` consult, so
-    // what they call "resumable" is exactly what this path will accept.
+    // Same predicate `queueParentMessageToChild` and `agent_list` consult, so what they call "resumable" is exactly what this path will accept.
     const spentAxis = this.spentResumeAxis(meta);
     if (spentAxis === "budget-resumes") {
       return await finishAuthorizedFailure(
@@ -4211,10 +3515,8 @@ export class SubAgentRunner {
       );
     }
 
-    // Same resolution as spawn: the user's configured budget, else the default.
-    // No per-mode budget exists to consult (see MAX_TURNS_DEFAULT) — a resumed
-    // agent given 15 rounds because its profile says "explore" would die
-    // mid-investigation exactly like the spawn path did.
+    // Same resolution as spawn: the user's configured budget, else the default. No per-mode budget exists to consult (see
+    // MAX_TURNS_DEFAULT); a resumed agent given 15 rounds because its profile says "explore" would die mid-investigation exactly like the spawn path did.
     const requestedRounds = this.configuredRoundBudget() ?? MAX_TURNS_DEFAULT;
     const remainingRounds = cumulativeRoundsCeiling - priorCumulativeRounds;
     const cappedRounds = Math.max(
@@ -4236,32 +3538,20 @@ export class SubAgentRunner {
       toolScope: frozenToolScope,
       title: meta.subAgentTitle,
       profileModel: meta.profileModel,
-      // A resumed run's ORIGINAL instructions are not persisted, so the task
-      // here is the continuation the parent just wrote — which is the framing
-      // this segment of the run is actually working to, and the only
-      // parent-authored text that survives the suspension.
+      // A resumed run's ORIGINAL instructions are not persisted, so the task here is the continuation the parent just wrote; which is
+      // the framing this segment of the run is actually working to, and the only parent-authored text that survives the suspension.
       approvalProvenance: buildSubAgentApprovalProvenance({
         childSessionId: resumeId,
         originSessionId,
-        // The canonical form, which is what this segment actually runs on: a
-        // question-answer resume masks the continuation before using it.
+        // The canonical form, which is what this segment actually runs on: a question-answer resume masks the continuation before using it.
         task: canonicalContinuationInstructions,
-        // Both the door this resume came through AND what the session itself
-        // records. The guard above already refuses a wire-bound session
-        // resumed through the local entry point, so these agree today — but
-        // "which door" is an inference and `hasWireBinding` is the fact, and
-        // the fact is what decides whether a remote peer wrote this framing.
+        // Both the door this resume came through AND what the session itself records. The guard above already refuses a wire-bound session resumed through the local entry
+        // point, so these agree today; but "which door" is an inference and `hasWireBinding` is the fact, and the fact is what decides whether a remote peer wrote this framing.
         wireBound: executionPolicy !== undefined || hasWireBinding,
         background,
       }),
-      // Spawn passes this; resume used to omit it, so a re-hydrated child came
-      // back WITHOUT the ability to reach its parent unless `agent_send` happened
-      // to survive in the persisted scope — and spawn deliberately filters it out
-      // of the allowlist before registering it separately, so it usually did not.
-      // A resumed sub-agent is the same agent as before the suspension; losing
-      // its channel to the parent on re-hydration is a capability regression, not
-      // a scope narrowing. This does NOT widen the frozen tool scope: every other
-      // tool still comes from persisted metadata.
+      // Spawn passes this; resume used to omit it, so a re-hydrated child came back WITHOUT the ability to reach its parent unless `agent_send` happened to survive in the persisted scope; and spawn deliberately filters it out of the allowlist before registering it separately, so it
+      // usually did not. A resumed sub-agent is the same agent as before the suspension; losing its channel to the parent on re-hydration is a capability regression, not a scope narrowing. This does NOT widen the frozen tool scope: every other tool still comes from persisted metadata.
       includeAgentSend: true,
     });
 
@@ -4279,6 +3569,7 @@ export class SubAgentRunner {
         'sub-agent resume: failed to load session history for "' + resumeId + '"',
       );
     }
+    attempt.releaseCheckpointChild = await trackCodeCheckpointChild(originSessionId ?? meta.originSessionId);
     if (
       executionPolicy
       && !projectRootEquals(child.getSessionProjectRoot(), meta.projectRoot)
@@ -4290,10 +3581,8 @@ export class SubAgentRunner {
     if (cancellation.signal.aborted) {
       return await finishAuthorizedFailure("sub-agent run interrupted");
     }
-    // A resumed child is live as soon as its loop and project scope exist.
-    // Register it before mailbox or metadata I/O so workspace removal cannot
-    // snapshot activeChildren in the construction-to-run gap and leave stale
-    // directories on the child loop.
+    // A resumed child is live as soon as its loop and project scope exist. Register it before mailbox or metadata I/O so
+    // workspace removal cannot snapshot activeChildren in the construction-to-run gap and leave stale directories on the child loop.
     activeLease = this.registerActiveChild({
       childSessionId: resumeId,
       originSessionId: meta.originSessionId,
@@ -4354,19 +3643,15 @@ export class SubAgentRunner {
         agentMailboxCausalContext = causalContext;
       }
     }
-    // Parent directives queued while this child was suspended. They ride the
-    // SAME initial-guidance channel as sibling mail — one injection path, one
-    // joined bound — and carry no A2A causal context: the parent is this run's
-    // own principal, not a peer whose hop has to be accounted for.
+    // Parent directives queued while this child was suspended. They ride the SAME initial-guidance channel as sibling mail; one injection path,
+    // one joined bound; and carry no A2A causal context: the parent is this run's own principal, not a peer whose hop has to be accounted for.
     let parentDirectiveEntries: ParentDirectiveEntry[] = [];
     const parentDirectiveMailbox = this.deps.parentDirectiveMailbox;
-    // A resume with no origin (host-internal callers) addresses no parent, so
-    // there is no authority under which a stored directive could be delivered.
+    // A resume with no origin (host-internal callers) addresses no parent, so there is no authority under which a stored directive could be delivered.
     if (parentDirectiveMailbox && originSessionId) {
       try {
-        // The caller's origin, which the gate above already proved equal to the
-        // persisted `meta.originSessionId`: a directive is delivered on the
-        // authority of the parent asking for this resume, not on its own claim.
+        // The caller's origin, which the gate above already proved equal to the persisted `meta.originSessionId`:
+        // a directive is delivered on the authority of the parent asking for this resume, not on its own claim.
         parentDirectiveEntries = await parentDirectiveMailbox.peek(
           resumeId,
           originSessionId,
@@ -4462,48 +3747,18 @@ export class SubAgentRunner {
     try {
       const turnResult = await child.runTurn(
         canonicalContinuationInstructions,
-        {
-          onReasoningDelta: (text) => {
-            transcript.onReasoningDelta(text);
-            reasoningStreamEmitter.schedule();
-          },
-          onLlmStatus: (status) => {
-            if (transcript.onLlmStatus(status)) emitActivity();
-          },
-          onToolStart: (name, input, cbMeta) => {
-            transcript.onToolStart(name, input, cbMeta);
-            emitActivity();
-          },
-          onPermissionReview: (event) => {
-            transcript.onPermissionReview(event);
-            emitActivity();
-          },
-          onToolEnd: (name, toolResult, isError, cbMeta, uiPayload, durationMs) => {
-            totalToolCalls += 1;
-            transcript.onToolEnd(name, toolResult, isError, cbMeta, uiPayload, durationMs);
-            emitActivity();
-          },
+        this.buildTurnCallbacks({
+          transcript,
+          emitActivity,
+          reasoningStreamEmitter,
+          onToolEnd: () => { totalToolCalls += 1; },
           onAssistantRound: (round) => {
             assistantRounds += 1;
             turn = assistantRounds;
             lastText = round.text;
-            // Drop any queued delta emission first: the fold below is the
-            // authoritative state for this round, and a trailing snapshot
-            // landing after it would replace the finalized thought with the
-            // mid-stream one.
-            reasoningStreamEmitter.cancel();
-            transcript.onAssistantRound(
-              round.thought,
-              round.text,
-              round.stopReason,
-              round.hasToolCalls,
-            );
-            emitActivity();
           },
-          onError: (message) => {
-            callbacks?.onError?.(maskSubAgentText(message));
-          },
-        },
+          callbacks,
+        }),
         cancellation.signal,
         {
           maxRounds: cappedRounds,
@@ -4540,34 +3795,24 @@ export class SubAgentRunner {
       lastText = message;
       failureReason = message;
     } finally {
-      // Same reason as the spawn path: an abort mid-stream leaves deltas with
-      // no round boundary to cancel their queued emission.
+      // Same reason as the spawn path: an abort mid-stream leaves deltas with no round boundary to cancel their queued emission.
       reasoningStreamEmitter.cancel();
       unregisterResumeChild();
     }
     if (transcript.finish()) emitActivity();
-    let result: SubAgentSpawnResult = {
+    let result = this.buildTurnResult({
       summary: lastText,
       toolCallCount: totalToolCalls,
       turnCount: turn,
       childSessionId: resumeId,
       entries: transcript.snapshot(),
       ok,
-      ...(ok ? {} : { error: failureReason ?? lastText }),
-      ...(childStopReason ? { stopReason: childStopReason } : {}),
-      ...(childAuthorizationRequired
-        ? { authorizationRequired: childAuthorizationRequired }
-        : {}),
-      ...(ok && childStopReason === "round-cap"
-        ? {
-            suspension: createBudgetSuspension(resumeId),
-            incomplete: true,
-          }
-        : {}),
-      ...(ok && childStopReason === "input-required" && childInputRequired
-        ? { suspension: createQuestionSuspension(resumeId, childInputRequired) }
-        : {}),
-    };
+      failureReason,
+      stopReason: childStopReason,
+      authorizationRequired: childAuthorizationRequired,
+      inputRequired: childInputRequired,
+      suspensionSessionId: resumeId,
+    });
     if (cancellation.signal.aborted) {
       result = {
         summary: "sub-agent run interrupted",
@@ -4581,8 +3826,7 @@ export class SubAgentRunner {
       };
     }
 
-    // Claim the terminal transition before the first async preparation yield.
-    // Cancellation and final persistence therefore have a single winner.
+    // Claim the terminal transition before the first async preparation yield. Cancellation and final persistence therefore have a single winner.
     trackedRun.terminalCommitClaimed = true;
     delete trackedRun.abort;
     result = await this.prepareQuestionStageForPersistence(
@@ -4667,11 +3911,8 @@ export class SubAgentRunner {
       }
     }
 
-    // The SIBLING mailbox deliberately keeps the narrower rule: a peer's
-    // message rides an at-least-once lane whose entry also carries the causal
-    // context and force-ask label governing the segment, and retaining it on a
-    // round-cap is what carries that governance into the continuation. See the
-    // "retains idle sibling mailbox delivery" case in subagent-resume.test.ts.
+    // The SIBLING mailbox deliberately keeps the narrower rule: a peer's message rides an at-least-once lane whose entry also carries the causal context and force-ask label governing
+    // the segment, and retaining it on a round-cap is what carries that governance into the continuation. See the "retains idle sibling mailbox delivery" case in subagent-resume.test.ts.
     if (
       agentMessageBus
       && agentMailboxEntries.length > 0
@@ -4693,13 +3934,8 @@ export class SubAgentRunner {
         log.warn("sub-agent resume: agent mailbox acknowledgement failed for %s", resumeId);
       }
     }
-    // A parent directive is consumed when the turn that carried it reached a
-    // conclusion — INCLUDING a round-cap (see `resumeSegmentConsumedGuidance`).
-    // It carries no causal context and no force-ask label, so unlike the
-    // sibling entry above there is nothing in it that a continuation still
-    // needs; re-injecting it would only replay the parent's one message at the
-    // top of every remaining segment. A run that failed or was interrupted
-    // acknowledges nothing.
+    // A parent directive is consumed when the turn that carried it reached a conclusion; INCLUDING a round-cap (see `resumeSegmentConsumedGuidance`). It carries no causal context and no force-ask label, so unlike the sibling
+    // entry above there is nothing in it that a continuation still needs; re-injecting it would only replay the parent's one message at the top of every remaining segment. A run that failed or was interrupted acknowledges nothing.
     if (
       parentDirectiveMailbox
       && parentDirectiveEntries.length > 0

@@ -1,17 +1,11 @@
-/**
- * ConversationLoop must establish the remote-controller extension boundary
- * before any asynchronous lifecycle dispatch reaches the hook manager.
- */
+// Establish the remote-controller extension boundary before asynchronous lifecycle dispatch.
 import { describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { areExternalTurnHooksAllowed } from "../../shared/turn-extension-policy.js";
-import { ToolRegistry } from "../../tools/registry.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 class SingleTurnProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -23,12 +17,8 @@ class SingleTurnProvider implements LLMProvider {
 }
 
 function buildLoop(scriptHookManager: ScriptHookManager): ConversationLoop {
-  return new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+  return new ConversationLoop(makeBasicConversationLoopDeps({
     systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
-    toolRegistry: new ToolRegistry(),
     memoryManager: {
       saveSession: () => Promise.resolve(),
       listSessions: () => [],
@@ -36,7 +26,7 @@ function buildLoop(scriptHookManager: ScriptHookManager): ConversationLoop {
     },
     disableSessionPersistence: true,
     scriptHookManager,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
 }
 
 describe("ConversationLoop Tailnet extension policy", () => {

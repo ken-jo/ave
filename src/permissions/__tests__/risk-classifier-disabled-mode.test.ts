@@ -1,20 +1,9 @@
-/**
- * Issue #664 / PR #860 — DisabledRiskClassifier focused unit tests.
- *
- * Post-#664 the `disabled` reviewer mode is wired as pass-through-LOW (not
- * defer-all-HIGH). The fail-closed semantic moved to {@link StrictRiskClassifier}.
- *
- * These tests pin the new contract: every category, source, and trustOrigin
- * tuple returns LOW with the "disabled — pass-through" reason. The
- * classifier is intentionally trivial (no rule lookup, no LLM call), so
- * the contract is small: any input → LOW.
- */
+// Disabled mode always returns LOW without rule/model review; category/source/trust policy still applies.
 import { describe, it, expect } from "vitest";
 import {
   DisabledRiskClassifier,
 } from "../reviewer/risk-classifier.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
-
 
 describe("DisabledRiskClassifier — issue #664 pass-through", () => {
   const c = new DisabledRiskClassifier();
@@ -32,9 +21,7 @@ describe("DisabledRiskClassifier — issue #664 pass-through", () => {
   });
 
   it("shell category with destructive verb → still LOW (reviewer lane bypassed)", () => {
-    // `disabled` short-circuits before any rule fires. The per-tool category
-    // × source × trust matrix in PermissionManager (which still applies) is
-    // what guards destructive shell commands when this mode is on.
+    // `disabled` short-circuits before any rule fires. The per-tool category × source × trust matrix in PermissionManager (which still applies) is what guards destructive shell commands when this mode is on.
     const v = c.classify(
       ctx({
         category: "shell",

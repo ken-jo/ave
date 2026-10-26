@@ -221,9 +221,7 @@ describe("executeRationaleAwareConversationBatch", () => {
       "trigger-ok",
       RATIONALE_SIBLING_CANCELLED_RESULT,
     ]);
-    // The reviewer already authorized; the user modal is never opened.
     expect(coordinator.promptForApproval).not.toHaveBeenCalled();
-    // Execution still flows through the shared sealed-resume chokepoint.
     expect(coordinator.createSealedResume).toHaveBeenCalledTimes(1);
     expect(fixture.executor.executeSealedRationaleResume).toHaveBeenCalledTimes(1);
   });

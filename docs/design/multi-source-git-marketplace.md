@@ -570,7 +570,8 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   applies as inline custom properties with its shell's shadow stack and
   `color-scheme`.
 - **Language** — the locale set is open: any well-formed BCP 47 tag. `en`
-  and `ko` stay compiled in; an installed language registers its locale
+  and `ko` are visible built-ins without installing packages. A package can
+  overlay a compiled locale or add another locale; an installed language registers its locale
   with its native and English names, and its messages are layered over
   English, so a key it does not translate reads in English.
   - A package translates the interface only. `messages.json` may use
@@ -2516,7 +2517,7 @@ subject in both catalogs.
 | `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | — | `.artifactNotPinned` |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | — | `.digestMismatch` |
 | `MANIFEST_MISMATCH` | plugin.json vs descriptor | — | `.manifestMismatch` |
-| `process-entry-unconfined` | a `process` entry while the OS tool sandbox is off, or on Windows (`plugin-hostapi-protocol.md` §2.1) | — | `formatIpcError.processEntryUnconfined` |
+| `process-entry-unconfined` | a `process` entry while extension confinement (`features.pluginWorkerConfinement`) is not active, or on Windows (`plugin-hostapi-protocol.md` §2.1) | — | `formatIpcError.processEntryUnconfined` |
 | `process-entry-requires-pinned-artifact` | a `process` entry not installed from a sha256-pinned release or archive artifact (`plugin-hostapi-protocol.md` §2.1) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
 | `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `folder-has-no-build` (name: a folder plugin without `plugin.json`, §7.7) | `.noArtifact`, `.noArtifact.folderHasNoBuild` |
 | `CONTENT_RULE_VIOLATION` | content kind file rules; a folder's reading rules (§7.7) | `link-outside-folder` (path, target), `link-to-network` (path, target), `link-to-skipped` (path, target), `special-file` (path), `case-collision` (path), `limit` (path, limit) — `path` relative to the folder; `target` the link's own text, for `link-to-skipped` the skipped entry it reaches | `.contentRule`, `.contentRule.<reason>` |
@@ -3429,7 +3430,7 @@ blocks may not.
   and certificate checks (`servername`, `:131`). Its trust store is
   `tls.getCACertificates("default")` plus `tls.getCACertificates("system")`,
   so a company root installed in the OS store keeps working (§9.2). Electron
-  44 ships Node 24.20.0, which has both. Each redirect hop is a new
+  44.9.3 ships Node 24.22.0, which has both. Each redirect hop is a new
   connection with its own lookup and checks.
 - **Proxies on the transports Ave owns are trusted beyond their socket.**
   When PAC routes a download or a git http(s) connection through an http(s)

@@ -157,9 +157,7 @@ describe("validateDescriptorText", () => {
       expect(checkDescriptor(withPayload({ authority: authority(), artifact: { archive: { url: "https://dl.example.com/a.zip" } } })).ok).toBe(true);
     });
 
-    // Catalog-supplied http downloads are accepted (design §18.2.3, decision 5 of §18):
-    // the pin, read over the source's own transport, fixes the bytes, and the
-    // Delivery row says "unencrypted download — verified by the pinned sha256".
+    // HTTP artifact bytes are trusted through the source-pinned hash, not transport encryption.
     it.each([
       ["a release", { release: { url: "http://git.corp.example/root/api/v4/projects/7/packages/generic/alpha/1.2.0/alpha-1.2.0.zip", sha256: SHA } }],
       ["an archive", { archive: { url: "http://dl.example.com/a.zip", sha256: SHA } }],
@@ -295,7 +293,6 @@ describe("validateIndexText", () => {
     const kept = (result: ReturnType<typeof validateIndexText>) => (result.ok ? result.value.index.packages.length : -1);
 
     expect(kept(listing("plugin", [pluginVersion("1.0.0"), pin()]))).toBe(1);
-    // Each of these would hand git a commit that names no tree, or offer what cannot install.
     expect(kept(listing("plugin", [pin({ yanked: undefined })]))).toBe(0);
     expect(kept(listing("plugin", [pin({ artifact: { release: { repo: "acme/alpha", tag: "v0.9.0", asset: "a.zip", sha256: SHA } } })]))).toBe(0);
     expect(kept(listing("plugin", [pin({ artifact: { release: { repo: "acme/alpha", sha256: SHA }, tree: "plugins/fixturepin/build" } })]))).toBe(0);
@@ -444,16 +441,13 @@ describe("identifiers with a credential's shape (§18.8)", () => {
 
 describe("one detector for admission and egress (§18.8)", () => {
   const context = { sourceId: "acme", official: false };
-  // A task id from a digest of ordinary content, not a token renamed: SHA-224 hex after `task-`.
   const taskDigest = `task-${createHash("sha224").update("ordinary task inputs").digest("hex")}`;
   const base32Digest = "al62ny3xigdbyafl7irut3jbxlrld5chtn2dxghblz6hml2otyqq";
-  /** Ordinary names an id or package may have. */
   const ORDINARY_IDS = [
     "test-marketplace2026", "test-integration123", "live-notifications2026", "live-captions", "npm-audit-helper",
     "glpat-rotation-docs", "sk-proj-tools", "sk-learn-utils", "akiak-production", "task-sk-learn-utils",
     "task-prepare-marketplace-folder-source-diagnostics", "task-proj-build-the-user-interface-for-the-marketplace", taskDigest,
   ];
-  /** Ordinary values that are not ids: names with other characters, commits, digests, build metadata. */
   const ORDINARY_VALUES = [
     "npm_scripts", "AKIA-example-not-a-token", "laughs_compilation-of-the-best-moments.mp4",
     "0123456789abcdef0123456789abcdef01234567", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
@@ -485,7 +479,6 @@ describe("one detector for admission and egress (§18.8)", () => {
       expect(holdsCredential(text), text).toBe(true);
       expect(scrubDiagnosticSecrets(text)).not.toContain(token);
     }
-    // Where the result is an id's grammar, admission refuses it.
     const id = `${before}${ID_TOKEN}`;
     if (/^[a-z0-9-]+$/u.test(id)) {
       expect(isSourceId(id)).toBe(false);
@@ -505,7 +498,7 @@ describe("one detector for admission and egress (§18.8)", () => {
   });
 
   it("leaves a prefix glued to a letter or digit to the documented residual", () => {
-    // `ta` + `sk-proj-…` is the word `task-proj-…`: refusing such names would refuse ordinary ones (§18.8).
+    // Ordinary task-proj names must not be mistaken for a credential prefix.
     expect(holdsCredential(`backup${MIXED_TOKEN}`)).toBe(false);
   });
 });

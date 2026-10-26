@@ -1,15 +1,4 @@
-/**
- * Boot step — shared audit logger, notification service, and plugin
- * auth-partition tracker seeding (§4.2, extracted from boot.ts C18).
- *
- * The AuditLogger built here is the SINGLE instance shared by the plugin
- * runtime, hooks, and approval gate. The NotificationService is constructed
- * up-front so every lifecycle cue (turn-end / routine / ask-user / approval /
- * plugin / system) can fire against a live mainWindow getter, and the OS
- * notification presenter is created with it. Finally the
- * in-memory plugin-auth-partition tracker is seeded from disk (#748) with
- * persistence callbacks wired so later observations flush to disk.
- */
+/** Share one audit writer across plugins, hooks, and approvals; seed auth partitions before uninstall can run. */
 import { NotificationService } from "../../main/notification-service.js";
 import {
   readPersistedPluginAuthPartitions,
@@ -23,21 +12,13 @@ import {
 } from "../../main/plugin-auth-partition-tracker.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
+import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import type { BootContext } from "../context.js";
 import type { DesktopHostCapabilities } from "../host-runtime.js";
 
 const log = createLogger("ave");
 
-/**
- * Create the OS notification presenter at boot rather than at the first cue.
- * On Windows this is when Electron registers the per-user Start Menu shortcut
- * and the toast activator CLSID, so both exist before any notification and
- * the uninstaller can remove what the app registered
- * (`scripts/smoke-windows-nsis-installer.mjs` asserts each step). Until
- * 0.13.0 this happened only as a side effect of the retired manifest
- * `notificationEvents` wiring. A host without a desktop surface has no
- * presenter.
- */
+/** Initialize the presenter at boot so Windows toast activation is registered before any notification. */
 function initializeOsNotificationPresenter(
   desktop: Pick<DesktopHostCapabilities, "initializeNotificationPresenter"> | undefined,
 ): void {
@@ -49,7 +30,6 @@ function initializeOsNotificationPresenter(
 export async function setupAuditAndNotification(ctx: BootContext): Promise<void> {
   const { getMainWindow, aveHomeDocUpgradeMarkers } = ctx;
 
-  // Shared AuditLogger instance (plugin runtime + hooks + gate).
   const { AuditLogger } = await import("../../audit/audit-logger.js");
   const { ensureAuditSecret } = await import("../../audit/hmac-chain.js");
   const { createHostSecretStore } = await import("../../audit/host-secret-store.js");
@@ -59,9 +39,9 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
     ensureAuditSecret(permissionAuditSecretStore),
     permissionAuditSecretStore,
   );
+  initAdminPolicyAudit(bootAuditLogger);
 
-  // §14.2 Audit rotation must share the runtime writer instance. A separate
-  // maintenance logger cannot drain records queued by the host/plugin paths.
+  // Rotation must drain the runtime writer’s queue, not a separate maintenance logger.
   const runAuditMaintenance = () => {
     const auditCfg = ctx.settingsService.get("audit");
     void bootAuditLogger.rotateAndPrune({
@@ -75,9 +55,7 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
   const auditMaintenanceTimer = setInterval(runAuditMaintenance, 60 * 60 * 1000);
   auditMaintenanceTimer.unref?.();
 
-  // Issue #260 — system notification service. Constructed up-front so
-  // turn-end, routine, ask-user, approval, plugin, and system cues can call .fire().
-  // Live mainWindow getter avoids a stale handle after Electron close+reopen.
+  // Resolve the live main window after close and reopen.
   const notificationService = new NotificationService({
     getMainWindow,
     auditLogger: bootAuditLogger,
@@ -86,6 +64,8 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
       isAnyWindowFocused: () => false,
       notificationActivationRegistration: null,
     }),
+    isTurnCompletionSoundEnabled: () => ctx.settingsService.get("system").turnCompletionSoundEnabled ?? true,
+    isOsNotificationsEnabled: () => ctx.settingsService.get("alerts").osNotificationsEnabled,
   });
   initializeOsNotificationPresenter(ctx.host.desktop);
   if (aveHomeDocUpgradeMarkers.length > 0) {
@@ -99,25 +79,17 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
       body: t("be_boot.upgradeNotificationBody", { markerSummary }),
     });
   }
-  // Routine delivery sites pass `notificationService` explicitly per-call so
-  // there's no module-level singleton to reset between tests/processes.
+  // Pass notification service per call rather than retaining a process-global singleton.
 
-  // Issue #748 — seed the in-memory plugin-auth-partition tracker from disk so
-  // uninstall can wipe partitions created in prior app sessions (not just the
-  // current runtime). Wire persistence callbacks so every new observation is
-  // immediately flushed to `~/.ave/plugins/auth-partitions.json`.
-  //
-  // Sweep crashed-write tombstones from prior session before reading current state.
-  // Non-fatal — continue boot if sweep fails.
+  // Persist observed auth partitions so uninstall also wipes partitions from earlier sessions.
+  // Sweep interrupted-write tombstones before loading state; sweep failure is non-fatal.
   await cleanupStaleTmpFiles().catch((err: unknown) => {
     log.warn(
       "boot: cleanupStaleTmpFiles failed (non-fatal): %s",
       (err as Error).message,
     );
   });
-  //
-  // Corrupt file → throws loudly with an audit entry instead of silently
-  // using an empty set (CLAUDE.md "No Fallback Code" rule).
+  // Corrupt partition state must throw with an audit record rather than become an empty set.
   await readPersistedPluginAuthPartitions()
     .then((persisted) => {
       if (persisted !== null) seedPluginAuthPartitions(persisted);

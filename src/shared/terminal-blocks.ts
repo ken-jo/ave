@@ -1,8 +1,3 @@
-/**
- * Terminal command-block records, shared by the main-process block tracker
- * (main/terminal/terminal-blocks.ts), the internal terminal IPC surface, the
- * renderer block list and the `terminal_read` tool.
- */
 
 /** `osc133`: bounded by the shell's own markers. `heuristic`: split at Enter. */
 export type TerminalBlockSource = "osc133" | "heuristic";

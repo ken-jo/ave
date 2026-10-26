@@ -1,10 +1,5 @@
-/**
- * The installed-content IPC (blueprint P3): the `ave-content:` handler is
- * registered with the IPC handlers, before any window loads (a frame binds
- * its scheme loaders when it commits); nothing is loaded until the renderer
- * or an asset request first asks, the load runs once, and a failed load
- * answers "unavailable" (IPC) or 404 (assets) instead of throwing.
- */
+/** The installed-content IPC (blueprint P3): the `ave-content:` handler is registered with the IPC handlers, before any window loads (a frame binds its scheme loaders when it
+ * commits); nothing is loaded until the renderer or an asset request first asks, the load runs once, and a failed load answers "unavailable" (IPC) or 404 (assets) instead of throwing. */
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,7 +25,7 @@ vi.mock("../gated.js", () => ({
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { getLocale, isInstalledLocale, registerInstalledLocales, setInstalledCatalogLoader, setLocale, translate } from "../../i18n/index.js";
-import { loadLocaleMessages, messages as catalogs } from "../../i18n/messages/index.js";
+import { loadLocaleMessages } from "../../i18n/messages/index.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { ContentStore, type StagedContent } from "../../marketplace/content/store.js";
@@ -42,7 +37,7 @@ import { loadInstalledContent, registerMarketplaceContentHandlers } from "../dom
 
 const TOKEN = "t0123456789abcdef0123456789abcdef";
 /** No installed package here has an MCP server: the runtime only registers its lease source. */
-const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined };
+const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined, registerBundledCredentialSource: () => undefined };
 const content = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
 const port = {
   installed: () => content,
@@ -152,8 +147,8 @@ describe("loadInstalledContent", () => {
   it("applies what the store holds to this process: locales, their catalogs, theme ids and the selected language", async () => {
     const language = { locale: "fr", nativeName: "Français", englishName: "French" };
     // A real interface key: the loader checks the package against the compiled English catalog.
-    const key = Object.keys(catalogs.en).find((candidate) => !candidate.startsWith("be_") && !catalogs.en[candidate]!.includes("{"))!;
-    const messages = { [key]: "Envoyer" };
+    const key = "common.cancel";
+    const messages = { [key]: "Annuler" };
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
@@ -162,13 +157,21 @@ describe("loadInstalledContent", () => {
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
     expect(getLocale()).toBe("fr");
-    expect(translate("fr", key)).toBe("Envoyer");
+    expect(translate("fr", key)).toBe("Annuler");
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
     const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
+  });
+
+  it("vouches for its installed agent plugins only when none failed to load", async () => {
+    const sources: Array<{ installedPackages(): Promise<ReadonlySet<string> | undefined> }> = [];
+    const mcpManager = { ...LEASE_ONLY_MCP, registerBundledCredentialSource: (_kind: string, source: { installedPackages(): Promise<ReadonlySet<string> | undefined> }) => { sources.push(source); } };
+    await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager } as unknown as IpcDeps, TOKEN, root);
+    expect(sources).toHaveLength(1);
+    expect(await sources[0]!.installedPackages()).toEqual(new Set());
   });
 
   it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {

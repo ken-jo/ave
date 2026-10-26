@@ -1,8 +1,4 @@
-/**
- * The renderer's `types.ts` used to hand-mirror main-process types. These
- * assertions pin every re-export to the owner type so the two sides cannot
- * drift again: a divergence fails `check:typecheck-tests`, not a UI at runtime.
- */
+/** Keep renderer re-exports identical to their owning types so drift fails typechecking. */
 import { describe, expectTypeOf, it } from "vitest";
 import type {
   AppSettings,
@@ -62,12 +58,13 @@ import { t } from "../../../i18n/runtime.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
 describe("renderer types are the owner types", () => {
-  it("AppSettings is the host settings minus the main-only a2aRemote block", () => {
+  it("AppSettings is the host settings minus the main-only a2aRemote block and the upstream proxy (own channels)", () => {
     expectTypeOf<AppSettings>().toEqualTypeOf<RendererSettingsSnapshot>();
     expectTypeOf<AppSettings>().toEqualTypeOf<
-      Omit<HostAppSettings, "a2aRemote"> & { readonly activeChatModel: ActiveChatModel }
+      Omit<HostAppSettings, "a2aRemote" | "upstreamProxy"> & { readonly activeChatModel: ActiveChatModel }
     >();
     expectTypeOf<"a2aRemote">().not.toMatchTypeOf<keyof AppSettings>();
+    expectTypeOf<"upstreamProxy">().not.toMatchTypeOf<keyof AppSettings>();
     expectTypeOf<MemoryCaptureMode>().toEqualTypeOf<HostMemoryCaptureMode>();
   });
 

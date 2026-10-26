@@ -1,11 +1,3 @@
-/**
- * Phase 1.5 Option C — PluginRuntime.listPluginCards() tests.
- *
- * Verifies catalog shape used by SystemPromptBuilder + request_plugin:
- *   - id / name / description / sampleTools (max 3)
- *   - Tool descriptions are surfaced from pure manifest Tool objects
- *   - Manifest description remains the card summary
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -139,9 +131,7 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
       "meeting_push_chunk",
       "meeting_stop",
     ]);
-    // Manifest description is the card summary.
     expect(cards[0].description).toBe("Test fixture.");
-    // Per-tool descriptions remain accessible via toolDescriptions.
     expect(cards[0].toolDescriptions?.["meeting_start"]).toContain("회의 시작");
     expect(cards[0].toolDescriptions?.["meeting_push_chunk"]).toContain(
       "오디오 청크 전송",
@@ -308,9 +298,7 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
     });
     await runtime.startAll();
 
-    // Fake toolRegistry that only exposes filtered_a and filtered_c (filtered_b is denied).
-    // listPluginCards feeds the MODEL-visible set (getModelVisibleTools) to the card UI —
-    // see the runtime's comment at that call site.
+    // Cards must use the model-visible tool set, excluding denied tools.
     const fakeRegistry = {
       getModelVisibleTools: () => [
         { name: "filtered_a" },

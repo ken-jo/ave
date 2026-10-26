@@ -1,34 +1,4 @@
-/**
- * `routine_schedule` LLM tool — creates a persistent routine that fires at a
- * scheduled time (one-off or repeating). The routine survives app restart
- * (persisted to `~/.ave/routine/routines.json`) and fires via the RoutinesScheduler.
- *
- * NOTE: This tool registers a *routine* (a future-firing self-trigger).
- * It is NOT a calendar-event lookup tool — calendar event queries are served by
- * a calendar plugin. Naming intentionally puts "routine" first to avoid the
- * "schedule" verb colliding with calendar-event requests in LLM tool selection.
- *
- * Execution modes:
- *   - "llm-session"       → starts a ConversationLoop with prePrompt
- *   - "notification-only" → fires an OS notification
- *
- * 3 input styles:
- *   1. Form:           at + repeat.kind + repeat fields
- *   2. Cron:           repeat.kind="cron" + repeat.expression
- *   3. Natural language: LLM fills the structured fields after parsing user intent
- *
- * Examples
- *   Daily report at 09:00 every morning:
- *     { execution:"llm-session", schedule:{ at:"2026-05-09T09:00:00",
- *       repeat:{kind:"daily"} }, prePrompt:"Write today's daily report", title:"Daily report" }
- *
- *   Weekly work summary at 09:00 every Monday:
- *     { execution:"llm-session", schedule:{ at:"...", repeat:{kind:"weekly"} }, ... }
- *
- *   Direct cron expression:
- *     { execution:"notification-only", schedule:{ repeat:{kind:"cron",
- *       expression:"0 9 * * 1"} }, notificationTitle:"Monday reminder" }
- */
+// Persist future-triggered routines across restarts; calendar-event lookup belongs to plugins.
 import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
 import type { RoutinesStore } from "../main/routines-store.js";
@@ -48,20 +18,7 @@ const DATE_ONLY_DEFAULT_HOUR = 9;
 /** Maximum interval: the same horizon the store allows for `schedule.at`. */
 const MAX_INTERVAL_MS = MAX_FUTURE_OFFSET_MS;
 
-/**
- * Normalize a date/datetime string to a UTC ISO string.
- *
- * Accepts:
- * - ISO 8601 datetime strings (with or without timezone offset)
- * - `YYYY-MM-DD` date-only strings — defaults to **09:00 in the host's zone**
- *   when no time component is provided. Host-local because the person who said
- *   "on the 14th" meant their own calendar, and because the routine panel's own
- *   picker already builds `at` from the host zone — a fixed offset here made
- *   the same field mean two different instants depending on which door it came
- *   through.
- *
- * @returns UTC ISO string, or null if the input cannot be parsed.
- */
+// Return UTC ISO or null; date-only inputs default to 09:00 in the host zone, matching the routine picker.
 function asIso(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -114,12 +71,11 @@ function parseSchedule(raw: unknown): RoutineSchedule | null {
   const s = raw as Record<string, unknown>;
 
   const repeat = s.repeat !== undefined ? parseRepeat(s.repeat) : undefined;
-  // cron routines do not need an `at` field — next-fire is computed by the scheduler.
+  // Cron computes next-fire without an at timestamp.
   const isCron = repeat?.kind === "cron";
 
   const at = s.at !== undefined ? asIso(s.at) : undefined;
 
-  // Non-cron schedules require at least an `at` timestamp.
   if (!isCron && !at) return null;
 
   return {
@@ -136,7 +92,7 @@ function parseAllowedPlugins(raw: unknown): string[] | null {
   return [...new Set(ids)];
 }
 
-export function routineScheduleApprovalCacheKey(rawInput: unknown): string {
+function routineScheduleApprovalCacheKey(rawInput: unknown): string {
   const input = (rawInput ?? {}) as Record<string, unknown>;
   const allowedPlugins = parseAllowedPlugins(input.allowedPlugins);
   if (!allowedPlugins) return "scope:invalid";
@@ -264,9 +220,7 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
         };
       }
 
-      // Idempotency identity marker (e.g. `suggestion:<pluginId>:<intent>`).
-      // Optional; empty/whitespace collapses to unset. The store re-validates
-      // the cap as the SOT — the early check just returns a clean tool error.
+      // Empty source is unset; the store revalidates the idempotency marker cap.
       const rawSource = typeof a.source === "string" ? a.source.trim() : undefined;
       if (rawSource !== undefined && rawSource.length > MAX_ROUTINE_SOURCE_LENGTH) {
         return {
@@ -276,9 +230,7 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
       }
       const source = rawSource && rawSource.length > 0 ? rawSource : undefined;
 
-      // Permission policy Layer 4 — translate the LLM-facing `allowedPlugins` field
-      // into the canonical `scope` discriminated union. Missing or []
-      // both mean explicit deny-all; non-empty means explicit allow-list.
+      // Missing or empty allowedPlugins means explicit deny-all; otherwise map to the canonical scope allowlist.
       const pluginIds = allowedPlugins.length === 0
         ? ({ mode: "deny-all" } as const)
         : ({ mode: "allow", ids: allowedPlugins } as const);

@@ -1,19 +1,4 @@
-/**
- * Recommended-work proposals — the store half of the plugin → host channel.
- *
- * Same harness as `work-board-store.test.ts`: a temp `board.json` through the
- * constructor (proposals land beside it) and an injectable clock, so the real
- * `~/.ave/work-board/` namespace is never touched.
- *
- * The rules under test are the ones that have to REFUSE something, because a
- * rule with no test for its refusal is a rule that is documented rather than
- * implemented:
- *   - an undeclared kind is rejected;
- *   - a second open proposal in a kind that already has one is refused;
- *   - a withdrawal by a plugin that does not own the proposal is refused;
- *   - a malformed payload is rejected by field name, never coerced;
- *   - proposals survive a restart.
- */
+// Inject a temporary board path and clock so real user work-board files remain untouched.
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -90,7 +75,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
         posted.proposal.createdAt,
       );
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -106,7 +91,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
       expect(JSON.parse(readFileSync(join(path, "..", "proposals.json"), "utf8")).proposals)
         .toHaveLength(1);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -120,7 +105,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -139,7 +124,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
         FIXED_NOW + PROPOSAL_TTL_MAX_MS,
       );
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });
@@ -153,7 +138,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -165,7 +150,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const result = await store.upsertProposal(mail, input({ kind: "stale-index" }));
       expect(result).toEqual({ status: "kind_not_granted", kind: "stale-index" });
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -184,7 +169,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(2);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -198,7 +183,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       expect((await store.upsertProposal(INDEXER, input({ key: "folder:invoices" }))).status)
         .toBe("ok");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -206,8 +191,7 @@ describe("WorkBoardStore — proposal refusals", () => {
     const { store, cleanup } = tempStore();
     try {
       await store.upsertProposal(INDEXER, input());
-      // Same kind, same key, different caller — the id it resolves to is
-      // derived from ITS OWN plugin id, so the victim's row is not addressable.
+      // Same kind, same key, different caller — the id it resolves to is derived from ITS OWN plugin id, so the victim's row is not addressable.
       expect(await store.withdrawProposal("mail", "stale-index", "folder:reports")).toBe(false);
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(1);
@@ -216,7 +200,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       // And a second withdrawal is a no-op, not an error.
       expect(await store.withdrawProposal("indexer", "stale-index", "folder:reports")).toBe(false);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -242,7 +226,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -255,14 +239,13 @@ describe("WorkBoardStore — proposal refusals", () => {
       expect((await store.listProposals()).status === "ok").toBe(true);
       expect((await store.listProposals() as { proposals: unknown[] }).proposals).toHaveLength(0);
 
-      // Re-posting the SAME key refreshes the record but must not put the card
-      // the user closed back in front of them.
+      // Re-posting the SAME key refreshes the record but must not put the card the user closed back in front of them.
       expect((await store.upsertProposal(INDEXER, input({ summary: "still stale" }))).status)
         .toBe("ok");
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });
@@ -284,8 +267,7 @@ describe("WorkBoardStore — accepting a proposal", () => {
       expect(accepted.item.priority).toBe("high");
       expect(accepted.item.status).toBe("planned");
       expect(accepted.item.projectRoot).toBe("/tmp/project");
-      // The HOST composed the detail out of state + evidence + blockers, so the
-      // shape does not depend on how a plugin laid its text out.
+      // The HOST composed the detail out of state + evidence + blockers, so the shape does not depend on how a plugin laid its text out.
       expect(accepted.item.detail).toContain("Last scanned 12 days ago");
       expect(accepted.item.detail).toContain("Newest change: quarterly-summary.docx");
       expect(accepted.item.detail).toContain("disconnected share → Reconnect the share");
@@ -295,7 +277,7 @@ describe("WorkBoardStore — accepting a proposal", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -308,7 +290,7 @@ describe("WorkBoardStore — accepting a proposal", () => {
         proposalId: "indexer:stale-index:deadbeefdeadbeef",
       });
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });

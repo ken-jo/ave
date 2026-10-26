@@ -1,12 +1,8 @@
-/**
- * Each tab operation from main is carried out by exactly one chat view's
- * store: the one holding the tab, or for a new tab the one showing the
- * conversation it is for.
- */
+/** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
-import { bindGuestToTab, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
-import { setWebSurfaceElement } from "../web-surfaces.js";
+import { noteWebSurfaceFavicon, setWebSurfaceElement, webSurfaceFavicon } from "../web-surfaces.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
   const calls: string[] = [];
@@ -21,6 +17,14 @@ function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { call
 }
 
 describe("user browser navigation", () => {
+  it("quietly ignores a close for a tab no host holds", () => {
+    const owner = host("session", ["browser:live"]);
+    const unregister = registerBrowserTabHost({} as AveApi, owner);
+    try {
+      expect(() => closeBrowserTab("browser:missing")).not.toThrow();
+      expect(owner.calls).toEqual([]);
+    } finally { unregister(); }
+  });
   it("waits for main to confirm takeover before navigating", async () => {
     let resolveStop!: (result: { ok: true }) => void;
     const stop = vi.fn(() => new Promise<{ ok: true }>((resolve) => { resolveStop = resolve; }));
@@ -45,6 +49,22 @@ describe("user browser navigation", () => {
 });
 
 describe("guest binding", () => {
+  it("shares data-only favicon metadata for every bound guest and clears it on main-frame navigation", () => {
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
+    const unbind = bindGuestToTab({ browserTabs: { bindTab: vi.fn().mockResolvedValue({ ok: true }) } } as unknown as AveApi, guest, "browser:icon", undefined);
+    const publish = () => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://example.test/icon.png", "data:image/png;base64,YQ=="] }));
+    try {
+      publish();
+      expect(webSurfaceFavicon("browser:icon")).toBe("data:image/png;base64,YQ==");
+      guest.dispatchEvent(Object.assign(new Event("did-navigate"), { isMainFrame: false }));
+      expect(webSurfaceFavicon("browser:icon")).not.toBeNull();
+      guest.dispatchEvent(new Event("did-navigate"));
+      expect(webSurfaceFavicon("browser:icon")).toBeNull();
+      unbind();
+      publish();
+      expect(webSurfaceFavicon("browser:icon")).toBeNull();
+    } finally { unbind(); noteWebSurfaceFavicon("browser:icon", null); }
+  });
   it.each(["refused", "disconnected"])("retries a rejected bind on the next dom-ready and remembers only an accepted guest (%s)", async (failure) => {
     const bindTab = vi.fn().mockResolvedValue({ ok: true });
     if (failure === "refused") bindTab.mockResolvedValueOnce({ ok: false, error: "guest-not-hosted" });

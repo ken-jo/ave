@@ -1,9 +1,8 @@
+import { RuntimeProcessFixture as FakeRuntimeProcess } from "./support/runtime-process.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
-import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
 import {
@@ -20,18 +19,6 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 type Spawn = NonNullable<AcpSubscriptionRuntimeClientOptions["spawn"]>;
 
-class FakeRuntimeProcess extends EventEmitter {
-  readonly stdin = new PassThrough();
-  readonly stdout = new PassThrough();
-  readonly stderr = new PassThrough();
-  pid = -1;
-  exitCode: number | null = null;
-  killed = false;
-  kill = vi.fn((_signal?: NodeJS.Signals | number) => {
-    this.killed = true;
-    return true;
-  });
-}
 
 interface LoginHarness {
   client: AcpSubscriptionRuntimeClient;
@@ -42,16 +29,40 @@ interface LoginHarness {
 }
 
 const harnesses: LoginHarness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
-function createLoginHarness(provider: "kimi-code" | "grok-build" = "kimi-code"): LoginHarness {
-  const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-subscription-client-"));
+function runtimeDirectories(prefix: string) {
+  const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, prefix));
   const runtimeHome = join(runtimeRoot, "home");
   const workspaceDir = join(runtimeRoot, "workspace");
   const runtimeTempDir = join(runtimeRoot, "temporary");
   mkdirSync(runtimeHome);
   mkdirSync(workspaceDir);
   mkdirSync(runtimeTempDir);
+  return { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir };
+}
+
+function probeSpawn(versionChild: FakeRuntimeProcess, probeChild: FakeRuntimeProcess, version: string) {
+  const spawnCalls: LoginHarness["spawnCalls"] = [];
+  const spawn: Spawn = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    if (spawnCalls.length === 1) {
+      queueMicrotask(() => {
+        versionChild.stdout.write(version);
+        versionChild.emit("close", 0);
+      });
+      return versionChild as unknown as ChildProcess;
+    }
+    return probeChild as unknown as ChildProcess;
+  };
+  return { spawnCalls, spawn };
+}
+
+function createLoginHarness(
+  provider: "kimi-code" | "grok-build" = "kimi-code",
+  resolveExecutable?: AcpSubscriptionRuntimeClientOptions["resolveExecutable"],
+): LoginHarness {
+  const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-acp-subscription-client-");
 
   const child = new FakeRuntimeProcess();
   const spawnCalls: LoginHarness["spawnCalls"] = [];
@@ -62,7 +73,7 @@ function createLoginHarness(provider: "kimi-code" | "grok-build" = "kimi-code"):
     workspaceDir,
     executablePath: `C:\\approved\\${provider}.exe`,
     runtimeTempDir,
-    resolveExecutable: async () => `C:\\approved\\${provider}.exe`,
+    resolveExecutable: resolveExecutable ?? (async () => `C:\\approved\\${provider}.exe`),
     spawn,
     platform: "win32",
     clientVersion: "test-version",
@@ -84,6 +95,27 @@ afterEach(async () => {
 });
 
 describe("AcpSubscriptionRuntimeClient security boundary", () => {
+  it.each(["kimi-code", "grok-build"] as const)("revalidates the executable before starting sign-in (%s)", async (provider) => {
+    const resolveExecutable = vi.fn(async (path: string) => path);
+    const { client, spawnCalls } = createLoginHarness(provider, resolveExecutable);
+    await client.getStatus();
+    resolveExecutable.mockClear();
+    resolveExecutable.mockRejectedValueOnce(new Error("Executable rejected"));
+    await expect(client.startDeviceCodeLogin()).rejects.toMatchObject({ code: "acp-runtime-invalid-executable" });
+    expect(spawnCalls).toHaveLength(0);
+    expect(resolveExecutable).toHaveBeenCalledOnce();
+    expect((await client.startDeviceCodeLogin()).connection).toBe("pending");
+    expect(spawnCalls).toHaveLength(1);
+    expect(resolveExecutable).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects missing runtime directories before starting sign-in", async () => {
+    const { client, runtimeTempDir, spawnCalls } = createLoginHarness();
+    renameSync(runtimeTempDir, `${runtimeTempDir}-moved`);
+    await expect(client.startDeviceCodeLogin()).rejects.toMatchObject({ code: "acp-operation-failed" });
+    expect(spawnCalls).toHaveLength(0);
+  });
+
   it("uses only the fixed Kimi device-code argv and never projects untrusted runtime output", async () => {
     const { client, child, runtimeTempDir, spawnCalls } = createLoginHarness();
 
@@ -124,13 +156,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
 
   });
   it("opens the ACP authentication probe over a bidirectional JSONL pipe", async () => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-auth-probe-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-acp-auth-probe-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeRequests: Array<{ id: number; method: string }> = [];
@@ -157,18 +183,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
         }
       }
     });
-    const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
-    const spawn: Spawn = (command, args, options) => {
-      spawnCalls.push({ command, args, options });
-      if (spawnCalls.length === 1) {
-        queueMicrotask(() => {
-          versionChild.stdout.write("kimi 1.2.3\n");
-          versionChild.emit("close", 0);
-        });
-        return versionChild as unknown as ChildProcess;
-      }
-      return probeChild as unknown as ChildProcess;
-    };
+    const { spawnCalls, spawn } = probeSpawn(versionChild, probeChild, "kimi 1.2.3\n");
     const client = new AcpSubscriptionRuntimeClient({
       provider: "kimi-code",
       runtimeHome,
@@ -209,13 +224,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     { label: "reverse request", method: "session/request_permission", sendsDenial: true },
     { label: "non-string method envelope", method: 7, sendsDenial: false },
   ])("fails closed when a numeric $label ID collides with the pending auth request", async ({ method, sendsDenial }) => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-auth-reverse-request-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-acp-auth-reverse-request-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeWrites: Array<Record<string, unknown>> = [];
@@ -240,18 +249,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
         }
       }
     });
-    const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
-    const spawn: Spawn = (command, args, options) => {
-      spawnCalls.push({ command, args, options });
-      if (spawnCalls.length === 1) {
-        queueMicrotask(() => {
-          versionChild.stdout.write("kimi 1.2.3\n");
-          versionChild.emit("close", 0);
-        });
-        return versionChild as unknown as ChildProcess;
-      }
-      return probeChild as unknown as ChildProcess;
-    };
+    const { spawn } = probeSpawn(versionChild, probeChild, "kimi 1.2.3\n");
     const client = new AcpSubscriptionRuntimeClient({
       provider: "kimi-code",
       runtimeHome,
@@ -290,13 +288,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
   });
 
   it("performs the fixed Grok cached-token ACP verification handshake", async () => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-grok-acp-auth-probe-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-grok-acp-auth-probe-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeRequests: Array<{ id: number; method: string; params: unknown }> = [];
@@ -323,18 +315,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
         }
       }
     });
-    const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
-    const spawn: Spawn = (command, args, options) => {
-      spawnCalls.push({ command, args, options });
-      if (spawnCalls.length === 1) {
-        queueMicrotask(() => {
-          versionChild.stdout.write("grok-build 1.2.3\n");
-          versionChild.emit("close", 0);
-        });
-        return versionChild as unknown as ChildProcess;
-      }
-      return probeChild as unknown as ChildProcess;
-    };
+    const { spawnCalls, spawn } = probeSpawn(versionChild, probeChild, "grok-build 1.2.3\n");
     const client = new AcpSubscriptionRuntimeClient({
       provider: "grok-build",
       runtimeHome,
@@ -392,13 +373,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
   });
 
   it("fails closed before ACP authentication for Grok Build below the governed minimum", async () => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-grok-minimum-version-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-grok-minimum-version-");
     const versionChild = new FakeRuntimeProcess();
     const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
     const spawn: Spawn = (command, args, options) => {
@@ -434,19 +409,25 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
   it("rejects a Grok Build prerelease at the governed minimum", async () => {
-    const { client, child, spawnCalls } = createLoginHarness("grok-build");
-    const verification = client.verify();
+    // The version probe's own timeout rejects with the same code. With setTimeout faked it cannot fire, so only the version check can reject.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const { client, child, spawnCalls } = createLoginHarness("grok-build");
+      const verification = client.verify();
 
-    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-    child.stdout.write("grok-build 0.2.116-alpha.1\n");
-    child.emit("close", 0);
+      // Answer the probe once it is running: output written before the spawn reaches no listener.
+      await vi.waitFor(() => expect(spawnCalls).toHaveLength(1));
+      child.stdout.write("grok-build 0.2.116-alpha.1\n");
+      child.emit("close", 0);
 
-    await expect(verification).rejects.toMatchObject({ code: "acp-runtime-unavailable" });
-    expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0]).toMatchObject({ args: ["--version"] });
-    expect(client.getCachedStatus()).toMatchObject({ runtime: "unverified", connection: "unknown" });
+      await expect(verification).rejects.toMatchObject({ code: "acp-runtime-unavailable" });
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]).toMatchObject({ args: ["--version"] });
+      expect(client.getCachedStatus()).toMatchObject({ runtime: "unverified", connection: "unknown" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
-
 
   it("reads configured status without executing the selected runtime", async () => {
     const { client, spawnCalls } = createLoginHarness();
@@ -456,7 +437,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     expect(status).toMatchObject({ runtime: "unverified", connection: "unknown" });
     expect(spawnCalls).toHaveLength(0);
   });
-
 
   it("keeps an allowlisted Kimi verification URL in main and opens it only after an explicit request", async () => {
     const { client, child } = createLoginHarness();
@@ -486,7 +466,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     expect(JSON.stringify(afterOpen)).not.toContain("auth.kimi.com");
     expect(JSON.stringify(afterOpen)).not.toContain("main-process-only");
   });
-
 
   it("accepts the official Grok Build device page without projecting its URL", async () => {
     const { client, child, spawnCalls } = createLoginHarness("grok-build");
@@ -628,9 +607,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
       APPDATA: win32.join(win32.normalize(runtimeHome), "appdata"),
       LOCALAPPDATA: win32.join(win32.normalize(runtimeHome), "localappdata"),
     });
-    // Windows launch environments must not inherit a separate Unix-style
-    // home that could redirect third-party discovery outside the isolated
-    // provider directories.
+    // Windows launch environments must not inherit a separate Unix-style home that could redirect third-party discovery outside the isolated provider directories.
     expect(environment.HOME).toBeUndefined();
     for (const key of [
       "GROK_MANAGED_CONFIG",

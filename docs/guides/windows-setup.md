@@ -8,7 +8,7 @@ The general setup is in [Getting started](./getting-started.md). This page cover
 
 | Tool | Version | Check |
 |---|---|---|
-| Node.js | `>=22.4` (from `package.json` `engines`) | `node -v` |
+| Node.js | `>=22.12` (from `package.json` `engines`) | `node -v` |
 | Bun | Current release | `bun -v` |
 | Git | Any recent release | `git --version` |
 
@@ -33,6 +33,8 @@ Plugins are not taken from sibling checkouts. Install them from a marketplace, o
 
 Success: the log shows `boot: ready (N tools, N plugins, N mcp)` and the window opens.
 
+With the OS sandbox on, agent shell commands run in Microsoft Execution Containers when the launcher is present. Installers include it; a source checkout stages it once with `node scripts/fetch-mxc.mjs --arch x64` (or `arm64`). Without it, Settings → Permissions reports `binary-missing` and shells use the approved host route. See the architecture document, "Windows agent shells in Microsoft Execution Containers".
+
 ## 3. What the Windows launcher sets
 
 `scripts/run-electron.mjs` (with `scripts/lib/electron-launch-options.mjs` and `scripts/electron-flags.mjs`) applies these on `win32`:
@@ -40,10 +42,15 @@ Success: the log shows `boot: ready (N tools, N plugins, N mcp)` and the window 
 | Setting | Default | Purpose |
 |---|---|---|
 | `--disable-gpu`, `--disable-software-rasterizer`, `--disable-gpu-compositing`, `--no-sandbox` | Added unless `AVE_KEEP_GPU=1` | Avoids the "GPU process isn't usable" crash on machines with restricted GPU drivers. |
-| `AVE_WIN_NO_SANDBOX=1` | Set with the flags above | Lets the `ave://` protocol registration match the launch flags. Ignored by packaged builds. |
 | `--user-data-dir` | `%APPDATA%\Electron-Ave-Run`, or `AVE_USER_DATA_DIR` | Separate profile for source runs. |
 | `PYTHONIOENCODING`, `PYTHONUTF8`, `LANG`, `LC_ALL` | `utf-8`, `1`, `en_US.UTF-8` | UTF-8 output from Python and other children. |
 | `chcp 65001` | Electron starts through `cmd.exe` in the same console | Console output stays UTF-8. |
+
+A source run never registers itself as the `ave://` handler, so it cannot take
+an installed Ave's deep links in HKCU. Only a packaged app on its real profile
+registers; unpackaged, E2E, `AVE_HOME`-relocated and `--user-data-dir` launches
+skip and log the reason (`decideAveProtocolClientRegistration`,
+`src/main/ave-protocol-registration.ts`).
 
 Overrides:
 

@@ -1,21 +1,4 @@
-/**
- * E4 — global keyboard shortcuts (show/hide window toggle).
- *
- * Registers the user-chosen accelerator with Electron's `globalShortcut` so the
- * main window can be toggled from anywhere in the OS. The registration is
- * reconciled from settings: called once at boot and again whenever the
- * `shortcuts` block (or a relevant `system` field) changes via the existing
- * `settings.update` IPC — no dedicated IPC channel (see `.omc/plans/e4-design.md`
- * §0: settings-IPC reuse).
- *
- * No-Fallback: a registration failure (accelerator already claimed by another
- * app, or rejected by Electron's Accelerator parser) is NEVER swallowed. It is
- * surfaced to the user through the existing NotificationService (`kind:"system"`
- * — the boot/config-cue channel) so a silently-dead shortcut can't happen.
- *
- * Teardown: `unregisterAllGlobalShortcuts()` is called from the app-shutdown
- * cleanup pipeline so accelerators are released on quit.
- */
+// Reconcile shortcuts at boot and settings changes; report registration conflicts and release every accelerator during shutdown.
 import { globalShortcut } from "electron";
 import type { BrowserWindow } from "electron";
 import { createLogger } from "../lib/logger.js";
@@ -27,22 +10,19 @@ import { t } from "../i18n/index.js";
 
 const log = createLogger("ave");
 
-/**
- * Injectable surface so registration/conflict/teardown can be unit-tested
- * without Electron. Defaults bind to the real `globalShortcut` + app-state.
- */
+// Injectable surface so registration/conflict/teardown can be unit-tested without Electron. Defaults bind to the real `globalShortcut` + app-state.
 export interface GlobalShortcutsDeps {
   register: (accelerator: string, callback: () => void) => boolean;
   unregister: (accelerator: string) => void;
   unregisterAll: () => void;
   isRegistered: (accelerator: string) => boolean;
-  /** Invoked when the toggle accelerator fires. */
+  // Invoked when the toggle accelerator fires.
   onToggle: () => void;
-  /** Surface a user-facing failure (accelerator conflict / invalid). */
+  // Surface a user-facing failure (accelerator conflict / invalid).
   notifyFailure: (accelerator: string) => void;
 }
 
-/** Default toggle action — raise the window (creating it if needed) or hide it. */
+// Default toggle action — raise the window (creating it if needed) or hide it.
 function defaultOnToggle(): void {
   const win = getMainWindow();
   if (win && !win.isDestroyed()) {
@@ -73,14 +53,11 @@ function defaultDeps(): GlobalShortcutsDeps {
   };
 }
 
-/**
- * Last accelerator we actually bound (so reconcile can unregister precisely
- * rather than blowing away every app-wide shortcut). Module-level: there is one
- * global-shortcut registry per process.
- */
+// Last accelerator we actually bound (so reconcile can unregister precisely rather than blowing away every app-wide shortcut). Module-level: there is
+// one global-shortcut registry per process.
 let boundAccelerator: string | null = null;
 
-/** Result of a reconcile, for logging/tests. */
+// Result of a reconcile, for logging/tests.
 export type ReconcileOutcome =
   | { status: "registered"; accelerator: string }
   | { status: "unregistered" }
@@ -89,17 +66,13 @@ export type ReconcileOutcome =
   | { status: "invalid"; accelerator: string }
   | { status: "conflict"; accelerator: string };
 
-/**
- * Register/unregister the toggle accelerator to match the given settings.
- * Idempotent: unbinds the previous accelerator first, then binds the new one
- * when `enabled` and a valid accelerator are present.
- */
+// Register/unregister the toggle accelerator to match the given settings. Idempotent: unbinds the previous accelerator first, then binds the new one
+// when `enabled` and a valid accelerator are present.
 export function reconcileGlobalShortcuts(
   shortcuts: ShortcutSettings,
   deps: GlobalShortcutsDeps = defaultDeps(),
 ): ReconcileOutcome {
-  // Always release the previously-bound accelerator first so a change of
-  // accelerator (or disabling) never leaves a stale binding.
+  // Always release the previously-bound accelerator first so a change of accelerator (or disabling) never leaves a stale binding.
   if (boundAccelerator !== null) {
     try {
       deps.unregister(boundAccelerator);
@@ -145,10 +118,7 @@ export function reconcileGlobalShortcuts(
   return { status: "registered", accelerator };
 }
 
-/**
- * Release every global shortcut this process holds. Called from the app-shutdown
- * cleanup pipeline. Safe to call multiple times.
- */
+// Release every global shortcut this process holds. Called from the app-shutdown cleanup pipeline. Safe to call multiple times.
 export function unregisterAllGlobalShortcuts(
   deps: Pick<GlobalShortcutsDeps, "unregisterAll"> = { unregisterAll: () => globalShortcut.unregisterAll() },
 ): void {
@@ -160,7 +130,7 @@ export function unregisterAllGlobalShortcuts(
   boundAccelerator = null;
 }
 
-/** @internal test-only — reset module state between cases. */
+// @internal test-only — reset module state between cases.
 export function __resetGlobalShortcutsStateForTest(): void {
   boundAccelerator = null;
 }

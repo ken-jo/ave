@@ -1,13 +1,4 @@
-/**
- * RoutinesStore v2 — coverage mirrors the RemindersStore atomic-write / cap / mode / clamp tests.
- *
- * - Invalid `at` rejection.
- * - 50-record cap enforcement.
- * - Atomic write (tmp file replaced, no half-write).
- * - File mode 0o600 on POSIX.
- * - Monthly clamping — Feb 28/29, April 30.
- * - markFired advances daily/weekly/monthly/interval repeat.
- */
+import { withRoutinesStore } from "./support/routines-store.js";
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -17,261 +8,223 @@ import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CR
 import { futureIso, tempRoutinesStore } from "./routines-fixture.js";
 
 describe("RoutinesStore v2 — basic persistence", () => {
-  it("adds a notification-only routine and reads it back", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "test",
-      });
-      expect(r.id).toBeTruthy();
-      expect(store.listActive()).toHaveLength(1);
-      expect(r.scope?.pluginIds).toEqual({ mode: "deny-all" });
-    } finally {
-      await cleanup();
-    }
-  });
+  it("adds a notification-only routine and reads it back", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "test",
+    });
+    expect(r.id).toBeTruthy();
+    expect(store.listActive()).toHaveLength(1);
+    expect(r.scope?.pluginIds).toEqual({ mode: "deny-all" });
+  }));
 
-  it("adds an llm-session routine", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "llm-session",
-        schedule: { at: futureIso(), repeat: { kind: "daily" } },
-        prePrompt: "daily briefing",
-        title: "Daily",
-      });
-      expect(r.execution).toBe("llm-session");
-      expect(r.prePrompt).toBe("daily briefing");
-    } finally {
-      await cleanup();
-    }
-  });
+  it("adds an llm-session routine", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "llm-session",
+      schedule: { at: futureIso(), repeat: { kind: "daily" } },
+      prePrompt: "daily briefing",
+      title: "Daily",
+    });
+    expect(r.execution).toBe("llm-session");
+    expect(r.prePrompt).toBe("daily briefing");
+  }));
 
-  it("persists the exact last routine session id and clears it on the next fire", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "llm-session",
-        schedule: { at: futureIso(), repeat: { kind: "daily" } },
-        prePrompt: "daily briefing",
-        title: "Daily",
-      });
+  it("persists the exact last routine session id and clears it on the next fire", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "llm-session",
+      schedule: { at: futureIso(), repeat: { kind: "daily" } },
+      prePrompt: "daily briefing",
+      title: "Daily",
+    });
 
-      const updated = await store.update(r.id, { lastRoutineSessionId: "routine-session-1" });
-      expect(updated?.lastRoutineSessionId).toBe("routine-session-1");
-      expect(store.list()[0].lastRoutineSessionId).toBe("routine-session-1");
+    const updated = await store.update(r.id, { lastRoutineSessionId: "routine-session-1" });
+    expect(updated?.lastRoutineSessionId).toBe("routine-session-1");
+    expect(store.list()[0].lastRoutineSessionId).toBe("routine-session-1");
 
-      const fired = await store.markFired(r.id);
-      expect(fired?.lastRoutineSessionId).toBeUndefined();
-      expect(store.list()[0].lastRoutineSessionId).toBeUndefined();
+    const fired = await store.markFired(r.id);
+    expect(fired?.lastRoutineSessionId).toBeUndefined();
+    expect(store.list()[0].lastRoutineSessionId).toBeUndefined();
 
-      const current = await store.update(r.id, { lastRoutineSessionId: "routine-session-2" });
-      expect(current?.lastRoutineSessionId).toBe("routine-session-2");
-      expect(store.list()[0].lastRoutineSessionId).toBe("routine-session-2");
-    } finally {
-      await cleanup();
-    }
-  });
+    const current = await store.update(r.id, { lastRoutineSessionId: "routine-session-2" });
+    expect(current?.lastRoutineSessionId).toBe("routine-session-2");
+    expect(store.list()[0].lastRoutineSessionId).toBe("routine-session-2");
+  }));
 
-  it("rejects non-canonical routine records with flat plugin scope fields", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      writeFileSync(
-        join(dir, "routines.json"),
-        JSON.stringify({
-          version: 2,
-          routines: [{
-            id: "legacy-scope",
-            trigger: "schedule",
-            execution: "notification-only",
-            notificationTitle: "legacy",
-            allowedPlugins: ["meeting"],
-          }],
-        }),
-      );
+  it("rejects non-canonical routine records with flat plugin scope fields", withRoutinesStore(async ({ store, dir }) => {
+    writeFileSync(
+      join(dir, "routines.json"),
+      JSON.stringify({
+        version: 2,
+        routines: [{
+          id: "legacy-scope",
+          trigger: "schedule",
+          execution: "notification-only",
+          notificationTitle: "legacy",
+          allowedPlugins: ["meeting"],
+        }],
+      }),
+    );
 
-      await store.load();
+    await store.load();
 
-      expect(store.list()).toEqual([]);
-    } finally {
-      await cleanup();
-    }
-  });
+    expect(store.list()).toEqual([]);
+  }));
 
-  it("rejects non-canonical routine records with malformed scope shape", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      writeFileSync(
-        join(dir, "routines.json"),
-        JSON.stringify({
-          version: 2,
-          routines: [{
-            id: "bad-scope",
-            trigger: "schedule",
-            execution: "notification-only",
-            notificationTitle: "bad",
-            scope: {
-              pluginIds: { mode: "allow", ids: "meeting" },
-              forcedPluginIds: [],
-              directories: [],
-            },
-          }],
-        }),
-      );
+  it("rejects non-canonical routine records with malformed scope shape", withRoutinesStore(async ({ store, dir }) => {
+    writeFileSync(
+      join(dir, "routines.json"),
+      JSON.stringify({
+        version: 2,
+        routines: [{
+          id: "bad-scope",
+          trigger: "schedule",
+          execution: "notification-only",
+          notificationTitle: "bad",
+          scope: {
+            pluginIds: { mode: "allow", ids: "meeting" },
+            forcedPluginIds: [],
+            directories: [],
+          },
+        }],
+      }),
+    );
 
-      await store.load();
+    await store.load();
 
-      expect(store.list()).toEqual([]);
-    } finally {
-      await cleanup();
-    }
-  });
+    expect(store.list()).toEqual([]);
+  }));
 
-  it("holds back a stored routine whose plugin id the contract rejects while every valid routine loads", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
-      const legacy = {
-        id: "legacy-scope",
-        trigger: "schedule",
-        execution: "notification-only",
-        notificationTitle: "legacy",
-        scope: {
-          pluginIds: { mode: "allow", ids: ["sample-plugin", "Legacy.Plugin"] },
-          forcedPluginIds: [],
-          directories: [join(dir, "workspace", "a")],
-        },
-      };
-      const path = join(dir, "routines.json");
-      writeFileSync(path, `${JSON.stringify({ version: 2, routines: [good, legacy] }, null, 2)}\n`);
-      const legacyText = JSON.stringify({ version: 2, routines: [legacy] }, null, 2).split("\n").slice(3, -2).join("\n");
+  it("holds back a stored routine whose plugin id the contract rejects while every valid routine loads", withRoutinesStore(async ({ store, dir }) => {
+    const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+    const legacy = {
+      id: "legacy-scope",
+      trigger: "schedule",
+      execution: "notification-only",
+      notificationTitle: "legacy",
+      scope: {
+        pluginIds: { mode: "allow", ids: ["sample-plugin", "Legacy.Plugin"] },
+        forcedPluginIds: [],
+        directories: [join(dir, "workspace", "a")],
+      },
+    };
+    const path = join(dir, "routines.json");
+    writeFileSync(path, `${JSON.stringify({ version: 2, routines: [good, legacy] }, null, 2)}\n`);
+    const legacyText = JSON.stringify({ version: 2, routines: [legacy] }, null, 2).split("\n").slice(3, -2).join("\n");
 
-      await store.load();
-      expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
-      expect(store.listInvalid()).toEqual([{
-        id: "legacy-scope",
-        field: "scope.pluginIds.ids",
-        value: "Legacy.Plugin",
-        reason: "invalid-plugin-id",
-      }]);
-      expect(store.listForDisplay()).toEqual({ routines: store.listActive(), invalid: store.listInvalid() });
+    await store.load();
+    expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
+    expect(store.listInvalid()).toEqual([{
+      id: "legacy-scope",
+      field: "scope.pluginIds.ids",
+      value: "Legacy.Plugin",
+      reason: "invalid-plugin-id",
+    }]);
+    expect(store.listForDisplay()).toEqual({ routines: store.listActive(), invalid: store.listInvalid() });
 
-      // A write rewrites the valid records and carries the held-back one through unchanged.
-      await store.dismiss(good.id);
-      const afterWrite = JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] };
-      expect(afterWrite.routines).toContainEqual(legacy);
-      expect(readFileSync(path, "utf8")).toContain(legacyText);
+    // A write rewrites the valid records and carries the held-back one through unchanged.
+    await store.dismiss(good.id);
+    const afterWrite = JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] };
+    expect(afterWrite.routines).toContainEqual(legacy);
+    expect(readFileSync(path, "utf8")).toContain(legacyText);
 
-      // Workspace removal proceeds on valid records and leaves the held-back one untouched.
-      await expect(store.revokeWorkspaceRoot(join(dir, "workspace"))).resolves.toEqual({
-        routinesUpdated: 0,
-        directoriesRemoved: 0,
-      });
-      expect((JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] }).routines).toContainEqual(legacy);
+    // Workspace removal proceeds on valid records and leaves the held-back one untouched.
+    await expect(store.revokeWorkspaceRoot(join(dir, "workspace"))).resolves.toEqual({
+      routinesUpdated: 0,
+      directoriesRemoved: 0,
+    });
+    expect((JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] }).routines).toContainEqual(legacy);
 
-      // The remove action deletes the held-back record.
-      await expect(store.remove("legacy-scope")).resolves.toBe(true);
-      expect(store.listInvalid()).toEqual([]);
-      expect((JSON.parse(readFileSync(path, "utf8")) as { routines: Array<{ id: string }> }).routines.map((r) => r.id)).toEqual([good.id]);
-    } finally {
-      await cleanup();
-    }
-  });
+    // The remove action deletes the held-back record.
+    await expect(store.remove("legacy-scope")).resolves.toBe(true);
+    expect(store.listInvalid()).toEqual([]);
+    expect((JSON.parse(readFileSync(path, "utf8")) as { routines: Array<{ id: string }> }).routines.map((r) => r.id)).toEqual([good.id]);
+  }));
 
-  it("refuses to add a routine scoped to a plugin id the contract rejects", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "scoped",
-        scope: { pluginIds: { mode: "allow", ids: ["a_b"] }, forcedPluginIds: [], directories: [] },
-      })).rejects.toThrow("must be valid plugin ids");
-    } finally {
-      await cleanup();
-    }
-  });
+  it("refuses to add a routine scoped to a plugin id the contract rejects", withRoutinesStore(async ({ store }) => {
+    await expect(store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "scoped",
+      scope: { pluginIds: { mode: "allow", ids: ["a_b"] }, forcedPluginIds: [], directories: [] },
+    })).rejects.toThrow("must be valid plugin ids");
+  }));
 });
 
 describe("RoutinesStore v2 — cap enforcement", () => {
-  it("rejects after the 50-record cap is reached", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      for (let i = 0; i < MAX_PERSISTED_ROUTINES; i++) {
-        await store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: futureIso((i + 1) * 60_000) },
-          notificationTitle: `r-${i}`,
-        });
-      }
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: futureIso(1_000_000) },
-          notificationTitle: "overflow",
-        }),
-      ).rejects.toThrow(/cap reached/);
-    } finally {
-      await cleanup();
+  it("rejects after the 50-record cap is reached", withRoutinesStore(async ({ store }) => {
+    for (let i = 0; i < MAX_PERSISTED_ROUTINES; i++) {
+      await store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: futureIso((i + 1) * 60_000) },
+        notificationTitle: `r-${i}`,
+      });
     }
-  });
+    await expect(
+      store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: futureIso(1_000_000) },
+        notificationTitle: "overflow",
+      }),
+    ).rejects.toThrow(/cap reached/);
+  }));
 });
 
 describe("RoutinesStore v2 — invalid at", () => {
-  it("rejects non-ISO at value", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: "not-a-date" },
-          notificationTitle: "bad",
-        }),
-      ).rejects.toThrow(/invalid schedule.at/);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("rejects non-ISO at value", withRoutinesStore(async ({ store }) => {
+    await expect(
+      store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: "not-a-date" },
+        notificationTitle: "bad",
+      }),
+    ).rejects.toThrow(/invalid schedule.at/);
+  }));
 });
 
 describe("RoutinesStore v2 — non-cron repeat requires schedule.at", () => {
   const kinds = ["daily", "weekly", "monthly", "interval"] as const;
   for (const kind of kinds) {
-    it(`rejects ${kind} repeat without schedule.at`, async () => {
-      const { store, cleanup } = tempRoutinesStore();
-      try {
-        const repeat =
-          kind === "interval"
-            ? { kind: "interval" as const, intervalMs: 3_600_000 }
-            : { kind };
-        await expect(
-          store.add({
-            trigger: "schedule",
-            execution: "notification-only",
-            schedule: { repeat } as import("../../shared/routines-types.js").RoutineSchedule,
-            notificationTitle: "test",
-          }),
-        ).rejects.toThrow(/schedule.at is required/);
-      } finally {
-        await cleanup();
-      }
-    });
+    it(`rejects ${kind} repeat without schedule.at`, withRoutinesStore(async ({ store }) => {
+      const repeat =
+        kind === "interval"
+          ? { kind: "interval" as const, intervalMs: 3_600_000 }
+          : { kind };
+      await expect(
+        store.add({
+          trigger: "schedule",
+          execution: "notification-only",
+          schedule: { repeat } as import("../../shared/routines-types.js").RoutineSchedule,
+          notificationTitle: "test",
+        }),
+      ).rejects.toThrow(/schedule.at is required/);
+    }));
   }
 });
 
 describe("RoutinesStore v2 — atomic write", () => {
-  it("does not leave a .tmp file behind after successful add", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
+  it("does not leave a .tmp file behind after successful add", withRoutinesStore(async ({ store, dir }) => {
+    const path = join(dir, "routines.json");
+    await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "ok",
+    });
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(`${path}.tmp`)).toBe(false);
+  }));
+
+  it.skipIf(platform() === "win32")(
+    "sets file mode 0o600 on POSIX",
+    withRoutinesStore(async ({ store, dir }) => {
       const path = join(dir, "routines.json");
       await store.add({
         trigger: "schedule",
@@ -279,306 +232,212 @@ describe("RoutinesStore v2 — atomic write", () => {
         schedule: { at: futureIso() },
         notificationTitle: "ok",
       });
-      const { existsSync } = await import("node:fs");
-      expect(existsSync(`${path}.tmp`)).toBe(false);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it.skipIf(platform() === "win32")(
-    "sets file mode 0o600 on POSIX",
-    async () => {
-      const { store, dir, cleanup } = tempRoutinesStore();
-      try {
-        const path = join(dir, "routines.json");
-        await store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: futureIso() },
-          notificationTitle: "ok",
-        });
-        const mode = statSync(path).mode & 0o777;
-        expect(mode).toBe(0o600);
-      } finally {
-        await cleanup();
-      }
-    },
+      const mode = statSync(path).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }),
   );
 });
 
 describe("RoutinesStore v2 — dismiss / remove", () => {
-  it("dismiss sets dismissedAt and hides from listActive", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "to-dismiss",
-      });
-      const ok = await store.dismiss(r.id);
-      expect(ok).toBe(true);
-      expect(store.listActive()).toHaveLength(0);
-      expect(store.list()).toHaveLength(1);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("dismiss sets dismissedAt and hides from listActive", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "to-dismiss",
+    });
+    const ok = await store.dismiss(r.id);
+    expect(ok).toBe(true);
+    expect(store.listActive()).toHaveLength(0);
+    expect(store.list()).toHaveLength(1);
+  }));
 
-  it("remove deletes from list entirely", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "to-remove",
-      });
-      await store.remove(r.id);
-      expect(store.list()).toHaveLength(0);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("remove deletes from list entirely", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "to-remove",
+    });
+    await store.remove(r.id);
+    expect(store.list()).toHaveLength(0);
+  }));
 });
 
 describe("RoutinesStore v2 — markFired repeat advancement", () => {
-  it("none: dismisses after first fire", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso(-1000), repeat: { kind: "none" } },
-        notificationTitle: "one-shot",
-      });
-      const updated = await store.markFired(r.id);
-      expect(updated?.dismissedAt).toBeTruthy();
-    } finally {
-      await cleanup();
-    }
-  });
+  it("none: dismisses after first fire", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso(-1000), repeat: { kind: "none" } },
+      notificationTitle: "one-shot",
+    });
+    const updated = await store.markFired(r.id);
+    expect(updated?.dismissedAt).toBeTruthy();
+  }));
 
-  it("daily: advances at by 24h+", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const pastIso = new Date(Date.now() - 1000).toISOString();
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: pastIso, repeat: { kind: "daily" } },
-        notificationTitle: "daily",
-      });
-      const updated = await store.markFired(r.id);
-      expect(updated?.dismissedAt).toBeUndefined();
-      const newAt = new Date(updated!.schedule!.at!).getTime();
-      expect(newAt).toBeGreaterThan(Date.now());
-    } finally {
-      await cleanup();
-    }
-  });
+  it("daily: advances at by 24h+", withRoutinesStore(async ({ store }) => {
+    const pastIso = new Date(Date.now() - 1000).toISOString();
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: pastIso, repeat: { kind: "daily" } },
+      notificationTitle: "daily",
+    });
+    const updated = await store.markFired(r.id);
+    expect(updated?.dismissedAt).toBeUndefined();
+    const newAt = new Date(updated!.schedule!.at!).getTime();
+    expect(newAt).toBeGreaterThan(Date.now());
+  }));
 
-  it("monthly clamping: Jan 31 → Feb stays within Feb", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      // Use a past date: Jan 31, 2026
-      const jan31 = new Date("2026-01-31T09:00:00Z");
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: jan31.toISOString(), repeat: { kind: "monthly" } },
-        notificationTitle: "monthly",
-      });
-      const updated = await store.markFired(r.id);
-      const nextAt = new Date(updated!.schedule!.at!);
-      // nextAt should be in Feb or later (not overflowing into March)
-      expect(nextAt.getMonth()).not.toBe(2); // not March (month index 2)
-    } finally {
-      await cleanup();
-    }
-  });
+  it("monthly clamping: Jan 31 → Feb stays within Feb", withRoutinesStore(async ({ store }) => {
+    // Use a past date: Jan 31, 2026
+    const jan31 = new Date("2026-01-31T09:00:00Z");
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: jan31.toISOString(), repeat: { kind: "monthly" } },
+      notificationTitle: "monthly",
+    });
+    const updated = await store.markFired(r.id);
+    const nextAt = new Date(updated!.schedule!.at!);
+    // nextAt should be in Feb or later (not overflowing into March)
+    expect(nextAt.getMonth()).not.toBe(2); // not March (month index 2)
+  }));
 
-  it("interval: advances at by intervalMs", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const pastIso = new Date(Date.now() - 1000).toISOString();
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: pastIso, repeat: { kind: "interval", intervalMs: 3_600_000 } },
-        notificationTitle: "interval",
-      });
-      const updated = await store.markFired(r.id);
-      const newAt = new Date(updated!.schedule!.at!).getTime();
-      expect(newAt).toBeGreaterThan(Date.now());
-    } finally {
-      await cleanup();
-    }
-  });
+  it("interval: advances at by intervalMs", withRoutinesStore(async ({ store }) => {
+    const pastIso = new Date(Date.now() - 1000).toISOString();
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: pastIso, repeat: { kind: "interval", intervalMs: 3_600_000 } },
+      notificationTitle: "interval",
+    });
+    const updated = await store.markFired(r.id);
+    const newAt = new Date(updated!.schedule!.at!).getTime();
+    expect(newAt).toBeGreaterThan(Date.now());
+  }));
 });
 
 describe("RoutinesStore v2 — schedule.at ISO normalization", () => {
-  it("normalizes tz-offset at to UTC ISO string", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const kstAt = "2026-05-09T09:00:00+09:00";
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: kstAt },
-        notificationTitle: "normalized",
-      });
-      // stored at must be a valid ISO string parseable back to the same UTC moment
-      const storedMs = new Date(r.schedule!.at!).getTime();
-      const expectedMs = new Date(kstAt).getTime();
-      expect(storedMs).toBe(expectedMs);
-      // and must be in the canonical UTC "Z" form
-      expect(r.schedule!.at).toMatch(/Z$/);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("normalizes tz-offset at to UTC ISO string", withRoutinesStore(async ({ store }) => {
+    const kstAt = "2026-05-09T09:00:00+09:00";
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: kstAt },
+      notificationTitle: "normalized",
+    });
+    // stored at must be a valid ISO string parseable back to the same UTC moment
+    const storedMs = new Date(r.schedule!.at!).getTime();
+    const expectedMs = new Date(kstAt).getTime();
+    expect(storedMs).toBe(expectedMs);
+    // and must be in the canonical UTC "Z" form
+    expect(r.schedule!.at).toMatch(/Z$/);
+  }));
 });
 
 describe("RoutinesStore v2 — cron validation", () => {
-  it("rejects invalid cron expression", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { repeat: { kind: "cron", expression: "not a cron" } },
-          notificationTitle: "bad-cron",
-        }),
-      ).rejects.toThrow(/invalid cron expression/);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("rejects cron expression exceeding MAX_CRON_EXPR_LENGTH", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { repeat: { kind: "cron", expression: "0 9 * * 1".padEnd(MAX_CRON_EXPR_LENGTH + 1, " x") } },
-          notificationTitle: "long-cron",
-        }),
-      ).rejects.toThrow(/too long/);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("accepts valid 5-field cron expression", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
+  it("rejects invalid cron expression", withRoutinesStore(async ({ store }) => {
+    await expect(
+      store.add({
         trigger: "schedule",
         execution: "notification-only",
-        schedule: { repeat: { kind: "cron", expression: "0 9 * * 1-5" } },
-        notificationTitle: "valid-cron",
-      });
-      expect(r.id).toBeTruthy();
-    } finally {
-      await cleanup();
-    }
-  });
+        schedule: { repeat: { kind: "cron", expression: "not a cron" } },
+        notificationTitle: "bad-cron",
+      }),
+    ).rejects.toThrow(/invalid cron expression/);
+  }));
+
+  it("rejects cron expression exceeding MAX_CRON_EXPR_LENGTH", withRoutinesStore(async ({ store }) => {
+    await expect(
+      store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { repeat: { kind: "cron", expression: "0 9 * * 1".padEnd(MAX_CRON_EXPR_LENGTH + 1, " x") } },
+        notificationTitle: "long-cron",
+      }),
+    ).rejects.toThrow(/too long/);
+  }));
+
+  it("accepts valid 5-field cron expression", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { repeat: { kind: "cron", expression: "0 9 * * 1-5" } },
+      notificationTitle: "valid-cron",
+    });
+    expect(r.id).toBeTruthy();
+  }));
 });
 
 describe("RoutinesStore v2 — execution validation", () => {
-  it("rejects llm-session with empty prePrompt", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "llm-session",
-          schedule: { at: futureIso() },
-          prePrompt: "   ",
-        }),
-      ).rejects.toThrow(/prePrompt/);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("rejects llm-session with empty prePrompt", withRoutinesStore(async ({ store }) => {
+    await expect(
+      store.add({
+        trigger: "schedule",
+        execution: "llm-session",
+        schedule: { at: futureIso() },
+        prePrompt: "   ",
+      }),
+    ).rejects.toThrow(/prePrompt/);
+  }));
 
-  it("rejects notification-only with empty notificationTitle", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: futureIso() },
-          notificationTitle: "  ",
-        }),
-      ).rejects.toThrow(/notificationTitle/);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("rejects notification-only with empty notificationTitle", withRoutinesStore(async ({ store }) => {
+    await expect(
+      store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: futureIso() },
+        notificationTitle: "  ",
+      }),
+    ).rejects.toThrow(/notificationTitle/);
+  }));
 });
 
 describe("RoutinesStore v2 — LLM session sub-cap", () => {
-  it(`rejects LLM session routine after ${MAX_LLM_SESSION_ROUTINES} active LLM routines`, async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
-        await store.add({
-          trigger: "schedule",
-          execution: "llm-session",
-          schedule: { at: futureIso((i + 1) * 60_000) },
-          prePrompt: `routine ${i}`,
-        });
-      }
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "llm-session",
-          schedule: { at: futureIso(1_000_000) },
-          prePrompt: "overflow llm routine",
-        }),
-      ).rejects.toThrow(/LLM session routine cap/);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("notification-only routines are not affected by LLM sub-cap", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      // Fill LLM sub-cap
-      for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
-        await store.add({
-          trigger: "schedule",
-          execution: "llm-session",
-          schedule: { at: futureIso((i + 1) * 60_000) },
-          prePrompt: `routine ${i}`,
-        });
-      }
-      // notification-only should still be allowed
-      const r = await store.add({
+  it(`rejects LLM session routine after ${MAX_LLM_SESSION_ROUTINES} active LLM routines`, withRoutinesStore(async ({ store }) => {
+    for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
+      await store.add({
         trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso(1_000_000) },
-        notificationTitle: "notification after llm cap",
+        execution: "llm-session",
+        schedule: { at: futureIso((i + 1) * 60_000) },
+        prePrompt: `routine ${i}`,
       });
-      expect(r.id).toBeTruthy();
-    } finally {
-      await cleanup();
     }
-  });
+    await expect(
+      store.add({
+        trigger: "schedule",
+        execution: "llm-session",
+        schedule: { at: futureIso(1_000_000) },
+        prePrompt: "overflow llm routine",
+      }),
+    ).rejects.toThrow(/LLM session routine cap/);
+  }));
+
+  it("notification-only routines are not affected by LLM sub-cap", withRoutinesStore(async ({ store }) => {
+    for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
+      await store.add({
+        trigger: "schedule",
+        execution: "llm-session",
+        schedule: { at: futureIso((i + 1) * 60_000) },
+        prePrompt: `routine ${i}`,
+      });
+    }
+    // notification-only should still be allowed
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso(1_000_000) },
+      notificationTitle: "notification after llm cap",
+    });
+    expect(r.id).toBeTruthy();
+  }));
 });
 
 describe("RoutinesStore v2 — advanceInterval far-past (no loop)", () => {
   it("advances far-past interval schedule in arithmetic time (no while loop)", async () => {
     const { store, cleanup } = tempRoutinesStore();
-    // Create a routine with an at timestamp 1 year in the past.
     const farPastMs = Date.now() - 365 * 24 * 60 * 60 * 1000;
     const farPastIso = new Date(farPastMs).toISOString();
     try {
@@ -603,336 +462,273 @@ describe("RoutinesStore v2 — advanceInterval far-past (no loop)", () => {
 });
 
 describe("RoutinesStore v2 — advanceMonthly UTC correctness (DST-independence)", () => {
-  it("monthly clamp is unaffected by host timezone (TZ=America/Los_Angeles)", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await withTz("America/Los_Angeles", async () => {
-        // Jan 31 in UTC — if advanceMonthly used local-time methods, LA timezone
-        // offset would shift the date and produce a different day.
-        const jan31Utc = new Date("2026-01-31T12:00:00Z");
-        const r = await store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: jan31Utc.toISOString(), repeat: { kind: "monthly" } },
-          notificationTitle: "utc-monthly",
-        });
-        const updated = await store.markFired(r.id);
-        const nextAt = new Date(updated!.schedule!.at!);
-        // Must be after now
-        expect(nextAt.getTime()).toBeGreaterThan(Date.now());
-        // Day must be clamped to last day of month using UTC, not local time
-        const year = nextAt.getUTCFullYear();
-        const month = nextAt.getUTCMonth();
-        const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-        const actualDay = nextAt.getUTCDate();
-        expect(actualDay).toBe(Math.min(31, lastDayOfMonth));
+  it("monthly clamp is unaffected by host timezone (TZ=America/Los_Angeles)", withRoutinesStore(async ({ store }) => {
+    await withTz("America/Los_Angeles", async () => {
+      // Jan 31 in UTC — if advanceMonthly used local-time methods, LA timezone offset would shift the date and produce a different day.
+      const jan31Utc = new Date("2026-01-31T12:00:00Z");
+      const r = await store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: jan31Utc.toISOString(), repeat: { kind: "monthly" } },
+        notificationTitle: "utc-monthly",
       });
-    } finally {
-      await cleanup();
-    }
-  });
+      const updated = await store.markFired(r.id);
+      const nextAt = new Date(updated!.schedule!.at!);
+      // Must be after now
+      expect(nextAt.getTime()).toBeGreaterThan(Date.now());
+      // Day must be clamped to last day of month using UTC, not local time
+      const year = nextAt.getUTCFullYear();
+      const month = nextAt.getUTCMonth();
+      const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+      const actualDay = nextAt.getUTCDate();
+      expect(actualDay).toBe(Math.min(31, lastDayOfMonth));
+    });
+  }));
 });
 
 describe("RoutinesStore v2 — advanceMonthly originalDay preservation (C-critic-2)", () => {
-  it("multi-month advance preserves originalDay across all months (Jan 31 → 6 cycles)", async () => {
-    // Simulate Jan 31 far in the past so markFired multi-skips through 6 months.
-    // Expected: originalDay=31 is clamped per-month (Feb→28/29, Apr→30, Jun→30)
+  it("multi-month advance preserves originalDay across all months (Jan 31 → 6 cycles)", withRoutinesStore(async ({ store }) => {
+    // Simulate Jan 31 far in the past so markFired multi-skips through 6 months. Expected: originalDay=31 is clamped per-month (Feb→28/29, Apr→30, Jun→30)
     // but NEVER drifts below 28 after a Feb clamp (the pre-fix bug: 31→28→28→28...).
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      // Use Jan 31, 2020 — far enough back that markFired will advance 6+ months.
-      const jan31 = new Date("2020-01-31T09:00:00Z");
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: jan31.toISOString(), repeat: { kind: "monthly" } },
-        notificationTitle: "monthly-31",
-      });
-      const updated = await store.markFired(r.id);
-      const nextAt = new Date(updated!.schedule!.at!);
 
-      // The next-fire date must be after now.
-      expect(nextAt.getTime()).toBeGreaterThan(Date.now());
+    // Use Jan 31, 2020 — far enough back that markFired will advance 6+ months.
+    const jan31 = new Date("2020-01-31T09:00:00Z");
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: jan31.toISOString(), repeat: { kind: "monthly" } },
+      notificationTitle: "monthly-31",
+    });
+    const updated = await store.markFired(r.id);
+    const nextAt = new Date(updated!.schedule!.at!);
 
-      // The day-of-month must be originalDay (31) clamped to the month's last day.
-      // It must NEVER be less than the last day of that month.
-      const year = nextAt.getUTCFullYear();
-      const month = nextAt.getUTCMonth(); // 0-based
-      const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-      const actualDay = nextAt.getUTCDate();
-      // actualDay should be min(31, lastDayOfMonth) — never < lastDayOfMonth when original=31
-      expect(actualDay).toBe(Math.min(31, lastDayOfMonth));
+    // The next-fire date must be after now.
+    expect(nextAt.getTime()).toBeGreaterThan(Date.now());
 
-      // Specifically: it must never be 28 when the month has 30+ days.
-      if (lastDayOfMonth >= 30) {
-        expect(actualDay).toBeGreaterThanOrEqual(30);
-      }
-    } finally {
-      await cleanup();
+    // The day-of-month must be originalDay (31) clamped to the month's last day. It must NEVER be less than the last day of that month.
+    const year = nextAt.getUTCFullYear();
+    const month = nextAt.getUTCMonth(); // 0-based
+    const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    const actualDay = nextAt.getUTCDate();
+    // actualDay should be min(31, lastDayOfMonth) — never < lastDayOfMonth when original=31
+    expect(actualDay).toBe(Math.min(31, lastDayOfMonth));
+
+    // Specifically: it must never be 28 when the month has 30+ days.
+    if (lastDayOfMonth >= 30) {
+      expect(actualDay).toBeGreaterThanOrEqual(30);
     }
-  });
+  }));
 
-  it("Feb 28 → Mar preserves day 28 (originalDay < lastDay)", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const feb28 = new Date("2020-02-28T09:00:00Z");
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: feb28.toISOString(), repeat: { kind: "monthly" } },
-        notificationTitle: "monthly-28",
-      });
-      const updated = await store.markFired(r.id);
-      const nextAt = new Date(updated!.schedule!.at!);
-      expect(nextAt.getTime()).toBeGreaterThan(Date.now());
-      // Day should be 28 (originalDay), not clamped higher
-      expect(nextAt.getUTCDate()).toBe(28);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("Feb 28 → Mar preserves day 28 (originalDay < lastDay)", withRoutinesStore(async ({ store }) => {
+    const feb28 = new Date("2020-02-28T09:00:00Z");
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: feb28.toISOString(), repeat: { kind: "monthly" } },
+      notificationTitle: "monthly-28",
+    });
+    const updated = await store.markFired(r.id);
+    const nextAt = new Date(updated!.schedule!.at!);
+    expect(nextAt.getTime()).toBeGreaterThan(Date.now());
+    // Day should be 28 (originalDay), not clamped higher
+    expect(nextAt.getUTCDate()).toBe(28);
+  }));
 });
 
 describe("RoutinesStore v2 — source marker", () => {
-  it("persists the source marker through add() and a reload from disk", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "llm-session",
-        schedule: { at: futureIso(), repeat: { kind: "daily" } },
-        prePrompt: "nightly rescan",
-        source: "suggestion:local-indexer:nightly-rescan",
-      });
-      expect(r.source).toBe("suggestion:local-indexer:nightly-rescan");
-      // Reload through a fresh store instance to prove on-disk round-trip.
-      const reloaded = new RoutinesStore(join(dir, "routines.json"));
-      await reloaded.load();
-      const found = reloaded.list().find((x) => x.id === r.id);
-      expect(found?.source).toBe("suggestion:local-indexer:nightly-rescan");
-    } finally {
-      await cleanup();
-    }
-  });
+  it("persists the source marker through add() and a reload from disk", withRoutinesStore(async ({ store, dir }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "llm-session",
+      schedule: { at: futureIso(), repeat: { kind: "daily" } },
+      prePrompt: "nightly rescan",
+      source: "suggestion:local-indexer:nightly-rescan",
+    });
+    expect(r.source).toBe("suggestion:local-indexer:nightly-rescan");
+    // Reload through a fresh store instance to prove on-disk round-trip.
+    const reloaded = new RoutinesStore(join(dir, "routines.json"));
+    await reloaded.load();
+    const found = reloaded.list().find((x) => x.id === r.id);
+    expect(found?.source).toBe("suggestion:local-indexer:nightly-rescan");
+  }));
 
-  it("leaves source unset when omitted (manual creation)", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
+  it("leaves source unset when omitted (manual creation)", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "manual",
+    });
+    expect(r.source).toBeUndefined();
+  }));
+
+  it("collapses an empty / whitespace-only source to unset", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "blank-source",
+      source: "   ",
+    });
+    expect(r.source).toBeUndefined();
+  }));
+
+  it("rejects a source longer than the cap", withRoutinesStore(async ({ store }) => {
+    await expect(
+      store.add({
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: futureIso() },
-        notificationTitle: "manual",
-      });
-      expect(r.source).toBeUndefined();
-    } finally {
-      await cleanup();
-    }
-  });
+        notificationTitle: "too-long",
+        source: "x".repeat(MAX_ROUTINE_SOURCE_LENGTH + 1),
+      }),
+    ).rejects.toThrow(/source must be a string of at most/);
+  }));
 
-  it("collapses an empty / whitespace-only source to unset", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      const r = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "blank-source",
-        source: "   ",
-      });
-      expect(r.source).toBeUndefined();
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("rejects a source longer than the cap", async () => {
-    const { store, cleanup } = tempRoutinesStore();
-    try {
-      await expect(
-        store.add({
-          trigger: "schedule",
-          execution: "notification-only",
-          schedule: { at: futureIso() },
-          notificationTitle: "too-long",
-          source: "x".repeat(MAX_ROUTINE_SOURCE_LENGTH + 1),
-        }),
-      ).rejects.toThrow(/source must be a string of at most/);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("drops an on-disk record whose source exceeds the cap (tamper rejection)", async () => {
-    const { dir, cleanup } = tempRoutinesStore();
-    try {
-      const filePath = join(dir, "routines.json");
-      writeFileSync(
-        filePath,
-        JSON.stringify({
-          version: 2,
-          routines: [
-            {
-              id: "tampered",
-              trigger: "schedule",
-              execution: "notification-only",
-              createdAt: new Date().toISOString(),
-              source: "y".repeat(MAX_ROUTINE_SOURCE_LENGTH + 1),
-            },
-          ],
-        }),
-      );
-      const store = new RoutinesStore(filePath);
-      await store.load();
-      expect(store.list()).toHaveLength(0);
-    } finally {
-      await cleanup();
-    }
-  });
+  it("drops an on-disk record whose source exceeds the cap (tamper rejection)", withRoutinesStore(async ({ dir }) => {
+    const filePath = join(dir, "routines.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 2,
+        routines: [
+          {
+            id: "tampered",
+            trigger: "schedule",
+            execution: "notification-only",
+            createdAt: new Date().toISOString(),
+            source: "y".repeat(MAX_ROUTINE_SOURCE_LENGTH + 1),
+          },
+        ],
+      }),
+    );
+    const store = new RoutinesStore(filePath);
+    await store.load();
+    expect(store.list()).toHaveLength(0);
+  }));
 });
 
 describe("RoutinesStore workspace scope revocation", () => {
-  it("atomically removes a canonical root and descendants and persists the shrink", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      const removedRoot = join(dir, "workspace");
-      const segmentSibling = join(dir, "workspace-sibling");
-      const unrelated = join(dir, "unrelated");
-      await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "first",
-        scope: {
-          pluginIds: { mode: "deny-all" },
-          forcedPluginIds: [],
-          directories: [
-            removedRoot,
-            join(removedRoot, "child"),
-            segmentSibling,
-          ],
-        },
-      });
-      await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "second",
-        scope: {
-          pluginIds: { mode: "deny-all" },
-          forcedPluginIds: [],
-          directories: [join(removedRoot, "nested", "child"), unrelated],
-        },
-      });
+  it("atomically removes a canonical root and descendants and persists the shrink", withRoutinesStore(async ({ store, dir }) => {
+    const removedRoot = join(dir, "workspace");
+    const segmentSibling = join(dir, "workspace-sibling");
+    const unrelated = join(dir, "unrelated");
+    await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "first",
+      scope: {
+        pluginIds: { mode: "deny-all" },
+        forcedPluginIds: [],
+        directories: [
+          removedRoot,
+          join(removedRoot, "child"),
+          segmentSibling,
+        ],
+      },
+    });
+    await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "second",
+      scope: {
+        pluginIds: { mode: "deny-all" },
+        forcedPluginIds: [],
+        directories: [join(removedRoot, "nested", "child"), unrelated],
+      },
+    });
 
-      await expect(store.revokeWorkspaceRoot(join(removedRoot, "."))).resolves.toEqual({
-        routinesUpdated: 2,
-        directoriesRemoved: 3,
-      });
+    await expect(store.revokeWorkspaceRoot(join(removedRoot, "."))).resolves.toEqual({
+      routinesUpdated: 2,
+      directoriesRemoved: 3,
+    });
 
-      const reloaded = new RoutinesStore(join(dir, "routines.json"));
-      await reloaded.load();
-      const byTitle = new Map(
-        reloaded.list().map((routine) => [routine.notificationTitle, routine]),
-      );
-      expect(byTitle.get("first")?.scope?.directories).toEqual([segmentSibling]);
-      expect(byTitle.get("second")?.scope?.directories).toEqual([unrelated]);
-    } finally {
-      await cleanup();
-    }
-  });
-  it("preserves routine directories owned by a separately registered child root", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      const parentRoot = join(dir, "workspace");
-      const preservedChild = join(parentRoot, "child");
-      const parentOnly = join(parentRoot, "parent-only");
-      const childDeep = join(preservedChild, "src");
-      const childPrefixSibling = join(parentRoot, "child-old");
-      const unrelated = join(dir, "unrelated");
-      await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "nested",
-        scope: {
-          pluginIds: { mode: "deny-all" },
-          forcedPluginIds: [],
-          directories: [
-            parentRoot,
-            parentOnly,
-            preservedChild,
-            childDeep,
-            childPrefixSibling,
-            unrelated,
-          ],
-        },
-      });
+    const reloaded = new RoutinesStore(join(dir, "routines.json"));
+    await reloaded.load();
+    const byTitle = new Map(
+      reloaded.list().map((routine) => [routine.notificationTitle, routine]),
+    );
+    expect(byTitle.get("first")?.scope?.directories).toEqual([segmentSibling]);
+    expect(byTitle.get("second")?.scope?.directories).toEqual([unrelated]);
+  }));
+  it("preserves routine directories owned by a separately registered child root", withRoutinesStore(async ({ store, dir }) => {
+    const parentRoot = join(dir, "workspace");
+    const preservedChild = join(parentRoot, "child");
+    const parentOnly = join(parentRoot, "parent-only");
+    const childDeep = join(preservedChild, "src");
+    const childPrefixSibling = join(parentRoot, "child-old");
+    const unrelated = join(dir, "unrelated");
+    await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "nested",
+      scope: {
+        pluginIds: { mode: "deny-all" },
+        forcedPluginIds: [],
+        directories: [
+          parentRoot,
+          parentOnly,
+          preservedChild,
+          childDeep,
+          childPrefixSibling,
+          unrelated,
+        ],
+      },
+    });
 
-      await expect(store.revokeWorkspaceRoot(parentRoot, {
-        preserveRoots: [preservedChild],
-      })).resolves.toEqual({
-        routinesUpdated: 1,
-        directoriesRemoved: 3,
-      });
+    await expect(store.revokeWorkspaceRoot(parentRoot, {
+      preserveRoots: [preservedChild],
+    })).resolves.toEqual({
+      routinesUpdated: 1,
+      directoriesRemoved: 3,
+    });
 
-      const reloaded = new RoutinesStore(join(dir, "routines.json"));
-      await reloaded.load();
-      expect(reloaded.list()[0]?.scope?.directories).toEqual([
-        preservedChild,
-        childDeep,
-        unrelated,
-      ]);
-    } finally {
-      await cleanup();
-    }
-  });
+    const reloaded = new RoutinesStore(join(dir, "routines.json"));
+    await reloaded.load();
+    expect(reloaded.list()[0]?.scope?.directories).toEqual([
+      preservedChild,
+      childDeep,
+      unrelated,
+    ]);
+  }));
 
-
-  it("is a no-op when no routine scope is covered", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "unrelated",
-        scope: {
-          pluginIds: { mode: "deny-all" },
-          forcedPluginIds: [],
-          directories: [join(dir, "workspace-sibling")],
-        },
-      });
-      await expect(store.revokeWorkspaceRoot(join(dir, "workspace"))).resolves.toEqual({
-        routinesUpdated: 0,
-        directoriesRemoved: 0,
-      });
-    } finally {
-      await cleanup();
-    }
-  });
+  it("is a no-op when no routine scope is covered", withRoutinesStore(async ({ store, dir }) => {
+    await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "unrelated",
+      scope: {
+        pluginIds: { mode: "deny-all" },
+        forcedPluginIds: [],
+        directories: [join(dir, "workspace-sibling")],
+      },
+    });
+    await expect(store.revokeWorkspaceRoot(join(dir, "workspace"))).resolves.toEqual({
+      routinesUpdated: 0,
+      directoriesRemoved: 0,
+    });
+  }));
 });
 
 describe("RoutinesStore v2 — corrupt routines.json recovery", () => {
-  it("backs up corrupt JSON as .corrupt-<ts>-<random>.bak and starts empty", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      writeFileSync(join(dir, "routines.json"), "{ this is not json", "utf-8");
+  it("backs up corrupt JSON as .corrupt-<ts>-<random>.bak and starts empty", withRoutinesStore(async ({ store, dir }) => {
+    writeFileSync(join(dir, "routines.json"), "{ this is not json", "utf-8");
 
-      const added = await store.add({
-        trigger: "schedule",
-        execution: "notification-only",
-        schedule: { at: futureIso() },
-        notificationTitle: "recovered",
-      });
-      expect(store.listActive().map((r) => r.id)).toEqual([added.id]);
+    const added = await store.add({
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle: "recovered",
+    });
+    expect(store.listActive().map((r) => r.id)).toEqual([added.id]);
 
-      const backups = readdirSync(dir).filter((f) => /^routines\.json\.corrupt-\d+-[0-9a-f]{8}\.bak$/.test(f));
-      expect(backups).toHaveLength(1);
-    } finally {
-      await cleanup();
-    }
-  });
+    const backups = readdirSync(dir).filter((f) => /^routines\.json\.corrupt-\d+-[0-9a-f]{8}\.bak$/.test(f));
+    expect(backups).toHaveLength(1);
+  }));
 });
 
 describe("persisted missing-plugin status validation", () => {
@@ -953,23 +749,20 @@ describe("persisted missing-plugin status validation", () => {
     } finally { await cleanup(); }
   });
 
-  it("holds back a stored missing-plugin id the contract rejects instead of dropping the routine", async () => {
-    const { store, dir, cleanup } = tempRoutinesStore();
-    try {
-      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
-      const { writeFile } = await import("node:fs/promises");
-      await writeFile(join(dir, "routines.json"), JSON.stringify({
-        version: 2,
-        routines: [good, { ...good, id: "bad", needsAttention: { missingPluginIds: ["../private"] } }],
-      }));
-      await store.load();
-      expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
-      expect(store.listInvalid()).toEqual([{
-        id: "bad",
-        field: "needsAttention.missingPluginIds",
-        value: "../private",
-        reason: "invalid-plugin-id",
-      }]);
-    } finally { await cleanup(); }
-  });
+  it("holds back a stored missing-plugin id the contract rejects instead of dropping the routine", withRoutinesStore(async ({ store, dir }) => {
+    const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(dir, "routines.json"), JSON.stringify({
+      version: 2,
+      routines: [good, { ...good, id: "bad", needsAttention: { missingPluginIds: ["../private"] } }],
+    }));
+    await store.load();
+    expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
+    expect(store.listInvalid()).toEqual([{
+      id: "bad",
+      field: "needsAttention.missingPluginIds",
+      value: "../private",
+      reason: "invalid-plugin-id",
+    }]);
+  }));
 });

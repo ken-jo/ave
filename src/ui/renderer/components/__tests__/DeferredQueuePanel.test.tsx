@@ -8,7 +8,6 @@ import { makeDeferredQueueEntry } from "../../../../../test/renderer/helpers.js"
 
 type DeferredEntry = DeferredQueueEntry;
 
-
 function installApi(opts: {
   entries: DeferredEntry[];
   listResult?: { ok: true; pending: DeferredEntry[]; total: number } | { ok: false; error: string };
@@ -99,7 +98,7 @@ describe("DeferredQueuePanel", () => {
         inputSummary: '{"command":"./update-all.sh"}',
         evaluationContext: {
           version: "permission-evaluation-context/v1",
-          reviewerFrameworkVersion: "permission-reviewer-framework/v2",
+          reviewerFrameworkVersion: "permission-reviewer-framework/v3",
           policyMode: "auto",
           headless: true,
           source: "builtin",
@@ -119,7 +118,7 @@ describe("DeferredQueuePanel", () => {
     const contextPanel = screen.getByTestId("permission-evaluation-context");
     expect(contextPanel).toBeTruthy();
     expect(within(contextPanel).getByText(/auto · headless/)).toBeTruthy();
-    expect(within(contextPanel).getByText(/permission-reviewer-framework\/v2/)).toBeTruthy();
+    expect(within(contextPanel).getByText(/permission-reviewer-framework\/v3/)).toBeTruthy();
   });
 
   it.each([
@@ -177,7 +176,6 @@ describe("DeferredQueuePanel", () => {
       fireEvent.click(button);
     });
     expect(api.deferredResolve).toHaveBeenCalledWith("abc-123", "approved", undefined, "button");
-    // After click: deferredList re-fetched (initial + post-action)
     expect(api.deferredList.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 

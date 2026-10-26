@@ -1,36 +1,11 @@
-/**
- * The compile half of `check:plugin-host-protocol-client`, demonstrated.
- *
- * The check compiles two separate programs. Each case below runs one of them
- * against a temporary copy whose compiler options are read from the committed
- * project file — only the file list is re-pointed — so a case fails exactly
- * when the committed program stops rejecting what it is there to reject:
- *
- *  - standalone (`scripts/tsconfig.plugin-host-protocol-client.json`): the
- *    generated client with a type error fails, and with an added `import` it
- *    fails too — whether or not the import resolves — because the file must
- *    stand alone;
- *  - host equality (`scripts/tsconfig.plugin-host-protocol-client-assertions.json`):
- *    the assertions module with one error code dropped from the host's side of
- *    the union fails, while the standalone program still passes — the two
- *    programs gate different things.
- *
- * The command line is then held to report what those programs find: in a
- * copy of everything it reads, a client that matches its schema but fails the
- * standalone compile, and an assertions module that disagrees with the host,
- * each make `--check` exit 1 with one failure line naming the program.
- *
- * The standalone copy lives in the OS temp directory, which proves it needs
- * nothing around it. The host-equality copy lives under the repository's
- * ignored `.cache/`, inside the root project's `rootDir`, because it compiles
- * the host's own modules under the repository's options.
- */
+// Standalone compilation forbids imports; host-equality compilation checks shared unions.
+// Keep standalone copies isolated and host-equality copies inside the repository rootDir.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   HOST_PROTOCOL_CLIENT_LABEL,
   HOST_PROTOCOL_CLIENT_PROGRAMS,
@@ -41,11 +16,13 @@ const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CLIENT = join(REPO_ROOT, "schemas/plugin-host-protocol/3/protocol-client.ts");
 const ASSERTIONS = join(REPO_ROOT, "scripts/lib/plugin-host-protocol-client-assertions.ts");
 const HOST_ERROR_SIDE = "(typeof HOST_API_WIRE_ERROR_CODES)[number]";
-/**
- * The plain Node the harness names: the suite runs under Electron, whose
- * `process.execPath` prints startup diagnostics a compile's output would carry.
- */
+// Use a plain interpreter so runtime startup diagnostics cannot contaminate compiler output.
 const NODE = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+let committedStandalone: ReturnType<typeof compileHostProtocolClientProgram>;
+
+beforeAll(() => {
+  committedStandalone = compileHostProtocolClientProgram(HOST_PROTOCOL_CLIENT_PROGRAMS.standalone, { alone: true, node: NODE });
+});
 
 const created: string[] = [];
 
@@ -57,16 +34,11 @@ function projectOptions(project: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(REPO_ROOT, project), "utf-8")) as Record<string, unknown>;
 }
 
-/** `to` as a relative module specifier from `fromDir`, `/`-separated. */
 function specifier(fromDir: string, to: string): string {
   const path = relative(fromDir, to).replaceAll("\\", "/");
   return path.startsWith(".") ? path : `./${path}`;
 }
 
-/**
- * The standalone program over a copy of the client, with `edit` applied to its
- * text and `beside` written next to it.
- */
 function standaloneCopy(edit: (client: string) => string, beside: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "protocol-client-standalone-"));
   created.push(dir);
@@ -79,13 +51,12 @@ function standaloneCopy(edit: (client: string) => string, beside: Record<string,
   return project;
 }
 
-/** The host-equality program over a copy of the assertions module, with `edit` applied to its text. */
 function hostEqualityCopy(edit: (assertions: string) => string): string {
   const cache = join(REPO_ROOT, ".cache");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "protocol-client-assertions-"));
   created.push(dir);
-  // The copy keeps every import pointing at the file the original imports.
+  // Preserve every copied import target.
   const source = readFileSync(ASSERTIONS, "utf-8").replace(
     /from "(\.[^"]+)"/gu,
     (_match, target: string) => `from "${specifier(dir, resolve(dirname(ASSERTIONS), target))}"`,
@@ -114,7 +85,9 @@ describe("the committed pair", () => {
       [standaloneCopy((client) => client), true],
       [hostEqualityCopy((assertions) => assertions), false],
     ] as const) {
-      const { ok, output } = compileHostProtocolClientProgram(project, { alone, node: NODE });
+      const { ok, output } = project === HOST_PROTOCOL_CLIENT_PROGRAMS.standalone
+        ? committedStandalone
+        : compileHostProtocolClientProgram(project, { alone, node: NODE });
       expect(output, project).toBe("");
       expect(ok, project).toBe(true);
     }
@@ -132,7 +105,7 @@ describe("the standalone program", () => {
   }, 60_000);
 
   it("fails a client that imports a module the program cannot see", () => {
-    // No ambient type and no Node: a built-in does not even resolve.
+    // Built-in imports must fail without ambient runtime types.
     const { ok, output } = compileHostProtocolClientProgram(
       standaloneCopy((client) => `import { readFileSync } from "node:fs";\nexport const read = readFileSync;\n${client}`),
       { alone: true, node: NODE },
@@ -142,8 +115,7 @@ describe("the standalone program", () => {
   }, 60_000);
 
   it("fails a client that imports a module that compiles, because the file must stand alone", () => {
-    // The import resolves and type-checks, so only the program's file list
-    // shows the client is no longer alone.
+    // A resolving import still violates the standalone program file list.
     const { ok, output } = compileHostProtocolClientProgram(
       standaloneCopy(
         (client) => `import { helper } from "./helper.js";\nexport const usesHelper = helper;\n${client}`,
@@ -169,12 +141,11 @@ describe("the host-equality program", () => {
     expect(equality.ok).toBe(false);
     expect(equality.output).toMatch(/assertions\.ts\(\d+,\d+\): error TS2344:/u);
 
-    const standalone = compileHostProtocolClientProgram(HOST_PROTOCOL_CLIENT_PROGRAMS.standalone, { alone: true, node: NODE });
+    const standalone = committedStandalone;
     expect(standalone).toEqual({ ok: true, output: "" });
   }, 120_000);
 });
 
-/** What the command line reads, by repository-relative path. */
 const CLI_FILES = [
   "scripts/generate-plugin-host-protocol-client.ts",
   "scripts/lib/plugin-host-protocol-client.ts",
@@ -185,15 +156,7 @@ const CLI_FILES = [
   "schemas/plugin-host-protocol/3/protocol-client.ts",
 ];
 
-/**
- * A checkout holding a copy of everything the command line reads, under the
- * repository's ignored `.cache/`, so a case can break one file and run the
- * real `--check` against it without touching the tree. An import of a copied
- * file stays as written; an import of anything else — the host's own `src/` —
- * is re-pointed at the real file, and `tsconfig.json` extends the
- * repository's, so the host-equality program compiles the real host under the
- * repository's options exactly as it does in place.
- */
+// Copy command inputs under .cache, preserving real host imports and compiler options.
 function cliCheckout(): string {
   const cache = join(REPO_ROOT, ".cache");
   mkdirSync(cache, { recursive: true });
@@ -239,7 +202,6 @@ describe("the command line", () => {
   }, 120_000);
 
   it("passes the same check in an unedited copy of what it reads", () => {
-    // The control for the two failures below: the copy alone changes nothing.
     const result = runCli(cliCheckout(), ["--check"]);
     expect(result.stdout).toBe(passed);
     expect(result.status, result.stderr).toBe(0);
@@ -247,9 +209,7 @@ describe("the command line", () => {
 
   it("fails, in one line, a client that matches its schema but does not compile standalone", () => {
     const root = cliCheckout();
-    // A named type the schema spells as raw TypeScript naming nothing that
-    // exists: the generator projects it faithfully, so the bytes match and
-    // only the standalone compile can refuse it.
+    // Schema-identical output with an unresolved type must fail standalone compilation.
     const schemaPath = join(root, "schemas/plugin-host-protocol/3/protocol.schema.json");
     const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as { $defs: { types: Record<string, unknown> } };
     schema.$defs.types.InjectedTypeError = { tsType: "NoSuchTypeAnywhere" };

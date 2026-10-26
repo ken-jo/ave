@@ -1,12 +1,3 @@
-/**
- * plugin-paths SoT helper.
- *
- * Locks the layout (rooted at `aveHome()/plugins/`) and the registry-relative
- * manifestPath helper used by every marketplace install path.
- *
- * Env override removed. Tests now exercise constructor injection only
- * (the sole remaining override mechanism).
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { resolve } from "node:path";
 import { resolvePluginPaths, toRegistryRelativeManifestPath } from "../plugin-paths.js";
@@ -37,9 +28,7 @@ describe("resolvePluginPaths", () => {
   });
 
   it("constructor-injected pluginsRoot redirects pluginsRoot + cache + registry", () => {
-    // This replaces the previous AVE_PLUGINS_DIR env-override test.
-    // Tests / portable installs / CI sandbox isolation pass an
-    // explicit `pluginsRoot` instead of relying on env var resolution.
+    // Tests and portable installs override pluginsRoot through constructor injection.
     const paths = resolvePluginPaths({ pluginsRoot: "/tmp/portable" });
     expect(paths.pluginsRoot).toBe(resolve("/tmp/portable"));
     expect(paths.registryPath).toBe(resolve("/tmp/portable", "registry.json"));
@@ -47,10 +36,7 @@ describe("resolvePluginPaths", () => {
   });
 
   it("constructor-injected pluginsRoot is honored even on packaged builds", () => {
-    // There is no env hard-gate to bypass anymore. Constructor injection is
-    // the only override path and it works regardless of
-    // packaged-mode (the input value is trusted because it came from
-    // boot-process code, not a user-controllable env var).
+    // Only trusted boot code injects pluginsRoot, including packaged builds.
     setIsPackaged(true);
     const paths = resolvePluginPaths({ pluginsRoot: "/tmp/explicit" });
     expect(paths.pluginsRoot).toBe(resolve("/tmp/explicit"));
@@ -107,8 +93,7 @@ describe("toRegistryRelativeManifestPath", () => {
   });
 
   it("returns absolute path verbatim when manifest is outside registry tree", () => {
-    // Runtime trust-root rejects these — production install must always be
-    // under pluginsRoot. Helper only normalizes; it does not enforce.
+    // This helper normalizes paths; runtime trust-root enforcement owns containment.
     const out = toRegistryRelativeManifestPath(
       "/ave/plugins/registry.json",
       "/Users/dev/legacy/plugin.json",

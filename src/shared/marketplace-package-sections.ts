@@ -34,7 +34,7 @@ export interface MarketplacePackageSectionDefinition {
 const PACKAGE_VOCABULARY_KINDS = { plugin: "extension", "agent-plugin": "plugin" } as const;
 const CODE_PACKAGE_SECTION_LABELS = { extension: "Extensions", plugin: "Plugins" } as const;
 
-export const MARKETPLACE_PACKAGE_TYPE_LABELS: Readonly<Record<MarketplacePackageType, string>> =
+const MARKETPLACE_PACKAGE_TYPE_LABELS: Readonly<Record<MarketplacePackageType, string>> =
   Object.freeze({
     plugin: CODE_PACKAGE_SECTION_LABELS[packageVocabularyKind("plugin")],
     mcp: "MCP",
@@ -88,7 +88,6 @@ export function isMarketplaceAssetPackageType(
   return typeof value === "string" && MARKETPLACE_ASSET_PACKAGE_TYPE_SET.has(value);
 }
 
-/** The catalog kind is already present on catalog and installed marketplace rows. */
 export function packageVocabularyKind(kind: "plugin" | "agent-plugin"): "extension" | "plugin" {
   return PACKAGE_VOCABULARY_KINDS[kind];
 }
@@ -100,24 +99,12 @@ export function marketplacePackageLabel(packageType: MarketplacePackageType | "a
   return MARKETPLACE_PACKAGE_TYPE_LABELS[packageType];
 }
 
-/** The two ways a catalog row can name its kind, as the host reads them. */
 export interface MarketplacePackageKindFields {
   readonly pluginType?: MarketplacePackageType;
-  /** The kind the catalog declared when this build does not recognise it. */
   readonly unsupportedPackageKind?: string;
 }
 
-/**
- * THE reading of a catalog row's kind: the package type to treat it as, or
- * `undefined` when the catalog named a kind this build does not know.
- *
- * The two absent-`pluginType` cases mean opposite things and every consumer has
- * to tell them apart. A row carrying no kind at all predates the field, and
- * every such row was a plugin — so it reads as one. A row that DID name a kind
- * this build cannot honour must never read as a plugin: offering it as an
- * installable one produces an install that can only fail, which is what the
- * fetcher's old coercion did.
- */
+/** Missing kind means legacy plugin; an explicit unknown kind is unrecognized, never coerced to plugin. */
 export function marketplacePackageTypeOf(
   fields: MarketplacePackageKindFields,
 ): MarketplacePackageType | undefined {

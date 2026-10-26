@@ -1,14 +1,3 @@
-/**
- * Routine IPC handlers — `ave:routines:*`.
- *
- * CRUD over the persisted routine list plus the two read paths the renderer
- * needs after a routine has fired: the pending-result queue and the per-routine
- * session history. Every handler is host-renderer only.
- *
- * `triggerNow` deliberately goes through the scheduler rather than firing the
- * execution handler directly, so a manual trigger takes the same persistence
- * (lastFiredAt, dedup) and execution path as a scheduled one.
- */
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import type { IpcDeps } from "../types.js";
@@ -48,8 +37,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return { ok: false, error: "no-store" };
     const ok = await routinesStore.remove(id);
     if (ok) {
+      const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
       for (const session of memoryManager.listSessionsByRoutine(id)) {
         await memoryManager.deleteSession(session.id);
+        endSessionScopedPermissions(session.id, deps.conversationLoop.permissionManager);
       }
     }
     return { ok };
@@ -62,9 +53,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
     if (!routinesScheduler) return { ok: false, error: "no-scheduler" };
-    // Dispatch through the scheduler so persistence (lastFiredAt, dedup) and
-    // execution handlers (LLM session or notification) fire identically to a
-    // scheduled trigger — no separate renderer-only event path.
+    // Use scheduler dispatch so manual triggers preserve persistence and dedup semantics.
     const dispatched = await routinesScheduler.dispatchNow(id);
     if (dispatched === "plugins-missing") return { ok: false, error: "plugins-missing" };
     if (!dispatched) return { ok: false, error: "routine-not-found" };
@@ -103,8 +92,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       }
       results.push(result);
     }
-    // These cards are addressed to the dedicated Suggestions conversation;
-    // results staged before it existed (or after it was deleted) need it now.
+    // Ensure Suggestions exists before returning cards addressed to it.
     if (results.length > 0) ensureSuggestionsSession(memoryManager);
     return results;
   });
@@ -148,16 +136,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     },
   );
 
-  /**
-   * A routine's runs, as the SAME row the sidebar lists them with.
-   *
-   * The panel and the sidebar show one set of sessions. This handler used to
-   * answer with a shape of its own (`{ routineId, firedAt, sessionId, title,
-   * preview }`), so the panel named the same session differently and formatted
-   * its time differently from the row beside it in the sidebar. It now returns
-   * {@link RoutineRunRow} — the conversation row plus the opening snippet only
-   * this panel has room for — assembled by the one `toSessionListRow`.
-   */
+  // Return the sidebar's shared run-row shape so panels and sidebar describe the same sessions.
   ipcMain.handle(ROUTINES.listSessions, async (e, routineId: string, limit?: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, ROUTINES.listSessions, e);

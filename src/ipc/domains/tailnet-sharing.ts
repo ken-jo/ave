@@ -1,11 +1,4 @@
-/**
- * Host-renderer-only IPC for local Tailnet pairing and scoped sharing.
- *
- * This is intentionally not a remote API: every mutation needs a live local
- * keyboard intent, and the handler gets the active conversation only through
- * the main-owned owner service. The renderer cannot nominate a session,
- * Tailnet login, raw actor id, or pairing binding.
- */
+// Pairing and sharing mutations require live local keyboard intent and a main-owned active conversation.
 import { ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
@@ -29,10 +22,7 @@ const OPERATION_REJECTED = Object.freeze({
 });
 const UNAVAILABLE = Object.freeze({ ok: false as const, error: "tailnet-sharing-unavailable" as const });
 
-/**
- * Broadcast only a change hint. Each renderer must refetch its safe snapshot;
- * neither invitation codes nor pairing/share data travel in this event.
- */
+// Broadcast only a refetch hint; invitation and share data remain out of events.
 function broadcastTailnetSharingChanged(deps: IpcDeps): void {
   const mainWindow = deps.getMainWindow?.();
   const windows = deps.getAppWindows?.() ?? [mainWindow];

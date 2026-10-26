@@ -1,9 +1,3 @@
-/**
- * AboutTab — after the settings IA restructure the former General tab was
- * renamed to About and holds ONLY the System Info block (OS / app version /
- * tech stack / data path). Account, workspace stats, and auth management moved
- * to the Model + Usage surfaces.
- */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { render, waitFor } from "@testing-library/react";
@@ -33,8 +27,7 @@ describe("AboutTab (System Info)", () => {
     const { findByTestId, findByText } = render(<AboutTab api={api} />);
     const version = await findByTestId("general-tab-app-version");
     await waitFor(() => expect(version.textContent).toContain("v0.2.3"));
-    // The data path is informational text; assert presence via the
-    // user-facing copy.
+    // The data path is informational text; assert presence via the user-facing copy.
     await findByText("/Users/test/Library/Application Support/Ave");
   });
 

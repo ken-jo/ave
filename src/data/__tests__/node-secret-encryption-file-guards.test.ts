@@ -51,7 +51,8 @@ afterEach(async () => {
   await cleanupTmpDir(root);
 });
 
-describe("external key file invariants", () => {
+// These owner/mode/inode guards are POSIX-only; Windows refuses keys before open.
+describe.skipIf(process.platform === "win32")("external key file invariants", () => {
   it("rejects a different owner and special permission bits before reading", () => {
     let reads = 0;
     onRead = () => { reads += 1; };

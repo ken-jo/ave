@@ -1,7 +1,3 @@
-
-
-
-
 import type { GenericMessage, LLMVendor } from "./llm/types.js";
 import { serializeMessageForEstimation } from "./llm/types.js";
 import { selectAssistantWireThinkingBlocks } from "./llm/assistant-wire-content.js";
@@ -19,42 +15,11 @@ import {
 import { estimateTokens } from "../shared/token-estimate.js";
 import { skillNameFromReadResult } from "../main/skill-overlay.js";
 
-// Token-count primitives now live in shared/token-estimate.ts (architecture
-// §4.6.2 — leaf primitive below both prompts/ and engine/). Re-exported here so
-// existing engine callers keep importing them from auto-compact unchanged.
-// estimateTokens is also imported above for use by estimateMessagesTokens.
 export { countHangul, estimateTokens } from "../shared/token-estimate.js";
 
+// Resolve context windows from settings, endpoint reports, catalog, then the conservative default.
 
-// ─── Context Window ──────────────────────────────────
-//
-// The window comes from one resolver, `shared/context-budget.ts`
-// (`resolveModelContextWindow`): the user's setting, the endpoint's report,
-// the model catalog, else the host's 128K fallback.
-
-/**
- * Model identifier → effective context window in tokens: what
- * {@link resolveModelContextWindow} answers, including the conservative 128K
- * fallback for a model nothing describes.
- *
- * `resolvedContextWindow` is the window a caller resolved for the ACTIVE route
- * through {@link resolveContextWindowForRoute}, which also consults the vendor
- * block and the provider's own `/models` report. Callers that only know a
- * vendor and a model omit it and get the catalog's answer.
- */
-export function getModelContextWindow(
-  vendor: LLMVendor,
-  model: string,
-  resolvedContextWindow?: number,
-): number {
-  return resolvedContextWindow ?? resolveModelContextWindow({ vendor, model }).contextWindow;
-}
-
-/**
- * The window and prompt cap the budget math reads. A caller that resolved the
- * route passes both (`inputLimit` from the same resolution); one that knows
- * only a vendor and a model gets the catalog's answer for both.
- */
+// Resolve the prompt cap and context window from the same route.
 function budgetWindow(
   vendor: LLMVendor,
   model: string,
@@ -68,14 +33,7 @@ function budgetWindow(
   return { contextWindow: resolved.contextWindow, ...(resolved.inputLimit !== undefined ? { inputLimit: resolved.inputLimit } : {}) };
 }
 
-/**
- * Usable portion of the model's context window — what callers should treat
- * as the denominator for "fullness" math. Subtracts Ave fixed
- * buffer (output + safety reservation). See {@link getUsableContext}.
- *
- * Use this for compact decisions and any UI ring that should hit 100% at the
- * compact threshold rather than at the raw context window.
- */
+/** Use context after output and safety reserves as the fullness denominator. */
 export function getModelUsableContext(
   vendor: LLMVendor,
   model: string,
@@ -85,9 +43,6 @@ export function getModelUsableContext(
   const window = budgetWindow(vendor, model, resolvedContextWindow, inputLimit);
   return getUsableContext(window.contextWindow, window.inputLimit);
 }
-
-
-
 
 export function getModelPreflightThreshold(
   vendor: LLMVendor,
@@ -109,16 +64,10 @@ export function getModelPreflightThreshold(
   return windowThreshold;
 }
 
-/** Which input {@link getModelPreflightThreshold} actually used — observability only. */
 export type PreflightThresholdSource =
   | "runtime-override" | "dev-env-override" | "tpm-capped" | "input-limit" | "context-window";
 
-/**
- * Mirrors {@link getModelPreflightThreshold}'s own priority order so trace
- * consumers can tell whether a preflight decision was made against the
- * model's context window, a TPM cap, or a UI/env override — without
- * duplicating the threshold math itself.
- */
+/** Report the winning threshold source without duplicating threshold calculations. */
 export function getModelPreflightThresholdSource(
   vendor: LLMVendor,
   model: string,
@@ -152,11 +101,7 @@ function readDevPreflightOverride(): number | null {
   return n;
 }
 
-/**
- * Runtime dev preflight override — IPC 가 UI slider 의 값을 push 할 때 사용.
- * production NODE_ENV 에서는 set 자체를 거부 (no-op).
- * `null` 전달 시 override clear → env var / computed 로 fallback.
- */
+// Runtime overrides are development-only; null restores environment or computed thresholds.
 export function setRuntimePreflightOverride(n: number | null): void {
   if (process.env.NODE_ENV === "production") return;
   if (n === null) {
@@ -167,50 +112,27 @@ export function setRuntimePreflightOverride(n: number | null): void {
   _runtimePreflightOverride = Math.floor(n);
 }
 
-/** Renderer UI 가 현재 활성 runtime override 값 (또는 null) 을 조회. */
 export function getRuntimePreflightOverride(): number | null {
   return _runtimePreflightOverride;
 }
 
-// Compact pipeline: token preflight -> LLM compact -> same-session checkpoint.
-// Automatic session splitting is not part of this model.
+// Compaction checkpoints stay in-session; automatic session splitting is unsupported.
 
-// ─── Types ──────────────────────────────────────────
+// Message estimation stays in engine because wire shapes and stubbing depend on engine types.
 
-// ─── Token Estimation ───────────────────────────────
-//
-// estimateTokens / countHangul are re-exported from shared/token-estimate.ts
-// at the top of this module. estimateMessagesTokens stays here because it
-// depends on engine-only types (GenericMessage, wire serialization, tool-result
-// stubbing) and so cannot move down to shared/.
-
-/**
- * Estimate one message from the provider-wire shape.
- *
- * Signed reasoning counts only on a route that replays it; an unknown route
- * retains valid signed blocks conservatively. Display-only thought never
- * counts. Every API-key route sends live tool-result images, either natively
- * or as derived user images, so image accounting does not vary by route.
- */
+/** Estimate provider-wire content, retaining unknown-route signed reasoning conservatively.
+ * Display-only thought does not count; live tool images count on every API-key route. */
 export function estimateMessageTokensForWire(message: GenericMessage, vendor?: LLMVendor): number {
   if (message.role === "user") return estimateUserMessageTokens(message.content);
 
-  // Marked tool_results keep raw content in memory for UI and checkpoint
-  // inspection, but stream-collector stubs them immediately before provider
-  // send. Counting the raw content here makes preflight and session-load rings
-  // fire far earlier than the actual payload.
+  // Count marked results as wire stubs while preserving their raw inspection content in memory.
   let total = estimateTokens(serializeMessageForWireEstimate(message, vendor));
 
-  // A view_image tool_result carries its image on a sibling field, so the
-  // wire-estimate string above counts 0 for it. Add the image overhead while
-  // it is still LIVE (not yet marked/stubbed) — gated on the same not-stubbed
-  // predicate the serializer uses, so it stops counting once the image is
-  // dropped from the wire and never double-counts against the stub content.
+  // Count sibling images only while live, using the serializer stub predicate.
   if (
     message.role === "tool_result" &&
     message.image !== undefined &&
-    // Every API-key route sends a live image either in the native tool result or
-    // in the host-derived user image that follows its tool-result group.
+    // Routes send images inline or in a derived user row after the result group.
     message.meta?.compactedAt === undefined &&
     message.meta?.truncated === undefined &&
     message.meta?.serializedStub !== true
@@ -222,7 +144,6 @@ export function estimateMessageTokensForWire(message: GenericMessage, vendor?: L
   return total;
 }
 
-/** 메시지 배열의 총 토큰 추정 */
 export function estimateMessagesTokens(messages: GenericMessage[], vendor?: LLMVendor): number {
   return messages.reduce((total, message) => total + estimateMessageTokensForWire(message, vendor), 0);
 }
@@ -254,32 +175,18 @@ function serializeMessageForWireEstimate(message: GenericMessage, vendor?: LLMVe
   });
 }
 
-
-// ─── Mark Stale Tool Results (memory-verbatim, serialization-stub) ───────────
-//
-// Same-session checkpoint compaction uses the full marker pattern.
-// 이전 동작: content 즉시 stub 으로 교체 → memory/wire/disk 단일 source.
-// 현재 동작: meta.compactedAt 만 set, content *verbatim* 보존.
-//   - memory: verbatim (UI / checkpoint preview 가 원본 표시 가능)
-//   - wire: `wire-serialize.ts:prepareMarkedToolResultsForWire` 가 provider 호출 직전 stub 변환
-//   - disk: `MemoryManager.saveSession` 이 stub JSONL + file-backed artifact 로 영속화
-//
-// `meta.stripped` / `meta.strippedAt` / `meta.originalLength` 는 제거됨 (호환성 layer 없음).
-// 단일 marker `meta.compactedAt` 가 "이 message 는 serialization 시 stub 으로 변환되어야 함" 을 의미.
+// compactedAt marks serialization stubs; memory retains raw text and disk keeps a file-backed artifact.
 
 export interface MarkStaleConfig {
-  /** 말단에서부터 이 개수만큼의 tool_result는 raw 유지 (기본 8) */
   preserveRecentToolResults: number;
-  /** 이 길이(자) 미만의 tool_result는 mark 대상에서 제외 (기본 200, Ave noise floor) */
+  // Results below this character threshold save too little to justify stubbing.
   minStubThreshold?: number;
 }
 
 export interface MarkStaleResult {
-  /** 실제 mark 가 일어났는지 여부 */
   marked: boolean;
-  /** mark 된 tool_result 개수 */
   markedCount: number;
-  /** 직렬화 시 절약될 예상 문자 수 (UTF-16 code unit) (sum of original.length − stub.length) */
+  // Estimated UTF-16 code units freed, including dropped image content.
   freedCharsOnSerialize: number;
 }
 
@@ -288,17 +195,8 @@ const DEFAULT_MARK_STALE_CONFIG: MarkStaleConfig = {
   minStubThreshold: 200,
 };
 
-/**
- * Preventive, LLM-free part marking. Memory verbatim 보존.
- *
- * - 최근 `preserveRecentToolResults` 개는 mark 면제 (assistant 가 직접 참조 가능)
- * - content 길이가 `minStubThreshold` 미만이면 mark 면제 (직렬화 시 절약 ≈ 0)
- * - 이미 marked (`meta.compactedAt` 존재) 메시지는 skip (idempotent)
- * - 각 skill 의 가장 최근 성공한 `skill_load` 결과는 mark 면제 — 진행 중인 skill 지시가
- *   이후 tool call 8개 뒤에 stub 으로 사라지지 않게 한다. 같은 skill 의 이전 중복 읽기는 대상.
- * - `toolUseId`, `content`, `toolName`, `isError` 모두 *verbatim* — meta 만 추가
- * - 입력 array 는 mutate 하지 않고 새 배열 반환. mark 된 메시지만 새 객체.
- */
+/** Mark without mutating raw content or input rows; skip recent, tiny, and already-marked results.
+ * Preserve each skill latest successful read so its instructions remain available. */
 export function markStaleToolResults(
   messages: GenericMessage[],
   config: MarkStaleConfig = DEFAULT_MARK_STALE_CONFIG,
@@ -323,14 +221,10 @@ export function markStaleToolResults(
   const eligibleCandidates = markCandidates.filter((i) => {
     const m = messages[i];
     if (m.role !== "tool_result") return false;
-    if (m.meta?.compactedAt !== undefined) return false; // idempotent
-    // The skill instructions in use: a skill body lives only in its skill_load
-    // result, so stubbing it would silently drop the skill mid-task.
+    if (m.meta?.compactedAt !== undefined) return false;
+    // Stubbing the latest skill body would silently drop active task instructions.
     if (activeSkillReads.has(i)) return false;
-    // An aged view_image tool_result carries a large base64 image on its sibling
-    // field but only a tiny text placeholder in `content`, so the char threshold
-    // never fires. Make it eligible on the image alone: once marked, the rebuild
-    // below drops `image`, so the ~MBs stop riding every wire send.
+    // Image-only results need marking even when their text placeholder is below the size threshold.
     return m.content.length >= minStub || m.image !== undefined;
   });
   if (eligibleCandidates.length === 0) {
@@ -350,12 +244,10 @@ export function markStaleToolResults(
     if (msg.role !== "tool_result") return msg;
 
     const originalLength = msg.content.length;
-    // Names the *stripped* form specifically: the truncated stub is a different,
-    // much longer text, so measuring the wrong one mis-reports what is freed.
+    // Measure the stripped stub; truncated stubs are longer and report different savings.
     const strippedStubLength = buildToolResultStrippedStub(msg.toolName, originalLength).length;
     freedCharsOnSerialize += Math.max(0, originalLength - strippedStubLength);
-    // Also count the base64 image chars this rebuild drops (see below) — a
-    // content-only measure under-reports the bytes actually freed from the wire.
+    // Include dropped base64 siblings in freed size.
     freedCharsOnSerialize += msg.image?.data.length ?? 0;
     markedCount += 1;
 
@@ -364,7 +256,7 @@ export function markStaleToolResults(
       toolUseId: msg.toolUseId,
       toolName: msg.toolName,
       isError: msg.isError,
-      content: msg.content, // *verbatim* — content 보존
+      content: msg.content,
       meta: {
         ...(msg.meta ?? {}),
         compactedAt: nowIso,
@@ -382,10 +274,7 @@ export function markStaleToolResults(
   };
 }
 
-/**
- * Indices of the most recent successful, un-marked `skill_load` result for
- * each skill. Older reads of the same skill are duplicates and stay eligible.
- */
+// Preserve the latest successful unmarked skill read; earlier duplicates remain eligible.
 function latestSkillReadIndices(messages: GenericMessage[], toolResultIndices: number[]): Set<number> {
   const latestBySkill = new Map<string, number>();
   for (const i of toolResultIndices) {
@@ -401,24 +290,11 @@ function latestSkillReadIndices(messages: GenericMessage[], toolResultIndices: n
 export interface EvictImagesResult {
   evicted: boolean;
   evictedCount: number;
-  /** base64 chars dropped from the wire/memory. */
   freedChars: number;
 }
 
-/**
- * Drop the `image` sibling from tool_result rows that have aged past the most
- * recent `preserveRecent` tool_results, returning a new messages array (the
- * affected rows are rebuilt without `image`; every other row is referenced
- * as-is).
- *
- * Unlike {@link markStaleToolResults} this is IMAGE-ONLY and unconditional: an
- * image is a wire-bandwidth cost (~MBs of base64 re-sent every turn), not a
- * token cost, so it should be evicted as soon as it ages out — independent of
- * the token-pressure floor that (correctly) gates text stubbing. Text rows and
- * recent images are never touched. The model has already seen the image while
- * it was inside the preserve window (the per-round tool-call cap is smaller than
- * the window, so a produced image is sent at least once before it can age out).
- */
+/** Evict aged images regardless of token pressure; preserve recent images and all text.
+ * The protect window exceeds a round fan-out, so every image is sent before aging out. */
 export function evictAgedToolResultImages(
   messages: GenericMessage[],
   preserveRecent: number,
@@ -449,25 +325,7 @@ export function evictAgedToolResultImages(
   };
 }
 
-// ─── Reactive Recovery ──────────────────────────────
-
-/**
- * 벤더별 "context too long" 오류인지 판별.
- *
- * 입력 형태별 처리 (duck-typing):
- * - `Error` 인스턴스: `.message` 문자열 검사 + `.code === "context_length_exceeded"` 검사
- * - `string`: 직접 검사 (StreamEvent `{type:"error", error:string}` 경로)
- * - `{message: string}` 객체: `.message` 필드 검사
- * - `{error: string}` 객체: `.error` 필드 검사
- *
- * 메시지 패턴:
- * - Anthropic: "prompt is too long"
- * - OpenAI: `.code === "context_length_exceeded"` 또는 "maximum context length"
- * - Gemini: "context window"
- *
- * 주의: `error.type` 필드나 HTTP 상태 코드는 직접 검사하지 않음.
- * 벤더가 이를 노출하는 경우에도 message 패턴 매칭으로 충분히 커버됨.
- */
+/** Match context-limit messages and Error codes; HTTP status and error.type are not inspected. */
 export function isContextLengthError(err: unknown): boolean {
   let rawMsg: string;
   if (err instanceof Error) {
@@ -475,7 +333,6 @@ export function isContextLengthError(err: unknown): boolean {
   } else if (typeof err === "string") {
     rawMsg = err;
   } else if (err !== null && typeof err === "object") {
-    // {message: string} or {error: string} (StreamEvent-style)
     const asObj = err as Record<string, unknown>;
     rawMsg = typeof asObj["message"] === "string"
       ? asObj["message"]
@@ -487,20 +344,15 @@ export function isContextLengthError(err: unknown): boolean {
   }
 
   const msg = rawMsg.toLowerCase();
-  // code field (Error instances only)
   if (err instanceof Error) {
     const code = (err as { code?: string }).code;
     if (code === "context_length_exceeded") return true;
   }
 
-  // Anthropic: "prompt is too long" (status 400, type invalid_request_error)
   if (msg.includes("prompt is too long")) return true;
 
-  // OpenAI fallback message
   if (msg.includes("maximum context length")) return true;
 
-  // Gemini: "The input token count (N) exceeds the maximum number of tokens allowed"
-  //         "Input exceeds the context window size"
   if ((msg.includes("exceeds the maximum") && msg.includes("token")) ||
       msg.includes("input token count") ||
       msg.includes("context window")) return true;

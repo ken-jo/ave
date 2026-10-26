@@ -20,18 +20,7 @@ export function makeMockWebContents() {
   };
 }
 
-/**
- * The approval CARDS a gate sent to this renderer, in order.
- *
- * The same webContents also carries settlement announcements
- * (`ave:approval:settled`), so an index into the raw call log reads one of
- * those as a card as soon as an earlier request ends. Suites that count or
- * index the cards select them through here.
- *
- * Typed against the call log rather than against {@link makeMockWebContents},
- * because a suite whose mock takes its own options (a destroyed renderer, a
- * `send` that throws) still sends the same cards.
- */
+/** Filter approval cards separately from settlement events before counting or indexing sends. */
 export function sentApprovalCards<T>(
   wc: { send: { mock: { calls: unknown[][] } } },
 ): T[] {
@@ -41,21 +30,12 @@ export function sentApprovalCards<T>(
     .map(([, payload]) => payload);
 }
 
-/** The document the host renderer loads — `main-window.ts` loadFile(index.html). */
 export const HOST_FRAME_URL = "file:///Applications/Ave.app/dist/index.html";
 
-/** The one document a plugin UI shell frame loads. */
 export const PLUGIN_SHELL_FRAME_URL =
   "file:///Applications/Ave.app/dist/plugin-ui-shell.html";
 
-/**
- * A synthetic `IpcMainInvokeEvent` from the TRUSTED host renderer frame — the one
- * `validateHostRendererSender` accepts. THE shared builder: `validateSender` fails
- * closed on a missing frame, so a handler test can no longer hand its handler a
- * frameless `null`/`{}` and be treated as trusted. Every gated-IPC suite builds its
- * event here, so a newly written handler test gets a valid frame by default rather
- * than by remembering.
- */
+/** Trusted IPC events require a valid host frame; missing frames must fail closed. */
 export function hostFrameEvent(): IpcMainInvokeEvent {
   return {
     senderFrame: { url: HOST_FRAME_URL },
@@ -63,29 +43,20 @@ export function hostFrameEvent(): IpcMainInvokeEvent {
   } as unknown as IpcMainInvokeEvent;
 }
 
-/** A synthetic event from ANY OTHER frame — a plugin shell, a remote page, an empty URL. */
 export function foreignFrameEvent(url: string): IpcMainInvokeEvent {
   return { senderFrame: { url }, sender: {} } as unknown as IpcMainInvokeEvent;
 }
 
-/**
- * A frame from a page the host never loads — the canonical "wrong sender" for a
- * gated channel. Every guard must refuse it.
- */
 export function untrustedEvent(): IpcMainInvokeEvent {
   return foreignFrameEvent("https://evil.example.com/");
 }
 
-/** A plugin-UI-shell frame — a `file:` frame that sensitive host channels must refuse. */
+/** Plugin-shell file frames must not gain host-channel authority. */
 export function pluginShellFrameEvent(): IpcMainInvokeEvent {
   return foreignFrameEvent(PLUGIN_SHELL_FRAME_URL);
 }
 
-/**
- * An event whose sender frame is gone — what Electron delivers once the sending
- * frame is destroyed or navigated away between `invoke` and handler execution.
- * Every guard must refuse it.
- */
+/** A destroyed or navigated-away sender frame must be refused. */
 export function framelessEvent(): IpcMainInvokeEvent {
   return { senderFrame: null, sender: {} } as unknown as IpcMainInvokeEvent;
 }
@@ -113,13 +84,6 @@ export function invokeRegisteredHandlerWithEvent<T = unknown>(
   return fn(event, ...args) as T;
 }
 
-/**
- * {@link invokeRegisteredHandlerWithEvent} bound to one handler map, for a
- * suite that registers once and then drives many channels.
- *
- * The suites that wanted this had each written the map lookup out again as a
- * local `invoke`, which is a third copy of "what a missing handler does".
- */
 export function makeRegisteredHandlerInvoker(
   handlers: Map<string, RegisteredHandler>,
 ): <T = unknown>(channel: string, event: unknown, ...args: unknown[]) => T {
@@ -200,10 +164,6 @@ export function makeRecordedSpawn(
   };
 }
 
-/**
- * A live (non-destroyed) BrowserWindow stand-in for IPC fan-out assertions.
- * Shared so window-broadcast suites do not each re-declare the same shape.
- */
 export interface FakeBrowserWindow {
   isDestroyed: () => boolean;
   webContents: { isDestroyed: () => boolean; send: (channel: string, payload?: unknown) => void };
@@ -216,17 +176,7 @@ export function liveWindow(): FakeBrowserWindow {
   };
 }
 
-/**
- * Run `fn` with `process.env.TZ` pinned to `zone`, restoring the previous value
- * afterwards — for a sync `fn` on return, for an async one when its promise
- * settles. Node re-reads `TZ` on assignment for both `Date` and the `Intl`
- * default, so no other setup is needed.
- *
- * Every civil-calendar assertion has to pin the zone or it asserts nothing
- * beyond "the machine running the suite agrees with itself". Three suites
- * carried the same `withTz` plus a `beforeEach`/`afterEach` pair to undo it;
- * this is the one owner and it undoes itself.
- */
+/** Pin and restore TZ through async settlement so calendar tests do not inherit the runner's zone. */
 export function withTz<T>(zone: string, fn: () => T): T {
   const previous = process.env.TZ;
   const restore = (): void => {
@@ -250,37 +200,12 @@ export function withTz<T>(zone: string, fn: () => T): T {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-/**
- * Read a file by its repo-relative path, for source-discipline suites that
- * assert on what is checked in (workflows, styles, scripts) rather than on
- * behaviour. Anchored on this file's location, not `process.cwd()`, so a
- * suite run from another working directory reads the same repo.
- */
+/** Anchor source reads to this file, independent of the working directory. */
 export function readRepoFile(path: string): string {
   return readFileSync(resolve(REPO_ROOT, path), "utf8");
 }
 
-/**
- * A factory for scratch directories under the OS temp dir, removed together
- * when the suite finishes.
- *
- * Fourteen suites each carried the same three lines — `mkdtempSync`, push onto
- * a suite-local array, return it — plus a hook to drain that array. The array
- * is the part worth removing: each copy is another place a teardown can be
- * written wrong or forgotten, and the directory a suite makes is the same
- * artifact in every one of them. Registering the `afterAll` here means a suite
- * declares only what it creates.
- *
- * `prefix` labels the suite's directories. A call may pass its own label when
- * one suite makes directories for more than one purpose, which is why the four
- * suites that took the prefix per call fold into the same helper as the ten
- * that fixed it once.
- *
- * Removal goes through {@link createTmpDirTracker}, not a second `rm` ladder:
- * the transient-lock retry that teardown needs has one owner
- * (`support/tmp-dir-teardown.ts`) and a copy here is what that file exists to
- * prevent.
- */
+/** Register scratch cleanup with the shared tracker so all suites use the same lock-retry policy. */
 export function useTempDirs(prefix: string): (ownPrefix?: string) => string {
   const tracker = createTmpDirTracker();
   afterAll(async () => {
@@ -289,32 +214,13 @@ export function useTempDirs(prefix: string): (ownPrefix?: string) => string {
   return (ownPrefix = prefix) => tracker.track(mkdtempSync(join(tmpdir(), ownPrefix)));
 }
 
-/**
- * A factory for paths to `fileName`, each inside a fresh scratch directory this
- * suite owns. The path is returned, not created: the subject under test is what
- * creates it, which is what those suites are asserting about.
- *
- * The suites that wanted this wrapped {@link useTempDirs} in a local function so
- * their call sites could stay bare. The wrapper is the duplicated part; the
- * prefix and the file name are not, and stay at the one place a suite names its
- * subject. `PermissionTestResources.tmpFilePaths` is the same shape for suites
- * whose cleanup is owned by that instance rather than by a hook.
- */
+/** Return uncreated paths so subjects, rather than fixtures, perform the writes under test. */
 export function useTempPaths(prefix: string, fileName: string): () => string {
   const makeDir = useTempDirs(prefix);
   return () => join(makeDir(), fileName);
 }
 
-/**
- * A fresh scratch directory this suite owns, plus a path to `fileName` inside
- * it. Neither is created beyond the directory itself: the subject under test
- * writes the file, which is what those suites assert about.
- *
- * The pair is the helper because the suites that wanted it assert on both — a
- * settings file and the root it sits under, where the root is also the
- * workspace directory the settings name. {@link useTempPaths} is the same
- * helper for a suite that needs only the path.
- */
+/** Create only the directory; the subject must create the file. */
 export function useTempDirFile(
   prefix: string,
   fileName: string,
@@ -326,12 +232,7 @@ export function useTempDirFile(
   };
 }
 
-/**
- * Make a link (a junction for a directory on Windows) at `at` pointing at
- * `target`, removed — the link only — after each test. Removed before the
- * scratch directories it sits in, whose recursive removal would walk a Windows
- * junction into whatever it points at.
- */
+/** Remove links before scratch trees so recursive cleanup cannot traverse Windows junctions. */
 export function useScratchLinks(): (target: string, at: string) => string {
   const links: string[] = [];
   afterEach(() => {
@@ -344,59 +245,31 @@ export function useScratchLinks(): (target: string, at: string) => string {
   };
 }
 
-/**
- * A promise plus the handle that settles it, for a test that must observe work
- * mid-flight — start the call, assert on the state it is now in, then resolve.
- *
- * Three suites wrote this out; the only thing that differed between them was the
- * name of the executor's parameter. `Promise.withResolvers` is the same object,
- * but it is ES2024 and this tree compiles against `lib: ES2023`.
- */
-export function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
+export { deferred } from "./support/deferred.js";
 
-/** A user transcript entry — the minimal shape every transcript suite starts from. */
 export function userEntry(text: string): ChatEntry {
   return { kind: "user", text };
 }
 
-/** A settled (non-streaming) assistant entry with the given body. */
 export function assistantEntry(text: string): Extract<ChatEntry, { kind: "assistant" }> {
   return { kind: "assistant", text, streaming: false };
 }
 
-/** Let un-awaited work that was queued with setImmediate run before asserting on it. */
+/** Drain queued setImmediate work before assertions. */
 export function settleMacrotask(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-/**
- * Override `process.platform` for a platform-branching subject. The caller
- * owns restoring the real value in its own afterEach.
- */
+/** The caller must restore process.platform in afterEach. */
 export function setProcessPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { value, configurable: true });
 }
 
-/** Parse a tool's JSON text output as a keyed record. */
 export function parseJsonRecord(output: string): Record<string, unknown> {
   return JSON.parse(output) as Record<string, unknown>;
 }
 
-/**
- * The file's identity and its bytes, read through ONE open handle.
- *
- * The atomic-write tests assert that a rewrite REPLACED the file: a new inode
- * carrying the new bytes. Statting the path and then reading the path asks the
- * directory twice, so the two answers can describe different files — the race
- * those very tests exist to prove the writer avoids. Opening once and asking
- * the descriptor makes the inode and the bytes the same file by construction.
- */
+/** Read identity and bytes through one handle so replacement races cannot mix files. */
 export function inspectFile(path: string): { ino: number; mode: number; text: string } {
   const fd = openSync(path, "r");
   try {
@@ -407,20 +280,9 @@ export function inspectFile(path: string): { ino: number; mode: number; text: st
   }
 }
 
-/**
- * A {@link SessionGoalStore} over an in-memory sidecar.
- *
- * One home rather than a copy per suite: the fake stands in for the persistence
- * the real store commits to before it touches memory, and two copies of it are
- * two ways for that contract to drift from the store it is standing in for.
- *
- * `disk` is returned so a test can prove a restart reads the goal back, and
- * `now` so timestamps can be made deterministic; both are optional because
- * most callers only need the store.
- */
+/** Expose in-memory persisted state and a deterministic clock to test restart behavior. */
 export function makeSessionGoalStore(now?: () => string): {
   store: SessionGoalStore;
-  /** The sidecar the store wrote through, keyed by session id. */
   disk: Map<string, SessionGoal | null>;
 } {
   const disk = new Map<string, SessionGoal | null>();
@@ -436,15 +298,7 @@ export function makeSessionGoalStore(now?: () => string): {
   };
 }
 
-/**
- * Hold a real loopback port for the duration of one test.
- *
- * Two suites arrange the same precondition — "this port is taken" — and a
- * second copy of the arrangement is a second definition of what "taken" means.
- * A port the machine running the suite already uses satisfies the precondition
- * on its own, so that case releases nothing rather than failing the test for
- * the very condition it is arranging.
- */
+/** Hold a loopback port per test; an already occupied port satisfies the precondition. */
 export async function occupyLoopbackPort(port: number): Promise<() => Promise<void>> {
   const held = createNetServer();
   const bound = await new Promise<boolean>((resolve, reject) => {

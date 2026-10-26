@@ -1,11 +1,4 @@
-/**
- * Per-model price corrections — the shared parse and precedence rules.
- *
- * The pair that matters most: the settings list and the deployed env blob are
- * two spellings of one thing, so a case proven for one has to hold for the
- * other. Anything that only held for one would be the second implementation
- * this module exists to prevent.
- */
+/** Settings and environment price corrections must share parsing and precedence rules. */
 import { describe, it, expect } from "vitest";
 import {
   normalizePricingOverrides,

@@ -4,17 +4,10 @@ import { act, render, screen, waitFor, fireEvent, within } from "@testing-librar
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
 import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
+import { makePluginCard } from "./support/plugin-card.js";
 
 const mockCards = vi.fn(async () => [
-  {
-    id: "meeting",
-    name: "Meeting",
-    description: "Meeting plugin",
-    sampleTools: [],
-    capabilities: [],
-    tools: [],
-    loadStatus: "loaded" as const,
-  },
+  makePluginCard({}),
 ]);
 const mockGet = vi.fn(async () => ({ ok: true as const, config: { apiKey: "abc" } }));
 const mockSet = vi.fn(async () => ({
@@ -27,11 +20,8 @@ const mockUninstall = vi.fn(async () => ({
   error: "unauthorized-frame",
   message: "제거 권한이 없습니다.",
 }));
-/**
- * The git marketplace a Doctor repair goes through. `bind(name)` makes the
- * catalog list that plugin as installed from `ave` at 1.0.0; without it the
- * plugin has no bound source.
- */
+/** The git marketplace a Doctor repair goes through. `bind(name)` makes the catalog list that plugin as installed from
+ * `ave` at 1.0.0; without it the plugin has no bound source. */
 const market = {
   listCatalog: vi.fn(),
   listSources: vi.fn(),
@@ -242,16 +232,13 @@ describe("PluginConfigTab", () => {
   });
 
   it("runs Doctor for a failed plugin and refreshes the plugin card", async () => {
-    const broken = {
+    const broken = makePluginCard({
       id: "samplehub",
       name: "Sample Hub",
       description: "Agent orchestration",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-samplehub"],
       loadStatus: "failed" as const,
-    };
+    });
     const repaired = {
       ...broken,
       loadStatus: "loaded" as const,
@@ -296,16 +283,13 @@ describe("PluginConfigTab", () => {
   it.each(["failed", "missing"] as const)(
     "does not report repair success when the refreshed card is %s",
     async (refreshedState) => {
-      const broken = {
+      const broken = makePluginCard({
         id: "samplehub",
         name: "Sample Hub",
         description: "Agent orchestration",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
         installAliases: ["ave-plugin-samplehub"],
         loadStatus: "failed" as const,
-      };
+      });
       const cards = vi.fn()
         .mockResolvedValueOnce([broken])
         .mockResolvedValueOnce(refreshedState === "failed" ? [broken] : []);
@@ -339,15 +323,12 @@ describe("PluginConfigTab", () => {
   );
 
   it("warns without planning an install when no source binds the failed plugin", async () => {
-    const broken = {
+    const broken = makePluginCard({
       id: "samplehub",
       name: "Sample Hub",
       description: "Agent orchestration",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
@@ -379,16 +360,13 @@ describe("PluginConfigTab", () => {
   });
 
   it("keeps a card refresh failure instead of overwriting it with repair success", async () => {
-    const broken = {
+    const broken = makePluginCard({
       id: "samplehub",
       name: "Sample Hub",
       description: "Agent orchestration",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-samplehub"],
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
       .mockRejectedValueOnce(new Error("card refresh failed"));
@@ -422,17 +400,11 @@ describe("PluginConfigTab", () => {
   });
 
   it("reports a non-reinstallable diagnosis as repaired only after the refreshed runtime is loaded", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
-      description: "Meeting plugin",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
+    const broken = makePluginCard({
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "incompatible-app-version" as const,
       loadStatus: "failed" as const,
-    };
+    });
     const repaired = {
       ...broken,
       installFailureKind: undefined,
@@ -483,12 +455,14 @@ describe("PluginConfigTab", () => {
       remedy: /설정 > 권한 > OS 도구 샌드박스를 켠 뒤 익스텐션을 다시 시작하세요\. 다시 설치해도/,
     },
   ])("shows a localized Doctor diagnosis for a process-entry extension refused as $kind", async ({ kind, title, detail, remedy }) => {
-    const broken = {
-      id: "process-kit", name: "Process Kit", description: "Process extension",
-      sampleTools: [], capabilities: [], tools: [], loadStatus: "failed" as const,
+    const broken = makePluginCard({
+      id: "process-kit",
+      name: "Process Kit",
+      description: "Process extension",
+      loadStatus: "failed" as const,
       installFailureKind: kind,
       installFailureMessage: "English refusal from main.",
-    };
+    });
     Object.defineProperty(window, "ave", {
       value: { plugins: { cards: vi.fn().mockResolvedValue([broken]) }, pluginConfig: { get: mockGet, set: mockSet } },
       writable: true, configurable: true,
@@ -501,18 +475,13 @@ describe("PluginConfigTab", () => {
   });
 
   it("shows an unresolved warning without reinstalling when the app is too old", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
+    const broken = makePluginCard({
       description: "Marketplace install failed: plugin requires Ave >= 999.0.0, current 0.5.0",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "incompatible-app-version" as const,
       installFailureMessage: "plugin requires Ave >= 999.0.0, current 0.5.0",
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
@@ -545,18 +514,13 @@ describe("PluginConfigTab", () => {
 
   it("names a host protocol mismatch, and does not reinstall for it", async () => {
     const navigate = vi.fn();
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
+    const broken = makePluginCard({
       description: "Plugin could not be loaded.",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "incompatible-host-protocol" as const,
       installFailureMessage: "plugin 'meeting' speaks host protocol 1; this app serves 2",
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn().mockResolvedValue([broken]);
     bind("meeting");
     market.listCatalog.mockResolvedValue({ ok: true, value: {
@@ -580,8 +544,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
     });
-    // Its own diagnosis, not "update the app": a newer app may have dropped
-    // the version rather than lacking it.
+    // Its own diagnosis, not "update the app": a newer app may have dropped the version rather than lacking it.
     expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
     expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
     expect(await screen.findByText(/마켓플레이스에서 2.0.0 버전 검토/)).toBeInTheDocument();
@@ -604,10 +567,11 @@ describe("PluginConfigTab", () => {
     }] });
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards: vi.fn().mockResolvedValue([{
-          id: "meeting", name: "Meeting", description: "Needs update", sampleTools: [], capabilities: [], tools: [],
-          loadStatus: "failed", installFailureKind: "incompatible-host-protocol",
-        }]) },
+        plugins: { cards: vi.fn().mockResolvedValue([makePluginCard({
+          description: "Needs update",
+          loadStatus: "failed",
+          installFailureKind: "incompatible-host-protocol",
+        })]) },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
@@ -620,18 +584,13 @@ describe("PluginConfigTab", () => {
   });
 
   it("shows a sandbox ceiling diagnosis with update and remove actions without reinstalling", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
+    const broken = makePluginCard({
       description: "Plugin filesystem grant is outside approved directories.",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "sandbox-grant-outside-ceiling" as const,
       installFailureMessage: "sandbox-grant-outside-ceiling",
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
@@ -660,19 +619,14 @@ describe("PluginConfigTab", () => {
   });
 
   it("auto-reinstalls when a failed load is a reinstall-fixable manifest schema error", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
+    const broken = makePluginCard({
       description: "Plugin manifest could not be loaded.",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "manifest-validation-error" as const,
       installFailureMessage:
         "[manifest:meeting] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools'",
       loadStatus: "failed" as const,
-    };
+    });
     const repaired = { ...broken, installFailureKind: undefined, installFailureMessage: undefined, loadStatus: "loaded" as const };
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
@@ -705,18 +659,13 @@ describe("PluginConfigTab", () => {
   });
 
   it("falls back to the failure detail when auto-repair reinstall fails", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
+    const broken = makePluginCard({
       description: "Plugin manifest could not be loaded.",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "manifest-validation-error" as const,
       installFailureMessage: "[manifest:meeting] schema validation failed",
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn().mockResolvedValue([broken]);
     bind("meeting");
     market.executeInstall.mockResolvedValue({
@@ -750,19 +699,16 @@ describe("PluginConfigTab", () => {
   });
 
   it("shows manifest validation field details in the Doctor panel", async () => {
-    const broken = {
+    const broken = makePluginCard({
       id: "samplemail",
       name: "Sample Mail",
       description: "Marketplace install failed",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       installAliases: ["ave-plugin-samplemail"],
       installFailureKind: "manifest-validation-error" as const,
       installFailureMessage:
         "[manifest:samplemail] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools' — the manifest contains a field that the current SDK schema no longer allows.",
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
@@ -784,17 +730,14 @@ describe("PluginConfigTab", () => {
   });
 
   it("opens uninstall from the Doctor panel even for a managed failed plugin", async () => {
-    const broken = {
+    const broken = makePluginCard({
       id: "samplehub",
       name: "Sample Hub",
       description: "Agent orchestration",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       isManaged: true,
       installPolicy: "admin" as const,
       loadStatus: "failed" as const,
-    };
+    });
     const cards = vi.fn(async () => [broken]);
     mockUninstall.mockResolvedValueOnce({ ok: true as const });
     Object.defineProperty(window, "ave", {
@@ -823,24 +766,12 @@ describe("PluginConfigTab", () => {
   });
 
   it("refreshes the settings plugin list when an install result event arrives", async () => {
-    const meeting = {
-      id: "meeting",
-      name: "Meeting",
-      description: "Meeting plugin",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      loadStatus: "loaded" as const,
-    };
-    const sampleHub = {
+    const meeting = makePluginCard({});
+    const sampleHub = makePluginCard({
       id: "samplehub",
       name: "Sample Hub",
       description: "Agent orchestration",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      loadStatus: "loaded" as const,
-    };
+    });
     const cards = vi.fn()
       .mockResolvedValueOnce([meeting])
       .mockResolvedValueOnce([meeting, sampleHub]);
@@ -884,21 +815,14 @@ describe("PluginConfigTab", () => {
   });
 
   it("refreshes rendered configSchema fields when an install result returns an updated plugin card", async () => {
-    const meetingV1 = {
-      id: "meeting",
-      name: "Meeting",
-      description: "Meeting plugin",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      loadStatus: "loaded" as const,
+    const meetingV1 = makePluginCard({
       version: "1.0.0",
       configSchema: {
         properties: {
           endpoint: { type: "string", title: "Endpoint" },
         },
       },
-    };
+    });
     const meetingV2 = {
       ...meetingV1,
       version: "2.0.0",
@@ -953,13 +877,10 @@ describe("PluginConfigTab", () => {
 
   it("renders preparation progress details for a selected preparing plugin", async () => {
     const cards = vi.fn(async () => [
-      {
+      makePluginCard({
         id: "samplehub",
         name: "Sample Hub",
         description: "Agent orchestration",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
         loadStatus: "preparing" as const,
         preparationStatus: {
           phase: "installing-deps",
@@ -967,7 +888,7 @@ describe("PluginConfigTab", () => {
           progressPct: 40,
           updatedAt: "2026-05-21T00:00:00.000Z",
         },
-      },
+      }),
     ]);
     Object.defineProperty(window, "ave", {
       value: {
@@ -992,24 +913,19 @@ describe("PluginConfigTab", () => {
 
 describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
   it("renders the typed form when manifest declares configSchema and routes secrets through setSecret", async () => {
-    // Override the cards mock with a plugin that declares a typed schema
-    // including one secret key.
+    // Override the cards mock with a plugin that declares a typed schema including one secret key.
     const mockCardsTyped = vi.fn(async () => [
-      {
+      makePluginCard({
         id: "with-schema",
         name: "Schema Plugin",
         description: "Has configSchema",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
-        loadStatus: "loaded" as const,
         configSchema: {
           properties: {
             endpoint: { type: "string", title: "Endpoint", default: "https://api" },
             apiKey: { type: "string", format: "secret", title: "API Key" },
           },
         },
-      },
+      }),
     ]);
     const mockGetTyped = vi.fn(async () => ({ ok: true as const, config: {} }));
     const mockSetTyped = vi.fn(async () => ({ ok: true as const, config: { endpoint: "https://api" } }));
@@ -1045,14 +961,14 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
     // Legacy raw-KV editor must NOT render — the "+ 추가" button is the marker.
     expect(screen.queryByText("+ 추가")).toBeNull();
 
-    // Type a secret value, click its dedicated 저장 button. setSecret MUST
-    // be called (NOT pluginConfig.set with the cleartext value).
+    // Type a secret value, click its dedicated 저장 button. setSecret MUST be called (NOT pluginConfig.set with the cleartext
+    // value).
     const secretInputs = document.querySelectorAll('input[type="password"]');
     expect(secretInputs.length).toBe(1);
     fireEvent.change(secretInputs[0], { target: { value: "sk-LIVE" } });
     const saveButtons = screen.getAllByRole("button", { name: /저장/ });
-    // The first 저장 button belongs to the secret row; the form-level
-    // 저장 lives further down. We click the secret one explicitly via test id.
+    // The first 저장 button belongs to the secret row; the form-level 저장 lives further down. We click the secret one explicitly
+    // via test id.
     const secretSaveBtn = document.querySelector(
       '[data-testid="pcfg:with-schema:apiKey:save"]',
     ) as HTMLButtonElement;
@@ -1071,9 +987,8 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
   });
 
   it("falls back to the legacy raw key/value editor when manifest has NO configSchema", async () => {
-    // Use the original mock from the outer `beforeEach`. Re-install here
-    // explicitly because this describe block does not share the parent's
-    // hooks.
+    // Use the original mock from the outer `beforeEach`. Re-install here explicitly because this describe block does not share
+    // the parent's hooks.
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards: mockCards },
@@ -1100,13 +1015,10 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
 describe("PluginConfigTab — auth UI", () => {
   it("keeps auth UI available for inactive loaded plugins while hiding model tools", async () => {
     const cards = vi.fn(async () => [
-      {
+      makePluginCard({
         id: "inactive-auth-plugin",
         name: "Inactive Auth Plugin",
         description: "Inactive but runtime-loaded",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
         loadStatus: "disabled" as const,
         active: false,
         runtimeLoaded: true,
@@ -1115,7 +1027,7 @@ describe("PluginConfigTab — auth UI", () => {
           statusTool: "inactive_status",
           loginTool: "inactive_login",
         },
-      },
+      }),
     ]);
     const callPluginMethod = vi.fn(async (tool: string) =>
       tool === "inactive_status" ? { authenticated: false } : { ok: true },
@@ -1162,21 +1074,17 @@ describe("PluginConfigTab — auth UI", () => {
   });
 
   it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {
-    // What the runtime reports after a disable: the generation is retired, so
-    // nothing is loaded (`runtimeLoaded: false`), and the card is `disabled`.
-    // The switch is the only way back to enabled.
+    // What the runtime reports after a disable: the generation is retired, so nothing is loaded (`runtimeLoaded: false`), and
+    // the card is `disabled`. The switch is the only way back to enabled.
     let enabled = false;
-    const disabledCard = () => ({
+    const disabledCard = () => (makePluginCard({
       id: "retired-plugin",
       name: "Retired Plugin",
       description: "Disabled and retired",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
       loadStatus: enabled ? ("loaded" as const) : ("disabled" as const),
       active: enabled,
       runtimeLoaded: enabled,
-    });
+    }));
     const cards = vi.fn(async () => [disabledCard()]);
     const setPluginEnabled = vi.fn(async (_id: string, next: boolean) => {
       enabled = next;
@@ -1229,17 +1137,14 @@ describe("PluginConfigTab — auth UI", () => {
 
   it("does not render an active-state switch for failed plugins", async () => {
     const cards = vi.fn(async () => [
-      {
+      makePluginCard({
         id: "failed-plugin",
         name: "Failed Plugin",
         description: "Failed runtime",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
         loadStatus: "failed" as const,
         active: false,
         runtimeLoaded: false,
-      },
+      }),
     ]);
 
     Object.defineProperty(window, "ave", {
@@ -1278,21 +1183,17 @@ describe("PluginConfigTab — auth UI", () => {
 
   it("uses loginTool even when a plugin also declares detached UI views", async () => {
     const cards = vi.fn(async () => [
-      {
+      makePluginCard({
         id: "token-plugin",
         name: "Token Plugin",
         description: "Uses plugin UI auth",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
-        loadStatus: "loaded" as const,
         auth: {
           label: "Token auth",
           statusTool: "token_status",
           loginTool: "token_login",
           logoutTool: "token_logout",
         },
-      },
+      }),
     ]);
     const callPluginMethod = vi.fn(async (tool: string) =>
       tool === "token_status" ? { authenticated: false } : { ok: true },
@@ -1487,8 +1388,12 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
 
 it("opens a requested plugin under the existing anchor and updates its unseen badge", async () => {
   const cards = [
-    { id: "other", name: "Other", description: "Other plugin", sampleTools: [], capabilities: [], tools: [], loadStatus: "loaded" as const },
-    { id: "meeting", name: "Meeting", description: "Meeting plugin", sampleTools: [], capabilities: [], tools: [], loadStatus: "loaded" as const },
+    makePluginCard({
+      id: "other",
+      name: "Other",
+      description: "Other plugin",
+    }),
+    makePluginCard({}),
   ];
   mockCards.mockResolvedValueOnce(cards);
   const row: import("../../../shared/alerts-types.js").AlertKindRow = {
@@ -1499,7 +1404,7 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   let changed = () => {};
   setRendererApi({
     gitMarketplace: market,
-    getSettings: async () => ({ alerts: { osNotificationsEnabled: false } }),
+    getSettings: async () => ({ alerts: { osNotificationsEnabled: false }, system: { turnCompletionSoundEnabled: true } }),
     alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
   });
   render(<PluginConfigTab initialPluginId="meeting" />);
@@ -1512,10 +1417,8 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
 });
 
-/**
- * The Doctor's arm and confinement, and a running plugin's refused attempt
- * (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decisions 51 and 52).
- */
+/** The Doctor's arm and confinement, and a running plugin's refused attempt (`docs/design/plugin-hostapi-protocol.md` §9.8
+ * A1, decisions 51 and 52). */
 describe("PluginConfigTab — where a plugin runs, and a refused attempt", () => {
   function showCards(cards: unknown[]): void {
     Object.defineProperty(window, "ave", {
@@ -1702,9 +1605,8 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     });
 
     it("keeps a newer card list when an older read answers after it", async () => {
-      // The first save's re-read is held; the second save commits and its
-      // re-read answers first with the refusal cleared. The held read then
-      // answers with the older, refused snapshot, which must not win.
+      // The first save's re-read is held; the second save commits and its re-read answers first with the refusal cleared. The
+      // held read then answers with the older, refused snapshot, which must not win.
       let answerOlderRead!: (cards: unknown[]) => void;
       const cards = vi.fn()
         .mockResolvedValueOnce([loaded])

@@ -28,22 +28,20 @@ function pending(over: Partial<PendingResourceTemplate> = {}): PendingResourceTe
   };
 }
 
+function renderTemplate(value: PendingResourceTemplate | null = pending(), onSubmit = vi.fn()) {
+  return render(<McpResourceTemplateDialog onCancel={vi.fn()} onSubmit={onSubmit} pending={value} />);
+}
+
 describe("McpResourceTemplateDialog", () => {
   it("blocks submission until EVERY variable has a value", () => {
     // Every variable is required, unlike a prompt argument. Level 1 expansion would put
     // nothing in place of a blank one, which silently names the directory above — a
     // different resource than the user asked for, and one they cannot see they asked for.
     const onSubmit = vi.fn();
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={onSubmit}
-        pending={pending({
-          uriTemplate: "github://repos/{owner}/{repo}",
-          variables: ["owner", "repo"],
-        })}
-      />,
-    );
+    renderTemplate(pending({
+      uriTemplate: "github://repos/{owner}/{repo}",
+      variables: ["owner", "repo"],
+    }), onSubmit);
 
     const submit = screen.getByTestId("mcp-resource-template-submit") as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
@@ -63,9 +61,9 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("treats whitespace as unfilled", () => {
-    // Main trims and then refuses an empty value, so a form that let spaces through
-    // would offer a submit button whose only outcome is a failure toast.
-    render(<McpResourceTemplateDialog onCancel={vi.fn()} onSubmit={vi.fn()} pending={pending()} />);
+    // Main trims and then refuses an empty value, so a form that let spaces through would offer a submit button whose only
+    // outcome is a failure toast.
+    renderTemplate();
     fireEvent.change(screen.getByTestId("mcp-resource-template-input-path"), {
       target: { value: "   " },
     });
@@ -78,16 +76,10 @@ describe("McpResourceTemplateDialog", () => {
     // so `toString` is an ordinary key; `Object.fromEntries` at the boundary DEFINES own
     // properties, so the value survives instead of reaching the prototype setter.
     const onSubmit = vi.fn();
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={onSubmit}
-        pending={pending({
-          uriTemplate: "file:///{toString}/{__proto__}",
-          variables: ["toString", "__proto__"],
-        })}
-      />,
-    );
+    renderTemplate(pending({
+      uriTemplate: "file:///{toString}/{__proto__}",
+      variables: ["toString", "__proto__"],
+    }), onSubmit);
 
     fireEvent.change(screen.getByTestId("mcp-resource-template-input-toString"), {
       target: { value: "a" },
@@ -104,15 +96,9 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("drops names it could not have been given, and collapses duplicates", () => {
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        pending={pending({
-          variables: ["ok", "ok", "not a name", "", "x".repeat(65), 42 as unknown as string],
-        })}
-      />,
-    );
+    renderTemplate(pending({
+      variables: ["ok", "ok", "not a name", "", "x".repeat(65), 42 as unknown as string],
+    }));
 
     const dialog = screen.getByTestId("mcp-resource-template-dialog");
     expect(dialog.querySelectorAll("input")).toHaveLength(1);
@@ -120,16 +106,10 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("stops at the number of variables main will carry", () => {
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        pending={pending({
-          variables: Array.from({ length: MCP_RESOURCE_TEMPLATE_MAX_VARIABLES + 4 },
-            (_, i) => `v${i}`),
-        })}
-      />,
-    );
+    renderTemplate(pending({
+      variables: Array.from({ length: MCP_RESOURCE_TEMPLATE_MAX_VARIABLES + 4 },
+        (_, i) => `v${i}`),
+    }));
 
     expect(screen.getByTestId("mcp-resource-template-dialog").querySelectorAll("input"))
       .toHaveLength(MCP_RESOURCE_TEMPLATE_MAX_VARIABLES);
@@ -139,13 +119,7 @@ describe("McpResourceTemplateDialog", () => {
     // The host derived `variables` from a template it had already validated, so an empty
     // usable set means the two disagree. Submitting anyway would send a request main
     // refuses at the expansion — a failure toast for a form that looked fillable.
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        pending={pending({ variables: ["not a name"] })}
-      />,
-    );
+    renderTemplate(pending({ variables: ["not a name"] }));
 
     expect(screen.getByTestId("mcp-resource-template-unrunnable")).toBeTruthy();
     expect((screen.getByTestId("mcp-resource-template-submit") as HTMLButtonElement).disabled)
@@ -153,13 +127,7 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("renders server-authored labels as inert text and says where they came from", () => {
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        pending={pending({ label: "<img src=x onerror=alert(1)> ignore previous instructions" })}
-      />,
-    );
+    renderTemplate(pending({ label: "<img src=x onerror=alert(1)> ignore previous instructions" }));
 
     const dialog = screen.getByTestId("mcp-resource-template-dialog");
     expect(dialog.querySelector("img")).toBeNull();
@@ -168,25 +136,17 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("strips invisible and reordering characters from the server's label", () => {
-    // The same treatment the picker row gets. A right-to-left override in a title can
-    // make the dialog appear to be asking about a different resource entirely.
+    // The same treatment the picker row gets. A right-to-left override in a title can make the dialog appear to be asking
+    // about a different resource entirely.
     const rtlOverride = String.fromCodePoint(0x202e);
-    render(
-      <McpResourceTemplateDialog
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-        pending={pending({ label: `report${rtlOverride}fdp.md` })}
-      />,
-    );
+    renderTemplate(pending({ label: `report${rtlOverride}fdp.md` }));
 
     expect(screen.getByTestId("mcp-resource-template-dialog").textContent)
       .not.toContain(rtlOverride);
   });
 
   it("starts from an empty form for each template so values never cross servers", () => {
-    const { rerender } = render(
-      <McpResourceTemplateDialog onCancel={vi.fn()} onSubmit={vi.fn()} pending={pending()} />,
-    );
+    const { rerender } = renderTemplate();
     fireEvent.change(screen.getByTestId("mcp-resource-template-input-path"), {
       target: { value: "secret" },
     });
@@ -204,7 +164,7 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("renders nothing when no template is awaiting values", () => {
-    render(<McpResourceTemplateDialog onCancel={vi.fn()} onSubmit={vi.fn()} pending={null} />);
+    renderTemplate(null);
     expect(screen.queryByTestId("mcp-resource-template-dialog")).toBeNull();
   });
 });

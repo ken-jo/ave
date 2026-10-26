@@ -1,37 +1,4 @@
-/**
- * Crash-durable progress for the turn that is running right now.
- *
- * A session transcript (`sessions/<id>.jsonl`) used to be written only by a
- * whole-file rewrite at the turn's persistence points, all of which sit after
- * the model loop returns. A process that quit, crashed, or was killed in the
- * middle of a turn therefore lost every round that turn had streamed. Two
- * records close that window, and this module owns their on-disk shape:
- *
- * 1. Completed rows (an assistant round, a tool_result) are APPENDED to the
- *    transcript as soon as they enter history — one JSON line each, the same
- *    line format the rewrite produces, so every existing reader keeps working.
- *    A later rewrite from history replaces them byte-for-byte by row id, which
- *    is what makes the turn's normal completion idempotent.
- * 2. The text still streaming for the current round lives in a small sidecar,
- *    `sessions/<id>/turn-inflight.json`, replaced atomically at most once
- *    per throttle interval. Its presence is also the proof that a turn was in
- *    flight: the engine deletes it after a successful transcript sync at turn
- *    end. An orphaned sidecar means the turn died or could not save its tail.
- *
- * Load folds the sidecar back in (`recoverInterruptedTurn`): the partial text
- * becomes an interrupted assistant row, a tool call that never got a result
- * gets an "interrupted, result unknown" result instead of being silently
- * dropped, and the tail is marked so the renderer can offer Continue. Nothing
- * is ever re-run automatically.
- *
- * Reference hosts do the same thing at different grain: Claude Code writes
- * each message, tool use and result to a plaintext JSONL as it works; Codex's
- * rollout recorder appends one line per item and newline-terminates a torn
- * tail before appending again (`ensure_rollout_is_newline_terminated`);
- * opencode persists each part's start and end durably while its text deltas
- * stay ephemeral. Ave goes one step further than opencode on the delta side,
- * because on a desktop app a crash mid-answer is exactly what users see.
- */
+// Persist completed rows and an in-flight partial snapshot so mid-turn crashes retain progress.
 import { unlinkSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
@@ -40,10 +7,8 @@ import { isRecord } from "../shared/is-record.js";
 
 const TURN_INFLIGHT_FILE = "turn-inflight.json";
 
-/** `meta.interruptedBy` value for a turn cut short by the app exiting. */
 export const HOST_EXIT_INTERRUPTION = "host-exit" as const;
 
-/** Upper bound on the sidecar's partial text, so a runaway stream cannot make each snapshot unbounded. */
 export const MAX_TURN_PARTIAL_CHARS = 2_000_000;
 
 export interface TurnInflightPartial {
@@ -64,11 +29,7 @@ export function turnInflightPath(sessionsDir: string, sessionId: string): string
   return join(sessionsDir, sessionId, TURN_INFLIGHT_FILE);
 }
 
-/**
- * Read a sidecar written by {@link writeTurnInflightRecord}. The file sits in a
- * user-writable directory, so anything that does not have exactly the shape
- * written here is ignored rather than trusted.
- */
+// Treat user-writable sidecars as untrusted and ignore shapes the writer could not produce.
 export function parseTurnInflightRecord(raw: string): TurnInflightRecord | null {
   let parsed: unknown;
   try {
@@ -103,12 +64,7 @@ export function parseTurnInflightRecord(raw: string): TurnInflightRecord | null 
   return record;
 }
 
-/**
- * Replace the sidecar through the host's atomic writer (temp + fsync +
- * rename), so a reader sees either the previous snapshot or the new one, never
- * half of one. Async: written at most once per throttle interval while text
- * streams, and the disk wait stays off the main process's event loop.
- */
+// Atomically replace snapshots off the main event loop so readers never observe partial writes.
 export async function writeTurnInflightRecord(path: string, record: TurnInflightRecord): Promise<void> {
   await writeUtf8FileAtomic(path, JSON.stringify(record));
 }
@@ -126,22 +82,8 @@ export interface AppendedTranscriptState {
   mtimeMs: number;
 }
 
-/**
- * Append records to a JSONL file as whole lines and make them durable.
- *
- * A previous process may have died halfway through a line. Appending straight
- * after it would fuse the torn fragment with the next record into one
- * unparseable line and lose that record too, so a missing final newline is
- * written first (the same repair Codex's rollout recorder makes on reopen).
- * The torn fragment itself is skipped by the reader as a malformed line.
- *
- * All records go out in one write and one fdatasync: a completed round is a
- * unit the user would be upset to lose to a power cut, and rounds arrive
- * seconds apart, so the sync is paid per round rather than per token.
- */
+// Write a missing final newline before appending; a torn fragment must not swallow the next durable record.
 export async function appendJsonlRecords(path: string, records: readonly unknown[]): Promise<AppendedTranscriptState> {
-  // Async so the fdatasync — the expensive part — waits on the libuv pool, not
-  // on the main process's event loop that is delivering stream frames.
   const handle = await open(path, "a+", 0o600);
   try {
     const { size } = await handle.stat();
@@ -161,7 +103,6 @@ export async function appendJsonlRecords(path: string, records: readonly unknown
   }
 }
 
-/** Row ids of a history snapshot, or null when any row has none (then only a rewrite is safe). */
 export function rowIdsOf(messages: readonly unknown[]): string[] | null {
   const ids: string[] = [];
   for (const message of messages) {
@@ -181,7 +122,6 @@ export function isIdPrefix(prefix: readonly string[], ids: readonly string[]): b
   return true;
 }
 
-/** New progress rows, allowing completed results to be inserted into the open tool tail. */
 export function sessionProgressRows(
   knownIds: readonly string[],
   ids: readonly string[],
@@ -197,8 +137,7 @@ export function sessionProgressRows(
   }
   const assistant = messages[tailStart - 1];
   if (!isRecord(assistant) || assistant.role !== "assistant" || !Array.isArray(assistant.toolCalls)) return null;
-  // Only the active result group may grow in its middle. Edits, compaction,
-  // removed rows and other reordered history still require a full rewrite.
+  // Only the active result group may grow internally; other reorders or edits require a full rewrite.
   if (knownIds.length < tailStart || !isIdPrefix(ids.slice(0, tailStart), knownIds)) return null;
   const knownTail = knownIds.slice(tailStart);
   const known = new Set(knownTail);
@@ -215,7 +154,6 @@ export function sessionProgressRows(
   return messages.slice(tailStart).filter((_message, index) => !known.has(ids[tailStart + index]));
 }
 
-/** Project completion-order records into their assistant's call order without changing the file. */
 export function orderToolResultRows(messages: readonly unknown[]): unknown[] {
   const ordered: unknown[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -233,8 +171,7 @@ export function orderToolResultRows(messages: readonly unknown[]): unknown[] {
     const rank = (result: unknown): number => isRecord(result) && typeof result.toolUseId === "string"
       ? order.get(result.toolUseId) ?? Number.MAX_SAFE_INTEGER
       : Number.MAX_SAFE_INTEGER;
-    // Stable sorting retains duplicate or unmatched records for the existing
-    // pairing validator; ordering never silently discards a stored row.
+    // Stable ordering preserves duplicate and unmatched rows for the pairing validator.
     ordered.push(...messages.slice(i + 1, end).sort((a, b) => rank(a) - rank(b)));
     i = end - 1;
   }
@@ -242,28 +179,10 @@ export function orderToolResultRows(messages: readonly unknown[]): unknown[] {
 }
 
 export interface InterruptedTurnRecoveryText {
-  /** Content of the result recorded for a tool call that never returned. */
   toolResultUnknown: string;
 }
 
-/**
- * Fold an orphaned in-flight sidecar into the transcript read from disk.
- *
- * Pure and deterministic: every synthesized row's id comes from `deriveId`, so
- * two independent reads of the same files (the sidebar's history read and the
- * conversation loop's resume) agree, and the next whole-file save persists the
- * same rows the user was shown.
- *
- * - An open tool tail (the last assistant row with tool calls, followed only
- *   by tool results) gets a result for every call that has none: an error
- *   result saying the outcome is unknown, flagged `toolDisplay.cancelled` so
- *   the row renders as a halt. This keeps the call visible and the provider's
- *   call/result pairing valid without running anything again.
- * - A partial whose round never committed becomes an interrupted assistant row
- *   under the id the committed row would have had.
- * - If the transcript then ends in neither the user's message nor a finished
- *   answer, an empty interrupted row marks where the turn stopped.
- */
+// Recover deterministically so independent readers share synthesized row ids before the next save.
 export function recoverInterruptedTurn(
   messages: readonly unknown[],
   record: TurnInflightRecord,
@@ -344,12 +263,7 @@ function openToolTailIndex(messages: readonly unknown[]): number {
   return -1;
 }
 
-/**
- * Whether the recovered tail still needs a row saying the turn stopped here.
- * Not after the user's own message (nothing was produced: Continue re-asks it),
- * not after an interrupted row, and not after a plain answer — a turn whose
- * last row is a finished answer died after it was complete.
- */
+// Do not synthesize interruption after a user row, existing interruption, or completed plain answer.
 function needsInterruptionMarker(tail: Record<string, unknown>): boolean {
   if (tail.role === "user") return false;
   if (tail.role !== "assistant") return true;

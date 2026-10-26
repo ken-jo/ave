@@ -113,6 +113,13 @@ export const en = {
   "toolApprovalDialog.rowVerdict": "Verdict",
   "toolApprovalDialog.rowChoice": "Choice",
   "toolApprovalDialog.choiceDescription": "You can choose: reject, always allow, or allow once.",
+  "toolApprovalDialog.shellOutsideSandbox": "This command runs outside the sandbox. Only an exact rule for this command lets it run without asking.",
+  "toolApprovalDialog.shellExactRuleLabel": "Saving remembers exactly:",
+  "toolApprovalDialog.shellScopeProjectTarget": "This project: {root}",
+  "toolApprovalDialog.shellExactRuleUnavailable": "This command cannot be saved as an exact rule. Allow it once or deny it.",
+  "toolApprovalDialog.allowForProject": "Allow for this project",
+  "toolApprovalDialog.sessionAllowNeedsConversation": "This request is not part of a conversation, so it cannot be allowed for the session. Allow it once instead.",
+  "toolApprovalDialog.ruleDecisionSaveFailed": "Could not save this decision. Review the rule and try again; the request is still pending.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
@@ -228,4 +235,11 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.rowVerdict": "판단",
   "toolApprovalDialog.rowChoice": "선택",
   "toolApprovalDialog.choiceDescription": "거절, 항상 허용, 한 번만 허용을 선택할 수 있습니다.",
+  "toolApprovalDialog.shellOutsideSandbox": "이 명령은 샌드박스 밖에서 실행됩니다. 이 명령과 정확히 일치하는 규칙만 묻지 않고 실행을 허용합니다.",
+  "toolApprovalDialog.shellExactRuleLabel": "저장하면 정확히 이 규칙만 기억합니다:",
+  "toolApprovalDialog.shellScopeProjectTarget": "이 프로젝트: {root}",
+  "toolApprovalDialog.shellExactRuleUnavailable": "이 명령은 정확한 규칙으로 저장할 수 없습니다. 이번만 허용하거나 거부하세요.",
+  "toolApprovalDialog.allowForProject": "이 프로젝트에서 허용",
+  "toolApprovalDialog.sessionAllowNeedsConversation": "이 요청은 대화에 속하지 않아 세션 동안 허용할 수 없습니다. 한 번만 허용하세요.",
+  "toolApprovalDialog.ruleDecisionSaveFailed": "결정을 저장하지 못했습니다. 규칙을 확인하고 다시 시도하세요. 요청은 아직 대기 중입니다.",
 };

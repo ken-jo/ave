@@ -1,12 +1,4 @@
-/**
- * Unit tests for the shared Telegram connection validators.
- *
- * `isTelegramBotUsername` gates the post-`getMe` identity check in the connect
- * flow, and a failure there is surfaced as `telegram-provider-unreachable` —
- * so an over-tight grammar here turns a VALID bot into a phantom network
- * error. The length-boundary cases below pin the BotFather contract: 5-32
- * chars total, `bot` suffix (case-insensitive), leading letter.
- */
+/** Match the bot username contract; overly strict validation misreports valid bots as network failures. */
 import { describe, expect, it } from "vitest";
 
 import { isTelegramBotUsername, isTelegramBotToken, TELEGRAM_BOT_TOKEN_PATH_GRAMMAR } from "../telegram-connection.js";
@@ -22,7 +14,6 @@ describe("isTelegramBotUsername", () => {
   });
 
   it("accepts the 32-char maximum handle", () => {
-    // 1 leading letter + 28 middle + "bot" = 32.
     expect(isTelegramBotUsername(`a${"x".repeat(28)}bot`)).toBe(true);
   });
 

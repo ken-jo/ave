@@ -56,8 +56,7 @@ describe("marketplace pending-update recovery", () => {
   let warnings: unknown[][];
 
   beforeEach(async () => {
-    // `createLogger` delegates to `console.warn` under test, so this is the
-    // host's warn channel rather than a stand-in for it.
+    // The test logger routes host warnings to console.warn.
     warnings = [];
     warnSpy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
       warnings.push(args);
@@ -93,11 +92,7 @@ describe("marketplace pending-update recovery", () => {
     warnSpy.mockRestore();
   });
 
-  /**
-   * The single file under the unattributed-state namespace with this name.
-   * Fails loudly rather than returning a path that does not exist, so a park
-   * that silently deleted its input cannot read as a pass.
-   */
+  /** Require the parked file to exist so accidental deletion cannot pass as recovery. */
   async function findParkedFile(name: string): Promise<string> {
     const parkRoot = join(paths.pluginsRoot, PARKED_PLUGIN_STATE_SUBDIR);
     const parked = await readdir(parkRoot);
@@ -253,14 +248,7 @@ describe("marketplace pending-update recovery", () => {
     expect(existsSync(backupDir)).toBe(false);
   });
 
-  /**
-   * The failure the review reproduced against `main`. An empty `data/` at the
-   * promoted root — a storage call that landed in the swap window, or an
-   * interrupted carry — used to make every carry in recovery throw, so
-   * `recoverPendingPluginUpdate` never reached a terminal disposition:
-   * `pendingUpdate` stayed set, the plugin never loaded again, and the next
-   * boot arrived at the same state and threw again.
-   */
+  /** An empty live data/ from an interrupted swap must not leave pendingUpdate stuck across boots. */
   it("resolves an empty data directory at the promoted root and restores the live state", async () => {
     const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
     const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
@@ -279,14 +267,7 @@ describe("marketplace pending-update recovery", () => {
     expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeUndefined();
   });
 
-  /**
-   * The parked bytes must still be THERE. An earlier revision handed them to
-   * `tombstoneAndDeferredRemove`, which schedules an `rm` of what it renames —
-   * so "parked" meant "deleted a tick later", and a test that only asserted the
-   * namespace directory exists could not tell the difference (`mkdir` creates
-   * it either way). This reads the contents back, and reads them again after
-   * the deferred removal would have run.
-   */
+  /** Read parked contents again after deferred deletion would run; namespace existence alone proves nothing. */
   it("parks an unattributable data directory and keeps its contents readable", async () => {
     const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
     const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
@@ -297,26 +278,21 @@ describe("marketplace pending-update recovery", () => {
     });
     await mkdir(backupDir);
     await seedPluginDataFixture(backupDir);
-    // A stray write reached the live path while the swap was in flight.
     await mkdir(join(paths.pluginsRoot, pluginId, "data"), { recursive: true });
     await writeFile(join(paths.pluginsRoot, pluginId, "data", "unattributed.bin"), "keep me");
 
     expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
-    // The transaction's own state wins the live root.
+    // The transaction state takes precedence over stray live-path writes.
     expect(await readPluginDataFixture(join(paths.pluginsRoot, pluginId))).toEqual(PLUGIN_DATA_FIXTURE);
     expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeUndefined();
 
     const parkedFile = await findParkedFile("unattributed.bin");
     expect(await readFile(parkedFile, "utf-8")).toBe("keep me");
-    // Past any deferred-removal tick a removal lifecycle would have scheduled.
     await new Promise((done) => setTimeout(done, 400));
     expect(await readFile(parkedFile, "utf-8")).toBe("keep me");
-    // And never routed into the swept namespace.
     expect(existsSync(join(paths.pluginsRoot, TOMBSTONE_SUBDIR))).toBe(false);
 
-    // Kept bytes nobody is told about are, to whoever wants the data back,
-    // indistinguishable from deleted ones. Nothing sweeps this namespace and no
-    // registry row points at it, so the log line is the only mention it gets.
+    // No registry row points to parked state; the recovery log is its only discovery path.
     const parkWarning = warnings.find(([message]) =>
       typeof message === "string" && message.includes("could not be attributed"));
     expect(parkWarning).toBeDefined();
@@ -326,12 +302,7 @@ describe("marketplace pending-update recovery", () => {
     }));
   });
 
-  /**
-   * The other direction: the promoted root is discarded and the backup becomes
-   * live. Here the BACKUP holds the pre-upgrade state, so a stray directory at
-   * the live path must not win — the loser is whichever side is the live
-   * install path, not whichever side happens to be the carry's source.
-   */
+  /** On rollback the backup holds authoritative state; stray writes at the live path must lose. */
   it("parks a stray live-root directory rather than carrying it over the backup's state", async () => {
     const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
     const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
@@ -341,7 +312,6 @@ describe("marketplace pending-update recovery", () => {
       recoveryBackupMode: "rename",
     });
     await rename(join(paths.pluginsRoot, pluginId), backupDir);
-    // The backup is the pre-upgrade root, data included.
     await seedPluginDataFixture(backupDir);
     await mkdir(join(paths.pluginsRoot, pluginId), { recursive: true });
     await writeFile(join(paths.pluginsRoot, pluginId, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
@@ -360,8 +330,7 @@ describe("marketplace pending-update recovery", () => {
     const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
     const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
     await mkdir(backupDir);
-    // The crash left the plugin's only data directory in the backup; explicit
-    // cleanup is the operator-driven path that drops that backup.
+    // Explicit backup cleanup must preserve the only copy of plugin data.
     await seedPluginDataFixture(backupDir);
     await preparePendingPluginUpdate(paths, entry, {
       kind: "marketplace",
@@ -377,7 +346,6 @@ describe("marketplace pending-update recovery", () => {
   it("carries plugin data out of a journalled cleanup root before removing it", async () => {
     const obsoleteDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
     await mkdir(obsoleteDir);
-    // A retry's superseded root. On a retry the live `data/` is inside it.
     await seedPluginDataFixture(obsoleteDir);
     await updatePluginRegistry(paths.registryPath, (registry) => {
       const target = registry.plugins.find((candidate) => candidate.id === pluginId)!;
@@ -411,11 +379,8 @@ describe("marketplace pending-update recovery", () => {
     expect(existsSync(backupDir)).toBe(false);
   });
 
-  // A failed local install restores its predecessor through this recovery at
-  // runtime, while the failed candidate may still run with the promoted root
-  // in its confinement. Both discarded roots wait in the tombstones then.
-  // The copy-mode restore stage is deleted at once as payload only. A leftover
-  // one holding a runtime directory is refused, and the plugin stays pending.
+  // Runtime recovery tombstones roots still bound to children.
+  // A payload-only restore stage containing runtime directories must be refused.
   it("refuses a leftover restore stage that holds a runtime directory", async () => {
     const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
     const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
@@ -474,11 +439,7 @@ describe("marketplace pending-update recovery", () => {
     expect(manifests.sort()).toEqual([JSON.stringify({ id: pluginId, version: "2.0.0" }), oldManifest].sort());
   });
 
-  // A local install parks the live generation's socket directories in its
-  // recovery backup while it swaps roots (marketplace.ts `installLocal`), and
-  // restores a `pending-predecessor` through this function at runtime, with
-  // that generation still bound to them. Whichever root holds them, the
-  // restored root must end up with the same directories.
+  // Runtime rollback must restore the same socket directories the predecessor is still bound to.
   describe("socket directories", () => {
     it("retains both roots after a midway failure and converges on the next boot", async () => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
@@ -527,8 +488,7 @@ describe("marketplace pending-update recovery", () => {
       });
       const live = join(paths.pluginsRoot, pluginId);
       await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
-      // One destination leaf already moved into the original directory; the
-      // next move failed before the original directory reached the live path.
+      // An interrupted merge can leave leaves split between the original directory and the live root.
       await mkdir(join(backupDir, "run", "already-moved"), { recursive: true });
       await mkdir(join(live, "run", "not-yet-moved"), { recursive: true });
       const inode = statSync(join(backupDir, "run")).ino;
@@ -538,17 +498,8 @@ describe("marketplace pending-update recovery", () => {
       expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [] });
     });
 
-    // The promoted root's child left a link in its own sockets/. Recovery
-    // removes it rather than throwing, or the plugin would stay unresolved on
-    // every boot; the link's target is never touched.
-    //
-    // Which link: an unprivileged process on Windows cannot create a file
-    // symlink (EPERM without SeCreateSymbolicLinkPrivilege) but can create a
-    // directory junction, which lstat reports as a link and which a recursive
-    // delete that followed it would empty. So Windows covers the junction a
-    // child can actually leave there; POSIX covers both a file and a directory
-    // symlink. A hard link is not this case: it is a regular file, which the
-    // carry moves as a socket entry rather than refusing.
+    // Recovery must unlink child-planted links without touching targets or leaving the update pending.
+    // Windows covers junctions without symlink privileges; POSIX also covers file symlinks.
     const childLinks: ReadonlyArray<"file symlink" | "directory link"> =
       process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"];
     it.each(childLinks)("resolve past a %s a child left in its sockets/", async (linkKind) => {
@@ -569,8 +520,6 @@ describe("marketplace pending-update recovery", () => {
       await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
       await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
       const victim = join(dirname(paths.pluginsRoot), "victim");
-      // The file the link reaches: the target itself, or one inside the
-      // linked directory.
       let victimFile = victim;
       if (linkKind === "file symlink") {
         await writeFile(victim, "original");
@@ -581,8 +530,6 @@ describe("marketplace pending-update recovery", () => {
         await mkdir(victim, { recursive: true });
         await writeFile(victimFile, "original");
         await mkdir(join(live, "sockets"), { recursive: true });
-        // A junction on Windows (absolute target, no privilege needed); the
-        // type is ignored on POSIX, where this is a directory symlink.
         await symlink(victim, join(live, "sockets", "evil.sock"), "junction");
       }
 
@@ -644,9 +591,7 @@ describe("marketplace pending-update recovery", () => {
       expect(await readFile(join(live, "sockets", "egress.sock"), "utf-8")).toBe("live");
     });
 
-    // Recovery at runtime: the live predecessor's worker has already made
-    // its leaf at the live root while another live leaf still sits in the
-    // backup. Neither may be dropped for being in the "wrong" root.
+    // A live worker can create leaves at either root during recovery; neither root may be discarded wholesale.
     it("merge a backup's live worker leaf into a live root that already has one", async () => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
       const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
@@ -785,10 +730,7 @@ describe("marketplace pending-update recovery", () => {
     expect(existsSync(backupDir)).toBe(true);
   });
 
-  // An unprivileged Windows process cannot create a file symlink (EPERM) but
-  // can plant a directory junction, which the retained-payload walk's lstat
-  // reports as a link. POSIX keeps the executable file symlink and adds the
-  // same directory link.
+  // Windows uses an unprivileged junction; POSIX also covers a file symlink.
   it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
     "refuses predecessor recovery when the retained payload contains an unlisted %s",
     async (linkKind) => {
@@ -808,7 +750,6 @@ describe("marketplace pending-update recovery", () => {
         const outsideDir = join(root, "outside-tools");
         await mkdir(outsideDir, { recursive: true });
         await writeFile(join(outsideDir, "tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-        // A junction on Windows; the type is ignored on POSIX.
         await symlink(outsideDir, join(backupDir, "dist", "injected-tool"), "junction");
       }
       await mkdir(join(paths.pluginsRoot, pluginId), { recursive: true });

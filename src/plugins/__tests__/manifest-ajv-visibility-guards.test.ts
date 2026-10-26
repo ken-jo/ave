@@ -1,4 +1,3 @@
-/** AJV wiring and pure Tool visibility validation. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

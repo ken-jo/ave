@@ -11,10 +11,7 @@ import {
 import { conversationDigestFor, namespaceAt } from "./telegram-connection-namespace.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 
-/**
- * Distinct raw values that must never reach the file. Each one is what the
- * bridge actually handles at runtime; the store only ever sees a digest of it.
- */
+// These raw sentinels must never reach disk; the store receives only their digests.
 const RAW_BOT_TOKEN = "8112233445:SENTINEL-bot-token-value-never-persisted";
 const RAW_TELEGRAM_USER_ID = "776655443322";
 const RAW_CHAT_ID = "-1009988776655";
@@ -32,7 +29,7 @@ function hash(domain: string, value: string): string {
     .update(value, "utf8").digest("hex");
 }
 
-/** Mirrors telegram-platform-runtime: HMAC over a secret, never the raw ids. */
+// Mirrors telegram-platform-runtime: HMAC over a secret, never the raw ids.
 function actorDigestFor(userId: string): string {
   return createHmac("sha256", "test-actor-secret")
     .update("ave/telegram-platform-bridge/actor/v1\0", "utf8")
@@ -44,7 +41,7 @@ const BOT_FINGERPRINT = hash("bot", RAW_BOT_TOKEN);
 const OTHER_BOT_FINGERPRINT = hash("bot", "9998887776:a-different-bot-token");
 const ACTOR = actorDigestFor(RAW_TELEGRAM_USER_ID);
 const OTHER_ACTOR = actorDigestFor("111222333444");
-/** Stands in for the platform runtime's digest of the durable actor key. */
+// Stands in for the platform runtime's digest of the durable actor key.
 const ACTOR_KEY_DIGEST = hash("actor-key", "the-actor-key-this-machine-can-load");
 const OTHER_ACTOR_KEY_DIGEST = hash("actor-key", "the-key-a-restored-machine-mints-instead");
 const CODE_DIGEST = hash("code", RAW_PAIRING_CODE);
@@ -66,7 +63,12 @@ function openStore(
   return store.open().then(() => store);
 }
 
-/** connect → mint → redeem → approve, the whole owner-driven happy path. */
+async function freshStore() {
+  const clock = { value: 1_700_000_000_000 };
+  return { clock, store: await openStore(tempDirectory(), clock) };
+}
+
+// connect → mint → redeem → approve, the whole owner-driven happy path.
 async function connectedAndApproved(
   store: TelegramConnectionStore,
   options: { readonly ttlMs?: number; readonly conversationId?: string } = {},
@@ -102,7 +104,7 @@ const APPROVAL_ID = "22222222-2222-4222-9222-222222222222";
 const SCOPE_ID = "33333333-3333-4333-a333-333333333333";
 const OWNER_ID = "44444444-4444-4444-b444-444444444444";
 
-/** A hand-built document: the only way to express a stale-epoch approval. */
+// A hand-built document: the only way to express a stale-epoch approval.
 function documentWithApprovalEpoch(pairingEpoch: number): Record<string, unknown> {
   return {
     version: 1,
@@ -189,8 +191,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("charges an attempt for a candidate rejected before digest comparison", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await store.setConnected(BOT_FINGERPRINT);
     await store.createPendingCode({ codeDigest: CODE_DIGEST, maxAttempts: 3 });
 
@@ -203,8 +204,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("does not redeem an expired pending code", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { clock, store } = await freshStore();
     await store.setConnected(BOT_FINGERPRINT);
     await store.createPendingCode({ codeDigest: CODE_DIGEST, ttlMs: 60_000 });
 
@@ -221,8 +221,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("resolves an approval only for the exact live actor and conversation", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { clock, store } = await freshStore();
     await connectedAndApproved(store, { ttlMs: HOUR_MS });
 
     expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toMatchObject({
@@ -269,8 +268,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("makes every approval unresolvable once the pairing is revoked", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
     const pairingId = store.ownerSnapshot().pairing?.id;
     expect(pairingId).toBeDefined();
@@ -294,8 +292,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("does not resolve an approval while the bridge is paused", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
 
     expect(await store.setPaused()).toBe(true);
@@ -334,8 +331,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("drops pairing state when a different bot is connected but keeps it on reconnect", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
     await store.recordPollOffset(77);
 
@@ -399,10 +395,8 @@ describe("createTelegramConnectionStore", () => {
   it("re-shares under an id source that can only mint the id already in use", async () => {
     const clock = { value: 1_700_000_000_000 };
     const directory = tempDirectory();
-    // The most hostile id source there is: every grant, pairing and scope gets
-    // the same uuid. A re-share reuses the id of the grant it replaces, which
-    // the document's own validator refuses as a duplicate — so this only works
-    // because the replaced grant leaves on the pass that retires it.
+    // The most hostile id source there is: every grant, pairing and scope gets the same uuid. A re-share reuses the id of the grant it replaces, which the
+    // document's own validator refuses as a duplicate — so this only works because the replaced grant leaves on the pass that retires it.
     const store = await openStore(directory, clock, { randomUuid: () => APPROVAL_ID });
     await connectedAndApproved(store);
 
@@ -415,8 +409,7 @@ describe("createTelegramConnectionStore", () => {
     expect(readDocument(directory).approvals).toHaveLength(1);
     expect(store.resolveActiveApproval(ACTOR, OTHER_CONVERSATION)).not.toBeNull();
     expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
-    // Non-vacuous proof that the file the store wrote passes validation: a
-    // fresh store over an invalid one falls back to a disconnected document.
+    // Non-vacuous proof that the file the store wrote passes validation: a fresh store over an invalid one falls back to a disconnected document.
     const reopened = await openStore(directory, clock);
     expect(reopened.resolveActiveApproval(ACTOR, OTHER_CONVERSATION)).not.toBeNull();
   });
@@ -455,8 +448,7 @@ describe("createTelegramConnectionStore", () => {
     await store.createPendingCode({ codeDigest: CODE_DIGEST });
 
     const persisted = readText(directory);
-    // Everything Telegram-side stays a digest. These are the values the bridge
-    // actually handles at runtime, and none of them may reach the file.
+    // Everything Telegram-side stays a digest. These are the values the bridge actually handles at runtime, and none of them may reach the file.
     for (const secret of [
       RAW_BOT_TOKEN,
       RAW_TELEGRAM_USER_ID,
@@ -465,8 +457,7 @@ describe("createTelegramConnectionStore", () => {
     ]) {
       expect(persisted).not.toContain(secret);
     }
-    // The one deliberate exception, asserted rather than assumed: the host's own
-    // conversation id is local, and storing it is what makes the share durable.
+    // The one deliberate exception, asserted rather than assumed: the host's own conversation id is local, and storing it is what makes the share durable.
     expect(persisted).toContain(RAW_CONVERSATION_ID);
     expect(readDocument(directory).approvals[0]?.conversationId).toBe(RAW_CONVERSATION_ID);
     // Non-vacuous: the file really does hold this activation's state.
@@ -482,8 +473,7 @@ describe("createTelegramConnectionStore", () => {
     await connectedAndApproved(first);
     expect(first.resolveBoundConversation(ACTOR)).toBe(RAW_CONVERSATION_ID);
 
-    // The restart case, and the point of persisting the plaintext at all: a
-    // brand-new store over the same file, with nothing carried in memory.
+    // The restart case, and the point of persisting the plaintext at all: a brand-new store over the same file, with nothing carried in memory.
     const reopened = await openStore(directory, clock);
     expect(reopened.resolveBoundConversation(ACTOR)).toBe(RAW_CONVERSATION_ID);
     expect(reopened.resolveActiveApproval(ACTOR, CONVERSATION)).not.toBeNull();
@@ -512,8 +502,7 @@ describe("createTelegramConnectionStore", () => {
 
     const tampered = await openStore(directory, clock);
     expect(tampered.resolveBoundConversation(ACTOR)).toBeNull();
-    // Neither conversation resolves: the record is not an approval any more,
-    // rather than an approval for one of the two conversations named in it.
+    // Neither conversation resolves: the record is not an approval any more, rather than an approval for one of the two conversations named in it.
     expect(tampered.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
     expect(tampered.resolveActiveApproval(ACTOR, OTHER_CONVERSATION)).toBeNull();
     expect(tampered.ownerSnapshot().approval).toBeNull();
@@ -522,8 +511,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("keeps the digest as the authorization key even when the plaintext is intact", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
 
     // Same untouched record, same conversation, wrong account.
@@ -552,8 +540,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("shares one conversation at a time, so the newest grant replaces the old", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { clock, store } = await freshStore();
     await connectedAndApproved(store);
     const firstId = store.ownerSnapshot().approval?.id;
     expect(store.resolveBoundConversation(ACTOR)).toBe(RAW_CONVERSATION_ID);
@@ -578,10 +565,8 @@ describe("createTelegramConnectionStore", () => {
     const store = await openStore(directory, clock);
     await connectedAndApproved(store, { ttlMs: 8 * HOUR_MS });
 
-    // Far more re-shares than the document's bound, all inside one TTL window
-    // so nothing expires on its own. A retired grant that held its slot until
-    // its original expiry made this refuse partway through, and the owner was
-    // told only that Telegram was unavailable.
+    // Far more re-shares than the document's bound, all inside one TTL window so nothing expires on its own. A retired grant that held its slot until its
+    // original expiry made this refuse partway through, and the owner was told only that Telegram was unavailable.
     const shares = 40;
     for (let index = 0; index < shares; index += 1) {
       clock.value += 1_000;
@@ -595,8 +580,7 @@ describe("createTelegramConnectionStore", () => {
 
     const newest = `sentinel-reshare-${shares - 1}`;
     expect(store.resolveBoundConversation(ACTOR)).toBe(newest);
-    // One live share, and nothing else: the retired grants are gone rather
-    // than filling the document with records no reader can reach.
+    // One live share, and nothing else: the retired grants are gone rather than filling the document with records no reader can reach.
     expect(readDocument(directory).approvals).toHaveLength(1);
     expect(readDocument(directory).approvals[0]?.conversationId).toBe(newest);
   });
@@ -611,15 +595,13 @@ describe("createTelegramConnectionStore", () => {
 
     expect(await store.revokeApproval(store.ownerSnapshot().approval!.id)).toBe(true);
 
-    // The share ended hours before the grant would have expired, and the
-    // conversation it named does not outlive it on disk.
+    // The share ended hours before the grant would have expired, and the conversation it named does not outlive it on disk.
     expect(readDocument(directory).approvals).toHaveLength(0);
     expect(readText(directory)).not.toContain(RAW_CONVERSATION_ID);
   });
 
   it("reports no bound conversation once the share or the connection ends", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
     expect(store.resolveBoundConversation(ACTOR)).toBe(RAW_CONVERSATION_ID);
 
@@ -634,8 +616,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("resolves an approval synchronously so an egress fence never awaits", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
 
     const resolved = store.resolveActiveApproval(ACTOR, CONVERSATION);
@@ -647,8 +628,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("notifies subscribers on every persisted change until they unsubscribe", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     let changes = 0;
     const unsubscribe = store.subscribe(() => {
       changes += 1;
@@ -687,8 +667,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("closes the egress fence on a pairing whose actor key no longer loads", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await store.setConnected(BOT_FINGERPRINT);
     await store.reconcileActorKey(ACTOR_KEY_DIGEST);
     await connectedAndApproved(store);
@@ -700,8 +679,7 @@ describe("createTelegramConnectionStore", () => {
 
     expect(await store.reconcileActorKey(OTHER_ACTOR_KEY_DIGEST)).toBe(true);
 
-    // The digest is unchanged and still names the same account — it is simply
-    // no longer derivable here, so nothing may resolve on it.
+    // The digest is unchanged and still names the same account — it is simply no longer derivable here, so nothing may resolve on it.
     expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
     expect(store.resolveBoundConversation(ACTOR)).toBeNull();
     expect(store.activePairingActorDigest()).toBeNull();
@@ -709,8 +687,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("rejects malformed digests and durations instead of storing them", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await expect(store.setConnected("not-a-digest")).rejects.toThrow(
       "telegram-connection-store-input-invalid",
     );

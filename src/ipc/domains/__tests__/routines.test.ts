@@ -13,6 +13,9 @@ vi.mock("electron", () => ({
   },
 }));
 
+const endSessionScopedPermissions = vi.fn();
+vi.mock("../../../permissions/session-scope-end.js", () => ({ endSessionScopedPermissions }));
+
 vi.mock("../../../lib/logger.js", () => ({
   createLogger: vi.fn(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() })),
 }));
@@ -48,9 +51,7 @@ function makeDeps(
     sessionTasksStore: null,
     conversationLoop: { getSessionId: vi.fn(() => "main-session") },
     memoryManager: {
-      // The handler now assembles the shared conversation row, which reads
-      // the fields a stored entry always has — a bare `{id, preview}` stub is
-      // a shape the store never returns.
+      // Fixtures need complete stored-row fields because the handler uses the shared row assembler.
       listSessionsByRoutine: vi.fn(() => sessions.map((session) => ({
         modifiedAt: new Date("2026-05-16T12:00:00.000Z"),
         sessionKind: "routine",
@@ -112,8 +113,6 @@ describe("routine pending results", () => {
         summary: "exact preview",
       }),
     ]);
-    // The result cards are addressed to the dedicated Suggestions
-    // conversation, so a non-empty drain makes it exist without moving it.
     expect(deps.memoryManager.touchSessionTranscript)
       .toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: false });
   });
@@ -159,8 +158,6 @@ describe("routine pending results", () => {
 
     const results = await invoke(ROUTINES.listSessions, "routine-a", 10);
 
-    // The row the sidebar lists this run with, plus the panel's snippet — the
-    // handler no longer answers in a shape only the panel understands.
     expect(results).toEqual([
       {
         id: "routine-session-1",
@@ -206,6 +203,8 @@ describe("routine pending results", () => {
       ["routine-session-1"],
       ["routine-session-2"],
     ]);
+    // Each deleted conversation's "This session" grants end with it (owner 2026-10-25).
+    expect(endSessionScopedPermissions.mock.calls.map(([sessionId]) => sessionId)).toEqual(["routine-session-1", "routine-session-2"]);
   });
 });
 

@@ -1,9 +1,3 @@
-/**
- * §B3 — routeExternalUrl unit tests.
- *
- * Verifies live-policy lookup, scheme validation, audit logging, and the
- * branch between in-app viewer vs system browser.
- */
 import { describe, it, expect, vi } from "vitest";
 import { EXTERNAL_LINK_PARTITION, routeExternalUrl } from "../plugin-runtime.js";
 import type { SettingsService } from "../../../data/settings-store.js";
@@ -92,7 +86,6 @@ describe("routeExternalUrl (§B3)", () => {
     expect(stub.openLinkWindowService).toHaveBeenCalledOnce();
     expect(stub.shellOpenExternal).not.toHaveBeenCalled();
 
-    // User flips the toggle.
     stub.setFlow("system-browser");
 
     await routeExternalUrl({
@@ -101,7 +94,6 @@ describe("routeExternalUrl (§B3)", () => {
       ...stub,
     });
     expect(stub.shellOpenExternal).toHaveBeenCalledOnce();
-    // openLinkWindowService total still 1 — the second call did NOT use it.
     expect(stub.openLinkWindowService).toHaveBeenCalledOnce();
   });
 
@@ -152,10 +144,7 @@ describe("routeExternalUrl (§B3)", () => {
   });
 
   it("rejects URLs with embedded credentials without opening anything", async () => {
-    // http(s) alone is not sufficient: `https://trusted.example@evil.tld/`
-    // reads as trusted.example but navigates to evil.tld. Delegated to the
-    // shared validateExternalUrl authority, so this goes red if that rule is
-    // dropped there OR if this wiring stops delegating.
+    // Reject URL userinfo; a trusted-looking prefix can navigate to an attacker host.
     const stub = makeStub("in-app");
     await expect(
       routeExternalUrl({ url: "https://trusted.example@evil.tld/", pluginId: "p", ...stub }),

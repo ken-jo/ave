@@ -2,11 +2,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/**
- * Ave runs the user's own `codex` CLI and ships none. These locks fail the
- * moment a dependency, an unpack rule, an arch-selected install or a
- * module-resolution path would put a copy of the CLI back into the package.
- */
+// The user supplies this CLI; installers must not bundle a copy.
 const repoRoot = resolve(__dirname, "../..");
 const CODEX_PACKAGE = /@openai\/codex/;
 

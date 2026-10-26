@@ -1,12 +1,4 @@
-/**
- * §35 STT transcript.updated per-chunk — host-side event bus + renderer bridge test.
- *
- * Verifies:
- *  1. meeting.transcript.updated is in the public event namespace (classifySubscription = "public")
- *  2. meeting plugin declaring meeting.* in emittedEvents can emit meeting.transcript.updated
- *  3. Three simulated chunk events are received by an onEvent subscriber in order
- *  4. The webContents.send forwarding logic (§35 boot.ts wiring) is exercised end-to-end
- */
+/** Exercise transcript-event authorization, ordering, and renderer forwarding. */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { emitEvent, onEvent } from "../boot/types.js";
@@ -16,12 +8,6 @@ import {
   canEmitEvent,
 } from "../plugins/capabilities.js";
 
-/**
- * Build an emittedEvents-gated emitter using the production `canEmitEvent`
- * predicate from capabilities.ts. This exercises the same gating logic as
- * createHostApi without duplicating the implementation. The second arg is the
- * plugin's declared `emittedEvents`.
- */
 function makeGatedEmitFn(pluginId: string, emittedEvents: string[]) {
   return (type: string, data?: Record<string, unknown>) => {
     if (!canEmitEvent(type, emittedEvents)) {
@@ -37,8 +23,7 @@ describe("meeting.transcript.updated — namespace + capability", () => {
   });
 
   it("maps meeting.transcript.updated to the meeting-recorder effect label", () => {
-    // The internal effect label survives for the emit-denied audit trail even
-    // though authorization is now inferred from emittedEvents.
+    // Keep the internal effect label for emit-denied audit records.
     const requiredCap = requiredCapabilityForEmit("meeting.transcript.updated");
     expect(requiredCap).toBe("meeting-recorder");
   });
@@ -111,7 +96,6 @@ describe("meeting.transcript.updated — event bus delivery (3 chunks)", () => {
 
 describe("meeting.transcript.updated — webContents.send forwarding simulation", () => {
   it("subscriber receives event and would forward to renderer", () => {
-    // Simulate what boot.ts §35 does: subscribe onEvent → call webContents.send
     const sentMessages: Array<{ channel: string; type: string; data: unknown }> = [];
     const mockWebContents = {
       isDestroyed: () => false,

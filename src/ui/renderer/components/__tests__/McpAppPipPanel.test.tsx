@@ -17,13 +17,11 @@ vi.mock("../mcp-app-bridge.js", () => ({
   createMcpAppBridge: createMcpAppBridgeMock,
 }));
 
-
 const readUiResource = vi.fn(async (serverId: string) => ({
   proxyUrl: `ave-mcp-app://${Buffer.from(serverId, "utf8").toString("hex")}/proxy.html?t=tok-${serverId}`,
   html: "<html><body>card</body></html>",
 }));
 const disposeUiSession = vi.fn();
-
 
 beforeEach(() => {
   __resetMcpAppCardLocationStoreForTests();
@@ -140,16 +138,16 @@ describe("McpAppPipPanel — coexists with a fullscreen card (independent slots)
     const pip = render(<McpAppPipPanel />, { wrapper: ThemeWrapper });
     await waitFor(() => expect(webviewNodes(pip.container)).toHaveLength(1));
 
-    // Card B is presented in the fullscreen surface — an entirely separate McpAppView
-    // mount (mirroring McpAppFullscreenPanel's own instance), never touching the pip slot.
+    // Card B is presented in the fullscreen surface — an entirely separate McpAppView mount (mirroring McpAppFullscreenPanel's
+    // own instance), never touching the pip slot.
     const fullscreen = render(
       <McpAppView payload={payload("gitlab")} displayMode="fullscreen" />,
       { wrapper: ThemeWrapper },
     );
     await waitFor(() => expect(webviewNodes(fullscreen.container)).toHaveLength(1));
 
-    // Both remain live simultaneously — the two slots are independent, so one card's
-    // single-slot discipline never disturbs an unrelated card in the other.
+    // Both remain live simultaneously — the two slots are independent, so one card's single-slot discipline never disturbs an
+    // unrelated card in the other.
     expect(webviewNodes(pip.container)).toHaveLength(1);
     expect(webviewNodes(fullscreen.container)).toHaveLength(1);
   });

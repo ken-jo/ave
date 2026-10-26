@@ -1,9 +1,5 @@
-/**
- * Tests for S2 sandbox audit sink.
- * Issue: #691 PR-A4
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
@@ -12,7 +8,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const TEST_HOME = join(tmpdir(), `ave-test-sink-${randomBytes(4).toString("hex")}`);
 process.env.AVE_HOME = TEST_HOME;
 
-import { emitSandboxAudit, sandboxAuditSinkPath } from "../sandbox-audit-sink.js";
+import { emitSandboxAudit, flushSandboxAudit, sandboxAuditSinkPath } from "../sandbox-audit-sink.js";
 import { buildSandboxAuditEntry } from "../sandbox-audit.js";
 
 beforeEach(async () => {
@@ -69,7 +65,6 @@ describe("emitSandboxAudit", () => {
 
     const raw = await readFile(sandboxAuditSinkPath(), "utf8");
     const lines = raw.trim().split("\n").filter(Boolean);
-    // All 10 must land; order not guaranteed under concurrency
     expect(lines).toHaveLength(10);
     expect(lines.every((l) => { try { JSON.parse(l); return true; } catch { return false; } })).toBe(true);
   });
@@ -98,12 +93,32 @@ describe("emitSandboxAudit", () => {
     expect(parsed.reviewer.userApprovalUsed?.nlJustification).toBe("테스트용 파일 정리");
   });
 
+  it("rejects, rather than throws, when the audit home cannot be resolved", async () => {
+    // Callers fire this with `.catch(...)` and no try; a resolver failure must
+    // arrive as a rejection. The test home guard refuses the real account home
+    // synchronously, before any filesystem access.
+    process.env.AVE_HOME = join(userInfo().homedir, ".ave");
+    let result: Promise<void> | undefined;
+    try {
+      expect(() => { result = emitSandboxAudit(makeEntry()); }).not.toThrow();
+    } finally {
+      process.env.AVE_HOME = TEST_HOME;
+    }
+    await expect(result).rejects.toThrow(/refusing to resolve AVE_HOME/);
+    await flushSandboxAudit();
+  });
+
+  it("flushSandboxAudit waits for writes that were not awaited", async () => {
+    void emitSandboxAudit(makeEntry("unawaited"));
+    await flushSandboxAudit();
+    const raw = await readFile(sandboxAuditSinkPath(), "utf8");
+    expect(raw.trim().split("\n").map((line) => JSON.parse(line).tool.name)).toEqual(["unawaited"]);
+  });
+
   it("sandboxAuditSinkPath returns daily-rotated path under AVE_HOME/audit/", () => {
     const path = sandboxAuditSinkPath();
     expect(path).toContain(TEST_HOME);
-    // Must be under the audit/ subdirectory, not at the root
     expect(path.replace(/\\/g, "/")).toContain("/audit/");
-    // Must match the daily-rotate pattern: YYYY-MM-DD.sandbox.jsonl
     expect(path).toMatch(/\d{4}-\d{2}-\d{2}\.sandbox\.jsonl$/);
   });
 });

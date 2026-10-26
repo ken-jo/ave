@@ -1,19 +1,4 @@
-/**
- * Mid-stream durability: a turn's rounds survive the process going away.
- *
- * `conversation-loop-transcript-durability.test.ts` pins the c019c815a
- * guarantees (user message on disk before the first provider call, a turn
- * that THROWS keeps its rounds). A `finally` never runs when the process
- * quits, crashes or is killed, so these cases pin what replaces it:
- *
- *   1. each completed round and tool_result is on disk while the turn is
- *      still running — appended, without a whole-session save per round,
- *   2. the streaming text is snapshotted and folds back in on reload,
- *   3. a normal completion leaves exactly one copy of every row,
- *   4. the quit path stops running turns as `host-exit` and the reload offers
- *      Continue, which resumes from the persisted rows,
- *   5. sub-agent children get the same journal through the same runTurn.
- */
+// Completed rounds and partial streams must survive process exit without relying on finally.
 import { appendFileSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +26,6 @@ const SESSION_ID = "5d1e2f3a-46a9-493a-8a3e-f277ba673230";
 
 type Step = StreamEvent[] | "block" | ((params: StreamTurnParams) => AsyncIterable<StreamEvent>);
 
-/** Plays scripted rounds; `"block"` streams nothing and waits for the turn's abort. */
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   private index = 0;
@@ -81,7 +65,6 @@ async function* waitForAbort(params: StreamTurnParams): AsyncIterable<StreamEven
   });
 }
 
-/** Streams `text` then holds the stream open until the turn is aborted. */
 function streamThenBlock(text: string, onStreamed: () => void): Step {
   return async function* (params) {
     yield { type: "text_delta", text };
@@ -169,7 +152,7 @@ describe("mid-stream durability", () => {
         return { output: "second output", isError: false };
       },
     }));
-    // Both can start together; reverse order covers a result inserted ahead of a persisted sibling.
+    // Reverse completion order covers insertion ahead of an already persisted sibling.
     const calls: StreamEvent[] = [
       { type: "tool_call", id: "finished", name: "finished_tool", input: {} },
       { type: "tool_call", id: "waiting", name: "waiting_tool", input: {} },
@@ -258,7 +241,6 @@ describe("mid-stream durability", () => {
       ],
       (round) => {
         if (round !== 2) return;
-        // A second reader of the same files: what a relaunch would see now.
         onDiskAtRound2 = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
         savesBeforeRound2 = saveSpy.mock.calls.length;
       },
@@ -275,7 +257,6 @@ describe("mid-stream durability", () => {
       ["assistant", "라운드 2"],
       ["tool_result", "call-2"],
     ]);
-    // Only the turn-accepted save ran before round 3: rounds 1–2 were appended.
     expect(savesBeforeRound2).toBe(1);
   });
 
@@ -312,11 +293,10 @@ describe("mid-stream durability", () => {
     const turn = loop.runTurn("부분 응답", undefined, undefined, { inputOrigin: "user-keyboard" });
     const sidecar = turnInflightPath(join(dir, "sessions"), SESSION_ID);
     await waitFor(() => streamed);
-    // The first snapshot of a round is written without waiting a full interval.
+    // The first stream snapshot must not wait for the throttle interval.
     await waitFor(() => existsSync(sidecar) && JSON.parse(readFileSync(sidecar, "utf-8")).partial !== undefined);
 
-    // Simulate the death: copy the files as they are now into a fresh home and
-    // read them there, where no turn of this process holds the journal.
+    // Read copied files without the original process holding their journal.
     const crashed = mkdtempSync(join(tmpdir(), "ave-mid-stream-crashed-"));
     try {
       cpSync(join(dir, "sessions"), join(crashed, "sessions"), { recursive: true });
@@ -364,7 +344,6 @@ describe("mid-stream durability", () => {
     });
     expect(existsSync(turnInflightPath(join(dir, "sessions"), SESSION_ID))).toBe(false);
 
-    // Relaunch: the session reopens with the partial answer and Continue.
     const reopened = buildLoop(relaunched, toolRegistry, provider);
     expect(await reopened.loadSession(SESSION_ID)).toBe(true);
     const entries = historyToEntries(reopened.getHistory().getMessages().map((m, i) => serializeHistoryMessage(m, i)));
@@ -456,7 +435,6 @@ describe("mid-stream durability", () => {
       });
       await waitFor(() => blocked);
 
-      // Mid-run, the child's first round is already in the sub-agent store.
       const childFiles = readdirSync(join(openFeatureNamespace("subagent").dir, "sessions")).filter((f) => f.endsWith(".jsonl"));
       expect(childFiles).toHaveLength(1);
       const childId = childFiles[0].slice(0, -".jsonl".length);

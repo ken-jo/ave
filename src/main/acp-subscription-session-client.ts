@@ -1,17 +1,5 @@
-/**
- * Long-lived, main-process ACP JSONL client for one authenticated subscription
- * conversation. It is intentionally separate from the short-lived auth probe:
- * this transport keeps one ACP session alive only while an Ave conversation is
- * using it.
- *
- * The caller must supply app-owned, isolated runtime directories and a
- * previously picker-approved executable. No filesystem, terminal, or MCP host
- * capabilities are advertised here except one caller-supplied Ave MCP server.
- * If an ACP runtime nevertheless asks the host to execute a native tool or
- * grant permission, this client records only a safe observation, replies with
- * JSON-RPC method-not-found, and tears down the transport. The separately
- * supplied Ave MCP bridge remains the only controlled tool path.
- */
+// Keeps one ACP session per active conversation using isolated directories and a picker-approved executable. The supplied MCP bridge is the only tool
+// path; native-tool or permission requests trigger rejection and teardown.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -53,11 +41,11 @@ import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 
 const MAX_RPC_LINE_BYTES = 1_000_000;
-/** Native image cap that always fits the ACP JSONL transport with room for text. */
+// Native image cap that always fits the ACP JSONL transport with room for text.
 export const MAX_ACP_SUBSCRIPTION_IMAGE_ATTACHMENTS = 5;
 export const MAX_ACP_SUBSCRIPTION_IMAGE_BYTES = 256 * 1024;
 export const MAX_ACP_SUBSCRIPTION_IMAGE_TOTAL_BYTES = MAX_ACP_SUBSCRIPTION_IMAGE_BYTES;
-/** Conservative serialized Ave history budget when a native ACP image is present. */
+// Conservative serialized Ave history budget when a native ACP image is present.
 export const MAX_ACP_SUBSCRIPTION_TEXT_WITH_IMAGES_BYTES = 256 * 1024;
 export const ACP_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS: SubscriptionImageAttachmentLimits = Object.freeze({
   maxCount: MAX_ACP_SUBSCRIPTION_IMAGE_ATTACHMENTS,
@@ -72,7 +60,7 @@ const MAX_RPC_METHOD_LENGTH = 256;
 const MAX_RPC_ID_LENGTH = 512;
 const DEFAULT_REQUEST_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.mcpRequestDefaultMs;
 const DEFAULT_PROMPT_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs;
-const DEFAULT_ABORT_GRACE_MS = TOOL_TIMEOUT_POLICY.processTreeKillMs;
+const DEFAULT_ABORT_GRACE_MS = TOOL_TIMEOUT_POLICY.acpAbortGraceMs;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 type RpcId = string | number;
@@ -92,29 +80,23 @@ type AcpSubscriptionSessionNewParams = Readonly<{
   }>;
 }>;
 
-/** Re-export the single Grok agent-policy source used by native and ACP paths. */
+// Re-export the single Grok agent-policy source used by native and ACP paths.
 export { GROK_BUILD_GOVERNED_AGENT_PROFILE };
-
 
 const GROK_BUILD_GOVERNED_AGENT_PROFILE_META = Object.freeze({
   agentProfile: GROK_BUILD_GOVERNED_AGENT_PROFILE,
 });
 
-/**
- * Reconstruct a narrow `session/new` object rather than forwarding an object
- * that can carry runtime-owned profile or MCP configuration. Kimi receives
- * the legacy shape exactly; the stock Grok Build client receives only Ave's
- * governed profile and no model-selection override.
- */
-export function buildAcpSubscriptionSessionNewParams(
+// Reconstruct a narrow `session/new` object rather than forwarding an object that can carry runtime-owned profile or MCP configuration. Kimi receives
+// the legacy shape exactly; the stock Grok Build client receives only Ave's governed profile and no model-selection override.
+function buildAcpSubscriptionSessionNewParams(
   provider: AcpSubscriptionProviderId,
   workspaceDir: string,
   mcpServers: readonly AcpSubscriptionMcpServerConfig[],
 ): AcpSubscriptionSessionNewParams {
   const params = {
     cwd: workspaceDir,
-    // Only the validated Ave-owned stdio descriptor can cross this boundary;
-    // native host RPC/tool requests remain fail-closed below.
+    // Only the validated Ave-owned stdio descriptor can cross this boundary; native host RPC/tool requests remain fail-closed below.
     mcpServers: mcpServers.map((server) => ({
       name: server.name,
       command: server.command,
@@ -149,7 +131,7 @@ export type AcpSubscriptionSessionErrorCode =
   | "acp-session-stopped"
   | "acp-session-transport-closed";
 
-/** Error surface intentionally contains a stable code only, never runtime output. */
+// Error surface intentionally contains a stable code only, never runtime output.
 export class AcpSubscriptionSessionError extends Error {
   constructor(
     readonly code: AcpSubscriptionSessionErrorCode,
@@ -160,11 +142,8 @@ export class AcpSubscriptionSessionError extends Error {
   }
 }
 
-/**
- * Safe, main-process-only observation of an unsupported ACP server request.
- * Params are deliberately omitted: third-party runtimes can include paths,
- * credentials, or user content in a request payload.
- */
+// Safe, main-process-only observation of an unsupported ACP server request. Params are deliberately omitted: third-party runtimes can include paths,
+// credentials, or user content in a request payload.
 export interface AcpSubscriptionHostRequestObservation {
   readonly provider: AcpSubscriptionProviderId;
   readonly sessionId: string | null;
@@ -175,51 +154,45 @@ export interface AcpSubscriptionHostRequestObservation {
 
 export interface AcpSubscriptionSessionClientOptions {
   provider: AcpSubscriptionProviderId;
-  /** Previously picker-approved canonical executable; it is revalidated before spawn. */
+  // Previously picker-approved canonical executable; it is revalidated before spawn.
   executablePath: string;
-  /** Existing app-owned, isolated provider data directory. */
+  // Existing app-owned, isolated provider data directory.
   runtimeHome: string;
-  /** Existing app-owned isolated workspace. Never pass a user project directly. */
+  // Existing app-owned isolated workspace. Never pass a user project directly.
   workspaceDir: string;
-  /** Existing app-owned temporary directory. Defaults to <runtimeHome>/tmp. */
+  // Existing app-owned temporary directory. Defaults to <runtimeHome>/tmp.
   runtimeTempDir?: string;
-  /**
-   * Optional exact copy of the shared provider transport argv. Any difference
-   * from `ACP_SUBSCRIPTION_RUNTIME_MANIFESTS[provider].acpArgs` is rejected.
-   */
+  // Optional exact copy of the shared provider transport argv. Any difference from `ACP_SUBSCRIPTION_RUNTIME_MANIFESTS[provider].acpArgs` is rejected.
   runtimeArgs?: readonly string[];
-  /**
-   * The main-process-created Ave MCP bridge for this one session. Zero or one
-   * descriptors are validated and copied before `session/new`; renderer and
-   * ACP runtime input cannot supply it or add another server.
-   */
+  // The main-process-created Ave MCP bridge for this one session. Zero or one descriptors are validated and copied before `session/new`; renderer and ACP
+  // runtime input cannot supply it or add another server.
   mcpServers?: readonly AcpSubscriptionMcpServerConfig[];
-  /** Main-only callback for a rejected reverse RPC request. It never receives params. */
+  // Main-only callback for a rejected reverse RPC request. It never receives params.
   onHostRequest?: (request: AcpSubscriptionHostRequestObservation) => void | Promise<void>;
-  /** Test seam; production uses the managed-child registry. */
+  // Test seam; production uses the managed-child registry.
   spawn?: SpawnAcpRuntime;
-  /** Test seam; production reuses the executable validator from the auth client. */
+  // Test seam; production reuses the executable validator from the auth client.
   resolveExecutable?: (candidate: string) => Promise<string>;
-  /** Test seam for launch options and environment construction. */
+  // Test seam for launch options and environment construction.
   platform?: NodeJS.Platform;
   clientVersion?: string;
-  /** Bounded request timeout. Defaults to the shared MCP request policy. */
+  // Bounded request timeout. Defaults to the shared MCP request policy.
   requestTimeoutMs?: number;
-  /** Bounded prompt timeout. Defaults to the shared sub-agent ceiling. */
+  // Bounded prompt timeout. Defaults to the shared sub-agent ceiling.
   promptTimeoutMs?: number;
-  /** Grace period after session/cancel before the managed process tree is killed. */
+  // Grace period after session/cancel before the managed process tree is killed.
   abortGraceMs?: number;
 }
 
 export interface AcpSubscriptionSessionInfo {
   readonly provider: AcpSubscriptionProviderId;
-  /** Opaque runtime value. Keep it in the main process; do not project through IPC. */
+  // Opaque runtime value. Keep it in the main process; do not project through IPC.
   readonly sessionId: string;
 }
 
 export interface AcpSubscriptionPromptInput {
   text: string;
-  /** Original image bytes permitted only after ACP initialize negotiation. */
+  // Original image bytes permitted only after ACP initialize negotiation.
   attachments?: readonly SubscriptionPromptAttachment[];
   abortSignal?: AbortSignal;
 }
@@ -235,10 +208,7 @@ interface AcpSubscriptionPromptResult {
   readonly stopReason: AcpSubscriptionPromptStopReason;
 }
 
-/**
- * One ACP prompt. `events` is single-consumer and already uses Ave's generic
- * stream contract, while `completion` retains ACP's complete stop reason.
- */
+// One ACP prompt. `events` is single-consumer and already uses Ave's generic stream contract, while `completion` retains ACP's complete stop reason.
 export interface AcpSubscriptionPromptHandle {
   readonly events: AsyncIterable<StreamEvent>;
   readonly completion: Promise<AcpSubscriptionPromptResult>;
@@ -263,7 +233,7 @@ class AcpRemoteRpcError extends Error {
   }
 }
 
-/** Minimal bounded async queue used by the one active ACP prompt. */
+// Minimal bounded async queue used by the one active ACP prompt.
 class AsyncEventQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
   private waiter: {
@@ -402,10 +372,7 @@ function spawnAcpSessionRuntime(
   return spawnManaged(command, args, options, { label: "acp-subscription-session" });
 }
 
-/**
- * ACP session lifecycle: `start()` is idempotent until `stop()` is called;
- * one client owns one ACP process and exactly one active prompt at a time.
- */
+// ACP session lifecycle: `start()` is idempotent until `stop()` is called; one client owns one ACP process and exactly one active prompt at a time.
 export class AcpSubscriptionSessionClient {
   private readonly manifest: AcpSubscriptionRuntimeManifest;
   private readonly spawn: SpawnAcpRuntime;
@@ -418,6 +385,7 @@ export class AcpSubscriptionSessionClient {
   private readonly runtimeArgs: readonly string[];
   private readonly mcpServers: readonly AcpSubscriptionMcpServerConfig[];
   private child: ChildProcess | null = null;
+  private termination: void | Promise<void> = undefined;
   private startPromise: Promise<void> | null = null;
   private sessionId: string | null = null;
   private readonly pending = new JsonRpcPendingRequests();
@@ -447,7 +415,7 @@ export class AcpSubscriptionSessionClient {
     return { provider: this.options.provider, sessionId };
   }
 
-  /** Main-process-only opaque session ID; never project it over renderer IPC. */
+  // Main-process-only opaque session ID; never project it over renderer IPC.
   getSessionId(): string | null {
     return this.sessionId;
   }
@@ -471,8 +439,7 @@ export class AcpSubscriptionSessionClient {
       resolveCompletion = resolvePrompt;
       rejectCompletion = rejectPrompt;
     });
-    // `events` is commonly consumed without inspecting `completion`; retaining
-    // this no-op handler prevents an intentional cancellation from becoming an
+    // `events` is commonly consumed without inspecting `completion`; retaining this no-op handler prevents an intentional cancellation from becoming an
     // unhandled rejection while preserving the rejecting promise for callers.
     void completion.catch(() => undefined);
 
@@ -520,22 +487,22 @@ export class AcpSubscriptionSessionClient {
     await this.cancelPrompt(active, createAbortError());
   }
 
-  /** Permanently closes this client and force-kills its managed process tree. */
+  // Permanently closes this client and force-kills its managed process tree.
   async stop(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped) return this.termination;
     this.stopped = true;
     const active = this.activePrompt;
     if (active) await this.cancelPrompt(active, new AcpSubscriptionSessionError("acp-session-stopped"));
-    this.abortTransport(new AcpSubscriptionSessionError("acp-session-stopped"));
+    await this.abortTransport(new AcpSubscriptionSessionError("acp-session-stopped"));
   }
 
   private async ensureStarted(): Promise<void> {
     if (this.stopped) throw new AcpSubscriptionSessionError("acp-session-stopped");
     if (this.child && this.sessionId) return;
     if (!this.startPromise) {
-      this.startPromise = this.startTransport().catch((error: unknown) => {
+      this.startPromise = this.startTransport().catch(async (error: unknown) => {
         const normalized = this.normalizeStartError(error);
-        this.abortTransport(normalized);
+        await this.abortTransport(normalized);
         throw normalized;
       });
     }
@@ -573,11 +540,11 @@ export class AcpSubscriptionSessionClient {
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
     if (!child.stdin || !child.stdout) {
-      forceKillManagedChildProcess(child, "acp subscription session missing stdio pipes");
+      await forceKillManagedChildProcess(child, "acp subscription session missing stdio pipes");
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
     if (this.stopped) {
-      forceKillManagedChildProcess(child, "acp subscription session stopped during startup");
+      await forceKillManagedChildProcess(child, "acp subscription session stopped during startup");
       throw new AcpSubscriptionSessionError("acp-session-stopped");
     }
 
@@ -609,7 +576,7 @@ export class AcpSubscriptionSessionClient {
     this.sessionId = sessionId;
   }
 
-  /** Build only standard ACP blocks after runtime-owned capability negotiation. */
+  // Build only standard ACP blocks after runtime-owned capability negotiation.
   private promptBlocks(
     text: string,
     attachments: readonly SubscriptionPromptAttachment[] | undefined,
@@ -629,10 +596,7 @@ export class AcpSubscriptionSessionClient {
     return prompt;
   }
 
-  /**
-   * ACP is JSONL. Test the exact outbound session/prompt envelope before it is
-   * registered as pending or written, so no image is truncated or half-sent.
-   */
+  // ACP is JSONL. Test the exact outbound session/prompt envelope before it is registered as pending or written, so no image is truncated or half-sent.
   private assertPromptFitsRpcLimit(
     sessionId: string,
     prompt: readonly Record<string, unknown>[],
@@ -689,8 +653,7 @@ export class AcpSubscriptionSessionClient {
     child.stdout?.on("data", (chunk: Buffer | string) => reader.write(chunk));
     child.stdout?.once("error", () => abort("acp-session-transport-closed"));
     child.stdin?.once("error", () => abort("acp-session-transport-closed"));
-    // Drain but never retain or log third-party stderr: it can contain OAuth
-    // URLs, device codes, account names, and provider diagnostics.
+    // Drain but never retain or log third-party stderr: it can contain OAuth URLs, device codes, account names, and provider diagnostics.
     child.stderr?.on("data", () => undefined);
     child.stderr?.once("error", () => abort("acp-session-transport-closed"));
     child.once("error", () => abort("acp-session-transport-closed"));
@@ -826,13 +789,8 @@ export class AcpSubscriptionSessionClient {
       this.abortTransport(new AcpSubscriptionSessionError("acp-session-invalid-response"));
       return;
     }
-    // ACP agents report MCP progress through standard tool updates. The update
-    // itself is never an execution authority: it can carry untrusted raw input
-    // or output and has no portable server provenance. The sole permitted tool
-    // path is the session-scoped, tokenized Ave MCP bridge handed to
-    // `session/new`; that bridge separately validates a schema and emits the
-    // normal Ave `tool_call` event. Drop every raw tool update so it cannot
-    // leak into the renderer/audit stream or trigger host execution.
+    // Drop raw ACP tool updates: they carry untrusted content without portable provenance.
+    // Only the session-scoped authenticated MCP bridge may emit a validated host tool call.
     if (updateType === "tool_call" || updateType === "tool_call_update") {
       return;
     }
@@ -852,8 +810,7 @@ export class AcpSubscriptionSessionClient {
       return;
     }
     const active = this.activePrompt;
-    // Notifications outside the active prompt can be history replay or stale
-    // output. They must never leak into the current Ave conversation.
+    // Notifications outside the active prompt can be history replay or stale output. They must never leak into the current Ave conversation.
     if (!active || active.cancelling) return;
     const accepted = active.queue.push(
       eventType === "text_delta" ? { type: "text_delta", text } : { type: "reasoning_delta", text },
@@ -905,8 +862,7 @@ export class AcpSubscriptionSessionClient {
       type: "message_complete",
       stopReason: stopReason === "max_tokens" ? "max_tokens" : "end_turn",
     };
-    // Never finish a full queue without its required terminal event. Failing
-    // closed clears partial output and retains a single unambiguous outcome.
+    // Never finish a full queue without its required terminal event. Failing closed clears partial output and retains a single unambiguous outcome.
     if (!active.queue.push(terminalEvent)) {
       this.abortTransport(new AcpSubscriptionSessionError("acp-session-operation-failed"));
       return;
@@ -991,7 +947,7 @@ export class AcpSubscriptionSessionClient {
     }
   }
 
-  private abortTransport(error: Error, expectedChild?: ChildProcess): void {
+  private abortTransport(error: Error, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.child = null;
@@ -1008,6 +964,7 @@ export class AcpSubscriptionSessionClient {
       active.reject(error);
     }
     this.pending.rejectAll(error);
-    if (child) forceKillManagedChildProcess(child, "acp subscription session transport closed");
+    if (child) this.termination = forceKillManagedChildProcess(child, "acp subscription session transport closed");
+    return this.termination;
   }
 }

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
@@ -10,6 +12,8 @@ import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { MemoryManager } from "../../memory/memory-manager.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
@@ -20,21 +24,19 @@ import {
   A2A_INPUT_REQUIRED_CONTROL_KIND,
   A2A_INPUT_REQUIRED_CONTROL_VERSION,
 } from "../../tools/agent-send.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+
+// Real filesystem I/O can schedule lock retries after fake time has advanced.
+const retrySleep = vi.hoisted(() => ({ skip: false }));
+vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/abortable-deadline.js")>();
+  return { ...actual, sleep: (ms: number, signal?: AbortSignal) => retrySleep.skip ? Promise.resolve() : actual.sleep(ms, signal) };
+});
 
 afterEach(() => {
   vi.useRealTimers();
 });
-
-class FakeProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-
-  constructor(private readonly turns: StreamEvent[][]) {}
-
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
 
 const CODEX_USAGE_SUBSCRIPTION = {
   kind: "subscription",
@@ -44,8 +46,7 @@ const CODEX_USAGE_SUBSCRIPTION = {
 
 function fakeUsageReportingSubscriptionSettings() {
   return {
-    // Keep Claude configured to prove the selected subscription runtime, not
-    // the dormant API-key vendor, owns the execution and accounting boundary.
+    // Keep an inactive API-key vendor to verify subscription execution and accounting own the turn.
     ...fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
     activeChatRuntime: CODEX_USAGE_SUBSCRIPTION,
   };
@@ -88,7 +89,7 @@ function createLoopWithRegistry(
   const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },
@@ -144,9 +145,6 @@ describe("ConversationLoop onTurnSummary", () => {
     }),
     );
 
-    // Round 1: 2 tools (list_directory + read_file in parallel),
-    // Round 2: 1 tool (read_file again),
-    // Round 3: end_turn with tokens reported via usage.
     const provider = new FakeProvider([
       [
         { type: "text_delta", text: "looking" },
@@ -193,30 +191,19 @@ describe("ConversationLoop onTurnSummary", () => {
 
     expect(summary).not.toBeNull();
     expect(summary!.toolCount).toBe(3);
-    // Contract (Issue #912): tokensIn = turn-end projected context input.
-    // It is the same SOT that TokenProgressRing consumes, not the last
-    // provider round alone. tokensOut + cache remain turn-aggregate work.
-    //   round 1: in=100, out=20
-    //   round 2: in= 80, out=15
-    //   round 3: in= 60, out=10  (end_turn — last)
-    // → tokensIn > 60 because final assistant output is now part of the next
-    // request context; tokensOut=45 (sum).
+    // Input tokens measure final projected context; output and cache tokens aggregate all rounds.
     expect(summary!.tokensIn).toBeGreaterThan(60);
     expect(summary!.tokensOut).toBe(45);
     expect(summary!.turnDurationMs).toBeGreaterThanOrEqual(0);
-    // cumulativeToolMs aggregates per-call wall-clock — non-negative; tool
-    // executor is in-process so duration may round to <1ms but never < 0.
+    // In-process tool wall time may round below one millisecond, but never below zero.
     expect(summary!.cumulativeToolMs).toBeGreaterThanOrEqual(0);
-    // Breakdown carries per-tool aggregates.
     expect(summary!.breakdown).toBeDefined();
     expect(summary!.breakdown!["read_file"].count).toBe(2);
     expect(summary!.breakdown!["list_directory"].count).toBe(1);
   });
 
   it("sends the effective output limit and records the route's resolved model settings", async () => {
-    // The route's /models handshake reported an 8,192-token completion
-    // ceiling. Before, that observation was carried and never applied: the
-    // round sent the block's 32,000, and the turn kept no record of either.
+    // The negotiated completion ceiling must constrain requests and appear in the turn record.
     const sent: Array<{ outputTokenLimit?: number }> = [];
     const provider: LLMProvider = {
       vendor: "openai",
@@ -261,7 +248,6 @@ describe("ConversationLoop onTurnSummary", () => {
         tokens: 400_000,
         source: "model-catalog",
         catalogEntry: "openai/gpt-5.4-mini",
-        // The catalog's prompt cap, below the window, bounded the compaction budget.
         inputLimit: { tokens: 272_000, source: "model-catalog" },
       },
       output: {
@@ -272,9 +258,7 @@ describe("ConversationLoop onTurnSummary", () => {
         effective: 8_192,
         effectiveSource: "provider-reported",
       },
-      // Thinking budget 8,000 maps to "medium", which gpt-5.4-mini accepts.
       reasoning: { kind: "openai-effort", requestedEffort: "medium", effort: "medium", source: "model-catalog" },
-      // The rates the turn is priced at, and the entry that stated them.
       pricing: {
         source: "model-catalog",
         catalogEntry: "openai/gpt-5.4-mini",
@@ -347,8 +331,7 @@ describe("ConversationLoop onTurnSummary", () => {
       const output = { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" };
       expect(summary?.modelSettings?.output).toEqual(output);
       expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({ output }) }));
-      // The route keeps its unknown ceiling; Claude's native serialization then
-      // narrows to the SDK's model limit, which the run records as request controls.
+      // Record native serialization limits even when the route ceiling is unknown.
       const sent = vendor === "claude" ? 4_096 : 32_000;
       for (const [, init] of fetchResponse.mock.calls) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -395,12 +378,9 @@ describe("ConversationLoop onTurnSummary", () => {
       return { sentTools, modelSettings: summary!.modelSettings };
     };
 
-    // gpt-3.5-turbo: the catalog's toolCall is false.
     const withheld = await turnOn("gpt-3.5-turbo");
-    // No `tools` key at all, so the adapter shapes the request as a no-tools one, as the record says.
     expect(withheld.sentTools).toEqual([undefined]);
     expect(withheld.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
-    // The same registry reaches a model that takes tools, and the record says nothing.
     const sent = await turnOn("gpt-5.4-mini");
     expect(sent.sentTools[0]).toContain("read_file");
     expect(sent.modelSettings).not.toHaveProperty("tools");
@@ -430,7 +410,6 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(request.modelCapabilities).toEqual({
         inputModalities: { input: ["text"], source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
         toolCall: { supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
-        // The same named entry states the model's reasoning.
         reasoning: { supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
       });
       const toolCall = request.modelCapabilities?.toolCall;
@@ -482,25 +461,34 @@ describe("ConversationLoop onTurnSummary", () => {
 
   it("omits primary route settings when a fallback keeps the same vendor and model", async () => {
     vi.useFakeTimers();
+    let signalPrimaryStarted!: () => void;
+    const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
     const settings = fakeLlmSettings({ provider: "openai", model: "gpt-3.5-turbo" });
     settings.vendors.openai.catalogModel = "openai/gpt-4.1";
     const primary: LLMProvider = {
       vendor: "openai",
-      async *streamTurn() { yield { type: "error", error: "503 fixture unavailable", classification: "network" }; },
+      async *streamTurn() { signalPrimaryStarted(); yield { type: "error", error: "503 fixture unavailable", classification: "network" }; },
     };
     const fallback = new FallbackProvider(primary, [{ provider: "openai", model: "gpt-3.5-turbo", baseUrl: "https://fallback.invalid/v1" }], () => "fixture-key", () => new FakeProvider([[
       { type: "text_delta", text: "fallback answer" },
       { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } },
     ]]));
+    const memoryManager = new MemoryManager({ aveDir: aveHome() });
+    const beginJournal = vi.spyOn(memoryManager, "beginTurnJournal");
     const loop = createLoopWithRegistry(fallback, new ToolRegistry(), {
+      memoryManager,
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
     const turn = loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    await Promise.race([primaryStarted, turn]);
     await vi.advanceTimersByTimeAsync(30_000);
     expect((await turn).text).toBe("fallback answer");
     expect(summary).toMatchObject({ vendorProvider: "openai", vendorModel: "gpt-3.5-turbo" });
     expect(summary?.modelSettings).toBeUndefined();
+    expect(beginJournal).toHaveBeenCalledOnce();
+    const persisted = memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null;
+    expect(persisted?.some((message) => message.role === "assistant" && message.content === "fallback answer")).toBe(true);
   });
 
   it("records a user price correction as the run's pricing and keeps reported reasoning tokens per request", async () => {
@@ -546,9 +534,6 @@ describe("ConversationLoop onTurnSummary", () => {
 
   it("emits a summary for a turn whose only output was reasoning", async () => {
     const toolRegistry = new ToolRegistry();
-    // Reasoning with no text and no tool call: the loop re-prompts twice, the
-    // model reasons every time, and the turn ends with empty text. Every round
-    // still spent tokens.
     class AlwaysReasoningProvider implements LLMProvider {
       readonly vendor = "openai" as const;
       async *streamTurn(): AsyncIterable<StreamEvent> {
@@ -568,19 +553,16 @@ describe("ConversationLoop onTurnSummary", () => {
     }, undefined, { inputOrigin: "user-keyboard" },
     );
 
-    // Empty final text is not a dropped turn here: the summary is the only
-    // record either the badge or cost accounting gets, and gating on text
-    // length reported the whole turn as zero usage on both surfaces.
+    // Reasoning-only turns still need a summary to retain usage and cost accounting.
     expect(result.text).toBe("");
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]!.tokensOut).toBe(21); // 3 rounds x 7
+    expect(summaries[0]!.tokensOut).toBe(21);
   });
 
   it("does not emit a summary for a round the provider returned blank", async () => {
     const toolRegistry = new ToolRegistry();
     const provider = new FakeProvider([
       [
-        // No text, no reasoning, no tool call — nothing to attribute spend to.
         { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 5, outputTokens: 0 },
         },
       ],
@@ -621,16 +603,13 @@ describe("ConversationLoop onTurnSummary", () => {
     }, controller.signal, { inputOrigin: "user-keyboard" },
     );
 
-    // An aborted turn carries partial-round stats, not a completed turn's, so
-    // the footer stays suppressed for it and for the two error stop reasons.
+    // Suppress summary footers for aborted and error turns with partial-round stats.
     expect(result.stopReason).toBe("interrupted");
     expect(calls).toBe(0);
   });
 
   it("keeps reporting usage for an input-required turn that answered before asking", async () => {
-    // `input-required` is not one of the suppressed stop reasons; it follows
-    // the same produced-an-answer rule every completed turn follows. Pinned so
-    // the A2A hand-off keeps its cost record.
+    // Input handoffs retain their completed-turn cost record.
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(createDynamicTool({
       name: "agent_send",
@@ -717,9 +696,12 @@ describe("ConversationLoop onTurnSummary", () => {
   it("attributes fallback-served turns to the provider/model that actually streamed", async () => {
     vi.useFakeTimers();
     const toolRegistry = new ToolRegistry();
+    let signalPrimaryStarted!: () => void;
+    const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
     const primary: LLMProvider = {
       vendor: "claude",
       streamTurn: async function* () {
+        signalPrimaryStarted();
         yield { type: "error", error: "500 internal server error", classification: "network",
         };
       },
@@ -744,6 +726,7 @@ describe("ConversationLoop onTurnSummary", () => {
       isPermissionAuditChainReady: () => false,
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
+      disableSessionPersistence: false,
       settingsService: {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
         getSecret: () => "test-key",
@@ -760,6 +743,8 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { inputOrigin: "user-keyboard" },
     );
+    // Finish checkpoint I/O before advancing the provider retry clock.
+    await primaryStarted;
     await vi.advanceTimersByTimeAsync(5_000);
     await pending;
     vi.useRealTimers();
@@ -781,7 +766,6 @@ describe("ConversationLoop onTurnSummary", () => {
   });
 
   async function sameIdentityFallbackRecords(resumePrimary = false) {
-    vi.useFakeTimers();
     const model = "gpt-5.4-mini";
     const llm = fakeLlmSettings({ model });
     const primarySent: StreamTurnParams[] = [];
@@ -815,7 +799,11 @@ describe("ConversationLoop onTurnSummary", () => {
       jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
       execute: async () => ({ output: "value", isError: false }),
     }));
+    const memoryManager = new MemoryManager({ aveDir: aveHome() });
+    const beginJournal = vi.spyOn(memoryManager, "beginTurnJournal");
+    const endJournal = vi.spyOn(memoryManager, "endTurnJournal");
     const loop = createLoopWithRegistry(provider, registry, {
+      memoryManager,
       settingsService: {
         get: () => ({ ...llm, modelListCache: {
           [llmModelListCacheKey("openai", llm.vendors.openai.baseUrl)]: {
@@ -828,9 +816,10 @@ describe("ConversationLoop onTurnSummary", () => {
       auditLogger: auditLogger as never,
     });
     const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
-    const pending = loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
-    await vi.advanceTimersByTimeAsync(5_000);
-    await pending;
+    retrySleep.skip = true;
+    try {
+      await loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
+    } finally { retrySleep.skip = false; }
     expect(primarySent).toHaveLength(resumePrimary ? 6 : 5);
     expect(primarySent[0]?.model).toBe(model);
     expect(primarySent[0]?.outputTokenLimit).toBe(4_096);
@@ -840,6 +829,13 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(fallbackSent[0]?.outputCeiling).toBeUndefined();
     expect(onTurnSummary).toHaveBeenCalledTimes(1);
     expect(auditLogger.logTurn).toHaveBeenCalledTimes(1);
+    expect(beginJournal).toHaveBeenCalledOnce();
+    expect(endJournal).toHaveBeenCalledOnce();
+    const persisted = memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null;
+    expect(persisted?.some((message) => message.role === "user" && message.content === "reply")).toBe(true);
+    expect(persisted?.findLast((message) => message.role === "assistant")?.meta?.turnSummary).toMatchObject({
+      vendorProvider: "openai", vendorModel: model,
+    });
     return { summary: onTurnSummary.mock.calls[0]![0], audit: auditLogger.logTurn.mock.calls[0]![0] };
   }
 
@@ -847,6 +843,16 @@ describe("ConversationLoop onTurnSummary", () => {
     const record = (await sameIdentityFallbackRecords())[surface];
     expect(record).toBeDefined();
     expect(record.modelSettings).toBeUndefined();
+  });
+
+  it("persists fallback turns and summaries after quarantining a corrupt checkpoint ledger", async () => {
+    const storage = join(aveHome(), "code-checkpoints");
+    await mkdir(storage, { recursive: true });
+    await writeFile(join(storage, "turns.json"), "{");
+    const { summary, audit } = await sameIdentityFallbackRecords();
+    expect(summary).toBeDefined();
+    expect(audit).toBeDefined();
+    expect((await readdir(storage)).some((name) => name.startsWith("turns.json.corrupt-"))).toBe(true);
   });
 
   it("records a later primary request after a fallback tool round", async () => {
@@ -928,9 +934,7 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { inputOrigin: "user-keyboard" },
     );
-    // The first round executes a real async permission-store read before the
-    // fallback retry timers exist. Wait for round two so fake time cannot race
-    // ahead of that I/O, then advance each retry window independently.
+    // Wait for round-two I/O before advancing each retry timer independently.
     await retryRoundStarted;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await vi.advanceTimersByTimeAsync(1_000);
@@ -1014,8 +1018,7 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { inputOrigin: "user-keyboard" });
 
-    // Fallback status remains observable even though its synthetic OpenAI
-    // identity must never become a billable serving identity.
+    // Fallback status stays observable without billing its synthetic serving identity.
     expect(onLlmStatus).toHaveBeenCalledWith(expect.objectContaining({
       phase: "attempt",
       provider: "openai",
@@ -1224,7 +1227,7 @@ describe("ConversationLoop onTurnSummary", () => {
       saveSessionMetadata: vi.fn(async () => {}),
     };
     const settingsService = {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
@@ -1272,7 +1275,7 @@ describe("ConversationLoop onTurnSummary", () => {
       listSessions: () => [],
     };
     const settingsService = {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
@@ -1351,14 +1354,10 @@ describe("ConversationLoop onTurnSummary", () => {
   });
 
   it("does not emit a summary or notification when stopReason is context-error", async () => {
-    // Regression guard: the context_error path must set
-    // stopReason="context-error" so willEmitSummary skips, preventing stale
-    // lastRoundProviderInputTokens from being reported to the user.
+    // Context errors must not report stale provider input tokens in a turn summary.
     const toolRegistry = new ToolRegistry();
     const provider = new FakeProvider([
       [
-        // Emit a context-length error — triggers stream-collector context_error branch.
-        // Must match isContextLengthError() patterns (see auto-compact.ts).
         { type: "error", error: "prompt is too long for this model",
         } as StreamEvent,
       ],
@@ -1373,23 +1372,14 @@ describe("ConversationLoop onTurnSummary", () => {
     }, undefined, { inputOrigin: "user-keyboard" },
     );
 
-    // stopReason must be "context-error" (not undefined / "end_turn")
     expect(result.stopReason).toBe("context-error");
-    // No turn summary emitted — stale lastRoundProviderInputTokens must not reach UI
     expect(summaryCallCount).toBe(0);
-    // Error message was surfaced as turn text
     expect(result.text).toContain("한도를 초과");
   });
 
   it("reports estimated context tokens when provider usage is unavailable", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        // No `usage` on message_complete → result.usage stays undefined.
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const loop = createLoopWithRegistry(provider, toolRegistry);
 
     let summary: { tokensIn: number; tokensOut: number; toolCount: number;
@@ -1427,12 +1417,7 @@ describe("ConversationLoop onTurnSummary", () => {
       execute: async () => ({ output: "ok", isError: false }),
     }),
     );
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const loop = createLoopWithRegistry(provider, toolRegistry, {
       systemPromptBuilder: {
         build: () => "system prompt overhead ".repeat(300),

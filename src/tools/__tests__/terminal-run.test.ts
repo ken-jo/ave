@@ -1,7 +1,5 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
-/**
- * terminal_run: type one approved command into a terminal the user can see.
- */
+/** terminal_run: type one approved command into a terminal the user can see. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createTerminalRunTool,
@@ -26,6 +24,7 @@ import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRIN
 import { terminalCommandTextProblem } from "../../shared/terminal-command-text.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
+import { t } from "../../i18n/index.js";
 
 describe("terminal executable registries", () => {
   it.each(TERMINAL_REGISTRY_COMMANDS)("refuses mutation: %s", (command) => {
@@ -302,9 +301,7 @@ describe("terminal_run", () => {
       expect(deps.typed).toEqual([]);
     });
 
-    // Each of these reads differently to the permission rules (bash) than to
-    // the terminal's interactive zsh, hides from the card, or outlives the
-    // command in the user's shell.
+    // Each of these reads differently to the permission rules (bash) than to the terminal's interactive zsh, hides from the card, or outlives the command in the user's shell.
     it.each([
       ["a # comment zsh may run as text", "echo SAFE # ; echo PWNED", /# comment/],
       ["a # comment hiding an rm", "ls # ; rm -rf build", /# comment/],
@@ -484,6 +481,24 @@ describe("terminal_run", () => {
   });
 
   describe("execute", () => {
+    it("includes the full Linux window when changed Git protection refuses typing", async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      try {
+        registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+        const deps = depsWith({ typeCommand: async () => ({ ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged") }) });
+        const tool = createTerminalRunTool(deps);
+        const scope = await tool.approvalMemoryScope!({ command: "git status" }, { cwd: "/workspace", sessionId: "main" });
+        const result = await tool.execute({ command: "git status" }, ctxFor(scope));
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.output as string)).toMatchObject({
+          error: expect.stringContaining(t("sandboxPolicy.terminalChanged")),
+          sandboxNotice: t("sandboxPolicy.terminalWindow"),
+        });
+        expect(deps.typed).toEqual([]);
+      } finally { Object.defineProperty(process, "platform", descriptor); }
+    });
+
     it("types the exact command into the sealed terminal and returns its finished block", async () => {
       const tracker = readyTracker();
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
@@ -506,6 +521,7 @@ describe("terminal_run", () => {
     });
 
     it("keeps typing into the sealed terminal when the user switches terminals while the card is open", async () => {
+      vi.useFakeTimers();
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-2"), readyTracker(), WINDOW);
       let active = "terminal:aaaaaaaa-1";
@@ -513,16 +529,21 @@ describe("terminal_run", () => {
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
       active = "terminal:aaaaaaaa-2";
-      await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      await vi.runAllTimersAsync();
+      await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
     });
 
     it("fails as not verified when the shell never reports starting the typed command", async () => {
+      vi.useFakeTimers();
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
-      const result = await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      await vi.runAllTimersAsync();
+      const result = await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
       expect(result.isError).toBe(true);
       expect(body(result.output as string)).toMatchObject({ typed: true, finished: false, error: expect.stringContaining("terminal:aaaaaaaa-1") });

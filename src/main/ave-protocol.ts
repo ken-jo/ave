@@ -12,15 +12,7 @@ export function findAveProtocolUri(argv: readonly string[]): string | null {
 
 const GIT_MARKETPLACE_ADD_URL_MAX = 2048;
 
-/**
- * Git marketplace deep links:
- * `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>`
- * and `ave://marketplace/add?url=<address>`. They replace the server-era
- * `ave://install/<slug>` forms (design §16.2), which parse as nothing. The
- * address is checked by the Add dialog's preview like one typed there. A
- * link may not choose a folder on this computer (§18.3 #7): an address that
- * is a path or a `file:` URL opens the Add dialog empty, saying why.
- */
+// Marketplace links accept remote addresses only; local paths open an empty Add dialog with an explanation. Legacy slug-only install links are rejected.
 export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | null {
   let parsed: URL;
   try {
@@ -53,45 +45,13 @@ export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | nu
   if (at < 0) return null;
   const name = qualified.slice(0, at);
   const sourceId = qualified.slice(at + 1);
-  // The tab gets the key scrubbed and names it back (§18.8): a key with a credential's shape is no link.
+  // Reject credential-shaped keys before returning the scrubbed key to the tab.
   if (!(PACKAGE_KINDS as readonly string[]).includes(kind) || !isPackageName(name) || holdsCredential(name) || !isSourceId(sourceId)) return null;
   return { action: host, key: { sourceId, kind: kind as PackageKind, name } };
 }
 
-/**
- * `ave://plugin-auth/<pluginId>?code=<code>` parser.
- *
- * Generic OAuth-style callback route for any plugin. The plugin-specific
- * server redirects
- * the user's system browser to this URL. The host (this process) catches the
- * deep link, validates the shape, then re-emits a host event so the matching
- * plugin can exchange the code for a token. The host never inspects the
- * code's contents — it's an opaque value the auth server issues and the
- * plugin exchanges back. We only enforce shape and length so a
- * malformed/oversized URI cannot reach the plugin event bus.
- *
- * The pattern parallels the `ave://install/<kind>/<name>@<source>` route:
- * a generic, registration-free routing prefix where the path targets the
- * specific plugin/operation.
- *
- * Returns `{ pluginId, code }` on success; `null` otherwise.
- *
- * Validation rules (security-relevant):
- *   - scheme must be `ave:`
- *   - host must be `plugin-auth` (lowercased)
- *   - first path segment is `pluginId` and must be a valid plugin id
- *     (`isValidPluginId`, the manifest contract rule) — keeps the host event
- *     payload predictable for plugin subscribers
- *   - no path segments past the first
- *   - exactly one `code` query parameter (multi-value drops to null to avoid
- *     parameter-pollution ambiguity)
- *   - `code` length must be in [MIN_CODE_LENGTH, MAX_CODE_LENGTH]
- *   - `code` must match the URL-safe base64 / UUID-ish character class:
- *     `[A-Za-z0-9._~-]+` (RFC 3986 unreserved). No fragment-relevant chars.
- *   - URL fragment is ignored entirely (not even checked) — fragments never
- *     reach the host process anyway, but we don't refuse the URL just
- *     because one is present.
- */
+// Treat OAuth codes as opaque and enforce only bounded unreserved-character shape before host-event delivery.
+// Require one valid plugin segment and exactly one code parameter; ignore fragments.
 const PLUGIN_AUTH_HOST = "plugin-auth";
 const MIN_CODE_LENGTH = 16;
 const MAX_CODE_LENGTH = 256;
@@ -107,9 +67,7 @@ export function parsePluginAuthUri(url: string): { pluginId: string; code: strin
   if (parsed.protocol !== "ave:") return null;
   if (parsed.hostname.toLowerCase() !== PLUGIN_AUTH_HOST) return null;
 
-  // Extract first path segment as pluginId. URL normalizes
-  // `ave://plugin-auth/foo` to pathname "/foo"; strip leading slash and
-  // require non-empty single segment.
+  // Extract first path segment as pluginId. URL normalizes `ave://plugin-auth/foo` to pathname "/foo"; strip leading slash and require non-empty single segment.
   const path = parsed.pathname ?? "";
   if (!path.startsWith("/")) return null;
   const trimmed = path.slice(1);
@@ -120,8 +78,7 @@ export function parsePluginAuthUri(url: string): { pluginId: string; code: strin
   if (!isValidPluginId(pluginId)) return null;
 
   const codes = parsed.searchParams.getAll("code");
-  // Reject parameter pollution (`?code=a&code=b`) outright. A real callback
-  // never carries duplicate `code` keys, so the only way we'd see this is an
+  // Reject parameter pollution (`?code=a&code=b`) outright. A real callback never carries duplicate `code` keys, so the only way we'd see this is an
   // attacker trying to confuse the parser.
   if (codes.length !== 1) return null;
   const code = codes[0];

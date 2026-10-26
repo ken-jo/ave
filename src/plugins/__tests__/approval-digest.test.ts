@@ -1,10 +1,5 @@
-/**
- * The approval digest (design §18.7.3): it covers what a bundled component
- * runs and everything it can read — the declaration, the anchored command
- * files and the whole package tree, with only the string value of
- * `plugin.json`'s one top-level `version` normalized, byte-exactly — and it
- * is `null` when the closure cannot be determined.
- */
+// Approval covers the declaration, anchored commands and package tree; only the top-level version string is normalized.
+// An indeterminate closure has no approval digest.
 import { describe, expect, it } from "vitest";
 import {
   approvalDigest,
@@ -16,7 +11,6 @@ import {
 } from "../contribution-approval-digest.js";
 import { isCodeFreeChange, pluginConsent, stagedDelta, withChangedFiles } from "../../marketplace/updates/consent.js";
 import { payloadFile as file } from "../../marketplace/__tests__/fixtures/package-files.js";
-
 
 function extension(options: { server?: string | null; util?: string; rules?: string; skill?: string; version?: string; description?: string; mcp?: Record<string, unknown> } = {}) {
   const ave: Record<string, unknown> = {
@@ -117,7 +111,6 @@ describe("approvalDigest", () => {
   });
 
   describe("the normalization is exact: only the value of the one top-level string version", () => {
-    /** `extension()`'s payload with plugin.json replaced by `text`. */
     function withManifest(text: string) {
       const { document, files } = extension();
       return { document, files: files.map((item) => (item.path === "plugin.json" ? file("plugin.json", text) : item)) };

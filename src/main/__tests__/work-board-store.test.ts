@@ -1,20 +1,4 @@
-/**
- * WorkBoardStore — the single board CRUD implementation.
- *
- * Mirrors the RoutinesStore test style: every case injects a temp `board.json`
- * path through the constructor (and an injectable clock for deterministic
- * overdue / timestamp assertions) so the real `~/.ave/work-board/` namespace
- * is never touched.
- *
- * Coverage:
- *   - Full CRUD round-trip: create → list → get → update → transition →
- *     complete (stamps completed_at) → reopen (clears it) → remove, plus a
- *     persistence reload through a second store instance.
- *   - `overdue` projection: resolved only for planned|in_progress with a past
- *     `due_at`; never written to disk.
- *   - MAX_ITEMS cap enforcement.
- *   - Corrupt `board.json` recovery (backup-and-reset path).
- */
+// Inject a temporary board path and clock so real user work-board files remain untouched.
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import {
@@ -37,7 +21,7 @@ function tempBoard(now?: () => number) {
   return { store, dir, path, cleanup };
 }
 
-/** A clock pinned to a fixed instant so timestamps + overdue are deterministic. */
+// A clock pinned to a fixed instant so timestamps + overdue are deterministic.
 const FIXED_NOW = Date.parse("2026-06-15T12:00:00.000Z");
 const fixedClock = () => FIXED_NOW;
 
@@ -345,12 +329,8 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
 });
 
 describe("WorkBoardStore — due dates stamped in another zone", () => {
-  /**
-   * The end-to-end half of `work-board/__tests__/due-at-normalization.test.ts`:
-   * a `board.json` written by the old KST-anchored panel, loaded on a host west
-   * of Seoul. What the picker shows is `localDateKey(due_at)`, so that is what
-   * this asserts.
-   */
+  // The end-to-end half of `work-board/__tests__/due-at-normalization.test.ts`: a `board.json` written by the old KST-anchored panel, loaded on a host
+  // west of Seoul. What the picker shows is `localDateKey(due_at)`, so that is what this asserts.
   function seedBoard(path: string, dueAt: string): void {
     writeFileSync(path, JSON.stringify({
       version: 1,

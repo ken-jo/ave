@@ -1,10 +1,4 @@
-/**
- * The agent browser tools reach pages only through an allow-list of DevTools
- * methods: accessibility reads, DOM node lookups, synthesized input and a
- * screenshot. No script evaluation, cookies, storage, network bodies,
- * downloads or unselected file uploads — not as tools, and not as CDP calls a tool
- * could make on the model's behalf.
- */
+// Browser tools may use only allow-listed CDP methods; uploads require picker approval and privileged page data stays inaccessible.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,7 +8,7 @@ const REPO = resolve(__dirname, "../../../..");
 const MODULES = [
   ...readdirSync(join(REPO, "src/main/browser"))
     .filter((name) => name.endsWith(".ts"))
-    .map((name) => join("src/main/browser", name)),
+    .map((name) => `src/main/browser/${name}`),
   "src/tools/browser-tools.ts",
   "src/tools/browser-tools-execute.ts",
 ];
@@ -50,7 +44,7 @@ const ALLOWED_CDP_METHODS = new Set([
   "DOM.documentUpdated",
 ]);
 
-/** `"Domain.method"` string literals: every CDP method name these modules spell. */
+// `"Domain.method"` string literals: every CDP method name these modules spell.
 const CDP_LITERAL = /["'`]([A-Z][A-Za-z]+\.[a-z][A-Za-z]+)["'`]/g;
 
 describe("browser tool CDP surface", () => {
@@ -105,8 +99,7 @@ describe("browser tool CDP surface", () => {
     const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
     const start = source.indexOf("async function targetFor(");
     const body = source.slice(start, source.indexOf("\n}\n", start));
-    // In the adapter every page call goes through the checked wrapper except
-    // this one, which presses nothing: it only ends the window's open sequence.
+    // In the adapter every page call goes through the checked wrapper except this one, which presses nothing: it only ends the window's open sequence.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
       'session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination })',

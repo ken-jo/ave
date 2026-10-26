@@ -1,3 +1,4 @@
+import { sep } from "node:path";
 import { displayShellWord, literalWord, staticShellWord, type ShellAssignment, type ShellCommand, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 
 export interface EffectiveShellCommand {
@@ -17,9 +18,19 @@ type ShellEnvironmentTransition =
   | { kind: "unset"; name: string }
   | { kind: "set"; assignment: ShellAssignment }
   | { kind: "cwd"; path: ShellWord };
-export function stripCommandPath(word: string): string { return word.slice(word.lastIndexOf("/") + 1); }
+/** On win32, normalize both separators, .exe suffixes, and case for external program names; builtins require the exact raw head. */
+export function stripCommandPath(word: string): string {
+  if (sep !== "\\") return word.slice(word.lastIndexOf("/") + 1);
+  if (word === ":" || word === ".") return word;
+  const leaf = word.slice(Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\")) + 1)
+    .toLowerCase().split(":", 1)[0]!.replace(/[. ]+$/, "");
+  return leaf.replace(/\.(?:exe|com|bat|cmd)$/, "");
+}
 
-/** Wrappers whose option grammar changes the effective executed command. */
+export function namesCommandPath(word: string): boolean {
+  return word.includes("/") || (sep === "\\" && word.includes("\\"));
+}
+
 const SHELL_EXECUTION_WRAPPERS: ReadonlySet<string> = new Set([
   "command", "env", "timeout", "nice", "ionice", "nohup", "stdbuf", "time", "watch", "xargs",
 ]);
@@ -45,8 +56,10 @@ export function effectiveShellWords(
     if (head === undefined) return result(words.length ? "Unresolved executed command" : undefined);
     const verb = stripCommandPath(head);
     if (!SHELL_EXECUTION_WRAPPERS.has(verb)) return result();
+    // Case or .exe variants of command and time are external programs, not the builtin or keyword.
+    if ((verb === "command" || verb === "time") && head !== verb && !namesCommandPath(head)) return result();
     if (verb === "xargs" || verb === "watch") return result(`Unsupported stream or string execution wrapper: ${verb}`);
-    if (head.includes("/")) wrapperPaths.push(words[0]!);
+    if (namesCommandPath(head)) wrapperPaths.push(words[0]!);
     wrappers.push(verb);
     let index = 1;
     let needsDuration = verb === "timeout";

@@ -1,17 +1,5 @@
-/**
- * Chat domain IPC handlers.
- * Covers: ave:chat:*, ave:llm:*, ave:memory:*, ave:starred:*,
- *         ave:feedback:submit, ave:ask-user-question:respond
- * Note: routine channels (ave:routines:*) are handled in routines.ts.
- *
- * The PUBLIC chat channels (send / sessions / get-history /
- * session-history) delegate to transport-agnostic pure handlers in
- * `../handlers/chat.ts`; this module keeps only the thin `ipcMain.handle`
- * wrappers (trust boundary + semantic-event sink construction) and the
- * internal / session-scoped handlers inline. The common platform timeline is
- * canonical; this Electron adapter performs the one-way `ave:chat:stream`
- * compatibility projection at the display edge.
- */
+import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { isRewindMode } from "../../shared/code-rewind.js";
 import { ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
@@ -97,7 +85,6 @@ import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js"
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 
-/** Refusal: the session named is already open in another tile of this window. */
 const SESSION_OPEN_IN_OTHER_GROUP = "session-open-in-other-group";
 const log = createLogger("chat");
 const MAX_MEMORY_PROJECT_ROOT_CHARS = 2_048;
@@ -109,16 +96,7 @@ function isMissingStagedEnvelopeError(error: unknown): boolean {
     && isMissingStagedEnvelopeErrorMessage(error.message);
 }
 
-// ─── Chat import — reverse of chat.export ─────────────────────────────────
-// Mirrors the export SOT shape (chat.export handler below, JSON branch):
-// `{ sessionId, exportedAt, messages: GenericMessage[] }`. Import re-uses
-// the same size guard memory-manager enforces on a session file
-// (MAX_SESSION_FILE_BYTES) as a DoS gate on the imported file itself.
-// Symmetric ceiling to the byte cap above: a JSON file can stay under 5 MB yet
-// still carry an absurd number of tiny messages (e.g. hundreds of thousands of
-// `{"role":"user","content":""}`), each of which becomes a persisted session
-// line + an FTS index row. Cap the message count so import cost is bounded on
-// BOTH axes (total bytes AND element count), not just bytes.
+// Imports accept the export envelope and always create a new session, never overwrite an existing one.
 const MAX_IMPORTED_MESSAGES = 100_000;
 
 const USER_CONTENT_PART_KEYS: Record<string, readonly string[]> = {
@@ -170,11 +148,7 @@ function isValidUserContentPart(part: unknown): boolean {
   return false;
 }
 
-/**
- * Imported multipart records use the same bounded composition as live IPC.
- * Iterate by owned index instead of caller-provided iteration helpers:
- * holes, unreadable properties, and overridden iteration helpers fail closed.
- */
+// Read owned array indices; sparse, unreadable, or overridden iteration must fail closed.
 function hasValidUserContentPartComposition(raw: unknown): boolean {
   if (!Array.isArray(raw)) return false;
 
@@ -231,10 +205,7 @@ function isValidOptionalString(value: unknown): boolean {
 function isValidToolCallBlock(call: unknown): boolean {
   if (!call || typeof call !== "object" || Array.isArray(call)) return false;
   const c = call as Record<string, unknown>;
-  // Registry origin travels with an exported call (the JSON export writes the
-  // stored messages verbatim), so an import that rejected it could not read
-  // back a file this app itself wrote. Every value is still checked against
-  // the closed vocabulary rather than trusted.
+  // Accept exported registry origin only after validating every value.
   if (!hasOnlyKeys(c, ["id", "name", "input", "source", "category", "pluginId", "mcpServerId"])) {
     return false;
   }
@@ -251,28 +222,13 @@ function isValidToolCallBlock(call: unknown): boolean {
   );
 }
 
-/**
- * Strictly validates one imported message against the `GenericMessage`
- * union (src/engine/llm/types.ts). Whitelist-only: any key outside the
- * role's known field set rejects the ENTIRE import (fail-closed — imported
- * JSON is untrusted input that must not smuggle arbitrary fields into a
- * session record). `meta` is deliberately excluded from every role's
- * allowed-key set: it carries engine-internal bookkeeping (turn summaries,
- * checkpoint/compaction state) that has no meaning for a freshly-imported
- * conversation and is dropped rather than round-tripped.
- */
+// Reject unknown message fields for the entire import; partial acceptance is forbidden.
 function isValidImportedMessage(raw: unknown): raw is GenericMessage {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const m = raw as Record<string, unknown>;
   switch (m.role) {
     case "user": {
-      // `meta` is ACCEPTED here and DROPPED by normalizeImportedMessage below —
-      // this app's own JSON export writes whole history rows, so every row it
-      // produces carries meta, and rejecting the key made an export of this app
-      // fail to import at all. Accepting the key is not accepting its contents:
-      // the normalizer rebuilds each message from whitelisted fields only, so
-      // no imported meta (a forged compact boundary, a stub marker, a borrowed
-      // row identity) reaches the conversation. Ids are re-minted on load.
+      // Accept exported meta but discard it during normalization so imports cannot forge identity or host compact boundaries.
       if (!hasOnlyKeys(m, ["role", "content", "meta"])) return false;
       const content = ownField(m, "content");
       if (content === UNREADABLE_FIELD) return false;
@@ -301,12 +257,7 @@ function isValidImportedMessage(raw: unknown): raw is GenericMessage {
   }
 }
 
-/**
- * Rebuild imported records instead of retaining parsed object references.
- * User multipart content is normalized through the same bounded local-data URL
- * contract used by live IPC and the provider mapper, so imports cannot persist
- * a remote URL that the AI SDK would later fetch.
- */
+// Rebuild parsed records and normalize multipart data through the live IPC bounds.
 function normalizeImportedMessage(message: GenericMessage): GenericMessage | null {
   switch (message.role) {
     case "user": {
@@ -384,12 +335,7 @@ interface ImportValidationResult {
   error?: string;
 }
 
-/**
- * Validates the top-level shape `{ sessionId, exportedAt, messages }` and
- * every message inside `messages`. Rejects the whole file on the first
- * invalid message (no partial-import — a rejected batch either imports in
- * full or not at all, preventing session-content corruption).
- */
+// Reject the whole import on any invalid message; never import a partial batch.
 function validateImportedSessionJson(raw: unknown): ImportValidationResult {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return { ok: false, messages: [], error: "invalid-file-shape" };
@@ -401,8 +347,6 @@ function validateImportedSessionJson(raw: unknown): ImportValidationResult {
   if (r.messages.length === 0) {
     return { ok: false, messages: [], error: "empty-messages" };
   }
-  // Element-count ceiling symmetric with the byte cap the handler enforces on
-  // the file itself — bounds import cost on the message-count axis too.
   if (r.messages.length > MAX_IMPORTED_MESSAGES) {
     return { ok: false, messages: [], error: "too-many-messages" };
   }
@@ -460,11 +404,7 @@ type MemoryCandidateActionPayload =
   | { ok: true; id: string; options: unknown }
   | { ok: false };
 
-/**
- * Candidate approval/rejection is an internal user action. Keep the payload
- * deliberately narrow so a renderer cannot smuggle arbitrary manager options
- * through the lifecycle boundary.
- */
+// Limit lifecycle payloads so renderer input cannot smuggle manager options.
 function parseMemoryCandidateActionPayload(raw: unknown): MemoryCandidateActionPayload {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
   const record = raw as Record<string, unknown>;
@@ -494,40 +434,12 @@ function candidateMemoryActionFailure(error: unknown): { ok: false; error: "inva
 
 export type { SerializedHistoryMessage } from "../../shared/chat-history.js";
 
-/**
- * Resolve the row a surface named by its durable id.
- *
- * This replaced an ordinal walk that counted user/assistant ROWS while the
- * renderer counted user/assistant ENTRIES. The two disagree by one for every
- * pure tool round (an assistant row with empty content renders as a tool group,
- * not a card), every compact boundary (a user row that renders as a checkpoint
- * divider), and every imported trigger — so "the third message" meant a
- * different message on each side, and a rewind or an edit cut the conversation
- * at the wrong turn. Addressing the row directly removes the second rule
- * instead of trying to keep two counters in agreement.
- *
- * Returns -1 when no row carries the id, which is what a caller sees after the
- * row it was holding has been compacted away.
- */
+// Resolve durable row ids; transcript entry ordinals differ from stored row ordinals.
 function historyIndexOfMessageId(history: GenericMessage[], messageId: string): number {
   return history.findIndex((m) => m.meta?.messageId === messageId);
 }
 
-/**
- * The text a rewind can hand back to the composer, or the reason it cannot.
- *
- * A rewind puts the user back in front of what they typed, so it has to return
- * the WHOLE input or none of it. Two kinds of turn cannot be handed back:
- *
- *   - one carrying image/file parts, because the composer stages those from a
- *     picked path and a thumbnail that history does not keep;
- *   - one carrying MCP resource attachments, because the fenced server text
- *     rides as its own content part precisely so it never sits inside the
- *     user's own body — folding it into the composer would undo that seam.
- *
- * Both are refused rather than partially restored: dropping the attachment and
- * keeping the words would look like it worked.
- */
+// Rewind returns the complete original input or refuses without truncating history.
 function restorableRewindInput(
   message: Extract<GenericMessage, { role: "user" }>,
 ): { ok: true; text: string } | { ok: false; error: string } {
@@ -539,11 +451,7 @@ function restorableRewindInput(
       return { ok: false, error: "attachment-not-restorable" };
     }
   }
-  // Rows whose stored content is a routing envelope — a drained guide batch,
-  // a child's report — record the words the bubble actually showed. The
-  // composer gets those, never the wrapper the user never wrote. Checked
-  // AFTER the attachment refusals so a row that carries both a display text
-  // and an unrebuildable attachment is still refused rather than half-restored.
+  // Restore canonical user text, never a host routing wrapper.
   const displayText = message.meta?.displayText;
   if (typeof displayText === "string") return { ok: true, text: displayText };
   if (typeof message.content === "string") return { ok: true, text: message.content };
@@ -566,32 +474,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     getMainWindow,
   } = deps;
 
-  // This single host-owned runtime outlives individual transports. Direct
-  // registrar tests deliberately receive a private instance, while production
-  // main-process composition injects the same one into Local API and IPC.
-  // ─── Tiled chat groups ────────────────────────────────────────────────
-  //
-  // A conversation IS a ConversationLoop: it holds the live history and runs
-  // exactly one turn at a time. Several tiles that can each be streaming
-  // therefore means several loops, and everything built ON one loop — its
-  // surface runtime, its command port, its legacy stream adapter — has to be
-  // per-group too. Two tiles sharing one timeline would interleave frames.
-  //
-  // See docs/design/tiled-chat-groups.md.
+  // Production transports share one host-owned runtime; registrar tests use a private instance.
   const STREAMING_ACTIVE = "streaming-active" as const;
   type StreamTurnTransport = {
     readonly sink: ConversationStreamEventSink;
   };
-  /**
-   * The turn machinery of ONE group: its leases, its stream ids and sinks,
-   * and the replay paths (edit/resend, continue, retry) built over them.
-   *
-   * These were one closure family over the primary loop. A handler that read
-   * a group's history and then replayed it through closures bound to the
-   * primary ran that tile's turn in the primary conversation — so each group
-   * builds its own, and a handler reaches them only through the group it
-   * resolved.
-   */
+  // Each tiled group owns its loop, leases, streams, and replay paths.
   const createGroupTurns = (
     loop: ConversationLoop,
     surfaceRuntime: ConversationSurfaceRuntime,
@@ -617,16 +505,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       displayText?: string,
       resumesInterruptedTurn?: true,
     ) => {
-      // Edit/resend and history replay reach the provider through this separate
-      // main-chat path. Keep their input (including folded text attachments)
-      // under the same DLP boundary as a normal `chat:send` turn while
-      // preserving non-text attachments.
-      //
-      // Keep only the fixed staged-origin enum before DLP can rewrite a source
-      // header into a non-parseable placeholder. Passing that enum as the
-      // claim below lets runStreamedTurn fail closed rather than downgrade a
-      // replayed staged turn to user-keyboard; the raw source never crosses
-      // this boundary.
+      // Replay and edit/resend need the same input DLP boundary as ordinary sends.
       const replayStagedInputOrigin = parseStagedEnvelope(input)?.kind.inputOrigin;
       const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, attachments);
       const result = await runStreamedTurn(
@@ -661,11 +540,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const messages = [...(loop.getHistory().getMessages() as GenericMessage[])];
       if (messages.length === 0) return { ok: false, error: "no-user-message" };
       let lastUserIdx = messages.length - 1;
-      // The app exited mid-turn (crash, kill, or quit): the rows the turn
-      // produced are persisted and end in a host-exit interrupted row. Continue
-      // resumes from there instead of re-asking — the model gets everything it
-      // already did, including tool calls whose outcome is unknown, and is told
-      // so. Nothing is truncated and nothing runs until the user asks.
+      // Host-exit interruption resumes persisted progress rather than replaying the user's last request.
       const resumeInterrupted = opts.requireTerminalUser && endsInHostExitInterruption(messages);
       if (resumeInterrupted) {
         lastUserIdx = -1;
@@ -684,9 +559,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       }
       if (lastUserIdx < 0) return { ok: false, error: "no-user-message" };
       const lastUser = messages[lastUserIdx] as Extract<GenericMessage, { role: "user" }>;
-      // Disjoint split: text parts → prompt body, non-text parts → attachments.
-      // `userContentText()` is wrong here — its `[image:...]` placeholder would
-      // re-send each attachment twice once paired with `lastUserAttachments`.
+      // Split text into prompt and non-text into attachments; display placeholders would duplicate attachments.
       const lastUserText = Array.isArray(lastUser.content)
         ? lastUser.content
             .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
@@ -711,18 +584,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         );
         return { ok: true, result };
       }
-      // Carried forward for the same reason `personaPromptId` is: the replayed row has to
-      // look like the row it replaces. Without it a resource turn's fenced body — folded
-      // into `lastUserText` by the split above — renders inside the user's own bubble on
-      // reload, which is exactly what the seam in `run-turn.ts` exists to prevent, undone
-      // one click after it worked.
-      //
-      // DISPLAY only. The fold still puts the fence in the replayed turn's text, so the
-      // per-turn bound (which counts content PARTS) does not see it — unchanged by this
-      // and accepted by the resources policy §6. What the fold must NOT also lose is the
-      // turn's TAINT, and that is fixed where taint is derived: `initialToolTrustOrigin`
-      // recognizes the fence in body text, the same way it already recognizes an inlined
-      // paste.
+      // Preserve display text so resource replay does not expose folded fences in the user bubble.
       const priorDisplayText = (lastUser.meta as { displayText?: unknown } | undefined)?.displayText;
       loop.getHistory().truncate(lastUserIdx);
       try {
@@ -735,9 +597,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         );
         return { ok: true, result };
       } catch (err) {
-        // Retry intentionally keeps its legacy behavior for ordinary stream
-        // failures, but a DLP-induced staged-header rejection happens before
-        // provider work and must never turn the pre-send truncate into data loss.
+        // Restore truncated history when staged-header rejection happens before provider work.
         if (opts.restoreOnFailure || isMissingStagedEnvelopeError(err)) {
           loop.getHistory().restore(messages);
         }
@@ -767,7 +627,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
   };
   type GroupTurns = ReturnType<typeof createGroupTurns>;
-  /** The transcript's last row says the turn was cut short by the app exiting. */
   const endsInHostExitInterruption = (messages: readonly GenericMessage[]): boolean => {
     const tail = messages[messages.length - 1];
     return tail?.role === "assistant"
@@ -776,13 +635,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
   };
 
   interface ChatGroupContext {
-    /**
-     * The renderer that owns this group's tiles, or `null` for the primary
-     * scope (the primary main window and auxiliary host surfaces, which keep
-     * the global ids). A secondary main window owns its groups outright.
-     */
+    // Secondary-window groups are renderer-owned; the primary scope retains global ids.
     owner: WebContents | null;
-    /** The id the owning renderer knows this group by (frames carry it). */
     rendererGroupId: string;
     loop: ConversationLoop;
     deps: IpcDeps;
@@ -790,40 +644,25 @@ export function registerChatHandlers(deps: IpcDeps): void {
     commandPort: ConversationCommandPort;
     buildSink: (streamId?: number) => ConversationStreamEventSink;
     turns: GroupTurns;
-    /** Detaches this group's frames from the window — part of releasing it. */
     unsubscribeStream: () => void;
   }
   const groupContexts = new Map<string, ChatGroupContext>();
-  /** Window-scoped "main active" state is the primary tile's to write. */
   const isPrimaryGroup = (group: ChatGroupContext): boolean =>
     group.deps.chatGroupId === undefined || group.deps.chatGroupId === MAIN_CHAT_GROUP_ID;
-  /** The group whose loop holds `sessionId` right now, the primary included. */
   const groupHolding = (sessionId: string): ChatGroupContext | undefined =>
     [...groupContexts.values()].find((group) => group.loop.getSessionId() === sessionId);
-  /**
-   * Where a group's frames go. The primary scope follows the primary main
-   * window — never "the window in use", which may be a secondary window whose
-   * own tiles reuse the same renderer ids. Without any registered main window
-   * (focused registrar tests, early boot) the injected window stands in.
-   */
+  // Primary frames follow the primary window, never the active window, whose tile ids may collide.
   const groupTargetContents = (owner: WebContents | null): WebContents | undefined => {
     if (owner) return owner.isDestroyed() ? undefined : owner;
     const primary = getPrimaryMainWindow();
     if (primary) return primary.webContents;
     return getMainWindows().length === 0 ? getMainWindow()?.webContents : undefined;
   };
-  // Approvals and ask-user questions are drawn by the window whose tile holds
-  // the asking conversation (`findSessionMainWindowContents`).
   setSessionContentsLookup((sessionId) => {
     const holder = groupHolding(sessionId);
     return holder ? groupTargetContents(holder.owner) ?? null : null;
   });
-  /**
-   * Main windows share one set of groups, but each renderer numbers its tiles
-   * from the start (`main`, `group-2`, ...). A secondary main window's ids are
-   * therefore scoped to that window here, so its tiles get loops of their own
-   * and never address the primary window's conversations.
-   */
+  // Scope secondary tile ids by window so independently numbered renderers never share loops.
   const scopedGroupKey = (owner: WebContents | null, rendererGroupId: string): string =>
     owner ? `window-${owner.id}:${rendererGroupId}` : rendererGroupId;
   const ownerOf = (sender: unknown): WebContents | null =>
@@ -836,18 +675,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const cached = groupContexts.get(chatGroupId);
     if (cached) return cached;
     const isMain = chatGroupId === MAIN_CHAT_GROUP_ID;
-    // No silent fall back to the primary loop: a request naming a group this
-    // process cannot build must fail, because the alternative is another
-    // tile's turn landing in this one.
+    // Unknown groups fail instead of falling back to another tile's loop.
     if (!isMain && (!deps.resolveChatGroupLoop || !deps.releaseChatGroupLoop)) {
       throw new Error("chat-groups-unavailable");
     }
     const loop = isMain ? conversationLoop : deps.resolveChatGroupLoop!(chatGroupId);
     const groupDeps: IpcDeps = isMain ? deps : { ...deps, conversationLoop: loop, chatGroupId };
     if (!isMain) watchRendererLifetime(owner);
-    // Injected runtimes belong to the PRIMARY group. Production composition
-    // shares one with the Local API, and registrar tests inject a private one;
-    // a second tile must not be handed either.
+    // Only the primary group receives the runtime shared with external transports.
     const surfaceRuntime = isMain
       ? deps.conversationSurfaceRuntime ?? createConversationSurfaceRuntime()
       : createConversationSurfaceRuntime();
@@ -861,15 +696,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const legacyStreamAdapter = createPlatformConversationLegacyStreamAdapter(
       surfaceRuntime.timeline,
     );
-    // Electron is the first owner-surface adapter. It receives a compatibility
-    // projection only; the semantic timeline remains the producer source.
-    //
-    // The group is stamped HERE rather than inside the adapter: the adapter is
-    // group-agnostic by design, and labelling at the one subscriber that owns
-    // these frames means no frame can leave unlabelled. `chatGroupId`, not
-    // `groupId` — the stream protocol already uses that name for a tool-call
-    // group, and reusing it would misroute a frame only when a turn happened
-    // to contain grouped tool calls.
+    // The semantic timeline is canonical; stamp the group before adapting frames for the renderer.
     const unsubscribeStream = legacyStreamAdapter.subscribe((channel, payload) => {
       const labelled = payload && typeof payload === "object"
         ? { ...(payload as Record<string, unknown>), chatGroupId: rendererGroupId }
@@ -894,15 +721,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
       unsubscribeStream,
     };
     groupContexts.set(chatGroupId, context);
-    // Session goal — once this group's turn lease releases, a running goal
-    // takes it straight back for one more turn. Registered per group because
-    // the goal belongs to the session a tile is holding, not to the window.
+    // Goal revival belongs to the group's held session and starts only after its turn lease releases.
     if (deps.sessionGoalStore) {
       const revival = createSessionGoalRevival({
         goals: deps.sessionGoalStore,
         currentSessionId: () => loop.getSessionId(),
-        // Released tiles and closed windows own no turns: a goal must not
-        // resurrect a conversation that is no longer on screen.
+        // Released groups cannot revive goals for conversations no longer on screen.
         isAttached: () => {
           if (groupContexts.get(chatGroupId) !== context) return false;
           return groupTargetContents(owner) !== undefined;
@@ -913,21 +737,16 @@ export function registerChatHandlers(deps: IpcDeps): void {
         runTurn: async ({ input, displayText }) => {
           await runStreamedTurn(loop, input, buildGroupSink(turns.allocateStreamId()), {
             ...STREAM_TURN_OPTIONS,
-            // Host-authored continuation text, not the user's — the same
-            // non-user origin the sub-agent parent wake injects with, so an
-            // autonomous loop's tool calls keep non-keyboard provenance.
+            // Autonomous continuation is host-authored and must retain non-keyboard provenance.
             inputOrigin: "agent-message",
             displayText,
-            // No surface echoed a bubble for this turn — the host started it —
-            // so the announced row is the only one the transcript will get.
+            // Host-started turns need an announced row because no surface echoed a bubble.
             hostSubmitted: true,
           });
         },
       });
       surfaceRuntime.activity.onTurnSettled(revival.reviveIfDue);
-      // A resume (or a goal set while the session sits idle) has no turn to
-      // follow. Without this the button would move the chip and change
-      // nothing, which is worse than not having the button.
+      // Idle goal resume must explicitly start a turn; there is no prior turn to trigger revival.
       deps.sessionGoalStore.onChange((sessionId) => {
         if (sessionId === loop.getSessionId()) revival.reviveIfDue();
       });
@@ -935,20 +754,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return context;
   };
 
-  // The primary group is built eagerly so its injected runtimes are wired
-  // before any channel is called, exactly as they were before groups existed.
+  // Build the primary group before exposing channels so injected runtimes are ready.
   const mainGroup = chatGroupContext(MAIN_CHAT_GROUP_ID);
   const conversationSurfaceRuntime = mainGroup.surfaceRuntime;
   const buildSink = mainGroup.buildSink;
 
-  /**
-   * The group a per-conversation channel names, from its trailing argument.
-   *
-   * Required, not defaulted. Both ends of these channels ship in one binary
-   * and the preload stamps the id on every call, so an absent id is a caller
-   * that forgot which tile it meant — and the symptom of defaulting that (a
-   * turn landing in the wrong tile) is worse than a rejected call.
-   */
+  // Require the preload-stamped group id; omission must not address the primary conversation.
   const groupOf = (event: { sender: unknown }, chatGroupId: unknown): ChatGroupContext => {
     if (typeof chatGroupId !== "string" || !chatGroupId.trim()) {
       throw new Error("chat-group-required");
@@ -956,11 +767,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return chatGroupContext(chatGroupId.trim(), ownerOf(event.sender));
   };
 
-  /**
-   * Stop whatever a group's loop is doing and wait until it has stopped.
-   * `reason` is what the stopped turn — and an approval it was parked on —
-   * records; it names the host's action, not the user's.
-   */
+  // Abort and await stopped work; interruption reasons name the host action.
   const quiesce = async (
     context: ChatGroupContext,
     reason: string,
@@ -974,7 +781,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     try {
       await active;
     } catch {
-      // expected: interrupted turns may reject
     }
   };
 
@@ -997,22 +803,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
   };
 
-  /**
-   * A renderer that navigates or dies takes its tiles with it, and the one
-   * that comes back numbers its tiles from the start again. Every group but
-   * the primary is let go of at that moment, so a reloaded window's second
-   * tile can never be handed a conversation the previous window left behind.
-   * Installed once, on the window whose tiles these are, the first time it
-   * asks for a second tile — that is the first moment there is anything to
-   * lose.
-   */
+  // Document replacement releases non-primary groups before the renderer reuses its tile ids.
   const watchedRenderers = new WeakSet<object>();
   const watchRendererLifetime = (owner: WebContents | null): void => {
     const contents = owner ?? groupTargetContents(null);
     if (!contents || watchedRenderers.has(contents)) return;
     watchedRenderers.add(contents);
-    // Only this renderer's groups: another window's tiles stay on screen.
-    // The primary scope's `main` loop is never torn down (see groupRelease).
+    // Release only this renderer's groups; the primary loop remains alive.
     const releaseAll = (reason: string) => {
       for (const [id, context] of [...groupContexts.entries()]) {
         if (id !== MAIN_CHAT_GROUP_ID && context.owner === owner) {
@@ -1022,45 +819,23 @@ export function registerChatHandlers(deps: IpcDeps): void {
         }
       }
     };
-    // The committed main-frame document change, not `did-start-navigation`:
-    // that fires for every attempt, including a link click the main window's
-    // `will-navigate` policy cancels and opens externally while every tile
-    // stays on screen. `did-navigate` skips in-page and subframe navigation.
-    // A main-frame load that fails commits an error page in place of the tiles
-    // without `did-navigate`. Electron raises `did-fail-provisional-load` only
-    // for that committed error page; `did-fail-load` also fires while the tiles'
-    // document stays (an invalid `loadURL`, its own load failing or stopped).
+    // Use committed main-frame changes; cancelled, in-page, and subframe navigation retain the owning document.
     contents.on("did-navigate", () => releaseAll("renderer reload released the tile"));
     contents.on("did-fail-provisional-load", (_event, errorCode, _description, _url, isMainFrame) => {
       if (isMainFrame && errorCode !== -3 /* ERR_ABORTED */) releaseAll("renderer load failed; tile released");
     });
     contents.on("render-process-gone", () => releaseAll("renderer process gone; tile released"));
-    // A closed window takes its tiles with it; a window opened later (even
-    // one that takes over the primary role) numbers its tiles from the start.
+    // Window closure releases its tiles before a later window reuses their ids.
     contents.on("destroyed", () => releaseAll("window closed; tile released"));
   };
 
-  /**
-   * Let go of a tile's conversation when the tile closes.
-   *
-   * The loop is what makes a group cost something — live history and the
-   * ability to run a turn — and ids are never reused, so a closed tile that
-   * kept its loop would count against the ceiling for the rest of the
-   * session. Any turn still running is stopped first: a tile that is gone
-   * has nowhere to show it.
-   */
+  // Closing a tile releases its loop and leases to prevent hidden live conversations.
   ipcMain.handle(CHANNELS.chat.groupRelease, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.groupRelease, e); return UNAUTHORIZED_FRAME; }
     if (typeof chatGroupId !== "string" || !chatGroupId.trim()) return { ok: false, error: "chat-group-required" };
     const id = scopedGroupKey(ownerOf(e.sender), chatGroupId.trim());
     if (id === MAIN_CHAT_GROUP_ID) {
-      // The primary loop is the window's: resume, restore, and the session
-      // list all address it, so it is never torn down and its stream stays
-      // subscribed (the next primary tile reads it). Closing its tile lets go
-      // of the conversation it holds — a blank one in its place, and the
-      // window-active pointer cleared so the next launch does not bring the
-      // closed conversation back — so no other tile is refused that session
-      // by a tile that no longer exists.
+      // Keep the primary loop and stream subscription for resume, restore, and session-list consumers.
       const admission = mainGroup.surfaceRuntime.activity.beginSessionTransitionAdmission();
       if (admission === null) throw new Error("conversation-activity:session-transition-in-progress");
       try {
@@ -1077,11 +852,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true, released: await releaseGroup(id, "tile closed") };
   });
 
-  // read-only, sender guard optional
   ipcMain.handle(CHANNELS.chat.hasProvider, (e, chatGroupId?: unknown) =>
     groupOf(e, chatGroupId).loop.hasProvider());
-  // Reads command files from disk, so the sender is checked. The project comes
-  // from the tile's own session, never from the renderer.
+  // Commands read disk; validate the sender and derive the project from the tile session.
   ipcMain.handle(CHANNELS.chat.listCustomCommands, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.listCustomCommands, e);
@@ -1106,9 +879,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const catalog = activeModelCatalog();
       return { ok: true, catalog, refreshPolicy: await readModelCatalogRefreshPolicy(getAdminPolicyPath()) };
     } catch (error) {
-      // Main boots with the catalog installed; reaching this is a startup-order
-      // defect. Logged here, where the main log records it, and answered as a
-      // refusal the renderer shows instead of a window that never mounts.
+      // A missing boot catalog is a startup-order defect; log it and return a stable refusal.
       log.error({ err: error }, "model catalog requested before main installed one");
       return { ok: false, error: "catalog-unavailable" };
     }
@@ -1116,28 +887,21 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   const mainTurns = mainGroup.turns;
 
-  // D3 opt-in wake is registered once the parent stream coordinator exists.
-  // It never changes the active session: a race with user navigation or a
-  // manual turn leaves the durable mailbox untouched for a later user turn.
+  // Opt-in parent wake never changes sessions; racing navigation leaves the durable mailbox for later.
   type WakeAwareRunner = {
     setParentWakeHandler?: (handler: (parentSessionId: string) => Promise<void>) => void;
   };
   const wakeAwareRunner = deps.getSubAgentRunner?.() as WakeAwareRunner | undefined;
   if (typeof wakeAwareRunner?.setParentWakeHandler === "function") {
     wakeAwareRunner.setParentWakeHandler(async (parentSessionId) => {
-      // A child result can arrive after the last round boundary but before the
-      // stream or session lease releases. Capture that one lease and await it
-      // once. The bus invokes this handler from a detached side promise, so a
-      // synchronous onDropped callback never waits on its own active turn.
-      // There is deliberately no timer, polling, or parking loop.
+      // A child result may arrive before lease release; capture and await that lease once before revalidation.
       const leaseAtRequest = conversationSurfaceRuntime.activity.activeTurn()
         ?? conversationSurfaceRuntime.activity.activeMutation();
       if (leaseAtRequest !== null) {
         try {
           await leaseAtRequest;
         } catch {
-          // Failed/interrupted work still releases its lease. The durable
-          // mailbox remains eligible for the same one-time revalidation.
+          // Interrupted work still releases its lease; the mailbox remains available for revalidation.
         }
       }
 
@@ -1153,9 +917,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const streamId = mainTurns.allocateStreamId();
       const sink = buildSink(streamId);
       await mainTurns.trackStreamTurn(async () => {
-        // Snapshot only after the turn lease is visible. A concurrent manual
-        // send or session mutation then fails closed before it can switch the
-        // loop or consume the same durable mailbox entries.
+        // Publish the turn lease before mailbox snapshot so concurrent sends or mutations cannot switch the loop.
         const mailboxTurn = await prepareParentMailboxTurn(deps);
         if (
           !mailboxTurn
@@ -1173,8 +935,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
             ...STREAM_TURN_OPTIONS,
             inputOrigin: "agent-message",
             approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-            // The wake turn's INPUT is the child report, so the report box has
-            // to come off the turn-input row on reload.
+            // Preserve report input as the user-row display text for reload.
             subAgentReport: mailboxTurn.childTitle === undefined
               ? {}
               : { title: mailboxTurn.childTitle },
@@ -1187,11 +948,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       });
     });
   }
-  // PUBLIC ave:chat:send — thin wrapper: trust boundary + sink construction,
-  // logic in handlers/chat.ts. The common semantic timeline is canonical; the
-  // renderer receives its existing frame shape only through the owner adapter.
-  // Stops the group's running turn and waits for it to settle, so the next
-  // command finds the lease free. Shared by `chat:abort` and an interrupt send.
+  // The semantic timeline owns chat frames; renderer delivery uses its compatibility projection.
   const interruptActiveTurn = async (group: ChatGroupContext): Promise<void> => {
     group.loop.abortCurrentTurn();
     const activeStreamTurn = group.surfaceRuntime.activity.activeTurn();
@@ -1199,13 +956,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
       try {
         await activeStreamTurn;
       } catch {
-        // expected: interrupted turns may reject
       }
     }
   };
-  // A refusal that came back after the running turn was already stopped: the
-  // renderer must not read it as "nothing happened" and take the interrupted
-  // badge off an answer that really was cut short.
+  // A late refusal must retain the interrupted badge if the running answer was already stopped.
   const flagInterruptedRefusal = (result: unknown): unknown => {
     if (result === null || typeof result !== "object") return result;
     const { ok, error } = result as { ok?: unknown; error?: unknown };
@@ -1219,15 +973,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.send, async (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.send, e); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId);
-    // An interrupt send is the user's Enter while a turn is running. The abort
-    // happens inside this call rather than as a separate round trip the
-    // renderer awaits first: that wait outlived the five-second keyboard
-    // intent, and the send that followed was refused as not user-initiated.
+    // Abort inside the interrupt send so a separate round-trip cannot expire keyboard activation.
     let interrupted = false;
     if (isInterruptSend(payload)) {
-      // Only a send the host would accept from the keyboard may stop the
-      // running turn: a refused payload must leave the answer the user was
-      // watching alone.
+      // Validate keyboard authority and payload before interrupting the running turn.
       const admitted = parseChatSendPayload(payload);
       if (admitted.ok && admitted.payload.inputOrigin === "user-keyboard") {
         await interruptActiveTurn(group);
@@ -1248,19 +997,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
   });
 
-  // "guide" — non-interrupting mid-stream direction adjustment. Queues
-  // the user's text so the engine consumes it at the next assistant-round
-  // boundary (between tool execution and the next LLM stream). The
-  // in-flight LLM call and its tool round are NOT aborted.
-  //
-  // Contract diverges from the pre-#623 handler (which aborted + restarted
-  // with a guidance prompt template) — see `src/shared/chat-utterance.ts`
-  // for the full 4-mode taxonomy.
-  //
-  // Atomicity: the `currentAbortController` check is folded INTO
-  // `queueGuidance` so the renderer can never lose a guide to a turn that
-  // ended between the active-turn check and the enqueue. The IPC return value
-  // drives the renderer's "keep typed text vs. clear" decision.
+  // Guide input queues for the next assistant-round boundary without interrupting the turn.
   ipcMain.handle(CHANNELS.chat.guide, async (e, input: string, chatGroupId?: unknown) => {
     const group = groupOf(e, chatGroupId);
     if (!validateHostRendererSender(e)) {
@@ -1270,21 +1007,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (typeof input !== "string" || input.trim().length === 0) {
       return { ok: false, error: "empty-text" };
     }
-    // PII redaction applies to guide input too — same trust origin
-    // (user-keyboard) and same downstream LLM consumption as chatSend.
-    // The `redact_notice` stream event uses the active turn's streamId
-    // implicitly and travels through the shared surface adapter so every
-    // attached display sees the same current streaming context.
+    // Guide text needs the same PII redaction as keyboard sends.
     const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), input);
     const queueResult = group.loop.queueGuidance(effective);
     if (queueResult === "queued") {
-      // Audit successful guide as a mutating state transition (parity with
-      // `ave:feedback:submit` and other mutating IPC calls — security
-      // reviewer M2). Log metadata only; the text already passed
-      // `sanitizeOutgoingInput` but logging it widens the disclosure
-      // surface unnecessarily. `mode` tag uses the shared utterance
-      // taxonomy so audit consumers can correlate guide/start/stop/abort
-      // calls across handlers.
+      // Audit guide acceptance as a mutation, recording metadata without user text.
       const mode: ChatUtteranceMode = "guide";
       auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -1300,10 +1027,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.abort, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.abort, e); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId);
-    // Stopping the turn stops the goal too. Without this the session would
-    // revive the moment the interrupted turn settles, which reads as the app
-    // ignoring the button the user just pressed. `pause`, not clear: the round
-    // count is kept so resuming carries on from where it stopped.
+    // Pause the goal on Stop so it cannot immediately revive; retain the goal for explicit resume.
     const goalSessionId = group.loop.getSessionId();
     if (deps.sessionGoalStore?.get(goalSessionId)?.status === "running") {
       await deps.sessionGoalStore.pause(goalSessionId);
@@ -1317,25 +1041,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const group = groupOf(e, chatGroupId);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
-      // The resolver owns the default: under the exclusive workload-broker
-      // route that is the guest cwd, not the controller host's workspace.
       const parsed = resolveChatNewProjectPayload(rawProject, defaultWorkspaceProject().projectRoot);
       const resolved = resolveAuthorizedWorkspaceProject(parsed.projectRoot, parsed.projectName);
       if (!resolved.authorized || !resolved.project) return PROJECT_NOT_ALLOWED;
       const { project } = resolved;
       await conversationLoop.newConversation("main", project);
-      // Persist the resolved project identity to the new session's metadata at
-      // creation — mirroring startRoutineConversation — but ONLY when the user
-      // explicitly selected a real (non-default) project. A session created
-      // with no explicit project (the common case: plain "New Chat") runs
-      // against the default/base-directory binding internally (unaffected —
-      // conversationLoop.newConversation above already applied it for tool
-      // access) but must NOT be tagged with it in metadata: "no project" (null
-      // fields) is the normal persisted state, so the sidebar renders it as a
-      // plain ungrouped conversation and Insights buckets it under "No
-      // project" rather than a synthetic "default"/"Current Project" label
-      // (2026-07 "remove Current Project labeling" refinement). Full-overwrite
-      // is safe: the session is brand new.
+      // Persist project identity only for explicit selections; default-directory access is not a project label.
       if (!project.isDefault && (project.projectRoot || project.projectName)) {
         await memoryManager.saveSessionMetadata(conversationLoop.getSessionId(), {
           sessionKind: "main",
@@ -1348,8 +1059,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     });
     return mutation ?? { ok: false as const, error: STREAMING_ACTIVE };
   });
-  // PUBLIC ave:chat:sessions — read-only; sender guard optional. On rejection
-  // returns the same shape (active id + empty list) as before; logic delegated.
   ipcMain.handle(CHANNELS.chat.sessions, (e, opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown }) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.sessions, e);
@@ -1362,10 +1071,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.compact, e); return UNAUTHORIZED_FRAME; }
     if (focus !== undefined && typeof focus !== "string") throw new Error("invalid compact focus");
     const group = groupOf(e, chatGroupId);
-    // Wire onCompactStarted/onCompactOccurred so slash-/compact also shows
-    // the "자동 압축 중..." StatusBar indicator (parity with token preflight
-    // path which gets it via runStreamedTurn callbacks). streamId is omitted
-    // because manualCompact runs outside the per-turn stream.
+    // Wire compact callbacks for slash-triggered compaction too; no stream id exists outside a turn.
     const mutation = group.turns.trackSessionMutation(async () => {
       const sink = group.buildSink();
       return group.loop.manualCompact({
@@ -1403,17 +1109,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     const group = groupOf(e, chatGroupId);
     const conversationLoop = group.loop;
-    // The loop refuses this on its own (ConversationLoopDeps.sessionHeldElsewhere);
-    // naming the holder is what lets the renderer bring that tile forward —
-    // it may be folded away by chat mode and unknown to the renderer's tiles.
-    // Answered before this group's lease: bringing another tile forward
-    // touches nothing here, so this group's own turn must not hide the holder.
+    // Name the holding tile so the renderer can reveal a folded conversation.
     const holder = groupHolding(sessionId);
     if (holder && holder !== group) {
       return {
         ok: false, compacted: false, compactedAt: null, removedMessageCount: 0,
         error: SESSION_OPEN_IN_OTHER_GROUP,
-        // A holder in another window has no tile here to bring forward.
         ...(holder.owner === ownerOf(e.sender) ? { holderChatGroupId: holder.rendererGroupId } : {}),
       };
     }
@@ -1434,8 +1135,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
       error: STREAMING_ACTIVE,
     };
   });
-  // PUBLIC ave:chat:get-history — read-only, sender guard optional. Returns the
-  // active session's serialized history; logic delegated.
   ipcMain.handle(CHANNELS.chat.getHistory, (e, chatGroupId?: unknown) =>
     handleChatGetHistory(groupOf(e, chatGroupId).deps));
 
@@ -1447,16 +1146,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return memoryManager.loadMainActiveSessionState();
   });
 
-  // PUBLIC ave:chat:session-history — read-only: load messages for any session
-  // by id (does NOT change active session). Delegated; the unauthorized frame
-  // keeps the success-path shape so callers always read `result.ok`/`.messages`.
   ipcMain.handle(CHANNELS.chat.sessionHistory, (e, sessionId: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.sessionHistory, e);
-      // Keep the shape consistent with the success path — renderer always
-      // reads `result.messages` and `result.ok`. Returning the bare
-      // UNAUTHORIZED_FRAME (which omits `messages`) would force every caller
-      // to widen the type and check before reading.
+      // Unauthorized history replies must retain messages and ok fields expected by callers.
       return { ok: false, messages: [], error: "unauthorized-frame" as const };
     }
     return handleChatSessionHistory(deps, sessionId);
@@ -1469,9 +1162,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (typeof messageId !== "string" || messageId.length === 0) return { ok: false, error: "invalid-message-id" };
     if (typeof newText !== "string" || newText.trim().length === 0) return { ok: false, error: "empty-text" };
     const turn = group.turns.tryStreamTurn(async (transport) => {
-      // Read, persona-resolve, and truncate only after the exclusive lease is
-      // visible. A Local API/CLI turn cannot leave this replay with a partial
-      // history when it wins the race.
+      // Publish the exclusive lease before reading or truncating replay history.
       const history = conversationLoop.getHistory().getMessages() as GenericMessage[];
       const historyIndex = historyIndexOfMessageId(history, messageId);
       if (historyIndex < 0) return { ok: false, error: "message-not-found" };
@@ -1485,9 +1176,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         const result = await group.turns.runStreamTurn(transport, newText, undefined, personaPrompt.rolePrompt);
         return { ok: true, result };
       } catch (err) {
-        // A provider-bound replay can fail closed before runTurn (for example
-        // when DLP redacts a staged provenance header). Keep the original
-        // conversation intact instead of turning a safe rejection into data loss.
+        // Restore history if provider-bound replay is refused before runTurn.
         if (isMissingStagedEnvelopeError(err)) {
           conversationLoop.getHistory().restore(messages);
         }
@@ -1497,16 +1186,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  // Rewind-only counterpart of `editResend`: same read → ordinal-resolve →
-  // truncate sequence, then it stops. The renderer puts the message text back
-  // in the composer, so replaying it is the user's next keystroke, not ours.
-  //
-  // The truncated history is written to disk here because nothing else will:
-  // `editResend` leaves persistence to the turn it starts, and this path
-  // starts no turn. Without the write, the discarded turns would come back on
-  // the next session load.
-  ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown) => {
+  // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.
+  ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown, mode: unknown = "conversation") => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.rewindTo, e); return UNAUTHORIZED_FRAME; }
+    if (!isRewindMode(mode)) return { ok: false, error: "invalid-rewind-mode" };
     const group = groupOf(e, chatGroupId);
     const conversationLoop = group.loop;
     if (typeof messageId !== "string" || messageId.length === 0) return { ok: false, error: "invalid-message-id" };
@@ -1516,29 +1199,29 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (historyIndex < 0) return { ok: false, error: "message-not-found" };
       const target = history[historyIndex];
       if (target.role !== "user") return { ok: false, error: "not-a-user-message" };
-      // Everything the composer has to be handed back is resolved BEFORE the
-      // truncate, and a message whose input cannot be handed back whole is
-      // refused with the conversation untouched. The alternative — cut first,
-      // then discover the image cannot be rebuilt — destroys the turn and the
-      // attachment together, which is the one outcome a rewind must not have.
-      const restorable = restorableRewindInput(target);
+      // Resolve all composer input before truncation; refuse if it cannot be restored whole.
+      const restorable = mode === "code" ? { ok: true as const, text: "" } : restorableRewindInput(target);
       if (!restorable.ok) return { ok: false, error: restorable.error };
       const personaPromptId = personaPromptIdFromUserMessage(target);
       if (!personaPromptId.ok) return { ok: false, error: personaPromptId.error };
       const sessionId = conversationLoop.getSessionId();
-      // Captured before the truncate: the pruner needs the boundary rows THIS
-      // rewind threw away. Asking instead which boundaries still survive also
-      // condemns the ones a later compaction had already summarized away, so
-      // snapshots this rewind never reached would be deleted with it.
+      if (mode !== "conversation") {
+        const restored = await restoreCodeCheckpoint(sessionId, messageId, () => ({
+          cwd: conversationLoop.getSessionExecutionCwd(),
+          extraAllowedDirectories: conversationLoop.getTurnAdditionalDirectories(),
+        }));
+        if (!restored.ok) {
+          auditLogger.log({ timestamp: new Date().toISOString(), type: "warn", sessionId, input: `code_checkpoint_refused:${messageId}:${mode}`, output: restored.error });
+          return restored;
+        }
+        auditLogger.log({ timestamp: new Date().toISOString(), type: "info", sessionId, input: `code_checkpoint_restored:${messageId}:${mode}` });
+        if (mode === "code") return { ok: true, text: "" };
+      }
+      // Prune boundaries discarded by this rewind, not those absent after earlier compactions.
       const discarded = history.slice(historyIndex);
       conversationLoop.getHistory().truncate(historyIndex);
       const remaining = conversationLoop.getHistory().getMessages() as GenericMessage[];
-      // Drop the checkpoints whose boundary sat inside the discarded range
-      // BEFORE the session is written. `recoverLatestCheckpointUserIfMissing`
-      // re-inserts the latest checkpoint's user message on load when no
-      // renderable user row survives, so a rewind to the opening message of a
-      // session that ever compacted would otherwise come back on reload with
-      // the message the user had just discarded.
+      // Drop discarded checkpoint sidecars before saving or load-time recovery may resurrect removed messages.
       await memoryManager.pruneCheckpointsDiscardedByRewind(sessionId, discarded);
       await memoryManager.saveSession(sessionId, remaining);
       return {
@@ -1559,18 +1242,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const mutation = group.turns.trackSessionMutation(async () => {
       const current = conversationLoop.getHistory().getMessages() as GenericMessage[];
       let upto = current.length;
-      // Omitted id means "branch the whole conversation" — the checkpoint
-      // branch path calls it that way. A named row that no longer exists is a
-      // different thing and must not silently become the whole conversation.
+      // Omitted id branches the whole conversation; an unresolved explicit id must fail.
       if (typeof messageId === "string" && messageId.length > 0) {
         const historyIndex = historyIndexOfMessageId(current, messageId);
         if (historyIndex < 0) return { ok: false, sessionId: null, error: "message-not-found" };
         upto = Math.min(historyIndex + 1, current.length);
       }
       const sliced = current.slice(0, upto);
-      // Repair tool-pair invariant before the slice is written to a NEW session
-      // file — the same authority `branchFromCheckpoint` uses on the identical
-      // slice→repair→rehydrate→saveSession sequence (engine/turn/session.ts).
+      // Repair tool-call/result pairing before writing the forked session.
       const { messages: slice, removedMessages, removedToolCalls } = normalizeToolPairInvariant(sliced);
       if (removedMessages > 0 || removedToolCalls > 0) {
         log.warn(
@@ -1624,8 +1303,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const prevLlm = settingsService.get("llm");
       const provider = prevLlm.provider;
       const prevBlock = getLlmVendorSettings(prevLlm.vendors, provider);
-      // Re-read at each call: the point is to compare the settings BEFORE and
-      // AFTER the patch, and both halves have to be taken the same way.
+      // Read settings before and after the patch through the same resolver.
       const currentVendorBaseUrlSig = () => llmRouteBaseUrlSignature(
         settingsService.get("llm"),
         settingsService.get("marketplace").installedProviderPresets,
@@ -1645,9 +1323,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           },
         },
       });
-      // ASRT choke-point: the spread includes prevBlock.baseUrl if set, so if
-      // a baseUrl was present it remains unchanged and the guard is a no-op.
-      // Included for completeness in case future patches extend this handler.
+      // Only address changes require sandbox network refresh; spreading the prior block preserves its address.
       if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
         void deps.refreshSandboxNetworkConfig?.();
       }
@@ -1661,9 +1337,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         await settingsService.patch({
           llm: { vendors: { [provider]: prevBlock } },
         });
-        // Restore path: if the forward patch triggered a sandbox refresh but
-        // the restore brings baseUrl back to the same value, the guard here is
-        // also a no-op (prevBlock was the original, sig matches original).
+        // Restoring the same address must not refresh sandbox network configuration.
         if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
           void deps.refreshSandboxNetworkConfig?.();
         }
@@ -1673,9 +1347,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  // `targetSessionId` lets a sidebar row export ITSELF. Without it "share this
-  // conversation" on a row silently exported whichever conversation happened to
-  // be loaded — the same click meaning two different things.
+  // Export the named session, never whichever conversation happens to be loaded.
   ipcMain.handle(CHANNELS.chat.export, async (
     e,
     format: "markdown" | "json",
@@ -1684,7 +1356,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.export, e); return UNAUTHORIZED_FRAME; }
     const { dialog } = await import("electron");
     const { writeFile } = await import("node:fs/promises");
-    // The dialog belongs to the window that asked.
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     if (format !== "markdown" && format !== "json") return { ok: false, error: "invalid-format" };
     const loadedSessionId = conversationLoop.getSessionId();
@@ -1693,8 +1364,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (typeof targetSessionId === "string" && targetSessionId !== loadedSessionId) {
       if (!isValidSessionId(targetSessionId)) return { ok: false, error: "invalid-session" };
       const stored = memoryManager.loadSession(targetSessionId);
-      // Not "fall back to the loaded conversation" — that would export the
-      // wrong thing under the right name. A missing session is an error.
+      // A missing export target must fail instead of exporting another conversation under its name.
       if (!Array.isArray(stored)) return { ok: false, error: "not-found" };
       sessionId = targetSessionId;
       messages = stored as GenericMessage[];
@@ -1745,12 +1415,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true, filePath: res.filePath };
   });
 
-  // ── Row-level conversation edits ───────────────────────────────────────
-  // One channel for the three fields a conversation row can change, because
-  // they are one action from the user's side: editing this conversation's own
-  // card. Each field is read off the payload by name — the payload is NEVER
-  // spread into the metadata, so a renderer cannot reach the project binding
-  // or the A2A wire identity through here.
+  // Row edits share one channel so title, archive, and other row changes address the same conversation.
   ipcMain.handle(CHANNELS.chat.sessionUpdate, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.sessionUpdate, e); return UNAUTHORIZED_FRAME; }
     const raw = (payload ?? {}) as {
@@ -1768,19 +1433,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (raw.title !== undefined) {
       if (typeof raw.title !== "string") return { ok: false, error: "invalid-title" };
       const title = raw.title.replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").trim();
-      // An empty rename is not "clear the title" — the row would then fall back
-      // to the derived title and the user would see their edit vanish with no
-      // explanation. Refuse it and let the caller keep the dialog open.
+      // Reject empty titles; otherwise derived-title fallback silently discards the rename.
       if (!title) return { ok: false, error: "empty-title" };
       fields.title = title;
     }
     const now = new Date().toISOString();
     if (raw.archived !== undefined) {
       if (typeof raw.archived !== "boolean") return { ok: false, error: "invalid-archived" };
-      // The Suggestions conversation is where every unrequested card is
-      // addressed, and the sidebar hides archived rows — archiving it would
-      // hide every suggestion and its count from then on. Its menu offers no
-      // archive; a request that names it anyway is refused, not ignored.
+      // Keep Suggestions unarchived while staged cards address it.
       if (raw.archived && isSuggestionsSession(raw.sessionId)) {
         return { ok: false, error: "suggestions-not-archivable" };
       }
@@ -1799,10 +1459,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.sessionDelete, e); return UNAUTHORIZED_FRAME; }
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (!isValidSessionId(sessionId)) return { ok: false, error: "invalid-session" };
-    // The confirmation lives HERE, not in the renderer. A renderer-side confirm
-    // is a promise the caller can skip; this one cannot be reached around.
+    // Confirm in main so callers cannot bypass a renderer-only dialog.
     const { dialog } = await import("electron");
-    // The dialog belongs to the window that asked.
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const confirmOptions = {
       type: "warning" as const,
@@ -1817,21 +1475,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
       : await dialog.showMessageBox(confirmOptions);
     if (confirmation.response !== 1) return { ok: false, canceled: true };
 
-    // Only a LOADED conversation can be mid-turn, so only it needs the
-    // mutation guard — and any tile may be the one holding it. Holding a
-    // delete of some other conversation behind a loop would refuse a safe
-    // action for a reason that does not apply to it.
-    //
-    // Deleting the Suggestions conversation clears it rather than removing
-    // it. Every card waiting in the window names it as its origin, and a card
-    // addressed to a conversation the list does not hold is drawn nowhere —
-    // so its row comes straight back, empty, before the renderer re-reads the
-    // list. Main cannot see the renderer's queue (a plugin card lives only
-    // there), so it does not ask whether anything is waiting: recreating the
-    // address is what keeps every such card reachable, including one staged
-    // while this confirm was open.
+    // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
       await memoryManager.deleteSession(sessionId);
+      // Its "This session" rules, approvals and network hosts end with it.
+      const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+      endSessionScopedPermissions(sessionId, conversationLoop.permissionManager);
       if (isSuggestionsSession(sessionId)) ensureSuggestionsSession(memoryManager);
     };
     const holder = groupHolding(sessionId);
@@ -1846,15 +1495,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return (await mutation) ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  // Reverse of chat.export. INTERNAL (mutating; not in
-  // PUBLIC_CHANNELS — same classification as chat.new/chat.fork above).
-  // ALWAYS creates a brand-new DLP-safe UUID session — importing
-  // NEVER overwrites an existing session, matching chat.fork's pattern.
+  // Import is internal and always creates a fresh DLP-safe session id.
   ipcMain.handle(CHANNELS.chat.import, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.import, e); return UNAUTHORIZED_FRAME; }
     const { dialog } = await import("electron");
     const { open } = await import("node:fs/promises");
-    // The dialog belongs to the window that asked.
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const dialogOptions = {
       title: t("mainDialog.importConversationTitle"),
@@ -1867,19 +1512,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true };
     const filePath = res.filePaths[0];
 
-    // TOCTOU-safe read (CodeQL js/file-system-race): open ONE fd, size-guard
-    // via fstat(fd), then read from that SAME fd. A separate stat()+readFile()
-    // pair races — the path could be swapped between the size check and the
-    // read (e.g. small→huge, or file→symlink to a device) so the cap is
-    // enforced against a different inode than the one read. Anchoring both the
-    // check and the read to a single fd closes that window.
+    // Size-check and read through the same file handle to prevent path-swap races.
     let text: string;
     let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       fileHandle = await open(filePath, "r");
       const stats = await fileHandle.stat();
-      // DoS guard — reject oversized files before ever reading/parsing them
-      // (same MAX_SESSION_FILE_BYTES cap memory-manager enforces on-disk).
+      // Reject oversized session files before reading or parsing.
       if (stats.size > MAX_SESSION_FILE_BYTES) {
         return { ok: false, error: "file-too-large" };
       }
@@ -1912,8 +1551,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     });
     return { ok: true, sessionId: newSessionId, messageCount: validated.messages.length };
   });
-
-  // ─── Checkpoint View + Branch ─────────────────────────
 
   ipcMain.handle(CHANNELS.chat.enterCheckpointView, (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.enterCheckpointView, e); return UNAUTHORIZED_FRAME; }
@@ -1956,7 +1593,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { error: (err as Error).message };
     }
   });
-  // ─── Memory ─────────────────────────────────────
   ipcMain.handle(CHANNELS.memory.entriesList, (e, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesList, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
@@ -2127,8 +1763,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { ok: false, error: "memory-consolidation-service-unavailable" };
     }
     try {
-      // The default workspace is the app's unscoped global context, not a user
-      // selected project. Never create a project overview for it.
+      // The default workspace is unscoped global context; never create a project overview for it.
       const project = conversationLoop.getSessionProjectIsDefault?.()
         ? undefined
         : conversationLoop.getSessionMemoryProjectContext?.();
@@ -2138,15 +1773,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
       });
       return { ok: true, ...result };
     } catch (error) {
-      // Provider and source details are host-only; renderer callers receive a
-      // stable envelope regardless of the failing adapter or source state.
+      // Keep provider and source failures host-only; renderer replies use stable envelopes.
       log.warn("manual long-term memory consolidation failed: %s", errorMessage(error));
       return { ok: false, error: "memory-consolidation-failed" };
     }
   });
 
-  // ─── Starred messages ────────────────────────────────────
-  // read-only, sender guard optional
   ipcMain.handle(CHANNELS.starred.list, () => {
     if (!starredStore) return [];
     return starredStore.list();
@@ -2170,7 +1802,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: false, error: "invalid-args" };
   });
 
-  // ─── Message feedback ────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.feedback.submit, async (e, payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.feedback.submit, e); return UNAUTHORIZED_FRAME; }
     const { sessionId, messageIndex, rating, reason } = payload ?? {};
@@ -2202,17 +1833,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true };
   });
 
-  // ─── Verbatim tool_result lazy-load ────────────────────────────────────
-  // Returns the in-memory verbatim content for a compacted or size-capped tool_result.
-  // Only works for the currently-active session; when the active history has
-  // a disk stub, the host attempts to rehydrate it from the file-backed artifact.
-  // Returns null when:
-  //   - sessionId does not match the active session
-  //   - toolUseId not found in history
-  //   - message has NOT been compacted or size-capped — callers should only
-  //     request verbatim for stubbed tool results
-  //   - message is a disk stub and no matching artifact is available
-  // lineCount is computed here so the renderer never has to split on "\n".
+  // Lazy verbatim results exist only in the active session; session switching must not read stale content.
   ipcMain.handle(
     CHANNELS.chat.getVerbatimToolResult,
     (e, { sessionId, toolUseId }: { sessionId: string; toolUseId: string }, chatGroupId?: unknown) => {
@@ -2228,7 +1849,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
           m.role === "tool_result" && m.toolUseId === toolUseId,
       );
       if (!msg) return null;
-      // content is always string on tool_result messages
       const content = msg.content;
       if (typeof content !== "string") return null;
       const artifact = isToolResultStubContent(content) && !msg.meta?.artifactUnavailable
@@ -2237,7 +1857,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (!artifact && msg.meta?.compactedAt === undefined && msg.meta?.truncated === undefined) return null;
       if (msg.meta?.serializedStub === true && isToolResultStubContent(content) && !artifact) return null;
       const verbatim = artifact?.content ?? content;
-      // zero-allocation line count
       let lineCount = 1;
       for (let i = 0; i < verbatim.length; i++) {
         if (verbatim.charCodeAt(i) === 10) lineCount++;
@@ -2246,12 +1865,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── Sub-agent transcript lazy-load ───────────────────────────────────
-  // Parent `agent_spawn` results may be stored as a small handle/stub, while
-  // the full child loop transcript lives in the isolated ~/.ave/subagent/
-  // namespace. This read-only handler re-joins them for the right-side
-  // sub-agent viewer without exposing sub-agent sessions in the main session
-  // list.
+  // Resolve child transcript handles from isolated storage; never expose host paths.
   ipcMain.handle(
     CHANNELS.chat.getSubAgentTranscript,
     (e, payload: unknown, chatGroupId?: unknown) => {
@@ -2278,18 +1892,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         originSessionId,
         group.loop.getHistory().getMessages(),
       ) as GenericMessage[];
-      // Ownership is established either by the parent's transcript still
-      // referencing the child, or by the child's own persisted
-      // `originSessionId` — the value the HOST wrote at spawn time, naming the
-      // parent that owns it.
-      //
-      // The metadata check is not a relaxation, it is the stronger of the two.
-      // The transcript scan reads a tool_result that compaction is free to
-      // strip (`[tool_result stripped: tool=agent_spawn, …]`), at which point a
-      // genuinely owned child becomes unreachable — which is exactly what
-      // happens to a restored panel row, whose transcript has no in-memory copy
-      // to fall back on. Host-written metadata cannot be edited by the model
-      // and does not decay with the conversation.
+      // Prove ownership from the parent's reference or the child's host-written originSessionId.
       const ownedByOrigin = runner.isPersistedSpawnOfOrigin?.(originSessionId, childSessionId) === true;
       if (!ownedByOrigin && !hasParentSubAgentReference(messages, childSessionId)) {
         return { ok: false, error: "sub-agent-reference-not-found" };
@@ -2301,13 +1904,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── Issue #749: write-file diff sidecar lazy-load ──────────────────────
-  // Returns { before, after } for a write_file tool call when content exceeded
-  // WRITE_DIFF_PREVIEW_LIMIT on either side. The sidecar is written by
-  // WriteFileTool.executeTyped into ~/.ave/diff-cache/<sessionId>/<toolUseId>.json.
-  // Returns null when:
-  //   - sessionId / toolUseId fail safe-id validation (no path separators)
-  //   - sidecar file not found or unreadable
+  // Load oversized write diffs from the sidecar instead of truncated tool content.
   ipcMain.handle(
     CHANNELS.chat.getWriteDiff,
     async (e, payload: unknown): Promise<{ before: string; after: string } | null> => {
@@ -2325,9 +1922,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── ask_user_question pending snapshot ──────────────────────────────────
-  // Read once by a renderer that (re)loaded after a question went out, so a
-  // question whose window closed re-shows where its session is drawn now.
+  // Reload pending questions only into the window holding their session.
   ipcMain.handle(CHANNELS.askUserQuestion.pending, (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.pending, e);
@@ -2336,7 +1931,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return askUserQuestionGate ? askUserQuestionGate.listPending(e.sender) : [];
   });
 
-  // ─── ask_user_question response ─────────────────────────────────────────
   ipcMain.handle(CHANNELS.askUserQuestion.respond, (e, response: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.respond, e);
@@ -2359,9 +1953,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           return {
             choice: typeof a.choice === "string" ? a.choice : undefined,
             choices: choices && choices.length > 0 ? choices : undefined,
-            // Shape only. Whether this question asked for a typed answer, and
-            // how long that answer may be, is the gate's call against the
-            // request it recorded.
+            // Validate shape here; the gate owns answer type and length for its recorded request.
             freeText: typeof a.freeText === "string" ? a.freeText : undefined,
           };
         })

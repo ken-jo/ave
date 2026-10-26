@@ -1,11 +1,4 @@
-/**
- * #811 milestone-2 — lifecycle stdin/env through the generalized runner.
- *
- * Proves the SAME fail-closed / env-allowlist machinery carries the lifecycle
- * wire shape: AVE_HOOK_EVENT + AVE_HOOK_SESSION_ID are injected, the tool-name
- * env is omitted for session-only events, and the env allowlist still strips
- * secrets (design §6.2 — env allowlist unchanged).
- */
+// Lifecycle hooks use the same fail-closed runner and secret-stripping environment; session-only events omit the tool name.
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { runOneHookScript, type RunnableHook } from "../script-hook-runner.js";

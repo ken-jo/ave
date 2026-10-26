@@ -15,11 +15,7 @@ interface Options {
   ) => string;
 }
 
-/**
- * The channel's own declaration. `preparing` used to be re-spelled here and in
- * the renderer API type; no producer ever set it - it had drifted in from the
- * install-PROGRESS channel, which has a `phase: "preparing"`.
- */
+/** Use the channel's shared result type; preparing belongs to install-progress, not install-result. */
 type InstallResultPayload = PluginInstallResultPayload;
 
 function targetLabel(slug: string, label: string): string {
@@ -44,15 +40,7 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
       } else {
         upsertToast(installToastId(safeSlug), {
           severity: "error",
-          // The producer sends a stable English code plus its human detail
-          // precisely so this maps to localized copy. Rendering `error` raw
-          // showed the user the literal string `incompatible-app-version`.
-          //
-          // `message` is the documented fallback for a code with no i18n
-          // entry. It changes nothing today — the only code this producer
-          // emits is mapped — so do not read a behavioural guarantee into it;
-          // it is here so the next unmapped code degrades to readable text
-          // instead of a bare identifier.
+          // Localize stable install error codes; message is the readable fallback for unmapped codes, never the raw identifier.
           message: t("useStatusBarInstall.installFailure", {
             target,
             error: sanitizeToastField(formatIpcError(error, message)),

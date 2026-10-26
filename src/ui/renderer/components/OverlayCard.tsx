@@ -1,24 +1,5 @@
-// OverlayCard — overlay card for routine fire and plugin (insertion-type) triggers.
-//
-// Two source variants share the same card shell:
-
-
-//
-// Policy:
-//   - Single active card with prev/next queue navigation
-//   - queueIndex / queueTotal counter (shown when queue ≥ 2)
-//   - dismiss (X) — permanent removal
-//   - snooze removed (production smoke test: UX risk)
-//   - a proposal card ANSWERS instead of confirming (see `dispositions`). That
-//     is not the snooze above returning: a snooze re-showed a result nobody had
-//     been asked about, on a timer; an answer is what the user gives to a
-//     question the card put to them, and the host stores it.
-//
-// Isolation: only summary and session id flow here. Full content stays in the
-// normal conversation session model.
-//
-
-// summary + actions. Transitions to done phase when running flips to false.
+// Only summaries and session ids enter overlay cards; full content stays in conversation sessions. Proposal dispositions
+// are stored answers, not timed snoozes.
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Loader2, X } from "lucide-react";
@@ -61,19 +42,12 @@ export interface OverlayCardProps {
   onPrimaryAction?: () => void;
 
   primaryActionLabel?: string;
-  /**
-   * A second answer beside the primary one, drawn quieter — an insertion card's
-   * "continue in a new conversation". Shown only with a primary action.
-   */
+  /** A second answer beside the primary one, drawn quieter — an insertion card's "continue in a new conversation". Shown only
+   * with a primary action. */
   secondaryAction?: { label: string; onClick: () => void };
 
-  /**
-   * Whether the summary is expanded, and how to change it.
-   *
-   * Controlled by the overlay queue rather than held here: the card unmounts
-   * when it moves between tiles, and local state would collapse the summary
-   * the user just opened.
-   */
+  /** Whether the summary is expanded, and how to change it. Controlled by the overlay queue rather than held here: the card
+   * unmounts when it moves between tiles, and local state would collapse the summary the user just opened. */
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
 
@@ -83,18 +57,8 @@ export interface OverlayCardProps {
   pluginId?: string;
   pluginDisplayName?: string;
 
-  /**
-   * A proposal is a question the user answers ONCE, so its card carries the
-   * answer instead of a single confirm: `onAccept` runs the proposed action,
-   * and the two refusals differ in whether the question may come back.
-   *
-   * This is not the snooze the header says was removed. A snooze re-showed a
-   * RESULT the user had already been handed, on a timer, having asked nothing;
-   * these three are the answers to a question that WAS asked, and the host
-   * stores whichever one it gets. When set, they replace the single primary
-   * action — `primaryActionLabel` is then the accept label, supplied by the
-   * proposing plugin.
-   */
+  /** Proposal dispositions store one answer; accepting runs the action and refusals differ in whether the question may
+   * return. */
   dispositions?: {
     onAccept: () => void;
     onLater: () => void;
@@ -136,8 +100,6 @@ export function OverlayCard({
   const [isOverflowing, setIsOverflowing] = useState(false);
   const summaryRef = useRef<HTMLParagraphElement | null>(null);
   const relTime = useMemo(() => formatRelativeTime(firedAt, relativeTimeLabels(t)), [firedAt, t]);
-
-
 
   useLayoutEffect(() => {
     const el = summaryRef.current;

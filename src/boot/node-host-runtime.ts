@@ -18,9 +18,7 @@ export interface NodeBootHostOptions {
 
 async function prepareBufferedBody(input: string, init: RequestInit): Promise<RequestInit> {
   if (init.body === null || init.body === undefined) return init;
-  // The HTTP dispatcher can await a stream after its request-start hook. Turn
-  // every body into bounded bytes before dispatch so that hook and the first
-  // header write execute in one synchronous stack.
+  // Buffer bodies before dispatch so the request-start hook and header write share a synchronous stack.
   const request = new Request(input, { ...init, duplex: "half" } as RequestInit);
   if (!request.body) return { ...init, headers: request.headers, body: null };
   const reader = request.body.getReader();
@@ -55,9 +53,7 @@ export function createNodeHostFetchTransport(dispatcher: Dispatcher): HostFetchT
     fetch(input, { ...init, redirect: "manual" })) as HostFetchTransport;
   transport.sendWithHandoff = async (input, init, beforeSend) => {
     const bufferedInit = await prepareBufferedBody(input, init);
-    // This callback runs at the HTTP stack's request-start point, after any
-    // connection wait and before it constructs or writes the header block.
-    // A retry invokes it again. The same proxy/CA dispatcher remains in use.
+    // Runs after connection waits and before headers; retries invoke the hook again on the same dispatcher.
     const guardedDispatcher = dispatcher.compose((dispatch) => (options, handler) => {
       const guardedHandler = new Proxy(handler, {
         get(target, property) {
@@ -88,8 +84,7 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
   const dispatcher = new EnvHttpProxyAgent({
     ...(ca ? { connect: { ca }, requestTls: { ca }, proxyTls: { ca } } : {}),
   });
-  // Providers and host fetches share the configured server route. A failed
-  // proxy connection remains a failure; there is no direct retry path.
+  // Share the configured proxy route; a failed proxy must not trigger a direct retry.
   setGlobalDispatcher(dispatcher);
   const networkFetch: typeof fetch = (input, init) => fetch(input, init);
   const singleHopNetworkFetch = createNodeHostFetchTransport(dispatcher);
@@ -103,6 +98,7 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
     singleHopNetworkFetch,
     llmFetch: createSafeLlmFetch(networkFetch),
     exit: (code) => process.exit(code),
+    relaunch: () => { throw new Error("relaunch-unsupported"); },
     close: () => dispatcher.destroy(),
   };
 }

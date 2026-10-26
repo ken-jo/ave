@@ -58,8 +58,8 @@ import {
   BROWSER_TARGET_KINDS,
   FILE_TARGET_KINDS,
   TAB_DRAG_THRESHOLD_PX,
-  DetailHeader,
-  PreviewBody,
+  PreviewDetail,
+  previewFillsPanel,
   UrlDocumentViewer,
   tabIcon,
 } from "./ChatSidePanelPreview.js";
@@ -535,11 +535,12 @@ function ContentTabView({
     );
   }
   return (
-    <div className="h-full min-h-0 overflow-auto p-3" data-testid="chat-side-panel-content-view" data-tab-id={tab.id}>
-      <div className="space-y-3">
-        <DetailHeader target={target} />
-        <PreviewBody api={api} sessionId={sessionId} target={target} />
-      </div>
+    <div
+      className={previewFillsPanel(target) ? "flex h-full min-h-0 flex-col overflow-auto p-3" : "h-full min-h-0 overflow-auto p-3"}
+      data-testid="chat-side-panel-content-view"
+      data-tab-id={tab.id}
+    >
+      <PreviewDetail api={api} sessionId={sessionId} target={target} />
     </div>
   );
 }
@@ -711,6 +712,8 @@ function WorkspaceLauncherMenu({ onOpen }: { onOpen: (kind: WorkspaceTabKind) =>
 
 export interface ChatSidePanelProps {
   api: AveApi;
+  /** Whether the column fits and is drawn, independent of retained tab state. */
+  visible?: boolean;
   sessionId?: string;
   targets: ChatPreviewTarget[];
   files: WorkspaceFileItem[];
@@ -774,6 +777,7 @@ export interface ChatSidePanelProps {
 
 export function ChatSidePanel({
   api,
+  visible = true,
   sessionId,
   targets,
   files,
@@ -1320,7 +1324,7 @@ export function ChatSidePanel({
                 api={api}
                 openRequest={sideChatOpenRequest}
                 onSessionsChanged={onSessionsChanged}
-                shown={sideChatActive}
+                shown={sideChatActive && visible}
                 onSessionIdChange={handleSideChatSession}
                 onSessionClaim={handleSideChatClaim}
                 targetChip={<ActiveSurfaceChip />}

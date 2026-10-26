@@ -1,15 +1,4 @@
-/**
- * Renderer composition glue for i18n.
- *
- * Wraps the pure {@link I18nProvider} with settings-backed locale state:
- *   - hydrates the active language from `settings.appearance.language` on mount,
- *   - stays in sync across windows via `api.onSettingsUpdated` (the same
- *     cross-window broadcast ThemeProvider uses), and
- *   - persists a language change through `api.updateSettings`.
- *
- * Defensive against a missing preload bridge (isolated component tests) — when
- * `window.aveApi` is absent it simply renders children at the English default.
- */
+/** Follow settings broadcasts across windows; without a preload bridge, render children using the default English locale. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_LOCALE,
@@ -65,8 +54,8 @@ export function I18nSettingsProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [api, applyLocale]);
 
-  // Cross-window sync: a language change in the settings window broadcasts to
-  // every renderer so the main window re-localizes without a restart.
+  // Cross-window sync: a language change in the settings window broadcasts to every renderer so the main window re-localizes
+  // without a restart.
   useEffect(() => {
     if (!api?.onSettingsUpdated) return;
     return api.onSettingsUpdated((settings) => {

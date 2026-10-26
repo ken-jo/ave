@@ -1,73 +1,31 @@
-/**
- * Renderer-safe wire contract for the owner-driven Telegram private-DM bridge.
- *
- * Telegram is an external cloud recipient, so this contract is deliberately
- * narrower than the Tailnet one. It carries opaque fingerprints and coarse
- * state only: the bot token, the webhook secret, raw Telegram user/chat ids,
- * raw conversation ids, message text, and the raw pairing code never appear in
- * a snapshot or a change event.
- *
- * Pairing identifies a Telegram account. It grants nothing on its own; sharing
- * the open conversation is a separate, explicitly gestured owner action.
- */
+/** Pairing grants no access without a separate owner share. Snapshots and events expose only coarse state and opaque fingerprints, never secrets, raw IDs, message text, or pairing codes. */
 import { hasUserKeyboardIntent, type UserKeyboardIntent } from "./chat-origin.js";
 import { UUID_PATTERN } from "./uuid.js";
 import { hasExactKeys, isRecord } from "./is-record.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
-/** How long an unredeemed pairing code stays valid. */
 export const TELEGRAM_PAIRING_CODE_TTL_MS = 10 * 60 * 1_000;
 
 export const TELEGRAM_APPROVAL_DURATION_PRESETS = ["1h", "8h", "24h"] as const;
 export type TelegramApprovalDurationPreset = (typeof TELEGRAM_APPROVAL_DURATION_PRESETS)[number];
 
-/**
- * Coarse owner-visible connection state. It is derived by the main process;
- * the renderer never computes it, so a stale renderer cannot invent `active`.
- */
+/** Main derives connection state; stale renderer state must not invent active. */
 const TELEGRAM_CONNECTION_STATES = [
   /** This machine has no usable encrypted store, so no token may be saved. */
   "unsupported",
   /** Boot environment owns the bridge; the desktop surface is read-only. */
   "disconnected",
   "connected-unpaired",
-  /**
-   * There was a pairing, and this machine can no longer recognise the account
-   * it named: the local key its digest was derived under is gone, which an OS
-   * keychain reset or a restore onto another machine both cause. Separate from
-   * `connected-unpaired` because the owner lost something and has to act, and
-   * separate from `error` because the bot connection itself is fine — the one
-   * repair is to pair again, so this state carries the pairing affordance.
-   */
+  /** Lost digest keys require pairing again even when the bot connection is healthy. */
   "pairing-unrecognized",
   "pairing-pending",
   "paired-unapproved",
-  /**
-   * A share exists and survives a restart. Whether its conversation is the one
-   * on screen is a property of the approval, not a state of the connection.
-   */
+  /** Shares survive restart; the open-conversation check belongs to approval, not connection state. */
   "active",
-  /**
-   * A share exists and names a conversation that no longer does. Distinct from
-   * `active`, which the surface renders as "that conversation is not open" —
-   * a deleted conversation is not one the owner can go back to, and telling
-   * them to open it sends them looking for something that is gone.
-   *
-   * It is a state rather than a flag on the approval because the repair is a
-   * connection-level action: share a different conversation. The share itself
-   * is still durable and still authorises nothing else, so this is not `error`.
-   */
+  /** A deleted shared conversation requires sharing another one; do not tell the owner to reopen a missing conversation. */
   "shared-conversation-missing",
   "paused-by-owner",
-  /**
-   * The owner left the connection on and Telegram is not answering — the
-   * machine is offline, just woke, or the network changed. Main keeps retrying
-   * on a growing backoff and again the moment the machine wakes or comes back
-   * online, so nothing is asked of the owner; `lastErrorCode` carries the
-   * reason. Distinct from `error`, which is a stop that needs the owner, and
-   * from `active`, which a share whose polls were all failing used to keep
-   * claiming.
-   */
+  /** Reconnecting retries on backoff and wake/network recovery without owner action; error requires intervention. */
   "reconnecting",
   "error",
 ] as const;
@@ -83,21 +41,9 @@ const TELEGRAM_CONNECTION_ERROR_CODES = [
   "user-keyboard-required",
   "telegram-encryption-unavailable",
   "telegram-bot-token-rejected",
-  /**
-   * A token was stored and can no longer be read back. Distinct from
-   * `telegram-encryption-unavailable`, which says this machine cannot hold a
-   * secret at all: here the store reports itself encrypted and the saved value
-   * is simply gone, which an OS keychain reset or a restore onto another
-   * machine both cause. Also distinct from `telegram-bot-token-rejected`, which
-   * is Telegram's verdict on a token this desktop could read.
-   */
+  /** Distinguish unreadable stored tokens from unavailable encryption and remotely rejected readable tokens. */
   "telegram-bot-token-unreadable",
-  /**
-   * This desktop could not write the connection's own durable state. Nothing is
-   * wrong with the bot or with Telegram, so it is not a provider code — but
-   * receiving stops, because the alternative is a bridge whose pairing,
-   * approvals, and poll position can no longer be recorded.
-   */
+  /** Stop receiving when durable state cannot be written; pairing, approval, and poll position must remain recordable. */
   "telegram-connection-state-unwritable",
   "telegram-provider-unreachable",
   "telegram-webhook-conflict",
@@ -114,16 +60,10 @@ interface TelegramPairingSummary {
 interface TelegramApprovalSummary {
   readonly id: string;
   readonly expiresAt: number;
-  /**
-   * Whether the shared conversation is the one currently on screen. The share
-   * itself is durable, so this says only whether replies can flow right now:
-   * execution still requires the shared conversation to be open. The renderer
-   * must not compare conversation ids itself; it never receives one.
-   */
+  /** Main reports whether the durable share is currently open; renderer never receives IDs to compare. */
   readonly matchesCurrentConversation: boolean;
 }
 
-/** A minted-but-unredeemed pairing code, described without its secret. */
 interface TelegramPendingCodeSummary {
   readonly id: string;
   readonly expiresAt: number;
@@ -145,7 +85,6 @@ export interface TelegramCreatedPairingCode {
   readonly id: string;
   readonly code: string;
   readonly expiresAt: number;
-  /** Convenience for building the t.me link; the bot's public handle only. */
   readonly botUsername: string;
 }
 
@@ -185,11 +124,7 @@ export type TelegramCreatePairingCodeResult =
   | { readonly ok: true; readonly pairingCode: TelegramCreatedPairingCode }
   | TelegramConnectionFailure;
 
-/**
- * The only Telegram owner-control surface exposed to the trusted renderer.
- * Every mutation carries a preload-minted live keyboard intent, and the
- * renderer never names a conversation: main resolves the open one at execution.
- */
+/** Every mutation requires live preload keyboard intent; main resolves the open conversation. */
 export interface TelegramConnectionOwnerApi {
   snapshot(): Promise<TelegramConnectionSnapshotResult>;
   connect(botToken: string): Promise<TelegramConnectionMutationResult>;
@@ -207,29 +142,12 @@ export interface TelegramConnectionOwnerApi {
 }
 
 const ACCOUNT_FINGERPRINT = /^[a-f0-9]{12}$/;
-/**
- * Deliberately not slash-prefixed. The shared ingress core rejects all leading
- * slash text unconditionally, so a `/start`-style code could never be redeemed
- * without branching that gate.
- */
+/** Pairing codes must not start with slash because ingress unconditionally rejects slash commands. */
 export const TELEGRAM_PAIRING_CODE = /^ave-tg-v1\.[A-Za-z0-9_-]{43}$/;
-/**
- * BotFather handles are 5-32 chars TOTAL and must end in "bot"
- * (case-insensitive). The middle quantifier is total-length arithmetic:
- * 1 leading letter + {1,28} middle + 3-char suffix = 5..32. A wider middle
- * bound would silently raise the minimum above BotFather's own floor and
- * reject real 5-6 char handles (e.g. `aebot`) after a successful identity
- * call — which the connect flow then misreports as provider-unreachable.
- */
+/** Bot handles require 5–32 total characters ending in bot; count the leading letter and suffix in the bound. */
 const BOT_USERNAME = /^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$/;
-/** The bot token is bounded here only to reject obvious paste errors early. */
 const BOT_TOKEN = /^[0-9]{5,20}:[A-Za-z0-9_-]{20,220}$/;
-/**
- * The grammar main enforces before a token becomes Bot API URL path material:
- * deliberately narrow so configuration can never change the HTTPS endpoint.
- * Looser than {@link isTelegramBotToken}'s paste check on purpose — that one
- * judges plausibility, this one judges URL safety.
- */
+/** URL-path safety is intentionally separate from paste plausibility; tokens must never alter the HTTPS endpoint. */
 export const TELEGRAM_BOT_TOKEN_PATH_GRAMMAR = /^[A-Za-z0-9:_-]{1,256}$/;
 const MAX_CONVERSATION_CHARS = 4_096;
 const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -238,16 +156,7 @@ export function isTelegramConnectionId(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
-/**
- * The one grammar for a host conversation id on the Telegram path.
- *
- * A conversation id is never projected to a renderer, but three main-process
- * owners have to agree on what one is: the service validates the id it is about
- * to share, the connection store persists it as a routing hint, and the platform
- * runtime compares the bound id against the one on screen. A second inline copy
- * that admitted one more character would let a grant be written that the route
- * fence could never match.
- */
+/** Service, store, and routing runtime must share the conversation-ID grammar so persisted grants remain matchable. */
 export function isTelegramConversationId(value: unknown): value is string {
   return typeof value === "string"
     && value.length > 0
@@ -352,11 +261,7 @@ function parsePendingCodeSummary(value: unknown): TelegramPendingCodeSummary | n
   });
 }
 
-/**
- * Rebuild the safe projection field by field rather than passing the wire
- * object through, so a future main-process producer that accidentally widens
- * its record cannot leak the added field to the renderer.
- */
+/** Rebuild safe fields rather than forwarding the wire object, preventing future producer additions from leaking. */
 export function parseTelegramConnectionSnapshot(
   value: unknown,
 ): TelegramConnectionSnapshot | null {

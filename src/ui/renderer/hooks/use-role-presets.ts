@@ -13,11 +13,8 @@ function withDefaultPersona(prompts: Array<Pick<RolePreset, "id" | "name">>): Ro
   ];
 }
 
-/**
- * Persona prompt list + active selection. The file-backed prompt store under
- * `~/.ave/prompts/*.md` is the source of truth; the synthetic default entry
- * means "no persona prompt for this turn".
- */
+/** Persona prompt list + active selection. The file-backed prompt store under `~/.ave/prompts/*.md` is the source of truth;
+ * the synthetic default entry means "no persona prompt for this turn". */
 export function useRolePresets(api: AveApi) {
   const [rolePresets, setRolePresets] = useState<RolePreset[]>([DEFAULT_PERSONA_SELECTION]);
   const [activePresetId, setActivePresetId] = useState<string>(DEFAULT_PERSONA_SELECTION.id);

@@ -192,6 +192,23 @@ function createHarness(
   return harness;
 }
 
+function createImageHarness() {
+  const respondNormally = standardHandler("kimi-code");
+  return createHarness("kimi-code", {
+    handler: (request, current) => {
+      if (request.method === "initialize" && typeof request.id === "number") {
+        current.respond(request.id, {
+          protocolVersion: 1,
+          authMethods: [{ id: "login" }],
+          agentCapabilities: { promptCapabilities: { image: true } },
+        });
+        return;
+      }
+      respondNormally(request, current);
+    },
+  });
+}
+
 function requestFor(agent: FakeAcpAgent, method: string): RpcMessage {
   const request = agent.requests.find((candidate) => candidate.method === method);
   if (!request) throw new Error(`Missing ${method} request`);
@@ -278,8 +295,7 @@ describe("AcpSubscriptionSessionClient", () => {
       handleNotification(method: string, params: unknown): void;
     };
 
-    // Drive the parsed-notification boundary synchronously so all 256 accepted
-    // deltas occupy the queue before the corresponding JSON-RPC completion.
+    // Drive the parsed-notification boundary synchronously so all 256 accepted deltas occupy the queue before the corresponding JSON-RPC completion.
     for (let index = 0; index < 256; index += 1) {
       notificationClient.handleNotification("session/update", {
         sessionId: "session-123",
@@ -298,20 +314,7 @@ describe("AcpSubscriptionSessionClient", () => {
   });
 
   it("sends original image blocks only after ACP image capability negotiation", async () => {
-    const respondNormally = standardHandler("kimi-code");
-    const { client, agent } = createHarness("kimi-code", {
-      handler: (request, current) => {
-        if (request.method === "initialize" && typeof request.id === "number") {
-          current.respond(request.id, {
-            protocolVersion: 1,
-            authMethods: [{ id: "login" }],
-            agentCapabilities: { promptCapabilities: { image: true } },
-          });
-          return;
-        }
-        respondNormally(request, current);
-      },
-    });
+    const { client, agent } = createImageHarness();
 
     await client.start();
     const prompt = await client.startPrompt({
@@ -342,20 +345,7 @@ describe("AcpSubscriptionSessionClient", () => {
   });
 
   it("accepts an image at the negotiated 256KiB ACP budget", async () => {
-    const respondNormally = standardHandler("kimi-code");
-    const { client, agent } = createHarness("kimi-code", {
-      handler: (request, current) => {
-        if (request.method === "initialize" && typeof request.id === "number") {
-          current.respond(request.id, {
-            protocolVersion: 1,
-            authMethods: [{ id: "login" }],
-            agentCapabilities: { promptCapabilities: { image: true } },
-          });
-          return;
-        }
-        respondNormally(request, current);
-      },
-    });
+    const { client, agent } = createImageHarness();
     await client.start();
     const data = pngData(MAX_ACP_SUBSCRIPTION_IMAGE_BYTES);
 
@@ -376,20 +366,7 @@ describe("AcpSubscriptionSessionClient", () => {
   });
 
   it("rejects a generic 25MiB image before writing an ACP prompt", async () => {
-    const respondNormally = standardHandler("kimi-code");
-    const { client, agent } = createHarness("kimi-code", {
-      handler: (request, current) => {
-        if (request.method === "initialize" && typeof request.id === "number") {
-          current.respond(request.id, {
-            protocolVersion: 1,
-            authMethods: [{ id: "login" }],
-            agentCapabilities: { promptCapabilities: { image: true } },
-          });
-          return;
-        }
-        respondNormally(request, current);
-      },
-    });
+    const { client, agent } = createImageHarness();
     await client.start();
     const data = pngData(MAX_SUBSCRIPTION_ATTACHMENT_BYTES);
 
@@ -401,20 +378,7 @@ describe("AcpSubscriptionSessionClient", () => {
   });
 
   it("enforces the ACP aggregate image budget before writing", async () => {
-    const respondNormally = standardHandler("kimi-code");
-    const { client, agent } = createHarness("kimi-code", {
-      handler: (request, current) => {
-        if (request.method === "initialize" && typeof request.id === "number") {
-          current.respond(request.id, {
-            protocolVersion: 1,
-            authMethods: [{ id: "login" }],
-            agentCapabilities: { promptCapabilities: { image: true } },
-          });
-          return;
-        }
-        respondNormally(request, current);
-      },
-    });
+    const { client, agent } = createImageHarness();
     await client.start();
     const eachImage = pngData((MAX_ACP_SUBSCRIPTION_IMAGE_BYTES / 2) + 1);
 

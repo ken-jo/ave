@@ -1,11 +1,3 @@
-/**
- * Pins each step of the catalog lookup-key normalization chain that main
- * (`plugins/marketplace.ts` → `catalogItemMatchesPluginId`) and the renderer
- * (`tabs/plugin-doctor-match.ts` → `findPluginDoctorMarketplaceItem`) now share.
- *
- * Every assertion below is written so that deleting the corresponding
- * `.replace()` from `normalizePluginLookupKey` reds it.
- */
 import { describe, it, expect } from "vitest";
 import { normalizePluginLookupKey } from "../plugin-lookup-key.js";
 

@@ -5,6 +5,8 @@ import type {
   SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { isPositiveSafeInteger } from "../../../shared/safe-integer.js";
+import { subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
+import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
 
 /**
  * Renderer-safe projection of the selected subscription runtime's verified
@@ -29,10 +31,8 @@ export interface SubscriptionRuntimeUiPolicy {
   readonly pendingProvider: SubscriptionRuntimeId | undefined;
   readonly imageAttachmentProvider: SubscriptionRuntimeId | undefined;
   readonly fileAttachmentProvider: SubscriptionRuntimeId | undefined;
-  /**
-   * Both status loading and a selected runtime without verified chat block all
-   * attachment ingress. API-key providers keep their established policy.
-   */
+  /** Both status loading and a selected runtime without verified chat block all attachment ingress. API-key providers keep
+   * their established policy. */
   readonly attachmentInputsReady: boolean;
   readonly imagesEnabled: boolean;
   readonly filesEnabled: boolean;
@@ -41,18 +41,13 @@ export interface SubscriptionRuntimeUiPolicy {
 export interface SubscriptionRuntimeUiPolicyInput {
   readonly activeSubscriptionRuntime: SubscriptionChatRuntimeSelection | null;
   readonly settingsLoaded: boolean;
-  /**
-   * Null while the active runtime's safe status request is in flight. A failed
-   * or malformed response is represented by the all-false shared default.
-   */
+  /** Null while the active runtime's safe status request is in flight. A failed or malformed response is represented by the
+   * all-false shared default. */
   readonly capabilities: SubscriptionRuntimeCapabilities | null;
 }
 
-/**
- * IPC responses are still an external boundary from the renderer's
- * perspective. Do not turn a truthy object, float, or malformed budget into
- * permission to send original bytes.
- */
+/** IPC responses are still an external boundary from the renderer's perspective. Do not turn a truthy object, float, or
+ * malformed budget into permission to send original bytes. */
 function safeImageAttachmentLimits(value: unknown): SubscriptionImageAttachmentLimits | null {
   if (!value || typeof value !== "object") return null;
   const limits = value as Partial<SubscriptionImageAttachmentLimits>;
@@ -117,13 +112,17 @@ export function selectSubscriptionRuntimeUiPolicy({
       ? null
       : capabilities?.chat === true
     : false;
-  const imageAttachmentLimits = subscriptionSelected && capabilities?.images === true
+  // A runtime whose image input depends on the model (ChatGPT plan usage) offers images only for a model that accepts them.
+  const imageModelVendor = provider ? subscriptionRuntimeDescriptor(provider).imageInputFollowsModelOf : undefined;
+  const modelAcceptsImages = imageModelVendor === undefined
+    || (activeSubscriptionRuntime?.model !== undefined && supportsVision(imageModelVendor, activeSubscriptionRuntime.model));
+  const imageAttachmentLimits = subscriptionSelected && capabilities?.images === true && modelAcceptsImages
     ? safeImageAttachmentLimits(capabilities.imageAttachmentLimits)
     : null;
   const imagesReady = subscriptionSelected
     ? statusPending
       ? null
-      : capabilities?.images === true && imageAttachmentLimits !== null
+      : capabilities?.images === true && modelAcceptsImages && imageAttachmentLimits !== null
     : false;
   const filesReady = subscriptionSelected
     ? statusPending

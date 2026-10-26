@@ -240,8 +240,7 @@ describe("PluginOperationGrantCoordinator", () => {
 
     active.release();
     const lease = await transition;
-    // The request is no longer queued at this point. A session teardown in
-    // this exact async-continuation window must still block the handler.
+    // The request is no longer queued at this point. A session teardown in this exact async-continuation window must still block the handler.
     coordinator.revokeSession(principal.appSessionId);
 
     expect(() => lease.assertAuthorized()).toThrow(

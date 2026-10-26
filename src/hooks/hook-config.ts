@@ -1,130 +1,42 @@
-/**
- * Permission policy — Layer 6 hook system: declarative `hooks.json` parser.
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4 (command-hooks
- * milestone) + issue #811. This is the PURE, INERT foundation: it parses an
- * already-deserialized `hooks.json` value into normalized config entries. It does
- * NO I/O (no fs, no spawn), and nothing in the boot / runner / trust pipeline
- * imports it yet — wiring lands separately.
- *
- * What it implements (the decisions already made for #811 m1, do not re-litigate):
- *
- *   (a) MATCHER ENGINE = GLOB. We deliberately diverge from the regex sketch in
- *       design §4.2 and reuse the existing `hookMatchesTool(matcher, toolName)`
- *       glob from `hook-discovery.ts` for consistency with `.sh`
- *       `# ave-hook-matcher:` frontmatter and for ReDoS safety. We only validate
- *       that `matcher` is a string here; the registry does the matching.
- *
- *   (b) EVENT KEYS = CLOSED SET. `PreToolUse → "pre"`, `PostToolUse → "post"`,
- *       `PermissionRequest → "perm"`. An unknown event key is IGNORED with a
- *       returned warning (never silently active — design §4.2 / §5 fail-closed).
- *
- *   (c) HANDLER must be `type: "command"` with a string or argv command. We
- *       classify the command as a local-script (argv[0] resolves to a file path)
- *       vs a PATH-binary (a bare program name). A binary-only command — a
- *       PATH-binary with NO local script argument — has no stable hash anchor for
- *       the lockfile trust model, so it is REJECTED at parse with a clear error
- *       (design §6.1: "not permitted in the command-hooks milestone").
- *
- *   (d) Per-entry `timeoutMs` is clamped to `DEFAULT_HOOK_TIMEOUT_MS`
- *       (`script-hook-types.ts`). Hooks stay on their own budget, independent of
- *       `TOOL_TIMEOUT_POLICY`.
- *
- * Output contract: `parseHookConfig` never throws. It returns `{ entries,
- * warnings, errors }` so the (future) caller can surface non-fatal problems
- * (unknown events, ignored shapes) and fatal per-entry rejections (binary-only
- * commands, bad handler types) without aborting boot.
- */
+// Inert config parsing: invalid matchers retain blocking denial guards, unknown events warn, and binary-only handlers lack a trust anchor and are rejected. Parsing never throws; per-entry timeouts use the hook ceiling (docs/architecture/hook-runtime-expansion-design.md).
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   type HookEvent,
 } from "./script-hook-types.js";
 import { isRecord } from "../shared/is-record.js";
+import { HOOK_EVENT_TYPES, hookEventSupportsMatcher } from "./hook-contract.js";
+import { hookMatcherError } from "./hook-discovery.js";
 
-/**
- * A normalized declarative hook entry parsed from `hooks.json`. This is the
- * config-origin half of the unified registry (`hook-registry.ts`); legacy `.sh`
- * files normalize into the same downstream shape there.
- */
 export interface HookConfigEntry {
-  /** Stable identity for trust-review / audit — `<event>#<index>` within the config. */
+  // Stable identity for trust-review / audit — `<event>#<index>` within the config.
   id: string;
-  /**
-   * Closed-set internal event (mapped from the `hooks.json` event key). Covers
-   * the three blocking tool-use events (pre|post|perm) AND the six non-blocking
-   * lifecycle events (#811 m2). Lifecycle events are config-only — they have no
-   * `.sh` prefix.
-   */
+  // Lifecycle events are config-only and have no legacy script prefix.
   event: HookEvent;
-  /**
-   * Optional glob matcher over the tool name (decision (a)). Absent ⇒ matches
-   * every tool. Matched later via `hookMatchesTool` in the registry.
-   */
+  // Absent matchers match all; compilation happens when building the registry.
   matcher?: string;
-  /** argv form of the command (always ≥1 element; argv[0] is the program). */
+  // Invalid entries remain inert denial guards for blocking tool events.
+  matcherError?: string;
+  configPath?: string;
+  // Nonempty argv; argv[0] is the program.
   command: string[];
   env?: Record<string, string>;
-  /** Per-entry timeout, clamped to `DEFAULT_HOOK_TIMEOUT_MS` (decision (d)). */
+  // Clamped to DEFAULT_HOOK_TIMEOUT_MS.
   timeoutMs: number;
-  /** Origin discriminant — distinguishes config entries from `.sh` entries. */
   source: "config";
 }
 
 export interface ParsedHookConfig {
   entries: HookConfigEntry[];
-  /** Non-fatal: shapes we ignored (unknown event, malformed sub-entry, …). */
+  // Non-fatal: shapes we ignored (unknown event, malformed sub-entry, …).
   warnings: string[];
-  /** Fatal per-entry rejections (binary-only command, bad handler type, …). */
+  // Fatal per-entry rejections (binary-only command, bad handler type, …).
   errors: string[];
 }
 
-/**
- * Closed-set mapping from `hooks.json` event keys to internal {@link HookEvent}.
- * Decision (b): anything not in this map is ignored + warned.
- *
- * The three tool-use events project onto the narrow pre|post|perm aliases (they
- * share the legacy `.sh` prefix model). The lifecycle events (#811 m2) map to
- * themselves — they are config-only with no `.sh` prefix. Six are OBSERVE-only
- * (non-blocking); `UserPromptSubmit` is BLOCKING + fail-closed (a `deny` refuses
- * the turn) and is dispatched via the manager's blocking path.
- */
-const EVENT_KEY_TO_TYPE: Readonly<Record<string, HookEvent>> = {
-  // Blocking tool-use events (legacy `.sh` prefix model).
-  PreToolUse: "pre",
-  PostToolUse: "post",
-  PermissionRequest: "perm",
-  // Non-blocking lifecycle events (config-only; #811 milestone-2, design §5).
-  PostToolUseFailure: "PostToolUseFailure",
-  PermissionDenied: "PermissionDenied",
-  SessionStart: "SessionStart",
-  // SessionEnd — fired when a session is left (newConversation / loadSession),
-  // the symmetric counterpart to SessionStart. Notification — fired when the
-  // host shows a turn-end notification. Both observe-only (canonical parity).
-  SessionEnd: "SessionEnd",
-  Notification: "Notification",
-  Stop: "Stop",
-  PreCompact: "PreCompact",
-  PostCompact: "PostCompact",
-  // Subagent (agent_spawn) lifecycle — observe-only; fired by subagent-runner
-  // around the child ConversationLoop's spawn run. Canonical parity (#811).
-  SubagentStart: "SubagentStart",
-  SubagentStop: "SubagentStop",
-  // The ONE blocking, fail-closed lifecycle event (config-only; #811 m2,
-  // design §5): a `deny` REFUSES the turn before queryLoop runs.
-  UserPromptSubmit: "UserPromptSubmit",
-};
+// Unknown events warn and are ignored. Lifecycle events map to themselves; UserPromptSubmit alone is blocking and fail-closed.
+const EVENT_KEY_TO_TYPE: Readonly<Record<string, HookEvent>> = HOOK_EVENT_TYPES;
 
-/**
- * Normalize a command field into an argv array. Accepts either a pre-split argv
- * (`string[]`) or a single string that we whitespace-split. Returns null when the
- * shape is unusable (not a string / array, empty, or contains non-string items).
- *
- * NOTE: this is a deliberately simple split — it does NOT honor shell quoting.
- * The trust model resolves argv[0]/script args as literal paths, so a hook author
- * who needs spaces in a path must use the argv (array) form. Documented here so a
- * future reader doesn't "fix" it into a shell parser (which would reintroduce
- * shell-injection surface the env allowlist + no-shell runner exist to avoid).
- */
+// String commands split on whitespace without shell quoting; paths with spaces require argv arrays. Do not introduce shell parsing or injection.
 function normalizeCommand(raw: unknown): string[] | null {
   let argv: string[];
   if (typeof raw === "string") {
@@ -138,41 +50,17 @@ function normalizeCommand(raw: unknown): string[] | null {
   return argv.length > 0 ? argv : null;
 }
 
-/**
- * Does this token look like a resolvable local file path (vs a bare PATH program
- * name)? Pure heuristic — NO fs access (this module is I/O-free by contract):
- *
- *   - contains a path separator (`/` or `\`)            → path
- *   - starts with `~` (home-relative)                   → path
- *   - starts with `.` (`./x`, `../x`, or a dotfile)     → path
- *
- * A bare token like `python3`, `node`, `curl` is a PATH-binary. The real sha256
- * resolution happens later in the (separately reviewed) trust wiring; here we
- * only need the local-vs-binary classification for decision (c)'s rejection.
- *
- * A URL (`https://host/path`) is NOT a local script even though it contains `/` —
- * `curl https://x/y` must stay "binary-only" and be rejected. We exclude any
- * token carrying a `scheme://` so a remote target can't masquerade as a local
- * hash anchor.
- */
+// Classify paths without I/O; scheme:// tokens must never masquerade as local hash anchors.
 export function looksLikeLocalScriptPath(token: string): boolean {
   if (token.length === 0) return false;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false; // URL → not a local path
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false; /* Remote URLs cannot anchor trust. */
   if (token.includes("/") || token.includes("\\")) return true;
   if (token.startsWith("~")) return true;
   if (token.startsWith(".")) return true;
   return false;
 }
 
-/**
- * Classify a command argv for the trust model (decision (c)):
- *   - "local-script": argv[0] itself resolves to a local file path. Anchorable.
- *   - "script-arg": argv[0] is a PATH-binary but a later arg references a local
- *      script (e.g. `python3 ~/.config/ave/hooks/policy.py`). Anchorable on the
- *      script's sha256.
- *   - "binary-only": a PATH-binary with no local script argument (e.g.
- *      `curl https://x`). NOT anchorable — rejected.
- */
+// Trust anchors on the local script in argv[0] or a later argument; binary-only commands are unanchorable and rejected.
 export type CommandClass = "local-script" | "script-arg" | "binary-only";
 
 export function classifyCommand(argv: string[]): CommandClass {
@@ -181,20 +69,12 @@ export function classifyCommand(argv: string[]): CommandClass {
   return "binary-only";
 }
 
-/**
- * Parse a deserialized `hooks.json` value into normalized config entries.
- *
- * Pure: takes already-parsed JSON (NOT a path / file contents), does no I/O, and
- * never throws. Missing / empty / malformed-at-the-top config yields empty
- * entries (with a warning for the malformed case) so a broken config can never
- * silently flip behavior.
- */
+// No I/O or throws; malformed config warns and yields no entries so broken config cannot silently activate hooks.
 export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {}): ParsedHookConfig {
   const entries: HookConfigEntry[] = [];
   const warnings: string[] = [];
   const errors: string[] = [];
 
-  // Missing / empty config → empty entries, byte-identical to "no hooks.json".
   if (raw === undefined || raw === null) {
     return { entries, warnings, errors };
   }
@@ -205,7 +85,6 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
 
   const hooksByEvent = raw.hooks;
   if (hooksByEvent === undefined) {
-    // `{ version: 1 }` with no hooks is a valid empty config.
     return { entries, warnings, errors };
   }
   if (!isRecord(hooksByEvent)) {
@@ -216,7 +95,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
   for (const [eventKey, group] of Object.entries(hooksByEvent)) {
     const event = Object.hasOwn(EVENT_KEY_TO_TYPE, eventKey) ? EVENT_KEY_TO_TYPE[eventKey] : undefined;
     if (!event) {
-      // Decision (b): unknown event → ignored + warned, never silently active.
+      // Unknown events warn and never activate.
       warnings.push(`hooks.json: unknown event "${eventKey}" — entry ignored`);
       continue;
     }
@@ -233,19 +112,26 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
         return;
       }
 
-      // matcher is optional; when present it must be a string (decision (a) —
-      // validated as a glob string, matched later via hookMatchesTool).
+      // Matchers must be exact name lists or valid regular expressions.
       let matcher: string | undefined;
-      if (matcherBlock.matcher !== undefined) {
+      let matcherError: string | undefined;
+      if (matcherBlock.matcher !== undefined && !hookEventSupportsMatcher(event)) {
+        warnings.push(`hooks.json: ${eventKey}[${blockIdx}].matcher ${JSON.stringify(matcherBlock.matcher)} ignored: event has no matcher support`);
+      } else if (matcherBlock.matcher !== undefined) {
         if (typeof matcherBlock.matcher !== "string") {
-          warnings.push(
-            `hooks.json: ${eventKey}[${blockIdx}].matcher is not a string — matcher ignored`,
-          );
+          matcherError = `matcher ${JSON.stringify(matcherBlock.matcher)} is not a string`;
+          errors.push(`hooks.json: ${eventKey}[${blockIdx}].${matcherError}`);
         } else {
           const trimmed = matcherBlock.matcher.trim();
-          // "*" and "" both mean "match all" → leave matcher undefined so the
-          // registry's hookMatchesTool short-circuits to true.
+          // An absent matcher, empty string or * matches all.
           matcher = trimmed === "" || trimmed === "*" ? undefined : trimmed;
+          const invalid = hookMatcherError(matcher);
+          if (invalid !== undefined) {
+            matcherError = invalid;
+            errors.push(
+              `hooks.json: ${eventKey}[${blockIdx}].matcher ${JSON.stringify(trimmed)} is not a valid regular expression (${invalid}) — rejected`,
+            );
+          }
         }
       }
 
@@ -280,8 +166,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           return;
         }
 
-        // Decision (c): binary-only commands have no stable hash anchor for the
-        // lockfile trust model — reject at parse with a clear error.
+        // Binary-only commands lack a stable trust anchor and must be rejected.
         if (classifyCommand(command) === "binary-only") {
           errors.push(
             `hooks.json: ${id} command "${command.join(
@@ -303,7 +188,6 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           env = handler.env as Record<string, string>;
         }
 
-        // Decision (d): clamp timeoutMs to the hook ceiling.
         let timeoutMs = DEFAULT_HOOK_TIMEOUT_MS;
         if (handler.timeoutMs !== undefined) {
           if (typeof handler.timeoutMs !== "number" || !Number.isFinite(handler.timeoutMs)) {
@@ -323,6 +207,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           id,
           event,
           ...(matcher !== undefined ? { matcher } : {}),
+          ...(matcherError !== undefined ? { matcherError } : {}),
           command,
           ...(env ? { env } : {}),
           timeoutMs,

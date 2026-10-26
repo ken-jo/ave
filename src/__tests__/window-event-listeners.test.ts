@@ -1,17 +1,4 @@
-/**
- * registerWindowEventListeners — re-attachment after render-process-gone recovery.
- *
- * Verifies that maximize / fullscreen broadcast listeners work correctly on a
- * fresh BrowserWindow instance, ensuring recovery paths (macOS re-activation,
- * handleAveUri window re-creation) don't silently lose these listeners.
- *
- * Strategy: create a minimal BrowserWindow fake with an EventEmitter-style
- * on() / emit() and a spy for webContents.send, then call
- * registerWindowEventListeners and fire each event.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// ─── Electron mock ────────────────────────────────────────────────────────────
 
 vi.mock("electron", () => ({
   protocol: { handle: vi.fn() },
@@ -20,8 +7,6 @@ vi.mock("electron", () => ({
   shell: {},
   dialog: {},
 }));
-
-// ─── Other transitive mocks required by ipc-bridge.ts ────────────────────────
 
 vi.mock("../permissions/policy-store.js", () => ({
   loadPolicy: vi.fn(async () => ({ mode: "default", rules: [] })),
@@ -33,8 +18,6 @@ vi.mock("../audit/dlp-filter.js", () => ({
   initPiiRedactionPolicy: vi.fn(),
 }));
 vi.mock("../audit/audit-logger.js", () => ({ createAuditLogger: vi.fn() }));
-
-// ─── BrowserWindow stub ───────────────────────────────────────────────────────
 
 function makeFakeWindow() {
   const listeners = new Map<string, Array<() => void>>();
@@ -51,8 +34,6 @@ function makeFakeWindow() {
     _sendSpy: sendSpy,
   };
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("registerWindowEventListeners", () => {
   beforeEach(() => {
@@ -100,7 +81,6 @@ describe("registerWindowEventListeners", () => {
     registerWindowEventListeners(win1 as any);
     registerWindowEventListeners(win2 as any);
 
-    // Only win2's listeners should fire when win2 emits — no cross-contamination.
     win2.emit("maximize");
 
     expect(win1._sendSpy).not.toHaveBeenCalled();

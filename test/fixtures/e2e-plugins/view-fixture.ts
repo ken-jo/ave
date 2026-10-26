@@ -1,23 +1,10 @@
-/**
- * The plugin the local UI suite seeds by default.
- *
- * It replaces the copies of sibling plugin repositories (local-indexer and
- * meeting) the suite used to read from the workspace: those repositories are
- * archived, and the app's verification must not depend on anything outside
- * this repository. One protocol-2 plugin carries the two surfaces the specs
- * need — a sidebar UI view (reached from the command menu) and a model- and
- * app-visible tool whose result proves the host dispatched into the plugin.
- *
- * The view calls that tool through its bridge when it mounts and shows the
- * answer, so opening the panel is also a plugin's first tool call: the
- * screenshot harness captures the host's permission dock from it.
- */
+// Repository-owned fixtures keep local UI verification independent of sibling plugin installations.
 import type { FixturePlugin } from "./seed.js";
 
 export const VIEW_FIXTURE_ID = "viewfixture";
 export const VIEW_FIXTURE_VIEW_KEY = `plugin:${VIEW_FIXTURE_ID}:viewfixture_control`;
 export const VIEW_FIXTURE_TOOL = "viewfixture_ping";
-/** Only the plugin's handler can put this in a transcript; a prompt that names the tool cannot. */
+// Only actual plugin dispatch can emit this marker; naming the tool in a prompt cannot.
 export const VIEW_FIXTURE_DISPATCH_MARKER = `e2e-fixture:${VIEW_FIXTURE_ID}:${VIEW_FIXTURE_TOOL}`;
 
 const VIEW_FIXTURE_MANIFEST = {
@@ -45,7 +32,6 @@ const VIEW_FIXTURE_MANIFEST = {
   }],
 };
 
-/** Every file the plugin ships, relative to its directory, besides plugin.json. */
 const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
   "dist/hostPlugin.js": `export default function createPlugin() {
   return {

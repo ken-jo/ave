@@ -1,15 +1,4 @@
-/**
- * Load-time bundle integrity — the gate that stands between an unpacked plugin
- * on disk and `import()` into the Electron main process.
- *
- * Install-time signature verification covers the downloaded artifact once. The
- * unpacked bundle then lives on the user's disk indefinitely, so the load path
- * re-derives a per-file digest of what is actually there and compares it with
- * the install receipt before the entry module is imported. These tests drive
- * the real preflight (`preflightPluginLoadPlan` → `verifyPluginIntegrity` →
- * `verifyInstallReceipt`) against a real filesystem so the refusal is proven
- * end to end rather than at the hashing helper alone.
- */
+/** Boot preflight must recheck unpacked payload digests against the receipt before importing code. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -42,7 +31,6 @@ describe("plugin load-time bundle integrity", () => {
   let pluginRoot: string;
   let manifestPath: string;
 
-  /** Run the real boot preflight over the single fixture plugin. */
   async function preflight() {
     const [outcome] = await preflightPluginLoadPlan(
       [{ pluginIdHint: PLUGIN_ID, manifestPath, enabled: true }],
@@ -55,10 +43,6 @@ describe("plugin load-time bundle integrity", () => {
     return outcome!;
   }
 
-  /**
-   * Run the preflight and return the refusal reason, asserting the plan was
-   * rejected at the integrity gate rather than anywhere later.
-   */
   async function integrityRefusalReason(): Promise<string> {
     const outcome = await preflight();
     if (outcome.ok || outcome.kind !== "integrity") {
@@ -145,12 +129,7 @@ describe("plugin load-time bundle integrity", () => {
     expect(outcome.ok).toBe(true);
   });
 
-  // Same shape as the worker-socket case below, and separate from it on purpose:
-  // `run/` is the HOST's socket directory and `sockets/` is the PLUGIN's, kept
-  // apart so an operator can tell who created a stale socket. That separation is
-  // also why the exclusion written for one did not carry to the other — this
-  // directory was scanned, and local-indexer's egress broker leaving
-  // `sockets/egress.sock` behind made the next boot refuse an intact plugin.
+  // Host run/ and plugin sockets/ are separate runtime roots; both must be excluded from payload integrity scans.
   it.skipIf(process.platform === "win32")(
     "still admits the load when the plugin left its own socket behind",
     async () => {
@@ -189,10 +168,7 @@ describe("plugin load-time bundle integrity", () => {
     },
   );
 
-  // The real-world trigger is a control socket a crashed worker never unlinked:
-  // a non-regular entry the payload scan rejects outright. `sun_path` is capped
-  // near 104 bytes, so this case builds its own short-pathed fixture rather than
-  // binding under the long macOS `tmpdir()`.
+  // Unix socket paths have a roughly 104-byte limit, so this fixture needs a short root.
   it.skipIf(process.platform === "win32")(
     "still admits the load when a crashed worker left its control socket behind",
     async () => {

@@ -16,8 +16,7 @@ describe("preferAsarUnpackedPath", () => {
   });
 
   it("never hands back the virtual archive path when the unpacked copy is missing", () => {
-    // Electron's fs reports the virtual path as existing, so it must not be
-    // the answer: the OS cannot execute anything inside the archive.
+    // Electron's fs reports the virtual path as existing, so it must not be the answer: the OS cannot execute anything inside the archive.
     expect(preferAsarUnpackedPath(packaged, (path) => path === packaged)).toBeNull();
   });
 });

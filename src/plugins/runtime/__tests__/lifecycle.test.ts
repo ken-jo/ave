@@ -1,11 +1,4 @@
-/**
- * Tests for PluginRuntime lifecycle — restartPlugin disk-reread.
- *
- * Covers the scenario where restartPlugin re-reads the manifest from disk
- * and re-instantiates with the latest on-disk state.
- */
-
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +23,8 @@ describe("PluginRuntime lifecycle — restartPlugin", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
   });
 
@@ -50,7 +45,6 @@ describe("PluginRuntime lifecycle — restartPlugin", () => {
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    // Should not throw, just warn
     await expect(runtime.restartPlugin("nonexistent")).resolves.toBeUndefined();
   });
 
@@ -94,15 +88,11 @@ export default async function createPlugin() {
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    // Plugin is loaded
     expect(runtime.listPluginIds()).toContain("lc-restart");
 
-    // Restart it
     await runtime.restartPlugin("lc-restart");
 
-    // Plugin should still be loaded after restart
     expect(runtime.listPluginIds()).toContain("lc-restart");
-    // Tool should still be callable
     await expect(runtime.call("lc_restart_ping")).resolves.toBeDefined();
   });
 
@@ -173,7 +163,6 @@ export default async function createPlugin() {
     await expect(runtime.call("lc_restart_remove_race_ping")).rejects.toThrow(/not found/);
   });
 
-
   it("cancels an in-flight replacement before it can start or publish", async () => {
     const pluginId = "lc-restart-shutdown-cancel";
     const pluginDir = join(installedDir, pluginId);
@@ -239,9 +228,7 @@ export default async function createPlugin() {
     }
     await expect(access(enteredPath)).resolves.toBeUndefined();
 
-    // This is the host shutdown cancellation boundary. The replacement is
-    // still inside its factory, so once it resolves neither `start` nor the
-    // runtime-generation publication may run.
+    // If shutdown aborts during construction, never start or publish the late replacement.
     runtime.cancelAllPendingRestarts();
     await writeFile(releasePath, "release", "utf-8");
 
@@ -351,22 +338,30 @@ export default async function createPlugin() {
     await runtime.startAll();
     await expect(runtime.call("lc_stop_timeout_ping")).resolves.toBe("pong");
 
+    const stopping = runtime as unknown as {
+      stopPluginInstance(...args: unknown[]): Promise<boolean>;
+    };
+    const stop = stopping.stopPluginInstance.bind(stopping);
+    let entered!: () => void;
+    const inStop = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(stopping, "stopPluginInstance").mockImplementation((...args) => {
+      const result = stop(...args);
+      entered();
+      return result;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await expect(runtime.restartPlugin("lc-stop-timeout")).resolves.toBe("started");
+    await inStop;
     expect(runtime.listPluginIds()).toContain("lc-stop-timeout");
     await expect(runtime.call("lc_stop_timeout_ping")).resolves.toBe("pong");
-    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    await vi.advanceTimersByTimeAsync(2_100);
     await expect(runtime.restartPlugin("lc-stop-timeout")).rejects.toMatchObject({
       code: "plugin-lifecycle-quarantined",
     });
   }, 10_000);
 
   it("restartPlugin re-imports the latest on-disk module (ESM cache-bust)", async () => {
-    // 회귀 가드: Node ESM 로더는 import URL 로 모듈을 메모이즈하므로,
-    // `?reload=<ts>` 쿼리 없이 같은 file:// URL 을 다시 import 하면 옛
-    // 모듈 그래프가 그대로 반환된다. 결과적으로 사용자가 플러그인을
-    // 재설치하거나 config.set 으로 재시작 시켜도 옛 코드가 계속 동작.
-    // (실제 PR 발견 경로: samplemail 의 loginInExternalBrowser 토글이
-    // 재설치 후에도 적용 안 되던 root cause 의 절반.)
+    // ESM caches by import URL; restarts need a fresh URL to load changed module state.
     const pluginDir = join(installedDir, "lc-bust");
     await mkdir(pluginDir, { recursive: true });
     const manifestPath = join(pluginDir, "plugin.json");
@@ -407,9 +402,7 @@ export default async function createPlugin() {
     await runtime.startAll();
     await expect(runtime.call("lc_bust_version")).resolves.toBe("v1");
 
-    // Overwrite the entry with a NEW module body. Without cache-bust the
-    // restartPlugin re-import returns the cached "v1" module — failing
-    // this assertion.
+    // Rewrite module content so a reused cached URL returns the wrong version.
     await writeFile(
       entryPath,
       `export default async function createPlugin() {
@@ -462,12 +455,10 @@ export default async function createPlugin() {
     await runtime.startAll();
     expect(runtime.listPluginIds()).toContain("lc-fail-manifest");
 
-    // Delete the manifest before restart
     await rm(manifestPath);
 
     await runtime.restartPlugin("lc-fail-manifest");
 
-    // Failed restart preserves the previously running instance.
     expect(runtime.listPluginIds()).toContain("lc-fail-manifest");
     await expect(runtime.call("lc_fail_manifest_ping")).resolves.toBe("ok");
   });
@@ -567,9 +558,7 @@ export default async function createPlugin() {
     await expect(runtime.setPluginEnabled("does-not-exist", false)).rejects.toThrow("Plugin not found");
   });
 
-  // Lifecycle callback contract: every successful post-boot replacement fires
-  // `onEnable` only after the new generation is published. The coordinated
-  // publication path does not expose a transient disabled projection.
+  // Fire onEnable only after replacement publication; expose no transient disabled projection.
   async function setupLifecyclePluginFixture(pluginId: string) {
     const pluginDir = join(installedDir, pluginId);
     await mkdir(pluginDir, { recursive: true });
@@ -691,9 +680,7 @@ export default async function createPlugin() {
   });
 
   it("addPlugin (fresh-load branch) fires onEnable once after start succeeds", async () => {
-    // Register the plugin in the registry but DO NOT call startAll — addPlugin
-    // takes the fresh-load branch via instantiateAndStartSinglePlugin only
-    // when the plugin is not already in the runtime's plugins map.
+    // Skip startAll so addPlugin exercises a fresh load rather than restart of an existing instance.
     await setupLifecyclePluginFixture("lc-add-fresh");
 
     const enableCalls: string[] = [];
@@ -703,9 +690,6 @@ export default async function createPlugin() {
       pluginsRoot: installedDir,
       onEnable: (pluginId) => { enableCalls.push(pluginId); },
     });
-    // Skip startAll so the plugins map stays empty — addPlugin's "already
-    // loaded" branch (which delegates to restartPlugin) does not engage and
-    // we exercise the fresh-load codepath in `instantiateAndStartSinglePlugin`.
     await runtime.addPlugin("lc-add-fresh");
 
     expect(enableCalls).toEqual(["lc-add-fresh"]);
@@ -732,9 +716,7 @@ export default async function createPlugin() {
   });
 
   it("addPlugin failure path (start throws) does NOT fire onEnable", async () => {
-    // Plugin whose `start` always throws — `instantiateAndStartSinglePlugin`
-    // markFailed-and-returns on the catch branch, never reaches the
-    // `this.onEnable?.(manifest.id)` call after the try/catch.
+    // Failed start must never fire onEnable.
     const pluginId = "lc-add-fail";
     const pluginDir = join(installedDir, pluginId);
     await mkdir(pluginDir, { recursive: true });
@@ -778,8 +760,7 @@ export default async function createPlugin() {
       onEnable: (pluginId) => { enableCalls.push(pluginId); },
     });
 
-    // addPlugin re-throws via `throwIfPluginFailedAfterAdd`; either way the
-    // plugin should be in the failed set and onEnable must not have fired.
+    // Propagate failed add while retaining its failed status and suppressing onEnable.
     await runtime.addPlugin(pluginId).catch(() => undefined);
 
     expect(enableCalls).toEqual([]);
@@ -788,10 +769,7 @@ export default async function createPlugin() {
 });
 
 describe("buildImportUrl — cache-bust contract", () => {
-  // 회귀 가드: restartPlugin/reloadPlugin 의 cache-bust 가 작동하려면
-  // bustCache 인자에 따라 URL 이 달라져야 한다. 누군가 default 를 뒤집거나
-  // bustCache 분기를 제거하면 plugin restart 가 silent 하게 stale 모듈 재사용
-  // 회귀로 돌아간다 (이번 PR 의 root cause).
+  // Cache-busting must produce a new URL or restart silently reuses stale modules.
   const path = "/plugins/test-plugin/dist/hostPlugin.js";
 
   it("default (bustCache=false) returns stable URL across calls", () => {
@@ -803,9 +781,7 @@ describe("buildImportUrl — cache-bust contract", () => {
 
   it("bustCache=true returns a fresh ?reload= URL each call", async () => {
     const a = buildImportUrl(path, true);
-    // 같은 ms 안에서도 후속 호출이 다르도록 — Date.now() 충돌 방지를
-    // 위해 약간 대기. 충돌 시 본 contract 가 깨지면 monotonic counter
-    // 도입 follow-up 이 필요한 신호.
+    // Separate clock ticks here; identical timestamps would otherwise reuse the import cache key.
     await new Promise((r) => setTimeout(r, 5));
     const b = buildImportUrl(path, true);
     expect(a).toMatch(/\?reload=\d+$/);

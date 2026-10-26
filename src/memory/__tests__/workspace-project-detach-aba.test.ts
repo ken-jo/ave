@@ -42,8 +42,7 @@ const lockControl = vi.hoisted(() => {
   return control;
 });
 
-// Only withFileLock is scripted; the module's other exports (the serial queue the
-// memory manager builds its JSONL writers on) stay real.
+// Mock only the lock; keep the writer queue real.
 vi.mock("../../lib/with-file-lock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/with-file-lock.js")>()),
   withFileLock: vi.fn(async <T>(targetPath: string, callback: () => Promise<T>): Promise<T> => {
@@ -134,8 +133,7 @@ describe("MemoryManager workspace project detach ABA ordering", () => {
       subAgentTaskState: "TASK_STATE_SUBMITTED",
     });
 
-    // Reaching the mocked lock proves saveSessionMetadata already captured the
-    // root generation, while the callback (and therefore file creation) has not run.
+    // Pause after generation capture but before file creation to exercise detach/re-add races.
     await lockControl.firstLockBlocked;
     expect(lockControl.events).toEqual(["stale-save-invoked", "stale-save-lock-requested"]);
     expect(existsSync(metadataPath)).toBe(false);

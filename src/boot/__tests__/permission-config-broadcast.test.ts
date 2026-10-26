@@ -1,21 +1,4 @@
-/**
- * ONE permission-config broadcast, reaching every live loop.
- *
- * `PERMISSIONS.configChanged` had five wirings: the canonical
- * `ipc/domains/permissions.ts:broadcastPermissionConfigChanged` plus four boot
- * stubs that each hand-built a deps stand-in and cast it into place. Two facts
- * that consolidation has to pin:
- *
- *  1. The host-side broadcast fans out over the CURATED app-window set
- *     (`main/main-window.ts:getAppWindows`), never `BrowserWindow.getAllWindows()`.
- *     The raw list reaches top-level windows deliberately kept out of host
- *     broadcasts — the OAuth window, the external-link window, the auth-partition
- *     viewer — and `sendToWindow` does no origin check.
- *  2. EVERY loop built by the real factories reports permission mutations. Only
- *     the main chat loop used to receive the callback, so `/permission hooks
- *     accept` in the side chat, or a session-directory grant in a routine turn,
- *     mutated the same global permission state with no window ever told.
- */
+/** Permission broadcasts use curated app windows and reach every loop that can mutate permission state. */
 import { describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
@@ -56,13 +39,7 @@ import {
   type SideChatConversationLoopDeps,
 } from "../conversation.js";
 
-/**
- * The deps bags below are cast (the factories want full service objects), so
- * the cast could hide the very key under test being renamed or dropped from a
- * factory's dep type. Type the spy through all three real dep types instead:
- * remove `broadcastPermissionConfigChanged` from any of those Picks and this
- * line stops compiling under `check:typecheck-tests`.
- */
+/** Typing the spy through each factory dependency type catches keys hidden by fixture casts. */
 type LoopBroadcastCallback =
   & NonNullable<ConversationDeps["broadcastPermissionConfigChanged"]>
   & NonNullable<RoutineConversationLoopDeps["broadcastPermissionConfigChanged"]>
@@ -106,8 +83,7 @@ describe("host permission-config broadcast — window set", () => {
     broadcastPermissionConfigChangedFromHost([curated as never]);
 
     expect(curated.webContents.send).toHaveBeenCalledWith(PERMISSIONS.configChanged, {});
-    // The OAuth / external-link / partition-viewer class of top-level window is
-    // NOT in the curated set and must not receive host permission events.
+    // Uncurated auth and external-content windows must not receive host permission events.
     expect(oauthWindow.webContents.send).not.toHaveBeenCalled();
     expect(h.getAllWindows).not.toHaveBeenCalled();
   });

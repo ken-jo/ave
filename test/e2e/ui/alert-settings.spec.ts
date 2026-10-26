@@ -11,9 +11,7 @@ async function raiseFixtureAlert(page: Page, t: TestT, key: string) {
   const pending = page.evaluate((key) => (window as unknown as { aveApi: AveApi }).aveApi.callPluginMethod("alert_fixture_raise", { key }), key)
     .then((value) => { settled = true; return { value }; }, (error: unknown) => { settled = true; return { error }; });
   const panel = page.getByTestId("tool-approval-panel");
-  // Read without waiting. `getAttribute` auto-waits for the element, so a panel
-  // that unmounts between an `isVisible()` and the read (the answered request
-  // closing) parks the poll callback until the poll's own timeout.
+  // Read without auto-waiting so a panel unmounted during polling cannot block the callback.
   const shownRequestId = () => panel.evaluateAll((elements) => elements[0]?.getAttribute("data-approval-request-id") ?? null);
   const newRequestShown = async (previous: string | null) => {
     const id = await shownRequestId();

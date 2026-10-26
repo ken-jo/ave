@@ -1,6 +1,3 @@
-/**
- * E4 — shared shortcuts SoT: accelerator + block normalization.
- */
 import { describe, expect, it } from "vitest";
 import { normalizeAccelerator, normalizeShortcuts } from "../shortcuts.js";
 

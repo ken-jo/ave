@@ -1,8 +1,3 @@
-/**
- * A scripted `gitMarketplace` / `gitRuntime` pair for the view tests: every
- * method is a `vi.fn()` answering with the views main would send, and the
- * three event channels can be fired from the test.
- */
 import { vi } from "vitest";
 import type {
   CatalogEntryView,

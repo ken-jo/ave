@@ -8,8 +8,7 @@ export function projectOpenAiMessages(messages: GenericMessage[]): GenericMessag
       case "user":
         return { role: message.role, content: message.content };
       case "assistant":
-        // Display reasoning and signed blocks from another provider are not
-        // replayable on either connection. Tool registry provenance stays local.
+        // Display reasoning and foreign signed blocks cannot replay; registry provenance stays local.
         return {
           role: message.role,
           content: message.content,

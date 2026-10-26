@@ -1,13 +1,4 @@
-/**
- * Model-list sync runs on the transport MAIN supplies, not on ambient `fetch`.
- *
- * Node's `fetch` reads neither the machine's proxy configuration nor its trust
- * store, so a model-list request issued on it goes direct on a machine whose
- * configuration routes that host through a proxy. The engine cannot import
- * Electron to fix that — every test importing it would break — so main hands
- * the transport down through the IPC dependency bag, and this suite is what
- * holds that wire in place.
- */
+// Use the host-supplied transport so model discovery honors system proxy and trust configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";

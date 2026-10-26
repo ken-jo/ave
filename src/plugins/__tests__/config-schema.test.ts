@@ -1,14 +1,4 @@
-/**
- * §9.2 Track B — VSCode-style configSchema tests.
- *
- * Covers acceptance criteria US-B1..US-B6:
- *   - Manifest AJV strict validation accepts/rejects configSchema shapes.
- *   - Renderer fallback for legacy plugins (no configSchema) intact.
- *   - hostApi.config.{get,set,onChange} roundtrip.
- *   - Plugin isolation — listener for plugin A not fired by plugin B.
- *   - Secret routing — `format: "secret"` keys never land in cleartext
- *     pluginConfigs after the IPC strip.
- */
+/** Secret config values must never enter cleartext pluginConfigs. */
 import { describe, it, expect, beforeEach } from "vitest";
 import * as AjvModule from "ajv";
 import * as AddFormatsModule from "ajv-formats";
@@ -33,8 +23,6 @@ import {
 import type { PluginConfigSchema } from "../types.js";
 import { agentPluginsDocument, aveSchemaProperties } from "./test-helpers.js";
 
-// Host-owned manifest schema SOT (ph2) — resolved relative to this test file
-// so it works regardless of cwd and reads the host schema directly.
 const SCHEMA_PATH = fileURLToPath(
   new URL("../../../schemas/plugin-manifest.schema.json", import.meta.url),
 );
@@ -51,9 +39,7 @@ function buildAjv() {
 
 async function loadHostManifestSchema() {
   const raw = await readFile(SCHEMA_PATH, "utf-8");
-  // The host-owned manifest schema carries the host-required fields natively, so
-  // tests compile it verbatim — the same shape (and the same file) the runtime
-  // `buildManifestValidator()` enforces.
+  // Compile the host schema verbatim so the fixture enforces the runtime contract.
   return JSON.parse(raw);
 }
 
@@ -111,7 +97,6 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
       entry: "index.js",
       tools: ["test_ping"],
       configSchema: {
-        // missing required `properties`
         required: ["foo"],
       },
     }));
@@ -129,7 +114,7 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
       tools: ["test_ping"],
       configSchema: {
         properties: {
-          weird: { type: "object" }, // not in enum
+          weird: { type: "object" },
         },
       },
     }));
@@ -155,14 +140,7 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
   });
 });
 
-// #885 v6.1.0 — the "toolSchemas authority metadata" describe block (per-tool
-// `category` + `toolSchemas.pathFields` declared via the legacy `toolSchemas`
-// map) was removed here: the host's pure Tool[] schema now rejects
-// `toolSchemas` and per-tool `category` outright (additionalProperties), and
-// the host already stopped reading them in #885 Phase R. Current authority
-// metadata is `tool._meta["ave/pathFields"]` — covered by
-// normalize-manifest.test.ts. Category is never declared; the host classifies
-// risk itself (see architecture.md §6.3 / CLAUDE.md Permission Policy).
+// Authority metadata belongs in tool._meta["ave/pathFields"]; the host classifies risk.
 describe("pure Tool authority metadata — no toolSchemas, category, or workerId", () => {
   it("end-to-end: parsePluginJson loads a category-less manifest on the host", async () => {
     const { buildManifestValidator, parsePluginJson } = await import(
@@ -206,8 +184,7 @@ describe("pure Tool authority metadata — no toolSchemas, category, or workerId
       version: "1.0.0",
       description: "A manifest with a pure model-only tool (no worker self-claim).",
       entry: "dist/index.js",
-      // #885 Phase R — per-tool `workerId` (and the whole toolSchemas map) left the
-      // manifest contract; a pure Tool never carries a worker self-claim.
+      // A pure Tool cannot claim a worker through manifest metadata.
       tools: [
         {
           name: "worker_ping",
@@ -257,7 +234,7 @@ describe("US-B2 / US-B6 — config-schema helpers", () => {
   it("applyConfigDefaults fills missing keys without overriding saved values", () => {
     const merged = applyConfigDefaults(schema, { maxRetries: 7 });
     expect(merged.enabled).toBe(true);
-    expect(merged.maxRetries).toBe(7); // saved value wins
+    expect(merged.maxRetries).toBe(7);
     expect(merged.mode).toBe("fast");
   });
 
@@ -291,9 +268,7 @@ describe("US-B1 regression — baseline manifest WITHOUT configSchema still vali
   it("AJV strict accepts a manifest that omits configSchema (legacy plugins)", async () => {
     const ajv = buildAjv();
     const validate = ajv.compile(await loadHostManifestSchema());
-    // Replicates the shape of the current (post-#885 v6) meeting / local-indexer
-    // / samplemail manifests — no configSchema, but heavy use of pure Tool[] +
-    // capabilities. Must keep loading without modification (DoD §4).
+    // Manifests without configSchema must still load with pure Tool[] and capabilities.
     const ok = validate(agentPluginsDocument({
       id: "meeting-recorder",
       name: "회의록 녹음",

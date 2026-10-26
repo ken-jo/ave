@@ -13,12 +13,8 @@ export interface StarredItem {
   starredAt: string;
 }
 
-/**
- * Starred messages hook.
- * Owns the starred list, refresh, and toggle action. `handleToggleStar`
- * needs the current entries/sessionId/map to resolve which history index
- * is being toggled, so callers pass those in at call time.
- */
+/** Starred messages hook. Owns the starred list, refresh, and toggle action. `handleToggleStar` needs the current
+ * entries/sessionId/map to resolve which history index is being toggled, so callers pass those in at call time. */
 export function useStarred(api: AveApi) {
   const [starred, setStarred] = useState<StarredItem[]>([]);
 
@@ -28,8 +24,8 @@ export function useStarred(api: AveApi) {
 
   useEffect(() => { void refreshStarred(); }, [refreshStarred]);
 
-  // O(1) lookup index keyed by `${sessionId}:${messageIndex}` → starred id.
-  // Avoids O(n×m) linear scan when rendering many entries.
+  // O(1) lookup index keyed by `${sessionId}:${messageIndex}` → starred id. Avoids O(n×m) linear scan when rendering many
+  // entries.
   const starredIndex = useMemo(() => {
     const map = new Map<string, string>();
     for (const s of starred) map.set(`${s.sessionId}:${s.messageIndex}`, s.id);
@@ -121,16 +117,8 @@ export function useStarred(api: AveApi) {
   };
 }
 
-/**
- * The key the starred store has always used: how many user/assistant ENTRIES
- * precede this one in the transcript.
- *
- * Deliberately NOT the row-addressing rule the rewind / edit / fork actions
- * use. Those name a row by its durable `messageId` because they mutate the
- * conversation and must not act on the wrong turn. A pin is a bookmark whose
- * key is already written into `~/.ave` under this scheme, so it keeps its own
- * scheme rather than silently reinterpreting every stored row.
- */
+/** Persisted star keys count preceding user/assistant entries; do not reinterpret them as durable messageId keys used by
+ * mutating actions. */
 function starredMessageIndexOfEntry(
   entries: ChatEntry[],
   entryIdx: number,
@@ -138,10 +126,5 @@ function starredMessageIndexOfEntry(
   if (entryIdx < 0 || entryIdx >= entries.length) return undefined;
   const target = entries[entryIdx];
   if (target.kind !== "user" && target.kind !== "assistant") return undefined;
-  let ordinal = 0;
-  for (let i = 0; i < entryIdx; i += 1) {
-    const kind = entries[i].kind;
-    if (kind === "user" || kind === "assistant") ordinal += 1;
-  }
-  return ordinal;
+  return entries.slice(0, entryIdx).filter((entry) => entry.kind === "user" || entry.kind === "assistant").length;
 }

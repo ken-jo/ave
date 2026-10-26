@@ -1,3 +1,4 @@
+import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import type {
   PlatformBridgeDeliveryTransportSendOptions,
@@ -46,6 +47,15 @@ function successfulFetch() {
   }));
 }
 
+function outboundTransport(fetchSpy: ReturnType<typeof successfulFetch>) {
+  return createTelegramOutboundTransport({
+    botToken: BOT_TOKEN,
+    fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    minIntervalMs: 1,
+    wait: async () => undefined,
+  });
+}
+
 function coalesceQueue(
   entries: readonly TelegramDeliveryQueueEntry[],
 ): readonly TelegramDeliveryQueueEntry[] {
@@ -72,9 +82,8 @@ describe("Telegram platform adapter", () => {
 
   it("ignores reply decoration instead of killing the message that carries it", () => {
     const verifier = createTelegramPollingVerifier();
-    // Swipe-to-reply is Telegram's default gesture in a DM. The parser never
-    // reads these fields, so rejecting them discarded a perfectly ordinary
-    // message for HOW it was composed, with no containment gain.
+    // Swipe-to-reply is Telegram's default gesture in a DM. The parser never reads these fields, so rejecting them discarded a perfectly ordinary message
+    // for HOW it was composed, with no containment gain.
     for (const decorate of [
       (candidate: Record<string, any>) => { candidate.message.reply_to_message = { message_id: 7 }; },
       (candidate: Record<string, any>) => { candidate.message.quote = { text: "earlier" }; },
@@ -228,9 +237,8 @@ describe("Telegram platform adapter", () => {
     });
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     const body = JSON.parse(String(init?.body));
-    // 2,048 emoji are already Telegram's whole 4,096-unit budget. Sending
-    // 4,096 of them is 8,192 units and fails with 400 "message is too long",
-    // which closes the delivery channel and loses the reply.
+    // 2,048 emoji are already Telegram's whole 4,096-unit budget. Sending 4,096 of them is 8,192 units and fails with 400 "message is too long", which
+    // closes the delivery channel and loses the reply.
     expect(String(body.text)).toHaveLength(4_096);
     expect(body).toEqual({
       chat_id: "42",
@@ -245,12 +253,7 @@ describe("Telegram platform adapter", () => {
 
   it("renders empty snapshots and statuses with fixed safe text", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
     const messages: readonly PlatformBridgeOutboundMessage[] = [
       { kind: "snapshot", cursor: 1, status: "awaiting-local-approval", text: "" },
       { kind: "status", cursor: 2, status: "tool-running" },
@@ -273,12 +276,7 @@ describe("Telegram platform adapter", () => {
 
   it("renders a failed turn with its category and safe summary, failing closed otherwise", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
     const messages: readonly PlatformBridgeOutboundMessage[] = [
       {
         kind: "status",
@@ -347,16 +345,10 @@ describe("Telegram platform adapter", () => {
 
   it("names the waiting tool in the approval notice and resumes with the plain working status", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
     const messages: readonly PlatformBridgeOutboundMessage[] = [
       { kind: "status", cursor: 1, status: "awaiting-local-approval", tool: "builtin:list_files" },
-      // The approval decision itself never crosses the bridge; the turn simply
-      // resumes through the ordinary tool status once it is approved locally.
+      // The approval decision itself never crosses the bridge; the turn simply resumes through the ordinary tool status once it is approved locally.
       { kind: "status", cursor: 2, status: "tool-running" },
     ];
 
@@ -375,12 +367,7 @@ describe("Telegram platform adapter", () => {
 
   it("keeps the fixed approval text when the tool identifier is missing or unsafe", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
 
     for (const tool of [undefined, "unsafe tool C:\\private\\path"]) {
       await transport.send(
@@ -463,8 +450,7 @@ describe("Telegram platform adapter", () => {
     ]);
     expect(Object.isFrozen(combined)).toBe(true);
 
-    // 4,097 emoji are 8,194 UTF-16 units: three chunks, not two, and every
-    // chunk has to fit the same unit budget the Bot API enforces.
+    // 4,097 emoji are 8,194 UTF-16 units: three chunks, not two, and every chunk has to fit the same unit budget the Bot API enforces.
     const original = "😀".repeat(4_097);
     const chunked = coalesceQueue([
       { cursor: 10, message: { kind: "text", cursor: 10, text: original } },
@@ -511,8 +497,7 @@ describe("Telegram platform adapter", () => {
     ]);
     expect(separated).toHaveLength(3);
 
-    // Re-admission drops a non-conforming or misplaced identifier rather than
-    // killing the channel: the bare status still reaches the reader.
+    // Re-admission drops a non-conforming or misplaced identifier rather than killing the channel: the bare status still reaches the reader.
     expect(coalesceQueue([
       { cursor: 4, message: { kind: "status", cursor: 4, status: "awaiting-local-approval", tool: "unsafe tool name" } },
     ])).toEqual([
@@ -529,9 +514,8 @@ describe("Telegram platform adapter", () => {
     const oversized = coalesceQueue([
       { cursor: 20, message: { kind: "snapshot", cursor: 20, status: "idle", text: `OLDEST${"x".repeat(8_000)}NEWEST` } },
     ]);
-    // A reconnect snapshot stays one Bot API send. Splitting it would replay
-    // the retained window as several rate-limited messages on every inbound
-    // message, and the newest text is what the reader is waiting for.
+    // A reconnect snapshot stays one Bot API send. Splitting it would replay the retained window as several rate-limited messages on every inbound message,
+    // and the newest text is what the reader is waiting for.
     expect(oversized).toHaveLength(1);
     const snapshotText = oversized[0]?.message.kind === "snapshot" ? oversized[0].message.text : "";
     expect(snapshotText).toHaveLength(4_096);
@@ -544,8 +528,7 @@ describe("Telegram platform adapter", () => {
     const boundaryText = surrogateBoundary[0]?.message.kind === "snapshot"
       ? surrogateBoundary[0].message.text
       : "";
-    // Retaining the last 4,096 units would start on half of a surrogate pair,
-    // so the bound gives back one unit instead of emitting a broken character.
+    // Retaining the last 4,096 units would start on half of a surrogate pair, so the bound gives back one unit instead of emitting a broken character.
     expect(boundaryText).toBe(`${"😀".repeat(2_047)}x`);
   });
 
@@ -652,8 +635,7 @@ describe("Telegram platform adapter", () => {
     const newChannel = Object.freeze({ chatId: "42", deliveryLease: "new-lease" });
     let activeDeliveryLease: string | undefined = oldChannel.deliveryLease;
     let resolveResponse: ((response: Response) => void) | undefined;
-    let markFetchStarted: (() => void) | undefined;
-    const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+    const { promise: fetchStarted, resolve: markFetchStarted } = deferred<void>();
     const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => {
       resolveResponse = resolve;
       markFetchStarted?.();
@@ -688,8 +670,7 @@ describe("Telegram platform adapter", () => {
     vi.useFakeTimers();
     try {
       let requestSignal: AbortSignal | undefined;
-      let markFetchStarted: (() => void) | undefined;
-      const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+      const { promise: fetchStarted, resolve: markFetchStarted } = deferred<void>();
       const hangingFetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
         const signal = init?.signal;
         requestSignal = signal ?? undefined;
@@ -868,8 +849,7 @@ describe("Telegram platform adapter", () => {
     // Prefix + status fields + a description hard-capped at 120 characters.
     expect(line.length).toBeLessThan(220);
     expect(line).toContain('description="A<x>');
-    // Embedded quotes and control characters are stripped, so a hostile
-    // description can neither restructure the line nor flood the log.
+    // Embedded quotes and control characters are stripped, so a hostile description can neither restructure the line nor flood the log.
     const delimiter = 'description="';
     const loggedDescription = line.slice(line.indexOf(delimiter) + delimiter.length, -1);
     expect(loggedDescription.length).toBeLessThanOrEqual(120);

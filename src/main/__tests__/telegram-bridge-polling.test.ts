@@ -27,7 +27,7 @@ function textUpdate(updateId: number, text: string): TelegramPolledUpdate {
   };
 }
 
-/** A membership change: well-formed, never a message the host can act on. */
+// A membership change: well-formed, never a message the host can act on.
 function nonMessageUpdate(updateId: number): TelegramPolledUpdate {
   return {
     updateId,
@@ -215,8 +215,7 @@ describe("startTelegramPollingIngress", () => {
     h.queue({ ok: true, value: [callbackUpdate(320, "opaque-token-abc")] });
     start(h.options);
 
-    // Re-polling an unhandled press could never help; it is consumed on
-    // purpose, so it must not be tallied as data loss either.
+    // Re-polling an unhandled press could never help; it is consumed on purpose, so it must not be tallied as data loss either.
     await vi.waitFor(() => expect(h.currentOffset()).toBe(321));
     expect(h.handleWebhook).not.toHaveBeenCalled();
     expect(lines.filter((line) => line.includes("pre-envelope drop"))).toEqual([]);
@@ -285,9 +284,8 @@ describe("startTelegramPollingIngress", () => {
     start(h.options);
 
     await vi.waitFor(() => expect(h.options.redeemPairingCode).toHaveBeenCalledOnce());
-    // Exactly one redemption call, and no second charging path: the durable
-    // store already debits the attempt when it rejects a digest, and charging
-    // from here too spent the advertised five attempts in about three.
+    // Exactly one redemption call, and no second charging path: the durable store already debits the attempt when it rejects a digest, and charging from
+    // here too spent the advertised five attempts in about three.
     expect(h.options.redeemPairingCode).toHaveBeenCalledTimes(1);
     // A code-shaped credential must not reach the transcript even when wrong.
     expect(h.handleWebhook).not.toHaveBeenCalled();
@@ -325,10 +323,8 @@ describe("startTelegramPollingIngress", () => {
     h.queue({ ok: true, value: [textUpdate(55, "/status")] });
     start(h.options);
 
-    // The core rejects every leading-slash message by policy and the update is
-    // consumed. Without its own notice the owner typing /status saw nothing at
-    // all, which is the same dead-bot reading the shared-conversation notice
-    // was added to remove.
+    // The core rejects every leading-slash message by policy and the update is consumed. Without its own notice the owner typing /status saw nothing at all,
+    // which is the same dead-bot reading the shared-conversation notice was added to remove.
     await vi.waitFor(() => expect(notifyUnroutable)
       .toHaveBeenCalledWith(String(OWNER_ID), "commands-not-supported"));
     await vi.waitFor(() => expect(h.currentOffset()).toBe(56));
@@ -341,8 +337,7 @@ describe("startTelegramPollingIngress", () => {
     h.queue({ ok: true, value: [textUpdate(60, "who is this")] });
     start(h.options);
 
-    // Replying would confirm to a stranger that this bot is attached to a
-    // live desktop.
+    // Replying would confirm to a stranger that this bot is attached to a live desktop.
     await vi.waitFor(() => expect(h.currentOffset()).toBe(61));
     expect(notifyUnroutable).not.toHaveBeenCalled();
   });
@@ -409,8 +404,7 @@ describe("startTelegramPollingIngress", () => {
 
     await ingress.finished;
     running = undefined;
-    // The unclassified 409 backed off instead of guessing; the recurrence was
-    // classified and named the webhook that is actually configured.
+    // The unclassified 409 backed off instead of guessing; the recurrence was classified and named the webhook that is actually configured.
     expect(waits).toEqual([2_000]);
     expect(h.onFatal.mock.calls).toEqual([["telegram-webhook-conflict"]]);
   });
@@ -453,8 +447,7 @@ describe("startTelegramPollingIngress", () => {
   });
 
   it("ends the activation when a confirmed offset cannot be persisted", async () => {
-    // Both write sites, because they are separate calls: a fix applied to one
-    // leaves the other killing ingress without a word.
+    // Both write sites, because they are separate calls: a fix applied to one leaves the other killing ingress without a word.
     const sites = [
       { name: "seeded offset", offset: null, batch: { ok: true as const, value: [] } },
       {
@@ -472,16 +465,13 @@ describe("startTelegramPollingIngress", () => {
       });
       failing.setOffset(site.offset);
       failing.queue(site.batch);
-      // Resolves only because the loop gave up. Reaching this line at all is
-      // half the assertion: a loop that carried on would park on the next poll
-      // until the test times out.
+      // Resolves only because the loop gave up. Reaching this line at all is half the assertion: a loop that carried on would park on the next poll until the test times out.
       await start(failing.options).finished;
       running = undefined;
       expect(failing.onFatal.mock.calls, site.name)
         .toEqual([["telegram-connection-state-unwritable"]]);
 
-      // Non-vacuous: the identical batch through a store that takes the write
-      // neither stops nor reports anything.
+      // Non-vacuous: the identical batch through a store that takes the write neither stops nor reports anything.
       const healthy = harness();
       healthy.setOffset(site.offset);
       healthy.queue(site.batch);
@@ -512,12 +502,7 @@ describe("startTelegramPollingIngress", () => {
     })).toThrow("telegram-polling-ingress-options-invalid");
   });
 
-  // ── Pre-envelope drop counter ─────────────────────────
-  //
-  // Updates refused before an envelope exists are the one class the notice
-  // path cannot reach: there is no verified sender to answer. Their only
-  // trace is this tally, so these tests assert what a line says, not that
-  // logging happened.
+  // Pre-envelope refusals have no verified sender for notices; assert their diagnostic tally instead.
   describe("pre-envelope drops", () => {
     function counted(overrides: Partial<TelegramPollingIngressOptions> = {}) {
       const lines: string[] = [];
@@ -527,7 +512,7 @@ describe("startTelegramPollingIngress", () => {
       };
     }
 
-    /** Read a line's numbers so an assertion pins values, not prose. */
+    // Read a line's numbers so an assertion pins values, not prose.
     function tally(line: string): { total: number; reasons: Record<string, number> } {
       const reasons: Record<string, number> = {};
       let total = -1;
@@ -572,8 +557,7 @@ describe("startTelegramPollingIngress", () => {
         h.queue({ ok: true, value: [textUpdate(200, "hello")] });
         const ingress = start(h.options);
 
-        // The offset moving is what makes this a drop rather than a retry, so
-        // the tally below is counting something that was really lost.
+        // The offset moving is what makes this a drop rather than a retry, so the tally below is counting something that was really lost.
         await vi.waitFor(() => expect(h.currentOffset()).toBe(201));
         await stopAndDrain(ingress);
 
@@ -608,8 +592,7 @@ describe("startTelegramPollingIngress", () => {
 
     it("counts nothing when the core re-polls instead of consuming", async () => {
       const h = counted();
-      // Pre-envelope like the counted four, but it releases the update for
-      // retry. Counting it would report a turned-off bridge as data loss.
+      // Pre-envelope like the counted four, but it releases the update for retry. Counting it would report a turned-off bridge as data loss.
       h.handleWebhook.mockResolvedValue("disabled");
       h.queue({ ok: true, value: [textUpdate(210, "hello")] });
       const ingress = start(h.options);
@@ -630,8 +613,7 @@ describe("startTelegramPollingIngress", () => {
       await vi.waitFor(() => expect(h.currentOffset()).toBe(221));
       await stopAndDrain(ingress);
 
-      // The update never reached the gateway, but it was consumed deliberately
-      // rather than lost.
+      // The update never reached the gateway, but it was consumed deliberately rather than lost.
       expect(h.handleWebhook).not.toHaveBeenCalled();
       expect(h.dropLines()).toEqual([]);
     });
@@ -667,8 +649,7 @@ describe("startTelegramPollingIngress", () => {
       await vi.waitFor(() => expect(h.currentOffset()).toBe(512));
       await stopAndDrain(ingress);
 
-      // Anyone who can message the bot can drive this count, so a line per
-      // drop would hand them the desktop log. Twelve drops, three lines.
+      // Anyone who can message the bot can drive this count, so a line per drop would hand them the desktop log. Twelve drops, three lines.
       expect(h.dropLines().map((line) => tally(line).total)).toEqual([1, 10, 12]);
     });
 
@@ -693,7 +674,7 @@ describe("startTelegramPollingIngress", () => {
 });
 
 describe("reconnecting after sleep, a network change, or an outage", () => {
-  /** A wait that only ends when its signal aborts, recording each delay asked for. */
+  // A wait that only ends when its signal aborts, recording each delay asked for.
   function blockingWait(waits: number[]) {
     return (ms: number, signal: AbortSignal) => {
       waits.push(ms);
@@ -726,8 +707,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
 
     await vi.waitFor(() => expect(waits).toEqual([2_000]));
     ingress.nudge();
-    // Re-polled at once; the failure after the wake starts the streak over at
-    // 2 s instead of continuing to 4 s.
+    // Re-polled at once; the failure after the wake starts the streak over at 2 s instead of continuing to 4 s.
     await vi.waitFor(() => expect(waits).toEqual([2_000, 2_000]));
     expect(h.getUpdatesCalls).toHaveLength(2);
     expect(h.onFatal).not.toHaveBeenCalled();

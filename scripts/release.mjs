@@ -1,18 +1,6 @@
 #!/usr/bin/env node
-/**
- * Production release builder.
- *
- * Steps:
- *   1. Pre-flight security check (signing-env validation)
- *   2. Read + patch-bump version in package.json, and regenerate the host
- *      protocol schema whose `$id` carries it
- *   3. node scripts/build-installers.mjs --current --publish=never
- *
- * Usage:  node scripts/release.mjs [--skip-code-sign]
- *
- * Credentials (signing certs, GH_TOKEN, etc.) must come from the environment
- * — never checked in. See docs/references/production-release-checklist.md.
- */
+// Regenerate app-versioned protocol artifacts before building release installers.
+// Signing credentials come only from the environment; see the production release checklist.
 import { readFileSync, writeFileSync } from "node:fs";
 import { runCommand } from "./hooks/spawn-command.mjs";
 import { resolve, dirname } from "node:path";
@@ -38,13 +26,8 @@ function bumpPatch(version) {
   return `${maj}.${min}.${patch + 1}`;
 }
 
-/**
- * Validate signing environment. For packaged macOS/Windows builds we
- * need codesign material. --skip-code-sign is an explicit internal-build
- * opt-out. Also verifies package.json build.publish.provider is declared.
- */
+// Signing opt-out is for explicit internal builds; publishing still needs a declared provider.
 function checkSigningEnv(pkg) {
-  // Provider check — pkg.build.publish must exist AND have a known provider.
   const publish = pkg?.build?.publish;
   const provider = Array.isArray(publish) ? publish[0]?.provider : publish?.provider;
   const KNOWN_PROVIDERS = new Set(["github", "s3", "generic"]);
@@ -99,7 +82,6 @@ function checkSigningEnv(pkg) {
 async function main() {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
 
-  // Pre-flight security gate (fail CI early before any build work).
   checkSigningEnv(pkg);
 
   const oldVersion = pkg.version;
@@ -107,8 +89,7 @@ async function main() {
   console.log(`[release] version: ${oldVersion} → ${newVersion}`);
   pkg.version = newVersion;
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
-  // The host protocol schema's `$id` carries the app version, and the build
-  // below refuses a committed schema that differs from its sources.
+  // Regenerate the schema after a version bump because its id includes the app version.
   run("bun", ["run", "generate:plugin-host-protocol-schema"]);
   run("bun", ["run", "generate:plugin-host-protocol-client"]);
   run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);

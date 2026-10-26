@@ -1,12 +1,4 @@
-/**
- * Remote-approval coordinator tests, driven through a REAL ApprovalGate.
- *
- * The point of the design under test is that a Telegram button press resolves
- * a parked approval through the SAME `ApprovalGate.resolve` chokepoint the
- * desktop dock's IPC handler calls — so these tests compose a real gate (mock
- * renderer, short timeout) with the coordinator and a fake Bot API client, and
- * assert on what the gate's `requestAndWait` promise actually resolved to.
- */
+// Resolve button presses through the real ApprovalGate chokepoint used by desktop approvals.
 import { describe, expect, it, vi } from "vitest";
 import {
   ApprovalGate,
@@ -29,7 +21,7 @@ const STRANGER_ID = "987654321";
 const SHARED_CONVERSATION = "shared-conversation";
 const TOOL_IDENTIFIER = "builtin:list_files";
 
-/** Renderer stand-in that records the dock payloads the gate sends. */
+// Renderer stand-in that records the dock payloads the gate sends.
 function deskDock() {
   const sent: ApprovalRequest[] = [];
   return {
@@ -96,7 +88,7 @@ function press(data: string, senderId: string = OWNER_ID): TelegramCallbackQuery
   return { provider: "telegram", callbackQueryId: "press-1", senderId, data };
 }
 
-/** The two opaque tokens minted for the first card the fake client sent. */
+// The two opaque tokens minted for the first card the fake client sent.
 async function sentCardTokens(client: ReturnType<typeof fakeDecisionCardClient>): Promise<{
   approveToken: string;
   denyToken: string;
@@ -111,7 +103,7 @@ async function sentCardTokens(client: ReturnType<typeof fakeDecisionCardClient>)
   return { approveToken: approve!.callbackData, denyToken: deny!.callbackData };
 }
 
-/** Desk echo material for the newest dock payload, to answer locally. */
+// Desk echo material for the newest dock payload, to answer locally.
 function deskEcho(dock: ReturnType<typeof deskDock>, choice: ApprovalDecision["choice"]): ApprovalDecision {
   const request = dock.sent[dock.sent.length - 1]!;
   return {
@@ -184,8 +176,7 @@ describe("telegram remote approval", () => {
 
     await coordinator.handleCallbackQuery(press(approveToken, STRANGER_ID));
 
-    // Acknowledged without text — a reply would confirm a live desktop — and
-    // nothing resolved: the approval is still pending for the owner.
+    // Acknowledged without text — a reply would confirm a live desktop — and nothing resolved: the approval is still pending for the owner.
     expect(client.answerCallbackQuery).toHaveBeenCalledWith("press-1", undefined);
     expect(client.editMessageText).not.toHaveBeenCalled();
 
@@ -227,8 +218,7 @@ describe("telegram remote approval", () => {
       `Ave: tool ${TOOL_IDENTIFIER} denied`,
     ));
 
-    // The remote press arrives late: harmlessly ignored, and the desk's
-    // decision — a DENY — is not flipped by the approve button.
+    // The remote press arrives late: harmlessly ignored, and the desk's decision — a DENY — is not flipped by the approve button.
     await coordinator.handleCallbackQuery(press(approveToken));
     expect(client.answerCallbackQuery)
       .toHaveBeenCalledWith("press-1", "This approval is no longer active");

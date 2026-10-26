@@ -1,10 +1,3 @@
-/**
- * Session-goal revival — the loop and, one by one, everything that stops it.
- *
- * The driver is exercised through the same seam production wires it through:
- * a turn lease that settles, a session id the group is holding, and a store
- * over an in-memory sidecar. No window, no provider, no Electron.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSessionGoalRevival } from "../session-goal-revival.js";
 import { SESSION_GOAL_CEILING } from "../../shared/session-goal.js";
@@ -38,18 +31,16 @@ function harness(overrides: {
     },
     runTurn,
   });
-  /** One turn ending, awaited to its settled state. */
+  // One turn ending, awaited to its settled state.
   const settle = async () => {
     revival.reviveIfDue();
-    // The driver's work is a chain of microtasks behind the lease; two ticks
-    // is enough for one revival to finish and for its own settle NOT to be
-    // implied (production re-enters through the coordinator, not from here).
+    // The driver's work is a chain of microtasks behind the lease; two ticks is enough for one revival to finish and for its own settle NOT to be implied
+    // (production re-enters through the coordinator, not from here).
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
   };
-  // The goal-change trigger and the settled-turn trigger are the same
-  // evaluation; naming both makes the tests say which one they mean.
+  // The goal-change trigger and the settled-turn trigger are the same evaluation; naming both makes the tests say which one they mean.
   return { goals, turns, runTurn, settle, revive: settle, disk };
 }
 
@@ -105,9 +96,8 @@ describe("session goal revival", () => {
   });
 
   it("starts on a resume, without waiting for a turn to end first", async () => {
-    // A resume while the session sits idle has no turn to follow. If the only
-    // trigger were a settled turn, the button would move the chip and change
-    // nothing until the user typed again — a no-op with a label.
+    // A resume while the session sits idle has no turn to follow. If the only trigger were a settled turn, the button would move the chip and change nothing
+    // until the user typed again — a no-op with a label.
     const h = harness();
     await h.goals.set(SESSION, "ship it");
     await h.settle();

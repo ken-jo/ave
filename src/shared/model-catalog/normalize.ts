@@ -1,21 +1,5 @@
-/**
- * models.dev provider records → normalized catalog models.
- *
- * Pure and deterministic: the generator and the background refresh run the
- * same code over the same bytes and get the same catalog. The source schema
- * is `packages/core/src/schema.ts` in github.com/anomalyco/models.dev; only
- * the fields the catalog carries are read, each checked for its declared
- * shape, and an absent field stays absent.
- *
- * Two kinds of fault, two outcomes. A wrong TYPE on a field the host computes
- * with — the id, a limit, a price, a modality list — drops the model with a
- * diagnostic: keeping it with the field guessed would put an invented number
- * into a budget or a bill. An unknown VALUE in an enumerated field (a status,
- * a reasoning effort, a reasoning control kind) or a malformed descriptive
- * field (name, family, release date) drops only that field or value, with a
- * diagnostic: the source adds enum values over time, and a new one must not
- * make a model's known context window disappear.
- */
+/** Normalize deterministically; invalid computational types drop the model, while unknown descriptive or enum values drop only that field. */
+import { isRecord } from "../is-record.js";
 import {
   REASONING_EFFORT_VALUES,
   type CatalogCostTier,
@@ -51,9 +35,7 @@ class Malformed extends Error {}
 type Note = (message: string) => void;
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function optionalString(value: unknown, field: string, max = MAX_TEXT_LENGTH): string | undefined {
@@ -79,10 +61,7 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
-/**
- * A token limit. Zero and absence both mean "not stated": the source schema
- * admits `output = 0`, and a model that can produce nothing is not a model.
- */
+/** Zero and absent limits mean unstated, not a model incapable of output. */
 function optionalLimit(value: unknown, field: string): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_CATALOG_TOKEN_LIMIT) {
@@ -91,7 +70,7 @@ function optionalLimit(value: unknown, field: string): number | undefined {
   return value === 0 ? undefined : value;
 }
 
-/** A price as listed. A listed `0` is kept: it is the source's statement, which a consumer must not read as "free". */
+/** Retain a listed zero as source data; consumers must not infer free usage. */
 function optionalPrice(value: unknown, field: string): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_PRICE_PER_MILLION) {
@@ -134,8 +113,7 @@ function cost(value: unknown): CatalogModelCost | undefined {
       const tier = record(raw);
       const shape = record(tier?.tier);
       if (!tier || !shape) throw new Malformed(`cost.tiers[${index}] is not a tier`);
-      // Only prompt-size tiers have a meaning here; any other kind is a rate
-      // this catalog cannot apply, so the model keeps its base rates only.
+      // Unsupported tier kinds leave only base rates.
       if (shape.type !== "context") continue;
       const size = optionalLimit(shape.size, `cost.tiers[${index}].tier.size`);
       if (size === undefined) throw new Malformed(`cost.tiers[${index}].tier.size is missing`);
@@ -206,7 +184,6 @@ function status(value: unknown, note: Note): CatalogModel["status"] {
   return undefined;
 }
 
-/** One models.dev model record, normalized; throws {@link Malformed} on a bad field. */
 function normalizeModel(key: string, raw: unknown, note: Note): CatalogModel {
   const model = record(raw);
   if (!model) throw new Malformed("not an object");
@@ -258,12 +235,7 @@ function normalizeModel(key: string, raw: unknown, note: Note): CatalogModel {
   return out;
 }
 
-/**
- * Normalize the named providers out of a models.dev `api.json` document.
- * A provider absent from the document is reported, not invented; the caller
- * decides whether that is acceptable (the refresh refuses a document that
- * lost providers the previous catalog had).
- */
+/** Report missing providers instead of inventing them; refresh decides whether provider loss is acceptable. */
 export function normalizeModelsDevProviders(document: unknown, providerIds: readonly string[]): NormalizedProviders {
   const root = record(document);
   if (!root) throw new Error("models.dev document is not an object");
@@ -291,12 +263,7 @@ export function normalizeModelsDevProviders(document: unknown, providerIds: read
   return { providers, diagnostics };
 }
 
-/**
- * The model fields {@link normalizeModelsDevProviders} reads. The generator's
- * committed input keeps only these, so the input is the data the catalog was
- * made from and nothing else; a field the normalizer starts reading must be
- * added here and the input fetched again.
- */
+/** Pruned generator input must include every field the normalizer reads. */
 export const MODELS_DEV_MODEL_FIELDS = [
   "attachment",
   "canonical_model_id",
@@ -316,13 +283,7 @@ export const MODELS_DEV_MODEL_FIELDS = [
   "tool_call",
 ] as const;
 
-/**
- * The named providers' models out of a full models.dev `api.json`, each model
- * reduced to {@link MODELS_DEV_MODEL_FIELDS}. Of the provider-level fields only
- * `api` (the endpoint) is kept; the npm package, env names and docs URL are
- * dropped, the host has its own. A provider absent from the document is left
- * out here and reported by the normalizer.
- */
+/** Keep model fields and provider endpoints only; host-owned package and environment metadata stay excluded. */
 export function pruneModelsDevDocument(
   document: unknown,
   providerIds: readonly string[],
@@ -334,8 +295,7 @@ export function pruneModelsDevDocument(
     const provider = record(root[providerId]);
     const models = record(provider?.models);
     if (!models) continue;
-    // The provider's endpoint, kept so a test can hold the provider map to
-    // the rule that a vendor maps only to providers serving its own host.
+    // Preserve endpoints so tests can verify native-host provider mappings.
     const api = typeof provider?.api === "string" ? provider.api : undefined;
     const kept: Record<string, unknown> = {};
     for (const key of Object.keys(models).sort()) {

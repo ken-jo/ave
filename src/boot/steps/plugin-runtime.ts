@@ -1,21 +1,7 @@
 import type { BootHost } from "../host-runtime.js";
 import type { HostFetchTransport } from "../../main/host-fetch-guard.js";
 import { noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
-/**
- * Boot §4.2 Step 3-5 — Plugin runtime + HostApi factory.
- *
- * Extracted from boot.ts to keep orchestration thin. This module:
- *   • constructs the PluginDeploymentGuard and plugin runtime integrity gate
- *   • builds the per-plugin HostApi factory (emitEvent / onEvent / getSecret /
- *     callLlm /
- *     logEvent / onShutdown)
- *   • creates the PluginRuntime, starts plugins, registers plugin tools,
- *     and wires the dev hot-reload watcher
- *   • returns the runtime + late-binding refs (llmCallerRef / pluginCallLlmRef /
- *     conversationLoopRef) that boot.ts injects once ConversationLoop exists.
- *
- * No plugin-specific literals here — everything is manifest-driven.
- */
+/** Construct the runtime before activation; loop-dependent callers are late-bound after conversation setup. */
 import type { BrowserWindow } from "electron";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -52,14 +38,8 @@ import { PluginLoopbackManager } from "../../mcp/plugin-loopback-manager.js";
 import type { PluginBundleLifecycleHandler } from "../../plugins/plugin-bundle-lifecycle.js";
 import { createLogger } from "../../lib/logger.js";
 
-// ── Pure/self-contained clusters live under ./plugin-runtime/*; imported
-//    here for the orchestrator body below and re-exported further down so
-//    the public contract stays importable from this path.
 import { approvalIssuerRegistry } from "./plugin-runtime/approval-gating.js";
 import { buildAppPreferenceReader } from "./plugin-runtime/app-preference.js";
-// ── HIGH-RISK orchestrator clusters (HostApi factory + lifecycle callbacks
-//    + registry-entry cache) live under ./plugin-runtime/*; wired into
-//    initPluginRuntime below.
 import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { createHostApiFactory } from "./plugin-runtime/host-api-factory.js";
 import { createLifecycleCallbacks } from "./plugin-runtime/lifecycle.js";
@@ -69,7 +49,7 @@ import { PluginRuntimePreStartPhase } from "./plugin-runtime/pre-start-phase.js"
 import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 const log = createLogger("ave");
 
-// ── Re-exports — preserve this module path's public export contract. ────────
+// Preserve this module’s public export path.
 export { declaresHostManagedPythonRuntime } from "./plugin-runtime/manifest.js";
 export { approvalIssuerRegistry, auditApprovalViolation,
 } from "./plugin-runtime/approval-gating.js";
@@ -122,11 +102,7 @@ export interface LateBindingRefs {
     fn: import("../../engine/conversation-loop.js").ConversationLoop | null;
   };
   pluginToolInvokerRef: {
-    // The gated tool-invocation delegate installed by the `plugin-tool-executor`
-    // boot step. Typed off the SoT (`PluginToolInvocationDelegate` →
-    // `PluginToolInvocationContext.origin` → `InvocationOrigin`), never an inline
-    // restatement of the origin union — a narrower structural copy here silently
-    // desynced from the runtime's own delegate type and would reject a new origin.
+    // Derive delegate types from the shared origin contract so new origins cannot silently diverge.
     fn: import("../../plugins/runtime.js").PluginToolInvocationDelegate | null;
   };
 }
@@ -144,101 +120,39 @@ export interface InitPluginRuntimeInput {
   pythonRuntime?: PythonRuntimeBootstrapper;
   bootAuditLogger: AuditLogger;
   mainWindow: BrowserWindow | null;
-  /**
-   * Electron `net`-backed fetch (Chromium stack: OS proxy incl. PAC/WPAD + OS
-   * trust store). Backs the capability-gated `hostApi.hostFetch`. Eager (exists
-   * at boot) so it needs no late binding, unlike the LLM caller.
-   */
+  /** Use OS proxy and trust-store routing for gated hostFetch; transport exists at boot. */
   networkFetch: HostFetchTransport;
   getMainWindow?: () => BrowserWindow | null;
   openAuthWindowService: (
     parent: BrowserWindow,
     opts: OpenAuthWindowBaseOptions & { returnFinalUrl?: boolean },
   ) => Promise<AuthWindowCookie[] | OpenAuthWindowFinalUrlResult>;
-  /**
-   * §B3 — Light external-link viewer used when
-   * `settings.webView.preferredFlow === "in-app"`. Distinct from
-   * `openAuthWindowService` (no cookieHosts / completionUrlPatterns).
-   * Tests inject a stub; production wiring is `openLinkWindow` from
-   * `src/main/link-window-service.ts`.
-   */
+  /** In-app link viewing has no auth cookie or completion-pattern behavior. */
   openLinkWindowService: (
     parent: BrowserWindow,
     opts: { url: string; windowTitle?: string; persistPartition?: string },
   ) => Promise<void>;
-  /**
-   * Issue #649 — viewer that loads a URL inside the *caller plugin's*
-   * `persist:plugin-auth:<pluginId>` partition so AAD/OIDC cookies deposited
-   * by an earlier `openAuthWindow` produce silent SSO. Production wiring is
-   * `openAuthPartitionViewer` from `src/main/auth-partition-viewer-service.ts`;
-   * tests inject a stub.
-   */
+  /** Open inside the caller’s auth partition to reuse its sign-in cookies. */
   openAuthPartitionViewerService: (
     parent: BrowserWindow,
     opts: import("../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
-  /**
-   * HostApi wipe-partition surface used by plugin `clearAuthPartition`
-   * to delete cookies / storage / cache / HTTP-auth from one of the
-   * plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions
-   * after a user-triggered sign-out. Production wiring is
-   * `clearAuthPartition` from `src/main/auth-window-service.ts`; tests
-   * inject a stub.
-   */
+  /** Clear only the caller’s auth partitions after user sign-out. */
   clearAuthPartitionService: (partition: string) => Promise<void>;
-  /**
-   * §B3 — System browser opener used when
-   * `settings.webView.preferredFlow === "system-browser"`. Production wiring
-   * is `shell.openExternal` from electron; tests inject a spy.
-   */
   shellOpenExternal: (url: string) => Promise<void>;
-  /**
-   * Optional PermissionManager reference. When provided,
-   * the per-plugin `resolveApiKey` host implementation merges the manager's
-   * `getPluginRevokeSignal` with the caller's request signal so a permission
-   * rule change aborts outstanding bearers across plugins. Optional so unit
-   * tests that build a minimal runtime can skip the wiring; production boot
-   * (boot.ts) always passes the live instance.
-   */
+  /** Production supplies the live permission manager so rule changes abort outstanding bearer requests. */
   permissionManager?: import("../../permissions/permission-manager.js").PermissionManager;
-  /**
-   * §8 — required ApprovalGate instance. The `agentApproval` namespace on
-   * every plugin's HostApi is wired to this gate so main-process plugin
-   * handlers can respond to pending approvals without going through the
-   * renderer-only preload bridge. Required (not optional) so that boot
-   * sequence inversion is impossible — if approvalGate is not yet built,
-   * initPluginRuntime cannot be called.
-   */
+  /** The approval gate must exist before runtime creation so plugin handlers can settle approvals. */
   approvalGate: import("../../permissions/approval-gate.js").ApprovalGate;
-  /**
-   * Routines SOT — backs the per-plugin `hostApi.hasRoutineBySource` idempotency
-   * query. Injected (not late-bound) because the per-plugin HostApi factory runs
-   * during `startAll()` inside this step, so the store must already exist; boot
-   * therefore constructs it BEFORE calling initPluginRuntime.
-   */
+  /** Routine storage must exist before startAll creates plugin HostApi instances. */
   routinesStore: RoutinesStore;
-  /**
-   * Work Board SOT — backs `hostApi.proposeWork` / `withdrawWorkProposal`.
-   * Late-bound (unlike `routinesStore`) because `setupWorkBoard` runs AFTER
-   * this step; plugins start later still, so the getter always answers by the
-   * time a proposal can arrive.
-   */
+  /** Resolve Work Board storage late; it is built after this step but before plugins start. */
   getWorkBoardStore: () => import("../../main/work-board-store.js").WorkBoardStore | undefined;
-  /**
-   * Alerts service — backs `hostApi.raiseAlert` / `withdrawAlert` and
-   * registers each plugin's declared kinds at start. Late-bound like the Work
-   * Board store: `setupAlerts` runs after this step and before plugins start.
-   */
+  /** Resolve alerts late; setup runs before any plugin start. */
   getAlertsService: () => import("../../alerts/service.js").AlertsService | undefined;
   /** Production defers activation until Skill/Hook/MCP lifecycle wiring exists. */
   deferStart?: boolean;
-  /**
-   * Re-derives the ASRT shared network union AFTER `load()` reads the
-   * manifests and BEFORE `startAll()` spawns anything: the sandbox gate now
-   * runs before startPlugins(), so its init-time union predates the manifest
-   * read. No-ops internally when ASRT is not active. Optional only for
-   * harnesses that never run the sandbox gate.
-   */
+  /** Refresh manifest domains after load and before startAll can spawn confined children. */
   refreshSandboxUnionDomains?: () => Promise<void>;
   /** Renderer authority revocation hook owned by the IPC layer. */
   onPluginUiRevisionChange?: (pluginId: string) => void;
@@ -251,13 +165,9 @@ export interface InitPluginRuntimeOutput {
   pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void>;
   }>;
   runPluginShutdownHandlers: () => Promise<void>;
-  /** SoT — shared with MarketplaceService + post-boot update detector. */
+  /** Share the marketplace deployment guard with the update detector. */
   pluginPaths: ReturnType<typeof resolvePluginPaths>;
-  /**
-   * Owns each plugin's in-process loopback MCP host. Exposed so the render IPC's
-   * unified `ui://` resolver can try the loopback host (serverId === pluginId)
-   * before the external `mcpManager.clients` registry.
-   */
+  /** Try plugin loopback hosts before external MCP clients when resolving UI resources. */
   loopbackManager: PluginLoopbackManager;
   /** Late-bind bundle projections after workflow, Hook, and MCP services exist. */
   setBundleLifecycleHandler: (handler: PluginBundleLifecycleHandler) => void;
@@ -267,11 +177,6 @@ export interface InitPluginRuntimeOutput {
   admitPreStartOperation: <T>(operation: () => Promise<T>) => Promise<T>;
 }
 
-/**
- * §4.2 Step 3-5 — construct PluginRuntime, register the per-plugin HostApi
- * factory, start all plugins, register plugin tools into ToolRegistry, and
- * wire the dev hot-reload watcher.
- */
 export async function initPluginRuntime(
   input: InitPluginRuntimeInput,
 ): Promise<InitPluginRuntimeOutput> {
@@ -297,19 +202,13 @@ export async function initPluginRuntime(
     getAlertsService,
   } = input;
 
-  // §B3 — host public preference reader, shared across all per-plugin HostApi
-  // instances. Reads `settingsService` live so a Settings toggle is visible on
-  // the next plugin call without reload.
+  // Read public preferences live so settings edits take effect without plugin reload.
   const readAppPreference = buildAppPreferenceReader(settingsService, log);
 
-  // Effect-boundary enforcement — the live `hostClassifiesRisk` read, evaluated
-  // PER hostApi call so a Settings toggle is honoured without reload. Same SOT key
-  // the executor + conversation-loop providers read (boot.ts). When false
-  // (default) the enforcement wrapper is a pure pass-through.
+  // Read effect enforcement on each HostApi call; settings changes apply without reload.
   const hostClassifiesRiskEnabled = (): boolean =>
     settingsService.get("features")?.hostClassifiesRisk ?? false;
 
-  // Plugin shutdown handler registry — fires on before-quit (see shared AuditLogger + hooks wiring).
   const pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void>;
   }> = [];
   let pluginShutdownRan = false;
@@ -338,16 +237,10 @@ export async function initPluginRuntime(
     })();
     return pluginShutdownPromise;
   };
-  // The second and last Electron `before-quit` listener the host installs, and
-  // deliberately not a shutdown hook: hooks are synchronous, and this one has
-  // to defer the quit. It covers the boot window only. Once `AppServices` is
-  // published the ordered cleanup in `main/app-shutdown.ts` runs these same
-  // handlers and `isAppShutdownStarted()` makes this a no-op; before that, the
-  // ordered cleanup returns "skipped" and nothing else would run them.
+  // Before services publish, this listener defers quit for plugin cleanup; ordered shutdown owns later quits.
   input.host.desktop?.onBootShutdown(runPluginShutdownHandlers,
     () => pluginShutdownHandlers.length > 0 && !pluginShutdownRan);
 
-  // Generic configOverrides plus declarative pythonExecutable injection.
   const configOverrides = buildPluginConfigOverrides(settingsService);
   if (pythonPath) {
     configOverrides["*"] = {
@@ -356,16 +249,11 @@ export async function initPluginRuntime(
     };
   }
 
-  // Plugin layout anchors at `aveHome()/plugins/<id>/`, the single root every
-  // install lands in. The resolver always uses `aveHome()/plugins`; E2E
-  // overrides AVE_HOME once and every caller follows the same app-home SOT.
+  // All installs resolve through the single app-home plugin root, including isolated test homes.
   const pluginPaths = resolvePluginPaths();
-  // mkdir the root once so the trust-root realpath check in PluginRuntime
-  // (and any first-install write under pluginsRoot/<id>/) doesn't trip on a
-  // missing directory the very first time the app boots.
+  // Create the trust root before realpath checks or first-install writes.
   mkdirSync(pluginPaths.pluginsRoot, { recursive: true });
-  // Only the machine policy's requiredInstalls locks a plugin (design §10.2).
-  // An unreadable policy file locks nothing, as in the marketplace, which logs it.
+  // Only managed-policy required installs lock plugins; unreadable policy locks none.
   const deploymentGuard = new PluginDeploymentGuard({
     registryPath: pluginPaths.registryPath,
     pluginsRoot: pluginPaths.pluginsRoot,
@@ -375,10 +263,7 @@ export async function initPluginRuntime(
     },
   });
 
-  // #958/#959 security — registry-entry cache (host-verified installSource +
-  // install-time manifest SHA pin; `plugin.json` is untrusted). Extracted to
-  // ./plugin-runtime/registry-cache.ts and wired here so the HostApi closures
-  // answer lookups synchronously and the install/uninstall listeners refresh it.
+  // Trust lookups use host-verified source and manifest pins, never plugin.json claims.
   const { refreshRegistryEntryCache, refreshRegistryEntryCacheIfChanged, getRegistryEntry } =
     createRegistryEntryCache({
       registryPath: pluginPaths.registryPath,
@@ -386,7 +271,6 @@ export async function initPluginRuntime(
     });
   await refreshRegistryEntryCache();
 
-  // Late-binding refs for ConversationLoop-dependent callers.
   const lateBinding: LateBindingRefs = {
     llmCallerRef: { fn: null },
     pluginCallLlmRef: { fn: null },
@@ -394,26 +278,17 @@ export async function initPluginRuntime(
     pluginToolInvokerRef: { fn: null },
   };
 
-  // §Step 4 — wire `app.isPackaged` into the dev-flag gate before any
-  // helper or downstream module reads it. Packaged builds with AVE_DEV* set
-  // get a single audit warning, never a per-flag enumeration.
+  // Seed packaged state before downstream flag reads; packaged tampering produces one audit warning.
   setIsPackaged(input.host.isPackaged);
   if (shouldWarnPackagedFlagsIgnored()) {
-    // Snapshot was captured at `dev-flags.ts` import time, BEFORE
-    // `main.ts:67-73` scrubbed the vars from `process.env`. Listing the
-    // specific names lets operators distinguish a stale launcher
-    // (`AVE_PLUGINS_DIR`) from an active dev tamper (`AVE_DEV=1`).
+    // Report pre-scrub flag names so operators can identify stale launchers and tampering.
     const names = tamperedVarsAtBoot();
     log.error(`Forbidden development/test env ignored in packaged build: ${names.join(", ")}`);
   }
 
-  // Plugin-owned OAuth removed host-owned provider auth APIs. The related
-  // capability is advisory metadata only; there is no host-side auth gate.
+  // Auth capability metadata is advisory; plugins own their authorization flows.
   let pluginRuntime!: PluginRuntime;
-  // Owns the loopback hosts for every plugin — each runs as an in-process MCP
-  // server (mcp-alignment-design.md §3.1). Assigned right after PluginRuntime
-  // construction; the lifecycle closures below capture it and only fire on
-  // post-boot events.
+  // Bind loopback hosts before plugin activation callbacks can use them.
   let loopbackManager!: PluginLoopbackManager;
   let bundleLifecycle: PluginBundleLifecycleHandler | undefined;
 
@@ -421,17 +296,9 @@ export async function initPluginRuntime(
     input.host.desktop?.installPluginPartition(pluginId, pluginRuntime.getPluginRoot(pluginId));
   };
 
-  // §Step 1 + §Step 2 — thread the canonical installed-plugin root through
-  // the runtime. Install source and receipt metadata, not an unsigned-plugin
-  // opt-in, establish the deployment trust classification.
-  // Build the extracted factories. Lazy bindings (pluginRuntime,
-  // loopbackManager) are passed as getters so the eventual assignments below
-  // are visible; both are still unassigned at this point (never value-captured).
-  //
-  // ONE plugin-runtime audit transport, shared by `new PluginRuntime` below and
-  // by the HostApi factory's plugin-storage rejection sink. Hoisted (rather
-  // than inlined at the PluginRuntime construction) so the storage sink cannot
-  // drift into a second record shape.
+  // Deployment trust comes from install provenance and receipts, not an unsigned-plugin opt-in.
+  // Pass runtime and loopback getters because both assignments happen after factory construction.
+  // Share one runtime audit transport so storage refusals use the same record contract.
   const pluginRuntimeAuditLog = (
     level: "info" | "warn" | "error",
     message: string,
@@ -450,11 +317,7 @@ export async function initPluginRuntime(
       log.error({ err: error }, "plugin runtime audit sink failed");
     }
   };
-  /**
-   * Owned here rather than threaded in from boot: the registry's lifetime is
-   * the plugin runtime's, and a catcher outliving the runtime that opened it
-   * would be a bound port with no owner left to close it.
-   */
+  /** The catcher registry must not outlive the runtime that owns its bound ports. */
   const authRedirectCatchers = new AuthRedirectCatchers();
   const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
   const createHostApi = createHostApiFactory({
@@ -505,8 +368,6 @@ export async function initPluginRuntime(
   pluginRuntime = new PluginRuntime({
     encryption: input.host.encryption,
     hostRoot: projectRoot,
-    // The emitted child entry under the runtime asset directory: every
-    // `entry` plugin runs in a child (§9.8 A1).
     childEntryPath: resolvePluginChildEntryPath(),
     pluginsRoot: pluginPaths.pluginsRoot,
     registryPath: pluginPaths.registryPath,
@@ -530,13 +391,7 @@ export async function initPluginRuntime(
     stopRuntime: (signal) => pluginRuntime.stopAll({ signal }),
   });
 
-  // AC1.2 — periodic purge of stale ApprovalIssuerRegistry entries.
-  // ApprovalGate's per-request timeout (default 5 min) resolves deny-once but
-  // doesn't reach back into this registry; if the respond path is never hit
-  // (renderer crash, plugin crash) the issuer entry would leak. We sweep on
-  // a 1-minute cadence, dropping anything older than the gate timeout. The
-  // interval is cleared by a shutdown hook to avoid keeping the process alive
-  // during shutdown.
+  // Sweep abandoned approval issuers; gate timeouts do not remove them from this registry.
   const APPROVAL_REGISTRY_PURGE_MAX_AGE_MS = 5 * 60 * 1000;
   const APPROVAL_REGISTRY_PURGE_INTERVAL_MS = 60 * 1000;
   const approvalRegistryPurgeTimer = setInterval(() => {
@@ -557,101 +412,52 @@ export async function initPluginRuntime(
     clearInterval(approvalRegistryPurgeTimer);
   });
 
-  // PluginRuntime now exists — wire the loopback manager before any plugin
-  // starts (startAll fires onEnable, whose closures use it).
+  // Bind loopback management before startAll fires activation callbacks.
   loopbackManager = new PluginLoopbackManager(pluginRuntime, toolRegistry);
 
   const preStartPhase = new PluginRuntimePreStartPhase();
   const startPluginsOnce = async (): Promise<void> => {
-    // From here plugin processes may run; recursive deletes of plugin trees
-    // become boot-only (see lib/confined-process-phase.ts).
+    // After plugin processes may start, delete plugin trees only during boot.
     noteConfinedProcessesMayRun();
-    // Managed pre-start sync may have committed registry rows after the cache
-    // was first constructed. Refresh from the final durable snapshot before
-    // startAll creates HostApi instances and trust decisions for those rows.
+    // Refresh the final durable registry before HostApi creation and trust decisions.
     if (input.deferStart) await refreshRegistryEntryCache();
-    // Partition policy first, plugin start second.
-    //
-    // The window is already up when this step runs, so a plugin panel can be
-    // opened while `startAll` is still working — and `startAll` is not quick
-    // for a worker-backed plugin, which provisions a Python runtime before it
-    // returns. A `<webview>` that attaches in that window binds its URL loaders
-    // once, at first load, from whatever the session offers at that instant: no
-    // `ave-plugin:` handler yet means every asset request from that frame ends
-    // in ERR_UNKNOWN_URL_SCHEME without ever reaching the handler, for the life
-    // of the frame. The panel then shows "Plugin UI failed to load" and stays
-    // that way until the app restarts, while the very same URL fetched a second
-    // later from anywhere else succeeds.
-    //
-    // `load()` only reads the registry and manifests — it is the cheap half of
-    // `startAll`, it is idempotent, and it is enough to know which partitions
-    // will exist. Installing their policies here closes the window. The pass
-    // after `startAll` stays: it picks up ids that only appear once plugins are
-    // running, and re-points each partition at the install root the runtime
-    // finally resolved.
+    // Install partition handlers before starting plugins; webviews bind URL loaders on first load.
+    // Load manifests cheaply before activation, then repeat policy installation for runtime-resolved roots.
     await pluginRuntime.load();
     for (const pluginId of pluginRuntime.listPluginIds()) {
       installLoadedPluginPartitionPolicy(pluginId);
     }
-    // The union the sandbox enforces must reflect the manifests `load()` just
-    // read BEFORE any factory spawns a confined child in `startAll()` — the
-    // gate initialized pre-load with only host-resolved dynamic endpoints.
+    // Refresh confinement domains from loaded manifests before any child can spawn.
     await input.refreshSandboxUnionDomains?.();
     await pluginRuntime.startAll();
     log.info("boot: plugins loaded: %s", pluginRuntime.listToolNames());
 
-    // Pre-register the per-partition session preload policy for every
-    // loaded plugin (#498). Electron's `<webview partition="persist:plugin:..."
-  // preload="...">` honors `preload=` only when sandbox=no; with sandbox=yes
-  // the preload script must be registered on the partition's Session via
-  // `session.registerPreloadScript()`. The previous attach-time hook in main.ts
-  // tries to read `contents.session.partition` to decide which partition
-  // got attached, but that property is undocumented and returns
-  // `undefined` on current Electron — so the hook never registers the preload
-  // and plugin webviews load without the `avePlugin` contextBridge,
-  // surfacing as "avePlugin bridge missing" in the shell. Pre-registering
-  // by walking the loaded-plugin set sidesteps the partition-name read
-  // entirely.
+    // Sandboxed webviews need session-registered preloads; preload attributes do not apply.
     for (const pluginId of pluginRuntime.listPluginIds()) {
       installLoadedPluginPartitionPolicy(pluginId);
     }
   };
   const startPlugins = (): Promise<void> => preStartPhase.start(startPluginsOnce);
   if (!input.deferStart) await startPlugins();
-  // Cover plugins added AFTER startAll() — deep-link install
-  // (`ave://install/<slug>` → `addPlugin`), dev hot-reload watcher
-  // (AVE_DEV_RELOAD=1), Settings sideload. The boot loop above only sees
-  // `startAll`-era plugins; the attach-time hook in main.ts is dead code
-  // for these (it reads `contents.session.partition` which is undocumented
-  // and returns `undefined`), so the partition policy must be installed at
-  // plugin-install time.
-  // Install events: partition policy is per-install (Electron `session`s are
-  // created lazily and pinned per pluginId), so it stays here. ToolRegistry
-  // resync runs through the runtime's `onEnable` hook wired above —
-  // `addPlugin` / `restartPlugin` already fire it before this event lands.
+  // Install partition policy for post-boot arrivals too; they missed the initial loaded-plugin pass.
+  // Partition policy follows installs; tool resync belongs to runtime activation callbacks.
   onHostEvent("plugin.installed", (data) => {
     const pluginId = (data as { pluginId?: string } | undefined)?.pluginId;
     if (typeof pluginId !== "string") return;
     installLoadedPluginPartitionPolicy(pluginId);
-    // #958/#959 — keep installSource + manifest SHA pin in sync so a freshly
-    // installed admin plugin gets both decisions on first call.
+    // Refresh trust metadata before a new plugin’s first call.
     void refreshRegistryEntryCache();
   });
 
-  // Uninstall projection is owned by PluginBundleLifecycle. Never run legacy
-  // syncAll here: it can re-admit untagged tools outside the generation barrier.
+  // Bundle lifecycle owns uninstall projection; legacy sync can admit tools outside the generation barrier.
   onHostEvent("plugin.uninstalled", (data) => {
     const pluginId = (data as { pluginId?: string } | undefined)?.pluginId;
     if (typeof pluginId !== "string") return;
-    // #958/#959 — drop the stale cache entry so a re-install does not inherit
-    // the previous Tier-3 bypass or manifest SHA decision.
+    // Drop removed cache entries so reinstall cannot inherit old trust decisions.
     void refreshRegistryEntryCache();
   });
 
-  // Dev-mode live-reload watcher. No-op unless AVE_DEV_RELOAD=1.
-  // ToolRegistry resync runs through the runtime's `onEnable` callback wired
-  // above — `reloadPlugin` fires it on success — so the watcher only
-  // surfaces the hot-reload log line here.
+  // Reload already resyncs tools through onEnable; the watcher only reports the result.
   const pluginDevWatcher = startPluginDevWatcher({
     pluginRuntime,
     onReloaded: (pluginId) => {
@@ -681,5 +487,4 @@ export async function initPluginRuntime(
   };
 }
 
-// Re-export so boot.ts's return statement can still reach BrowserWindow type.
 export type { BrowserWindow };

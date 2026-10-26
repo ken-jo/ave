@@ -1,16 +1,4 @@
-/**
- * The floating dock's policy — geometry, admission, and lifetime.
- *
- * The geometry cases are the security ones. What stops an attached card from
- * covering the screen is a cap the plugin cannot reach, and a cap that is only
- * asserted through a real window is a cap nobody re-checks. Both bounds are
- * pure functions so they can be checked directly.
- *
- * The lifetime cases are the correctness ones. Every detach must reach the
- * plugin exactly once and carry its reason — a recorder that hears "user
- * closed the dock" has an orphaned session to clean up, and one that hears
- * nothing keeps recording into a window that is gone.
- */
+// Geometry caps must be unreachable by plugins; every detach must notify the plugin exactly once with its reason.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DOCK_CHROME_HEIGHT,
@@ -42,7 +30,7 @@ const SURFACE: ResolvedFloatingSurface = {
   title: "Recorder",
 };
 
-/** A surface that records what it was told and lets a test drive the window. */
+// A surface that records what it was told and lets a test drive the window.
 function stubSurface(workArea: WorkArea = WORK_AREA) {
   const calls: string[] = [];
   const mounted: Array<{ panelId: string; surface: ResolvedFloatingSurface; height: number }> = [];
@@ -86,6 +74,11 @@ function stubSurface(workArea: WorkArea = WORK_AREA) {
   };
 }
 
+function createDock(workArea: WorkArea = WORK_AREA) {
+  const stub = stubSurface(workArea);
+  return { stub, dock: new FloatingDock(stub.surface, () => SURFACE) };
+}
+
 beforeEach(() => {
   __resetPanelSeqForTests();
 });
@@ -114,8 +107,7 @@ describe("clampSlotHeight", () => {
   });
 
   it("refuses rather than squeezing below the floor", async () => {
-    // A slot the user can see but cannot read is worse than being told there
-    // is no room. The plugin can retry; a 12px card is just broken.
+    // A slot the user can see but cannot read is worse than being told there is no room. The plugin can retry; a 12px card is just broken.
     try {
       clampSlotHeight(200, 12);
       expect.unreachable("should have refused");
@@ -130,8 +122,7 @@ describe("clampSlotHeight", () => {
     ["zero", 0],
     ["negative", -300],
   ])("refuses %s rather than substituting a default", async (_name, value) => {
-    // Substituting the floor would turn a plugin's arithmetic bug into a slot
-    // that merely looks wrong, with nothing to report.
+    // Substituting the floor would turn a plugin's arithmetic bug into a slot that merely looks wrong, with nothing to report.
     try {
       clampSlotHeight(value, 10_000);
       expect.unreachable("should have refused");
@@ -152,8 +143,7 @@ describe("dockBounds", () => {
   });
 
   it("respects a work area that does not start at the origin", async () => {
-    // A second display, or a docked taskbar. Ignoring the offset would put the
-    // dock on the wrong screen entirely.
+    // A second display, or a docked taskbar. Ignoring the offset would put the dock on the wrong screen entirely.
     expect(dockBounds(200, { x: -1920, y: 40, width: 1920, height: 1000 })).toMatchObject({
       x: -1920 + 1920 - DOCK_WIDTH - DOCK_MARGIN,
       y: 40 + 1000 - 200 - DOCK_MARGIN,
@@ -161,9 +151,8 @@ describe("dockBounds", () => {
   });
 
   it("does not push the dock off the top of a work area shorter than itself", async () => {
-    // Only `y` is pinned here: 800 - 360 - 16 still leaves room horizontally,
-    // so the x anchor is the ordinary one. A dock whose top went negative
-    // would put its close control off-screen.
+    // Only `y` is pinned here: 800 - 360 - 16 still leaves room horizontally, so the x anchor is the ordinary one. A dock whose top went negative would put
+    // its close control off-screen.
     expect(dockBounds(900, { x: 0, y: 0, width: 800, height: 400 })).toMatchObject({
       x: 800 - DOCK_WIDTH - DOCK_MARGIN,
       y: 0,
@@ -181,29 +170,25 @@ describe("dockBounds", () => {
 
 describe("FloatingDock activity", () => {
   it("shows the window on the first activity and hides it when cleared", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
 
     dock.setActivity({ conversation: "Quarterly report", summary: "Indexing 3 documents" });
     expect(dock.visible).toBe(true);
-    // The line says WHOSE work it is. One line, up to four conversations: an
-    // unlabelled line cannot be attributed, and the next one to arrive
-    // replaces it without the user knowing what it replaced.
+    // The line says WHOSE work it is. One line, up to four conversations: an unlabelled line cannot be attributed, and the next one to arrive replaces it
+    // without the user knowing what it replaced.
     expect(stub.activities[stub.activities.length - 1]).toMatchObject({
       conversation: "Quarterly report",
       summary: "Indexing 3 documents",
     });
 
     dock.setActivity(null);
-    // A window floating above every other application with nothing in it is
-    // clutter the user did not ask for.
+    // A window floating above every other application with nothing in it is clutter the user did not ask for.
     expect(dock.visible).toBe(false);
     expect(stub.calls).toContain("hide");
   });
 
   it("keeps the dock up when activity clears but a panel is still attached", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { dock } = createDock();
     dock.setActivity({ conversation: "Quarterly report", summary: "working" });
     dock.attach("meeting", { extensionId: "recorder" });
 
@@ -213,8 +198,7 @@ describe("FloatingDock activity", () => {
   });
 
   it("shows the window for an attachment even with no activity at all", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { dock } = createDock();
 
     dock.attach("meeting", { extensionId: "recorder" });
 
@@ -224,14 +208,12 @@ describe("FloatingDock activity", () => {
 
 describe("FloatingDock attachment", () => {
   it("mounts a declared surface at a clamped height and lays the dock out", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
 
     const handle = dock.attach("meeting", { extensionId: "recorder", height: 9999 });
 
     expect(handle.height).toBe(MAX_SLOT_HEIGHT);
-    // Clamped BEFORE the mount — the surface never saw the raw number, so
-    // nothing painted at 9999px even for a frame.
+    // Clamped BEFORE the mount — the surface never saw the raw number, so nothing painted at 9999px even for a frame.
     expect(stub.mounted[0]).toMatchObject({ height: MAX_SLOT_HEIGHT });
     expect(dock.height).toBe(DOCK_CHROME_HEIGHT + MAX_SLOT_HEIGHT);
   });
@@ -252,8 +234,7 @@ describe("FloatingDock attachment", () => {
   });
 
   it("returns the same slot for a repeat attach of the same surface", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
 
     const first = dock.attach("meeting", { extensionId: "recorder" });
     const second = dock.attach("meeting", { extensionId: "recorder" });
@@ -274,8 +255,7 @@ describe("FloatingDock attachment", () => {
   });
 
   it("admits later attachments against the room the earlier ones left", async () => {
-    // The bound that matters. Per-slot caps alone would let several
-    // attachments add up to a full-screen overlay.
+    // The bound that matters. Per-slot caps alone would let several attachments add up to a full-screen overlay.
     const stub = stubSurface();
     const dock = new FloatingDock(stub.surface, (pluginId, extensionId) => ({
       ...SURFACE,
@@ -296,8 +276,7 @@ describe("FloatingDock attachment", () => {
       pluginId,
       extensionId,
     }));
-    // 0.6 * 600 = 360, minus 76 of chrome, leaves 284 — the first attachment
-    // takes all of it and nothing else fits.
+    // 0.6 * 600 = 360, minus 76 of chrome, leaves 284 — the first attachment takes all of it and nothing else fits.
     dock.attach("a", { extensionId: "one", height: MAX_SLOT_HEIGHT });
 
     try {
@@ -332,8 +311,7 @@ describe("FloatingDock slot titles", () => {
     dock.refreshTitles();
     expect(stub.calls.filter((c) => c.startsWith("retitle:"))).toHaveLength(1);
 
-    // A surface that no longer resolves keeps its title; detaching is not a
-    // side effect of a language switch.
+    // A surface that no longer resolves keeps its title; detaching is not a side effect of a language switch.
     outcome.current = "unknown-plugin";
     dock.refreshTitles();
     expect(stub.calls.filter((c) => c.startsWith("retitle:"))).toHaveLength(1);
@@ -343,8 +321,7 @@ describe("FloatingDock slot titles", () => {
 
 describe("FloatingDock slot lifetime", () => {
   it("clamps a resize the same way and reports what was applied", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
 
     expect(await handle.resize(9999)).toBe(MAX_SLOT_HEIGHT);
@@ -353,21 +330,16 @@ describe("FloatingDock slot lifetime", () => {
   });
 
   it("does not count a slot's own height against its own resize", async () => {
-    // Measuring against the full dock would make growing an existing slot
-    // impossible as soon as the dock neared its cap — the slot would be
-    // competing with itself.
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    // Measuring against the full dock would make growing an existing slot impossible as soon as the dock neared its cap — the slot would be competing with itself.
+    const { dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder", height: 400 });
 
     expect(await handle.resize(MAX_SLOT_HEIGHT)).toBe(MAX_SLOT_HEIGHT);
   });
 
   it("re-reads the work area on resize", async () => {
-    // The user can move the app to another display mid-recording. A cap
-    // computed once at attach would then be the wrong screen's cap.
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    // The user can move the app to another display mid-recording. A cap computed once at attach would then be the wrong screen's cap.
+    const { stub, dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
 
     stub.area.current = { x: 0, y: 0, width: 1200, height: 600 };
@@ -375,8 +347,7 @@ describe("FloatingDock slot lifetime", () => {
   });
 
   it("notifies once with the reason when the user closes the dock", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
     const seen: DetachReason[] = [];
     handle.onDetached((reason) => seen.push(reason));
@@ -384,17 +355,15 @@ describe("FloatingDock slot lifetime", () => {
     stub.fire({ kind: "dock-closed" });
     stub.fire({ kind: "dock-closed" });
 
-    // Once, not twice: a second notification would cancel an already-cancelled
-    // recording. The reason has to survive so an orphaned session can be told
-    // apart from a deliberate stop.
+    // Once, not twice: a second notification would cancel an already-cancelled recording. The reason has to survive so an orphaned session can be told apart
+    // from a deliberate stop.
     expect(seen).toEqual(["user-closed"]);
     expect(dock.attachedCount).toBe(0);
     expect(dock.visible).toBe(false);
   });
 
   it("carries a renderer crash through as its own reason", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
     const seen: DetachReason[] = [];
     handle.onDetached((reason) => seen.push(reason));
@@ -405,8 +374,7 @@ describe("FloatingDock slot lifetime", () => {
   });
 
   it("survives a listener that throws and still notifies the rest", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
     const second = vi.fn();
     handle.onDetached(() => {
@@ -420,22 +388,19 @@ describe("FloatingDock slot lifetime", () => {
   });
 
   it("tells a late subscriber the slot is already gone", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
     await handle.detach();
 
     const late = vi.fn();
     handle.onDetached(late);
 
-    // Silence would leave the subscriber waiting for an event that has already
-    // happened.
+    // Silence would leave the subscriber waiting for an event that has already happened.
     expect(late).toHaveBeenCalledTimes(1);
   });
 
   it("makes detach idempotent", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
 
     await handle.detach();
@@ -445,8 +410,7 @@ describe("FloatingDock slot lifetime", () => {
   });
 
   it("refuses a resize after detach instead of silently doing nothing", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
     await handle.detach();
 
@@ -454,8 +418,7 @@ describe("FloatingDock slot lifetime", () => {
   });
 
   it("lets a surface be re-attached after it detaches", async () => {
-    const stub = stubSurface();
-    const dock = new FloatingDock(stub.surface, () => SURFACE);
+    const { stub, dock } = createDock();
     await dock.attach("meeting", { extensionId: "recorder" }).detach();
 
     dock.attach("meeting", { extensionId: "recorder" });

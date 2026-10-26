@@ -1,49 +1,34 @@
-/**
- * Read-classification evasion regression tests.
- *
- * The structural defect these payloads reached: `invocation-runner` gated the
- * whole shell path policy — the sensitive-path hard block AND the
- * allowed-directory check — on the derived category being `"shell"`. Anything
- * the host inspector classified `"read"` therefore skipped containment
- * entirely, so every way to get a mutating command classified `read` was also
- * a way to erase path containment.
- *
- * Each case below pins BOTH halves of the fix:
- *   1. the payload is no longer classified `read` by {@link inspectHostRisk}, and
- *   2. path containment ({@link findShellPathPolicyViolation}) actually runs on
- *      the command and sees the real target — the control that used to be
- *      skipped is now reachable and correct for the same payload.
- */
-import { describe, it, expect } from "vitest";
+// Read classification must never skip sensitive-path or allowed-directory enforcement. Each evasion case checks both conservative classification and containment of the real target.
+import { afterEach, describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { inspectHostRisk, isReadOnlyCommand } from "../reviewer/host-risk-inspector.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
+import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/**
- * The shipped `permissions.blockReadsOutsideWorkingDirectories` — off, so reads
- * are bounded by the Layer 0 deny-list rather than by the directory boundary.
- *
- * Every payload below is either a Layer 0 path or a leaf the verb tables
- * classify as writing, so the asymmetry does not reach any of them: each is
- * refused for the same reason under either setting.
- */
+// The shipped `permissions.blockReadsOutsideWorkingDirectories` — off, so reads are bounded by the Layer 0 deny-list rather than by the directory boundary. Every payload below is either a Layer 0 path or a leaf the verb tables classify as writing, so the asymmetry does not reach any of them: each is refused for the same reason under either setting.
 const READS_WIDE = false;
 import { shellPathPolicyViolation } from "../../tools/pipeline/path-extraction.js";
-import { canonicalizePathForMatch } from "../sensitive-paths.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 
-/** Absolute path to a real credential file under the current user's home. */
+// Absolute path to a real credential file under the current user's home.
 const AUTHORIZED_KEYS = join(homedir(), ".ssh", "authorized_keys");
+// The same path as one shell word. Unquoted, the backslashes of a Win32 path are bash escapes, so the command would name a different, relative file.
+const AUTHORIZED_KEYS_WORD = shellQuote(AUTHORIZED_KEYS);
 
 function classify(finalInput: Record<string, unknown>) {
   return inspectHostRisk({ source: "plugin", finalInput });
 }
 
-/** A throwaway sandbox root; the policy resolves relative operands against it. */
+const tmpDirs = createTmpDirTracker();
+
+afterEach(() => tmpDirs.cleanup());
+
+// A throwaway sandbox root; the policy resolves relative operands against it.
 function sandboxRoot(): string {
-  return mkdtempSync(join(tmpdir(), "ave-evasion-"));
+  return tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-evasion-")));
 }
 
 describe("evasion: a second command-bearing field carries the payload", () => {
@@ -61,7 +46,7 @@ describe("evasion: a second command-bearing field carries the payload", () => {
     const root = sandboxRoot();
     expect(
       shellPathPolicyViolation(
-        { command: "cat ./notes.txt", script: `cat ${AUTHORIZED_KEYS}` },
+        { command: "cat ./notes.txt", script: `cat ${AUTHORIZED_KEYS_WORD}` },
         root,
         [],
         READS_WIDE,
@@ -138,27 +123,24 @@ describe("evasion: an env assignment selects the interpreter", () => {
 
   it("runs path containment on the interpreter-selecting form", () => {
     const root = sandboxRoot();
-    // The assignment value is itself a path operand (`/bin/sh`, or an
-    // unresolvable `%s` form), so containment refuses on it before reaching the
-    // credential operand — either way the control now runs on a command that
-    // used to be waved through as read.
+    // Assignment values are path operands too; containment may reject /bin/sh or opaque %s before reaching the credential target.
     expect(
-      findShellPathPolicyViolation(`LESSOPEN='|/bin/sh %s' cat ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`LESSOPEN='|/bin/sh %s' cat ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).not.toBeNull();
     expect(
-      findShellPathPolicyViolation(`LESSOPEN=/bin/sh cat ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`LESSOPEN=/bin/sh cat ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).not.toBeNull();
     // Without the assignment the same operand is the sensitive-path block.
     expect(
-      findShellPathPolicyViolation(`cat ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`cat ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).toMatchObject({ kind: "sensitive-path" });
   });
 });
 
 describe("evasion: a read-only git subcommand carries a writing flag", () => {
   it("git diff --output=<file> is no longer read", () => {
-    expect(isReadOnlyCommand(`git diff --output=${AUTHORIZED_KEYS}`)).toBe(false);
-    expect(classify({ command: `git diff --output=${AUTHORIZED_KEYS}` })).toBe("shell");
+    expect(isReadOnlyCommand(`git diff --output=${AUTHORIZED_KEYS_WORD}`)).toBe(false);
+    expect(classify({ command: `git diff --output=${AUTHORIZED_KEYS_WORD}` })).toBe("shell");
   });
 
   it("escalates every unknown flag on an inspection subcommand (allow-list, not deny-list)", () => {
@@ -167,9 +149,7 @@ describe("evasion: a read-only git subcommand carries a writing flag", () => {
     expect(isReadOnlyCommand("git show --frobnicate")).toBe(false);
   });
 
-  // `reflog` is an inspection subcommand, but its expire/delete forms rewrite
-  // the reflog. `expire --all` and `delete HEAD@{1}` graded read on b77d98d0;
-  // `--expire=now` was already escalated by the inspection flag allow-list.
+  // `reflog` is an inspection subcommand, but its expire/delete forms rewrite the reflog. `expire --all` and `delete HEAD@{1}` graded read on b77d98d0; `--expire=now` was already escalated by the inspection flag allow-list.
   it.each([
     "git reflog expire --all",
     "git reflog expire --expire=now --all",
@@ -192,39 +172,41 @@ describe("evasion: a read-only git subcommand carries a writing flag", () => {
   it("runs path containment on the git write flag", () => {
     const root = sandboxRoot();
     expect(
-      findShellPathPolicyViolation(`git diff --output=${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`git diff --output=${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).toMatchObject({ kind: "sensitive-path" });
   });
 });
 
 describe("evasion: a glued short flag hides the write target", () => {
-  const command = `sort -o${AUTHORIZED_KEYS} f`;
+  const command = `sort -o${AUTHORIZED_KEYS_WORD} f`;
 
   it("sort -o<file> glued to the flag is no longer read", () => {
     expect(isReadOnlyCommand(command)).toBe(false);
     expect(classify({ command })).toBe("shell");
     // The separated form was already covered; both must stay shell.
-    expect(isReadOnlyCommand(`sort -o ${AUTHORIZED_KEYS} f`)).toBe(false);
+    expect(isReadOnlyCommand(`sort -o ${AUTHORIZED_KEYS_WORD} f`)).toBe(false);
   });
 
   it("path containment resolves the glued value as the real target, not a relative path", () => {
     const root = sandboxRoot();
     expect(findShellPathPolicyViolation(command, root, root, [], READS_WIDE)).toMatchObject({
       kind: "sensitive-path",
-      // A violation reports the path in the canonical match form the policy
-      // compares with — identical to the platform form on POSIX, drive-folded
-      // and forward-slashed on Win32. Asserting the raw join would only be
-      // testing which platform the suite runs on.
-      path: canonicalizePathForMatch(AUTHORIZED_KEYS),
+      // A violation reports the resolved host path the command opens, which is the platform form on every platform.
+      path: AUTHORIZED_KEYS,
     });
-    // The decisive case: a glued target whose BASENAME is not itself sensitive.
-    // Resolved as a pseudo-relative path it landed inside the sandbox and
-    // produced no violation at all; resolved as the real target it is
-    // out-of-bounds.
+    // The decisive case: a glued target whose BASENAME is not itself sensitive. Resolved as a pseudo-relative path it landed inside the sandbox and produced no violation at all; resolved as the real target it is out-of-bounds.
     const outside = join(homedir(), "Documents", "exfil.txt");
     expect(
-      findShellPathPolicyViolation(`sort -o${outside} f`, root, root, [], READS_WIDE),
-    ).toMatchObject({ kind: "sandbox-boundary", path: canonicalizePathForMatch(outside) });
+      findShellPathPolicyViolation(`sort -o${shellQuote(outside)} f`, root, root, [], READS_WIDE),
+    ).toMatchObject({ kind: "sandbox-boundary", path: outside });
+  });
+
+  it("path containment reads a drive-qualified glued value as a path", () => {
+    // Absolute on Win32 and a relative operand elsewhere; either way the glued value is the target the policy must check.
+    const root = sandboxRoot();
+    expect(
+      findShellPathPolicyViolation("sort -oC:/Users/u/.ssh/authorized_keys f", root, root, [], READS_WIDE),
+    ).toMatchObject({ kind: "sensitive-path" });
   });
 
   it("leaves ordinary glued flags read (no path in the glued value)", () => {
@@ -253,11 +235,9 @@ describe("evasion: mutating/exec forms missing from allow-listed verbs", () => {
 
   it("runs path containment on the find write target", () => {
     const root = sandboxRoot();
-    // `find` is refused by the recursive-traversal rule before the operand scan
-    // — the point is that the rule now RUNS for this payload at all, where a
-    // `read` verdict used to skip the whole policy.
+    // Recursive-traversal rejection may precede operand scanning; read classification must never skip this policy.
     expect(
-      findShellPathPolicyViolation(`find . -fprint0 ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`find . -fprint0 ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).toMatchObject({ kind: "recursive-traversal" });
   });
 });

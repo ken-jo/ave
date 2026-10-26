@@ -1,9 +1,4 @@
-/**
- * registry.json migration — pre-PR #430 entries with `installedBy` +
- * `_devLinked` are mapped onto the unified `installSource` enum on first
- * read. Reads are side-effect-free; explicit migration persists through the
- * shared registry transaction.
- */
+/** Registry reads normalize legacy fields without writing; only explicit migration persists changes. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
@@ -26,11 +21,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("maps `_devLinked: true` in memory and persists only through explicit migration", async () => {
-    // Post-2026-05 dev-link purge: legacy `_devLinked: true` and any
-    // existing `installSource: "dev-link"` are rewritten to "local-dev"
-    // (the closest still-valid sibling). Receipt verification then
-    // applies normally — the operator will see a clear failure if the
-    // entry was a dev-link install with no receipt on disk.
+    // Normalize dev-link to local-dev; receipt verification still applies.
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -118,12 +109,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("`_devLinked: true` wins over `installedBy: \"admin\"` (rewritten to local-dev post-purge)", async () => {
-    // Pre-PR #430 dev-link installs co-existed with admin signals on the
-    // same entry only by accident; the disjunction call sites used was
-    // "_devLinked first, then installedBy". After the 2026-05 dev-link
-    // purge, the result is "local-dev" rather than "dev-link" — the
-    // _devLinked precedence over installedBy is preserved, but the value
-    // produced is the still-valid sibling.
+    // Legacy _devLinked takes precedence over installedBy and normalizes to local-dev.
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -146,8 +132,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("rewrites pre-existing `installSource: \"dev-link\"` to `\"local-dev\"`", async () => {
-    // Post-2026-05: any dev-link-typed install source on disk is normalised
-    // to local-dev on read, with a one-shot loud audit warning.
+    // Normalize dev-link on read and emit a one-shot audit warning.
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -172,10 +157,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("entries with neither legacy field nor installSource keep installSource undefined", async () => {
-    // Truly legacy entries (pre-installedBy) leave the manifest
-    // installPolicy as the only signal — the deployment-guard
-    // explicitly falls back to it when `installSource === undefined`,
-    // so the migration must NOT default-stamp "user" here.
+    // Without install-source signals, preserve undefined so deployment policy can consult the manifest.
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -318,8 +300,6 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
     const missingPath = join(tmpDir, "does-not-exist.json");
     const registry = await readPluginRegistry(missingPath);
     expect(registry.plugins).toEqual([]);
-    // Migration log should not fire on first boot — and certainly the
-    // file must not be created.
     await expect(readFile(missingPath, "utf-8")).rejects.toThrow();
   });
 

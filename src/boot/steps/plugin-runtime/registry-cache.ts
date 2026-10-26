@@ -1,17 +1,4 @@
-/**
- * Boot §4.2 / #958-#959 — registry-entry cache (C6 extraction).
- *
- * Behavior-preserving move of the `registryEntryCache` cluster out of
- * initPluginRuntime. The registry file (`~/.ave/plugins/registry.json`) is the
- * host-verified source of truth for `installSource`, the install-time
- * manifest SHA pin and the install's origin; `plugin.json` lives inside the
- * plugin's writable surface and cannot be trusted alone. The cache is populated at boot
- * and refreshed on every install/uninstall so HostApi closures answer lookups
- * synchronously without touching disk on the hot path.
- *
- * Trust source: the host-secret gate (getSecret / resolveApiKey) reads this
- * map; manifest-only metadata never grants a host secret.
- */
+/** Trust host registry provenance and pins; writable plugin manifests alone cannot grant host secrets. */
 import { stat } from "node:fs/promises";
 import { isMissingPathError } from "../../../lib/atomic-file.js";
 import { fileIdentityKey } from "../../../lib/file-identity.js";
@@ -20,24 +7,14 @@ import type { PluginRegistryTrust } from "../../../plugins/types.js";
 
 export interface RegistryEntryCache {
   refreshRegistryEntryCache: () => Promise<void>;
-  /**
-   * Re-read the registry only when the file changed since the last read. The
-   * install and uninstall events refresh the cache, but other writers (the
-   * §16.3 migration binding an origin, boot recovery) do not raise them; the
-   * host-secret gate calls this before it trusts an entry.
-   */
+  /** Check file identity before trust decisions because some registry writers emit no install event. */
   refreshRegistryEntryCacheIfChanged: () => Promise<void>;
   getRegistryEntry: (
     pluginId: string,
   ) => PluginRegistryTrust | undefined;
 }
 
-/**
- * Build the registry-entry cache. `refreshRegistryEntryCache` re-reads the
- * host-managed registry file (fail-closed on error → empty cache → no entry,
- * so no host-secret grant); `getRegistryEntry` is a synchronous
- * lookup used inside the per-plugin HostApi closures.
- */
+/** Read failures empty the cache and deny grants until a successful refresh. */
 export function createRegistryEntryCache(deps: {
   registryPath: string;
   log: { warn: (msg: string, ...args: unknown[]) => void };
@@ -75,8 +52,6 @@ export function createRegistryEntryCache(deps: {
     } catch (err) {
       registryEntryCache.clear();
       readStamp = null;
-      // Cache stays empty, so the host-secret gate finds no entry and grants
-      // nothing until a later refresh reads the registry.
       log.warn(
         "registry-entry cache refresh failed: %s",
         (err as Error).message,

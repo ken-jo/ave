@@ -1,79 +1,35 @@
-/**
- * S2 sandbox audit entry schema + builder.
- *
- * Spec ref: docs/research/sandbox-isolation.md §3.6 (S2 audit fields)
- * Issue: #691
- *
- * This module defines the JSON shape of a sandbox execution audit entry
- * and a builder function that callers use to construct one.
- *
- * The *sink* (audit.log append, HMAC chain linkage) is intentionally
- * omitted here — it is wired alongside the full user-approval-store and
- * emit pipeline. This file is focused on types and skeletons only.
- *
- * Relationship to existing audit:
- *   `src/audit/audit-schema.ts` defines the permission-gate audit entries
- *   (AuditAllow, AuditDeny, …). This file defines a *separate* S2 channel
- *   for per-spawn sandbox telemetry — tool execution metadata plus
- *   reviewer composition signals that are not captured in the gate entries.
- *   Both channels are JSONL; the discriminator is the presence of
- *   `SandboxAuditEntry.sandbox` vs `PermissionAuditEntry.decision`.
- */
+/** Sandbox execution telemetry uses a separate JSONL schema from permission decisions (docs/research/sandbox-isolation.md). */
 
 import type { SandboxKind, SandboxCapability } from "../permissions/sandbox-capability.js";
 import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";
+import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.js";
+import type { EgressGrantScope } from "../shared/sandbox-capability-info.js";
 
-// ─── Event shapes ─────────────────────────────────────────────────────────────
-
-/**
- * An observable event captured during a single sandboxed tool execution.
- * The Anthropic Sandbox Runtime (ASRT) backends surface these as they
- * intercept syscalls / proxy egress (Linux bwrap seccomp, macOS Seatbelt).
- */
+/** Events observed by sandbox backends while intercepting filesystem or network operations. */
 export type SandboxEvent =
   | {
       type: "egress_attempted";
-      /** Whether the runner's policy blocked the connection attempt. */
       blocked: boolean;
-      /** Destination IP or hostname. */
       target: string;
     }
   | {
       type: "fs_write_attempted";
-      /** Whether the runner's policy blocked the write. */
       blocked: boolean;
-      /** Absolute path the child attempted to write. */
       path: string;
     };
 
-// ─── SandboxAuditEntry ───────────────────────────────────────────────────────
-
-/**
- * Full S2 audit entry. One entry per sandboxed tool invocation.
- *
- * Fields:
- *   `timestamp`  ISO 8601 — wall-clock time the spawn was initiated.
-  *   `tool`       Identifies the tool invocation (name, DLP-redacted args string,
-  *                source, and approval trust tuple).
- *   `sandbox`    Execution context: kind/confidence from the SOT, events
- *                observed during execution, and spawn overhead metrics.
- *   `reviewer`   Reviewer composition signals: rule + LLM + final verdicts,
- *                which composition rules fired, and user-approval provenance
- *                if the action required interactive approval.
- */
+/** One row per sandboxed invocation: tool identity, confinement events, timing, and reviewer provenance. */
 export interface SandboxAuditEntry {
   timestamp: string;  // ISO 8601
 
   tool: {
-    /** Tool name (underscore format, per CLAUDE.md Tool Naming Convention). */
     name: string;
-    /** DLP-redacted args as a JSON string. Callers must mask before emit. */
+    /** Callers must DLP-mask arguments before emitting their JSON representation. */
     args: string;
-    /** Tool source (`builtin`, `plugin`, or `mcp`). */
     source: string;
-    /** Trust origin of the tool call (mirrors ToolInvocationContext.trustOrigin). */
+    /** Trust origin mirrors ToolInvocationContext.trustOrigin. */
     trustOrigin?: ToolTrustOrigin;
     /** Optional authority-sensitive approval identity for this invocation. */
     approvalCacheKey?: string;
@@ -82,92 +38,132 @@ export interface SandboxAuditEntry {
   sandbox: {
     kind: SandboxKind;
     confidence: SandboxCapability["confidence"];
-    /** Events observed by the runner during this invocation. */
     events: SandboxEvent[];
     /** Wall-clock ms from spawn() call to first byte of child stdout. */
     spawnLatencyMs: number;
-    /**
-     * Sandbox overhead as a percentage of total execution time:
-     *   (spawnLatencyMs / totalExecutionMs) * 100
-     * Rounded to 2 decimal places. Used for SLA tracking.
-     */
+    /** Percentage overhead is spawnLatencyMs / totalExecutionMs * 100, rounded to two decimals. */
     overheadPercent: number;
   };
 
   reviewer: {
-    /** Verdict from the deterministic rule-based classifier. */
     ruleVerdict: RiskLevel;
-    /**
-     * Raw parsed verdict from the LLM classifier, or "high" when the LLM
-     * classifier fails closed. `null` when no LLM verdict is available —
-     * e.g. memory/cache hits, rule-only mode, or fallback-to-rule parse /
-     * provider failures where the final verdict comes from rules instead.
-     */
+    /** Raw parsed model verdict, or high on fail-closed errors; null when rules or cached approval supplied the verdict. */
     llmVerdict: RiskLevel | null;
-    /**
-     * Final composed verdict. With an LLM verdict present this is
-     * max(ruleVerdict, llmVerdict). When `userApprovalUsed.memoryHit` is
-     * true, it is max(ruleVerdict, verdict stored at approval time).
-     */
+    /** Use max(rule, model), or max(rule, stored approval verdict) on a memory hit. */
     finalVerdict: RiskLevel;
-    /**
-     * Composition rules that fired and influenced the final verdict.
-     * Populated by the reviewer engine. Empty when no rule overrode
-     * the base verdict.
-     */
+    /** Only rules that overrode the base verdict are recorded. */
     compositionRulesTriggered: Array<{
       rule: string;
       reason: string;
     }>;
-    /**
-     * Present when the action required interactive user approval.
-     * `null` when the action was auto-approved or auto-denied without
-     * user interaction.
-     */
+    /** Null when approval or denial occurred without user interaction. */
     userApprovalUsed: {
-      /** true if the approval was served from the memory/cache store. */
       memoryHit: boolean;
-      /** NL justification provided by the user, or null if not given. */
+      /** Null when the user supplied no justification. */
       nlJustification: string | null;
-      /** Reviewer verdict at the moment the user was prompted. */
+      /** Verdict recorded when the approval prompt was shown. */
       verdictAtApproval: UserApprovalVerdict | null;
     } | null;
   };
 }
 
-// ─── Builder ─────────────────────────────────────────────────────────────────
-
-/**
- * Build a S2 audit entry, injecting the current ISO 8601 timestamp.
- *
- * The `timestamp` field is always set by this builder — callers MUST NOT
- * set it manually to ensure consistent UTC wall-clock recording.
- *
- * The actual sink (audit.log append + HMAC chain linkage) is wired by the
- * sandbox-audit-sink module. Callers can use this builder for in-memory
- * event capture and test assertions.
- *
- * @example
- * ```ts
- * const entry = buildSandboxAuditEntry({
- *   tool: { name: "bash_run", args: '{"command":"ls"}', source: "user-keyboard" },
- *   sandbox: { kind: "none", confidence: "verified", events: [], spawnLatencyMs: 0, overheadPercent: 0 },
- *   reviewer: { ruleVerdict: "low", llmVerdict: "low", finalVerdict: "low",
- *               compositionRulesTriggered: [], userApprovalUsed: null },
- * });
- * ```
- */
+/** The builder alone supplies the UTC timestamp; the sink owns persistence. */
 export function buildSandboxAuditEntry(params: {
   tool: SandboxAuditEntry["tool"];
   sandbox: SandboxAuditEntry["sandbox"];
   reviewer: SandboxAuditEntry["reviewer"];
 }): SandboxAuditEntry {
-  // Explicit field-by-field copy so the builder always controls timestamp;
-  // do not switch to ...params (would allow caller-injected timestamp override).
+  // Copy fields explicitly so callers cannot override the timestamp through a spread.
   return {
     timestamp: new Date().toISOString(),
     tool: params.tool,
     sandbox: params.sandbox,
     reviewer: params.reviewer,
   };
+}
+
+/** Record invocation ownership without its live token; forged, stale, or absent tokens are unattributed. */
+export type SandboxEgressDenyInvocation = EgressDenialSource;
+
+/** Proxy-denial rows use entryKind; tool-execution rows use reviewer and no entryKind. */
+export interface SandboxEgressDenyAuditEntry {
+  timestamp: string; // ISO 8601, when ASRT recorded the deny
+  entryKind: "egress-deny";
+  sandbox: {
+    kind: SandboxKind;
+    confidence: SandboxCapability["confidence"];
+    /** Exactly one `egress_attempted` event with `blocked: true`. */
+    events: [Extract<SandboxEvent, { type: "egress_attempted" }>];
+  };
+  invocation: SandboxEgressDenyInvocation;
+  deny: EgressDenial;
+}
+
+export function buildSandboxEgressDenyAuditEntry(params: {
+  timestamp: Date;
+  sandbox: { kind: SandboxKind; confidence: SandboxCapability["confidence"] };
+  invocation: SandboxEgressDenyInvocation;
+  deny: SandboxEgressDenyAuditEntry["deny"];
+}): SandboxEgressDenyAuditEntry {
+  const target = params.deny.port === null ? params.deny.host : `${params.deny.host}:${params.deny.port}`;
+  return {
+    timestamp: params.timestamp.toISOString(),
+    entryKind: "egress-deny",
+    sandbox: {
+      kind: params.sandbox.kind,
+      confidence: params.sandbox.confidence,
+      events: [{ type: "egress_attempted", blocked: true, target }],
+    },
+    invocation: params.invocation,
+    deny: params.deny,
+  };
+}
+
+export type EgressDecisionBasis =
+  /** A plugin worker reached a host its extension declares (or the host's model endpoint). */
+  | "extension-allowlist"
+  /** A shell reached a host a standing grant covers. */
+  | "grant"
+  | "prompt"
+  /** Refused before any lookup: unattributed, wrong kind of identity, or a rule. */
+  | "policy"
+  /** Proxy-level refusal precedes the callback: denied or malformed hosts, another invocation's listener, or proxy routing back to this host. */
+  | "sandbox";
+
+/** Decision rows record resolution and user choice; refusals also generate a proxy-denial row. */
+export interface SandboxEgressDecisionAuditEntry {
+  timestamp: string;
+  entryKind: "egress-decision";
+  invocation: SandboxEgressDenyInvocation;
+  /** DLP-mask the destination host as for denial rows. */
+  destination: { host: string; port: number | null };
+  decision: "allow" | "deny";
+  basis: EgressDecisionBasis;
+  /** Null when no grant matched or was selected. */
+  scope: EgressGrantScope | null;
+  /** Null for allowed requests. */
+  reason: string | null;
+}
+
+/** A v1 "This workspace" network grant the v1 → v2 grant-file migration dropped instead of widening it: its directory was inside a repository, and a v2 "This project" grant keys on the repository root. DLP-mask the host and both directories as for denial rows. */
+export interface SandboxEgressGrantMigrationAuditEntry {
+  timestamp: string;
+  entryKind: "egress-grant-migration";
+  action: "dropped";
+  destination: { host: string; port: number };
+  /** The v1 grant's exact directory. */
+  workspaceRoot: string;
+  /** The repository root a v2 project grant would have covered. */
+  projectRoot: string;
+}
+
+/** Record skipped unusable proxy routes once per lookup, not connection.
+ * DLP-mask hosts and entries; never record credentials, and name environment entries only by variable. */
+export interface SandboxEgressRouteAuditEntry {
+  timestamp: string;
+  entryKind: "egress-route";
+  destination: { host: string; port: number };
+  /** Where the routes came from (`UpstreamProxySource`). */
+  source: string;
+  skipped: string[];
 }

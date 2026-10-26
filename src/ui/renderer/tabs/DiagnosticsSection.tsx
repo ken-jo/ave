@@ -1,13 +1,4 @@
-/**
- * Diagnostics surface — rendered at the bottom of the Audit tab.
- * Three sub-sections:
- *   1. Bundle export — build a redacted diagnostics ZIP (+ includeCrashDumps).
- *   2. Log tail viewer — recent redacted log lines with a level filter.
- *   3. Crash list — crash-dump metadata (filename / time / size).
- *
- * IPC error codes are kebab-case English; this component maps them to Korean
- * (localized) strings per the Ave IPC/UI language convention.
- */
+/** Diagnostics exports and log tails are redacted; map host error codes to localized messages. */
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
@@ -61,26 +52,20 @@ interface DiagnosticsSectionProps {
 export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: DiagnosticsSectionProps) {
   const { t } = useTranslation();
 
-  // ── bundle export state ──
   const [includeCrashDumps, setIncludeCrashDumps] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [exportErr, setExportErr] = useState<string | null>(null);
 
-  // ── log tail state ──
   const [logLevel, setLogLevel] = useState<string>("all");
   const [logLines, setLogLines] = useState<string[]>([]);
   const [logErr, setLogErr] = useState<string | null>(null);
 
-  // ── crash list state ──
   const [crashes, setCrashes] = useState<CrashDumpMeta[]>([]);
   const [crashErr, setCrashErr] = useState<string | null>(null);
 
-  /**
-   * Map a kebab-case IPC error code to a localized string via the canonical
-   * `formatIpcError` SOT (COMMON_IPC_ERROR_MESSAGES) — the same mapper every
-   * other tab uses, so the diagnostics codes cannot drift from the shared set.
-   */
+  /** Map a kebab-case IPC error code to a localized string via the canonical `formatIpcError` SOT (COMMON_IPC_ERROR_MESSAGES)
+   * — the same mapper every other tab uses, so the diagnostics codes cannot drift from the shared set. */
   const mapError = useCallback((code: string): string => formatIpcError(code, undefined), []);
 
   /**
@@ -151,8 +136,8 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   useEffect(() => {
     void refreshLogs();
     void refreshCrashes();
-    // Seed the checkbox from the persisted setting so it reflects the true SOT
-    // the export handler reads, not a hardcoded default.
+    // Seed the checkbox from the persisted setting so it reflects the true SOT the export handler reads, not a hardcoded
+    // default.
     void (async () => {
       try {
         const settings = await api().getSettings();

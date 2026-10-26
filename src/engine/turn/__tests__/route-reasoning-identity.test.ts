@@ -18,7 +18,6 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
     config.vendor, "test-key", config.baseUrl,
     async (_input, init) => {
       state.bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      // The request has left the adapter; refuse it to end without a live service.
       return new Response("refused", { status: 400 });
     },
     {}, config.providerMetadata,
@@ -26,7 +25,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
 }));
 
 async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", enableThinking = true) {
-  if (route === "child") expect(isModelAvailableForVendor("openai", "gpt-5.4-pro")).toBe(true);
+  if (route === "child") expect(isModelAvailableForVendor("openai", "gpt-5.4-pro", [])).toBe(true);
   const llm = route === "child"
     ? fakeLlmSettings({ model: "gpt-5.4-mini" })
     : route === "sdk-capped"

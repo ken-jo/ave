@@ -4,20 +4,7 @@ import { act, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import type { MarketplaceAnnouncement } from "../../src/shared/marketplace-announcements.js";
 
-/**
- * What an announcement's button is allowed to do.
- *
- * An announcement is content fetched from the marketplace and shown on every
- * install. A button that changed a setting would therefore be a path from a
- * marketplace post into this machine's configuration, so the button only
- * NAVIGATES — to a settings tab, or to a page in the user's browser — and the
- * user flips the switch themselves once they are looking at it.
- *
- * Driven through the real producer: the announcement arrives on the IPC channel
- * the host pushes it on, and the assertion is on what the app then calls. A
- * test on the handler alone could not see a settings write added anywhere else
- * along the click.
- */
+// Marketplace announcements are untrusted content: actions may navigate, never change configuration.
 describe("marketplace announcement actions", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -72,15 +59,12 @@ describe("marketplace announcement actions", () => {
       button.click();
     });
 
-    // The destination the button named — the settings panel's Permissions page,
-    // named by the breadcrumb that describes where the window is.
     await waitFor(() => {
       expect(
         container.querySelector('[data-testid="view-path-current-settings:permissions"]'),
       ).not.toBeNull();
     });
-    // Navigation, not configuration: nothing about the permission block was
-    // written, and the browser was not sent anywhere either.
+    // Assert no configuration writes or browser navigation after the settings route opens.
     expect(
       api.updateSettings.mock.calls.some(([patch]) =>
         Object.prototype.hasOwnProperty.call(patch as object, "permissions"),

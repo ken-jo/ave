@@ -67,8 +67,7 @@ describe("assertReadableFilePath", () => {
   });
 
   it("rejects a symlink whose real target escapes the allowed roots", async () => {
-    // The guard realpath's the link BEFORE the boundary check, so a symlink that
-    // lives inside the root but points out of it is rejected on its true target.
+    // Check the realpath target so an in-root symlink cannot escape the boundary.
     const outside = mkdtempSync(join(tmpdir(), "ave-read-core-escape-"));
     writeFileSync(join(outside, "secret.txt"), "escaped");
     const link = join(root, "escape-link");
@@ -85,8 +84,7 @@ describe("assertReadableFilePath", () => {
     writeFileSync(join(root, "sub", "alias.md"), "alias");
     const verdict = assertReadableFilePath(join(link, "alias.md"), root, []);
     expect(verdict.ok).toBe(true);
-    // The resolved path is the realpath target (in.md), not the lexical link —
-    // so the boundary check and the eventual read/stat operate on the same file.
+    // Boundary checks and reads must use the same resolved file.
     if (verdict.ok) expect(verdict.resolved.endsWith(join("sub", "alias.md"))).toBe(true);
     await cleanupTmpDir(link);
   });

@@ -1,67 +1,26 @@
-/**
- * Expand ECMA-262 character-class shorthands inside JSON-Schema `pattern`
- * strings into the explicit character classes they are defined as.
- *
- * WHY THIS EXISTS
- *
- * Self-hosted OpenAI-compatible backends (llama.cpp / llama-server, and the
- * xgrammar-backed vLLM and SGLang servers) do not send a JSON Schema to the
- * model — they COMPILE it into a grammar and constrain decoding with it. Their
- * schema→grammar converters understand explicit character classes (`[0-9]`) but
- * emit shorthand escapes (`\d`, `\w`, `\s`, and the negated forms) into the
- * grammar text verbatim, where the grammar parser then rejects them. The server
- * answers the whole request with
- *
- *     Failed to initialize samplers: failed to parse grammar
- *
- * so ONE tool carrying such a pattern takes down every turn that loads it.
- *
- * The expansion below is an identity on the regex language: each shorthand is
- * replaced by exactly the set ECMA-262 §22.2.1 defines it to be, including the
- * full Unicode whitespace set for `\s`. Nothing is narrowed, so this is
- * normalization rather than a provider workaround, and it is applied on the one
- * request-assembly chokepoint for every vendor instead of behind a vendor
- * branch that could drift from the vendors that actually need it.
- *
- * Schemas with no affected pattern are returned by REFERENCE, so a provider
- * whose tools never use a shorthand receives byte-identical payloads.
- */
+/** Expand schema regex shorthands without changing their language so grammar compilers can consume them.
+ * Normalize all routes at assembly; preserve references when nothing changes. */
 import type { ToolSchema } from "./types.js";
 
-/**
- * ECMA-262 `\s`: the union of WhiteSpace and LineTerminator. Written as class
- * BODY text (no brackets) so it can be spliced into either a standalone class
- * or an existing one.
- */
+// ECMA-262 whitespace and line terminators as a bracket-free class body.
 const WHITESPACE_CLASS_BODY =
   "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff";
 const DIGIT_CLASS_BODY = "0-9";
 const WORD_CLASS_BODY = "0-9A-Z_a-z";
 
-/** Class body for each shorthand that denotes a POSITIVE set. */
 const POSITIVE_SHORTHAND_BODIES: Readonly<Record<string, string>> = {
   d: DIGIT_CLASS_BODY,
   w: WORD_CLASS_BODY,
   s: WHITESPACE_CLASS_BODY,
 };
 
-/** Class body for the complement each NEGATED shorthand denotes. */
 const NEGATED_SHORTHAND_BODIES: Readonly<Record<string, string>> = {
   D: DIGIT_CLASS_BODY,
   W: WORD_CLASS_BODY,
   S: WHITESPACE_CLASS_BODY,
 };
 
-/**
- * `pattern` with every `\d`/`\w`/`\s`/`\D`/`\W`/`\S` rewritten to the character
- * class it denotes, or the SAME string when it contains none.
- *
- * A negated shorthand INSIDE a character class (`[\D]`) is left alone: a
- * complement is not expressible as a member list of the class that contains it,
- * and rewriting it to the positive body would invert the match. That form is
- * vanishingly rare and losing it costs correctness, which this transform will
- * not trade for reach.
- */
+/** Keep negated shorthands inside classes unchanged; complements cannot be spliced as members. */
 export function expandRegexShorthandClasses(pattern: string): string {
   if (!pattern.includes("\\")) return pattern;
 
@@ -71,7 +30,6 @@ export function expandRegexShorthandClasses(pattern: string): string {
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]!;
     if (ch !== "\\") {
-      // A `]` only closes a class we are actually inside of.
       if (ch === "[" && !inClass) inClass = true;
       else if (ch === "]" && inClass) inClass = false;
       out += ch;
@@ -79,7 +37,7 @@ export function expandRegexShorthandClasses(pattern: string): string {
     }
     const next = pattern[i + 1];
     if (next === undefined) {
-      // Trailing lone backslash: not our business to repair.
+      // Preserve a trailing lone backslash; this transform does not repair invalid regexes.
       out += ch;
       continue;
     }
@@ -97,20 +55,14 @@ export function expandRegexShorthandClasses(pattern: string): string {
       i++;
       continue;
     }
-    // Any other escape (`\.`, `\\`, `\[`, `\D` inside a class) passes through
-    // WITH its escaped character, so that character is never re-read as a class
-    // delimiter on the next iteration.
+    // Copy other escapes with their character so escaped brackets cannot become delimiters.
     out += ch + next;
     i++;
   }
   return changed ? out : pattern;
 }
 
-/**
- * `node` with every nested `pattern` expanded, or the SAME reference when no
- * pattern in the subtree changed. Reference equality is the signal callers use
- * to skip rebuilding an unaffected schema.
- */
+/** Preserve reference equality when no nested pattern changes. */
 function expandNode(node: unknown): unknown {
   if (Array.isArray(node)) {
     let changed = false;
@@ -140,10 +92,7 @@ function expandNode(node: unknown): unknown {
   return changed ? next : node;
 }
 
-/**
- * `schemas` with grammar-hostile `pattern` shorthands expanded everywhere they
- * appear. Returns the SAME array reference when nothing needed rewriting.
- */
+/** Return the original array when no schema pattern needs expansion. */
 export function toGrammarSafeToolSchemas(
   schemas: ToolSchema[] | undefined,
 ): ToolSchema[] | undefined {

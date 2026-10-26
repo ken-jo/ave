@@ -2,7 +2,8 @@ import type { Locale } from "./i18n";
 
 /**
  * The user guide. One template renders every page; each page is a list of
- * sections built from paragraphs, term lists, bullet lists and code.
+ * sections built from paragraphs, term lists, bullet lists, code and links
+ * to other pages of the site.
  * Facts come from the app's docs and UI strings; when the app changes a
  * label, change it here too.
  */
@@ -11,7 +12,9 @@ export type Block =
   | { p: string }
   | { dl: [string, string][] }
   | { ul: string[] }
-  | { code: string };
+  | { code: string }
+  /** A link to another page of this site, by its canonical (Korean, slashed) path. */
+  | { link: { to: string; label: string } };
 
 interface DocSection {
   id: string;
@@ -45,6 +48,7 @@ const ko: Record<DocSlug, DocPage> = {
             ["Linux", "x86_64 AppImage. 설치 없이 실행 권한만 주면 됩니다."],
           ] },
           { p: "지금 공개하는 빌드는 코드 서명과 공증을 거치지 않았습니다. 그래서 macOS는 처음 실행할 때 격리 표시를 지워야 하고, Windows는 SmartScreen 경고가 뜹니다. 운영체제별 단계는 내려받기 페이지에 있습니다." },
+          { link: { to: "/download/", label: "운영체제별 설치 단계" } },
         ],
       },
       {
@@ -100,7 +104,7 @@ const ko: Record<DocSlug, DocPage> = {
         blocks: [
           { dl: [
             ["ChatGPT 요금제", "내가 설치한 codex CLI를 Ave 전용 격리 폴더에서 실행해 로그인합니다. Ave에는 codex CLI가 들어 있지 않으며, 찾지 못하면 설정에서 공식 설치 방법을 안내합니다."],
-            ["Claude 구독", "내가 설치한 공식 claude CLI를 Ave가 찾아 실행합니다. 찾지 못하면 설정에서 공식 설치 방법을 안내합니다. 앱 전용 설정 폴더를 쓰고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 쓰입니다. 이 경로에서는 모델 선택과 이미지 첨부가 없습니다."],
+            ["Claude 구독", "Ave가 자동으로 찾은 공식 claude CLI를 실행합니다. 앱 전용 설정 폴더를 쓰고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 쓰입니다. 이 경로에서는 모델 선택과 이미지 첨부가 없습니다."],
           ] },
           { p: "구독 자격 증명은 API 키가 되지 않고, 경로 사이에서 몰래 다른 경로로 넘어가지 않습니다." },
         ],
@@ -182,7 +186,7 @@ const ko: Record<DocSlug, DocPage> = {
           { dl: [
             ["쓰기만 확인", "기본값. 읽기는 허용하고 바꾸는 작업은 승인을 요청합니다."],
             ["모두 확인", "읽기를 포함한 모든 도구에 승인을 요청합니다."],
-            ["자동 검증", "저위험 작업은 처리하고, 헤드리스 실행과 대화의 나머지 요청은 권한 리뷰어가 검증합니다."],
+            ["자동 검증", "대화에서 저위험·중위험 판정은 감사 기록과 함께 자동 허용하고 고위험만 승인을 요청합니다. 헤드리스 실행은 별도의 실패 폐쇄형 리뷰 대기열을 씁니다."],
             ["모두 허용", "하드 차단 밖은 자동으로 허용합니다. 허용 디렉터리 밖 접근은 따로 승인을 받습니다."],
           ] },
           { p: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고, 위험도는 낮음, 중간, 높음입니다." },
@@ -212,7 +216,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "directories",
         h: "허용 디렉터리와 민감한 경로",
         blocks: [
-          { p: "허용 디렉터리는 프로젝트 루트, ~/.ave, 그리고 전용 임시 폴더에서 시작하고, 설정의 permissions.additionalDirectories 로 넓힙니다. 그 밖에 접근하면 따로 승인을 받습니다." },
+          { p: "허용 디렉터리는 프로젝트 루트, ~/.ave, 전용 임시 폴더, 시스템 임시 폴더(macOS와 Linux는 /tmp 포함)에서 시작하고, 설정의 permissions.additionalDirectories 로 넓힙니다. 그 밖에 접근하면 따로 승인을 받습니다." },
           { p: "~/.ssh 의 키, .env 파일 같은 민감한 경로는 어떤 모드에서도 막힙니다." },
           { p: "사용자와 관리자가 각각 policy.json 을 둘 수 있고, 올바른 관리자 정책이 있으면 사용자가 그 항목을 바꿀 수 없습니다." },
         ],
@@ -234,14 +238,14 @@ const ko: Record<DocSlug, DocPage> = {
         id: "audit",
         h: "감사 로그와 가림",
         blocks: [
-          { p: "~/.ave/audit.log 는 HMAC 체인으로 이어져 있어 중간을 바꾸면 드러납니다. 감사 기록에는 비밀 값을 넣지 않습니다. 비밀 값과 개인정보는 모델로 보내기 전에 가려지고, 가린 사실은 감사 로그에 남습니다." },
+          { p: "~/.ave/audit.log 는 HMAC 체인으로 이어져 있어 중간을 바꾸면 드러납니다. 감사 기록에는 비밀 값을 넣지 않습니다. API 키를 비롯한 자격 증명은 설정과 무관하게 항상 제거하고 보냅니다. 설정의 PII 리댁트(기본값 꺼짐)를 켜면 이메일, 전화번호, 카드 번호 같은 개인정보도 가려 보내고, 가린 개수가 감사 로그에 남습니다." },
         ],
       },
     ],
   },
   plugins: {
     slug: "plugins",
-    title: "플러그인",
+    title: "플러그인 설치와 격리",
     summary: "플러그인이 하는 일, 설치, 격리, 기본 플러그인.",
     sections: [
       {
@@ -291,7 +295,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "alerts",
         h: "알림과 제안",
         blocks: [
-          { p: "플러그인 알림은 내가 켠 것만 오고, 재알림 간격과 횟수 제한이 있습니다. 카드나 OS 알림으로 나타납니다. host:overlay 권한이 있는 플러그인은 대화를 제안할 수 있지만, 제안은 내가 받아들일 때까지 시작되지 않습니다." },
+          { p: "플러그인이 선언한 알림 종류는 설치할 때 플러그인이 정한 기본값으로 켜지거나 꺼지고, 종류마다 끌 수 있으며, 재알림 간격과 횟수 제한이 있습니다. 카드나 OS 알림으로 나타납니다. host:overlay 권한이 있는 플러그인은 대화를 제안할 수 있지만, 제안은 내가 받아들일 때까지 시작되지 않습니다." },
         ],
       },
     ],
@@ -447,6 +451,7 @@ const ko: Record<DocSlug, DocPage> = {
             "플러그인을 설치하는 중에는 적용하지 않고, 설치 전에 확인을 받습니다.",
           ] },
           { p: "서명 없는 Mac 빌드는 스스로 교체할 수 없습니다. 업데이트를 적용하려 하면 Ave가 이 사이트의 첫 화면을 엽니다. 그곳의 다운로드에서 새 DMG를 받아 앱을 바꾸고 격리 표시를 다시 지우면 됩니다." },
+          { link: { to: "/download/", label: "운영체제별 설치 단계" } },
         ],
       },
       {
@@ -498,6 +503,7 @@ const en: Record<DocSlug, DocPage> = {
             ["Linux", "x86_64 AppImage. No installation; make it executable and run it."],
           ] },
           { p: "Public builds are currently not code-signed or notarised. On macOS you clear the quarantine flag before the first launch; on Windows SmartScreen shows a warning. The steps for each system are on the download page." },
+          { link: { to: "/download/", label: "Install steps for each system" } },
         ],
       },
       {
@@ -553,7 +559,7 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { dl: [
             ["ChatGPT plan", "Sign in through the codex CLI you installed, run in an Ave-only isolated folder. Ave does not ship the CLI; if it is not found, Settings shows the official install methods."],
-            ["Claude subscription", "Ave finds and launches the official claude CLI you installed; if it is not found, Settings shows the official install methods. It uses an app-owned config folder and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments."],
+            ["Claude subscription", "Ave launches the official claude CLI Ave discovers automatically. It uses an app-owned config folder and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments."],
           ] },
           { p: "Subscription credentials never become API keys, and there is no silent fallback from one route to another." },
         ],
@@ -635,7 +641,7 @@ const en: Record<DocSlug, DocPage> = {
           { dl: [
             ["Confirm writes", "The default. Reads are allowed; operations that change something ask for approval."],
             ["Confirm all", "Every tool asks for approval, reads included."],
-            ["Auto-verify", "Low-risk work is processed; other requests in headless runs and chat are verified by the permission reviewer."],
+            ["Auto-verify", "In chat, low- and medium-risk verdicts are allowed automatically with an audit trail, and high risk asks. Headless runs use a separate fail-closed reviewer queue."],
             ["Allow all", "Everything outside the hard blocks is allowed. Access outside the allowed folders still needs its own approval."],
           ] },
           { p: "Tool calls fall into read, write, shell, network and meta. Risk is low, medium or high." },
@@ -665,7 +671,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "directories",
         h: "Allowed folders and sensitive paths",
         blocks: [
-          { p: "Allowed folders start with the project root, ~/.ave and a private scratch folder, and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
+          { p: "Allowed folders start with the project root, ~/.ave, a private scratch folder and the system temporary folder (plus /tmp on macOS and Linux), and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
           { p: "Sensitive paths, such as keys under ~/.ssh and .env files, are blocked in every mode." },
           { p: "Users and administrators can each keep a policy.json. A valid administrator policy locks the settings it covers." },
         ],
@@ -687,14 +693,14 @@ const en: Record<DocSlug, DocPage> = {
         id: "audit",
         h: "Audit log and masking",
         blocks: [
-          { p: "~/.ave/audit.log is HMAC-chained, so a change in the middle shows. Audit records never contain raw secrets. Secrets and personal data are masked before anything goes to the model, and each mask is recorded in the audit log." },
+          { p: "~/.ave/audit.log is HMAC-chained, so a change in the middle shows. Audit records never contain raw secrets. API keys and other credentials are always removed before anything is sent, whatever the settings say. Turn on PII Redaction in settings (off by default) and personal data such as email addresses, phone numbers and card numbers is masked too, with the count recorded in the audit log." },
         ],
       },
     ],
   },
   plugins: {
     slug: "plugins",
-    title: "Plugins",
+    title: "Installing and isolating plugins",
     summary: "What plugins do, installing them, isolation, and the default plugins.",
     sections: [
       {
@@ -744,7 +750,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "alerts",
         h: "Alerts and suggestions",
         blocks: [
-          { p: "Plugin alerts arrive only if you turn them on, with cooldowns and rate limits, as cards or OS notifications. A plugin with the host:overlay capability can suggest a conversation, but it does not start until you accept it." },
+          { p: "Each alert kind a plugin declares starts on or off at install as the plugin chooses, and you can switch each kind off; alerts keep to cooldowns and rate limits and arrive as cards or OS notifications. A plugin with the host:overlay capability can suggest a conversation, but it does not start until you accept it." },
         ],
       },
     ],
@@ -900,6 +906,7 @@ const en: Record<DocSlug, DocPage> = {
             "An update is not applied while a plugin is installing, and Ave asks before installing it.",
           ] },
           { p: "An unsigned Mac build cannot replace itself. When you apply an update, Ave opens this site’s home page: download the new DMG there, replace the app, and clear the quarantine flag again." },
+          { link: { to: "/download/", label: "Install steps for each system" } },
         ],
       },
       {

@@ -1,16 +1,5 @@
 import { requireDesktopHost } from "./host-runtime.js";
-/**
- * assembleAppServices — build the final {@link AppServices} return literal from
- * a fully-populated {@link BootContext} (C18).
- *
- * The key set here is a LOCKED contract: it must match the C3 bootstrap
- * integration snapshot exactly (same names, same construction). This module owns
- * the deferred lifecycle closures main.ts drives after boot
- * (`startRoutinesScheduler`, `startWorkBoardDueSoon`, `refreshPluginEventBridge`,
- * `registerPluginEventBridge`, `shutdown`) — they read + mutate the context so
- * the event-bridge disposer and the due-soon timer stay
- * live across window recreation and are torn down deterministically on quit.
- */
+/** Lifecycle closures share mutable boot context so timers and event disposers survive window recreation. */
 import {
   forgetTrackedPluginAuthPartitions as forgetPluginAuthPartitionsService,
   getTrackedPluginAuthPartitions as listPluginAuthPartitionsService,
@@ -22,9 +11,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
   let shutdownPromise: Promise<void> | null = null;
   let activeLlmWildcardDisposed = false;
 
-  // App cleanup invokes plugin shutdown handlers before `services.shutdown()`.
-  // Dispose here as well as in `shutdown()` so a pending vendor-change debounce
-  // cannot restart a plugin while its shutdown hook is running.
+  // Dispose before plugin shutdown hooks so pending vendor-change work cannot restart plugins.
   const disposeActiveLlmWildcard = (): void => {
     if (activeLlmWildcardDisposed) return;
     ctx.disposeRefreshActiveLlmWildcard();
@@ -32,6 +19,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
   };
 
   return {
+    relaunchApp: () => ctx.host.relaunch(),
     pythonRuntime: ctx.pythonRuntime,
     pythonPath: ctx.pythonPath,
     pluginRuntime: ctx.pluginRuntime,
@@ -48,16 +36,13 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     routeEngine: ctx.routeEngine,
     toolRegistry: ctx.toolRegistry,
     systemPromptBuilder: ctx.systemPromptBuilder,
-    // The same instance the prompt builder reads — the `mcp.uiModelContext` IPC is its
-    // only writer.
+    // Share the prompt builder’s context store; IPC is its only writer.
     mcpAppModelContext: ctx.mcpAppModelContext,
     conversationLoop: ctx.conversationLoop,
     sideChatConversationLoop: ctx.sideChatConversationLoop,
     paneChatLoops: ctx.paneChatLoops,
     sideChatMemoryManager: ctx.sideChatMemoryManager,
-    // Tiled chat groups resolve their own loop through this. It is assembled
-    // by name like everything else here, so leaving it out is how the IPC
-    // domain ends up unable to build any group but the primary.
+    // Pass group-loop resolution through to IPC so secondary chat groups can be built.
     resolveChatGroupLoop: ctx.resolveChatGroupLoop,
     releaseChatGroupLoop: ctx.releaseChatGroupLoop,
     findLoopBySessionId: ctx.findLoopBySessionId,

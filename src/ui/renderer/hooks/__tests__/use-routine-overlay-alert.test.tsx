@@ -5,16 +5,8 @@ import { useRoutineOverlay } from "../use-routine-overlay.js";
 import type { OverlayItem } from "../../context/OverlayContext.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 
-/**
- * Confirming an alert card from the renderer.
- *
- * An alert carries a host-rendered prompt inside the same staged envelope a
- * plugin's overlay trigger uses, so confirming it must travel the same
- * `imported_trigger` path with the plugin's provenance — never a plain user
- * turn. A card main withdrew must leave the queue, not just the lookup. What
- * the user did with a card is reported back, so main keeps its identity
- * closed, and cards staged before the window listened are pulled on mount.
- */
+/** Alert confirmation preserves plugin provenance through imported_trigger; withdrawn cards leave the queue and boot-staged
+ * cards are pulled on mount. */
 const TILE = "group-1";
 
 const ALERT: OverlayItem = {

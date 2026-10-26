@@ -1,4 +1,4 @@
-import { readPluginRegistry } from "./plugins/registry.js";
+import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { promptSurfaceResolver, requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
@@ -85,7 +85,7 @@ import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler
 import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
-import { ensureAveHomePrivate, aveHome } from "./shared/ave-home.js";
+import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot } from "./shared/ave-home.js";
 import { ensureAveScratchDir } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
@@ -119,6 +119,7 @@ import { snapshotA2ARemoteGates } from "./main/a2a-remote-gates.js";
 import { createRemoteA2AActionController } from "./main/remote-a2a-action-controller.js";
 import { buildSingleFlightAgentActionApprover } from "./permissions/agent-action-approver.js";
 import { PluginBundleLifecycle } from "./plugins/plugin-bundle-lifecycle.js";
+import { configureChatGptPlanRuntime } from "./main/chatgpt-plan/runtime.js";
 const log = createLogger("ave");
 
 /**
@@ -225,9 +226,10 @@ export async function bootstrap(
   // `0o700` mkdir; on Windows `mode` is not a permission at all, so the same
   // step sets the DACL every file created underneath will inherit.
   const homePrivacy = ensureAveHomePrivate();
+  setAveHomePrivacyAtBoot(homePrivacy);
   if (homePrivacy.enforcement === "none") {
     log.error(
-      `boot: ${homePrivacy.home} could not be restricted to this account (${homePrivacy.reason}) — settings, audit log and secrets are protected only by whatever the parent directory grants`,
+      `boot: ${homePrivacy.failedPath ?? homePrivacy.home} could not be restricted to this account (${homePrivacy.category}: ${homePrivacy.reason}) — extension confinement is refused because private directory protection is unverified`,
     );
   }
 
@@ -842,6 +844,25 @@ export async function bootstrap(
   // Subscription-authenticated reviewers run before conversation wiring, so
   // construct the one main-owned provider factory here and share it with both
   // the reviewer and all conversation-loop variants below.
+  // ChatGPT plan usage keeps its account record in the encrypted secret store and sends every request through the
+  // host network stack behind its own egress allowlist. Configured before the subscription service is first created.
+  configureChatGptPlanRuntime({
+    secrets: settingsService,
+    networkFetch: host.networkFetch,
+    onEvent: (event) => {
+      try {
+        ctx.bootAuditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: "subscription-runtime",
+          type: event.failure ? "warn" : "info",
+          // Codes only: the session event carries no token, URL or account detail.
+          input: JSON.stringify({ provider: "chatgpt-plan", event: event.event, ...(event.failure ? { failure: event.failure } : {}) }),
+        });
+      } catch {
+        // Auditing never changes a session outcome.
+      }
+    },
+  });
   ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings({
     shellOpenExternal: (url) => requireDesktopHost(host).shellOpenExternal(url),
     auditLogger: ctx.bootAuditLogger,
@@ -901,6 +922,12 @@ export async function bootstrap(
   ctx.pluginBundleLifecycle = pluginBundleLifecycle;
   pluginRuntime.setGenerationAccess(pluginBundleLifecycle);
   ctx.mcpManager.setPluginGenerationAccess(pluginBundleLifecycle);
+  // App-plugin OAuth servers authenticate and reconnect through their generation; the
+  // registry names every installed plugin, enabled or not. A missing, unreadable or
+  // mid-replacement registry cannot vouch for that, so no stored sign-in is pruned then.
+  ctx.mcpManager.registerBundledCredentialSource("plugin", pluginBundleLifecycle.bundledMcpCredentialSource(
+    () => vouchedInstalledPluginIds(pluginPaths.registryPath),
+  ));
   ctx.scriptHookManager.setPluginGenerationAccess(pluginBundleLifecycle);
   setBundleLifecycleHandler?.(pluginBundleLifecycle);
   await pluginBundleLifecycle.recoverRetirements();

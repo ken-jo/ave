@@ -39,13 +39,10 @@ describe("SubAgentTranscriptAccumulator", () => {
   it("DLP-masks child tool RESULTS before they enter the transcript", () => {
     const acc = new SubAgentTranscriptAccumulator();
     acc.onToolStart("read_file", { path: "/tmp/x" }, meta());
-    // A PII value (email) that maskSensitiveData redacts — this is the NEW
-    // persisted/forwarded surface, so leaking here would be a DLP hole.
+    // Persisted and forwarded transcript text must redact email PII.
     acc.onToolEnd("read_file", "contact: secret.person@example.com", false, meta(), undefined, 5);
     const group = acc.snapshot()[0];
     if (group.kind !== "tool_group") throw new Error("expected tool_group");
-    // audit/dlp-filter masks the email local-part to `***@…` — the raw PII
-    // must not survive.
     expect(group.tools[0].result).not.toContain("secret.person@example.com");
     expect(group.tools[0].result).toContain("***@example.com");
   });
@@ -53,8 +50,7 @@ describe("SubAgentTranscriptAccumulator", () => {
   it("DLP-masks the MCP uiPayload title (server-authored free-text label)", () => {
     const acc = new SubAgentTranscriptAccumulator();
     acc.onToolStart("mcp_widget", {}, meta());
-    // A server-authored resource TITLE that echoes PII — it enters the same
-    // NEW persisted/forwarded snapshot, so it must be masked like the result.
+    // Server-authored resource titles need the same DLP masking as result text.
     acc.onToolEnd(
       "mcp_widget",
       "ok",
@@ -73,17 +69,13 @@ describe("SubAgentTranscriptAccumulator", () => {
     expect(stored?.title).toBeDefined();
     expect(stored?.title).not.toContain("leaked.user@example.com");
     expect(stored?.title).toContain("***@example.com");
-    // Structural identifiers are left verbatim (masking a URI would corrupt it).
+    // Preserve structural identifiers; masking URIs would corrupt them.
     expect(stored?.resourceUri).toBe("ui://widget/1");
     expect(stored?.serverId).toBe("srv-1");
   });
 
   it("keeps the card's generation id so a sub-agent card resolves its loopback backend", () => {
-    // Producer-driven: the accumulator is the ONLY hop that rebuilds the
-    // uiPayload object, and the sub-agent transcript renders through the same
-    // TranscriptRenderer as main chat — so a card that loses `generationId`
-    // here reaches `resolveMcpUiBackend` without one and hard-fails, showing a
-    // dead card. Start at the real producer, end at the real consumer.
+    // Carry generationId from accumulation through rendering so backend resolution binds the live card.
     const acc = new SubAgentTranscriptAccumulator();
     acc.onToolStart("mcp_widget", {}, meta());
     acc.onToolEnd(
@@ -127,8 +119,7 @@ describe("SubAgentTranscriptAccumulator", () => {
       stored?.generationId,
     );
     expect(backend).toBeDefined();
-    // The resolver binds the exact generation the host minted — not merely
-    // "some truthy id".
+    // Bind the exact host-minted generation rather than merely checking for a truthy ID.
     expect(asserted).toEqual(["gen-abc"]);
   });
 
@@ -149,8 +140,7 @@ describe("SubAgentTranscriptAccumulator", () => {
 
     const reasoning = acc.snapshot().find((e) => e.kind === "reasoning");
     if (reasoning?.kind !== "reasoning") throw new Error("expected reasoning");
-    // Accumulated, not last-delta-only — and still marked live so the panel
-    // renders the "Thinking…" spinner while the child is actually thinking.
+    // Accumulate reasoning deltas while retaining the live spinner state.
     expect(reasoning.text).toBe("Let me check the file");
     expect(reasoning.streaming).toBe(true);
   });
@@ -219,7 +209,7 @@ describe("SubAgentTranscriptAccumulator", () => {
 
   it("DLP-masks the ACCUMULATION so a secret split across deltas cannot leak", () => {
     const acc = new SubAgentTranscriptAccumulator();
-    // Split mid-address: neither half matches an email pattern on its own.
+    // Split an address so neither delta alone matches the email redactor.
     acc.onReasoningDelta("mail leak");
     acc.onReasoningDelta("@example.com now");
 
@@ -229,9 +219,7 @@ describe("SubAgentTranscriptAccumulator", () => {
   });
 
   it("leaves the settled round identical to the round-fold-only path", () => {
-    // Both accumulators stamp `createdAt` from the clock; the comparison is
-    // about shape, so the clock is held still or a millisecond boundary
-    // between the two rounds reads as a difference.
+    // Hold the clock still because createdAt stamping is outside the shape comparison.
     vi.useFakeTimers({ now: 1_700_000_000_000 });
     try {
       const streamed = new SubAgentTranscriptAccumulator();
@@ -242,8 +230,7 @@ describe("SubAgentTranscriptAccumulator", () => {
       const folded = new SubAgentTranscriptAccumulator();
       folded.onAssistantRound("thinking about it", "final answer", "end_turn", false);
 
-      // Persistence is unchanged by this feature: once the round closes, the
-      // streamed transcript is byte-identical to the one deltas never touched.
+      // Closing a streamed round must persist the same transcript as non-streamed accumulation.
       expect(streamed.snapshot()).toEqual(folded.snapshot());
     } finally {
       vi.useRealTimers();
@@ -253,8 +240,7 @@ describe("SubAgentTranscriptAccumulator", () => {
   it("finalizes a streamed thought even when the round reports none", () => {
     const acc = new SubAgentTranscriptAccumulator();
     acc.onReasoningDelta("mid-stream reasoning");
-    // A provider that streams reasoning but reports an empty round `thought`
-    // must not leave the card spinning forever.
+    // Empty final thought must clear the live reasoning spinner.
     acc.onAssistantRound("", "answer", "end_turn", false);
 
     const reasoning = acc.snapshot().find((e) => e.kind === "reasoning");

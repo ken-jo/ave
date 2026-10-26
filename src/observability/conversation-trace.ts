@@ -79,7 +79,7 @@ class FileTracer implements ConversationTracer {
  * Tracer 활성 여부 — dev 모드 또는 AVE_TRACE=1 환경변수.
  * 프로덕션에서는 기본 no-op. sampling 은 상위 호출자가 결정.
  */
-export function isTraceEnabled(): boolean {
+function isTraceEnabled(): boolean {
   if (process.env.AVE_TRACE === "1") return true;
   return process.env.NODE_ENV !== "production";
 }

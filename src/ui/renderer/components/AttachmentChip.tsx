@@ -12,10 +12,8 @@ import {
   type Attachment,
 } from "../types/attachments.js";
 
-/**
- * Longest stretch of a pasted text the chip's view lays out. The whole text
- * is always sent; past this the view says how much it left out.
- */
+/** Longest stretch of a pasted text the chip's view lays out. The whole text is always sent; past this the view says how
+ * much it left out. */
 export const PASTE_PREVIEW_MAX_CHARS = 32 * 1024;
 import { collapsePath } from "../utils/attachment-markers.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -95,11 +93,8 @@ function badgeClass(count: number): string {
   return "text-muted-foreground";
 }
 
-/**
- * Stacked-card visual. Renders `layers` cards (capped to ATTACH_MAX_COUNT),
- * each offset diagonally so density increases with attachment count. The
- * top card carries an icon; the others are bare colored cards behind it.
- */
+/** Stacked-card visual. Renders `layers` cards (capped to ATTACH_MAX_COUNT), each offset diagonally so density increases
+ * with attachment count. The top card carries an icon; the others are bare colored cards behind it. */
 function StackVisual({ layers }: { layers: number }) {
   const n = Math.max(2, Math.min(layers, ATTACH_MAX_COUNT));
   const cards = Array.from({ length: n }, (_, i) => i);
@@ -357,8 +352,7 @@ export function AttachmentOverlay({
                 data-testid="overlay-paste-text"
                 aria-label={t("attachmentChip.pastedTextOriginal", { n: att.n })}
                 tabIndex={0}
-                // One scroller: the list around it already scrolls, and a
-                // second one inside would swallow the wheel.
+                // One scroller: the list around it already scrolls, and a second one inside would swallow the wheel.
                 className="w-full basis-full select-text whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-[11px] leading-relaxed text-foreground"
               >
                 {/* A clipboard paste is stored whole, however long; laying out

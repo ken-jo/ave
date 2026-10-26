@@ -1,7 +1,4 @@
-/**
- * Answers construct, declaring a start hook, ignores SIGTERM and never
- * answers start: only the SIGKILL that follows the grace period ends it.
- */
+/** Ignore start and SIGTERM so only escalation can end the fixture. */
 import { constructed, speak, WITHHOLD } from "./speak.mjs";
 
 process.on("SIGTERM", () => undefined);

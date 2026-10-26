@@ -1,43 +1,4 @@
-/**
- * Work-board domain IPC handlers — the personal board CRUD + lifecycle.
- *
- * Bridges the renderer board panel (and any host-side caller) to the
- * {@link WorkBoardStore} persistence layer. Each `WORK_BOARD.*` store channel
- * maps 1:1 to a store method; the store already returns discriminated `status`
- * envelopes, so the handlers forward those verbatim — no fallback / re-shaping.
- *
- * After every SUCCESSFUL mutating call (add / update / transition / complete /
- * reopen / remove) the handler broadcasts a {@link WORK_BOARD.itemChanged}
- * event to all renderer windows (mirroring how the routines domain fans out
- * its events). The board panel subscribes to this and re-lists, so the view
- * stays live across windows and LLM-tool mutations without polling.
- *
- * Every channel validates the sender frame and audits rejected calls through
- * the shared {@link auditUnauthorized} sink (mirroring the routines domain in
- * `routines.ts`). When the store is absent (boot did not construct it) the handlers
- * return an English kebab-case `{ ok: false, error: "no-store" }` code so the
- * renderer can branch without parsing exceptions.
- *
- * The `run` channel kicks off the WorkBoardEngine plan→approve→execute
- * orchestration for one item. It is fire-and-forget from the renderer's view:
- * the handler broadcasts a `runStarted` marker, awaits the engine result, then
- * broadcasts `runFinished` (any terminal status, incl. denied/not_found) or
- * `runFailed` (engine threw). Live per-phase progress flows over the separate
- * `runProgress` channel, fanned out by the engine's `emitProgress` sink wired
- * at boot. When the engine is absent (boot did not construct it) the handler
- * returns `{ ok: false, error: "no-engine" }`.
- *
- * The `generate-report` channel produces a daily / weekly personal work report
- * from the board state + activity log + learned memory via the host-native
- * {@link WorkBoardReporter}, returning the generated markdown. When the
- * reporter is absent (boot did not construct it) it returns
- * `{ ok: false, error: "no-reporter" }`.
- *
- * The `run-briefing` channel runs the same two windows in the opposite
- * direction: instead of summarizing the board, it drives a read-only sub-agent
- * survey of the user's work and files what it found back as proposals, naming
- * every card it wrote on the `proposalChanged` channel.
- */
+// Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
@@ -64,11 +25,8 @@ import type {
 } from "../../main/work-board-store.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 
-/** Shared "store not constructed at boot" envelope for the mutating channels. */
 const NO_STORE = { ok: false, error: "no-store" as const };
-/** Shared "engine not constructed at boot" envelope for the `run` channel. */
 const NO_ENGINE = { ok: false, error: "no-engine" as const };
-/** Shared "reporter not constructed at boot" envelope for `generate-report`. */
 const NO_REPORTER = { ok: false, error: "no-reporter" as const };
 const UNAUTHORIZED_PROJECT_ROOT = "__ave_unauthorized_project_root__";
 const PROJECT_NOT_ALLOWED_REASON = "project root is not authorized";
@@ -115,11 +73,6 @@ function isAuthorizedStoredWorkItem(item: WorkItemResolved): boolean {
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
   const { workBoardStore, workBoardEngine, workBoardReport, auditLogger } = deps;
 
-  /**
-   * Fan the `itemChanged` event through the curated app-renderer target set.
-   * Destroyed windows are skipped. Mirrors `broadcastPromptsUpdated` in the
-   * prompts domain.
-   */
   const broadcastItemChanged = (
     itemId: number,
     change: WorkItemChangedEventPayload["change"],
@@ -139,7 +92,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return isAuthorizedStoredWorkItem(result.item) ? result : { status: "not_found", itemId: id };
   };
 
-  // ─── List ────────────────────────────────────────
   ipcMain.handle(WORK_BOARD.list, async (e, filter?: WorkItemListFilter) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.list, e);
@@ -149,7 +101,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return workBoardStore.list(normalizeProjectListFilter(filter));
   });
 
-  // ─── Get ─────────────────────────────────────────
   ipcMain.handle(WORK_BOARD.get, async (e, id: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.get, e);
@@ -159,7 +110,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return loadAuthorizedItem(id);
   });
 
-  // ─── Add ─────────────────────────────────────────
   ipcMain.handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.add, e);
@@ -173,7 +123,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Update ──────────────────────────────────────
   ipcMain.handle(WORK_BOARD.update, async (e, id: number, patch: WorkItemUpdateInput) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.update, e);
@@ -187,7 +136,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Transition ──────────────────────────────────
   ipcMain.handle(WORK_BOARD.transition, async (e, id: number, to: WorkItemStatusStored) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.transition, e);
@@ -201,7 +149,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Complete ────────────────────────────────────
   ipcMain.handle(WORK_BOARD.complete, async (e, id: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.complete, e);
@@ -215,7 +162,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Reopen ──────────────────────────────────────
   ipcMain.handle(WORK_BOARD.reopen, async (e, id: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.reopen, e);
@@ -229,7 +175,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Remove ──────────────────────────────────────
   ipcMain.handle(WORK_BOARD.remove, async (e, id: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.remove, e);
@@ -243,13 +188,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Run (plan → approve → execute) ──────────────
-  // Renderer → main: kick off the engine run for one item. The renderer awaits
-  // the terminal WorkItemRunResult, but also subscribes to the runProgress /
-  // runStarted / runFinished / runFailed broadcasts for live phase updates. The
-  // engine itself drives runProgress (per-phase) via its emitProgress sink; this
-  // handler owns only the coarse started/finished/failed markers so every window
-  // can show/clear a per-item running indicator without re-listing.
+  // Run returns a terminal result while progress events update the renderer.
   ipcMain.handle(WORK_BOARD.run, async (e, id: number, opts?: { agentName?: string }) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.run, e);
@@ -282,17 +221,12 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         reason,
         at: new Date().toISOString(),
       });
-      // Surface as the engine's `error` envelope so the renderer branches on one
-      // shape — no thrown exception crossing the IPC boundary.
+      // Convert engine failures to its stable error envelope; do not throw across IPC.
       return { status: "error", reason } satisfies WorkItemRunResult;
     }
   });
 
-  // ─── Generate report (daily | weekly) ───────────
-  // Renderer → main: build a personal work report. The reporter returns a
-  // discriminated `{ status: "ok" | "empty" }` envelope (forwarded verbatim).
-  // An LLM provider outage surfaces as a thrown error → mapped to an `error`
-  // envelope so the renderer branches on one shape, never a raw exception.
+  // Preserve the reporter's ok/empty result and map provider failure to the public error envelope.
   ipcMain.handle(
     WORK_BOARD.generateReport,
     async (
@@ -314,17 +248,12 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── Run transcript (past run conversation) ──────
-  // Renderer → main: read a past run's persisted plan+execute conversation for
-  // the run-history view. Returns `{ events }` (empty when the file is absent).
   ipcMain.handle(WORK_BOARD.runTranscript, async (e, itemId: number, runId: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.runTranscript, e);
       return UNAUTHORIZED_FRAME;
     }
-    // The renderer-supplied runId is interpolated into the transcript file path
-    // (sessions/<itemId>/<runId>.jsonl), so validate it against path traversal
-    // BEFORE the read — engine run ids are UUIDs. Anything else → empty.
+    // Validate run UUIDs before interpolating transcript paths to prevent traversal.
     if (typeof runId !== "string" || !/^[A-Za-z0-9_-]+$/.test(runId)) return { events: [] };
     if (!workBoardStore) return { events: [] };
     const existing = await loadAuthorizedItem(itemId);
@@ -333,12 +262,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return { events: await readRunTranscript(storage, itemId, runId) };
   });
 
-  // ─── Recommended work (plugin-proposed cards) ────
-  // Plugins post and withdraw through HostApi (main-side); the renderer only
-  // READS the open set and answers it — accept, which promotes the proposal
-  // into an ordinary work item, or dismiss, which closes the card for good.
-  // There is deliberately no renderer write path that creates a proposal: a
-  // proposal is a plugin's claim, and the user's own additions are work items.
+  // Plugins propose through HostApi; renderer actions may read and answer proposals but cannot create them.
 
   const broadcastProposalChanged = (
     proposalId: string,
@@ -361,10 +285,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return workBoardStore.listProposals();
   });
 
-  // Accept runs the ORDINARY create path, so the new item lands in the active
-  // project exactly as a hand-typed one does. Proposals themselves are not
-  // project-scoped — a plugin watching a mailbox has no project — so the
-  // project is decided here, at accept time, from the renderer's own workspace.
+  // Resolve the active project when accepting; unscoped proposals do not choose project identity.
   ipcMain.handle(WORK_BOARD.acceptProposal, async (e, proposalId: string, projectRoot?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.acceptProposal, e);
@@ -400,13 +321,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  // ─── Run briefing (survey → proposals) ───────────
-  // Renderer → main: run the daily / weekly briefing. The engine surveys the
-  // user's work with a read-only sub-agent and files what it found as
-  // proposals — the opposite direction from `generate-report`, which
-  // summarizes what the board already holds. Registered here, after
-  // `broadcastProposalChanged`, because every card the briefing writes is
-  // announced on that same channel so each window re-lists without polling.
+  // Briefing surveys through a read-only child and creates proposals rather than executing work.
   ipcMain.handle(
     WORK_BOARD.runBriefing,
     async (e, kind: WorkBoardBriefingKind, projectRoot?: string) => {

@@ -22,25 +22,14 @@ import type {
   UpdateStatusView,
 } from '../../../src/shared/git-marketplace.js';
 
-/**
- * Automatic updates end to end (design §18.7, §18.10 F): the built app runs
- * its real update scheduler (`AVE_E2E_MARKETPLACE_SCHEDULER=1`) against a
- * marketplace served over HTTP by a local `git http-backend`. A skill whose
- * new release changes nothing the user agreed to applies by itself; an
- * extension whose new release asks for a new network host is held for
- * review and stays at its installed version.
- *
- * The source is custom and plain http, so automatic updates are off for it
- * until the user turns them on, which first accepts `unencrypted-updates`:
- * the Updates card does both.
- */
+// Run the real update scheduler against a local marketplace.
+// Unchanged consent applies automatically; added network authority must wait for review.
 
 const SOURCE_ID = 'harbor-tools';
 const MIN_APP_VERSION = '0.11.0';
 
 type Entry = { path: string; mode: string; content: string };
 
-/** The repository at `version`; from 1.0.1 the extension also reaches `upload.example.com`. */
 function marketplaceTree(version: string): Entry[] {
   const file = (path: string, content: string): Entry => ({ path, mode: '100644', content });
   const authority = {
@@ -80,7 +69,6 @@ function marketplaceTree(version: string): Entry[] {
   ];
 }
 
-/** One call on `window.aveApi.gitMarketplace`; a failed result fails the test with its code and message. */
 async function call<T>(page: Page, method: string, ...args: unknown[]): Promise<T> {
   const result = await page.evaluate(
     ({ method, args }) => (window as unknown as { aveApi: { gitMarketplace: Record<string, (...a: unknown[]) => Promise<unknown>> } })
@@ -122,7 +110,7 @@ test.describe('git marketplace automatic updates', () => {
       await call(mainWindow, 'executeInstall', plan.planId);
     }
 
-    // A custom source over http is off by default; turning it on accepts unencrypted-updates first.
+    // Enable custom HTTP sources only after accepting unencrypted updates.
     const settings = await openInlineSettings(app, mainWindow, 'marketplace');
     const sourceRow = settings.getByTestId(`git-marketplace:updates:source:${SOURCE_ID}`);
     await expect(sourceRow).toBeVisible({ timeout: 30_000 });
@@ -131,7 +119,6 @@ test.describe('git marketplace automatic updates', () => {
     await sourceRow.getByTestId('git-marketplace:updates:unencrypted:continue').click();
     await expect(sourceRow.getByTestId(`git-marketplace:updates:source-switch:${SOURCE_ID}`)).toHaveValue('on', { timeout: 30_000 });
 
-    // Publish 1.0.1 and press Check now: the skill applies, the extension waits for review.
     repo.commitEntries(marketplaceTree('1.0.1'), 'publish 1.0.1');
     await settings.getByTestId('git-marketplace:updates:check').click();
     await expect.poll(async () => (await call<UpdateStatusView>(mainWindow, 'updateStatus')).packages
@@ -146,7 +133,6 @@ test.describe('git marketplace automatic updates', () => {
       `skill/harbor-review@${JSON.stringify({ state: 'installed', version: '1.0.1' })}`,
     ]);
 
-    // The card says both, and the notice names the automatic update.
     await expect(settings.getByTestId(`git-marketplace:updates:recent:${SOURCE_ID}:skill:harbor-review`)).toContainText('1.0.0 → 1.0.1');
     const held = settings.getByTestId(`git-marketplace:updates:row:${SOURCE_ID}:plugin:harbor-panel`);
     await expect(held.getByTestId('git-marketplace:updates:state')).toHaveText(t('gitMarketplace.updates.state.needsReview'));
@@ -154,7 +140,6 @@ test.describe('git marketplace automatic updates', () => {
     await expect(settings.getByTestId(`git-marketplace:boot-notice:auto-updated:${SOURCE_ID}:skill:harbor-review`)).toBeVisible();
     await test.info().attach('auto-update-card', { body: await settings.getByTestId('git-marketplace:updates').screenshot(), contentType: 'image/png' });
 
-    // The review shows what changes, and installs only when the user confirms.
     await held.getByTestId('git-marketplace:updates:review').click();
     const sheet = mainWindow.getByTestId('git-marketplace:sheet');
     await expect(sheet.getByTestId('git-marketplace:consent-row:authority.networkAccess')).toContainText('upload.example.com');

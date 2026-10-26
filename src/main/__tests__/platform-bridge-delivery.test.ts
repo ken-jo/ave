@@ -1,3 +1,4 @@
+import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   createPlatformBridgeDeliveryAdapter,
@@ -42,15 +43,15 @@ function event(
   };
 }
 
-function deferred(): { readonly promise: Promise<void>; resolve(): void } {
-  let resolvePromise: (() => void) | undefined;
-  const promise = new Promise<void>((resolve) => {
-    resolvePromise = resolve;
+function recordingAdapter(
+  options: Omit<Parameters<typeof createPlatformBridgeDeliveryAdapter>[0], "transport"> = {},
+) {
+  const sent: PlatformBridgeOutboundMessage[] = [];
+  const adapter = createPlatformBridgeDeliveryAdapter({
+    transport: { send: async (_channel: string, message) => void sent.push(message) },
+    ...options,
   });
-  return {
-    promise,
-    resolve: () => resolvePromise?.(),
-  };
+  return { sent, adapter };
 }
 
 function rejectedDeferred(): {
@@ -69,14 +70,7 @@ function rejectedDeferred(): {
 
 describe("PlatformBridgeDeliveryAdapter", () => {
   it("accepts only shared snapshot/events and never serializes private envelope fields", async () => {
-    const sent: PlatformBridgeOutboundMessage[] = [];
-    const adapter = createPlatformBridgeDeliveryAdapter({
-      transport: {
-        send: async (_channel: string, message) => {
-          sent.push(message);
-        },
-      },
-    });
+    const { sent, adapter } = recordingAdapter();
     const channel = adapter.openChannel("telegram:paired-chat", CONVERSATION_ID);
 
     channel.enqueueSnapshot({
@@ -85,8 +79,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
         busy: true,
         assistantText: "safe snapshot\u0000 text",
       }),
-      // A runtime cast models an accidental future field; this adapter must
-      // destructure only the public projection contract.
+      // A runtime cast models an accidental future field; this adapter must destructure only the public projection contract.
       ownerDetail: { path: "C:\\private\\secret.txt", token: "not-for-provider" },
     } as unknown as SharedConversationSnapshot);
     channel.enqueueEvent({
@@ -107,10 +100,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
   });
 
   it("carries the share-safe failure summary on a failed turn and drops a forged one", async () => {
-    const sent: PlatformBridgeOutboundMessage[] = [];
-    const adapter = createPlatformBridgeDeliveryAdapter({
-      transport: { send: async (_channel: string, message) => void sent.push(message) },
-    });
+    const { sent, adapter } = recordingAdapter();
     const channel = adapter.openChannel("telegram:failed-chat", CONVERSATION_ID);
 
     channel.enqueueEvent(event(1, {
@@ -143,14 +133,9 @@ describe("PlatformBridgeDeliveryAdapter", () => {
   });
 
   it("bounds text by UTF-16 unit and keeps the newest end of a snapshot", async () => {
-    const sent: PlatformBridgeOutboundMessage[] = [];
-    const adapter = createPlatformBridgeDeliveryAdapter({
-      transport: { send: async (_channel: string, message) => void sent.push(message) },
-      maxTextChars: 8,
-    });
+    const { sent, adapter } = recordingAdapter({ maxTextChars: 8 });
 
-    // The projection retains the TAIL of a long reply, so a head-bounded
-    // snapshot delivers its oldest retained words and drops the newest.
+    // The projection retains the TAIL of a long reply, so a head-bounded snapshot delivers its oldest retained words and drops the newest.
     const tail = adapter.openChannel("telegram:tail-chat", CONVERSATION_ID);
     tail.enqueueSnapshot(snapshot({ cursor: 1, assistantText: "oldest-middle-newest" }));
     // Six emoji are twelve UTF-16 units: a code-point bound would send all six.
@@ -176,10 +161,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
   });
 
   it("suppresses duplicate and out-of-order cursors before provider delivery", async () => {
-    const sent: PlatformBridgeOutboundMessage[] = [];
-    const adapter = createPlatformBridgeDeliveryAdapter({
-      transport: { send: async (_channel: string, message) => void sent.push(message) },
-    });
+    const { sent, adapter } = recordingAdapter();
     const channel = adapter.openChannel("discord:paired-channel", CONVERSATION_ID);
 
     expect(channel.enqueueSnapshot(snapshot())).toBe("accepted");
@@ -198,10 +180,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
   });
 
   it("forwards the coarse approval tool identifier and resumes with plain tool status after the decision", async () => {
-    const sent: PlatformBridgeOutboundMessage[] = [];
-    const adapter = createPlatformBridgeDeliveryAdapter({
-      transport: { send: async (_channel: string, message) => void sent.push(message) },
-    });
+    const { sent, adapter } = recordingAdapter();
     const channel = adapter.openChannel("telegram:approval-wait", CONVERSATION_ID);
 
     expect(channel.enqueueSnapshot(snapshot())).toBe("accepted");
@@ -226,7 +205,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
   });
 
   it("lets a provider compact only queued safe messages and retain split current-cursor chunks", async () => {
-    const firstSend = deferred();
+    const firstSend = deferred<void>();
     const sent: PlatformBridgeOutboundMessage[] = [];
     const queuedCursors: number[][] = [];
     const adapter = createPlatformBridgeDeliveryAdapter({
@@ -284,8 +263,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
           cursor: incoming.cursor,
           message: incoming.message,
         }];
-        // Validation can read this array safely, but normalization must also be
-        // guarded because provider code is an extension boundary.
+        // Validation can read this array safely, but normalization must also be guarded because provider code is an extension boundary.
         return new Proxy(valid, {
           get(target, property, receiver) {
             if (property === "map") throw new Error("provider-map-failure");
@@ -302,7 +280,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
   });
 
   it("closes only a slow channel when its bounded pending queue fills", async () => {
-    const firstSend = deferred();
+    const firstSend = deferred<void>();
     const onBackpressure = vi.fn();
     const send = vi.fn(async () => firstSend.promise);
     const adapter = createPlatformBridgeDeliveryAdapter({
@@ -321,8 +299,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
 
     firstSend.resolve();
     await channel.waitForIdle();
-    // This mock deliberately ignores its AbortSignal; queued turn status and
-    // overflowing text are still discarded for this one slow channel.
+    // This mock deliberately ignores its AbortSignal; queued turn status and overflowing text are still discarded for this one slow channel.
     expect(send).toHaveBeenCalledTimes(1);
     expect(adapter.channelCount()).toBe(0);
   });
@@ -523,10 +500,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
     const timeline = createPlatformConversationTimeline();
     const store = createSharedConversationProjectionStore(timeline);
     store.start();
-    const sent: PlatformBridgeOutboundMessage[] = [];
-    const adapter = createPlatformBridgeDeliveryAdapter({
-      transport: { send: async (_channel: string, message) => void sent.push(message) },
-    });
+    const { sent, adapter } = recordingAdapter();
     const channel = adapter.openChannel("discord:bridge", CONVERSATION_ID);
 
     timeline.publish({

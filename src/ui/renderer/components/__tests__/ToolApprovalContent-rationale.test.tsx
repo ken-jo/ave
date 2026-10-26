@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
@@ -33,8 +33,8 @@ function makeRationaleRequest(args: unknown): ApprovalRequest {
     category: "tool",
     kind: "rationale",
     allowedChoices: ["allow-once", "deny-once"],
-    // Deliberately different from the display contract: the renderer must not
-    // use generic request fields for a rationale decision card.
+    // Deliberately different from the display contract: the renderer must not use generic request fields for a rationale
+    // decision card.
     toolName: "untrusted-request-tool",
     toolCategory: "shell",
     args,
@@ -56,13 +56,7 @@ describe("ToolApprovalContent rationale card", () => {
     const onDecide = vi.fn();
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
-    const { container } = render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeRationaleRequest(makeReadyDisplay())}
-        onDecide={onDecide}
-      />,
-    );
+    const { container } = renderApproval(makeRationaleRequest(makeReadyDisplay()), onDecide);
 
     expect(screen.getByTestId("rationale-approval-card")).toBeInTheDocument();
     expect(container.querySelector('input, textarea, [contenteditable="true"], [role="textbox"]'))
@@ -92,8 +86,8 @@ describe("ToolApprovalContent rationale card", () => {
     ).toBeNull();
     expect(screen.queryByTestId("rationale-model-fallback")).not.toBeInTheDocument();
 
-    // Generic request fields, raw args JSON, and raw details must not cross
-    // into the rationale UI, even when their values disagree with host facts.
+    // Generic request fields, raw args JSON, and raw details must not cross into the rationale UI, even when their values
+    // disagree with host facts.
     expect(screen.queryByText("untrusted-request-tool")).not.toBeInTheDocument();
     expect(screen.queryByText("UNTRUSTED request reason: do not render this")).not.toBeInTheDocument();
     expect(screen.queryByText("/untrusted/raw-target")).not.toBeInTheDocument();
@@ -124,13 +118,7 @@ describe("ToolApprovalContent rationale card", () => {
     vi.stubGlobal("ave", {
       userApproval: { record: vi.fn().mockResolvedValue({ ok: true }) },
     });
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeRationaleRequest(display)}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval(makeRationaleRequest(display), vi.fn());
 
     const identity = screen.getByTestId("rationale-approval-tool");
     expect(identity).toHaveTextContent(display.toolName);
@@ -148,13 +136,7 @@ describe("ToolApprovalContent rationale card", () => {
       suggestion: null,
       modalFallbackRequired: true,
     };
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeRationaleRequest(failed)}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(makeRationaleRequest(failed), onDecide);
 
     expect(screen.queryByTestId("rationale-model-suggestion")).not.toBeInTheDocument();
     expect(screen.getByTestId("rationale-model-fallback")).toHaveTextContent(
@@ -172,21 +154,15 @@ describe("ToolApprovalContent rationale card", () => {
       ...makeReadyDisplay(),
       unexpected: '<img data-testid="raw-injection" src="x" />',
     };
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeRationaleRequest(malformed)}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(makeRationaleRequest(malformed), onDecide);
 
     expect(screen.getByTestId("rationale-approval-invalid")).toHaveTextContent(
       "Rationale details could not be verified.",
     );
     expect(screen.queryByTestId("rationale-approval-card")).not.toBeInTheDocument();
     expect(screen.queryByTestId("raw-injection")).not.toBeInTheDocument();
-    // Fail-closed is now BY OMISSION: an approval whose sealed evidence
-    // cannot be verified does not offer allow options at all.
+    // Fail-closed is now BY OMISSION: an approval whose sealed evidence cannot be verified does not offer allow options at
+    // all.
     expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
     expect(screen.queryByTestId(TEST_IDS.allowAlwaysButton)).toBeNull();
 

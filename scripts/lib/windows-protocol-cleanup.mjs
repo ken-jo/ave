@@ -1,14 +1,7 @@
-/**
- * Owner-only removal of the HKCU `ave://` registration a packaged Windows
- * build writes for itself when launched outside an NSIS install (no
- * per-machine marker beside the executable). A launch from win-unpacked
- * claims `ave://` for that executable; leaving it behind would point the
- * user's deep links at a build directory that is deleted afterwards. Only
- * values that name exactly `executable` are removed, and empty keys after
- * that; the call throws when the registration it expects is missing or is
- * owned by another executable. A no-op off Windows.
- */
+// Isolated packaged launches must leave the user's protocol handler unchanged.
+// Remove only claims for this executable, then throw to report the regression.
 import { spawnSync } from "node:child_process";
+import { windowsPowerShellEnv } from "./windows-powershell-env.mjs";
 
 const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -34,17 +27,17 @@ const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
   "  if ($empty) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($path, $false) }",
   "}",
   "$rootKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($rootPath, $false)",
-  "if ($null -eq $rootKey) { throw 'expected win-unpacked HKCU ave protocol root is missing' }",
+  "if ($null -eq $rootKey) { Write-Output 'absent'; exit 0 }",
   "$rootKey.Dispose()",
   "$commandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($commandPath, $false)",
-  "if ($null -eq $commandKey) { throw 'ave protocol root exists without an owned command' }",
+  "if ($null -eq $commandKey) { Write-Output 'foreign'; exit 0 }",
   "try {",
   "  $commandKind = $commandKey.GetValueKind('')",
   "  $command = [string]$commandKey.GetValue('', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
   "} finally { $commandKey.Dispose() }",
-  "if ($commandKind -ne [Microsoft.Win32.RegistryValueKind]::String) { throw 'refusing to remove a non-owned ave protocol command kind' }",
+  "if ($commandKind -ne [Microsoft.Win32.RegistryValueKind]::String) { Write-Output 'foreign'; exit 0 }",
   "$expectedCommand = '\"' + $env:AVE_PROTOCOL_OWNER_EXE + '\" \"%1\"'",
-  "if (-not [string]::Equals($command, $expectedCommand, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'refusing to remove a non-owned ave protocol command' }",
+  "if (-not [string]::Equals($command, $expectedCommand, [System.StringComparison]::OrdinalIgnoreCase)) { Write-Output 'foreign'; exit 0 }",
   "$expectedIcon = '\"' + $env:AVE_PROTOCOL_OWNER_EXE + '\",0'",
   "Remove-RegistryValueIfEquals $commandPath '' $expectedCommand ([System.StringComparison]::OrdinalIgnoreCase)",
   "Remove-RegistryValueIfEquals 'Software\\Classes\\ave\\DefaultIcon' '' $expectedIcon ([System.StringComparison]::OrdinalIgnoreCase)",
@@ -57,12 +50,16 @@ const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
   "  'Software\\Classes\\ave\\DefaultIcon',",
   "  $rootPath",
   ")) { Remove-EmptyRegistryKey $path }",
+  "Write-Output 'removed'",
 ].join("\n");
 
-export function cleanupOwnedWindowsProtocolHandler(executable) {
-  if (process.platform !== "win32") return;
+export function assertNoWindowsProtocolClaim(
+  executable,
+  { platform = process.platform, run = spawnSync } = {},
+) {
+  if (platform !== "win32") return;
 
-  const result = spawnSync(
+  const result = run(
     "powershell.exe",
     [
       "-NoLogo",
@@ -75,22 +72,30 @@ export function cleanupOwnedWindowsProtocolHandler(executable) {
     ],
     {
       encoding: "utf8",
-      env: {
+      env: windowsPowerShellEnv({
         ...process.env,
         AVE_PROTOCOL_OWNER_EXE: executable,
-      },
+      }),
       timeout: 30_000,
       windowsHide: true,
     },
   );
   if (result.error) {
     throw new Error(
-      `packaged Windows protocol cleanup failed to start: ${result.error.message}`,
+      `packaged Windows protocol check failed to start: ${result.error.message}`,
     );
   }
   if (result.status !== 0) {
     throw new Error(
-      `packaged Windows protocol cleanup failed with status ${result.status}: ${result.stderr.trim()}`,
+      `packaged Windows protocol check failed with status ${result.status}: ${result.stderr.trim()}`,
     );
   }
+  const outcome = result.stdout.trim().split(/\r?\n/u).at(-1);
+  if (outcome === "absent" || outcome === "foreign") return;
+  if (outcome === "removed") {
+    throw new Error(
+      "an isolated packaged launch claimed HKCU ave:// for its own executable; the claim was removed",
+    );
+  }
+  throw new Error(`packaged Windows protocol check returned an unexpected outcome: ${outcome}`);
 }

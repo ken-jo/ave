@@ -1,7 +1,3 @@
-
-
-
-
 import { memo, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
@@ -29,28 +25,14 @@ export interface TokenCostBadgeProps {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   pricing?: TokenCostBadgePricing;
-  /**
-   * Active vendor for the turn — selects how cache fields combine with the
-   * cost formula. Mirrors the asymmetry encoded in
-   * `engine/llm/pricing.ts:computeCost`:
-   *   - "claude": cache is additive (Anthropic ratios applied).
-   *   - everyone else: provider raw prompt_tokens includes cached tokens, so
-   *     the badge reconstructs raw input as fresh + cache before calling the
-   *     shared formula.
-   * Optional for backward-compat in tests; production callers always
-   * propagate the active vendor from ChatContext.
-   */
+  /** Cache accounting is provider-dependent: additive-cache routes use separate costs, while inclusive prompt counts
+   * reconstruct raw input from fresh plus cached tokens. */
   vendor?: LLMVendor;
-  /**
-   * Per provider request usage segments. When present, cost is summed per
-   * segment so prompt-size tier pricing such as OpenAI's long-context tier is
-   * not accidentally applied to an Ave turn aggregate.
-   */
+  /** Per provider request usage segments. When present, cost is summed per segment so prompt-size tier pricing such as
+   * OpenAI's long-context tier is not accidentally applied to an Ave turn aggregate. */
   usageByModel?: ModelUsageSegment<LLMVendor>[];
-  /**
-   * Non-billable subscription usage. When present this takes precedence over
-   * API-key pricing inputs and is rendered as a token-only provenance badge.
-   */
+  /** Non-billable subscription usage. When present this takes precedence over API-key pricing inputs and is rendered as a
+   * token-only provenance badge. */
   subscriptionUsage?: readonly SubscriptionUsageTelemetry[];
 }
 
@@ -75,16 +57,14 @@ function TokenCostBadgeImpl({
   usageByModel,
   subscriptionUsage,
 }: TokenCostBadgeProps) {
-  // Default = tokens. 사용자 요청: 청구액보다 토큰 수치가 더 직관적.
-  // 클릭으로 cost 토글 가능 (pricing 이 있을 때만).
+  // Default = tokens. 사용자 요청: 청구액보다 토큰 수치가 더 직관적. 클릭으로 cost 토글 가능 (pricing 이 있을 때만).
   const { t } = useTranslation();
   const [mode, setMode] = useState<"tokens" | "cost">("tokens");
   const pricingOverrides = usePricingOverrides();
   const hasSubscriptionUsage = (subscriptionUsage?.length ?? 0) > 0;
 
-  // Subscription telemetry has no per-call price. Keep it entirely out of
-  // the API-key pricing branch: even a caller accidentally providing a vendor
-  // or pricing table cannot make it look like a zero-dollar API request.
+  // Subscription telemetry has no per-call price. Keep it entirely out of the API-key pricing branch: even a caller
+  // accidentally providing a vendor or pricing table cannot make it look like a zero-dollar API request.
   if (hasSubscriptionUsage && subscriptionUsage) {
     const totalTokens = sumSubscriptionTokens(subscriptionUsage, "totalTokens");
     if (totalTokens === 0) return null;
@@ -135,15 +115,14 @@ function TokenCostBadgeImpl({
   const headlineTokens = freshInputTokens + tokensOut;
   if (headlineTokens === 0 && tokensIn === 0) return null;
 
-  // Single source of truth for cost math — shared `computeCost` (browser-safe
-  // via `shared/pricing-data.ts`) is the same function the engine billing
-  // pipeline calls. Keeps the badge from drifting when vendor branches evolve.
+  // Single source of truth for cost math — shared `computeCost` (browser-safe via `shared/pricing-data.ts`) is the same
+  // function the engine billing pipeline calls. Keeps the badge from drifting when vendor branches evolve.
   const effectiveVendor = vendor ?? "claude";
   const costInputTokens = effectiveVendor === "claude"
     ? freshInputTokens
     : freshInputTokens + cacheReadTokens + cacheWriteTokens;
-  // Each provider request is priced on its own: a price tier is chosen by one
-  // request's prompt, and a turn's rounds summed are not one prompt.
+  // Each provider request is priced on its own: a price tier is chosen by one request's prompt, and a turn's rounds summed
+  // are not one prompt.
   const segmentCost = usageByModel && usageByModel.length > 0
     ? usageByModel.reduce<number | null>((sum, segment) => {
         if (sum === null) return null;

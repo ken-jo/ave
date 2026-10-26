@@ -1,8 +1,4 @@
-/**
- * The hostApi surface `sampleassistant` reaches (plugin-hostapi-protocol.md §9.2),
- * each member called once so the golden transcript beside this file shows every
- * frame that surface puts on the wire.
- */
+/** Call each assistant host member once to record its actual wire frames. */
 export const createPlugin = async (context) => {
   const api = context.hostApi;
   const seen = { events: [], pluginsChanged: [], configChanges: [] };

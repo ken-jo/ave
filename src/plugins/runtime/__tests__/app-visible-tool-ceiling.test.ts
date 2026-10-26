@@ -1,19 +1,4 @@
-/**
- * #1553 (relocated, root-cause) — the app-only dispatch ceiling now lives
- * STRUCTURALLY inside `PluginRuntime.callDeclaredAppOnlyTool`, the SOLE entry point
- * of the bypass, rather than in the boot wiring that reaches it. This is the
- * root-cause guard the cluster review asked for: any caller of
- * callDeclaredAppOnlyTool is capped regardless of how boot dispatches, so a future
- * revert of the boot wiring back to a direct callDeclaredAppOnlyTool call cannot
- * silently drop the ceiling (CLAUDE.md §Tool Execution Timeout Policy: every
- * tool path passes through `runWithCeiling`).
- *
- * The runtime is built with a hand-crafted plugins/methodMap (the same seam
- * plugin-app-visibility-guard.test.ts uses) so the REAL callDeclaredAppOnlyTool is
- * exercised without spinning up a plugin entry file. `ceilingMs` is a defaulted
- * (= SOT) parameter used only as a test seam so we can prove the ceiling without
- * waiting the real 120s and without weakening the SOT.
- */
+/** All app-only dispatch must pass callDeclaredAppOnlyTool and its shared ceiling; tests inject only a smaller deadline. */
 import { describe, expect, it, vi } from "vitest";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +16,6 @@ function runtimeWithAppVisibleTool(
     plugins: Map<string, { manifest: unknown }>;
     methodMap: Map<string, { pluginId: string; handler: (p?: unknown) => Promise<unknown> }>;
   };
-  // The runtime method is one app-only Tool.
   internals.plugins.set("test.plugin", {
     manifest: {
       tools: [
@@ -52,11 +36,9 @@ describe("PluginRuntime.callDeclaredAppOnlyTool — structural ceiling (#1553)",
   it("rejects at the ceiling when the app-only handler never resolves (caller does not hang)", async () => {
     const rt = runtimeWithAppVisibleTool(
       "meeting_stage_upload_begin",
-      // Never resolves — simulates a hung app-only handler.
       () => new Promise<never>(() => {}),
     );
     await expect(
-      // small ceiling via the test seam — the SOT default is untouched
       rt.callDeclaredAppOnlyTool("meeting_stage_upload_begin", {}, 5),
     ).rejects.toThrow(/exceeded global ceiling \(5ms\): meeting_stage_upload_begin/);
   });
@@ -237,8 +219,7 @@ describe("PluginRuntime.callDeclaredAppOnlyTool — structural ceiling (#1553)",
 
   it("enforces the app-visible tool allowlist BEFORE the ceiling wrap (a non-app-visible method is rejected)", async () => {
     const rt = runtimeWithAppVisibleTool("meeting_stage_upload_begin", async () => "ok");
-    // A method present in methodMap but NOT declared app-visible must be
-    // rejected by app-visible Tool admission, which runs before runWithCeiling.
+    // App visibility admission precedes the execution ceiling even if methodMap contains the name.
     const internals = rt as unknown as {
       methodMap: Map<string, { pluginId: string; handler: (p?: unknown) => Promise<unknown> }>;
     };

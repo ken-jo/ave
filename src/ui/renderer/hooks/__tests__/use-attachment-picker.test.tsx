@@ -1,9 +1,6 @@
 // @vitest-environment jsdom
-/**
- * attachPastedText: another surface (a terminal block) hands text to the
- * composer as a pasted-text chip, through the same capped atomic commit the
- * file picker uses.
- */
+/** attachPastedText: another surface (a terminal block) hands text to the composer as a pasted-text chip, through the same
+ * capped atomic commit the file picker uses. */
 import "../../../../../test/renderer/setup.js";
 import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";

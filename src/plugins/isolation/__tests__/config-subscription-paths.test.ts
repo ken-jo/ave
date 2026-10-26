@@ -1,14 +1,4 @@
-/**
- * The config members and the four subscription members, driven across a real
- * dispatcher and a real child runtime.
- *
- * The four subscriptions are the hard part of this boundary and the assertions
- * say why: a lifetime with two owners has FOUR ways to end, and three of them
- * are deaths nobody calls a disposer for. So every one of them is exercised
- * against the COUNTS on both ledgers, not against behaviour that happens to
- * still work — a leaked subscription throws nothing, fails nothing, and keeps a
- * retired plugin's callbacks firing.
- */
+/** Check both subscription ledgers for every termination path; working callbacks alone cannot reveal leaks. */
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { PluginHostApi, PluginLifecycleEvent } from "../../types.js";
@@ -57,15 +47,7 @@ const MANIFEST: PluginManifest = {
   tools: [],
 };
 
-/**
- * A stand-in for the real per-incarnation hostApi.
- *
- * It records what was registered and hands back a working disposer, which is
- * all the handlers under test actually depend on — the permission assertion,
- * the restart policy and the self-event filter belong to the real object and
- * are deliberately NOT re-created here, because a copy of them in a test is a
- * second answer to a question the host already answers.
- */
+/** Replace only the per-incarnation host object; keep dispatch, permissions and restart rules in production code. */
 function fakeHostApi() {
   const configListeners = new Map<string, Set<(value: unknown) => void>>();
   const eventListeners = new Map<string, Set<(data: unknown) => void>>();
@@ -135,18 +117,12 @@ interface Harness {
   readonly api: ReturnType<typeof fakeHostApi>;
   readonly hostApi: PluginHostApi;
   readonly notifications: HostApiNotification[];
-  /** Every request that crossed. The only place a subscription id is observable. */
+  /** Read subscription IDs from actual wire requests. */
   readonly requests: HostApiRequest[];
   readonly call: (path: HostApiPath, args: readonly unknown[]) => Promise<unknown>;
 }
 
-/**
- * The id the child allocated for the registration `path` opened.
- *
- * The plugin never sees it — that is what `result: "handle"` means — so a test
- * playing the host's side has to read it where the host reads it: off the
- * subscribe request itself.
- */
+/** The plugin sees a handle, not its ID; observe the subscribe request to name the registration. */
 function subscriptionIdOf(requests: HostApiRequest[], path: HostApiPath): string {
   const request = requests.find((candidate) => pathOfRequest(candidate) === path);
   if (!request) throw new Error(`no '${path}' request crossed the wire`);
@@ -158,7 +134,6 @@ async function harness(
   options: {
     config?: Record<string, unknown>;
     isActive?: () => boolean;
-    /** Omitted deliberately by the cases that assert the unseeded refusal. */
     appPreferences?: { keys: readonly string[]; values: Record<string, unknown> };
   } = {},
 ): Promise<Harness> {
@@ -178,14 +153,12 @@ async function harness(
 
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Captured, not dropped: a sink that discards is what shipped, and a
-    // test that discards could not tell the difference.
+    // Capture host diagnostics so silently discarded failures cannot pass.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
     reportUnknownField: () => {},
-    // `ave/instance/shutdown`, answered by the child runtime itself.
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
@@ -269,17 +242,14 @@ describe("config.set crosses as plain JSON and comes back as nothing", () => {
   });
 
   it("makes a plugin's own set-then-get see its own write", async () => {
-    // The ordering the contract promises. `set` is awaited, so by the time it
-    // resolves the child's snapshot must already carry the value.
+    // Awaited config.set must update the child snapshot before resolving.
     const { hostApi } = await harness({ config: { theme: "dark" } });
     await hostApi.config.set("theme", "light");
     expect(hostApi.config.get("theme")).toBe("light");
   });
 
   it("leaves the snapshot alone when the host refuses the write", async () => {
-    // A rejected write readable through `config.get` would report a persisted
-    // value that does not exist — the silent wrong answer the boundary exists
-    // to prevent.
+    // Rejected writes must never become readable as persisted config.
     const { hostApi, api } = await harness({ config: { theme: "dark" } });
     api.rejectSet(new Error("secret fields must be saved via hostApi.setSecret()"));
     await expect(hostApi.config.set("theme", "light")).rejects.toThrow("Host request failed.");
@@ -296,9 +266,7 @@ describe("config.set crosses as plain JSON and comes back as nothing", () => {
 
   it("refuses a malformed call off the wire rather than persisting a bad key", async () => {
     const { call, api } = await harness();
-    // A surplus positional argument is not in this list: the params object has
-    // no slot for one, and an undeclared FIELD is reported and ignored (§3.3),
-    // which the boundary contract suite asserts.
+    // Undeclared params fields are reported and ignored; positional extras have no wire slot.
     for (const args of [[], ["only-a-key"], [42, "value"]]) {
       await expect(call("config.set", args)).rejects.toMatchObject({
         code: "argument-marshalling-rejected",
@@ -308,13 +276,7 @@ describe("config.set crosses as plain JSON and comes back as nothing", () => {
   });
 });
 
-/**
- * The three disposer-bearing members, driven through one table.
- *
- * They differ only in what they name and what their event carries; the lifetime
- * obligations are identical, so proving them once per member from one table is
- * what stops the third one quietly getting a weaker guarantee than the first.
- */
+/** Every disposer-bearing member has the same two-sided lifetime obligations. */
 const DISPOSABLE = [
   {
     path: "config.onChange" as const,
@@ -397,8 +359,7 @@ describe.each(DISPOSABLE)(
           code: "argument-marshalling-rejected",
         });
       }
-      // Nothing was wired on the host either — a refusal that still subscribed
-      // would leak a listener for a registration no ledger names.
+      // A refused subscription must not leave an untracked host listener.
       expect(hostListenerCount(api)).toBe(0);
     });
 
@@ -412,10 +373,7 @@ describe.each(DISPOSABLE)(
       const { call, child, api } = await harness();
       const subscription = child.openSubscription(path, () => {});
       await call(path, wireArgs(subscription.subscriptionId));
-      // A second registration under the same id is refused by the ledger — a
-      // silent overwrite would drop a release. The handler must take its own
-      // host subscription back off the bus rather than leaving a listener that
-      // no ledger entry can ever release.
+      // If ledger insertion rejects a duplicate ID, immediately dispose the new host subscription.
       await expect(call(path, wireArgs(subscription.subscriptionId))).rejects.toThrow();
       expect(hostListenerCount(api)).toBe(1);
     });
@@ -429,7 +387,6 @@ describe.each(DISPOSABLE)(
       expect(notifications.at(-1)).toMatchObject({
         method: "notifications/ave/subscription/release",
       });
-      // Idempotent: a plugin that disposes twice does not release twice.
       dispose();
       expect(host.openSubscriptionCount).toBe(0);
     });
@@ -445,8 +402,7 @@ describe.each(DISPOSABLE)(
       const { host, api } = await subscribed();
       expect(host.childGone()).toBe(1);
       expect(host.openSubscriptionCount).toBe(0);
-      // The real leak: the host is still wired to its own bus on behalf of a
-      // process that no longer exists.
+      // A dead child must not retain host bus registrations.
       expect(hostListenerCount(api)).toBe(0);
     });
 
@@ -459,9 +415,7 @@ describe.each(DISPOSABLE)(
     });
 
     it("drops the child side when the host revokes, and does not echo back", async () => {
-      // The plugin is still holding a live disposer at this point. A revoke it
-      // is not told about leaves it holding a closure over the whole plugin
-      // instance for a registration the host has already forgotten.
+      // Host revocation must invalidate the child closure as well as drop the host entry.
       const { child, notifications, requests, received, api, dispose } = await subscribed();
       const before = notifications.length;
       expect(
@@ -475,13 +429,10 @@ describe.each(DISPOSABLE)(
         }),
       ).toBe("closed");
       expect(child.openSubscriptionCount).toBe(0);
-      // No release travels back: the host already knows, and answering a
-      // close with a close is the ping-pong the reason exists to prevent.
+      // Do not answer a host close with another close.
       expect(notifications).toHaveLength(before);
       fire(api);
       expect(received).toEqual([]);
-      // The disposer the plugin still holds is now inert rather than a second
-      // release for a registration that is already gone.
       dispose();
       expect(notifications).toHaveLength(before);
     });
@@ -531,16 +482,12 @@ describe("onShutdown is the subscription the HOST ends", () => {
       order.push("host-returned");
     });
     await flush();
-    // The host is blocked on `ave/instance/shutdown`; the handler settling
-    // is the reply.
     expect(order).toEqual(["plugin-started"]);
     expect(hostReturned).toBe(false);
 
     release();
     await shutdown;
     expect(order).toEqual(["plugin-started", "plugin-finished", "host-returned"]);
-    // Both ledgers are clear afterwards: the release the child sent closed the
-    // host side, and disposing closed its own.
     expect(host.openSubscriptionCount).toBe(0);
     expect(child.openSubscriptionCount).toBe(0);
   });
@@ -549,8 +496,7 @@ describe("onShutdown is the subscription the HOST ends", () => {
     const { hostApi, api, host, child } = await harness();
     hostApi.onShutdown(() => Promise.reject(new Error("teardown failed")));
     await flush();
-    // The reply to `ave/instance/shutdown` is the failure, so the host's own
-    // shutdown loop logs it beside every other plugin's.
+    // Shutdown handler failures must cross as errors for the host shutdown log.
     await expect(api.runShutdown()).rejects.toThrow("teardown failed");
     await flush();
     expect(host.openSubscriptionCount).toBe(0);
@@ -572,8 +518,7 @@ describe("onShutdown is the subscription the HOST ends", () => {
 
   it("refuses a shutdown that names no open registration, instead of answering it done", async () => {
     const { child } = await harness();
-    // A host that believed it had waited for a handler the child never held
-    // would log a clean shutdown of work that did not run.
+    // Host shutdown cannot report completion before the child handler settles.
     await expect(child.runShutdownHandler("never-registered")).rejects.toThrow(
       /no open onShutdown registration 'never-registered'/,
     );
@@ -584,8 +529,7 @@ describe("onShutdown is the subscription the HOST ends", () => {
     hostApi.onShutdown(() => {});
     await flush();
     expect(host.childGone()).toBe(1);
-    // No registration is left to deliver to. A handler that fired anyway would
-    // throw `subscription-unknown` into the host's shutdown loop.
+    // No delivery may target an already-removed registration.
     await expect(api.runShutdown()).resolves.toBeUndefined();
   });
 
@@ -611,11 +555,7 @@ describe("onShutdown is the subscription the HOST ends", () => {
 
 describe("a subscribe the host refuses does not leave the plugin holding a live disposer", () => {
   it("drops the child registration and reports the refusal", async () => {
-    // The subscribe round trip is not awaited — it cannot be, because the
-    // in-process contract returns synchronously — so a refusal has no caller to
-    // throw to. Silence here would give the plugin a disposer for a
-    // subscription that exists on neither side, which looks exactly like a
-    // working subscription for an event that never fires.
+    // Asynchronous subscribe refusals need diagnostics because the synchronous caller already received its disposer.
     const { hostApi, child, host, api, notifications } = await harness({
       isActive: () => false,
     });
@@ -655,9 +595,7 @@ describe("a subscribe the host refuses does not leave the plugin holding a live 
 
 describe("the config snapshot the child answers from stays current", () => {
   it("moves the snapshot before the plugin's own onChange callback runs", async () => {
-    // A callback that reads `config.get(key)` must see the value it was just
-    // handed. Refreshing after the callback would show it the value it
-    // replaced, and nothing about that reads as an error.
+    // Update the snapshot before invoking callbacks that may reread config.
     const { hostApi, api } = await harness({ config: { theme: "dark" } });
     const seen: unknown[] = [];
     hostApi.config.onChange("theme", () => seen.push(hostApi.config.get("theme")));
@@ -733,10 +671,7 @@ describe("the group binds to one incarnation and claims exactly its own members"
   });
 
   it("leaves the shipped table unbound, because a module constant has no incarnation", () => {
-    // Publishing a bound handler into `HOSTAPI_DISPATCH_TABLE` would be a
-    // handler that names no plugin: `config.set` writes SOMEONE's settings and
-    // `onEvent` asserts SOMEONE's event access. Nothing routes out-of-process
-    // yet, and the shipped table staying unbound is what says so.
+    // Static dispatch entries must remain unbound; only per-incarnation bindings may act for a plugin.
     expect(HOSTAPI_DISPATCH_TABLE["config.get"].status).toBe("child-local");
     for (const path of [
       "config.set",
@@ -750,9 +685,7 @@ describe("the group binds to one incarnation and claims exactly its own members"
   });
 
   it("reports a host that drifts into returning a value from a void member", async () => {
-    // The check exists on the dispatcher; a handler that awaited the host's
-    // promise and resolved `undefined` of its own accord would make it
-    // unreachable, and the drift would reach the child's stub unannounced.
+    // Return the host result so the dispatcher can detect void-contract drift.
     const drifted = {
       config: {
         get: () => undefined,
@@ -765,14 +698,12 @@ describe("the group binds to one incarnation and claims exactly its own members"
     } satisfies ConfigSubscriptionHostApi;
     const hostLogs: { message: string; meta?: unknown }[] = [];
     const host = new HostApiDispatcher({
-      // Captured, not dropped: a sink that discards is what shipped, and a
-      // test that discards could not tell the difference.
+      // Capture host diagnostics so silently discarded failures cannot pass.
       log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
       isActive: () => true,
       notifications: { deliver: () => {} },
       reportUnknownField: () => {},
-      // No child runs here, so a shutdown reaching for one is a test bug.
       shutdownChild: async (subscriptionId) => {
         throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
       },
@@ -800,14 +731,12 @@ describe("the group binds to one incarnation and claims exactly its own members"
     } as Record<HostApiPath, HostApiPathHandler>;
     const hostLogs: { message: string; meta?: unknown }[] = [];
     const host = new HostApiDispatcher({
-      // Captured, not dropped: a sink that discards is what shipped, and a
-      // test that discards could not tell the difference.
+      // Capture host diagnostics so silently discarded failures cannot pass.
       log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
       isActive: () => true,
       notifications: { deliver: () => {} },
       reportUnknownField: () => {},
-      // No child runs here, so a shutdown reaching for one is a test bug.
       shutdownChild: async (subscriptionId) => {
         throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
       },
@@ -822,11 +751,7 @@ describe("the group binds to one incarnation and claims exactly its own members"
 
 describe("the config snapshot the child reads is re-pushed, not frozen at construction", () => {
   it("moves a value the host changed without the plugin subscribing to anything", async () => {
-    // `config.get` is child-local by contract, so a snapshot that is never
-    // re-pushed answers with the construction value forever — a wrong answer
-    // that reads exactly like a right one. Nothing here subscribes: the point
-    // is that the member has to be current whether or not the plugin ever
-    // called `config.onChange`.
+    // Refresh config snapshots even when the plugin never subscribes to config.onChange.
     const { child, hostApi } = await harness({ config: { theme: "dark", locale: "ko" } });
     expect(hostApi.config.get("theme")).toBe("dark");
 
@@ -846,9 +771,7 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
   });
 
   it("clears a key the host no longer resolves", async () => {
-    // A cleared key has no JSON representation as a value — `undefined` is not
-    // one — so `keys` carries it and `values` does not. A push that only
-    // carried an object would silently leave the stale value in place.
+    // Cleared keys belong in keys but not values; JSON cannot carry undefined.
     const { child, hostApi } = await harness({ config: { token: "abc" } });
     expect(hostApi.config.get("token")).toBe("abc");
 
@@ -865,9 +788,7 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
   });
 
   it("leaves a key the push does not enumerate alone", async () => {
-    // A key the plugin invented through `config.set` is not one the host can
-    // enumerate. Replacing the whole record would erase it; only the enumerated
-    // keys are touched.
+    // Only enumerated keys may change; preserve plugin-created keys absent from the host snapshot.
     const { child, hostApi } = await harness({ config: { theme: "dark" } });
     await hostApi.config.set("adhoc", 41);
     expect(hostApi.config.get("adhoc")).toBe(41);
@@ -888,9 +809,7 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
 
 describe("the secret sentinel has a wire form, and it is the only thing that reads as one", () => {
   it("crosses as a flag beside the key and comes back as the symbol itself", () => {
-    // The whole defect in one line: a Symbol under `value` does not survive
-    // `JSON.stringify`, so the round trip is what has to be asserted — not the
-    // encoder's return value.
+    // Assert the JSON round trip: stringify silently drops Symbols.
     const onWire = JSON.parse(
       JSON.stringify(encodeConfigChange("apiKey", SECRET_REDACTED_SENTINEL)),
     ) as unknown;
@@ -925,9 +844,7 @@ describe("the secret sentinel has a wire form, and it is the only thing that rea
   });
 
   it("refuses a value that would silently change shape on the wire", () => {
-    // The sentinel is one instance of a general hazard. A function or a second
-    // symbol vanishes exactly the same way, and the old code would have
-    // delivered every one of them as "cleared".
+    // Reject all non-JSON values rather than turn functions or Symbols into apparent clears.
     expect(() => encodeConfigChange("k", Symbol("other"))).toThrow(/cannot cross the boundary/u);
     expect(() => encodeConfigChange("k", () => undefined)).toThrow(/cannot cross the boundary/u);
     expect(() => encodeConfigChange("k", new Date("2020-01-01"))).toThrow(
@@ -948,10 +865,7 @@ describe("the secret sentinel has a wire form, and it is the only thing that rea
     api.emitConfigChange("apiKey", SECRET_REDACTED_SENTINEL);
 
     expect(seen).toEqual([SECRET_REDACTED_SENTINEL]);
-    // A secret is stripped out of the cleartext record the host resolves, so
-    // the in-process `config.get` answers `undefined` for one. Storing the
-    // sentinel would hand the plugin a Symbol through a member that has never
-    // produced one.
+    // Secret updates must not place the sentinel into the cleartext config snapshot.
     expect(readBack).toEqual([undefined]);
   });
 });
@@ -968,9 +882,7 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
   });
 
   it("moves when the host pushes a new snapshot", async () => {
-    // The member used to have no child half BECAUSE this push did not exist: a
-    // plugin reading the preference at call time would have answered with the
-    // construction value for the life of the process.
+    // Preference pushes must keep synchronous child reads current.
     const { child, hostApi } = await harness({
       appPreferences: {
         keys: ["webView.preferredFlow"],
@@ -993,9 +905,7 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
   });
 
   it("clears a preference the host no longer resolves", async () => {
-    // `undefined` is not a JSON value, so an unset preference is a key in
-    // `keys` and absent from `values`. A push carrying only an object would
-    // leave the stale value in place.
+    // Represent unset preferences with keys absent from values so stale entries can be deleted.
     const { child, hostApi } = await harness({
       appPreferences: {
         keys: ["webView.preferredFlow"],
@@ -1027,11 +937,7 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
   });
 
   it("answers a key inherited from Object.prototype as unset, not with the prototype member", async () => {
-    // The snapshot is a plain object, so a bare index answers `toString` and
-    // `constructor` with `Object.prototype`'s functions. The host reader tests
-    // the key against the allowlist and answers `undefined` for both, and a
-    // plugin handed a function where the host hands `undefined` is reading a
-    // different member on each side of the boundary.
+    // Use own-key lookup so inherited prototype functions cannot masquerade as preferences.
     const { hostApi } = await harness({
       appPreferences: {
         keys: ["webView.preferredFlow"],
@@ -1044,10 +950,7 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
   });
 
   it("throws rather than answering when the host published no snapshot at all", async () => {
-    // `getAppPreference` is OPTIONAL on `PluginHostApi`, so "this host has no
-    // preference reader" is a real state — and it is not the same as "this
-    // preference is unset". Answering `undefined` would merge the two into one
-    // reply the plugin cannot take apart.
+    // An absent optional preference reader differs from an unset preference; preserve the refusal.
     const { hostApi } = await harness();
     expect(() => hostApi.getAppPreference!("webView.preferredFlow")).toThrow(
       /published no preference snapshot/u,

@@ -5,7 +5,6 @@ import { afterEach, beforeEach } from "vitest";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { cleanupTmpDir } from "./tmp-dir-teardown.js";
 
-/** Isolated directories and matching interpreter facts for structural/native pairs. */
 export function useBashStructuralFixture() {
   const validator = new BashAstValidator();
   let cwd: string;

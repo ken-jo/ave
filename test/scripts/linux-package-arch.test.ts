@@ -1,9 +1,25 @@
+import { canCreateSymlinks } from "../../src/__tests__/support/symlink-capability.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fixtureModes = vi.hoisted(() => new Map<string, number>());
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    lstatSync: (path: string) => {
+      const stats = actual.lstatSync(path);
+      const mode = fixtureModes.get(path);
+      // The extracted fixtures carry Linux modes even on a host without them.
+      if (process.platform === "win32" && mode !== undefined) stats.mode = (Number(stats.mode) & ~0o777) | mode;
+      return stats;
+    },
+  };
+});
 import {
   appImagePayloadOffset,
   auditLinuxRelease,
@@ -18,7 +34,12 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const EM = { x64: 62, arm64: 183 } as const;
 
-/** A 64-byte ELF64 LE header: enough for the parser and for file(1). */
+// Normalize output paths for Windows.
+function posix(text: string): string {
+  return text.split(sep).join("/");
+}
+
+// A minimal 64-byte ELF header is enough for the parser and file inspection.
 function elf(machine: number, type = 3): Buffer {
   const header = Buffer.alloc(64);
   header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
@@ -31,20 +52,26 @@ function elf(machine: number, type = 3): Buffer {
 
 const MACHO_ARM64 = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01, ...Buffer.alloc(56)]);
 
-/** file(1) stand-in that answers from the header the same way the real one does. */
 function fakeFile(path: string): string {
   const header = parseElfHeader(readFileSync(path));
   if (!header) return "data";
   return header.machine === EM.x64 ? "ELF 64-bit LSB shared object, x86-64" : "ELF 64-bit LSB shared object, ARM aarch64";
 }
 
+// Disable archive handling so Windows treats the placeholder as a physical file.
 function write(path: string, content: Buffer | string, mode = 0o644): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
-  chmodSync(path, mode);
+  const previous = process.noAsar;
+  process.noAsar = true;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    chmodSync(path, mode);
+  } finally {
+    process.noAsar = previous;
+  }
+  fixtureModes.set(path, mode);
 }
 
-/** A linux-unpacked tree whose every native binary is `arch`. */
 function unpackedApp(root: string, arch: keyof typeof EM): string {
   const app = join(root, arch === "x64" ? "linux-unpacked" : `linux-${arch}-unpacked`);
   write(join(app, "ave"), elf(EM[arch], 3), 0o755);
@@ -84,7 +111,6 @@ function appImage(machine: number, payload: Buffer = APPIMAGE_PAYLOAD): Buffer {
   return Buffer.concat([runtime, payload]);
 }
 
-/** exec stand-in: answers the deb/rpm metadata and "extracts" the AppImage payload tree. */
 function installerExec(calls: string[][], unsquash: (args: string[]) => void = (args) => appImagePayloadTree(args[args.indexOf("-d") + 1])) {
   return ((command: string, args: string[]) => {
     calls.push([command, ...args]);
@@ -112,8 +138,7 @@ describe("Linux package architecture audit", () => {
     const root = tempRoot();
     unpackedApp(root, "x64");
     const { violations, checked } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
-    expect(violations).toEqual([]);
-    // main binary, crashpad, libffmpeg, two addons, rg, and the inflated uv
+    expect(violations.map(posix)).toEqual([]);
     expect(checked).toHaveLength(7);
   });
 
@@ -121,9 +146,9 @@ describe("Linux package architecture audit", () => {
     const root = tempRoot();
     const app = unpackedApp(root, "x64");
     write(join(app, "resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node"), elf(EM.arm64));
-    const { violations } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
-    expect(violations.join("\n")).toContain("node-pty/build/Release/pty.node: ELF is aarch64 (64-bit LE), expected x64");
-    expect(violations.join("\n")).toContain("pty.node: file(1) does not report x64");
+    const text = posix(auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations.join("\n"));
+    expect(text).toContain("node-pty/build/Release/pty.node: ELF is aarch64 (64-bit LE), expected x64");
+    expect(text).toContain("pty.node: file(1) does not report x64");
   });
 
   it("fails an arm64 helper executable, an arm64 main binary and a non-ELF addon", () => {
@@ -132,7 +157,7 @@ describe("Linux package architecture audit", () => {
     write(join(app, "ave"), elf(EM.arm64), 0o755);
     write(join(app, "resources/app.asar.unpacked/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/arm64/apply-seccomp"), elf(EM.arm64, 2), 0o755);
     write(join(app, "resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-arm64/pty.node"), MACHO_ARM64);
-    const text = auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations.join("\n");
+    const text = posix(auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations.join("\n"));
     expect(text).toContain("linux-unpacked/ave: ELF is aarch64");
     expect(text).toContain("seccomp/arm64/apply-seccomp: ELF is aarch64");
     expect(text).toContain("prebuilds/darwin-arm64/pty.node: native addon is not a Linux ELF shared object");
@@ -152,7 +177,7 @@ describe("Linux package architecture audit", () => {
     rmSync(join(app, "resources/uv/linux-x64"), { recursive: true });
     write(join(app, "resources/uv/linux-arm64/uv.gz"), gzipSync(elf(EM.x64, 2)));
     mkdirSync(join(root, "linux-arm64-unpacked"));
-    const stray = auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations.join("\n");
+    const stray = posix(auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations.join("\n"));
     expect(stray).toContain("linux-arm64/uv.gz: uv runtime directory is not linux-x64");
     expect(stray).toContain("unexpected unpacked output for another arch: linux-arm64-unpacked");
 
@@ -171,13 +196,16 @@ describe("Linux package architecture audit", () => {
       .toContain("no executable ELF main binary at the app root");
   });
 
-  it("never follows a symlink out of the tree", () => {
+  it.skipIf(!canCreateSymlinks())("never follows a symlink out of the tree", () => {
     const root = tempRoot();
     const app = unpackedApp(root, "x64");
     const outside = tempRoot();
     write(join(outside, "python3"), elf(EM.arm64, 2), 0o755);
+    const before = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
     symlinkSync(join(outside, "python3"), join(app, "resources/app.asar.unpacked/node_modules/node-pty/python3"));
-    expect(auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations).toEqual([]);
+    const after = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
+    expect(after).toEqual(before);
+    expect(after.violations.map(posix)).toEqual([]);
   });
 
   it("checks the installers' declared arch and requires one of each", () => {
@@ -227,9 +255,9 @@ describe("Linux package architecture audit", () => {
     expect(unsquash).toBeDefined();
     const dest = unsquash![unsquash!.indexOf("-d") + 1];
     expect(unsquash).toEqual(["unsquashfs", "-no-progress", "-no-xattrs", "-o", "128", "-d", dest, join(root, name)]);
-    expect(dest.startsWith(`${runnerTemp}/ave-installer-audit-`)).toBe(true);
+    expect(dest.startsWith(join(runnerTemp, "ave-installer-audit-"))).toBe(true);
     expect(existsSync(dirname(dest))).toBe(false);
-    expect(text).toContain(`${name}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node: ELF is aarch64 (64-bit LE), expected x64`);
+    expect(posix(text)).toContain(`${name}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node: ELF is aarch64 (64-bit LE), expected x64`);
     expect(text).not.toContain("AppImage runtime is");
   });
 
@@ -244,7 +272,7 @@ describe("Linux package architecture audit", () => {
 
   it("keeps the cross node-gyp header cache under the workspace", () => {
     expect(crossNodeGypRebuildArgs("/ws/node_modules/node-gyp/bin/node-gyp.js", "x64", "/ws"))
-      .toEqual(["/ws/node_modules/node-gyp/bin/node-gyp.js", "rebuild", "--arch=x64", "--devdir=/ws/.cache/node-gyp"]);
+      .toEqual(["/ws/node_modules/node-gyp/bin/node-gyp.js", "rebuild", "--arch=x64", `--devdir=${join("/ws", ".cache", "node-gyp")}`]);
   });
 
   it("agrees with the real file(1) on both architectures", () => {
@@ -274,7 +302,7 @@ describe("Linux package architecture audit", () => {
       stderr = String((err as { stderr: string }).stderr);
     }
     expect(status).toBe(1);
-    expect(stderr).toContain("better-sqlite3/prebuilds/linux-x64.node: ELF is aarch64");
+    expect(posix(stderr)).toContain("better-sqlite3/prebuilds/linux-x64.node: ELF is aarch64");
     expect(stderr).toContain("the package is not pure x64");
   });
 });

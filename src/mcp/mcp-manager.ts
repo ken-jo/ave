@@ -6,6 +6,11 @@ import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  McpAuthErrorCode,
+  McpAuthStatus,
+  McpAuthenticationResult,
+  McpHttpServerConfig,
+  McpConfigMutationResult,
   McpResourceSummary,
   McpResourceTemplateSummary,
   McpServerConfig,
@@ -17,6 +22,7 @@ import type {
 } from "./types.js";
 import { McpGovernance } from "./mcp-governance.js";
 import { McpClient, scrubSecrets } from "./mcp-client.js";
+import { McpOAuthError, McpOAuthSession, tryMcpOAuthCredentialKey, type McpOAuthDependencies, type McpOAuthSecrets } from "./mcp-oauth.js";
 import { ToolRegistry, type PreparedMcpRegistryReplacement } from "../tools/registry.js";
 import type { Tool } from "../tools/base.js";
 import type { PermissionManager } from "../permissions/permission-manager.js";
@@ -42,7 +48,9 @@ interface BundledCredentialDeclaration {
   transport: "stdio" | "http";
   command?: string;
   url?: string;
-  auth?: "api-key";
+  auth?: "api-key" | "oauth";
+  /** OAuth metadata exactly as the server's projection carries it; part of its credential key. */
+  oauth?: McpHttpServerConfig["oauth"];
   apiKeyEnv?: string;
   apiKeyHeader?: string;
   args?: string[];
@@ -52,12 +60,30 @@ interface BundledCredentialDeclaration {
 export interface BundledCredentialSource {
   list(): readonly BundledCredentialDeclaration[];
   reconnect(packageName: string, serverName: string): Promise<void>;
+  /** Only a verified installed set can authorize pruning; undefined means ownership is unknown. */
+  installedPackages(): Promise<ReadonlySet<string> | undefined>;
 }
 
 export interface BundledSecretStore {
   getSecret(key: string): string | null;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
+}
+
+const OAUTH_CREDENTIAL_INDEX_KEY = "mcp.oauth.index";
+
+/** Malformed existing configuration must never be overwritten. */
+class McpConfigFileInvalidError extends Error {
+  readonly code = "mcp-config-invalid";
+  constructor(message: string) {
+    super(message);
+    this.name = "McpConfigFileInvalidError";
+  }
+}
+
+function oauthErrorCode(error: unknown, status: McpAuthStatus | undefined): McpAuthErrorCode {
+  if (error instanceof McpOAuthError) return error.code;
+  return status === "required" ? "mcp-auth-required" : "mcp-auth-failed";
 }
 
 const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
@@ -111,23 +137,39 @@ export interface PreparedBundledMcpGeneration {
 
 export class McpManager {
   private clients = new Map<string, McpClient>();
+  private readonly oauthSessions = new Map<string, { fingerprint: string; session: McpOAuthSession }>();
+  private readonly bundledOAuthSessions = new Map<string, { fingerprint: string; session: McpOAuthSession }>();
+  private readonly bundledOAuthRuntimeIds = new Map<string, string>();
+  private oauthStoreWork: Promise<void> = Promise.resolve();
+  /** Unreadable credential indexes pause cleanup until a successful rebuild. */
+  private oauthIndexUnreadable = false;
+  /** Pruning waits until package transactions are closed. */
+  private packageTransactionsIdle: () => boolean = () => true;
+  private readonly deferredBundledReconciles = new Set<BundledPackageRef["kind"]>();
+  /** Reinstall sessions wait for committed removal revocations before loading grants. */
+  private readonly pendingBundledRemovals = new Map<string, Promise<void>>();
+  private readonly authentications = new Map<string, Promise<McpAuthenticationResult>>();
+  private readonly oauthRetirements = new Map<string, number>();
+  private readonly serverLifecycleLocks = new Map<string, Promise<void>>();
+  private oauthShutdownGeneration = 0;
   private bundledOwners = new Map<string, PluginMcpOwner>();
+  private readonly bundledStableIds = new Map<string, string>();
   private readonly bundledCredentialSources = new Map<BundledPackageRef["kind"], BundledCredentialSource>();
   private activeBundledServerIds = new Set<string>();
   private bundledDegraded = new Map<string, readonly BundledMcpDegradedState[]>();
   private readonly bundledBaseTools = new WeakMap<Tool, Tool>();
   private readonly bundledToolSnapshots = new Map<string, readonly Tool[]>();
-  /** Retains exact transport handles until candidate teardown succeeds. */
+  /** Keep exact transport handles until candidate teardown succeeds. */
   private readonly pendingBundledCandidateCleanup = new Map<
     McpClient,
     PendingBundledCandidateCleanup
   >();
   private generationAccess: PluginRuntimeGenerationAccess | undefined;
-  /** Lease sources by owner-id prefix (`agent-plugin/`), consulted before the plugin lifecycle. */
+  /** Longest owner-prefix lease routing takes precedence over the plugin lifecycle. */
   private readonly generationLeaseSources = new Map<string, (pluginId: string, activationId: string) => Promise<{ release(): void }>>();
   private readonly configPath: string;
   private readonly configLockPath: string;
-  /** Serialises all config read-modify-write ops to prevent TOCTOU races */
+  /** Serialize config read-modify-write operations to prevent races. */
   private configOpLock: Promise<void> = Promise.resolve();
 
   private withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -140,37 +182,23 @@ export class McpManager {
   }
 
   private withConfigFileLock<T>(fn: () => Promise<T>): Promise<T> {
-    // Use a stable sibling sentinel instead of touching configPath before lock acquisition.
-    // This avoids interfering with Windows temp-file + rename replacement of configPath.
+    // Lock a stable sibling sentinel so Windows atomic config replacement is not disturbed.
     return withFileLock(this.configLockPath, fn);
   }
 
   constructor(
     private readonly governance: McpGovernance,
     private readonly toolRegistry: ToolRegistry,
-    /** The host's outbound transport, handed to every client this builds. */
     private readonly networkFetch: typeof fetch,
     configPath?: string,
     private readonly permissionManager?: PermissionManager,
     private readonly auditLogger?: AuditLogger,
-    /**
-     * MRTR resolver factory (milestone mrtr-input-loop). Bound per-server and
-     * passed to each McpClient so a server's `input_required` (elicitation) is
-     * gathered via the host approval gate. Omitted ⇒ clients fail closed on
-     * `input_required` (No-Fallback).
-     */
+    /** Bind elicitation approval per server; without a resolver, input_required fails closed. */
     private readonly inputResolverFactory?: (serverId: string) => McpInputRequestResolver,
-    /**
-     * #885 b3 — invoked EXACTLY once per server *retirement* (the 3 teardown
-     * paths: `killSwitch`, `removeConfig`, `disconnectAll`). NOT invoked from
-     * the 2 reconnect/replace paths (`setApiKey`, `connectServer`'s error
-     * re-establish), because those re-create the same server id and the card is
-     * about to become valid again. The sink (wired in `mcp-setup.ts`) broadcasts
-     * the disconnect so renderer-owned cards retire, then clears the ephemeral
-     * per-server partition. Omitted ⇒ teardown proceeds without a UI signal.
-     */
+    /** Emit once for permanent retirement, never reconnect; consumers disable cards and clear partitions. */
     private readonly onServerDisconnected?: (serverId: string) => void,
     private readonly bundledSecrets?: BundledSecretStore,
+    private readonly oauthPresentation?: Omit<McpOAuthDependencies, "networkFetch">,
   ) {
     this.configPath = configPath ?? defaultConfigPath();
     this.configLockPath = `${this.configPath}.guard`;
@@ -180,23 +208,13 @@ export class McpManager {
     this.generationAccess = access;
   }
 
-  /**
-   * Route the generation leases of bundled servers whose owner id starts
-   * with `prefix` to `acquireExact` instead of the plugin lifecycle (design
-   * §18.7.4): agent plugins own their activations, which the plugin
-   * lifecycle's coordinator does not know.
-   */
+  /** Agent plugins supply their own generation leases because the plugin lifecycle does not own them. */
   registerGenerationLeaseSource(prefix: string, acquireExact: (pluginId: string, activationId: string) => Promise<{ release(): void }>): void {
     if (!prefix || this.generationLeaseSources.has(prefix)) throw new Error(`bundled MCP lease source ${prefix} is already registered`);
     this.generationLeaseSources.set(prefix, acquireExact);
   }
 
-  /**
-   * The one acquisition of a bundled server's generation lease: the source
-   * registered for the longest prefix of the owner's id, else the plugin
-   * lifecycle. Both a registered tool's `execute` and every other bundled
-   * call ({@link withBundledLease}) take their lease here.
-   */
+  /** Registered tools and all other bundled calls share the exact-generation lease acquisition path. */
   private async acquireOwnerLease(owner: { pluginId: string; activationId: string }): Promise<{ release(): void }> {
     let source: ((pluginId: string, activationId: string) => Promise<{ release(): void }>) | undefined;
     let matched = -1;
@@ -212,8 +230,66 @@ export class McpManager {
     return access.acquireExact(owner.pluginId, owner.activationId);
   }
 
+  /** Bundled sign-in pruning waits while this reports an open package transaction. */
+  setPackageTransactionProbe(probe: () => boolean): void {
+    this.packageTransactionsIdle = probe;
+  }
+
   registerBundledCredentialSource(kind: BundledPackageRef["kind"], source: BundledCredentialSource): void {
     this.bundledCredentialSources.set(kind, source);
+    void this.reconcileBundledOAuthCredentials(kind, source);
+  }
+
+  /** Committed removal revokes grants even if a same-id reinstall already appears in the installed set. */
+  reconcileBundledCredentials(kind: BundledPackageRef["kind"], options: { removed?: string } = {}): Promise<void> {
+    const revoked = options.removed === undefined ? Promise.resolve() : this.revokeRemovedBundledPackage({ kind, name: options.removed });
+    const source = this.bundledCredentialSources.get(kind);
+    return Promise.all([revoked, source ? this.reconcileBundledOAuthCredentials(kind, source) : undefined]).then(() => undefined);
+  }
+
+  private revokeRemovedBundledPackage(packageRef: BundledPackageRef): Promise<void> {
+    const ofPackage = (serverId: string): boolean => {
+      let ref: ReturnType<typeof parseBundledConfigId>;
+      try { ref = parseBundledConfigId(serverId); }
+      catch { ref = null; }
+      return ref?.packageRef.kind === packageRef.kind && ref.packageRef.name === packageRef.name;
+    };
+    const keys = new Set<string>();
+    for (const stableId of [...this.bundledOAuthSessions.keys()]) {
+      if (ofPackage(stableId)) keys.add(this.retireBundledSession(stableId));
+    }
+    const removal = `${packageRef.kind}/${packageRef.name}`;
+    const work = this.queueOAuthStoreWork(async (secrets) => {
+      const index = this.readOAuthIndex(secrets);
+      let changed = false;
+      for (const [serverId, key] of Object.entries(index ?? {})) {
+        if (!ofPackage(serverId)) continue;
+        keys.add(key);
+        delete index![serverId];
+        changed = true;
+      }
+      for (const key of keys) await secrets.deleteSecret(key);
+      if (changed) await this.writeOAuthIndex(secrets, index!);
+    });
+    this.pendingBundledRemovals.set(removal, work);
+    void work.then(() => {
+      if (this.pendingBundledRemovals.get(removal) === work) this.pendingBundledRemovals.delete(removal);
+    });
+    return work;
+  }
+
+  private retireBundledSession(stableId: string): string {
+    const { session } = this.bundledOAuthSessions.get(stableId)!;
+    session.dispose();
+    this.bundledOAuthSessions.delete(stableId);
+    for (const [serverId, mapped] of [...this.bundledOAuthRuntimeIds]) {
+      if (mapped === stableId) this.bundledOAuthRuntimeIds.delete(serverId);
+    }
+    return session.credentialKey;
+  }
+
+  packageTransactionsSettled(): void {
+    for (const kind of [...this.deferredBundledReconciles]) void this.reconcileBundledCredentials(kind);
   }
 
   private packageRefFromApproval(packageId: string): BundledPackageRef {
@@ -250,17 +326,18 @@ export class McpManager {
     return this.bundledDegraded.get(`${pluginId}\0${generationId}`) ?? [];
   }
 
-  // ─── Config Loading ─────────────────────────────────
-
-  /** MCP 서버 설정 파일에서 설정 로드 */
   async loadFromConfig(): Promise<McpServerConfig[]> {
     return this.withConfigFileLock(() => this.loadFromConfigUnlocked());
   }
 
   private async loadFromConfigUnlocked(): Promise<McpServerConfig[]> {
+    return (await this.loadConfigFile()).servers;
+  }
+
+  /** Only a parsed primary config authorizes credential cleanup; fallback or missing data does not. */
+  private async loadConfigFile(): Promise<{ servers: McpServerConfig[]; loaded: boolean; primaryInvalid: boolean }> {
     const bakPath = `${this.configPath}.bak`;
-    // Keep read-only fallback for legacy/operator-provided recovery files.
-    // saveConfigs() no longer creates new .bak files because they can retain secrets.
+    // Read legacy backups without creating new secret-bearing backups on save.
     const candidatePaths = [
       ...(existsSync(this.configPath) ? [this.configPath] : []),
       ...(existsSync(bakPath) ? [bakPath] : []),
@@ -268,42 +345,56 @@ export class McpManager {
 
     if (candidatePaths.length === 0) {
       log.info("MCP server config file missing: %s", this.configPath);
-      return [];
+      return { servers: [], loaded: false, primaryInvalid: false };
     }
 
+    // Refuse writes over existing malformed user configuration.
+    let primaryInvalid = false;
     for (const path of candidatePaths) {
       try {
         const raw = await readFile(path, "utf-8");
         if (!raw.trim()) {
           if (path === candidatePaths[candidatePaths.length - 1]) {
-            return [];
+            return { servers: [], loaded: false, primaryInvalid };
           }
       log.warn(`Empty config file detected, falling back to next candidate: ${path}`);
           continue;
         }
-        const parsed = JSON.parse(raw) as { servers?: McpServerConfig[] };
-        const servers = (parsed.servers ?? []).map((s) => {
-          // transport 필드 누락 시 command 유무로 기본값 보정
+        const parsed = JSON.parse(raw) as unknown;
+        const listed = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as { servers?: unknown }).servers : undefined;
+        // Wrong top-level shapes are configuration errors, never empty server lists.
+        if (!Array.isArray(listed)) throw new Error(`MCP server config ${path} must be an object with a "servers" array`);
+        const servers = (listed as McpServerConfig[]).map((s) => {
           if (!s.transport) {
             (s as Record<string, unknown>).transport = (s as Record<string, unknown>).command ? "stdio" : "http";
           }
           return s;
         });
       log.info(`${servers.length} MCP server configs loaded`);
-        return servers;
+        return { servers, loaded: path === this.configPath, primaryInvalid };
       } catch (err) {
+        if (path === this.configPath) primaryInvalid = true;
       log.error({ err }, "Config file parse failed");
       }
     }
 
-    return [];
+    return { servers: [], loaded: false, primaryInvalid };
   }
 
-  // ─── Connection Management ──────────────────────────
+  /** Existing unreadable configuration blocks writes to preserve user contents. */
+  private async loadConfigForWrite(): Promise<McpServerConfig[]> {
+    const { servers, primaryInvalid } = await this.loadConfigFile();
+    if (primaryInvalid) {
+      throw new McpConfigFileInvalidError(`[mcp-manager] ${t("be_mcpManager.configFileInvalid", { path: this.configPath })}`);
+    }
+    return servers;
+  }
 
-  /** 설정된 모든 승인 서버에 연결 (병렬) */
   async connectAll(): Promise<{ connected: string[]; failed: Array<{ id: string; error: string }> }> {
-    const configs = await this.loadFromConfig();
+    const { servers: configs, loaded } = await this.withConfigFileLock(() => this.loadConfigFile());
+    if (loaded) await this.reconcileOAuthCredentials(configs);
+    else log.warn("MCP server configuration was not loaded from its file; stored authorization cleanup skipped");
 
     const results = await Promise.allSettled(
       configs.map((config) => this.connectServer(config).then(() => config.id)),
@@ -329,28 +420,20 @@ export class McpManager {
     return { connected, failed };
   }
 
-  /** 단일 서버 연결 */
   async connectServer(config: McpServerConfig, opts: { force?: boolean } = {}): Promise<void> {
-    // 이미 연결된 서버는 건너뛰기
+    const epoch = this.oauthEpoch(config.id);
     const existing = this.clients.get(config.id);
     if (existing && existing.getState().status === "connected" && !opts.force) {
       log.info(`${config.id}: already connected — skipping`);
       return;
     }
 
-    // 기존 에러/연결 해제 상태면 정리 후 재연결
     if (existing) {
       await existing.disconnect();
       this.clients.delete(config.id);
     }
 
-    // The HOST decides the stdio worker's filesystem-jail
-    // root — it is NEVER sourced from plugin/renderer/marketplace/config-file
-    // input. `connectServer` is the single chokepoint every external MCP server
-    // config passes through before `new McpClient`, so the invariant "the host
-    // always sets sandboxRoot" is established here (deny-by-default A.a). Any
-    // value that rode in on `config` (e.g. a tampered servers.json) is dropped
-    // and overwritten with the host-derived per-server root.
+    // Always overwrite external sandboxRoot with the host-derived root before constructing a client.
     const { pluginDataDir: _untrustedDataDir, bundledPayloadRoot: _untrustedPayloadRoot, ...managedConfig } =
       config.transport === "stdio" ? config : { ...config, pluginDataDir: undefined, bundledPayloadRoot: undefined };
     const connectConfig =
@@ -358,18 +441,48 @@ export class McpManager {
         ? { ...managedConfig, sandboxRoot: await this.ensureStdioSandboxRoot(config.id) }
         : managedConfig;
 
+    const oauthSession = this.oauthSessionFor(config);
+    if (epoch !== this.oauthEpoch(config.id)) {
+      if (oauthSession) this.discardOAuthSession(config.id, oauthSession);
+      throw new Error("MCP connection retired");
+    }
+    const clientFetch: typeof fetch = oauthSession ? async (input, init) => {
+      try {
+        return await oauthSession.fetch(input, init);
+      } catch (error) {
+        if (oauthSession.getStatus() === "required" || oauthSession.getStatus() === "error") {
+          this.toolRegistry.unregisterByMcp(config.id);
+          const activeClient = this.clients.get(config.id);
+          if (activeClient?.getState().status === "connected") {
+            void activeClient.disconnect().catch(() => undefined);
+            this.onServerDisconnected?.(config.id);
+          }
+        }
+        throw error;
+      }
+    } : this.networkFetch;
     const client = new McpClient(
       connectConfig,
       this.governance,
       this.toolRegistry,
-      this.networkFetch,
+      clientFetch,
       this.permissionManager,
-      undefined, // transportOverride — external servers build their own transport
-      this.inputResolverFactory?.(config.id), // MRTR resolver, bound to this server
+      undefined,
+      this.inputResolverFactory?.(config.id),
     );
     this.clients.set(config.id, client);
     try {
       await client.connect();
+      if (epoch !== this.oauthEpoch(config.id)) {
+        await client.disconnect();
+        this.toolRegistry.unregisterByMcp(config.id);
+        throw new Error("MCP connection retired");
+      }
+      if (oauthSession && oauthSession.getStatus() !== "authenticated") {
+        await client.disconnect();
+        this.toolRegistry.unregisterByMcp(config.id);
+        throw new Error("MCP authentication required");
+      }
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: "mcp-manager",
@@ -381,7 +494,7 @@ export class McpManager {
         }),
       });
     } catch (err) {
-      this.clients.delete(config.id);
+      if (this.clients.get(config.id) === client) this.clients.delete(config.id);
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: "mcp-manager",
@@ -393,7 +506,319 @@ export class McpManager {
     }
   }
 
-  /** Prepare trusted bundled servers against an isolated registry. */
+  /** Create one session synchronously per id so concurrent callers cannot spend a refresh token twice. */
+  private oauthSessionFor(config: McpServerConfig): McpOAuthSession | undefined {
+    const previous = this.oauthSessions.get(config.id);
+    if (config.transport !== "http" || config.auth !== "oauth") {
+      if (previous) {
+        this.oauthSessions.delete(config.id);
+        previous.session.dispose();
+        void this.queueOAuthIndexUpdate(config.id, undefined, previous.session.credentialKey);
+      }
+      return undefined;
+    }
+    if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
+    const fingerprint = JSON.stringify(config);
+    if (previous?.fingerprint === fingerprint) return previous.session;
+    const session = this.replaceOAuthSession(config, previous?.session);
+    this.oauthSessions.set(config.id, { fingerprint, session });
+    return session;
+  }
+
+  /** Identity changes revoke old grants; same-key successors wait for in-flight refresh persistence. */
+  private replaceOAuthSession(config: McpHttpServerConfig, previous: McpOAuthSession | undefined, after?: Promise<void>): McpOAuthSession {
+    if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
+    const dependencies = { ...this.oauthPresentation, networkFetch: this.networkFetch };
+    const key = tryMcpOAuthCredentialKey(config);
+    if (previous && key !== undefined && previous.credentialKey === key) {
+      const session = new McpOAuthSession(config, dependencies, { after: previous.handOff(), initialStatus: previous.getStatus() });
+      void this.queueOAuthIndexUpdate(config.id, session.credentialKey);
+      return session;
+    }
+    const session = new McpOAuthSession(config, dependencies, after ? { after } : {});
+    previous?.dispose();
+    void this.queueOAuthIndexUpdate(config.id, session.credentialKey, previous?.credentialKey);
+    return session;
+  }
+
+  /** Serialized work on the credential store, so index updates and deletions never interleave. */
+  private queueOAuthStoreWork(work: (secrets: McpOAuthSecrets) => Promise<void>): Promise<void> {
+    const secrets = this.oauthPresentation?.secrets;
+    if (!secrets) return Promise.resolve();
+    const next = this.oauthStoreWork.then(() => work(secrets)).catch((error: unknown) => {
+      log.warn("MCP authorization credential index update failed: %s", errorMessage(error));
+    });
+    this.oauthStoreWork = next;
+    return next;
+  }
+
+  /** Unreadable indexes authorize no deletion and rebuild only from successfully loaded config keys. */
+  private readOAuthIndex(secrets: McpOAuthSecrets): Record<string, string> | undefined {
+    let parsed: unknown;
+    try {
+      const raw = secrets.getSecret(OAUTH_CREDENTIAL_INDEX_KEY);
+      if (!raw) return {};
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      parsed = undefined;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      Object.values(parsed).some((value) => typeof value !== "string" || !value.startsWith("mcp.oauth."))) {
+      if (!this.oauthIndexUnreadable) {
+        log.error("MCP authorization credential index is unreadable; stored sign-in cleanup is paused until it is rebuilt");
+      }
+      this.oauthIndexUnreadable = true;
+      return undefined;
+    }
+    return { ...(parsed as Record<string, string>) };
+  }
+
+  private async writeOAuthIndex(secrets: McpOAuthSecrets, index: Record<string, string>): Promise<void> {
+    await secrets.setSecret(OAUTH_CREDENTIAL_INDEX_KEY, JSON.stringify(index));
+  }
+
+  /** Index credential keys because the encrypted store cannot enumerate records after identity changes. */
+  private queueOAuthIndexUpdate(serverId: string, key: string | undefined, retiredKey?: string): Promise<void> {
+    return this.queueOAuthStoreWork(async (secrets) => {
+      if (retiredKey) await secrets.deleteSecret(retiredKey);
+      if (!secrets.canStoreEncrypted()) return;
+      const index = this.readOAuthIndex(secrets);
+      if (!index) return;
+      const recorded = index[serverId];
+      if (recorded === key) return;
+      if (recorded) await secrets.deleteSecret(recorded);
+      if (key) index[serverId] = key;
+      else delete index[serverId];
+      await this.writeOAuthIndex(secrets, index);
+    });
+  }
+
+  /** Clean external grants only after verified config load; rebuild unreadable indexes without deleting. */
+  private reconcileOAuthCredentials(configs: readonly McpServerConfig[]): Promise<void> {
+    const desired = new Map<string, string>();
+    for (const config of configs) {
+      if (config.transport !== "http" || config.auth !== "oauth") continue;
+      const key = tryMcpOAuthCredentialKey(config);
+      if (key) desired.set(config.id, key);
+    }
+    return this.queueOAuthStoreWork(async (secrets) => {
+      if (!secrets.canStoreEncrypted()) return;
+      const index = this.readOAuthIndex(secrets);
+      if (!index) {
+        const rebuilt = Object.fromEntries(desired);
+        for (const [stableId, { session }] of this.bundledOAuthSessions) rebuilt[stableId] = session.credentialKey;
+        // Index bundled grants only when their source can vouch for the installed set.
+        for (const [kind, source] of this.bundledCredentialSources) {
+          for (const [stableId, key] of (await this.bundledInventory(kind, source))?.declared ?? []) rebuilt[stableId] ??= key;
+        }
+        await this.writeOAuthIndex(secrets, rebuilt);
+        this.oauthIndexUnreadable = false;
+        log.error("MCP authorization credential index was rebuilt from the loaded configuration; earlier orphaned sign-ins were not deleted");
+        return;
+      }
+      let changed = false;
+      for (const [serverId, key] of Object.entries(index)) {
+        if (serverId.startsWith("bundled:") || desired.get(serverId) === key) continue;
+        await secrets.deleteSecret(key);
+        delete index[serverId];
+        changed = true;
+      }
+      for (const [serverId, key] of desired) {
+        if (index[serverId] === key) continue;
+        index[serverId] = key;
+        changed = true;
+      }
+      if (changed) await this.writeOAuthIndex(secrets, index);
+    });
+  }
+
+  /** Defer unverifiable inventories or open transactions atomically so a settle signal cannot be missed. */
+  private async bundledInventory(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Promise<{
+    installed: ReadonlySet<string>; listed: ReadonlySet<string>; declared: Map<string, string>;
+  } | undefined> {
+    const defer = (): undefined => {
+      this.deferredBundledReconciles.add(kind);
+      return undefined;
+    };
+    try {
+      if (!this.packageTransactionsIdle()) return defer();
+      const installed = await source.installedPackages();
+      if (!installed || !this.packageTransactionsIdle()) return defer();
+      const listed = new Set<string>();
+      const declared = new Map<string, string>();
+      for (const item of source.list()) {
+        listed.add(item.packageName);
+        if (item.transport !== "http" || item.auth !== "oauth" || !item.url) continue;
+        const id = bundledConfigId({ kind, name: item.packageName }, item.serverName);
+        const key = tryMcpOAuthCredentialKey({ id, transport: "http", url: item.url, auth: "oauth", ...(item.oauth ? { oauth: item.oauth } : {}) });
+        if (key) declared.set(id, key);
+      }
+      return { installed, listed, declared };
+    } catch (error) {
+      log.warn("Bundled MCP package list unavailable; stored authorization cleanup skipped: %s", errorMessage(error));
+      return defer();
+    }
+  }
+
+  /** Prune only verified removals or dropped declarations; disabled installed packages retain grants.
+     * Recheck transaction state when queued reconciliation runs and dispose sessions with retired grants. */
+  private reconcileBundledOAuthCredentials(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Promise<void> {
+    return this.queueOAuthStoreWork(async (secrets) => {
+      const inventory = await this.bundledInventory(kind, source);
+      if (!inventory) return;
+      this.deferredBundledReconciles.delete(kind);
+      for (const stableId of [...this.bundledOAuthSessions.keys()]) {
+        if (this.bundledGrantRetired(stableId, kind, inventory)) this.retireBundledSession(stableId);
+      }
+      if (!secrets.canStoreEncrypted()) return;
+      const index = this.readOAuthIndex(secrets);
+      if (!index) return;
+      let changed = false;
+      for (const [serverId, key] of Object.entries(index)) {
+        if (!this.bundledGrantRetired(serverId, kind, inventory)) continue;
+        await secrets.deleteSecret(key);
+        delete index[serverId];
+        changed = true;
+      }
+      for (const [serverId, key] of inventory.declared) {
+        if (index[serverId] !== undefined) continue;
+        index[serverId] = key;
+        changed = true;
+      }
+      if (changed) await this.writeOAuthIndex(secrets, index);
+    });
+  }
+
+  private bundledGrantRetired(serverId: string, kind: BundledPackageRef["kind"], inventory: {
+    installed: ReadonlySet<string>; listed: ReadonlySet<string>; declared: Map<string, string>;
+  }): boolean {
+    if (!serverId.startsWith("bundled:") || inventory.declared.has(serverId)) return false;
+    let ref: ReturnType<typeof parseBundledConfigId>;
+    try { ref = parseBundledConfigId(serverId); }
+    catch { ref = null; }
+    if (ref && ref.packageRef.kind !== kind) return false;
+    return !(ref && inventory.installed.has(ref.packageRef.name) && !inventory.listed.has(ref.packageRef.name));
+  }
+
+  private discardOAuthSession(serverId: string, session: McpOAuthSession): void {
+    session.dispose();
+    if (this.oauthSessions.get(serverId)?.session === session) this.oauthSessions.delete(serverId);
+  }
+
+  private oauthEpoch(serverId: string): string {
+    return `${this.oauthShutdownGeneration}:${this.oauthRetirements.get(serverId) ?? 0}`;
+  }
+
+  private retireOAuth(serverId: string): void {
+    this.oauthRetirements.set(serverId, (this.oauthRetirements.get(serverId) ?? 0) + 1);
+    this.oauthSessions.get(serverId)?.session.dispose();
+  }
+
+  private withServerLifecycleLock<T>(serverId: string, fn: () => Promise<T>): Promise<T> {
+    const operation = (this.serverLifecycleLocks.get(serverId) ?? Promise.resolve()).then(fn);
+    const settled = operation.then(() => undefined, () => undefined);
+    this.serverLifecycleLocks.set(serverId, settled);
+    void settled.then(() => {
+      if (this.serverLifecycleLocks.get(serverId) === settled) this.serverLifecycleLocks.delete(serverId);
+    });
+    return operation;
+  }
+
+  /** Browser interaction is reserved for the explicit settings action. */
+  authenticate(serverId: string): Promise<McpAuthenticationResult> {
+    const pending = this.authentications.get(serverId);
+    if (pending) return pending;
+    const bundledId = this.bundledOAuthStableId(serverId);
+    const operation = (bundledId ? this.authenticateBundled(bundledId) : this.authenticateServer(serverId)).finally(() => {
+      if (this.authentications.get(serverId) === operation) this.authentications.delete(serverId);
+    });
+    this.authentications.set(serverId, operation);
+    return operation;
+  }
+
+  private async authenticateServer(serverId: string): Promise<McpAuthenticationResult> {
+    const epoch = this.oauthEpoch(serverId);
+    try {
+      const config = (await this.loadFromConfig()).find((item) => item.id === serverId);
+      if (!config || config.transport !== "http" || config.auth !== "oauth") return { connected: false, errorCode: "mcp-auth-failed" };
+      if (!this.governance.validateServer(config).valid) return { connected: false, errorCode: "mcp-auth-failed" };
+      if (epoch !== this.oauthEpoch(serverId)) return { connected: false, errorCode: "mcp-auth-failed" };
+      const session = this.oauthSessionFor(config)!;
+      await session.authenticate();
+      return await this.withConfigLock(() => this.withServerLifecycleLock(serverId, async (): Promise<McpAuthenticationResult> => {
+        const current = (await this.loadFromConfig()).find((item) => item.id === serverId);
+        if (epoch !== this.oauthEpoch(serverId) || !current || JSON.stringify(current) !== JSON.stringify(config) || this.oauthSessions.get(serverId)?.session !== session) {
+          this.discardOAuthSession(serverId, session);
+          return { connected: false, errorCode: "mcp-auth-failed" };
+        }
+        await this.connectServer(current, { force: true });
+        const latest = (await this.loadFromConfig()).find((item) => item.id === serverId);
+        if (epoch !== this.oauthEpoch(serverId) || JSON.stringify(latest) !== JSON.stringify(current)) {
+          await this.clients.get(serverId)?.disconnect();
+          this.clients.delete(serverId);
+          this.toolRegistry.unregisterByMcp(serverId);
+          return { connected: false, errorCode: "mcp-auth-failed" };
+        }
+        return { connected: true };
+      }));
+    } catch (error) {
+      const status = this.oauthSessions.get(serverId)?.session.getStatus();
+      if (status === "required" || status === "error") {
+        const client = this.clients.get(serverId);
+        const connected = client?.getState().status === "connected";
+        this.toolRegistry.unregisterByMcp(serverId);
+        await client?.disconnect().catch(() => undefined);
+        if (connected) this.onServerDisconnected?.(serverId);
+      }
+      return { connected: false, errorCode: oauthErrorCode(error, status) };
+    }
+  }
+
+  private bundledOAuthStableId(serverId: string): string | undefined {
+    if (this.bundledOAuthSessions.has(serverId)) return serverId;
+    return this.bundledOAuthRuntimeIds.get(serverId);
+  }
+
+  private bundledOAuthSessionFor(projection: PreparedPluginMcpProjection): McpOAuthSession {
+    if (projection.config.transport !== "http") throw new Error("bundled MCP OAuth requires an HTTP server");
+    const bundled = projection.approval.bundled;
+    if (!bundled) throw new Error("bundled MCP approval is missing its package identity");
+    if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
+    // Package/server keys survive generation updates.
+    const packageRef = this.packageRefFromApproval(bundled.package);
+    const stableId = bundledConfigId(packageRef, bundled.server);
+    this.bundledOAuthRuntimeIds.set(projection.serverId, stableId);
+    const config: McpHttpServerConfig = { ...projection.config, id: stableId };
+    const fingerprint = JSON.stringify(config);
+    const previous = this.bundledOAuthSessions.get(stableId);
+    if (previous?.fingerprint === fingerprint) return previous.session;
+    // Reinstalls wait for removal revocations before reading credentials.
+    const removal = this.pendingBundledRemovals.get(`${packageRef.kind}/${packageRef.name}`);
+    const session = this.replaceOAuthSession(config, previous?.session, removal);
+    this.bundledOAuthSessions.set(stableId, { fingerprint, session });
+    return session;
+  }
+
+  private async authenticateBundled(stableId: string): Promise<McpAuthenticationResult> {
+    const entry = this.bundledOAuthSessions.get(stableId);
+    const ref = parseBundledConfigId(stableId);
+    const source = ref ? this.bundledCredentialSources.get(ref.packageRef.kind) : undefined;
+    if (!entry || !ref || !source) return { connected: false, errorCode: "mcp-auth-failed" };
+    try {
+      await entry.session.authenticate();
+    } catch (error) {
+      return { connected: false, errorCode: oauthErrorCode(error, entry.session.getStatus()) };
+    }
+    const isThisServer = (serverId: string): boolean => this.bundledOAuthRuntimeIds.get(serverId) === stableId;
+    for (const serverId of [...this.activeBundledServerIds]) {
+      if (isThisServer(serverId)) await this.disconnectBundledServer(serverId);
+    }
+    try { await source.reconnect(ref.packageRef.name, ref.server); }
+    catch { return { connected: false, errorCode: "mcp-auth-failed" }; }
+    const connected = [...this.activeBundledServerIds].some(isThisServer);
+    return connected ? { connected: true } : { connected: false, errorCode: "mcp-auth-failed" };
+  }
+
   async prepareBundledGeneration(
     owner: { pluginId: string; generationId: string },
     projections: readonly PreparedPluginMcpProjection[],
@@ -431,6 +856,19 @@ export class McpManager {
             localId: projection.owner.localId, code: "blocked-by-policy", message: "runtime approval not admitted by policy",
             retryable: false, lastAttemptAt: new Date().toISOString() }));
           continue;
+        }
+        let oauthSession: McpOAuthSession | undefined;
+        if (projection.config.auth === "oauth") {
+          oauthSession = this.bundledOAuthSessionFor(projection);
+          const authStatus = oauthSession.getStatus();
+          // Only explicit settings authentication may open a browser; preparation cannot.
+          if (authStatus !== "authenticated" && authStatus !== "insufficient_scope") {
+            degraded.push(Object.freeze({ pluginId: owner.pluginId, generationId: owner.generationId,
+              localId: projection.owner.localId, code: "credential_required",
+              message: "Authenticate this server in MCP settings",
+              retryable: true, lastAttemptAt: new Date().toISOString() }));
+            continue;
+          }
         }
         let credential: string | null = null;
         if (projection.config.auth === "api-key") {
@@ -470,7 +908,7 @@ export class McpManager {
           connectConfig,
           scopedGovernance,
           stagingRegistry,
-          this.networkFetch,
+          oauthSession ? oauthSession.fetch : this.networkFetch,
           undefined,
           undefined,
           this.inputResolverFactory?.(projection.serverId),
@@ -519,8 +957,7 @@ export class McpManager {
           mode: record.projection.approval.toolPermissionMode ?? "strict",
         }))),
       );
-      // Reserve the shared ToolRegistry last. All other validation and snapshot
-      // construction has completed, so no later preparation failure can strand it.
+      // Reserve the shared registry last so later preparation failure cannot strand reservations.
       const registryReplacement = this.toolRegistry.reserveMcpReplacement(
         predecessorServerIds,
         replacementTools,
@@ -562,7 +999,6 @@ export class McpManager {
     }
   }
 
-  /** Synchronous half of the shared plugin generation publish point. */
   publishBundledGeneration(prepared: PreparedBundledMcpGeneration): void {
     if (prepared.published) return;
     prepared.governancePublication.assertAdmitted();
@@ -574,6 +1010,8 @@ export class McpManager {
       const serverId = record.projection.serverId;
       this.clients.set(serverId, record.client);
       this.bundledOwners.set(serverId, record.projection.owner);
+      const bundled = record.projection.approval.bundled;
+      if (bundled) this.bundledStableIds.set(serverId, bundledConfigId(this.packageRefFromApproval(bundled.package), bundled.server));
       this.bundledToolSnapshots.set(serverId, record.baseTools);
       this.activeBundledServerIds.add(serverId);
     }
@@ -633,11 +1071,7 @@ export class McpManager {
     }
   }
 
-  /**
-   * Disconnect omitted clients only when they belong to this same generation.
-   * A predecessor generation remains transport-live until its coordinator
-   * leases drain and exact-generation retirement owns its teardown.
-   */
+  /** Tear down only omitted clients from this generation; predecessors stay live until leases drain. */
   async retirePublishedMcpReplacement(prepared: PreparedBundledMcpGeneration): Promise<void> {
     if (!prepared.published) throw new Error("bundled MCP replacement is not published");
     const replacementIds = new Set(prepared.records.map((record) => record.projection.serverId));
@@ -653,7 +1087,6 @@ export class McpManager {
     if (errors.length > 0) throw new AggregateError(errors, "bundled MCP predecessor retirement failed");
   }
 
-  /** Retire only MCP clients and tools owned by the selected immutable generation. */
   async disconnectBundledGeneration(pluginId: string, generationId: string): Promise<void> {
     const ids = [...this.bundledOwners]
       .filter(([, owner]) => owner.pluginId === pluginId &&
@@ -663,7 +1096,6 @@ export class McpManager {
     this.bundledDegraded.delete(`${pluginId}\0${generationId}`);
   }
 
-  /** Apply current governance withdrawals to live clients and their published tools. */
   async handlePolicyWithdrawal(serverIds: readonly string[]): Promise<void> {
     for (const serverId of serverIds) {
       const owner = this.bundledOwners.get(serverId);
@@ -696,6 +1128,7 @@ export class McpManager {
     }
     this.clients.delete(serverId);
     this.bundledOwners.delete(serverId);
+    this.bundledStableIds.delete(serverId);
     this.bundledToolSnapshots.delete(serverId);
     if (wasActive) {
       const toolNames = this.toolRegistry.listAll()
@@ -713,8 +1146,20 @@ export class McpManager {
     if (disconnectError) throw disconnectError;
   }
 
-  /** 모든 서버 연결 해제 */
   async disconnectAll(): Promise<void> {
+    this.oauthShutdownGeneration++;
+    for (const { session } of this.oauthSessions.values()) session.dispose();
+    for (const { session } of this.bundledOAuthSessions.values()) session.dispose();
+    await Promise.all(this.serverLifecycleLocks.values());
+    // Drain queued credential writes before closing the store.
+    await this.oauthStoreWork;
+    return this.disconnectAllLocked();
+  }
+
+  private async disconnectAllLocked(): Promise<void> {
+    this.oauthSessions.clear();
+    this.bundledOAuthSessions.clear();
+    this.bundledOAuthRuntimeIds.clear();
     let pendingCleanupError: Error | undefined;
     try {
       await this.retryPendingBundledCandidateCleanup("manager shutdown");
@@ -734,11 +1179,10 @@ export class McpManager {
     this.clients.clear();
     for (const id of this.bundledOwners.keys()) this.governance.unregisterRuntimeApproval?.(id);
     this.bundledOwners.clear();
+    this.bundledStableIds.clear();
     this.activeBundledServerIds.clear();
     this.bundledDegraded.clear();
-    // b3 — teardown path: emit once per retired id AFTER client teardown.
-    // Best-effort (may run at shutdown); the sink guards `isDestroyed()` and
-    // swallows send errors so a send-after-window-destroy is a no-op.
+    // Notify after teardown; shutdown notification is best-effort.
     for (const id of ids) {
       this.onServerDisconnected?.(id);
     }
@@ -746,24 +1190,10 @@ export class McpManager {
     if (pendingCleanupError) throw pendingCleanupError;
   }
 
-  /**
-   * Host-derive (and create) the per-server filesystem-jail root for an external
-   * stdio MCP worker — `~/.ave/mcp/<serverId>/sandbox/`.
-   *
-   * This is the ONLY writable path the ASRT-wrapped worker is granted. The
-   * directory is created mode 0o700 per the storage-namespace convention so the
-   * jail exists before the worker spawns. The server id is sanitized to a single
-   * path segment (no separators / parent traversal) so a crafted id cannot
-   * escape the `~/.ave/mcp/` namespace; if sanitization empties the id the
-   * server is rejected rather than silently jailing into a shared dir.
-   *
-   * On failure to create the dir we DO NOT fall back to a permissive path — we
-   * throw, and the caller's connect fails closed (No-Fallback).
-   */
+  /** Derive a private per-server write root from a safe single-segment id.
+     * Root creation failure refuses connection without a permissive fallback. */
   private async ensureStdioSandboxRoot(serverId: string): Promise<string> {
-    // Collapse to a single safe path segment: keep alnum / dash / underscore /
-    // dot, replace everything else with `_`, and strip leading dots so a
-    // sanitized id can never be `.` / `..` (parent traversal).
+    // Remove separators and leading dots so ids cannot escape or alias the namespace root.
     const safeId = serverId
       .replace(/[^A-Za-z0-9._-]/g, "_")
       .replace(/^\.+/, "");
@@ -777,14 +1207,16 @@ export class McpManager {
     return root;
   }
 
-  // ─── Kill Switch (§10.1) ────────────────────────────
-
-  /**
-   * 즉시 연결 해제 + 도구 제거.
-   * 진행 중인 요청은 에러로 reject됨.
-   */
+  /** Immediate teardown removes tools and rejects in-flight requests. */
   async killSwitch(serverId: string): Promise<void> {
+    this.retireOAuth(serverId);
+    return this.withServerLifecycleLock(serverId, () => this.killServer(serverId));
+  }
+
+  private async killServer(serverId: string): Promise<void> {
     log.warn(`Kill switch executing: ${serverId}`);
+    this.oauthSessions.get(serverId)?.session.dispose();
+    this.oauthSessions.delete(serverId);
 
     const client = this.clients.get(serverId);
     if (client) {
@@ -792,10 +1224,10 @@ export class McpManager {
       this.clients.delete(serverId);
     }
 
-    // 안전장치: ToolRegistry에서도 직접 제거 (중복 호출이지만 확실히 정리)
     this.toolRegistry.unregisterByMcp(serverId);
     this.activeBundledServerIds.delete(serverId);
     this.bundledOwners.delete(serverId);
+    this.bundledStableIds.delete(serverId);
     this.governance.unregisterRuntimeApproval?.(serverId);
     this.auditLogger?.log({
       timestamp: new Date().toISOString(),
@@ -804,35 +1236,57 @@ export class McpManager {
       input: JSON.stringify({ serverId }),
     });
 
-    // b3 — teardown path (permanent retirement): signal the UI to disable
-    // renderer-owned cards, then clear the ephemeral partition.
     this.onServerDisconnected?.(serverId);
 
     log.warn(`Kill switch completed: ${serverId} — all tools unregistered`);
   }
 
-  // ─── Query ──────────────────────────────────────────
-
-  /** 전체 서버 상태 조회 */
   listServers(): McpServerState[] {
-    return Array.from(this.clients.entries())
+    const states = Array.from(this.clients.entries())
       .filter(([serverId]) => !this.bundledOwners.has(serverId) || this.activeBundledServerIds.has(serverId))
-      .map(([, client]) => client.getState());
+      .map(([serverId, client]) => this.withAuthState(serverId, client.getState()));
+    for (const serverId of this.oauthSessions.keys()) {
+      if (!this.clients.has(serverId)) states.push(this.withAuthState(serverId, { id: serverId, status: "disconnected", registeredTools: [] }));
+    }
+    const running = new Set(states.flatMap((state) => {
+      const stableId = this.bundledOAuthStableId(state.id);
+      return stableId ? [stableId] : [];
+    }));
+    for (const stableId of this.bundledOAuthSessions.keys()) {
+      if (!running.has(stableId)) states.push(this.withAuthState(stableId, { id: stableId, status: "disconnected", registeredTools: [] }));
+    }
+    return states;
   }
 
-  /** 특정 서버 상태 조회 */
+  private oauthSessionForState(serverId: string): McpOAuthSession | undefined {
+    const external = this.oauthSessions.get(serverId)?.session;
+    if (external) return external;
+    const stableId = this.bundledOAuthStableId(serverId);
+    return stableId ? this.bundledOAuthSessions.get(stableId)?.session : undefined;
+  }
+
+  private withAuthState(serverId: string, state: McpServerState): McpServerState {
+    const session = this.oauthSessionForState(serverId);
+    const authStatus = session?.getStatus();
+    if (!session || !authStatus) return state;
+    const authError = this.oauthIndexUnreadable ? "mcp-auth-index-unreadable" as const : undefined;
+    if (authStatus === "required" || authStatus === "error") {
+      return { id: serverId, status: "disconnected", registeredTools: [], authStatus, ...(authError ? { authError } : {}) };
+    }
+    return { ...state, authStatus, ...(authError ? { authError } : {}) };
+  }
+
   getServerState(serverId: string): McpServerState | undefined {
     if (this.bundledOwners.has(serverId) && !this.activeBundledServerIds.has(serverId)) return undefined;
-    return this.clients.get(serverId)?.getState();
+    const state = this.clients.get(serverId)?.getState();
+    if (state) return this.withAuthState(serverId, state);
+    if (this.oauthSessions.has(serverId) || this.bundledOAuthSessions.has(serverId)) {
+      return this.withAuthState(serverId, { id: serverId, status: "disconnected", registeredTools: [] });
+    }
+    return undefined;
   }
 
-  // ─── MCP Apps UI Resource ────────────────────────────
-
-  /**
-   * Fetch a `ui://` resource from the given MCP server — the HTML plus the
-   * resource's OWN declared `_meta.ui` (csp / permissions), which main uses to build
-   * that card's sandbox-proxy CSP header. Delegates to {@link McpClient.readResource}.
-   */
+  /** Read card HTML with resource-owned CSP and permissions, never tool-result policy. */
   async readUiResource(serverId: string, uri: string): Promise<McpUiResourceRead> {
     const client = this.clients.get(serverId);
     if (!client) {
@@ -841,33 +1295,21 @@ export class McpManager {
     return this.withBundledLease(serverId, () => client.readResource(uri));
   }
 
-  /**
-   * The name a server-local tool is REGISTERED under in the §6.4 ToolRegistry
-   * (`mcp_<prefix>_<name>`) — governance namespacing is the SoT, so this only
-   * delegates. An MCP App names its server's tools by their SERVER-LOCAL name
-   * (it knows nothing about host namespacing); the `oncalltool` external backend
-   * uses this to find the GATED registry `Tool` the executor must run. It never
-   * proves ownership on its own (an unapproved server namespaces to a passthrough
-   * name) — the registry entry's `mcpServerId` is what binds the tool to the card's
-   * server.
-   */
+  /** Resolve server-local names through governance; registry mcpServerId, not namespacing, proves ownership. */
   namespacedToolName(serverId: string, toolName: string): string {
     return this.governance.applyToolNamespace(serverId, toolName);
   }
 
-  // ─── Config Mutation ────────────────────────────────
-
-  /** 설정 파일의 현재 서버 목록 반환 (renderer-safe DTO) */
   async getConfigs(): Promise<McpServerConfigDto[]> {
     const configs = await this.loadFromConfig();
     const bundled: McpServerConfigDto[] = [];
     for (const [kind, source] of this.bundledCredentialSources) {
       for (const declaration of source.list()) {
         const packageRef = { kind, name: declaration.packageName };
-        const runtimeId = [...this.bundledOwners].find(([serverId, owner]) =>
-          this.activeBundledServerIds.has(serverId) && owner.pluginId === `${kind}/${declaration.packageName}`
-          && owner.localId === declaration.serverName)?.[0];
-        const id = runtimeId ?? bundledConfigId(packageRef, declaration.serverName);
+        const stableId = bundledConfigId(packageRef, declaration.serverName);
+        const runtimeId = [...this.bundledStableIds].find(([serverId, candidate]) =>
+          this.activeBundledServerIds.has(serverId) && candidate === stableId)?.[0];
+        const id = runtimeId ?? stableId;
         const identity = { kind, name: declaration.packageName, server: declaration.serverName };
         if (declaration.transport === "stdio") {
           if (!declaration.command) throw new Error("bundled MCP stdio declaration has no command");
@@ -883,7 +1325,7 @@ export class McpManager {
     return [...configs.map((config) => this.toConfigDto(config)), ...bundled];
   }
 
-  /** A Studio-only read. Existing MCP settings projections keep arguments and environment values write-only. */
+  /** Studio-only projection; ordinary settings keep arguments and environment values write-only. */
   async getStudioConnectorSource(serverId: string): Promise<{ spec: McpServerConfigDto; args: string[]; env: Record<string, string> }> {
     const config = (await this.loadFromConfig()).find((item) => item.id === serverId);
     if (!config) {
@@ -926,7 +1368,6 @@ export class McpManager {
     return bound?.declaration === bundledCredentialDeclaration(declaration) ? bound.secret : null;
   }
 
-  /** Main-only export guard input; no credential crosses the Studio IPC bridge. */
   async getStudioStoredCredentialValues(): Promise<string[]> {
     const keys = (await this.loadFromConfig()).flatMap((config) => config.apiKey ? [config.apiKey] : []);
     for (const [kind, source] of this.bundledCredentialSources) for (const declaration of source.list()) {
@@ -954,17 +1395,13 @@ export class McpManager {
     return this.configPath;
   }
 
-  /**
-   * 설정 파일에 서버 추가 + 연결 시도.
-   * 이미 동일 id가 있으면 에러. write-lock으로 동시 추가 시 TOCTOU 방지.
-   */
-  /** What `addConfig` would decide about `config` under the governance policy, without adding it. */
+  /** Serialize additions, persist before connecting, and reject duplicate ids. */
   validateConfig(config: McpServerConfig): ValidationResult {
     return this.governance.validateServer(config);
   }
 
-  async addConfig(config: McpServerConfig): Promise<{ connected: boolean; warning?: string }> {
-    // Runtime payload validation (IPC cast is type-only, disappears at runtime)
+  async addConfig(config: McpServerConfig): Promise<McpConfigMutationResult> {
+    // IPC type casts do not validate runtime payloads.
     if (!config?.id || typeof config.id !== "string") {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.invalidServerId")}`);
     }
@@ -979,15 +1416,11 @@ export class McpManager {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.httpUrlRequired")}`);
     }
 
-    // Normalize id: trim whitespace, reject empty
     const normalizedId = config.id.trim();
     if (!normalizedId) {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdBlank")}`);
     }
-    // Bound the id at ingestion. This is the primary guard;
-    // `encodeMcpServerId` applies the same bound defensively for the
-    // `loadFromConfig`/servers.json path that bypasses addConfig. English throw
-    // (developer-facing tamper path, per CLAUDE.md IPC error-language convention).
+    // Bound ids at ingestion and encoding because persisted configuration bypasses this entry point.
     if (normalizedId.length > MAX_SERVER_ID_LEN) {
       throw new Error(
         `[mcp-manager] server id exceeds ${MAX_SERVER_ID_LEN} characters`,
@@ -1003,18 +1436,21 @@ export class McpManager {
             `[mcp-manager] ${t("be_mcpManager.governanceValidationFailed", { layer: String(validation.layer), reason: validation.reason })}`,
           );
         }
-        const existing = await this.loadFromConfigUnlocked();
+        const existing = await this.loadConfigForWrite();
         if (existing.some((s) => s.id === normalizedId)) {
           throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdAlreadyExists", { id: normalizedId })}`);
         }
         const updated = [...existing, normalizedConfig];
         await this.saveConfigs(updated);
       });
-      // 연결 시도 (실패해도 config 저장은 유지)
       try {
         await this.connectServer(normalizedConfig);
         return { connected: true };
       } catch (err) {
+        if (normalizedConfig.transport === "http" && normalizedConfig.auth === "oauth") {
+          const session = this.oauthSessions.get(normalizedId)?.session;
+          return { connected: false, errorCode: session?.getBlockedCode() ?? oauthErrorCode(err, session?.getStatus()) };
+        }
         const warning = errorMessage(err);
       log.warn(`Connection after server add failed (${normalizedId}): %s`, err);
         return { connected: false, warning };
@@ -1049,7 +1485,7 @@ export class McpManager {
     return connected ? { connected: true } : { connected: false, warning: "server did not connect" };
   }
 
-  /** Remove an obsolete declaration's value before update preparation; restore it if the install rolls back. */
+  /** Drop obsolete declaration values during preparation and restore them on rollback. */
   async stageBundledCredentialDrop(packageRef: BundledPackageRef, serverName: string, expectedDeclaration?: string): Promise<() => Promise<void>> {
     if (!this.bundledSecrets) throw new Error("bundled MCP credential store is unavailable");
     const key = bundledCredentialKey(packageRef, serverName);
@@ -1073,10 +1509,10 @@ export class McpManager {
 
     let updatedConfig: McpServerConfig | undefined;
 
-    // HIGH: validate BEFORE saveConfigs (inside the file-lock, mirrors addConfig pattern)
+    // Validate under the file lock before persisting any config change.
     await this.withConfigLock(async () => {
       await this.withConfigFileLock(async () => {
-        const existing = await this.loadFromConfigUnlocked();
+        const existing = await this.loadConfigForWrite();
         const idx = existing.findIndex((server) => server.id === id);
         if (idx === -1) {
           throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdNotFound", { id })}`);
@@ -1086,7 +1522,6 @@ export class McpManager {
           throw new Error(`[mcp-manager] ${t("be_mcpManager.serverNotApiKey", { id })}`);
         }
         const candidate = { ...current, apiKey: trimmedKey } as McpServerConfig;
-        // Governance validation BEFORE persisting to disk
         const validation = this.governance.validateServer(candidate);
         if (!validation.valid) {
           throw new Error(
@@ -1104,7 +1539,6 @@ export class McpManager {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdNotFound", { id })}`);
     }
 
-    // MEDIUM: disconnect existing client before reconnect so the new apiKey takes effect
     const existingClient = this.clients.get(id);
     if (existingClient) {
       await existingClient.disconnect().catch((err) => {
@@ -1115,7 +1549,6 @@ export class McpManager {
 
     try {
       await this.connectServer(updatedConfig, { force: true });
-      // MEDIUM: audit log on success
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: "mcp-manager",
@@ -1125,11 +1558,9 @@ export class McpManager {
       });
       return { connected: true };
     } catch (err) {
-      // MEDIUM: scrub secrets from warning before surfacing to caller
       const rawMsg = errorMessage(err);
       const warning = scrubSecrets(rawMsg);
       log.warn(`Connection after API key set failed (${id}): %s`, warning);
-      // MEDIUM: audit log on failure
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: "mcp-manager",
@@ -1141,29 +1572,26 @@ export class McpManager {
     }
   }
 
-  /**
-   * 설정 파일에서 서버 제거 + 연결 해제.
-   * 존재하지 않아도 에러 없이 처리. write-lock으로 동시 제거 시 TOCTOU 방지.
-   *
-   * NOTE: loadFromConfigUnlocked() may surface servers from a legacy .bak file
-   * even when the primary config is absent.  We therefore reason about the
-   * *effective* server list rather than short-circuiting on existsSync(), so
-   * that bak-only servers are also correctly removed: a new primary config is
-   * written without the removed server, which takes precedence over the .bak on
-   * the next load.
-   */
+  /** Remove from the effective list, including legacy-backup entries, and write a new primary if needed. */
   async removeConfig(serverId: string): Promise<void> {
+    this.retireOAuth(serverId);
     return this.withConfigLock(async () => {
+      let removedKey: string | undefined;
       await this.withConfigFileLock(async () => {
-        const existing = await this.loadFromConfigUnlocked();
+        const existing = await this.loadConfigForWrite();
+        const removedConfig = existing.find((config) => config.id === serverId);
+        // Resolve credentials before rewriting config; invalid OAuth endpoints have no stored key.
+        removedKey = removedConfig?.transport === "http" && removedConfig.auth === "oauth"
+          ? tryMcpOAuthCredentialKey(removedConfig) : undefined;
         const updated = existing.filter((s) => s.id !== serverId);
         if (updated.length === existing.length) {
-          // Server not present in the effective config — nothing to persist.
           return;
         }
         await this.saveConfigs(updated);
       });
-      // 연결 해제 (이미 끊겨있으면 무시)
+      const session = this.oauthSessions.get(serverId)?.session;
+      session?.dispose();
+      this.oauthSessions.delete(serverId);
       const client = this.clients.get(serverId);
       if (client) {
         await client.disconnect().catch((e) =>
@@ -1172,21 +1600,14 @@ export class McpManager {
         this.clients.delete(serverId);
       }
       this.toolRegistry.unregisterByMcp(serverId);
-      // b3 — teardown path (permanent retirement).
       this.onServerDisconnected?.(serverId);
+      if (session) await session.clear();
+      else if (removedKey) await this.oauthPresentation?.secrets.deleteSecret(removedKey);
+      await this.queueOAuthIndexUpdate(serverId, undefined);
     });
   }
 
-  /**
-   * `configPath` 에 서버 목록을 원자적으로 저장. Routes through the shared
-   * atomic-write authority ({@link writeFileAtomicAtPath}): random staging name
-   * + `O_CREAT|O_EXCL`, fsync of the staged bytes and parent directory, and a
-   * Windows transient-lock retry on the rename. That retry replaces the bespoke
-   * `EEXIST` backup-and-restore dance this used to carry — `EEXIST` is
-   * unreachable for a file-onto-file rename (Win32 `rename` replaces the target),
-   * whereas a scanner briefly locking the config is the case the old dance
-   * missed and the authority's retry now covers.
-   */
+  /** Shared atomic writes provide exclusive staging, fsync and Windows transient-lock retries. */
   private async saveConfigs(configs: McpServerConfig[]): Promise<void> {
     await writeFileAtomicAtPath(
       this.configPath,
@@ -1195,13 +1616,8 @@ export class McpManager {
   }
 
   private toConfigDto(config: McpServerConfig): McpServerConfigDto {
-    // Secrets remain write-only across IPC:
-    // - apiKey: shared secret
-    // - headers: may contain bearer/session tokens
-    // - env: may contain injected credentials
-    // - args: may embed secrets on stdio command lines
-    // - sandboxRoot, cwd, pluginDataDir and bundledPayloadRoot: host-derived filesystem paths;
-    //   never renderer concerns and never sourced from renderer input.
+    // Keep credentials, headers, args and environment write-only across IPC.
+        // Filesystem authority paths are host-derived and never accepted from renderer input.
     const { apiKey: _apiKey, headers: _headers, env: _env, args: _args, ...rest } =
       config;
     const { sandboxRoot: _sandboxRoot, cwd: _cwd, pluginDataDir: _pluginDataDir, bundledPayloadRoot: _bundledPayloadRoot, ...safe } =
@@ -1209,7 +1625,6 @@ export class McpManager {
     return safe as McpServerConfigDto;
   }
 
-  /** 특정 서버의 도구 호출 — ToolExecutor에서 사용 */
   async callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<McpToolCallOutput> {
     const client = this.clients.get(serverId);
     if (!client) {
@@ -1218,11 +1633,7 @@ export class McpManager {
     return this.withBundledLease(serverId, () => client.callTool(toolName, args));
   }
 
-  /**
-   * Fetch one declared prompt. Mirrors {@link callTool}: the bundled-generation
-   * lease is held across the request so a plugin-backed server cannot be
-   * retired mid-flight.
-   */
+  /** Hold the exact bundled-generation lease across prompt reads. */
   async getPrompt(
     serverId: string,
     name: string,
@@ -1239,34 +1650,14 @@ export class McpManager {
     return this.withBundledLease(serverId, () => client.getPrompt(name, args));
   }
 
-  /**
-   * Servers that currently declare resources, with their catalogues.
-   *
-   * The ONE projection for callers that need the catalogue as a list. Today that is
-   * the model-facing tools; the attach path deliberately does NOT use it — it calls
-   * `readDeclaredResource` and lets the listed-URI gate inside the client decide,
-   * so there is one place a URI is checked against what the server published rather
-   * than a second copy of that check in the handler.
-   *
-   * Only CONNECTED servers are listed. That cannot currently change an outcome —
-   * `clearDiscoveredSurfaces` nulls the catalogue on both teardown paths, and
-   * `connect()` flips the status in the same continuation as discovery — so it stands
-   * as an explicit invariant, not as a filter something is expected to fall through.
-   */
+  /** List connected resource catalogs; clients remain the sole authority for declared-URI reads. */
   listDeclaredResources(): Array<{ serverId: string; resources: readonly McpResourceSummary[] }> {
     return this.listServers()
       .filter((server) => server.status === "connected" && (server.resources?.length ?? 0) > 0)
       .map((server) => ({ serverId: server.id, resources: server.resources ?? [] }));
   }
 
-  /**
-   * Servers that currently declare URI TEMPLATES, with their catalogues.
-   *
-   * A sibling projection rather than a field on the one above, for the reason the type
-   * exists at all: a template's identity is `uriTemplate` and a resource's is `uri`, so
-   * one list carrying both would need every consumer to discriminate before it could
-   * even validate an entry.
-   */
+  /** Templates have uriTemplate identities and remain separate from concrete resource catalogs. */
   listDeclaredResourceTemplates(): Array<{
     serverId: string;
     templates: readonly McpResourceTemplateSummary[];
@@ -1277,13 +1668,7 @@ export class McpManager {
       .map((server) => ({ serverId: server.id, templates: server.resourceTemplates ?? [] }));
   }
 
-  /**
-   * Read one resource the server declared (`resources/read`, core capability).
-   *
-   * Leased like every other bundled-server round trip, so a plugin-backed server
-   * cannot be read after its generation is gone. Distinct from
-   * {@link readUiResource}, which serves the MCP-Apps `ui://` extension.
-   */
+  /** Declared core-resource reads hold a generation lease and remain distinct from Apps ui reads. */
   async readDeclaredResource(serverId: string, uri: string): Promise<{
     blocks: Array<{ uri?: string; mimeType?: string; text?: string; omittedKind?: string }>;
     droppedBlocks: number;
@@ -1296,14 +1681,7 @@ export class McpManager {
     return this.withBundledLease(serverId, () => client.readDeclaredResource(uri));
   }
 
-  /**
-   * Expand a declared URI template with the user's values and read the result.
-   *
-   * Leased like the plain read. Separate from it rather than a flag on it because the
-   * two are gated differently — one matches a listed URI, this one matches a listed
-   * TEMPLATE and produces the URI itself — and collapsing them would put a branch
-   * inside the gate, which is the shape that lets one side inherit the other's check.
-   */
+  /** Match listed templates and expand values in the host; concrete-resource reads use a different gate. */
   async readDeclaredResourceTemplate(
     serverId: string,
     uriTemplate: string,
@@ -1324,7 +1702,6 @@ export class McpManager {
     );
   }
 
-  /** 연결된 서버 수 */
   get connectedCount(): number {
     let count = 0;
     for (const client of this.clients.values()) {

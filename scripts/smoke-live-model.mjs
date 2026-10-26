@@ -1,19 +1,5 @@
-/**
- * Bridge the app's stored OpenRouter key into the live-model smoke suite.
- *
- * The key the user typed into Settings is encrypted with Chromium OSCrypt and
- * is only readable from a real Electron runtime. The vitest runner is Electron
- * launched as plain node (ELECTRON_RUN_AS_NODE), where `safeStorage` does not
- * exist — so the suite takes its key from the environment instead, and this
- * script is the piece that runs under Electron proper, decrypts, and hands it
- * over.
- *
- * The secret is passed to the child through its environment. That keeps it out
- * of argv (visible in process listings) and off disk, but it is still a secret
- * in a child process on this machine — run this yourself, not on shared CI.
- *
- * Usage: bun run smoke:llm
- */
+// Decrypt stored credentials only in the desktop runtime and pass them through the child environment.
+// Keep them out of argv and disk; this local-user smoke is unsuitable for shared CI.
 import { app, safeStorage } from "electron";
 import { spawn } from "node:child_process";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
@@ -21,15 +7,10 @@ import { join } from "node:path";
 
 const SECRET_KEY = "llm.apiKey.openrouter";
 
-// Without this the userData path is %APPDATA%/Electron and the store looks
-// empty. `productName` in package.json is what the packaged app resolves to.
+// Derive the configured store path from the packaged product name.
 app.setName("Ave");
 
-/**
- * Electron on Windows is a GUI-subsystem binary, so stdout never reaches the
- * launching console. Every line also goes to a status file so a run is
- * observable either way.
- */
+// GUI-subsystem stdout may be unavailable; mirror progress to a status file.
 const STATUS_PATH = join(process.cwd(), "smoke-live-model.status.txt");
 const lines = [];
 function report(message) {
@@ -38,10 +19,7 @@ function report(message) {
   writeFileSync(STATUS_PATH, `${lines.join("\n")}\n`, "utf-8");
 }
 
-/**
- * Remove `secret` from `text`. Belt and braces: the report path must be unable
- * to emit the key even if a downstream tool echoes it.
- */
+// Redact secrets even when downstream tools echo them.
 function redactSecret(text, secret) {
   return secret ? text.split(secret).join("[redacted]") : text;
 }
@@ -66,9 +44,7 @@ function readStoredKey() {
   return safeStorage.decryptString(Buffer.from(stored, "base64"));
 }
 
-// Not top-level await: Electron's main-process ESM loader does not run the
-// module body to completion before the app starts, and a top-level await here
-// silently produced no output at all.
+// Avoid top-level await: the main-process loader may start the app before the module body completes.
 app.whenReady().then(() => {
   let apiKey;
   try {
@@ -78,7 +54,7 @@ app.whenReady().then(() => {
   }
   if (!apiKey) return;
 
-  // The key never appears in a report — not its value, not its length.
+  // Reports must expose neither the credential nor its length.
   report(`decrypted ${SECRET_KEY} — running suite`);
 
   const child = spawn(
@@ -97,9 +73,7 @@ app.whenReady().then(() => {
   child.on("exit", (code) => {
     report(`suite exited with code ${code}`);
     report("--- suite output ---");
-    // The child's output is not trusted to be secret-free: a provider error can
-    // quote the request, and OpenRouter's 402 body carries a key-scoped URL.
-    // Redact before anything reaches the console or the status file.
+    // Redact provider output before console or status writes; errors may contain credentials.
     report(redactSecret(output.trimEnd(), apiKey));
     app.exit(code ?? 1);
   });

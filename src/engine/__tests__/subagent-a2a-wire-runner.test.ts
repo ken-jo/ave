@@ -5,13 +5,11 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../core/input-classifier.js";
+import { makeSubagentLoopDeps } from "./support/subagent-loop-fixtures.js";
 import { createDlpSafeUuid, isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import * as structuralIds from "../../shared/dlp-safe-id.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { MemoryManager, type SessionMetadata,
 } from "../../memory/memory-manager.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { readShellSessionCwd, recordShellSessionCwd } from "../../tools/shell-session-cwd.js";
@@ -52,34 +50,7 @@ function buildLoopDeps(
     projectName: "Untrusted Default",
   })),
 ) {
-  return {
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: {
-      build: () => "system",
-      setToolScope: () => undefined,
-      setOriginSource: () => undefined,
-      setActiveSessionId: () => undefined,
-      // The runner never shares the parent builder with a child, so the double
-      // hands back a separate one of the same shape.
-      createIsolated: () => ({
-        build: () => "system",
-        setToolScope: () => undefined,
-        setOriginSource: () => undefined,
-        setActiveSessionId: () => undefined,
-      }),
-    },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
-    toolRegistry,
-    memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-    },
-    getDefaultProject,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
+  return makeSubagentLoopDeps(toolRegistry, { getDefaultProject });
 }
 
 function registerNoop(toolRegistry: ToolRegistry): void {
@@ -392,8 +363,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     );
     await initialSaveEntered;
 
-    // Bypass the runner-level live cancellation to isolate the authoritative
-    // post-save revalidation. The root tombstone transforms the pending write.
+    // Disable live cancellation here to isolate tombstone revalidation after persistence.
     await expect(
       store.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(0);
@@ -458,7 +428,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     );
     await workingSaveEntered;
 
-    // As above, isolate the post-WORKING-save reload from runner-level abort.
+    // Isolate post-save revalidation from runner-level abort.
     await expect(
       store.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(1);
@@ -1213,11 +1183,9 @@ describe("SubAgentRunner A2A wire security contract", () => {
     const shell = new ChildProcess();
     shell.stdout = new PassThrough();
     shell.stderr = new PassThrough();
-    // No process is spawned: only the child's signal boundary is replaced.
     const kill = vi.spyOn(shell, "kill").mockReturnValue(true);
     let shellId = "";
     vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async () => {
-      // What the child's own bash calls would leave behind under its session id.
       shellId = backgroundShellManager.register({
         sessionId: childSessionId,
         command: "child watcher",

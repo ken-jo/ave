@@ -290,11 +290,12 @@ describe("foreground rationale contract", () => {
     expect(requestedOn).toMatchObject({
       requestedSandbox: true,
       fallbackReason: "requested-sandbox-unavailable",
-      requiresExplicitUserApproval: true,
+      // The sandbox-off policy applies (unsandboxed shell exact-rule requirement); the fallback reason keeps it distinct.
+      requiresExplicitUserApproval: false,
     });
     expect(requestedOff).toMatchObject({
       requestedSandbox: false,
-      fallbackReason: "none",
+      fallbackReason: "disabled-by-setting",
       requiresExplicitUserApproval: false,
     });
     expect(requestedOn.identity).not.toBe(requestedOff.identity);

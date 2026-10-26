@@ -14,7 +14,6 @@ let root: string;
 const NOW = new Date("2026-09-23T08:00:00.000Z");
 const COMMIT_A = "a".repeat(40);
 
-/** A source the test expects to be a git source. */
 function gitSource(source: ResolvedSource | undefined): GitSource {
   if (source?.transport !== "git") throw new Error(`expected a git source, got ${JSON.stringify(source)}`);
   return source;
@@ -124,11 +123,9 @@ describe("SourceRegistry.add", () => {
     expect(await code(registry.add(custom({ id: "acme-4", url: "acme/market-2" })))).toBe("passed");
     expect(await code(registry.add(custom({ id: "corp-2", url: "https://git.corp.example/ave/market/" })))).toBe("SOURCE_ID_TAKEN");
     expect(await code(registry.add(custom({ id: "mine", url: "ken-jo/agent-marketplace" })))).toBe("SOURCE_ID_TAKEN");
-    // The refusal names the source it duplicates and the address as added, so the tab can offer *Show acme* (§18.8).
     const taken = await failure(registry.add(custom({ id: "acme-5", url: "https://github.com/ACME/market/" })));
     expect(taken.code).toBe("SOURCE_ID_TAKEN");
     expect(taken.detail).toEqual({ reason: "repository-already-added", url: "https://github.com/ACME/market", existingId: "acme" });
-    // A taken id alone carries no detail: another id resolves it.
     expect((await failure(registry.add(custom({ url: "acme/other" })))).detail).toBeUndefined();
   });
 
@@ -180,7 +177,6 @@ describe("SourceRegistry load checks", () => {
       { subject: "corp", message: "corp is already used by a managed source" },
     ]);
 
-    // A later write keeps the entries it does not serve.
     await registry.add(custom({ id: "extra", url: "acme/extra" }));
     const ids = JSON.parse(readFileSync(join(root, "sources.json"), "utf8")).sources.map((entry: { id: string }) => entry.id);
     expect(ids).toEqual(["ave-tools", "corp", "acme", "extra"]);
@@ -267,7 +263,6 @@ describe("SourceRegistry.remove", () => {
     expect(registry.get("acme")).toBeUndefined();
     expect(await code(registry.add(custom()))).toBe("SOURCE_ID_TAKEN");
 
-    // Two entries share an id: removing the served one leaves the other as written.
     const served = { ...stale, url: "https://github.com/acme/market" };
     writeSources([served, stale]);
     const reopened = await open();
@@ -309,7 +304,6 @@ describe("SourceRegistry state", () => {
     const strict = await open(CORP_POLICY);
     expect(await code(strict.setEnabled("ave", false))).toBe("SOURCE_POLICY_BLOCKED");
     expect(await code(strict.setEnabled("corp", false))).toBe("SOURCE_POLICY_BLOCKED");
-    // A stored false from an earlier, looser policy is overridden.
     expect(strict.isEnabled(strict.get("ave")!, { pinnedCommit: null, enabled: false })).toBe(true);
 
     const loose = await open(policy({ allowDisablingOfficial: true }));
@@ -331,20 +325,17 @@ describe("confirmations are bound to the source's address (§18.5)", () => {
     await registry.acknowledge("team", ["token-unencrypted", "internal-downloads"]);
     expect([...(await registry.acknowledged(registry.get("team")!))]).toEqual(["token-unencrypted", "internal-downloads"]);
 
-    // The administrator points the same id at another service.
     moving.change(at("http://git.example.test:9000/new"));
     moving.apply((await moving.check())!);
     const moved = gitSource(registry.get("team"));
     expect(moved.url.url).toBe("http://git.example.test:9000/new");
     const held = await registry.acknowledged(moved);
     expect([...held]).toEqual([]);
-    // So the gate offers no credential over plain http to the new service.
     const gate = new NetworkGate({ policy: moving, allowLoopback: false, transport: async () => new Response(null) });
     expect(gate.checkRemote(moved.url, { official: false, acknowledged: held }).credentialsAllowed).toBe(false);
 
     const reopened = await SourceRegistry.open({ root, policy: policySource(at("http://git.example.test:9000/new")), now: () => NOW });
     expect([...(await reopened.acknowledged(reopened.get("team")!))]).toEqual([]);
-    // A confirmation given at the new address holds only what it gives.
     await reopened.acknowledge("team", ["unencrypted"]);
     expect([...(await reopened.acknowledged(reopened.get("team")!))]).toEqual(["unencrypted"]);
   });
@@ -355,7 +346,6 @@ describe("confirmations are bound to the source's address (§18.5)", () => {
     expect([...(await registry.acknowledged(registry.get("acme")!))]).toEqual(["unencrypted", "token-unencrypted"]);
     const stored = JSON.parse(readFileSync(join(root, "sources.json"), "utf8")) as { sources: Array<Record<string, unknown>> };
     expect(stored.sources[0]!.acknowledged).toEqual({ url: "http://git.example.test:8000/a", warnings: ["unencrypted", "token-unencrypted"] });
-    // Hand-edited to another port, the confirmations stay with the old address.
     writeSources([{ ...stored.sources[0], url: "http://git.example.test:9000/a" }]);
     const reopened = await open();
     expect([...(await reopened.acknowledged(reopened.get("acme")!))]).toEqual([]);
@@ -437,12 +427,10 @@ describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
     expect(await code(registry.writeState("team", { pinnedCommit: COMMIT_A, enabled: true }))).toContain("a folder source's pin must be a folder revision");
     expect(await code(registry.writeState("acme", { pinnedCommit: LOCAL, enabled: true }))).toContain("a git source's pin must be a commit id");
     expect(await code(registry.writeState("acme", { pinnedCommit: COMMIT_A, enabled: true, folder: { dev: "1", ino: "2", ancestors: [] } }))).toContain("a git source has no folder identity");
-    // A folder identity without the directories above it is not one this version wrote.
     mkdirSync(join(root, "team"), { recursive: true });
     writeFileSync(join(root, "team", "state.json"), JSON.stringify({ pinnedCommit: LOCAL, enabled: true, folder: { dev: "7", ino: "42" } }));
     await expect(registry.readState("team")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "team" } });
 
-    // A state written by hand with the wrong pairing reads as damaged, not as a pin.
     mkdirSync(join(root, "acme"), { recursive: true });
     writeFileSync(join(root, "acme", "state.json"), JSON.stringify({ pinnedCommit: LOCAL, enabled: true }));
     await expect(registry.readState("acme")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "acme" } });

@@ -1,16 +1,5 @@
-/**
- * The sources (design §15.4): each git repository the app reads packages
- * from, its pin, status and switch, with Refresh, Set token, Review (a
- * rewritten history) and Remove where the origin allows them. A source whose
- * downloaded copy is damaged offers Repair in place of Refresh and its
- * switch (§18.8), for every origin. A source that needs a confirmation it
- * does not hold (an address that changed class, sign-in over http) offers
- * *Allow…*, which states the risk once more and syncs again (§18.5); its
- * badges say what it was allowed. A folder source (§18.4.8) shows its
- * path, its contents revision and when it was read, the *Local folder* or
- * *Network folder* badge, and *Show in Finder* (Explorer, file manager) in
- * place of Set token.
- */
+/** Respect origin-specific actions, repair damaged copies, and re-confirm newly risky addresses before sync; folder sources
+ * expose paths rather than credentials. */
 import { Folder } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -99,8 +88,8 @@ export function SourcesView({ api, sources, onChanged, onAdd, highlightId = null
   const [failure, setFailure] = useState<{ failure: GitMarketplaceFailure; subject: FailureSubject; source: SourceView | null } | null>(null);
   const [confirm, setConfirmState] = useState<Confirm | null>(null);
   const [token, setToken] = useState("");
-  // A typed token belongs to the dialog it was typed in: opening or closing any dialog drops it, so a
-  // token typed for one host and cancelled can never be saved under the next source's host.
+  // A typed token belongs to the dialog it was typed in: opening or closing any dialog drops it, so a token typed for one
+  // host and cancelled can never be saved under the next source's host.
   const setConfirm = (next: Confirm | null) => {
     setToken("");
     setConfirmState(next);

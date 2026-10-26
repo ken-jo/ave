@@ -44,10 +44,10 @@ import {
 } from "./ChatSidePanelLayout.js";
 import {
   BrowserDocumentViewer,
-  DetailHeader,
   EmptyState,
   FileTreeRows,
-  PreviewBody,
+  PreviewDetail,
+  previewFillsPanel,
   UrlDocumentViewer,
   buildFileTree,
   fileBasename,
@@ -59,6 +59,20 @@ import {
   toRelativePath,
 } from "./ChatSidePanelPreview.js";
 
+
+/**
+ * The tree's roving row: the active row while it is visible, else the first
+ * row. Derived during render so the tree always has a tab stop; an effect
+ * would leave one committed render without one after the first listing, a
+ * collapse or a reload removes the active row.
+ */
+export function deriveRovingPath(
+  activeItemPath: string | null,
+  rows: ReadonlyArray<{ path: string }>,
+): string | null {
+  if (activeItemPath && rows.some((row) => row.path === activeItemPath)) return activeItemPath;
+  return rows[0]?.path ?? null;
+}
 
 type WorkspaceDirEntry = { name: string; path: string; type: "file" | "directory" };
 
@@ -245,16 +259,7 @@ function ProjectRootsBrowser({
     return out;
   }, [activeRoot, childrenByPath, expanded]);
 
-  // Clamp the roving pointer when the tree changes (collapse / reload / switch).
-  useEffect(() => {
-    if (flatNodes.length === 0) {
-      if (activeItemPath !== null) setActiveItemPath(null);
-      return;
-    }
-    if (!activeItemPath || !flatNodes.some((n) => n.path === activeItemPath)) {
-      setActiveItemPath(flatNodes[0].path);
-    }
-  }, [flatNodes, activeItemPath]);
+  const rovingPath = deriveRovingPath(activeItemPath, flatNodes);
 
   // Move DOM focus only for keyboard-driven changes (roving tabindex).
   useEffect(() => {
@@ -300,7 +305,7 @@ function ProjectRootsBrowser({
 
   const onTreeKeyDown = (e: ReactKeyboardEvent) => {
     if (flatNodes.length === 0) return;
-    const idx = flatNodes.findIndex((n) => n.path === activeItemPath);
+    const idx = flatNodes.findIndex((n) => n.path === rovingPath);
     const i = idx >= 0 ? idx : 0;
     const cur = flatNodes[i];
     switch (e.key) {
@@ -541,7 +546,7 @@ function ProjectRootsBrowser({
         const isDir = entry.type === "directory";
         const isOpen = expanded.has(entry.path);
         const opened = !isDir && entry.path === selectedPath;
-        const isActiveItem = entry.path === activeItemPath;
+        const isActiveItem = entry.path === rovingPath;
         return (
           <div key={entry.path}>
                 <div
@@ -944,6 +949,8 @@ export function FileBrowserWorkspace({
       canOpenExternal: false,
     };
   }, [fsPath]);
+  // The target the bottom pane shows (a directory pick wins over the session row).
+  const detailTarget = fsTarget ?? selectedFileTarget;
 
   useEffect(() => {
     if (selectedFile?.previewTargetId && selectedFile.previewTargetId !== selectedId) {
@@ -1071,17 +1078,11 @@ export function FileBrowserWorkspace({
           </div>
         }
         bottom={
-          <div className="min-h-0 p-3">
+          <div className={detailTarget && previewFillsPanel(detailTarget) ? "flex min-h-full flex-col p-3" : "min-h-0 p-3"}>
             {fsTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={fsTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={fsTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={fsTarget} />
             ) : selectedFileTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={selectedFileTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={selectedFileTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={selectedFileTarget} />
             ) : selectedFile ? (
               <div className="space-y-3">
                 <div className="flex min-w-0 items-center gap-2">

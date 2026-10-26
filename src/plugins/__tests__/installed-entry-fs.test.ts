@@ -29,7 +29,6 @@ describe("tombstoneAndDeferredRemove", () => {
     });
 
     expect(tombstone).toBe(join(pluginsRoot, TOMBSTONE_SUBDIR, "local-indexer-1715000000000-deadbeef"));
-    // Original dir is gone
     await expect(stat(installedDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -38,7 +37,6 @@ describe("tombstoneAndDeferredRemove", () => {
       now: () => 1,
       randomSuffix: () => "a",
     });
-    // Repeat with another fresh dir to hit the existing subdir path
     const second = join(pluginsRoot, "second-plugin");
     await mkdir(second);
     await writeFile(join(second, "plugin.json"), "{}");
@@ -92,7 +90,6 @@ describe("tombstoneAndDeferredRemove", () => {
         randomSuffix: () => "w",
       });
       expect(tombstone).toMatch(/local-indexer-7-w$/);
-      // Original install dir is renamed away
       await expect(stat(installedDir)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await fh.close();
@@ -116,7 +113,7 @@ describe("tombstoneAndDeferredRemove", () => {
   });
 
   it("uses random suffix to avoid same-millisecond collision", async () => {
-    // Two uninstalls of different dirs in the same ms — random suffix differs
+    // Random suffixes prevent same-millisecond uninstall collisions.
     const second = join(pluginsRoot, "second-plugin");
     await mkdir(second);
     await writeFile(join(second, "plugin.json"), "{}");
@@ -135,9 +132,7 @@ describe("tombstoneAndDeferredRemove", () => {
   });
 });
 
-// A tree a confined child may be bound to (Linux --bind keeps a renamed
-// directory writable to it) is deleted for real only before any confined
-// process can run; after that it waits in the tombstones for the next boot.
+// A renamed directory remains writable through a live bind mount; only boot may sweep it.
 describe("confined-process phase and plugin tree removal", () => {
   let pluginsRoot: string;
   let tree: string;

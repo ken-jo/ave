@@ -1,15 +1,4 @@
-/**
- * The kinds each plugin registered, and what registering does to the user's
- * choices in `settings.alerts.kinds`.
- *
- * A missing entry is written the first time its kind registers, blocked or
- * not, so its origin is durable from that moment: a fresh install takes the
- * kind's declared defaults, and a kind first seen in an update of a plugin
- * already installed is written off — an update must not turn on a card the
- * user never agreed to. An existing entry keeps its value, except that a
- * declared visibility above the one the user consented to turns it off and
- * marks it escalated. Inheritance from a retired plugin is a separate pass.
- */
+/** Persist defaults on first registration; update-added kinds start disabled. Increased visibility revokes existing consent. */
 import { join } from "node:path";
 import type { AlertKindDeclaration, AlertVisibility } from "../plugins/public-contract.js";
 import type { AlertKindChoice, AlertSettings } from "../shared/alerts-types.js";
@@ -22,18 +11,12 @@ const log = createLogger("alerts");
 
 const VISIBILITY_RANK: Record<AlertVisibility, number> = { silent: 0, "summary-only": 1, "user-visible": 2 };
 
-/** The settings key of a plugin's kind. */
 export function alertKindKey(pluginId: string, kindId: string): string {
   return `${pluginId}:${kindId}`;
 }
 
-/** How this registration of the plugin came about. */
 export type RegistrationOrigin = "install" | "update";
 
-/**
- * Apply one registration of `pluginId`'s declared kinds to the stored
- * choices. Returns the settings to store, or `null` when nothing changes.
- */
 export function resolveRegistration(
   settings: AlertSettings,
   pluginId: string,
@@ -58,13 +41,11 @@ export function resolveRegistration(
     }
     let entry = existing;
     if (entry.absentSinceAppVersion !== undefined) {
-      // Reinstalled before the entry aged out: the user's choice is back.
       const { absentSinceAppVersion: _returned, ...present } = entry;
       entry = present;
     }
     if (VISIBILITY_RANK[kind.visibility] > VISIBILITY_RANK[entry.visibility]) {
-      // Consent to a lower level is not consent to this one. Escalation only
-      // ever turns a kind off, whatever flags the entry carries.
+      // Visibility escalation only disables; lower-level consent cannot authorize it.
       entry = { ...entry, enabled: false, seenByUser: false, visibility: kind.visibility, escalated: true };
     }
     if (entry !== existing) {
@@ -75,7 +56,6 @@ export function resolveRegistration(
   return changed ? { ...settings, kinds: next } : null;
 }
 
-/** Mark every stored kind of an uninstalled plugin absent since `appVersion`, so a reinstall keeps them. */
 export function markPluginAbsent(settings: AlertSettings, pluginId: string, appVersion: string): AlertSettings | null {
   const prefix = `${pluginId}:`;
   const next: Record<string, AlertKindChoice> = { ...settings.kinds };
@@ -90,13 +70,7 @@ export function markPluginAbsent(settings: AlertSettings, pluginId: string, appV
 
 const LEDGER_FILE = "plugins.json";
 
-/**
- * The plugins the alerts service has seen registered, so a registration can
- * tell a fresh install from an update. The first time the file is created,
- * every plugin already installed is recorded: those predate the service, so
- * a kind they bring is an update's. An uninstall forgets the plugin, so a
- * later reinstall counts as fresh.
- */
+/** Seed existing plugins as updates; forgetting an uninstall makes a later reinstall fresh. */
 export class RegistrationLedger {
   private known: Set<string> | null = null;
   private writes: Promise<void> = Promise.resolve();
@@ -126,7 +100,6 @@ export class RegistrationLedger {
     return this.known;
   }
 
-  /** Record a registration and say how it came about. */
   register(pluginId: string): RegistrationOrigin {
     const known = this.loaded();
     if (known.has(pluginId)) return "update";
@@ -146,7 +119,6 @@ export class RegistrationLedger {
   private persist(): void {
     const file = { version: 1, plugins: [...this.loaded()].sort() };
     this.writes = this.writes.then(() => writeJsonAtomic(this.dir(), LEDGER_FILE, file)).catch((err: unknown) => {
-      // The in-memory set still answers for this session.
       log.warn(`could not persist the alert registration ledger: ${errorMessage(err)}`);
     });
   }

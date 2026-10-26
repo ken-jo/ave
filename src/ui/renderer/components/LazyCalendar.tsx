@@ -6,7 +6,7 @@ let calendarModulePromise:
   | Promise<{ default: ComponentType<CalendarProps> }>
   | undefined;
 
-export function preloadCalendar(): Promise<{ default: ComponentType<CalendarProps> }> {
+function preloadCalendar(): Promise<{ default: ComponentType<CalendarProps> }> {
   calendarModulePromise ??= import("../../../components/ui/calendar.js").then((mod) => ({
     default: mod.Calendar,
   }));

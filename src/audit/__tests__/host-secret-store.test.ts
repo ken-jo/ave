@@ -20,7 +20,10 @@ beforeEach(() => {
 afterEach(async () => cleanupTmpDir(root));
 
 describe("host authority secret store", () => {
-  it("preserves identity across restart and never regenerates it after wrong-key decryption", () => {
+  // Reject external keys on Windows when POSIX owner-only protection cannot be proven.
+  const withExternalKey = it.skipIf(process.platform === "win32");
+
+  withExternalKey("preserves identity across restart and never regenerates it after wrong-key decryption", () => {
     const secretStore = createHostSecretStore(createNodeSecretEncryption(keyFile), directory);
     const identity = ensureTailnetPairedShareActorSecret(secretStore);
     expect(ensureTailnetPairedShareActorSecret(
@@ -35,7 +38,7 @@ describe("host authority secret store", () => {
     expect(readFileSync(join(directory, files[0]))).toEqual(original);
   });
 
-  it("refuses unavailable keys, legacy formats and tampering without quarantine or overwrite", () => {
+  withExternalKey("refuses legacy formats and tampering without quarantine or overwrite", () => {
     const encryption = createNodeSecretEncryption(keyFile);
     const store = createHostSecretStore(encryption, directory);
     store.write("authority", "retained-value");
@@ -48,9 +51,13 @@ describe("host authority secret store", () => {
       expect(readFileSync(path, "utf8")).toBe(bytes);
       expect(readdirSync(directory)).toEqual(["authority.safe-storage"]);
     }
+  });
+
+  it("refuses an unconfigured external key without writing or quarantining", () => {
     const unavailable = createHostSecretStore(createNodeSecretEncryption(), directory);
     expect(() => unavailable.read("authority", 256)).toThrow(/not available/);
     expect(() => unavailable.write("authority", "replacement")).toThrow(/not available/);
+    expect(readdirSync(directory)).toEqual([]);
   });
 
   it("preserves existing desktop quarantine and replacement behavior", () => {

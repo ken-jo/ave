@@ -1,12 +1,4 @@
-/**
- * Name and check a normalized model catalog document.
- *
- * The hash is over the canonical JSON — keys sorted, arrays in
- * order — of what the catalog SAYS: its schema version, its license and its
- * providers. Provenance is carried beside it and left out of the name, so two
- * downloads of unchanged data (a new `fetchedAt`, a CDN's new ETag) are the
- * same catalog in a run record and in the cache, not two.
- */
+/** Hash schema, license, and providers only; unchanged content keeps its identity despite new provenance. */
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import {
@@ -15,7 +7,6 @@ import {
   type ModelCatalogProvenance,
 } from "../../shared/model-catalog/types.js";
 
-/** The catalog's name: sha256 over the canonical JSON of its schema version, license and providers. */
 export function modelCatalogSha256(document: Pick<ModelCatalogDocument, "schemaVersion" | "license" | "providers">): string {
   const { schemaVersion, license, providers } = document;
   return sha256Hex(canonicalStringify({ schemaVersion, license, providers }));
@@ -24,12 +15,7 @@ export function modelCatalogSha256(document: Pick<ModelCatalogDocument, "schemaV
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_OBJECT = /^[0-9a-f]{40}$/;
 
-/**
- * What is wrong with a provenance record's shape, or `undefined`. Provenance
- * is outside the hash, so a copy could carry any provenance under a valid
- * name; the shape check keeps what a reader reports about a copy's origin
- * well-formed. A run record cites the catalog by `sha256` alone.
- */
+/** Validate provenance separately because it is excluded from content identity. */
 function provenanceShapeFault(provenance: ModelCatalogProvenance): string | undefined {
   const optional = (value: unknown, pattern: RegExp): boolean => value === undefined || (typeof value === "string" && pattern.test(value));
   if (typeof provenance.url !== "string" || !provenance.url.startsWith("https://")) return "has no https url";
@@ -43,11 +29,7 @@ function provenanceShapeFault(provenance: ModelCatalogProvenance): string | unde
   return undefined;
 }
 
-/**
- * Reject a document that is not this schema version, whose provenance is
- * malformed, or whose content does not hash to its stated name. Throws with the reason; a damaged or foreign
- * catalog is never read as a partial one.
- */
+/** Reject schema, provenance, or hash mismatches instead of reading partial catalogs. */
 export function verifyModelCatalogDocument(value: unknown): ModelCatalogDocument {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("model catalog is not an object");

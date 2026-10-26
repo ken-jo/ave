@@ -1,9 +1,4 @@
-/**
- * The browser page actions and the snapshot ref table, over a fake CDP
- * session: ref minting and stability, re-render following, stale refs,
- * the snapshot cap, sensitive-field refusal, cancellation, and the
- * cross-origin redirect guard of navigate.
- */
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -37,7 +32,7 @@ function ax(nodeId: string, role: string, name: string, extra: Partial<AXNode> =
   return { nodeId, role: { type: "role", value: role }, name: { type: "computedString", value: name }, ...extra };
 }
 
-/** A page: a root with the given children (each a leaf). */
+// A page: a root with the given children (each a leaf).
 function page(children: AXNode[]): AXNode[] {
   return [
     ax("root", "RootWebArea", "Fixture", { childIds: children.map((child) => child.nodeId) }),
@@ -48,7 +43,7 @@ function page(children: AXNode[]): AXNode[] {
 class FakeCdp implements CdpSession {
   frameTree = { frame: { id: "main", loaderId: "loader-1", url: "https://a.example/form", securityOrigin: "https://a.example" }, childFrames: [] as unknown[] };
   hit = { backendNodeId: 0, frameId: "main" };
-  /** How far the page is scrolled, as the layout metrics report it. */
+  // How far the page is scrolled, as the layout metrics report it.
   scroll = { x: 0, y: 0 };
   readonly events = new EventEmitter();
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void {
@@ -58,9 +53,9 @@ class FakeCdp implements CdpSession {
   nodes: AXNode[] = [];
   attributes = new Map<number, Record<string, string>>();
   readonly calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
-  /** A mouse press gives the page focus after this many focus checks (Infinity: never). */
+  // A mouse press gives the page focus after this many focus checks (Infinity: never).
   focusLag = 0;
-  /** Text inserts lost (focus moved away) before one lands. */
+  // Text inserts lost (focus moved away) before one lands.
   dropTexts = 0;
   private focusedNode: number | undefined;
   private pressed = false;
@@ -120,6 +115,22 @@ class FakeCdp implements CdpSession {
   }
 }
 
+// Advance timer and Date together so press, dispatch, focus, and echo budgets measure the same simulated time.
+async function onFakeClock<T>(work: () => Promise<T>, maxMs = 30_000): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    let settled = false;
+    const running = work().finally(() => { settled = true; });
+    running.catch(() => undefined);
+    for (let advanced = 0; !settled && advanced < maxMs; advanced += 10) await vi.advanceTimersByTimeAsync(10);
+    // A hang must fail here, where the real clock is still restored below.
+    if (!settled) throw new Error(`work did not settle within ${maxMs} fake ms`);
+    return await running;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: AbortSignal } = {}) {
   let url = options.url ?? "https://a.example/form";
   const injected: number[] = [];
@@ -136,8 +147,7 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
       injected.push(cdp.calls.length);
       return inject();
     },
-    // One page alone: its window's press lock and delivery check are the
-    // adapter's, covered with the window router below.
+    // One page alone: its window's press lock and delivery check are the adapter's, covered with the window router below.
     press: (run) => run(),
     releaseFocus: () => {
       released.push(cdp.calls.length);
@@ -153,10 +163,13 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
   return value;
 }
 
+function snapshotFixture() {
+  return { refs: new BrowserRefTable(), cdp: new FakeCdp() };
+}
+
 describe("browser snapshot refs", () => {
   it("gives interactive elements refs that stay the same across snapshots", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([
       ax("h", "heading", "Sign up", { backendDOMNodeId: 1, properties: [{ name: "level", value: { value: 1 } }] }),
       ax("n", "textbox", "Name", { backendDOMNodeId: 2 }),
@@ -175,8 +188,7 @@ describe("browser snapshot refs", () => {
   });
 
   it("returns only what changed in delta mode", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     await snapshot(target(cdp), {}, refs);
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 }), ax("s", "StaticText", "Saved!")]);
@@ -186,8 +198,7 @@ describe("browser snapshot refs", () => {
   });
 
   it("caps a snapshot at the character limit and says so", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page(Array.from({ length: 2_000 }, (_, index) =>
       ax(`l${index}`, "link", `Result number ${index} with a fairly long accessible name to fill the page`, { backendDOMNodeId: 100 + index })));
     const shot = await snapshot(target(cdp), {}, refs);
@@ -199,8 +210,7 @@ describe("browser snapshot refs", () => {
 
 describe("resolving refs", () => {
   it("follows an element the page re-rendered as a new node", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     const shot = await snapshot(target(cdp), {}, refs);
     const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
@@ -217,8 +227,7 @@ describe("resolving refs", () => {
   });
 
   it("fails clearly on a stale ref and touches nothing", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
 
@@ -237,8 +246,7 @@ describe("resolving refs", () => {
   });
 
   it("does not follow a re-render when the fingerprint is ambiguous", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Delete", { backendDOMNodeId: 3 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     cdp.nodes = page([
@@ -252,8 +260,7 @@ describe("resolving refs", () => {
 
 describe("typing", () => {
   async function field(attributes: Record<string, string>) {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
     cdp.attributes.set(5, attributes);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
@@ -418,8 +425,7 @@ describe("settle", () => {
 
 describe("snapshot noise", () => {
   it("leaves out InlineTextBox lines", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = [
       ax("root", "RootWebArea", "Fixture", { childIds: ["t"] }),
       ax("t", "StaticText", "Hello", { parentId: "root", childIds: ["i"] }),
@@ -447,8 +453,7 @@ describe("pressing keys", () => {
   });
 
   it("clicks into a named element before pressing", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     await pressKey(target(cdp), "Backspace", ref, refs);
@@ -459,8 +464,7 @@ describe("pressing keys", () => {
   });
 
   it("refuses Enter or Space into an element a click already activates", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Submit", { backendDOMNodeId: 6 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     await expect(pressKey(target(cdp), "Enter", ref, refs)).rejects.toMatchObject({ code: "use-click" });
@@ -484,8 +488,7 @@ describe("screenshot", () => {
 
 describe("focus before keyboard input", () => {
   async function textField(focusLag: number) {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.focusLag = focusLag;
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
@@ -505,19 +508,19 @@ describe("focus before keyboard input", () => {
 
   it("types nothing and says so when the page never takes focus", async () => {
     const { cdp, ref, refs } = await textField(Number.POSITIVE_INFINITY);
-    await expect(typeInto(target(cdp), ref, "Ada", {}, refs)).rejects.toMatchObject({ code: "no-focus" });
+    await expect(onFakeClock(() => typeInto(target(cdp), ref, "Ada", {}, refs))).rejects.toMatchObject({ code: "no-focus" });
     expect(cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" || call.method === "Input.insertText")).toBe(false);
   }, 10_000);
 
   it("types again when the text was lost to a focus change, and reports a field it never reaches", async () => {
     const lost = await textField(0);
     lost.cdp.dropTexts = 1;
-    await typeInto(target(lost.cdp), lost.ref, "Ada", {}, lost.refs);
+    await onFakeClock(() => typeInto(target(lost.cdp), lost.ref, "Ada", {}, lost.refs));
     expect(lost.cdp.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(2);
 
     const never = await textField(0);
     never.cdp.dropTexts = 99;
-    await expect(typeInto(target(never.cdp), never.ref, "Ada", { submit: true }, never.refs)).rejects.toMatchObject({ code: "not-typed" });
+    await expect(onFakeClock(() => typeInto(target(never.cdp), never.ref, "Ada", { submit: true }, never.refs))).rejects.toMatchObject({ code: "not-typed" });
     expect(never.cdp.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(3);
     // No Enter after text that never landed.
     expect(never.cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" && call.params?.key === "Enter")).toBe(false);
@@ -526,8 +529,7 @@ describe("focus before keyboard input", () => {
 
 describe("focus hand-back", () => {
   async function field() {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     return { cdp, ref, refs };
@@ -552,7 +554,7 @@ describe("focus hand-back", () => {
     const failing = await field();
     failing.cdp.dropTexts = 99;
     const failingTab = target(failing.cdp);
-    await expect(typeInto(failingTab, failing.ref, "Ada", {}, failing.refs)).rejects.toMatchObject({ code: "not-typed" });
+    await expect(onFakeClock(() => typeInto(failingTab, failing.ref, "Ada", {}, failing.refs))).rejects.toMatchObject({ code: "not-typed" });
     expect(failingTab.released).toHaveLength(1);
   }, 10_000);
 
@@ -765,23 +767,17 @@ describe("focused field and document replacement", () => {
   });
 });
 
-/** Where the fixture's window content sits on screen, and where its page sits in that window. */
+// Where the fixture's window content sits on screen, and where its page sits in that window.
 const HOST_CONTENT = { x: 1000, y: 500, windowId: 1 };
 const PAGE_IN_WINDOW = { x: 40, y: 60 };
 
-/**
- * The window's one touch sequence, as measured with two pages in one window:
- * a lone sequence reaches the page that sent it; a touch start sent while
- * another page's sequence is open joins that sequence and lands in that page;
- * the tap is derived after the sequence ends. Each page reports what reaches
- * it as native input events, marked with the debugger bit.
- */
+// Measure two guests in one window: overlapping touch starts join the first page’s sequence; native marked events identify the real recipient.
 class WindowTouchRouter {
   private open: FixtureGuest | null = null;
-  /** Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`. */
+  // Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`.
   hang = false;
   private held: Array<() => void> = [];
-  /** The busy page answers: the held dispatches are delivered, in order. */
+  // The busy page answers: the held dispatches are delivered, in order.
   wake(): void {
     this.hang = false;
     for (const deliver of this.held.splice(0)) deliver();
@@ -816,8 +812,26 @@ class WindowTouchRouter {
   }
 }
 
-/** What the router needs of a page: where its native touch input is reported. */
+// What the router needs of a page: where its native touch input is reported.
 interface FixtureGuest { report(input: { type: string; _modifiers: number }): void }
+
+// The renderer's answer to a focus release: the page lets go of keyboard focus. Without it every press that took focus would wait out the release budget
+// for a page that never lets go.
+const focusReleases = new WeakMap<BrowserTabRegistry<never>, Map<number, FakeCdp>>();
+function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number, cdp: FakeCdp): void {
+  let pages = focusReleases.get(registry);
+  if (!pages) {
+    const known = new Map<number, FakeCdp>();
+    pages = known;
+    focusReleases.set(registry, known);
+    const release = registry.releaseFocus.bind(registry);
+    registry.releaseFocus = (id) => {
+      release(id);
+      known.get(id)?.loseFocus();
+    };
+  }
+  pages.set(guestId, cdp);
+}
 
 function adapterFixture(options: {
   hostKnown?: boolean;
@@ -872,6 +886,7 @@ function adapterFixture(options: {
   });
   registry.guestAttached(guest as never, 1);
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
+  modelFocusRelease(registry, guest.id, cdp);
   const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
   const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
   const tools = createBrowserTools({
@@ -974,8 +989,7 @@ describe("tap placement", () => {
   it("never presses at an earlier measurement when a later pointer move gets no echo", async () => {
     const { cdp, actions, approve, echo } = adapterFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
-    // The page never reports focus, so typing presses again; only the first
-    // pointer move is echoed.
+    // The page never reports focus, so typing presses again; only the first pointer move is echoed.
     cdp.focusLag = Number.POSITIVE_INFINITY;
     const live = await approve("browser_type");
     const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
@@ -985,7 +999,7 @@ describe("tap placement", () => {
       if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && ++moves > 1) echo.on = false;
       return send(method, params);
     });
-    await expect(actions.type(live, ref, "Ada", {})).rejects.toMatchObject({ code: "no-pointer-position" });
+    await expect(onFakeClock(() => actions.type(live, ref, "Ada", {}))).rejects.toMatchObject({ code: "no-pointer-position" });
     expect(cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")).toHaveLength(1);
   }, 10_000);
 
@@ -997,15 +1011,14 @@ describe("tap placement", () => {
 });
 
 describe("one press at a time in a window", () => {
-  // A window left wedged by one test would refuse the next test's presses:
-  // every busy page answers before the next test.
+  // A window left wedged by one test would refuse the next test's presses: every busy page answers before the next test.
   const routers: WindowTouchRouter[] = [];
   afterEach(async () => {
     for (const router of routers.splice(0)) router.wake();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
-  /** Two pages of one window, each with a link to press. */
+  // Two pages of one window, each with a link to press.
   async function twoPages() {
     const router = new WindowTouchRouter();
     routers.push(router);
@@ -1043,10 +1056,10 @@ describe("one press at a time in a window", () => {
   it("fails a press its own page never reported", async () => {
     const { router, pages: [a] } = await twoPages();
     vi.spyOn(router, "dispatch").mockResolvedValue(undefined);
-    await expect(a.click()).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("did not report") });
-    const result = await a.tool("browser_click").execute({ tabId: a.tab.handle, ref: "e1" }, {
+    await expect(onFakeClock(() => a.click())).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("did not report") });
+    const result = await onFakeClock(() => a.tool("browser_click").execute({ tabId: a.tab.handle, ref: "e1" }, {
       cwd: tmpdir(), extraAllowedDirectories: [], metadata: { sessionId: "conversation" },
-    });
+    }));
     expect(result.isError).toBe(true);
   });
 
@@ -1069,29 +1082,34 @@ describe("one press at a time in a window", () => {
     const { pages: [a, c] } = await twoPages();
     const send = c.cdp.send.bind(c.cdp);
     // Page C stops answering the guard's hit test, a read made while its press holds the window.
-    let hung = false;
+    const { promise: hung, resolve: markHung } = deferred<void>();
     vi.spyOn(c.cdp, "send").mockImplementation((method, params) => {
       if (method !== "DOM.getNodeForLocation") return send(method, params);
-      hung = true;
+      markHung();
       return new Promise(() => {});
     });
-    // Settled into a value at once: it fails while page A's click runs.
-    const stuck = c.click().then(() => null, (err: unknown) => err);
-    await vi.waitFor(() => expect(hung).toBe(true));
-    const started = Date.now();
-    await expect(a.click()).resolves.toBeUndefined();
+    const { stuck, elapsed } = await onFakeClock(async () => {
+      // Settled into a value at once: it fails while page A's click runs.
+      const stuck = c.click().then(() => null, (err: unknown) => err);
+      await hung;
+      const started = Date.now();
+      await expect(a.click()).resolves.toBeUndefined();
+      return { stuck: await stuck, elapsed: Date.now() - started };
+    });
     // One press budget (5 s) and margin, not the life of the hung page.
-    expect(Date.now() - started).toBeLessThan(6_500);
-    await expect(stuck).resolves.toMatchObject({ code: "input-not-delivered" });
+    expect(elapsed).toBeLessThan(6_500);
+    expect(stuck).toMatchObject({ code: "input-not-delivered" });
     expect(a.guest.touches).toEqual(["touchStart"]);
     expect(c.guest.touches).toEqual([]);
   }, 15_000);
 
-  /** Page A's touch start and its closing cancel both go unanswered: A's sequence stays open. */
+  // Page A's touch start and its closing cancel both go unanswered: A's sequence stays open.
   async function wedgedByA() {
     const fixture = await twoPages();
     fixture.router.hang = true;
-    await expect(fixture.pages[0].click()).rejects.toMatchObject({ code: "input-not-delivered" });
+    // A's press runs out its press budget and then its closing cancel's dispatch budget. Those are clock waits, so they run on a fake clock; everything
+    // after the wedge runs on real time.
+    await expect(onFakeClock(() => fixture.pages[0].click())).rejects.toMatchObject({ code: "input-not-delivered" });
     return fixture;
   }
 
@@ -1198,6 +1216,92 @@ describe("typed page actions", () => {
 });
 
 describe("file-input effect guard", () => {
+  it("replaces a thirty-megabyte selection on the same input", async () => {
+    const { promises: fs } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "ave-upload-capacity-")));
+    const previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(dir, "home");
+    const cdp = new FakeCdp();
+    try {
+      const originals = [join(dir, "first.txt"), join(dir, "second.txt")];
+      for (const path of originals) { await fs.writeFile(path, ""); await fs.truncate(path, 15 * 1024 * 1024); }
+      cdp.attributes.set(11, { type: "file", multiple: "" });
+      cdp.nodes = page([ax("file", "button", "File", { backendDOMNodeId: 11 })]);
+      const refs = new BrowserRefTable();
+      await snapshot(target(cdp), {}, refs);
+      const send = cdp.send.bind(cdp);
+      vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getDocument"
+        ? { root: { nodeName: "#document", children: [{ nodeName: "INPUT", backendNodeId: 11 }] } }
+        : send(method, params));
+      const options = {
+        windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443",
+        documentId: 1, controlGeneration: 1, ref: "e1", signal: new AbortController().signal,
+        pickFiles: async () => originals,
+      };
+      for (let index = 0; index < 3; index++) {
+        await expect(upload(target(cdp), "e1", options, refs)).resolves.toMatchObject({ status: "selected", count: 2, bytes: 30 * 1024 * 1024 });
+        const assignments = cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles");
+        expect(assignments).toHaveLength(index + 1);
+        const paths = assignments.at(-1)!.params!.files as string[];
+        for (const path of paths) expect((await fs.stat(path)).size).toBe(15 * 1024 * 1024);
+        if (index > 0) {
+          for (const path of assignments[index - 1]!.params!.files as string[]) await expect(fs.stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      }
+    } finally {
+      cdp.events.emit("message", "DOM.documentUpdated", {});
+      await vi.waitFor(async () => expect(await fs.readdir(join(dir, "home", "browser-uploads"))).toEqual([]));
+      if (previousHome === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = previousHome;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a staging replacement untouched and reports refusal before page assignment", async () => {
+    const { promises: fs } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "ave-upload-dispatch-")));
+    const previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(dir, "home");
+    try {
+      const original = join(dir, "notes.txt");
+      await fs.writeFile(original, "approved bytes");
+      const cdp = new FakeCdp();
+      cdp.attributes.set(11, { type: "file" });
+      cdp.nodes = page([ax("file", "button", "File", { backendDOMNodeId: 11 })]);
+      const refs = new BrowserRefTable();
+      await snapshot(target(cdp), {}, refs);
+      const send = cdp.send.bind(cdp);
+      let picked = false;
+      let replacement = "";
+      let mode = 0n;
+      vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+        if (method === "DOM.getDocument") return { root: { nodeName: "#document", children: [{ nodeName: "INPUT", backendNodeId: 11 }] } };
+        if (picked && !replacement && method === "Accessibility.getPartialAXTree") {
+          const root = join(dir, "home", "browser-uploads");
+          const selectionDir = join(root, (await fs.readdir(root))[0]!);
+          replacement = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+          await fs.rename(replacement, replacement + ".original");
+          await fs.writeFile(replacement, "replaced bytes", { mode: 0o400 });
+          mode = (await fs.stat(replacement, { bigint: true })).mode;
+        }
+        return send(method, params);
+      });
+      await expect(upload(target(cdp), "e1", {
+        windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443",
+        documentId: 1, controlGeneration: 1, ref: "e1", signal: new AbortController().signal,
+        pickFiles: async () => { picked = true; return [original]; },
+      }, refs)).rejects.toMatchObject({ code: "upload-refused", message: expect.stringContaining("within the upload limits"), cause: { code: "upload-cleanup-failed" } });
+      expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toEqual([]);
+      expect(replacement).not.toBe("");
+      expect(await fs.readFile(replacement, "utf8")).toBe("replaced bytes");
+      expect((await fs.stat(replacement, { bigint: true })).mode).toBe(mode);
+    } finally {
+      if (previousHome === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = previousHome;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a custom upload control before invoking the native picker", async () => {
     const cdp = new FakeCdp();
     cdp.nodes = page([ax("button", "button", "Choose", { backendDOMNodeId: 11 })]);
@@ -1284,7 +1388,7 @@ it("fails hover when the native pointer move is not reported", async () => {
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
   echo.on = false;
-  await expect(actions.hover(live, ref)).rejects.toMatchObject({ code: "no-pointer-position" });
+  await expect(onFakeClock(() => actions.hover(live, ref))).rejects.toMatchObject({ code: "no-pointer-position" });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
 });
 
@@ -1294,7 +1398,7 @@ it("fails scroll when the intended guest reports no native wheel sequence", asyn
   const live = await approve("browser_scroll");
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
-  await expect(actions.scroll(live, ref, "down", 200)).rejects.toMatchObject({ code: "input-not-delivered" });
+  await expect(onFakeClock(() => actions.scroll(live, ref, "down", 200))).rejects.toMatchObject({ code: "input-not-delivered" });
 });
 
 it("releases the native pointer observer when dispatch fails", async () => {
@@ -1396,7 +1500,7 @@ describe("native intercepted drag lifetime", () => {
     { stop: "navigation" as const, code: "document-changed" },
   ])("refuses an unproven or cancelled source before any destination drop ($code)", async (options) => {
     const f = await fixture(options);
-    await expect(f.run()).rejects.toMatchObject({ code: options.code });
+    await expect(onFakeClock(() => f.run())).rejects.toMatchObject({ code: options.code });
     expect(f.drops()).toHaveLength(0);
     expect(f.cdp.calls).toContainEqual({ method: "Input.setInterceptDrags", params: { enabled: false } });
     expect(f.cdp.events.listenerCount("message")).toBe(1);

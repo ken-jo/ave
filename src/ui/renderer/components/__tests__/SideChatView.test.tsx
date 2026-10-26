@@ -13,9 +13,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
 
 function makeApi() {
-  // Two subscribers share the side stream — the transcript reducer and the
-  // message queue's drain — so the seam fans every frame out to all of them,
-  // in subscription order, exactly as the preload channel does.
+  // Two subscribers share the side stream — the transcript reducer and the message queue's drain — so the seam fans every
+  // frame out to all of them, in subscription order, exactly as the preload channel does.
   const handlers = new Set<(e: ChatStreamEvent) => void>();
   const spies = {
     send: vi.fn(async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string) => ({ ok: true as const, result: {} })),
@@ -215,7 +214,6 @@ describe("SideChatView — the main composer's input system", () => {
     emit({ type: "text_delta", text: "working…", streamId: 1 });
     expect(spies.send).toHaveBeenCalledTimes(1);
 
-    // Enter mid-turn: queued, not sent — the field empties into the queue row.
     fireEvent.change(textarea, { target: { value: "second" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(spies.send).toHaveBeenCalledTimes(1);
@@ -409,8 +407,8 @@ describe("SideChatView — the cards its own turn parks", () => {
     const surface = approvalSurfaceStub();
     const onSessionIdChange = vi.fn((id: string) => {
       expect(surface.claims.ownerOf(id)).toBe(`side-chat:${id}`);
-      // A question raised inside the panel notification is in the same stack
-      // as the prelude, before the hook's session state has committed.
+      // A question raised inside the panel notification is in the same stack as the prelude, before the hook's session state has
+      // committed.
       dispatchAsk(question(id));
     });
     const { publishSideChatSurface } = renderSurface(api, surface, true, {
@@ -580,8 +578,7 @@ describe("SideChatView — the cards its own turn parks", () => {
     const published = publishSideChatSurface.mock.calls.at(-1)![0] as { askQuestions: AskUserQuestionRequest[] };
     expect(published.askQuestions.map((each) => each.id)).toEqual(["ask-side-9"]);
 
-    // A question for another session is somebody else's — a tile's, the
-    // window's — never drawn here.
+    // A question for another session is somebody else's — a tile's, the window's — never drawn here.
     ask(question("elsewhere"));
     expect(view.getAllByTestId(TEST_IDS.questionOverlay)).toHaveLength(1);
   });
@@ -629,8 +626,8 @@ describe("SideChatView — the cards its own turn parks", () => {
     await waitFor(() => expect(publishSideChatSurface).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "side-9" }),
     ));
-    // Before the loop had a session there was nothing to publish; from the
-    // moment it has one, the surface stays published until the view goes.
+    // Before the loop had a session there was nothing to publish; from the moment it has one, the surface stays published
+    // until the view goes.
     publishSideChatSurface.mockClear();
     unmount();
     expect(publishSideChatSurface).toHaveBeenCalledTimes(1);
@@ -653,8 +650,8 @@ describe("SideChatView — the session its agents belong to (#2345)", () => {
     await waitFor(() => expect(spies.new).toHaveBeenCalled());
     await waitFor(() => expect(onSessionIdChange).toHaveBeenLastCalledWith("side-2"));
 
-    // Unmounting (the side-chat tab closed) says nothing: the loop and the
-    // agents it started live on in main, and the panel keeps listening for them.
+    // Unmounting (the side-chat tab closed) says nothing: the loop and the agents it started live on in main, and the panel
+    // keeps listening for them.
     const calls = onSessionIdChange.mock.calls.length;
     view.unmount();
     expect(onSessionIdChange).toHaveBeenCalledTimes(calls);

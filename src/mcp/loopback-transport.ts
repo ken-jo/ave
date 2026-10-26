@@ -1,31 +1,5 @@
-/**
- * In-process loopback {@link McpTransport} (#1230, design §3.1 hybrid topology).
- *
- * Bridges a {@link McpClient} to a {@link PluginMcpServer} running in the SAME
- * process, with no sockets/subprocess — the first-party plugin path. The client
- * issues real RC JSON-RPC requests; this transport hands each request to the
- * server's `handle()` and pipes the response back through `onMessage`. Out-of-
- * process untrusted plugins use a stdio wrapper instead (same server, different
- * transport).
- *
- * Responses are delivered on a microtask (not synchronously inside `send`) so
- * the client's pending-request map is registered before the reply arrives —
- * matching the async delivery contract of the stdio/HTTP transports.
- *
- * Both directions are JSON round-tripped, and a value that would not survive
- * that round-trip UNCHANGED is refused rather than converted. Passing object
- * references made this look like a boundary without being one: a plugin could
- * return a `Date`, a `Map`, a class instance or a live mutable object and the
- * host received that exact reference, so the MCP framing proved nothing about
- * whether the same call works over a real wire.
- *
- * Refusing rather than converting is the point. Round-tripping alone would
- * make both sides agree on the mangled shape — `Buffer` becomes
- * `{ type: "Buffer", data: number[] }` without an exception — and a silent
- * type change passes every test here and misbehaves once the plugin is out of
- * process. The error names the exact path (`result.items[3].createdAt: Date`)
- * because "something was unserializable" is not something anyone can act on.
- */
+/** Clone both directions through strict JSON, refusing values that serialization would change.
+ * Deliver on a microtask so pending requests register before replies arrive. */
 import type {
   JsonRpcMessage,
   JsonRpcResponse,
@@ -34,13 +8,7 @@ import type {
 import type { PluginMcpServer } from "./plugin-mcp-server.js";
 import { describeNonJson } from "../shared/json-representable.js";
 
-/**
- * Round-trip a value the way a real transport would, refusing anything the
- * round-trip would not preserve.
- *
- * `direction` and `id` go into the message because by the time a malformed
- * payload is noticed, the only context left is which hop it was on.
- */
+/** Reject changed wire values with direction, request id and value path for diagnosis. */
 function marshal<T>(value: T, direction: string, id: unknown): T {
   const reason = describeNonJson(value, direction);
   if (reason !== null) {
@@ -70,9 +38,7 @@ export class LoopbackTransport implements McpTransport {
     if (!this.alive) {
       throw new Error("[loopback] transport not open");
     }
-    // Only requests (have both `method` and `id`) get a reply; notifications
-    // (method, no id) are fire-and-forget; responses never travel client→server.
-    // (`method` is optional on every union arm now, so narrow by value.)
+    // Reply only to requests with method and id; notifications and responses receive no reply.
     const method = "method" in message ? message.method : undefined;
     if (typeof method !== "string" || !("id" in message)) {
       return;

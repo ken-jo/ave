@@ -47,7 +47,7 @@ const MAX_FAST_ARGUMENT_CHARS = 16_384;
  * `test/scripts` holds the hook, gate and repository-tooling suites; its
  * triggers (`scripts/`, `package.json`) are also global inputs, so on a
  * fast push it runs only through a changed test file or a recorded document
- * reader. The category PR's full CI runs it on every merge to main.
+ * reader. Non-test-only category PRs and periodic full CI runs cover it all.
  */
 export const AVE_APP_LOCK_SUITE_TRIGGERS = Object.freeze({
   "src/__tests__/packaging-discipline-source.test.ts": Object.freeze([
@@ -133,6 +133,7 @@ export const FULL_CHECK_GLOBAL_INPUT_FILES = Object.freeze([
   "src/__tests__/support/ave-home-isolation-guard.ts",
   "src/__tests__/vitest-ave-home.ts",
   "src/__tests__/vitest-model-catalog.ts",
+  "src/__tests__/vitest-vm-exit-hooks.ts",
   "src/i18n/testing/vitest-ambient-intl.ts",
   "src/shared/ave-home-test-guard.ts",
   "tsconfig.json",
@@ -203,6 +204,51 @@ export function isCollectedVitestFile(relativePath) {
   return !segments.some((segment) => deniedTestTreeSegments.has(segment));
 }
 
+/** Local test helpers and fixture assets, excluding every shared global input. */
+export function isTestSupportFile(path) {
+  return isCanonicalGitPath(path) && safeCliPath.test(path) && !isFullCheckGlobalInput(path) &&
+    !isCollectedVitestFile(path) && !path.split("/").some((segment) => deniedTestTreeSegments.has(segment)) &&
+    (/^(?:src|test)\/(?:[^/]+\/)*__tests__\/.+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(path) ||
+      // Fixtures belong to a test tree: anywhere under test/, and in src/ only
+      // under a __tests__ directory (src/main/fixtures/ is product data).
+      /^(?:test\/|src\/(?:.*\/)?__tests__\/)(?:.*\/)?fixtures\/.+/.test(path));
+}
+
+const testModuleExtension = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const testHelperLocation = /^test\/|(?:^|\/)(?:__tests__|__mocks__)\//;
+
+/**
+ * A test helper or setup module: an importable file in a test tree (anything
+ * under test/, or under a __tests__ or __mocks__ directory, fixtures there
+ * included) that
+ * Vitest does not collect. One helper can change what any number of tests
+ * observe, and the import graph only sees the importers it can trace, so CI
+ * never treats a helper change as test-only and runs the full suite for it on
+ * every base but integration/* (scripts/run-ci-suite.mjs). The Vitest setup
+ * files are also global inputs (FULL_CHECK_GLOBAL_INPUT_FILES).
+ */
+export function isTestHelperModule(path) {
+  return isCanonicalGitPath(path) && testModuleExtension.test(path) &&
+    !isCollectedVitestFile(path) && testHelperLocation.test(path);
+}
+
+/**
+ * A test-only diff changes collected Vitest files and fixture assets, nothing
+ * else: no test helper or setup module (isTestHelperModule), no global input
+ * (the Vitest config and setup files, config/, scripts/ including the CI
+ * selection itself, .github/), no symlink and no mode change.
+ * Renames arrive as deletion + addition (--no-renames). Deleted tests drop.
+ */
+export function isTestOnlyDiff(changes) {
+  const regularModes = new Set(["100644", "100755"]);
+  return Array.isArray(changes) && changes.length > 0 && changes.every(({ path, status, oldMode, newMode }) =>
+    isCanonicalGitPath(path) && safeCliPath.test(path) && !isFullCheckGlobalInput(path) &&
+    !isTestHelperModule(path) && (isCollectedVitestFile(path) || isTestSupportFile(path)) &&
+    ((status === "A" && oldMode === "000000" && regularModes.has(newMode)) ||
+      (status === "M" && regularModes.has(oldMode) && oldMode === newMode) ||
+      (status === "D" && regularModes.has(oldMode) && newMode === "000000")));
+}
+
 function ineligible(reason) {
   return { eligible: false, reason, testFiles: [], relatedFiles: [], messageCatalogEntries: [], documentationEntries: [] };
 }
@@ -245,7 +291,7 @@ export function getRelatedCoverageFullReason(relatedFiles, coverage, messageCons
  * often reaches a shared contract through a barrel (the IPC suites reach
  * src/shared/ipc-channels.ts through src/contract/app-contract.ts), and
  * cutting it would drop exactly the cross-cutting check the change needs.
- * The full transitive set runs in the category PR's CI.
+ * The full transitive set runs in CI's affected selection.
  */
 export const RELATED_TEST_BOUND = 150;
 const FAN_OUT_SOURCE_BOUND = 25;
@@ -448,20 +494,43 @@ export function readMessageCatalogEntries(text, relativePath) {
 }
 
 /**
+ * readMessageCatalogEntries for many modules at once, keyed by relative path.
+ * Each compiler session is a native child process, so reading the catalog's
+ * ~190 modules one by one costs ~190 process spawns; this parses them all in
+ * one session and validates each module exactly as the single-module reader.
+ */
+export function readMessageCatalogEntriesByPath(texts) {
+  const readable = new Map([...texts].filter(([, text]) => isReadableCatalogText(text)));
+  const sources = parseCatalogSources(readable);
+  return new Map([...texts.keys()].map((path) =>
+    [path, readParsedMessageCatalog(sources?.get(path), path)?.entries ?? null]));
+}
+
+function isReadableCatalogText(text) {
+  return typeof text === "string" && !/[\u2028\u2029]/u.test(text);
+}
+
+function parseCatalogSources(texts) {
+  try {
+    return parseSourceTexts(texts);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Preserve each locale's property order and the source ranges of its values.
  * Only the shipped declarations, type-only seed scaffolding and static string
  * properties are accepted. Unknown syntax or a different binding layout keeps
  * the full tier; declaration order must never stand in for locale identity.
  */
 function readMessageCatalogModule(text, relativePath) {
-  if (typeof text !== "string" || /[\u2028\u2029]/u.test(text)) return null;
+  if (!isReadableCatalogText(text)) return null;
   const parsePath = relativePath ?? "catalog.ts";
-  let source;
-  try {
-    source = parseSourceTexts(new Map([[parsePath, text]])).get(parsePath);
-  } catch {
-    return null;
-  }
+  return readParsedMessageCatalog(parseCatalogSources(new Map([[parsePath, text]]))?.get(parsePath), relativePath);
+}
+
+function readParsedMessageCatalog(source, relativePath) {
   if (!source) return null;
   const fragment = relativePath === undefined
     ? source.statements.filter(ast.isVariableStatement).length === 2

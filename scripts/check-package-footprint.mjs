@@ -1,11 +1,5 @@
 #!/usr/bin/env node
-/**
- * Fail-closed package footprint audit for unpacked Electron builds.
- *
- * The production app should contain compiled Ave assets plus production
- * runtime dependencies. Root source/docs/tests and dependency source maps or
- * docs add package size and cold-start I/O without helping runtime behavior.
- */
+// Packaged apps need compiled assets and runtime dependencies, without development source or maps.
 
 import * as asar from "@electron/asar";
 import { createHash } from "node:crypto";
@@ -16,6 +10,7 @@ import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { assertImageRuntimeFiles } from "./lib/image-runtime-files.cjs";
 import { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } from "./lib/ripgrep-runtime-files.cjs";
+import { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, assertPdfUnpackedData, PAGE_RENDERER_LICENSE_NOTICES } from "./lib/page-runtime-files.cjs";
 
 const { assertGraphicsRuntimeFiles } = createRequire(import.meta.url)(
   "./lib/graphics-runtime-files.cjs",
@@ -32,7 +27,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const fallbackAppAsar = resolve(root, "release", "linux-arm64-unpacked", "resources", "app.asar");
-const maxAppAsarMb = Number(process.env.AVE_MAX_APP_ASAR_MB ?? "100");
+const maxAppAsarMb = Number(process.env.AVE_MAX_APP_ASAR_MB ?? "200");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const DEFAULT_PACKAGED_ELECTRON_LANGUAGES = Object.freeze(["en-US"]);
 
@@ -56,7 +51,7 @@ const missingConfiguredLanguages = DEFAULT_PACKAGED_ELECTRON_LANGUAGES.filter(
   (language) => !configuredLanguages.includes(language),
 );
 if (unexpectedConfiguredLanguages.length > 0 || missingConfiguredLanguages.length > 0) {
-  fail("desktop app must package only the default Electron language; ship UI languages as marketplace language packs", [
+  fail("desktop app must package only the default shell language; UI catalogs are independent of browser locale files", [
     ...missingConfiguredLanguages.map((language) => `missing:${language}`),
     ...unexpectedConfiguredLanguages.map((language) => `unexpected:${language}`),
   ]);
@@ -137,12 +132,7 @@ function asarList(archivePath) {
   }
 }
 
-// electron-builder keys asar entries with the OS path separator, so on Windows
-// they are stored like `dist\src\main\main.js`. `asar.extractFile` matches the
-// raw stored key, so a POSIX lookup path ("dist/src/main/x") misses the
-// backslash-keyed entry and reports it "not found" — even though the file is
-// packaged (the list-based checks pass because normalizeAsarEntry folds `\`→`/`).
-// Convert POSIX lookup paths to the stored separator before extracting.
+// Archive extraction uses stored OS separators; normalize lookup paths to match them.
 function extractAsarFile(archivePath, posixPath) {
   return asar.extractFile(archivePath, posixPath.split("/").join(sep));
 }
@@ -288,19 +278,16 @@ if (unexpectedMainRootScripts.length > 0) {
   );
 }
 
-// Lazy renderer chunks — mermaid loads via a webpack dynamic import that
-// swallows load errors (preview-renderers.tsx catch → raw-source fallback), so a
-// chunk pruned out of the asar fails SILENTLY at runtime — a launch smoke can
-// never see it. Assert membership at build time instead. The chunk name carries
-// a contenthash (webpack.config.cjs chunkFilename [name].[contenthash:8].js), so
-// match by regex rather than exact string.
+// Missing lazy chunks degrade silently, so assert archive membership at build time.
+// Match content-hashed names by pattern.
 const LAZY_RENDERER_CHUNKS = [
   { name: "mermaid", pattern: /^\/dist\/src\/renderer\/chunks\/mermaid\.[0-9a-f]{8}\.js$/ },
-  // Code-block syntax highlighting (use-highlighted-code.ts): the core chunk
-  // and one representative grammar. A missing chunk degrades to plain text
-  // silently, so membership is asserted here.
+  // Missing highlighting chunks silently degrade to plain text; assert membership here.
   { name: "highlight", pattern: /^\/dist\/src\/renderer\/chunks\/highlight\.[0-9a-f]{8}\.js$/ },
   { name: "hljs-typescript", pattern: /^\/dist\/src\/renderer\/chunks\/hljs-typescript\.[0-9a-f]{8}\.js$/ },
+  // Korean is a built-in UI language; a missing catalog chunk silently falls back to English.
+  { name: "i18n-ko", pattern: /^\/dist\/src\/renderer\/chunks\/i18n-ko\.[0-9a-f]{8}\.js$/ },
+  { name: "i18n-ko-seed", pattern: /^\/dist\/src\/renderer\/chunks\/i18n-ko-seed\.[0-9a-f]{8}\.js$/ },
 ];
 const missingLazyChunks = LAZY_RENDERER_CHUNKS.filter(
   (chunk) => !entries.some((entry) => chunk.pattern.test(entry)),
@@ -369,12 +356,7 @@ if (betterSqliteSourceLeakEntries.length > 0) {
   fail("better-sqlite3 build sources leaked into app.asar", betterSqliteSourceLeakEntries);
 }
 
-// better-sqlite3 13 is N-API and ships per-platform PREBUILDS
-// (prebuilds/<platform>-<arch>.node); electron-after-pack prunes every prebuild
-// this target never loads, leaving exactly the one below. Derive that target
-// from the artifact under check: platform from the package type, arch from the
-// output dir (electron-builder appends `-<arch>` for non-default arches and
-// omits it for x64).
+// Derive the native prebuild target from the artifact platform and output-directory architecture.
 function resolveBetterSqlitePrebuildTarget() {
   const platformPrefix = isMacAppPackage()
     ? "darwin"
@@ -448,6 +430,11 @@ for (const notice of RIPGREP_LICENSE_NOTICES) {
   const path = resolve(resourcesDir, "licenses", "ripgrep", notice);
   if (!existsSync(path)) fail(`ripgrep license notice missing: ${path}`);
 }
+// The PDF page renderer: canvas wrapper (MIT) and the Skia and third-party code in its binary.
+for (const notice of PAGE_RENDERER_LICENSE_NOTICES) {
+  const path = resolve(resourcesDir, "licenses", "canvas", notice);
+  if (!existsSync(path)) fail(`page renderer license notice missing: ${path}`);
+}
 
 const localeCount = isMacAppPackage() ? validateMacElectronLocales() : validatePakElectronLocales();
 
@@ -477,6 +464,9 @@ assertSandboxRuntimeFiles(
 const [imagePlatform, imageArch] = resolveBetterSqlitePrebuildTarget().split("-");
 assertImageRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
 assertRipgrepRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertCanvasRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertPdfRuntimeEntries(entries);
+assertPdfUnpackedData(resolve(unpackedDir, "node_modules"));
 
 process.stdout.write(
   [
