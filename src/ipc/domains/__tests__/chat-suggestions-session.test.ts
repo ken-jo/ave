@@ -1,9 +1,9 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 // Keep the Suggestions conversation in the list while staged cards still address it.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
@@ -38,6 +38,7 @@ let mm: MemoryManager;
 async function register(): Promise<void> {
   handlers.clear();
   const { registerChatHandlers } = await import("../chat.js");
+  await installNativeChatWindow();
   registerChatHandlers({
     conversationLoop: {
       getHistory: vi.fn(() => ({ getMessages: () => [], truncate: vi.fn(), restore: vi.fn() })),

@@ -8,6 +8,7 @@ import { disposeSessionFileReads } from "../tools/file-read-state.js";
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissions/sandbox-capability.js";
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
 import { getWorkspaceRootLifecycle } from "../permissions/workspace-root-lifecycle.js";
+import { approvalSurfaceRegistry } from "../permissions/approval-surface-registry.js";
 import { HookRunner } from "../hooks/hook-runner.js";
 import type { LifecycleHookEvent } from "../hooks/script-hook-types.js";
 import {
@@ -116,7 +117,14 @@ export class ConversationLoop {
   readonly toolExecutor: ToolExecutor;
   readonly auditLogger: AuditLogger;
   provider: LLMProvider | null = null;
-  sessionId: string = createDlpSafeUuid();
+  private approvalSessionId = createDlpSafeUuid();
+  get sessionId(): string {
+    return this.approvalSessionId;
+  }
+  set sessionId(sessionId: string) {
+    approvalSurfaceRegistry.move(this.approvalSessionId, sessionId);
+    this.approvalSessionId = sessionId;
+  }
   /** Monotonic host generation; increments on every active-session replacement. */
   sessionEpoch = 0;
   sessionKind: SessionKind = "main";
@@ -203,6 +211,9 @@ export class ConversationLoop {
     );
     this.auditLogger = deps.auditLogger ?? new AuditLogger();
     this.refreshProvider();
+    // Hosts bind a trusted surface before starting an interactive run. A run
+    // created without one has no surface for manual approval.
+    approvalSurfaceRegistry.register(this.sessionId, null);
   }
 
   get permissionManager(): import("../permissions/permission-manager.js").PermissionManager | undefined {
@@ -548,6 +559,7 @@ export class ConversationLoop {
       }
       this.deps.closeRationaleSession?.(ownedLease.sessionId);
       this.deps.pluginRuntime?.clearSessionActivated?.(ownedLease.sessionId);
+      approvalSurfaceRegistry.release(ownedLease.sessionId);
     };
     if (lease !== undefined) return cleanup(lease);
     return this.runSessionTransition("session-cleanup", cleanup);

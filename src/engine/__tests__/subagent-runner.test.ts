@@ -56,6 +56,7 @@ import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { SkillOverlay } from "../../main/skill-overlay.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
@@ -102,6 +103,32 @@ function makeRunner(toolRegistry: ToolRegistry) {
     subAgentMemoryManager: fakeSubAgentMemoryManager(),
   });
 }
+
+describe("SubAgentRunner approval-owner setup", () => {
+  it("releases the temporary child registration when initialization fails", async () => {
+    let temporarySessionId: string | undefined;
+    const initialize = vi.spyOn(ConversationLoop.prototype, "initializeConversation")
+      .mockImplementation(function (this: ConversationLoop) {
+        temporarySessionId = this.sessionId;
+        throw new Error("child initialization rejected");
+      });
+    try {
+      const result = await makeRunner(new ToolRegistry()).spawn({
+        title: "initialization failure",
+        instructions: "prepare the child",
+        toolScope: DENY_ALL_TOOL_SCOPE,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("child initialization rejected");
+      expect(temporarySessionId).toBeTypeOf("string");
+      expect(() => approvalSurfaceRegistry.move(temporarySessionId!, "replacement-child"))
+        .toThrow("approval-surface: unregistered outgoing session");
+    } finally {
+      initialize.mockRestore();
+      if (temporarySessionId) approvalSurfaceRegistry.release(temporarySessionId);
+    }
+  });
+});
 
 function createInMemoryMailboxNamespace() {
   let stored: unknown;

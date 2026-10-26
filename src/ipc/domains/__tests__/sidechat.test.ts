@@ -31,13 +31,16 @@ vi.mock("../../../main/app-state.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../main/app-state.js")>();
   return {
     ...original,
-    mainWindowForContents: vi.fn((contents: { id?: number }) => (contents?.id === 1 ? { id: 7 } : null)),
+    mainWindowForContents: vi.fn((contents: { id?: number }) => (contents?.id === 1 || contents?.id === 2
+      ? { id: contents.id === 1 ? 7 : 8, webContents: contents, isDestroyed: () => false } : null)),
     setSideChatOwnerContents: vi.fn(original.setSideChatOwnerContents),
   };
 });
 
 import { registerSideChatHandlers } from "../sidechat.js";
 import { setSideChatOwnerContents } from "../../../main/app-state.js";
+import { approvalSurfaceRegistry } from "../../../permissions/approval-surface-registry.js";
+import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approval-gate.js";
 import { browserTabRegistry } from "../../../main/browser/browser-tab-registry.js";
 const terminalOwners = new Map<string, number>();
 vi.mock("../../../main/terminal/pty-manager.js", () => ({
@@ -47,12 +50,16 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
 
-function rendererContents(senderId = 1): EventEmitter & { id: number } {
-  return Object.assign(new EventEmitter(), { id: senderId });
+function rendererContents(senderId = 1) {
+  return Object.assign(new EventEmitter(), {
+    id: senderId,
+    mainFrame: { url: "file:///index.html" },
+    isDestroyed: () => false,
+  });
 }
 
 function ev(url?: string, senderId = 1, sender = rendererContents(senderId)): IpcMainInvokeEvent {
-  return (url ? { senderFrame: { url }, sender } : { sender }) as unknown as IpcMainInvokeEvent;
+  return (url ? { senderFrame: url === sender.mainFrame.url ? sender.mainFrame : { url }, sender } : { sender }) as unknown as IpcMainInvokeEvent;
 }
 
 function makeSideLoop() {
@@ -155,6 +162,75 @@ beforeEach(() => {
 });
 
 describe("side-chat IPC domain", () => {
+  it.each(["rail", "pane"] as const)("registers the %s owner before a real approval gate receives its first tool request", async (surfaceKind) => {
+    const owner = Object.assign(rendererContents(), { send: vi.fn() });
+    const foreign = Object.assign(rendererContents(2), { send: vi.fn() });
+    const side = makeSideLoop();
+    const pane = makeSideLoop();
+    pane.getSessionId.mockReturnValue("c9b54bd9-5a48-4d07-b41a-8b9756d23fc7");
+    const pool = makePanePool(() => pane);
+    const loop = surfaceKind === "rail" ? side : pane;
+    const gate = new ApprovalGate((sessionId, terminalTabId) => approvalSurfaceRegistry.resolve(sessionId, terminalTabId));
+    const afterConsent = vi.fn();
+    loop.runTurn.mockImplementationOnce(async () => {
+      expect(approvalSurfaceRegistry.resolve(loop.getSessionId())).toBe(owner);
+      const decision = await gate.requestAndWait({
+        id: `first-${surfaceKind}`, sessionId: loop.getSessionId(), category: "tool", toolCategory: "write",
+        toolName: "write_file", args: { path: "/workspace/project/action.txt" },
+        reason: "write needs approval", source: "builtin", createdAt: Date.now(),
+      });
+      expect(decision.choice).toBe("allow-once");
+      afterConsent();
+      return { route: "chat" };
+    });
+    register(side, makeMainLoop(), false, makeSideChatStore(), pool);
+    const turn = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, owner), {
+      input: "write it", ...(surfaceKind === "pane" ? { surface: { kind: "terminal", tabId: "terminal:1" } } : {}),
+    });
+    try {
+      await vi.waitFor(() => expect(owner.send).toHaveBeenCalledWith("ave:approval:request", expect.any(Object)));
+      const card = owner.send.mock.calls.find(([channel]) => channel === "ave:approval:request")![1] as ApprovalRequest;
+      const response = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
+      expect(gate.listPendingRendererRequests(foreign as never)).toEqual([]);
+      expect(gate.resolveFromDesktopRenderer(card.id, response, foreign as never)).toBeNull();
+      expect(afterConsent).not.toHaveBeenCalled();
+      expect(gate.resolveFromDesktopRenderer(card.id, response, owner as never)).toMatchObject({ choice: "allow-once" });
+      await expect(turn).resolves.toMatchObject({ ok: true });
+      expect(afterConsent).toHaveBeenCalledOnce();
+    } finally {
+      gate.disposeAll();
+      await turn;
+      approvalSurfaceRegistry.release(loop.getSessionId());
+    }
+  });
+
+  it.each(["subframe", "unregistered window"] as const)("rejects %s attempts to replace a rail approval owner", async (source) => {
+    const side = makeSideLoop();
+    const owner = rendererContents();
+    register(side, makeMainLoop());
+    await handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, owner), { input: "first" });
+    const event = source === "subframe"
+      ? { sender: owner, senderFrame: { url: "file:///index.html" } }
+      : ev("file:///index.html", 9);
+    await expect(handlers.get(CHANNELS.sidechat.send)!(event, { input: "take ownership" }))
+      .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(approvalSurfaceRegistry.resolve(side.getSessionId())).toBe(owner);
+    expect(side.runTurn).toHaveBeenCalledOnce();
+  });
+
+  it.each(["new", "load"] as const)("registers the window accepting an explicit rail %s before the next turn", async (operation) => {
+    const side = makeSideLoop();
+    const first = rendererContents();
+    const next = rendererContents(2);
+    register(side, makeMainLoop());
+    await handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, first), { input: "first" });
+    expect(approvalSurfaceRegistry.resolve(side.getSessionId())).toBe(first);
+    const channel = operation === "new" ? CHANNELS.sidechat.new : CHANNELS.sidechat.load;
+    await expect(handlers.get(channel)!(ev("file:///index.html", 2, next), side.getSessionId()))
+      .resolves.toMatchObject({ ok: true });
+    expect(approvalSurfaceRegistry.resolve(side.getSessionId())).toBe(next);
+  });
+
   it("announces its current session before the first pending turn can publish tool events", async () => {
     const pending = deferred<{ route: string }>();
     const side = makeSideLoop();
@@ -740,7 +816,7 @@ describe("side-chat turns bound to a pane", () => {
     register(side, makeMainLoop(), false, makeSideChatStore(), panes);
     await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 9), {
       input: "x", surface: { kind: "terminal", tabId: "terminal:1" },
-    })).resolves.toEqual({ ok: false, error: "invalid-surface" });
+    })).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
     expect(side.runTurn).not.toHaveBeenCalled();
     expect(panes.resolve).not.toHaveBeenCalled();
   });

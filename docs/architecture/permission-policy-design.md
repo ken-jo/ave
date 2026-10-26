@@ -2012,11 +2012,23 @@ receipts do not establish fresh human consent.
 Fresh native consent is a gate-verified response to the current signed approval
 card, [consumed once by the host](../../src/permissions/judge/manual-approval.ts).
 The responder must be a registered application window's exact main frame and
-the live owner of the card's session or terminal. Listing pending cards and
-answering them both resolve the current owner; moving the session or terminal
-transfers that authority immediately. A valid card signature does not authorize
-a foreign window. Missing or foreign ownership rejects and audits the answer
-without settling the pending card or minting fresh consent.
+the live owner of the card's session or terminal. The host explicitly registers
+approval ownership when it creates a main chat, side panel, work pane or Work
+Board item run. Sub-agent children register a live link to their parent run's
+owner, including resumed children. Scheduled and background runs register their
+available trusted surface or explicitly register no surface. The approval
+resolver reads only this registry; chat holders, persisted ancestry and window
+focus cannot supply missing approval authority.
+Listing pending cards and answering them both read the current registration;
+moving the session or terminal updates it and transfers authority immediately,
+including to existing children. A valid card signature does not authorize a
+foreign window. Missing or foreign ownership rejects and audits the answer
+without settling the pending card or minting fresh consent. A new approval
+request with no registered live surface follows the headless deny path and
+explicitly names `no approval surface`.
+If an owner closes without aborting the turn, an already pending card remains
+pending until the normal five-minute deny timeout. Losing its owner never
+auto-approves it; a registered replacement owner can answer before timeout.
 Remembering exact approvals or shell rules and requesting scope proposals use
 the same frame and live-owner checks; knowing a card id grants neither operation.
 After all asynchronous hooks and route admission, one synchronous final gate

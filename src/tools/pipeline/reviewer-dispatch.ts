@@ -100,10 +100,11 @@ export async function dispatchReviewerForHeadless(
       allowed: false,
       message:
         t("be_executor.permHoldStrictHeadless", { toolName, source }) +
+        " (no approval surface)" +
         (deferredId ? ` (deferredId=${deferredId})` : ""),
       permissionResult: {
         decision: "deny",
-        reason: "strict headless requires explicit approval",
+        reason: "strict headless requires explicit approval: no approval surface",
         layer: 5,
         reviewer: { route: "headless", verdict },
         ...(deferredId ? { deferred: { queueId: deferredId, reviewerVerdict: verdict } } : {}),
@@ -114,10 +115,10 @@ export async function dispatchReviewerForHeadless(
   if (!permissionManager?.hasReviewer()) {
     return {
       allowed: false,
-      message: t("be_executor.permBlockHeadlessNoReviewer", { toolName, source }),
+      message: t("be_executor.permBlockHeadlessNoReviewer", { toolName, source }) + " (no approval surface)",
       permissionResult: {
         decision: "deny",
-        reason: "headless reviewer not wired",
+        reason: "headless reviewer not wired: no approval surface",
         layer: 5,
       },
     };

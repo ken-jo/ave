@@ -310,7 +310,7 @@ export async function bootstrap(
   // namespace and §8 main-process approval routing silently no-ops.
   const approvalGate = await createApprovalGate(
     // Resolve the current conversation owner on delivery, listing and response.
-    mainWindow === null ? null : approvalSurfaceResolver(host, getMainWindow, ctx),
+    mainWindow === null ? null : approvalSurfaceResolver(),
     ctx.bootAuditLogger,
     ctx.notificationService,
     // Tier 2 of the sub-agent approval chain, supplied as accessors rather

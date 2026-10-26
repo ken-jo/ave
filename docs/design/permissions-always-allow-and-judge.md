@@ -301,10 +301,21 @@ verified fresh native human consent for that exact action. Policy grants,
 remembered approvals, reviewer decisions, parent decisions and sealed rationale
 receipts do not establish that provenance.
 Native approval requires a registered application window's exact main frame
-and live ownership of the card's session or terminal. Pending-card listing and
-answers resolve current ownership, so a move transfers authority immediately;
-a valid signature never authorizes a foreign window. A rejected answer is
-audited, leaves the card pending for its owner and creates no fresh consent.
+and live ownership of the card's session or terminal. Approval ownership is an
+explicit host registration for main chat, side panel, work pane and Work Board
+item runs. Sub-agent children, including resumed children, register live parent
+links; scheduled and background runs register their trusted surface or no
+surface. The resolver reads only the registry, without inferring authority from
+chat holders, persisted ancestry or focused windows.
+Pending-card listing and answers read the current registration, so ownership
+updates transfer authority immediately and existing children follow their
+parent. A valid signature never authorizes a foreign window. A rejected answer
+is audited, leaves the card pending for its owner and creates no fresh consent.
+A new request with no registered live surface denies with `no approval surface`
+under the headless semantics. If an owner closes without a turn abort, an
+already pending card stays pending until its normal five-minute deny timeout
+and is never auto-approved. A registered replacement owner can answer it before
+timeout.
 Remembered grants and scope proposals share this
 [live-owner boundary](../architecture/permission-policy-design.md#automated-judge-chain).
 One synchronous final gate runs immediately before the tool handler, after all

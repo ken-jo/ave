@@ -852,7 +852,7 @@ function verifyApprovalIntegrity(
 
 // ApprovalGate
 
-// Resolves the current owner for each attributed session or terminal; an unhosted session has no approval surface. Unattributed requests use the live desktop selected by the host. Re-evaluated for delivery, listing and answers.
+// Resolves explicit host registrations for each session, terminal or unattributed host role. Re-evaluated for delivery, listing and answers; a missing registration has no approval surface.
 export type ApprovalSurfaceResolver = (
   sessionId: string | undefined,
   // Set for a workspace terminal tab's ask: the window that owns the tab, or null.
@@ -998,7 +998,7 @@ export class ApprovalGate {
     }
   }
 
-  // The live renderer that should draw this request's card right now, or null: the window showing its conversation, or for a terminal tab's ask the window that owns the tab.
+  // The currently registered renderer, or null. Run kinds and visible chat holders do not imply ownership.
   private liveSurfaceFor(sessionId: string | undefined, terminalTabId?: string): WebContents | null {
     const surface = (terminalTabId === undefined
       ? this.resolveSurface?.(sessionId)
@@ -1584,7 +1584,9 @@ export class ApprovalGate {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
         choice: "deny-once",
-        rememberPattern: "explicit host execution requires a local desktop approval",
+        rememberPattern: this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null
+          ? "explicit host execution requires a local desktop approval: no approval surface"
+          : "explicit host execution requires a local desktop approval",
       });
     }
 
@@ -1701,7 +1703,7 @@ export class ApprovalGate {
       };
     }
 
-    // webContents destruction check — deny once if no main window is open.
+    // Missing or destroyed registered owners have the same fail-closed semantics as headless runs.
     if (this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
@@ -1709,13 +1711,14 @@ export class ApprovalGate {
         sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",
         output: headless
-          ? `[approval:decided] ${fullReq.id} ${auditFieldsFor({ ...fullReq, answeredBy: "headless-exec" }, executionPlanAudit)} choice=deny-once rememberPattern=none`
-          : `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} — desktop surface unavailable → deny-once`,
+          ? `[approval:decided] ${fullReq.id} ${auditFieldsFor({ ...fullReq, answeredBy: "headless-exec" }, executionPlanAudit)} choice=deny-once rememberPattern=no approval surface`
+          : `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} — no approval surface → deny-once`,
       });
       try { this.headlessDenied?.(fullReq.id, fullReq.toolName); } catch { /* Notification cannot change a deny. */ }
       return markHostApprovalRejectedDecision({
         requestId: fullReq.id,
         choice: "deny-once",
+        rememberPattern: "no approval surface",
       });
     }
 
@@ -2069,10 +2072,14 @@ export class ApprovalGate {
       const parked = this.pending.get(fullReq.id);
       if (parked !== undefined) parked.rendererRequest = maskedSignedReq;
       // on send failure (webContents destruction race), clear pending and deny once.
+      let surfaceUnavailable = false;
       try {
         // Resolve the live owner again before sending; a conversation may have moved.
         const surface = this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId);
-        if (!surface) throw new Error("Approval surface unavailable");
+        if (!surface) {
+          surfaceUnavailable = true;
+          throw new Error("no approval surface");
+        }
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
       } catch (sendErr) {
@@ -2089,6 +2096,7 @@ export class ApprovalGate {
           markHostApprovalRejectedDecision({
             requestId: fullReq.id,
             choice: "deny-once",
+            ...(surfaceUnavailable ? { rememberPattern: "no approval surface" } : {}),
           }),
         );
       }

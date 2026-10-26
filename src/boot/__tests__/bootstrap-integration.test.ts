@@ -127,7 +127,7 @@ vi.mock("../conversation.js", () => ({
     h.captured["conversationDepsCalls"] = calls;
     h.captured["mainConversationDeps"] = deps;
     return {
-      getSessionId: vi.fn(() => undefined),
+      getSessionId: vi.fn(() => "8e0967c0-7ae6-46b1-bac3-c6197562a52f"),
       getTurnAdditionalDirectories: vi.fn(() => []),
       onTurnSettled: vi.fn(() => () => {}),
     };

@@ -10,6 +10,8 @@ import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js"
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { SessionGoalStore } from "../../../main/session-goal-store.js";
 import type { SessionGoal } from "../../../shared/session-goal.js";
+import { approvalSurfaceRegistry } from "../../../permissions/approval-surface-registry.js";
+import { installNativeChatWindow, nativeChatFrameEvent } from "../../../__tests__/support/native-chat-window.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -19,13 +21,6 @@ vi.mock("electron", () => ({
       handlers.set(channel, fn);
     }),
   },
-}));
-
-const RENDERER_EVENT = { senderFrame: { url: "file:///index.html" } };
-
-vi.mock("../../gated.js", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  validateHostRendererSender: () => true,
 }));
 
 // Releasing a group must unsubscribe its stream adapter.
@@ -79,6 +74,11 @@ type FakeLoop = {
   isSessionTransitioning: () => boolean;
   getSessionId: () => string;
   getSessionKind: () => "main";
+  getSessionRoutineId: () => null;
+  getSessionRoutineTitle: () => null;
+  getSessionProjectRoot: () => undefined;
+  getSessionProjectName: () => undefined;
+  getSessionProjectIsDefault: () => false;
   getSessionExecutionCwd: () => string;
   getTurnAdditionalDirectories: () => readonly string[];
   hasActiveTurn: () => boolean;
@@ -116,6 +116,11 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
     isSessionTransitioning: vi.fn(() => transitioning),
     getSessionId: () => loop.sessionId,
     getSessionKind: () => "main",
+    getSessionRoutineId: () => null,
+    getSessionRoutineTitle: () => null,
+    getSessionProjectRoot: () => undefined,
+    getSessionProjectName: () => undefined,
+    getSessionProjectIsDefault: () => false,
     getSessionExecutionCwd: () => `/projects/${id}`,
     getTurnAdditionalDirectories: () => [],
     hasActiveTurn: () => false,
@@ -156,6 +161,8 @@ async function registerWithGroups(
   },
   groupSeed?: unknown[],
 ) {
+  const appState = await import("../../../main/app-state.js");
+  if (window && !appState.mainWindowForContents(window.webContents)) await installNativeChatWindow(window);
   const { createConversationSurfaceRuntime } = await import("../../../engine/conversation-surface-runtime.js");
   const main = fakeLoop(MAIN_CHAT_GROUP_ID, [
     { role: "user", content: "from main", meta: { messageId: "main-q1" } },
@@ -179,12 +186,14 @@ async function registerWithGroups(
     saveSessionMetadata: vi.fn(async () => undefined),
     saveSession: vi.fn(async () => undefined),
     pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
+    listSessions: vi.fn(() => []),
   };
   const goalDisk = new Map<string, SessionGoal | null>();
   const sessionGoalStore = new SessionGoalStore({
     load: (sessionId) => goalDisk.get(sessionId) ?? null,
     save: async (sessionId, goal) => { goalDisk.set(sessionId, goal); },
   });
+  const auditLogger = { log: vi.fn() };
   registerChatHandlers({
     conversationLoop: main,
     conversationSurfaceRuntime: createConversationSurfaceRuntime(),
@@ -196,11 +205,11 @@ async function registerWithGroups(
     },
     memoryManager,
     sessionGoalStore,
-    auditLogger: { log: vi.fn() },
+    auditLogger,
     getMainWindow: vi.fn(() => window ?? null),
   } as unknown as Parameters<typeof registerChatHandlers>[0]);
-  const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(RENDERER_EVENT, ...args);
-  return { main, groups, resolveChatGroupLoop, releaseChatGroupLoop, invoke, memoryManager, sessionGoalStore };
+  const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(nativeChatFrameEvent(), ...args);
+  return { main, groups, resolveChatGroupLoop, releaseChatGroupLoop, invoke, memoryManager, sessionGoalStore, auditLogger };
 }
 
 function fakeRenderer(): {
@@ -216,11 +225,12 @@ function fakeRenderer(): {
 }
 
 describe("ave:chat:* with chat groups", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     handlers.clear();
     unsubscribes.length = 0;
     runtimes.length = 0;
     vi.clearAllMocks();
+    await installNativeChatWindow();
   });
 
   it("names its group or is refused — there is no default tile", async () => {
@@ -236,7 +246,10 @@ describe("ave:chat:* with chat groups", () => {
     let releasePause = () => {};
     let restorePause = () => {};
     if (pausingGoal) {
+      // Seed a goal during active work so this fixture tests Stop, not idle revival.
+      const activeTurn = vi.spyOn(main, "hasActiveTurn").mockReturnValue(true);
       await sessionGoalStore.set(main.getSessionId(), "finish the goal");
+      activeTurn.mockRestore();
       const originalPause = sessionGoalStore.pause.bind(sessionGoalStore);
       const pauseHeld = new Promise<void>((resolve) => { releasePause = resolve; });
       const pause = vi.spyOn(sessionGoalStore, "pause").mockImplementationOnce(async (sessionId) => {
@@ -700,7 +713,7 @@ describe("ave:chat:* with chat groups", () => {
       auditLogger: { log: vi.fn() },
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
-    const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(RENDERER_EVENT, ...args);
+    const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(nativeChatFrameEvent(), ...args);
     expect(() => invoke(CHANNELS.chat.hasProvider, "group-2")).toThrow("chat-groups-unavailable");
   });
 });
@@ -720,6 +733,7 @@ describe("ave:chat:* across several main windows", () => {
       id: id * 10,
       isDestroyed: () => false,
       send: vi.fn(),
+      mainFrame: { url: "file:///index.html" },
       on: (name: string, fn: (...args: unknown[]) => void) => { (events[name] ??= []).push(fn); },
     };
     return { window: { id, isDestroyed: () => false, webContents }, events };
@@ -732,8 +746,8 @@ describe("ave:chat:* across several main windows", () => {
     appState.registerMainWindow(primary.window as never, "primary");
     appState.registerMainWindow(secondary.window as never, "secondary");
     const { main, groups, resolveChatGroupLoop, releaseChatGroupLoop } = await registerWithGroups(primary.window);
-    const from = (sender: unknown) => (channel: string, ...args: unknown[]) =>
-      handlers.get(channel)!({ ...RENDERER_EVENT, sender }, ...args);
+    const from = (sender: { mainFrame: unknown }) => (channel: string, ...args: unknown[]) =>
+      handlers.get(channel)!({ sender, senderFrame: sender.mainFrame }, ...args);
     const fromPrimary = from(primary.window.webContents);
     const fromSecondary = from(secondary.window.webContents);
 
@@ -748,10 +762,15 @@ describe("ave:chat:* across several main windows", () => {
     ]);
     expect(main.hasProvider).not.toHaveBeenCalled();
     expect(groups.get("group-2")).not.toBe(groups.get("window-20:group-2"));
+    expect(approvalSurfaceRegistry.resolve(main.getSessionId())).toBe(primary.window.webContents);
+    expect(approvalSurfaceRegistry.resolve(groups.get("group-2")!.getSessionId())).toBe(primary.window.webContents);
+    expect(approvalSurfaceRegistry.resolve(groups.get("window-20:group-2")!.getSessionId())).toBe(secondary.window.webContents);
+    const releasedSession = groups.get("window-20:main")!.getSessionId();
 
     await expect(fromSecondary(CHANNELS.chat.groupRelease, MAIN_CHAT_GROUP_ID))
       .resolves.toEqual({ ok: true, released: true });
     expect(releaseChatGroupLoop).toHaveBeenCalledWith("window-20:main");
+    expect(approvalSurfaceRegistry.resolve(releasedSession)).toBeNull();
     expect(main.newConversation).not.toHaveBeenCalled();
 
     secondary.events["destroyed"]![0]!();
@@ -769,7 +788,7 @@ describe("ave:chat:* across several main windows", () => {
     appState.registerMainWindow(secondary.window as never, "secondary");
     const { main, groups, releaseChatGroupLoop } = await registerWithGroups(primaryWindow);
     const fromSecondary = (channel: string, ...args: unknown[]) =>
-      handlers.get(channel)!({ ...RENDERER_EVENT, sender: secondary.window.webContents }, ...args);
+      handlers.get(channel)!({ sender: secondary.window.webContents, senderFrame: secondary.window.webContents.mainFrame }, ...args);
 
     fromSecondary(CHANNELS.chat.hasProvider, "group-2");
     const secondarySession = groups.get("window-20:group-2")!.sessionId;
@@ -787,12 +806,69 @@ describe("ave:chat:* across several main windows", () => {
     expect(releaseChatGroupLoop).not.toHaveBeenCalled();
   });
 
-  it("keeps auxiliary host surfaces on the global ids", async () => {
+  it("refuses an unregistered surface before creating a global chat group", async () => {
     const appState = await import("../../../main/app-state.js");
     const primary = fakeMainWindow(1);
     appState.registerMainWindow(primary.window as never, "primary");
     const { resolveChatGroupLoop } = await registerWithGroups(primary.window);
-    handlers.get(CHANNELS.chat.hasProvider)!({ ...RENDERER_EVENT, sender: { id: 999 } }, "group-2");
-    expect(resolveChatGroupLoop).toHaveBeenCalledWith("group-2");
+    const contents = { id: 999, mainFrame: { url: "file:///index.html" }, isDestroyed: () => false };
+    expect(handlers.get(CHANNELS.chat.hasProvider)!({ sender: contents, senderFrame: contents.mainFrame }, "group-2")).toBe(false);
+    expect(resolveChatGroupLoop).not.toHaveBeenCalled();
+  });
+
+  it.each(["subframe", "unregistered window"] as const)("refuses %s group reads and mutations before they can assign approval ownership", async (kind) => {
+    const appState = await import("../../../main/app-state.js");
+    const primary = fakeMainWindow(1);
+    appState.registerMainWindow(primary.window as never, "primary");
+    const { main, resolveChatGroupLoop, auditLogger } = await registerWithGroups(primary.window);
+    const owner = primary.window.webContents;
+    const unregistered = fakeMainWindow(99).window.webContents;
+    const invalid = kind === "subframe"
+      ? { sender: owner, senderFrame: { url: owner.mainFrame.url } }
+      : { sender: unregistered, senderFrame: unregistered.mainFrame };
+    const native = { sender: owner, senderFrame: owner.mainFrame };
+    const registration = vi.spyOn(approvalSurfaceRegistry, "register");
+    try {
+      expect(handlers.get(CHANNELS.chat.hasProvider)!(invalid, "new-group")).toBe(false);
+      expect(handlers.get(CHANNELS.chat.getHistory)!(invalid, "new-group")).toEqual([]);
+      await expect(handlers.get(CHANNELS.chat.new)!(invalid, undefined, MAIN_CHAT_GROUP_ID)).rejects.toThrow("unauthorized-frame");
+      await expect(handlers.get(CHANNELS.chat.sessionResume)!(invalid, main.getSessionId(), MAIN_CHAT_GROUP_ID)).rejects.toThrow("unauthorized-frame");
+      await expect(handlers.get(CHANNELS.chat.groupRelease)!(invalid, MAIN_CHAT_GROUP_ID)).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
+      expect(registration).not.toHaveBeenCalled();
+      expect(resolveChatGroupLoop).not.toHaveBeenCalled();
+      expect(main.newConversation).not.toHaveBeenCalled();
+      expect(main.resetAndResume).not.toHaveBeenCalled();
+      for (const channel of [CHANNELS.chat.hasProvider, CHANNELS.chat.getHistory, CHANNELS.chat.new, CHANNELS.chat.sessionResume, CHANNELS.chat.groupRelease]) {
+        expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining(channel) }));
+      }
+      expect(approvalSurfaceRegistry.resolve(main.getSessionId())).toBe(owner);
+      // Cached native reads have no registration side effect either.
+      expect(handlers.get(CHANNELS.chat.hasProvider)!(native, MAIN_CHAT_GROUP_ID)).toBe(false);
+      expect(handlers.get(CHANNELS.chat.getHistory)!(native, MAIN_CHAT_GROUP_ID)).toMatchObject({ sessionId: main.getSessionId() });
+      expect(registration).not.toHaveBeenCalled();
+    } finally {
+      registration.mockRestore();
+    }
+  });
+
+  it("transfers a released conversation's explicit approval owner when another window resumes it", async () => {
+    const appState = await import("../../../main/app-state.js");
+    const primary = fakeMainWindow(1);
+    const secondary = fakeMainWindow(2);
+    appState.registerMainWindow(primary.window as never, "primary");
+    appState.registerMainWindow(secondary.window as never, "secondary");
+    const { groups } = await registerWithGroups(primary.window);
+    const from = (sender: { mainFrame: unknown }, channel: string, ...args: unknown[]) => handlers.get(channel)!({ sender, senderFrame: sender.mainFrame }, ...args);
+    from(primary.window.webContents, CHANNELS.chat.hasProvider, "group-2");
+    const sessionId = groups.get("group-2")!.getSessionId();
+    expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(primary.window.webContents);
+    await expect(from(secondary.window.webContents, CHANNELS.chat.sessionResume, sessionId, "group-2"))
+      .resolves.toMatchObject({ ok: false, error: "session-open-in-other-group" });
+    expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(primary.window.webContents);
+    await from(primary.window.webContents, CHANNELS.chat.groupRelease, "group-2");
+    expect(approvalSurfaceRegistry.resolve(sessionId)).toBeNull();
+    await expect(from(secondary.window.webContents, CHANNELS.chat.sessionResume, sessionId, "group-2"))
+      .resolves.toMatchObject({ ok: true });
+    expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(secondary.window.webContents);
   });
 });

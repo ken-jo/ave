@@ -1224,7 +1224,7 @@ export async function authorizeToolInvocation(
         if (!headlessReviewerRoute) {
           const headlessDeny: PermissionCheckResult = {
             decision: "deny",
-            reason: `headless explicit approval unavailable: ${permissionResult.reason}`,
+            reason: `headless explicit approval unavailable (no approval surface): ${permissionResult.reason}`,
             layer: permissionResult.layer,
           };
           const msg = t("be_executor.permBlockHeadlessDeny", {
