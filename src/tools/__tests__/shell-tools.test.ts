@@ -542,9 +542,12 @@ describe("powershell tool", () => {
       }, { ...ctx(dir), abortSignal: controller.signal });
       try {
         const pidFile = join(dir, "shell.pid");
-        await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 10_000 });
-        const pid = Number(readFileSync(pidFile, "utf8").replace(/^\uFEFF/, "").trim());
-        expect(Number.isInteger(pid) && pid > 0).toBe(true);
+        // Set-Content creates the file before writing it; wait for a positive PID, not for the file.
+        const pid = await vi.waitFor(() => {
+          const value = Number(existsSync(pidFile) ? readFileSync(pidFile, "utf8").replace(/^\uFEFF/, "").trim() : "");
+          expect(Number.isInteger(value) && value > 0).toBe(true);
+          return value;
+        }, { timeout: 10_000 });
         controller.abort();
         const result = await pending;
         expect(result.metadata?.aborted).toBe(true);
