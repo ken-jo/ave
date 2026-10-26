@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { win32SystemBinary } from "./ave-home.js";
+import { errorMessage } from "./error-message.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
@@ -178,7 +179,7 @@ export async function readWindowsReadDenyEvidence(paths: readonly string[]): Pro
         ...(row.status === "readable" ? { principals: row.principals } : {}) }];
     }));
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = errorMessage(error);
     return new Map(targets.map(path => [windowsReadDenyKey(path), { status: "error", reason }]));
   }
 }
