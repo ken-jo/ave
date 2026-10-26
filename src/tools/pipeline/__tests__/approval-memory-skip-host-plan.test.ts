@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { emitSandboxAuditMock } = vi.hoisted(() => ({
@@ -76,6 +77,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
       { trustOrigin: "user-keyboard", approvalMemory: { kind: "args" } as const },
       approvalCacheKey,
       {},
+      randomUUID(),
       undefined,
       undefined,
       undefined,

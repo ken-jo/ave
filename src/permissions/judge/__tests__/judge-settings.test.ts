@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
@@ -313,7 +314,7 @@ describe("external stage env", () => {
 describe("JudgeCircuitBreaker", () => {
   it("rewiring keeps the pause and rejects noncanonical thresholds", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
-    for (let i = 0; i < 3; i++) b.record("s", "deny");
+    for (let i = 0; i < 3; i++) b.record("s", "deny", randomUUID());
     expect(b.isOpen("s")).toBe(true);
     b.setLimits({ consecutive: 3, total: 20 });
     expect(b.isOpen("s")).toBe(true);
@@ -325,24 +326,24 @@ describe("JudgeCircuitBreaker", () => {
 
   it("trips on three consecutive blocks; allow resets the streak and ask counts", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
-    b.record("s", "deny");
-    b.record("s", "deny");
-    b.record("s", "allow");
-    b.record("s", "deny");
-    b.record("s", "ask");
+    b.record("s", "deny", randomUUID());
+    b.record("s", "deny", randomUUID());
+    b.record("s", "allow", randomUUID());
+    b.record("s", "deny", randomUUID());
+    b.record("s", "ask", randomUUID());
     expect(b.isOpen("s")).toBe(false);
-    expect(b.record("s", "deny")).toBe(true);
+    expect(b.record("s", "deny", randomUUID())).toBe(true);
     expect(b.isOpen("s")).toBe(true);
   });
 
   it("trips on M total denials even with allows between", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
     for (let i = 0; i < 19; i++) {
-      b.record("s", "deny");
-      b.record("s", "allow");
+      b.record("s", "deny", randomUUID());
+      b.record("s", "allow", randomUUID());
     }
     expect(b.isOpen("s")).toBe(false);
-    b.record("s", "deny");
+    b.record("s", "deny", randomUUID());
     expect(b.isOpen("s")).toBe(true);
     expect(b.snapshot("s").total).toBe(0);
   });

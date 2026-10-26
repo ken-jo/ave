@@ -11,6 +11,7 @@ import { ToolExecutor } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   approvalCacheKeyIdentity,
@@ -393,6 +394,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setMode("auto");
+    wireJudgeForTest(manager);
     manager.setInteractiveAutoApprove("low");
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];

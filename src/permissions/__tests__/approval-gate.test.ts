@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import {
@@ -708,6 +709,7 @@ describe("ApprovalGate", () => {
       const manager = new PermissionManager("/workspace/permissions.json");
       wireJudgeForTest(manager);
       const reviewer = await manager.dispatchReviewer(req.toolName, {
+        invocationId: randomUUID(),
         sessionId: "approval-gate-review-session",
         source: "builtin", category: "shell", finalInput: req.args as Record<string, unknown>,
         pathFields: [], executionCwd: req.evaluationContext!.executionCwd,
@@ -755,6 +757,7 @@ describe("ApprovalGate", () => {
     const manager = new PermissionManager("/workspace/permissions.json");
     wireJudgeForTest(manager);
     const reviewer = await manager.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
       sessionId: "approval-gate-review-session",
       source: "builtin", category: "shell", finalInput: { command: "printf hello" },
       pathFields: [], executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"],

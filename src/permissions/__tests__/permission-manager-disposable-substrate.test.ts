@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // The dispatch input's `disposableSubstrate` must reach the reviewer as the `disposable-container` capability. The executor tests stub `dispatchReviewer`, so this is the one place the argument threading through `resolveReviewerSandboxCacheState` is pinned: drop it and guest calls silently regress to host grading.
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,6 +47,7 @@ describe("PermissionManager.dispatchReviewer — disposable substrate reaches th
   it("grades a brokered call against the disposable-container capability", async () => {
     const { pm, seen } = makeManager();
     await pm.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
       ...baseInput,
       disposableSubstrate: { authority: "workload-broker", id: "1".repeat(64) },
     }, undefined, { defer: "none" });
@@ -59,7 +61,7 @@ describe("PermissionManager.dispatchReviewer — disposable substrate reaches th
 
   it("grades the same call without a substrate against the host capability", async () => {
     const { pm, seen } = makeManager();
-    await pm.dispatchReviewer("bash", baseInput, undefined, { defer: "none" });
+    await pm.dispatchReviewer("bash", { ...baseInput, invocationId: randomUUID() }, undefined, { defer: "none" });
     expect(seen).toHaveLength(1);
     expect(seen[0].sandboxCapability.kind).not.toBe("disposable-container");
   });

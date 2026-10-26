@@ -2326,6 +2326,7 @@ export async function runToolInvocation(
       currentAuditMetadata,
       withHostShellExecutionPlan,
       permissionResult,
+      automatedApproval: authorization.automatedApproval,
       abortSignal,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,

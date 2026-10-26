@@ -233,6 +233,8 @@ export interface PermissionCheckContext {
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
+  // Host invocation identity shared by scope assessment and ordinary review.
+  invocationId: string;
   // Conversation whose turn is being reviewed. Recorded on a deferred entry so the question reaches the tile that raised it. Absent for invocations that belong to no conversation.
   sessionId?: string;
   source: ToolSource;
@@ -466,6 +468,7 @@ export class PermissionManager {
   private userRulesVersion: PersistedPolicyVersion | undefined;
   // Permission policy reviewer agent dispatch components. Wired at boot.
   private reviewerClassifier: TracingRiskClassifier | null = null;
+  private reviewerModel: string | undefined;
   private reviewerUnavailableReason: string | undefined;
   private judgeDeps: JudgeEngineDeps | undefined;
   private readonly judgeBreaker = new JudgeCircuitBreaker(DEFAULT_JUDGE_SETTINGS.breaker);
@@ -504,6 +507,7 @@ export class PermissionManager {
   // Permission policy wire the Layer 5 reviewer agent. Call once at boot after loading settings. The executor checks hasReviewer before headless reviewer dispatch and fail-closes when the reviewer is absent.
   setReviewer(deps: {
     classifier: RiskClassifier;
+    model?: string;
     cache: VerdictCache;
     deferredQueue: DeferredQueue;
     cacheScope?: Record<string, unknown>;
@@ -513,6 +517,7 @@ export class PermissionManager {
     unavailableReason?: string;
   }): void {
     this.reviewerClassifier = traceRiskClassifier(deps.classifier);
+    this.reviewerModel = deps.model;
     this.reviewerUnavailableReason = deps.unavailableReason;
     this.verdictCache = deps.cache;
     this.deferredQueue = deps.deferredQueue;
@@ -532,13 +537,18 @@ export class PermissionManager {
     return this.judgeBreaker;
   }
 
-  resumeAutomatedApproval(sessionId: string, decision: ApprovalDecision): void {
-    if (!consumeManualApproval(decision, sessionId)) return;
+  resumeAutomatedApproval(sessionId: string, decision: ApprovalDecision): boolean {
+    if (!consumeManualApproval(decision, sessionId)) return false;
     this.judgeBreaker.resume(this.resolveJudgeRootSession(sessionId));
+    return true;
   }
 
   isAutomatedApprovalPaused(sessionId?: string): boolean {
-    return sessionId !== undefined && this.judgeBreaker.isOpen(this.resolveJudgeRootSession(sessionId));
+    return this.getAutomatedApprovalPauseReason(sessionId) !== undefined;
+  }
+
+  getAutomatedApprovalPauseReason(sessionId?: string): "consecutive" | "total" | undefined {
+    return sessionId === undefined ? undefined : this.judgeBreaker.pauseReason(this.resolveJudgeRootSession(sessionId));
   }
 
   hasJudge(category?: ToolCategory): boolean {
@@ -886,6 +896,7 @@ export class PermissionManager {
     if (approvalConversationRoot(rootSessionId) !== rootSessionId) {
       throw new Error("Session shell rules end only with their root conversation");
     }
+    this.judgeBreaker.forget(this.resolveJudgeRootSession(rootSessionId));
     const dropped = this.sessionShellRules.delete(rootSessionId);
     if (dropped) {
       this.policyGeneration += 1;
@@ -1790,13 +1801,17 @@ export class PermissionManager {
     if (input.sessionId === undefined || input.sessionId.trim().length === 0) {
       throw new JudgeContractError("Automated permission review requires a session id");
     }
+    if (typeof input.invocationId !== "string" || input.invocationId.trim().length === 0) {
+      throw new JudgeContractError("Automated permission review requires an invocation id");
+    }
     const wired = this.judgeDeps;
     if (!wired) throw new JudgeContractError("Permission judge is not wired");
     const baseline = context?.baseline === true || !this.hasJudge(input.category);
     const defaultStage = { provider: "builtin-llm" as const, id: "builtin-llm" };
     const deps: JudgeEngineDeps = baseline ? {
+      budget: "classifier",
       settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [defaultStage], mode: "active", categories: { shell: true, write: true, network: true } },
-      chain: [{ settings: defaultStage, judge: new BuiltinLlmJudge(this.reviewerClassifier, () => this.interactiveAutoApprove) }],
+      chain: [{ settings: defaultStage, judge: new BuiltinLlmJudge(this.reviewerClassifier, () => this.interactiveAutoApprove, this.reviewerModel) }],
       breaker: wired.breaker, audit: wired.audit,
     } : wired;
     const policyEpoch = this.getPolicyEpoch();
@@ -1851,6 +1866,7 @@ export class PermissionManager {
       reviewerBaseline: baseline,
     };
     const request: JudgeRequest = {
+      invocationId: input.invocationId,
       sessionId: this.resolveJudgeRootSession(input.sessionId),
       lane, invocation,
       recentUserMessages: input.conversationContext?.recentUserMessage ? [input.conversationContext.recentUserMessage] : [],

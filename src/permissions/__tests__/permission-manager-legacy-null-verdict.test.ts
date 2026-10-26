@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Regression test for the fail-closed gate against legacy user-approval entries with `verdictAtApproval: null`. Earlier the user-approval entry shape did not have a `verdictAtApproval` field. A naive `?? "medium"` coerce on read would have turned every such legacy entry into a medium-risk memory hit — fail-permissive for inputs whose original verdict was HIGH. The fail-closed gate rejects the memory hit and forces a fresh approval flow when `verdictAtApproval == null`. This file is the regression guard for that gate.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -111,7 +112,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
         approvalCacheKey, approvalMemory: { kind: "args" } as const,
       };
 
-      const remembered = await pm.dispatchReviewer("write_file", input, undefined, { defer: "none" });
+      const remembered = await pm.dispatchReviewer("write_file", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
       expect(remembered).toMatchObject({ outcome: "approval-memory", verdict: { level: ceiling } });
       expect(remembered.judge).toMatchObject({ judged: true, decision: "allow" });
       expect(broadcast).toHaveBeenLastCalledWith({
@@ -128,6 +129,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
 
       // The exact tuple still matches, but the current scope no longer admits this target. The deterministic HIGH must survive memory composition.
       const escalated = await pm.dispatchReviewer("write_file", {
+        invocationId: randomUUID(),
         ...input, allowedDirectories: [],
       }, undefined, { defer: "none" });
       expect(escalated).toMatchObject({ outcome: "approval-memory", verdict: { level: "high" } });
@@ -146,6 +148,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
 
       const otherCwd = resources.makeTmpDir("ave-pm-scoped-approval-other-");
       const otherProject = await pm.dispatchReviewer("write_file", {
+        invocationId: randomUUID(),
         ...input, executionCwd: otherCwd,
       }, undefined, { defer: "none" });
       expect(otherProject.outcome).not.toBe("approval-memory");
@@ -185,6 +188,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     __resetSessionStoreForTest();
 
     const result = await pm.dispatchReviewer("write_file", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
@@ -223,7 +227,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       ownerPluginSandboxRoot: cwd,
       pluginId: "plugin_probe",
     };
-    const fresh = await pm.dispatchReviewer("plugin_probe", input, undefined, { defer: "none" });
+    const fresh = await pm.dispatchReviewer("plugin_probe", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
     expect(fresh.verdict).toMatchObject({ level: "medium", requiresExplicitApproval: true });
     expect(fresh.judge).toMatchObject({ judged: true, decision: "ask" });
     expect(broadcast).not.toHaveBeenCalled();
@@ -238,7 +242,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity,
     });
     __resetSessionStoreForTest();
-    const result = await pm.dispatchReviewer("plugin_probe", input, undefined, { defer: "none" });
+    const result = await pm.dispatchReviewer("plugin_probe", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
 
     expect(result).toMatchObject({
       outcome: "approval-memory",
@@ -292,6 +296,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     };
 
     await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
@@ -337,6 +342,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     };
 
     await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
@@ -373,6 +379,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     mockLookupResult = null;
 
     await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
@@ -417,6 +424,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
 
     await pm.dispatchReviewer("write_file", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
@@ -445,6 +453,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
   it("reviewer audit masks finalInput and preserves the trust tuple", async () => {
     await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "plugin",
       category: "network",
@@ -481,6 +490,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
   it("reviewer audit persists the Host-owned governed projection", async () => {
     await pm.dispatchReviewer("plugin_checkin_read", {
+      invocationId: randomUUID(),
       sessionId: "permission-manager-legacy-null-verdict-session",
       source: "plugin",
       category: "read",

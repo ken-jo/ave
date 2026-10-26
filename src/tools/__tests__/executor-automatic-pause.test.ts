@@ -1,8 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { verifyChain } from "../../audit/hmac-chain.js";
+import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
@@ -14,6 +16,8 @@ import * as approvals from "../../permissions/user-approval-store.js";
 import type { ApprovalMemory } from "../../shared/permissions-events.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
+import { WriteFileTool } from "../file-tools.js";
+import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
@@ -34,7 +38,8 @@ async function subject() {
   const root = resources.makeTmpDir("ave-executor-pause-");
   const audit = new AuditLogger(join(root, "audit"));
   loggers.push(audit);
-  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+  const auditSecret = randomBytes(32).toString("hex");
+  await audit.setupPermissionAuditChain(auditSecret);
   let level: RiskVerdict["level"] = "low";
   const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level, reason: "reviewed action" }),
@@ -60,6 +65,7 @@ async function subject() {
     chain: [], breaker: manager.getJudgeBreaker(), audit,
   });
   const review = (input: Record<string, unknown>) => manager.dispatchReviewer("write_probe", {
+    invocationId: randomUUID(),
     sessionId: SESSION_ID, source: "builtin", category: "write", pathFields: ["path"],
     finalInput: input, executionCwd: root, allowedDirectories: [root],
     sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
@@ -72,7 +78,36 @@ async function subject() {
     level = "low";
     expect(manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   };
-  return { root, audit, manager, complete, pause, review };
+  return { root, audit, auditSecret, manager, complete, pause, review, setLevel: (value: RiskVerdict["level"]) => { level = value; } };
+}
+
+function manualGate() {
+  const cards: ApprovalRequest[] = [];
+  const gate = new ApprovalGate({
+    isDestroyed: () => false,
+    send(channel: string, request: ApprovalRequest) {
+      if (channel === "ave:approval:request") cards.push(request);
+    },
+  } as never);
+  const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
+    requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
+  });
+  return { gate, cards, approve };
+}
+
+function heldPreToolUse() {
+  const hooks = new ScriptHookManager();
+  const runPreToolUse = hooks.runPreToolUse.bind(hooks);
+  let enter!: () => void;
+  let release!: () => void;
+  const reached = new Promise<void>((resolve) => { enter = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  vi.spyOn(hooks, "runPreToolUse").mockImplementationOnce(async (...args) => {
+    enter();
+    await held;
+    return runPreToolUse(...args);
+  });
+  return { hooks, reached, release };
 }
 
 function denyingGate() {
@@ -103,12 +138,202 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
   return tryUserApprovalMemorySkip(
     "write_probe", "builtin", "write", ["path"], input, current.root, [current.root], [],
     userPermissionContext({ approvalMemory: memory }), "write-scope", {},
+    randomUUID(),
     undefined, undefined, undefined, undefined, undefined, SESSION_ID, undefined,
     manager.dispatchReviewer.bind(manager),
   );
 }
 
 describe("executor automated approval pause", () => {
+  it("requires a native approval when sibling reviews pause an auto-approved write during PreToolUse", async () => {
+    const current = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const pending = executor.executeAll([{ id: "held-automatic-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+    });
+    await reached;
+    expect(current.complete).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    await current.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    expect(execute).not.toHaveBeenCalled();
+    expect(cards[0]).toMatchObject({ sessionId: SESSION_ID, toolName: "write_probe", isReadOnly: false });
+    expect(cards[0].reason).toMatch(/3/);
+    const auditLines = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n");
+    expect(verifyChain(current.auditSecret, auditLines)).toEqual({ ok: true });
+    expect(auditLines.map((line) => JSON.parse(line))).toContainEqual(expect.objectContaining({
+      decision: "ask", tool: "write_probe", toolUseId: "held-automatic-write", reason: cards[0].reason,
+    }));
+    approve(cards[0]);
+    const [result] = await pending;
+    expect(result.is_error).toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(hooks.runPreToolUse).toHaveBeenCalledOnce();
+    expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(false);
+  });
+
+  it("honors a PermissionRequest denial before showing a late pause card", async () => {
+    const current = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const denyReason = "operator approval hook refused this action";
+    const permissionHook = vi.spyOn(hooks, "runPermissionRequest").mockResolvedValueOnce({
+      decision: "deny", reason: denyReason, results: [],
+    });
+    const postHook = vi.spyOn(hooks, "runPostToolUse");
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const { gate, cards } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const pending = executor.executeAll([{ id: "held-hook-refused-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+    });
+    await reached;
+    await current.pause();
+    release();
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain(denyReason);
+    expect(permissionHook).toHaveBeenCalledOnce();
+    expect(cards).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalled();
+    expect(postHook).not.toHaveBeenCalled();
+    expect(lifecycle.mock.calls.filter(([event]) => event === "PostToolUseFailure")).toHaveLength(0);
+    expect(lifecycle.mock.calls.find(([event]) => event === "PermissionDenied")).toMatchObject([
+      "PermissionDenied", SESSION_ID, "user-keyboard",
+      { toolName: "write_probe", denyReason: { layer: 5, source: "tool-executor", reason: denyReason } },
+    ]);
+    const rows = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(rows).toContainEqual(expect.objectContaining({
+      decision: "deny", toolUseId: "held-hook-refused-write",
+      denyReasons: expect.arrayContaining([expect.objectContaining({ reason: denyReason })]),
+    }));
+    expect(rows.some((row) => row.decision === "ask" && row.toolUseId === "held-hook-refused-write")).toBe(false);
+  });
+
+  it("does not show a late pause card or enter the handler when the required ask audit fails", async () => {
+    const current = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const append = current.audit.appendPermissionAuditEntry.bind(current.audit);
+    vi.spyOn(current.audit, "appendPermissionAuditEntry").mockImplementation(async (entry) => {
+      if (entry.decision === "ask") throw new Error("late approval ask audit failed");
+      return append(entry);
+    });
+    const { gate, cards } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const pending = executor.executeAll([{ id: "held-ask-audit-failed", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+    });
+    await reached;
+    await current.pause();
+    release();
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("late approval ask audit failed");
+    expect(cards).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalled();
+    expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it.each(["headless", "unavailable surface"] as const)("denies an automatic write paused during PreToolUse with %s", async (lane) => {
+    const current = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const pending = executor.executeAll([{ id: "held-unattended-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({
+        additionalDirectories: [current.root], headless: lane === "headless",
+        ...(lane === "unavailable surface" ? { approvalSurface: "unavailable" as const } : {}),
+      }),
+    });
+    await reached;
+    expect(current.complete).toHaveBeenCalledOnce();
+    await current.pause();
+    release();
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/3/);
+    expect(execute).not.toHaveBeenCalled();
+    expect(cards).toHaveLength(0);
+    expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("retains a genuine manual approval when sibling reviews pause automation during PreToolUse", async () => {
+    const current = await subject();
+    current.setLevel("high");
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const pending = executor.executeAll([{ id: "held-human-write", name: "write_probe", input: { path: join(current.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+    });
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    approve(cards[0]);
+    await reached;
+    await current.pause();
+    release();
+    const [result] = await pending;
+    expect(result.is_error).toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(cards).toHaveLength(1);
+    expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("counts one invocation once when a remembered medium path grant needs a high scope review and ordinary cached review", async () => {
+    const current = await subject();
+    const tool = new WriteFileTool();
+    const execute = vi.spyOn(tool, "execute");
+    const input = { path: join(current.root, "remembered.txt"), content: "approved" };
+    const identity = await approvalIdentityFor(tool, input, current.root);
+    expect(identity.approvalMemory).toMatchObject({ kind: "key", scope: { kind: "path", path: input.path } });
+    await approvals.recordApproval(tool.name, approvals.canonicalStringify(input), "builtin", {
+      scope: "session", sessionId: SESSION_ID, verdictAtApproval: "medium", riskCeilingAtApproval: "medium", nlJustification: null,
+      trustOrigin: "user-keyboard", workingDirectoryIdentity: approvals.captureApprovalWorkingDirectory(current.root).identity,
+      approvalCacheKey: approvals.approvalCacheKeyIdentity(identity.approvalCacheKey, identity.approvalMemory),
+    });
+    current.setLevel("high");
+    const dispatch = vi.spyOn(current.manager, "dispatchReviewer");
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const { gate, cards } = denyingGate();
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, undefined, current.audit);
+    const [result] = await executor.executeAll([{ id: "changed-remembered-write", name: tool.name, input: { ...input, content: "changed" } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+    });
+    expect(result.is_error).toBe(true);
+    expect(current.complete).toHaveBeenCalledOnce();
+    expect(cards).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls[0][3]).toMatchObject({ purpose: "approval-scope" });
+    expect(dispatch.mock.calls[1][1].invocationId).toBe(dispatch.mock.calls[0][1].invocationId);
+    const assessments = await Promise.all(dispatch.mock.results.map((result) => result.value));
+    expect(assessments.map((assessment) => assessment.outcome)).toEqual(["fresh", "cache"]);
+    expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 1, total: 1, open: false });
+  });
+
   it.each(["before lookup", "during lookup"] as const)("requires the user card despite exact approval memory when paused %s", async (timing) => {
     const current = await subject();
     const input = { path: join(current.root, "approved.txt") };

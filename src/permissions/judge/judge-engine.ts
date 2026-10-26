@@ -65,6 +65,9 @@ export interface JudgeChainStage {
 }
 
 export interface JudgeEngineDeps {
+  // The implicit builtin reviewer retains its classifier's timeout/retry policy.
+  // Configured chains use the user's stage and whole-chain budgets.
+  budget?: "configured" | "classifier";
   settings: JudgeSettings;
   // Constructed stages, in `settings.chain` order. Empty is off unless rejected.
   chain: readonly JudgeChainStage[];
@@ -95,6 +98,7 @@ export interface JudgeAuditRecord {
   event: "permission-judge";
   ts: string;
   session: string;
+  invocationId: string;
   lane: JudgeRequest["lane"];
   mode: JudgeMode;
   tool: string;
@@ -199,7 +203,7 @@ interface JudgeRun {
 async function runJudge(
   judge: PermissionJudge | null,
   request: JudgeRequest,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   callerSignal: AbortSignal | undefined,
 ): Promise<JudgeRun> {
   // A caller that already cancelled gets its cancel back; the judge is never started.
@@ -207,7 +211,7 @@ async function runJudge(
   if (!judge) return { fallback: "unavailable", failureMessage: "judge provider unavailable" };
   const controller = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
     timedOut = true;
     controller.abort(new JudgeFailure("timeout", `judge timed out after ${timeoutMs}ms`));
   }, timeoutMs);
@@ -231,7 +235,7 @@ async function runJudge(
     }
     return { fallback: "error", failureMessage: errorMessage(err) };
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
     callerSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
@@ -270,13 +274,13 @@ async function runChain(
 ): Promise<ChainResult> {
   let lastFailure: JudgeRun | undefined;
   let ambiguous: { stage: JudgeChainStage; verdict: JudgeVerdict } | undefined;
-  const deadline = now() + deps.settings.chainDeadlineMs;
+  const deadline = deps.budget === "classifier" ? undefined : now() + deps.settings.chainDeadlineMs;
   for (let i = 0; i < deps.chain.length; i++) {
     const stage = deps.chain[i]!;
     const isLast = i === deps.chain.length - 1;
     const t0 = now();
-    const remaining = deadline - t0;
-    if (remaining <= 0) {
+    const remaining = deadline === undefined ? undefined : deadline - t0;
+    if (remaining !== undefined && remaining <= 0) {
       for (const rest of deps.chain.slice(i)) {
         records.push({
           id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
@@ -286,7 +290,7 @@ async function runChain(
       }
       return chainDeadlineFallback(deps);
     }
-    const stageTimeout = Math.min(deps.settings.timeoutMs, remaining);
+    const stageTimeout = remaining === undefined ? undefined : Math.min(deps.settings.timeoutMs, remaining);
     const run = await runJudge(stage.judge, view, stageTimeout, signal);
     const latencyMs = Math.max(0, now() - t0);
     const stderr = run.diagnostics?.stderr ?? run.verdict?.diagnostics?.stderr;
@@ -302,7 +306,7 @@ async function runChain(
     if (!run.verdict) {
       records.push({ ...base, decision: null, confidence: null, outcome: "failed", fallback: run.fallback ?? "error" });
       // The engine's timer fired on a budget the chain deadline capped: the deadline is spent and no later stage gets to run. A provider that reports its own timeout is an ordinary stage failure and escalates.
-      if (run.engineTimedOut && stageTimeout < deps.settings.timeoutMs) {
+      if (run.engineTimedOut && stageTimeout !== undefined && stageTimeout < deps.settings.timeoutMs) {
         for (const rest of deps.chain.slice(i + 1)) {
           records.push({
             id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
@@ -370,6 +374,13 @@ export async function resolveJudge(
   deps: JudgeEngineDeps,
   signal?: AbortSignal,
 ): Promise<JudgeOutcome> {
+  if (deps.budget !== undefined && deps.budget !== "configured" && deps.budget !== "classifier") {
+    throw new JudgeContractError("Invalid judge execution budget policy");
+  }
+  if (deps.budget === "classifier" &&
+      (deps.chain.length !== 1 || deps.chain[0]?.settings.provider !== "builtin-llm")) {
+    throw new JudgeContractError("Classifier execution budget requires one builtin reviewer stage");
+  }
   const skip = skipReason(gate, request, deps);
   if (skip && skip !== "breaker-open") return { judged: false, skip };
   if (signal?.aborted) throw signal.reason;
@@ -451,7 +462,7 @@ export async function resolveJudge(
   let breakerTripped = false;
   if (applied && source === "judge" && verdict) {
     // One counter per session across the whole chain: the chain's final verdict.
-    breakerTripped = deps.breaker.record(request.sessionId, verdict.decision);
+    breakerTripped = deps.breaker.record(request.sessionId, verdict.decision, request.invocationId);
     pause = deps.breaker.pauseReason(request.sessionId);
     if (pause) {
       source = "breaker";
@@ -468,6 +479,7 @@ export async function resolveJudge(
     event: "permission-judge",
     ts: new Date(started).toISOString(),
     session: request.sessionId,
+    invocationId: request.invocationId,
     lane: request.lane,
     mode,
     tool: request.invocation.toolName,

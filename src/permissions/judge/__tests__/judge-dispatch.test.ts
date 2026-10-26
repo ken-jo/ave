@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { ApprovalGate, type ApprovalRequest } from "../../approval-gate.js";
 import { sentApprovalCards } from "../../../__tests__/test-helpers.js";
@@ -106,7 +107,7 @@ async function dispatch(subject: Subject, lane: Lane, sessionId = "session-root"
     subject.manager, "bash", "builtin", "shell", [], { command }, [subject.root], [],
     { trustOrigin: "user-keyboard", headless, ...(approvalSurface ? { approvalSurface } : {}) }, evaluation, {},
     statuses ? { onPermissionReview: (event) => statuses.push(event.status) } : undefined,
-    { groupId: "judge-dispatch", toolUseId: "judge-call", displayOrder: 0 }, undefined,
+    { groupId: "judge-dispatch", toolUseId: randomUUID(), displayOrder: 0 }, undefined,
     undefined, undefined, undefined, sessionId,
   ];
   if (headless) {
@@ -317,6 +318,7 @@ describe("configured judge dispatch lanes", () => {
     wire(subject, [], loaded.settings, undefined, undefined, loaded.chainRejected, loaded.unreadable);
     expect(subject.manager.hasJudge("network")).toBe(true);
     const result = await subject.manager.dispatchReviewer("web_fetch", {
+      invocationId: randomUUID(),
       sessionId: "network-session", source: "builtin", category: "network", pathFields: [],
       finalInput: { url: "https://example.test/" }, executionCwd: subject.root,
       allowedDirectories: [subject.root], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
@@ -1102,6 +1104,7 @@ it("rejects a missing automated-review session identity without running a classi
   const reviewer = llm("low");
   const subject = makeSubject(reviewer.classifier);
   await expect(subject.manager.dispatchReviewer("bash", {
+    invocationId: randomUUID(),
     source: "builtin", category: "shell", pathFields: [], finalInput: { command: "echo hello" },
     executionCwd: subject.root, allowedDirectories: [subject.root], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
   }, undefined, { defer: "none" })).rejects.toThrow("Automated permission review requires a session id");

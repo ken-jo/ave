@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Classify raw finalized input identically in reviewer and foreground lanes; DLP masks provider/display/audit/cache sinks, since masking classifier input can destroy policy signals.
 import { describe, it, expect, afterEach } from "vitest";
@@ -87,6 +88,7 @@ describe("both lanes classify the same object", () => {
     it(`${c.label}: dispatchReviewer grades the raw arguments and returns the raw verdict`, async () => {
       const { pm, seen, dir } = makeManager();
       const result = await pm.dispatchReviewer("net_probe", {
+        invocationId: randomUUID(),
         sessionId: "classifier-lane-parity-session",
         source: "plugin",
         category: "network",
@@ -152,6 +154,7 @@ describe("DLP is preserved at the sinks", () => {
         deferredQueue: queue,
       });
       const result = await pm.dispatchReviewer("net_probe", {
+        invocationId: randomUUID(),
         sessionId: "classifier-lane-parity-session",
         source: "plugin",
         category: "network",

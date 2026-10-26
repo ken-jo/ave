@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Foreground memory reuse requires a matching tuple and non-escalated verdict, records an audit hit, and never bypasses deny or forced-modal gates.
  * Revoked or legacy-null approvals re-prompt; headless calls remain outside this path. */
@@ -249,6 +250,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       userPermissionContext({ trustOrigin: "plugin-emitted" }),
       undefined,
       {},
+      randomUUID(),
       undefined,
       undefined,
       "com.ave.checkin",

@@ -25,6 +25,7 @@ export function createApprovalGateEgressRequester(
   permissionManager?: PermissionManager,
 ): EgressApprovalRequester {
   return async (request): Promise<EgressApprovalAnswer> => {
+    const requestId = randomUUID();
     const { host, port } = request.destination;
     const terminal = request.origin === "terminal";
     // A terminal's ask names its tab: the gate draws it in the window that owns that tab, and the renderer in the tab's banner.
@@ -37,6 +38,7 @@ export function createApprovalGateEgressRequester(
       (mode === "auto" || permissionManager.hasJudge("network"))) {
       const cwd = request.workspaceRoot ?? process.cwd();
       const review = await permissionManager.dispatchReviewer("sandbox_network", {
+        invocationId: requestId,
         source: "builtin", category: "network", pathFields: [],
         finalInput: { url: `https://${host.includes(":") ? `[${host}]` : host}:${port}/` },
         executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
@@ -62,7 +64,7 @@ export function createApprovalGateEgressRequester(
       }
     }
     const decision = await gate.requestAndWait({
-      id: randomUUID(),
+      id: requestId,
       category: "tool",
       kind: "egress-host",
       toolName,

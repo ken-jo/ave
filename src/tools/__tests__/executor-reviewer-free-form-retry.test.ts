@@ -49,35 +49,36 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-retry-nosession-"));
     try {
       const toolName = "reviewed_network_retry_no_session";
+      const requestAndWait = vi.fn();
       const executor = new ToolExecutor(
         makeReviewedNetworkProbe(toolName, executeSpy),
         undefined,
         makeAutoPermissionManager(dir, classifySpy),
+        undefined,
+        { requestAndWait } as never,
       );
       const input = { payload: "send release notice" };
 
-      const first = await executor.executeAll(
+      await expect(executor.executeAll(
         [{ id: "tu-nosession-first", name: toolName, input }],
         {
           permissionContext: userPermissionContext({
             userIntent: "릴리즈 안내 전송 경로를 확인합니다.",
           }),
         },
-      );
-      expect(first[0].is_error).toBe(true);
+      )).rejects.toThrow("Automated permission review requires a session id");
 
-      const second = await executor.executeAll(
+      await expect(executor.executeAll(
         [{ id: "tu-nosession-second", name: toolName, input }],
         {
           permissionContext: userPermissionContext({
             userIntent: "진행해",
           }),
         },
-      );
-
-      expect(second[0].is_error).toBe(true);
+      )).rejects.toThrow("Automated permission review requires a session id");
       expect(executeSpy).not.toHaveBeenCalled();
-      expect(classifySpy).toHaveBeenCalledTimes(2);
+      expect(classifySpy).not.toHaveBeenCalled();
+      expect(requestAndWait).not.toHaveBeenCalled();
     } finally {
       await cleanupTmpDir(dir);
     }

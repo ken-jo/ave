@@ -1915,8 +1915,9 @@ failure outcomes, including eligible host-built-in `meta` calls. Absent judge
 settings or a valid empty configured `permissions.judge.chain` use that default
 builtin reviewer chain. The shared pause and resume behavior below applies to
 every automated lane.
-Automated review requires a conversation or task session identity; a missing
-identity fails clearly instead of sharing an unscoped counter.
+Automated review requires a conversation or task session identity and a
+host-created invocation identity. Either missing identity fails clearly instead
+of sharing an unscoped counter or inventing a new invocation.
 
 The [judge settings contract](../design/permissions-always-allow-and-judge.md#p2-judge-slot)
 defines the persisted ordered chain, transports and model syntax. A configured
@@ -1944,6 +1945,10 @@ allow. The [settings parser](../../src/permissions/judge/judge-settings.ts),
 [shared contract](../../src/permissions/judge/judge-contract.ts) and
 [engine](../../src/permissions/judge/judge-engine.ts) own complete fields/defaults,
 request/verdict types and chain semantics respectively.
+The implicit builtin chain imposes no additional stage or whole-chain timeout:
+the classifier retains its existing retry, streaming and transport limits.
+Explicit configured chains retain their budgets, and caller cancellation
+propagates in both cases.
 
 The model picker offers configured providers and their model options using the
 same source as chat selection. `permissions.judge.model` selects the permission
@@ -2000,10 +2005,17 @@ approval card for interactive requests and denies with a reason naming the
 threshold when no user is available. Existing approval-card and notification
 surfaces explain the pause in English and Korean. Caller cancellation is
 terminal, and internal contract or active-audit failures propagate.
+One final pause check occurs at the handler boundary after all asynchronous
+pre-tool hooks. A paused automatic approval requires manual approval
+interactively or denies when no user is available. Existing manual authorization
+remains valid.
 
 One chain-owned circuit breaker counts successful classifier blocks per root
-conversation. A final non-allow verdict counts once, including a builtin
-foreground `ask`. Intermediate verdicts, shadow observations, failures, timeouts
+conversation. A final non-allow verdict counts once per host invocation
+identity, including a builtin foreground `ask`. Scope review, ordinary review
+and cache assessments reuse that identity and cannot count the same invocation
+again. Distinct invocations count separately even with identical arguments.
+Intermediate verdicts, shadow observations, failures, timeouts
 and separate host safety rejections do not count. Thresholds are fixed at 3
 consecutive or 20 total blocks. An allowed action resets only the consecutive
 count. The total persists for the session and resets only when the total
@@ -2023,12 +2035,13 @@ counter. Deferred entries keep the requesting session's identity to route later
 approval correctly.
 
 The existing audit writer records each stage's provider/version, resolved model,
-verdict and latency alongside the root session, argument hash, redacted request,
-final decision, rationale and fallback. Active decisions require a successful
-write to the HMAC-protected permission audit. Shadow records use the shadow
-channel. A judge may suggest a rule but cannot persist it. Hooks may redact or
-short-circuit to ask/deny before judging and may only retain or downgrade the
-result afterward.
+verdict and latency alongside the root session, invocation identity, argument
+hash, redacted request, final decision, rationale and fallback. Active decisions
+require a successful write to the HMAC-protected permission audit. Shadow records use the shadow
+channel. Normal builtin review and the authoritative shadow baseline preserve
+the resolved reviewer model in their stage audit. A judge may suggest a rule
+but cannot persist it. Hooks may redact or short-circuit to ask/deny before
+judging and may only retain or downgrade the result afterward.
 
 ## Reviewer Failure
 

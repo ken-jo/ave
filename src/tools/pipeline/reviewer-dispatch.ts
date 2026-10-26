@@ -22,6 +22,14 @@ import { emitPermissionReview, summarizeInputForDeferred } from "./display-mask.
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import { errorMessage } from "../../shared/error-message.js";
 
+export function reviewerInvocationId(meta: Pick<ToolCallMeta, "groupId" | "toolUseId">): string {
+  if (typeof meta.groupId !== "string" || meta.groupId.trim().length === 0 ||
+      typeof meta.toolUseId !== "string" || meta.toolUseId.trim().length === 0) {
+    throw new JudgeContractError("Automated review requires a tool invocation identity");
+  }
+  return JSON.stringify([meta.groupId, meta.toolUseId]);
+}
+
 function resolveDispatchedJudge(
   reviewer: ReviewerDispatchResult,
   lane: ReviewerLane,
@@ -125,6 +133,7 @@ export async function dispatchReviewerForHeadless(
   const reviewer = await permissionManager.dispatchReviewer(
     toolName,
     {
+      invocationId: reviewerInvocationId(meta),
       ...(sessionId ? { sessionId } : {}),
       source,
       category,
@@ -242,6 +251,7 @@ export async function dispatchReviewerForInteractiveAuto(
     reviewer = await mgr.dispatchReviewer(
       toolName,
       {
+        invocationId: reviewerInvocationId(meta),
         ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,

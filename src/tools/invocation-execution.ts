@@ -42,7 +42,7 @@ import {
   mergeHookChains,
   redactAskUserAuditOutput,
 } from "./pipeline/audit-entries.js";
-import { emitToolStart } from "./pipeline/display-mask.js";
+import { emitPermissionReview, emitToolStart } from "./pipeline/display-mask.js";
 import { returnUserAbort } from "./pipeline/invocation-context.js";
 import {
   finishRationaleResume,
@@ -153,6 +153,7 @@ export interface ExecutionStageContext {
   ) => ToolExecutionAuditMetadata;
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   permissionResult: PermissionCheckResult | undefined;
+  automatedApproval: boolean;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
@@ -202,7 +203,7 @@ export async function executeAuthorizedToolInvocation(
     auditCurrentToolCall,
     currentAuditMetadata,
     withHostShellExecutionPlan,
-    permissionResult,
+    automatedApproval,
     abortSignal,
     hostShellExecutionPermitBinding,
     hostShellApprovalDecision,
@@ -228,6 +229,7 @@ export async function executeAuthorizedToolInvocation(
     pluginOperationPrincipal,
     pluginAuthLifecycle,
   } = context;
+  let permissionResult = context.permissionResult;
 
 
   const scriptPre = resolvedPluginOperation
@@ -428,6 +430,8 @@ export async function executeAuthorizedToolInvocation(
   let image: ToolResultImage | undefined;
   let authorizationRequired: AuthorizationRequiredControl | undefined;
   let effectAuthorizationRequired: AuthorizationRequiredControl | undefined;
+  let latePermissionHookChain: import("../audit/audit-schema.js").HookResult[] | undefined;
+  let handlerAdmissionBlocked = false;
   let outputArtifact: ToolOutputArtifactInfo | undefined;
   let ownedOutputCapture: ToolOutputCapture | undefined;
   let outputArtifactDelivered = false;
@@ -814,98 +818,157 @@ export async function executeAuthorizedToolInvocation(
   }
   const outcome = await runWithCeiling(
     async (signal) => {
-      // Operator confinement is re-observed here, after every async pre-hook,
-      // admission, rate, and audit gate. No await separates this one-shot grant
-      // from the synchronous handler-entry checks below.
-      const finalExecutionRouteGrant = finalizeExecutionRouteGrant === undefined
-        ? executionRouteGrant
-        : await finalizeExecutionRouteGrant();
-      const ctx: ToolExecutionContext = {
-        ...executionContext,
-        ...(finalExecutionRouteGrant === undefined
-          ? {}
-          : { executionRouteGrant: finalExecutionRouteGrant }),
-        abortSignal: signal,
-      };
-      // Bind the per-invocation effect ledger for the async chain of this
-      // execution so the in-process plugin hostApi closures record onto it.
-      // AsyncLocalStorage propagates through the loopback transport (the same
-      // path `currentInvocationOrigin` relies on); a re-entrant callTool opens
-      // its own ledger scope, so nested effects never double-count here.
-      //
-      // Effect-boundary ENFORCEMENT — bind the per-invocation gate context
-      // alongside the ledger so a host-classified WRITE reached during execute
-      // can ask AT THE EFFECT (foreground) or fail closed (headless).
-      // `headless` is the SAME signal that drives the pre-exec headless lane; the
-      // fresh `onceGrants` set dedups N writes to one target within this call.
-      // When `hostClassifiesRisk` is OFF (disabled/unset; the shipped default
-      // is ON, see settings-store.ts) the gate is a pass-through, so binding
-      // the context here is inert.
-      const execution = runWithToolExecutionCwd(executionCwd, () =>
-        runWithEffectLedger(effectLedger, () =>
-          runWithEffectGateContext(
-            {
-              headless: invocationPermissionContext.headless === true,
-              approvalSurface: invocationPermissionContext.approvalSurface,
-              toolName: toolUse.name,
-              ...(sessionId === undefined ? {} : { sessionId }),
-            },
-            () => {
-              if (
-                pluginOperationPrincipal &&
-                operationExecutionDomain
-              ) {
-                // No await may separate this final revocation check from
-                // handler entry. Session/account/generation teardown that won
-                // the race after lease admission therefore blocks dispatch.
-                services.pluginOperationGrants.assertExecutionAuthorized(
-                  pluginOperationPrincipal,
-                  operationExecutionDomain,
-                );
-              }
-              if (pluginAuthLifecycle) {
-                if (!pluginOperationPrincipal || !operationExecutionDomain) {
-                  throw new Error(
-                    "host plugin auth lifecycle is missing governed operation admission",
+      const enterHandler = async (manuallyApproved: boolean): Promise<Awaited<ReturnType<Tool["execute"]>>> => {
+        // Operator confinement is re-observed here, after every async pre-hook,
+        // admission, rate, and audit gate. No await separates this one-shot grant
+        // from the synchronous handler-entry checks below.
+        const finalExecutionRouteGrant = finalizeExecutionRouteGrant === undefined
+          ? executionRouteGrant
+          : await finalizeExecutionRouteGrant();
+        const ctx: ToolExecutionContext = {
+          ...executionContext,
+          ...(finalExecutionRouteGrant === undefined
+            ? {}
+            : { executionRouteGrant: finalExecutionRouteGrant }),
+          abortSignal: signal,
+        };
+        // Bind the per-invocation effect ledger for the async chain of this
+        // execution so the in-process plugin hostApi closures record onto it.
+        // AsyncLocalStorage propagates through the loopback transport (the same
+        // path `currentInvocationOrigin` relies on); a re-entrant callTool opens
+        // its own ledger scope, so nested effects never double-count here.
+        //
+        // Effect-boundary ENFORCEMENT — bind the per-invocation gate context
+        // alongside the ledger so a host-classified WRITE reached during execute
+        // can ask AT THE EFFECT (foreground) or fail closed (headless).
+        // `headless` is the SAME signal that drives the pre-exec headless lane; the
+        // fresh `onceGrants` set dedups N writes to one target within this call.
+        // When `hostClassifiesRisk` is OFF (disabled/unset; the shipped default
+        // is ON, see settings-store.ts) the gate is a pass-through, so binding
+        // the context here is inert.
+        const execution = runWithToolExecutionCwd(executionCwd, () =>
+          runWithEffectLedger(effectLedger, () =>
+            runWithEffectGateContext(
+              {
+                headless: invocationPermissionContext.headless === true,
+                approvalSurface: invocationPermissionContext.approvalSurface,
+                toolName: toolUse.name,
+                ...(sessionId === undefined ? {} : { sessionId }),
+              },
+              () => {
+                // This is the single final automatic-authority boundary. Every
+                // asynchronous hook and route admission has completed before it.
+                const pause = automatedApproval && !manuallyApproved
+                  ? services.permissionManager?.getAutomatedApprovalPauseReason(sessionId)
+                  : undefined;
+                if (pause !== undefined) {
+                  handlerAdmissionBlocked = true;
+                  const userAvailable = invocationPermissionContext.headless !== true &&
+                    invocationPermissionContext.approvalSurface !== "unavailable" && services.approvalGate !== undefined;
+                  const reason = t(pause === "consecutive"
+                    ? userAvailable ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
+                    : userAvailable ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal");
+                  permissionResult = { decision: userAvailable ? "ask" : "deny", reason, layer: 5, forceModal: true };
+                  emitPermissionReview(callbacks, {
+                    status: userAvailable ? "needs_approval" : "failed", toolName: toolUse.name,
+                    toolCategory: invocationCategory, source, reason, ...meta,
+                  });
+                  if (!userAvailable) throw new Error(reason);
+                  if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
+                  const requestManualApproval = async () => {
+                    const permHook = await runScriptHook(
+                      services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
+                      finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
+                      undefined, undefined, tool.pluginGeneration !== undefined,
+                    );
+                    latePermissionHookChain = hookChainFromDispatch("perm", permHook);
+                    if (permHook.decision === "deny") {
+                      permissionResult = { decision: "deny", reason: permHook.reason, layer: 5, forceModal: true };
+                      throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
+                    }
+                    await services.auditWriter.auditPermissionAsk(
+                      toolUse.name, source, invocationCategory, finalInput,
+                      { decision: "ask", reason, layer: 5, forceModal: true }, executionCwd,
+                      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
+                    );
+                    if (signal.aborted) throw signal.reason;
+                    const decision = await services.approvalGate!.requestAndWait({
+                      id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: toolUse.name,
+                      toolCategory: invocationCategory, source, trustOrigin: invocationPermissionContext.trustOrigin,
+                      args: finalInput, reason, createdAt: Date.now(), abortSignal: signal,
+                      forceExplicit: true, isReadOnly: false, durableApprovalRecordAllowed: false,
+                      parentAdjudicationEligible: false, allowedChoices: ["allow-once", "deny-once"],
+                    });
+                    if (signal.aborted) throw signal.reason;
+                    if (!services.permissionManager!.resumeAutomatedApproval(sessionId, decision)) {
+                      permissionResult = { decision: "deny", reason, layer: 5, forceModal: true };
+                      throw new Error(reason);
+                    }
+                    permissionResult = { decision: "allow", reason: "user approved approval request (allow-once)", layer: 5 };
+                    // Manual consent supersedes automatic authority for this
+                    // exact action. Renew route admission after the card await.
+                    return enterHandler(true);
+                  };
+                  return requestManualApproval();
+                }
+                if (
+                  pluginOperationPrincipal &&
+                  operationExecutionDomain
+                ) {
+                  // No await may separate this final revocation check from
+                  // handler entry. Session/account/generation teardown that won
+                  // the race after lease admission therefore blocks dispatch.
+                  services.pluginOperationGrants.assertExecutionAuthorized(
+                    pluginOperationPrincipal,
+                    operationExecutionDomain,
                   );
                 }
-                // This callback performs the host-owned auth-generation check
-                // at the same final no-await boundary as the revocation check.
-                pluginAuthLifecycle.beforeHandler(
-                  pluginOperationPrincipal,
-                  operationExecutionDomain,
-                );
-              }
-              // No await may separate the paired-share check from handler
-              // entry. A local owner revoke that wins after approval therefore
-              // prevents the effectful tool adapter from receiving dispatch.
-              if (!isRemoteControllerAuthorityCurrent(
-                invocationPermissionContext.remoteControllerAuthority,
-              )) {
-                throw new Error("remote-controller-revoked");
-              }
-              return tool.execute(finalInput, ctx);
-            },
-            () => {
-              effectAuthorizationRequired ??= issueAuthorizationRequiredControl({
-                kind: "tool",
-                toolName: toolUse.name,
-                source,
-                category: invocationCategory,
-                reason: "approval-surface-unavailable",
-              });
-            },
+                if (pluginAuthLifecycle) {
+                  if (!pluginOperationPrincipal || !operationExecutionDomain) {
+                    throw new Error(
+                      "host plugin auth lifecycle is missing governed operation admission",
+                    );
+                  }
+                  // This callback performs the host-owned auth-generation check
+                  // at the same final no-await boundary as the revocation check.
+                  pluginAuthLifecycle.beforeHandler(
+                    pluginOperationPrincipal,
+                    operationExecutionDomain,
+                  );
+                }
+                // No await may separate the paired-share check from handler
+                // entry. A local owner revoke that wins after approval therefore
+                // prevents the effectful tool adapter from receiving dispatch.
+                if (!isRemoteControllerAuthorityCurrent(
+                  invocationPermissionContext.remoteControllerAuthority,
+                )) {
+                  throw new Error("remote-controller-revoked");
+                }
+                handlerAdmissionBlocked = false;
+                return tool.execute(finalInput, ctx);
+              },
+              () => {
+                effectAuthorizationRequired ??= issueAuthorizationRequiredControl({
+                  kind: "tool",
+                  toolName: toolUse.name,
+                  source,
+                  category: invocationCategory,
+                  reason: "approval-surface-unavailable",
+                });
+              },
+            ),
           ),
-        ),
-      );
-      if (!awaitCancellationSettlement) return execution;
-      return execution.catch((error: unknown) => {
-        // The ceiling helper preserves interruption classification, which can
-        // replace a late rejection message. Keep the actual error for this
-        // builtin's bounded detail without exposing its stack or metadata.
-        settledTaskError = errorMessage(error);
-        throw error;
-      });
+        );
+        if (!awaitCancellationSettlement) return execution;
+        return execution.catch((error: unknown) => {
+          // The ceiling helper preserves interruption classification, which can
+          // replace a late rejection message. Keep the actual error for this
+          // builtin's bounded detail without exposing its stack or metadata.
+          settledTaskError = errorMessage(error);
+          throw error;
+        });
+      };
+      return enterHandler(false);
     },
     effectiveCeilingMs,
     abortSignal,
@@ -1257,7 +1320,7 @@ export async function executeAuthorizedToolInvocation(
 
   try {
   // ── Step 7: PostHook + Feedback Merge ───────────
-  if (!resolvedPluginOperation) {
+  if (!resolvedPluginOperation && !handlerAdmissionBlocked) {
     postFeedback = await services.hookRunner.runPostHooks({
       toolName: toolUse.name,
       toolInput: finalInput,
@@ -1374,6 +1437,7 @@ export async function executeAuthorizedToolInvocation(
   const successHookChain = mergeHookChains(
     hookChainFromDispatch("pre", scriptPre),
     hookChainFromDispatch("post", scriptPost),
+    latePermissionHookChain,
   );
   const auditedPermissionResult = authorizationRequired
     ? {

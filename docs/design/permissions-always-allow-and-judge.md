@@ -160,8 +160,9 @@ Absent judge settings or a valid empty configured chain use the default builtin
 reviewer chain. Classification and failure behavior remain unchanged, including
 eligible host-built-in `meta` calls, except for the unified pause and resume
 behavior below.
-Automated review requires a conversation or task session identity; a missing
-identity is an explicit contract error.
+Automated review requires a conversation or task session identity and a
+host-created invocation identity; either missing identity is an explicit
+contract error.
 
 **2. Settings and model selection.** The canonical persisted shape is an ordered
 `permissions.judge.chain`. The [settings parser](../../src/permissions/judge/judge-settings.ts)
@@ -262,6 +263,10 @@ to the next stage. An `allow` or `deny` meeting the threshold is final; without
 a threshold, `allow` and `deny` are final directly. A stage failure advances to
 the next stage within the chain deadline. The last stage's ambiguity asks the
 user. All stages receive the call context without tool results.
+The implicit builtin chain adds no stage or whole-chain timeout beyond the
+classifier's existing retry, streaming and transport limits. Explicitly
+configured chains retain their configured budgets. Caller cancellation still
+propagates in both cases.
 
 **5. Input and output.** The host supplies recent user messages, the normalized
 tool call, cwd/project root, effective sandbox state, rule verdict, policy text
@@ -291,6 +296,10 @@ and appends an item to the existing `DeferredQueue`. A paused breaker routes
 interactive requests to the normal user approval card; without an available
 user, it denies with a reason naming the threshold. The existing approval card
 and notification surfaces explain the pause in English and Korean.
+The host checks pause state once at the final handler boundary, after all
+asynchronous pre-tool hooks. A paused automatic approval returns to manual
+approval interactively or denies when no user is available; existing manual
+authorization remains valid.
 Caller cancellation remains terminal; internal contract violations and failures
 to write the active audit propagate instead of becoming an approval.
 
@@ -305,8 +314,11 @@ and failure metadata remain unchanged.
 
 **8. Breaker.** One chain-owned breaker counts successful classifier blocks per
 root conversation across all automated lanes. A final non-allow verdict counts
-once, including a builtin foreground `ask`; intermediate stage verdicts, shadow
-observations, classifier failures, timeouts and separate host safety rejections
+once per host invocation identity, including a builtin foreground `ask`.
+Scope review, ordinary review and cache assessments of the same invocation
+cannot count it again; distinct invocations count separately even with identical
+arguments. Intermediate stage verdicts, shadow observations, classifier failures,
+timeouts and separate host safety rejections
 do not count. The thresholds are fixed at 3 consecutive or 20 total blocks.
 The block is counted after the provider and host hook complete, before audit
 append. A stop during append does not undo that completed block; a stop before
@@ -330,9 +342,12 @@ a fresh counter for that conversation.
 ask/deny. It cannot change the executing invocation. `afterJudge` may only keep
 or downgrade a decision (`allow → ask → deny`).
 
-**10. Audit and verification.** The existing writer records root session, tool,
-argument hash, redacted request, provider id/version, rationale, latency and
-fallback. Each executed stage records its verdict, confidence, model and latency.
+**10. Audit and verification.** The existing writer records root session,
+invocation identity, tool, argument hash, redacted request, provider id/version,
+rationale, latency and fallback. Each executed stage records its verdict,
+confidence, model and latency.
+Normal builtin review and the authoritative shadow baseline retain the resolved
+reviewer model in that stage audit.
 Active decisions use the HMAC-protected permission audit; shadow uses the shadow
 channel. Active audit failure prevents execution.
 

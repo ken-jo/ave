@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -46,7 +47,7 @@ describe("PermissionManager builtin judge decisions", () => {
       trustOrigin: "user-keyboard" as const,
     };
     for (const expectedOutcome of ["fresh", "cache"] as const) {
-      const result = await manager.dispatchReviewer("write_probe", input, undefined, {
+      const result = await manager.dispatchReviewer("write_probe", { ...input, invocationId: randomUUID() }, undefined, {
         defer: lane === "headless" ? "medium-high" : "none",
       });
       expect(result.verdict).toEqual(verdict);

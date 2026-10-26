@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
@@ -86,10 +88,14 @@ describe("exact decisions scoped to the captured working directory", () => {
       pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
     });
     const args = { command: "inspect_local_fixture" };
-    const reviewer = await new PermissionManager(join(root, "permissions.json")).dispatchReviewer("bash", {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    wireJudgeForTest(manager);
+    const reviewer = await manager.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "working-directory-session",
       source: "builtin", category: "shell", pathFields: [], finalInput: args,
       trustOrigin: "user-keyboard", executionCwd: alias, allowedDirectories: [first], sensitivePathsAdjacent: [],
-    });
+    }, undefined, { defer: "none" });
     let displayed: ApprovalRequest | undefined;
     const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
@@ -121,10 +127,14 @@ describe("exact decisions scoped to the captured working directory", () => {
   it.each(["high", "forged", "changed-input"])("rejects %s evidence for remembering failed-review HIGH", async (caseName) => {
     const cwd = join(root, "first");
     const args = { command: caseName === "high" ? "rm -rf file" : "printf hello" };
-    const reviewer = await new PermissionManager(join(root, "permissions.json")).dispatchReviewer("bash", {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    wireJudgeForTest(manager);
+    const reviewer = await manager.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "working-directory-session",
       source: "builtin", category: "shell", pathFields: [], finalInput: args,
       trustOrigin: "user-keyboard", executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
-    });
+    }, undefined, { defer: "none" });
     if (caseName === "high") expect(reviewer.approvalBasis!.ruleVerdict).toBe("high");
     let displayed: ApprovalRequest | undefined;
     const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
