@@ -1,3 +1,4 @@
+import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
@@ -1064,6 +1065,14 @@ export function normalizeWebView(input: unknown): WebViewSettings {
     );
   }
   return { ...DEFAULT_SETTINGS.webView };
+}
+
+export function normalizeDocuments(input: unknown): DocumentSettings {
+  const result = { ...DEFAULT_SETTINGS.documents };
+  if (isRecord(input)) {
+    acceptField(result, "openMode", input.openMode, isDocumentOpenMode, "documents", STORED_FIELD);
+  }
+  return result;
 }
 
 const VALID_CLOSE_BEHAVIORS: readonly SystemCloseBehavior[] = ["hide-to-tray", "quit"];

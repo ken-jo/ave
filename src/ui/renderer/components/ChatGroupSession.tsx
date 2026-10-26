@@ -70,6 +70,7 @@ export interface ChatGroupEnvironment {
   llmContextWindow: number;
   /** The active route's prompt cap below the window, when one is stated (`resolveContextWindowForRoute(...).inputLimit`). */
   llmInputLimit?: number;
+  autoCompactEnabled?: boolean;
   /** The active route's endpoint and its own price report, for the pre-send estimate. */
   llmRoutePricing?: ModelPricingRoute;
   /** The active route's input modalities, for the image gate; `undefined` until settings have resolved. */
@@ -900,6 +901,8 @@ export function ChatGroupSession({
     onOpenSettings: env.onOpenSettings,
     ...env.search,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
+    llmContextWindow: env.llmContextWindow, llmInputLimit: env.llmInputLimit,
+    autoCompactEnabled: env.autoCompactEnabled,
     tpmLimit, tpmPct, isTpmOverflow,
     usageAvailable: env.apiUsageProjectionAvailable,
     rolePresets: env.rolePresets, activePreset: env.activePreset,

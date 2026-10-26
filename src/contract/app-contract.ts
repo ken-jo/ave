@@ -738,6 +738,8 @@ export const CHANNELS = {
     // bounded sheet or page, never source bytes. The index selects a sheet
     // for table formats or a page for presentations/PDF. INTERNAL.
     readDocument: "ave:preview:read-document",
+    documentOpenRequest: "ave:preview:document-open-request",
+    documentOpenAck: "ave:preview:document-open-ack",
   },
   workspace: {
     pickRoot: "ave:workspace:pick-root",

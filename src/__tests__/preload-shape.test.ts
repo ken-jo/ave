@@ -229,6 +229,8 @@ describe("preload contextBridge world shape lock", () => {
             "set",
           ],
           "preview": [
+            "acknowledgeDocumentOpen",
+            "onDocumentOpen",
             "readDocument",
             "readFile",
           ],

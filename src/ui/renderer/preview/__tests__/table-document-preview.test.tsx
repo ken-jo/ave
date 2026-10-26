@@ -114,7 +114,7 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
       totalColumns: 2,
       rowsTruncated: true,
       columnsTruncated: false,
-      cellsTruncated: false,
+      cellsTruncated: false, clippedCells: [],
     },
     {
       index: 1,
@@ -126,7 +126,7 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
       totalColumns: 1,
       rowsTruncated: false,
       columnsTruncated: false,
-      cellsTruncated: false,
+      cellsTruncated: false, clippedCells: [],
     },
   ];
   return {

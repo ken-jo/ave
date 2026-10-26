@@ -1,4 +1,5 @@
 /** Task numbers are 1-based and match the numbers shown to the model. */
+import { chatSurface } from "./chat-surface.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ListChecks, X } from "lucide-react";
 import { Badge } from "../../../components/ui/badge.js";
@@ -163,7 +164,7 @@ export function SessionTasksPanel({
             over an empty toast reserve whenever there was nothing to notify. */}
         <button
           type="button"
-          className={`inline-flex min-w-0 shrink-0 items-center gap-1 rounded-full border border-warning/(--opacity-medium) bg-warning/(--opacity-faint) px-1.5 tabular-nums text-warning transition-colors duration-(--motion-fast) ease-(--motion-ease-standard) hover:bg-warning/(--opacity-subtle) focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none ${
+          className={`${chatSurface({ shape: "chip", elevation: "flat" })} inline-flex min-w-0 shrink-0 items-center gap-1 px-1.5 tabular-nums text-warning hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus ${
             open ? "bg-warning/(--opacity-subtle)" : ""
           }`}
           data-testid="session-tasks-panel"
@@ -191,7 +192,7 @@ export function SessionTasksPanel({
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-80 p-0 text-xs" data-testid="session-tasks-list">
+      <PopoverContent side="top" align="start" className={`${chatSurface({ elevation: "floating" })} w-80 max-w-[calc(100vw-1.5rem)] p-0 text-xs text-input-bar-foreground`} data-testid="session-tasks-list">
         <div className="flex items-center gap-2 px-3 py-1.5">
           <ListChecks className="h-3 w-3" />
           <span className="font-medium">{t("sessionTasksPanel.panelTitle")}</span>

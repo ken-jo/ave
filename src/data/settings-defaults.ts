@@ -106,6 +106,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     bundleId: DEFAULT_BUNDLE_ID,
     language: DEFAULT_LOCALE,
   },
+  documents: { openMode: "direct" },
   webView: {
     preferredFlow: "in-app",
   },

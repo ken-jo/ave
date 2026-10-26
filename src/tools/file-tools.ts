@@ -7,6 +7,7 @@ import {
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   stat,
   unlink,
@@ -28,6 +29,7 @@ import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/ex
 import {
   MAX_TEXT_FILE_BYTES,
   isBinaryFile,
+  isGlobPattern,
   readTextFileWindow,
 } from "./file-read-core.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -62,6 +64,15 @@ import {
   ImagePreparationOptionsSchema,
 } from "../shared/image-preparation-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { ReadDocumentInputSchema, OpenDocumentInputSchema, type ReadDocumentInput } from "./document-tool-input.js";
+import { requestDocumentPanel } from "./document-panel-access.js";
+import { documentToolFailure, formatDocumentToolOutput } from "./document-tool-output.js";
+import { PREVIEW_DOCUMENT_LIMITS, previewDocumentFormatOf } from "../shared/preview-document.js";
+import { previewPageFormatOf } from "../shared/preview-page-document.js";
+import { acquireParseSlot } from "./preview-document-process.js";
+import { readPreviewDocumentInput } from "./preview-document-input.js";
+import { TableDocumentError } from "./table-document-error.js";
+import { DOCUMENT_PARSE_MESSAGES } from "./preview-document-protocol.js";
 import { RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
 import {
@@ -677,6 +688,147 @@ export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
     } catch (error) {
       return toolError(`view_image: ${errorMessage(error)}`);
     }
+  }
+}
+
+function documentPolicyFailure(denial: ToolExecutionResult): ToolExecutionResult {
+  const error = denial.output.startsWith("Sensitive path:") ? "sensitive-path" : "path-not-allowed";
+  return documentToolFailure(error, "Document read denied by file policy");
+}
+
+function documentRouteFailure(failure: ToolExecutionResult): ToolExecutionResult {
+  return { ...documentToolFailure("unsupported-route", "Document execution route is unavailable"), metadata: failure.metadata };
+}
+
+export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
+  readonly name = "read_document";
+  readonly description =
+    "Read CSV, TSV, XLSX, XLS, ODS, PDF or PPTX using bounded document extraction. " +
+    "Select sheet (zero-based sheet and absolute row/column offsets; default 20 rows by 10 columns, " +
+    "maximum 100 rows, 50 columns and 500 cells), page (one-based page, zero-based textOffset), " +
+    "or info (ten sheet labels per call). Text results fit 6000 characters, 16 KiB and 1800 estimated tokens; " +
+    "follow remainingWindows or nextTextOffset for more. Formulas are cached display values. " +
+    "Page includeImage defaults false; true adds the existing rendered PNG as visual model context, " +
+    "at most 2 MiB per call in a separate image budget. Image input consumes additional model context " +
+    "and provider-dependent image tokens; omit it for text-only reading. PPTX is an outline without a rendered image. " +
+    "PDF text also requires the page renderer; no OCR or document editing. Does not open the side panel.";
+  readonly inputSchema = ReadDocumentInputSchema;
+  override readonly category: ToolCategory = "read";
+  override readonly awaitCancellationSettlement = true as const;
+
+  override isReadOnly(): boolean { return true; }
+
+  override async execute(rawInput: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const parsed = this.inputSchema.safeParse(rawInput);
+    return parsed.success ? this.executeTyped(parsed.data, ctx) : documentToolFailure("invalid-arguments", "Invalid document selection or window");
+  }
+
+  protected async executeTyped(input: ReadDocumentInput, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {
+    if (isGlobPattern(input.path) || /^[a-z][a-z0-9+.-]*:\/\//i.test(input.path)) {
+      return documentToolFailure("not-a-file", "A concrete local file path is required");
+    }
+    const transport = await this.executionTransport(input, ctx);
+    if (transport.kind === "failure") return documentRouteFailure(transport.result);
+    const resolved = this.resolveExecutionPath(input.path, ctx, transport);
+    if (!resolved.ok) return documentRouteFailure(resolved.error);
+    let target = resolved.value;
+    if (transport.kind === "local") {
+      const denied = this.ensureAllowed(target, ctx, "read");
+      if (denied) return documentPolicyFailure(denied);
+      try { target = await realpath(target); }
+      catch { return documentToolFailure("read-failed", "Document could not be read"); }
+      const canonicalDenied = this.ensureAllowed(target, ctx, "read");
+      if (canonicalDenied) return documentPolicyFailure(canonicalDenied);
+    }
+    const format = previewDocumentFormatOf(target) ?? previewPageFormatOf(target);
+    if (!format) return documentToolFailure("unsupported-format", "Unsupported document format");
+    const table = previewDocumentFormatOf(target) !== null;
+    if (input.selection && input.selection.kind !== "info" && (table !== (input.selection.kind === "sheet"))) {
+      return documentToolFailure("invalid-arguments", "Selection does not match the document format");
+    }
+    const selection = input.selection ?? ReadDocumentInputSchema.parse({ path: target,
+      selection: { kind: table ? "sheet" : "page" } }).selection!;
+    const controller = new AbortController();
+    const handleAbort = (): void => controller.abort(ctx.abortSignal?.reason);
+    ctx.abortSignal?.addEventListener("abort", handleAbort, { once: true });
+    if (ctx.abortSignal?.aborted) handleAbort();
+    try {
+      const slot = await acquireParseSlot(`agent-document:${randomUUID()}`, controller);
+      try {
+        let bytes: Buffer;
+        if (transport.kind === "broker") {
+          const result = await transport.runtime.executeBrokeredWorkloadRequest(transport.capability,
+            "file.read_binary", brokerFilePayload({ path: target, maxBytes: PREVIEW_DOCUMENT_LIMITS.maxFileBytes }),
+            transport.correlationAuthority, slot.signal);
+          if (result.isError) return documentRouteFailure(result);
+          if (!("data" in result)) return documentRouteFailure(brokerFailureResult("binary response was missing document bytes"));
+          bytes = Buffer.from(result.data, "base64");
+          if (bytes.length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes || bytes.toString("base64") !== result.data) {
+            return documentRouteFailure(brokerFailureResult("invalid binary document response"));
+          }
+        } else {
+          bytes = await readPreviewDocumentInput(target, slot.signal);
+        }
+        slot.signal.throwIfAborted();
+        const index = selection.kind === "sheet" ? selection.sheet : selection.kind === "page" ? selection.page - 1 : 0;
+        const window = selection.kind === "sheet" ? {
+          rowOffset: selection.rowOffset, columnOffset: selection.columnOffset,
+          rowCount: selection.rowCount, columnCount: selection.columnCount,
+        } : table ? { rowCount: 1, columnCount: 1 } : undefined;
+        const document = await slot.parse(bytes, format, index, window);
+        slot.signal.throwIfAborted();
+        return formatDocumentToolOutput(target, document, selection);
+      } finally { slot.release(); }
+    } catch (error) {
+      if (controller.signal.aborted) return documentToolFailure("superseded", "Document read was canceled");
+      if (error instanceof TableDocumentError) {
+        const message = error.code in DOCUMENT_PARSE_MESSAGES
+          ? DOCUMENT_PARSE_MESSAGES[error.code as keyof typeof DOCUMENT_PARSE_MESSAGES] : "Document could not be read";
+        return documentToolFailure(error.code, message);
+      }
+      return documentToolFailure("read-failed", "Document could not be read");
+    } finally { ctx.abortSignal?.removeEventListener("abort", handleAbort); }
+  }
+}
+
+export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
+  readonly name = "open_document";
+  readonly description =
+    "Present a local CSV, TSV, XLSX, XLS, ODS, PDF or PPTX to the user. " +
+    "The user's document setting chooses direct side-panel opening or a clickable file link. " +
+    "Uses ordinary read permissions without an additional prompt. Does not feed document contents to the model. " +
+    "Requires the originating foreground session; unavailable headless or for isolated guest paths.";
+  readonly inputSchema = OpenDocumentInputSchema;
+  override readonly category: ToolCategory = "read";
+  override isReadOnly(): boolean { return true; }
+
+  override async execute(rawInput: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const parsed = this.inputSchema.safeParse(rawInput);
+    return parsed.success ? this.executeTyped(parsed.data, ctx) : documentToolFailure("invalid-arguments", "A document path is required");
+  }
+
+  protected async executeTyped(input: z.infer<typeof OpenDocumentInputSchema>, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {
+    if (isGlobPattern(input.path) || /^[a-z][a-z0-9+.-]*:\/\//i.test(input.path)) {
+      return documentToolFailure("not-a-file", "A concrete local file path is required");
+    }
+    const transport = await this.executionTransport(input, ctx);
+    if (transport.kind === "failure") return documentRouteFailure(transport.result);
+    if (transport.kind === "broker") return documentToolFailure("unsupported-route", "Guest documents cannot be opened in the host panel");
+    const resolved = this.resolveExecutionPath(input.path, ctx, transport);
+    if (!resolved.ok) return documentRouteFailure(resolved.error);
+    let target = resolved.value;
+    const denied = this.ensureAllowed(target, ctx, "read");
+    if (denied) return documentPolicyFailure(denied);
+    try { target = await realpath(target); }
+    catch { return documentToolFailure("read-failed", "Document could not be read"); }
+    const canonicalDenied = this.ensureAllowed(target, ctx, "read");
+    if (canonicalDenied) return documentPolicyFailure(canonicalDenied);
+    if (!(previewDocumentFormatOf(target) ?? previewPageFormatOf(target))) {
+      return documentToolFailure("unsupported-format", "Unsupported document format");
+    }
+    const file = await statFile(target);
+    if (!file.ok || !file.value.isFile()) return documentToolFailure("not-a-file", "Document must be a regular file");
+    return requestDocumentPanel(target, ctx);
   }
 }
 
@@ -1554,6 +1706,8 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
 const canonicalFileToolConstructors = new Set<Function>([
   ReadFileTool,
   ViewImageTool,
+  ReadDocumentTool,
+  OpenDocumentTool,
   ListFilesTool,
   GlobFilesTool,
   GrepFilesTool,
@@ -1571,6 +1725,8 @@ export function createFileTools(): Tool[] {
   return [
     new ReadFileTool(),
     new ViewImageTool(),
+    new ReadDocumentTool(),
+    new OpenDocumentTool(),
     new ListFilesTool(),
     new GlobFilesTool(),
     new GrepFilesTool(),
@@ -1588,6 +1744,8 @@ export function createFileTools(): Tool[] {
 export type CanonicalFileTool =
   | ReadFileTool
   | ViewImageTool
+  | ReadDocumentTool
+  | OpenDocumentTool
   | ListFilesTool
   | GlobFilesTool
   | GrepFilesTool

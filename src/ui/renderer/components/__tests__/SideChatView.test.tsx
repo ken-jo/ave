@@ -10,6 +10,7 @@ import { ChatContextProvider, type ChatContextValue } from "../../context/ChatCo
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalRequest, approvalSurfaceStub, deferred } from "../../../../../test/renderer/helpers.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { getUsableContext } from "../../../../shared/context-budget.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
 
 function makeApi() {
@@ -97,6 +98,22 @@ describe("SideChatView — New button gating during streaming", () => {
     await waitFor(() => expect(spies.controlShellTask).toHaveBeenCalledWith("side-1", "background", undefined));
     expect(mainControl).not.toHaveBeenCalled();
     expect(spies.listShellTasks).toHaveBeenCalledWith("side-1");
+  });
+
+  it("keeps its own context warning in its composer and compaction history in its transcript", async () => {
+    const { api, emit, acceptTurn } = makeApi();
+    renderView(api, { hasApiKey: true, settingsLoaded: true, llmContextWindow: 100_000, autoCompactEnabled: true, contextOverflowPct: 0.1 });
+    await startTurn();
+    acceptTurn(1);
+    emit({ type: "compact_notice", streamId: 1, removedMessages: 3, freedTokens: 100, estimatedAfter: getUsableContext(100_000) * 1.09, summary: "Side decisions" });
+    const notice = screen.getByTestId("composer-context-notice");
+    expect(notice.closest('[data-testid="side-chat-composer-dock"]')).not.toBeNull();
+    expect(notice).toHaveTextContent("109%");
+    expect(notice).toHaveAttribute("data-severity", "warning");
+    expect(screen.getByTestId("summary-toast").closest('[data-testid="side-chat-transcript"]')).not.toBeNull();
+    expect(screen.getAllByTestId("checkpoint-divider")).toHaveLength(1);
+    emit({ type: "compact_notice", streamId: 1, removedMessages: 1, freedTokens: 100, estimatedAfter: 0 });
+    expect(screen.queryByTestId("composer-context-notice")).toBeNull();
   });
 
   it("disables the New button while a turn is streaming", async () => {

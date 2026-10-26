@@ -243,6 +243,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
+  ["preview", CHANNELS.preview.documentOpenAck, [{ requestId: "request", sessionId: "session", opened: true }]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
   ["usage", CHANNELS.usage.pricingOverrides, []],
@@ -350,7 +351,9 @@ describe("host-renderer-only IPC channels", () => {
   });
 
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
-    await invoke(channel, hostFrameEvent(), args);
+    const event = hostFrameEvent();
+    if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
+    await invoke(channel, event, args);
     expect(guardRowsFor(channel)).toEqual([]);
     if (channel === CHANNELS.workspace.searchFiles) {
       expect(searchWorkspaceFiles).toHaveBeenCalledTimes(1);

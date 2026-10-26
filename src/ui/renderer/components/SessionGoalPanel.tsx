@@ -1,4 +1,5 @@
 /** Goal controls follow its state: stop, resume, continue after budget exhaustion, or dismiss after completion. */
+import { chatSurface } from "./chat-surface.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Target, Pause, Play, X } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -109,7 +110,7 @@ export function SessionGoalPanel({
 
   return (
     <span
-      className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-info/(--opacity-medium) bg-info/(--opacity-faint) px-1.5 tabular-nums text-info"
+      className={`${chatSurface({ shape: "chip", elevation: "flat" })} inline-flex min-w-0 shrink items-center gap-1 px-1.5 tabular-nums text-info`}
       data-testid="session-goal-panel"
       data-session-id={sessionId ?? ""}
       data-status={goal.status}

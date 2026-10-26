@@ -78,6 +78,9 @@ export default defineConfig({
     },
   }],
   test: {
+    // Dependency directories can be shared by worktrees with different lockfiles.
+    // Keep cache invalidation local so one checkout cannot remove another's modules.
+    fsModuleCachePath: rootPath(".cache/vitest/modules"),
     globalSetup: [rootPath("config/vitest.globalSetup.ts")],
     // Boot fixtures retain calls from beforeAll; each suite owns mock cleanup.
     clearMocks: false,

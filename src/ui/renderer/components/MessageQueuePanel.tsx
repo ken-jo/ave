@@ -1,4 +1,5 @@
 /** Use info foreground tokens; accent is a surface tint and is unreadable as text or a border on light themes. */
+import { chatSurface } from "./chat-surface.js";
 import { useSyncExternalStore, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, MessageSquarePlus, ArrowUp, ArrowDown, Check, X, Pencil } from "lucide-react";
 import { Badge } from "../../../components/ui/badge.js";
@@ -48,20 +49,13 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
 
   return (
     <div
-      /* Full-bleed band across <main>, like SessionTasksPanel above it: dock
-         strips are BANDS and the composer is the inset card. That split is a
-         deliberate system decision, pinned for the tasks strip by
-         session-tasks-in-chat.spec.ts — do not inset this one either, or the
-         two siblings stop agreeing. Dashed border = "not committed yet", the
-         shared language; the hue is what separates them (info here, warning
-         there). */
-      className="border-x border-y border-dashed border-info/(--opacity-medium) bg-info/(--opacity-faint) text-xs"
+      className={`${chatSurface()} mb-2 min-w-0 text-xs text-input-bar-foreground`}
       data-testid="message-queue-panel"
     >
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-info/(--opacity-subtle) motion-reduce:transition-none"
+        className="flex w-full min-w-0 items-center gap-2 rounded-t-[inherit] px-3 py-2 text-left text-xs transition-colors duration-(--motion-fast) ease-(--motion-ease-out) hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none"
         aria-expanded={expanded}
       >
         {expanded ? (

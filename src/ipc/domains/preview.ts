@@ -6,16 +6,15 @@
  * window.ave.preview.readDocument(path, sheetIndex). readDocument runs the SAME
  * guard and returns a bounded sheet or page (never source document bytes).
  *
- * SECURITY INVARIANT: the set of files this handler will read for preview is
- * EXACTLY the set the builtin `read_file` tool reads without approval — the
- * guard ({@link assertReadableFilePath}) and text-window core
- * ({@link readTextFileWindow}) are the SAME functions the tool uses
- * (`src/tools/file-read-core.ts`). This IPC adds ZERO new read authority.
+ * Preview reads always use the allowed-root guard, independently of the
+ * native agent read policy's optional directory fencing. Text windows share
+ * readTextFileWindow; this IPC does not widen either caller's read authority.
  *
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
  * reach it (fail-closed). Frame-guarded via validateHostRendererSender.
  */
 import { ipcMain, type WebContents, type WebFrameMain } from "electron";
+import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
@@ -104,6 +103,7 @@ function observeDocumentOwner(sender: WebContents, frame: WebFrameMain, abort: (
 }
 
 export function registerPreviewHandlers(deps: IpcDeps): void {
+  registerDocumentOpenHandlers(deps);
   const { auditLogger } = deps;
 
   ipcMain.handle(

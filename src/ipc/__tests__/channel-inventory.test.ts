@@ -489,6 +489,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:plugins:uninstall",
         "ave:policy:get",
         "ave:policy:set",
+        "ave:preview:document-open-ack",
         "ave:preview:read-document",
         "ave:preview:read-file",
         "ave:prompts:delete",
