@@ -236,6 +236,91 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     expect(lstatSync(absent, { throwIfNoEntry: false })).toBeUndefined();
   });
 
+  it("does not let a bracketed session write grant retain unrelated absent denies", async () => {
+    captureRuntime();
+    const target = join(profile, "unrelated-absent-secret");
+    for (const name of ["plain", "work[1]"]) {
+      const grant = join(profile, name);
+      mkdirSync(grant);
+      await initializeAsrtSandbox({ allowWrite: [grant], denyRead: [target], denyWrite: [target] });
+      expect(paths(config?.filesystem.denyRead)).not.toContain(target);
+      expect(paths(config?.filesystem.denyWrite)).not.toContain(target);
+      await resetAsrtSandbox();
+    }
+  });
+
+  it("drops absent denies beneath a live read-only grant", async () => {
+    const wrap = captureRuntime();
+    const grant = join(profile, "readonly");
+    mkdirSync(grant);
+    const target = join(grant, "absent-secret");
+    await initializeAsrtSandbox({});
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowRead: [grant] });
+    try {
+      await wrapToolCommand("echo readonly", { commandId: TEST_COMMAND_ID,
+        filesystem: { denyRead: [target], denyWrite: [target] } });
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+    } finally {
+      held.release();
+    }
+  });
+
+  it("keeps absent denies beneath a live write grant until its last writer releases", async () => {
+    const wrap = captureRuntime();
+    const grant = join(profile, "writable");
+    mkdirSync(grant);
+    const target = join(grant, "absent-secret");
+    const filesystem = { denyRead: [target], denyWrite: [target] };
+    await initializeAsrtSandbox({});
+    const reader = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowRead: [grant] });
+    const writer = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [grant] });
+    const otherWriter = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [grant] });
+    try {
+      writer.release();
+      await wrapToolCommand("echo writable", { commandId: TEST_COMMAND_ID, filesystem });
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).toContain(target);
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).toContain(target);
+      otherWriter.release();
+      await wrapToolCommand("echo readonly", { commandId: TEST_COMMAND_ID, filesystem });
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+    } finally {
+      writer.release();
+      otherWriter.release();
+      reader.release();
+    }
+  });
+
+  it("does not carry a live write grant across sandbox reset", async () => {
+    const wrap = captureRuntime();
+    const grant = join(profile, "previous-session");
+    mkdirSync(grant);
+    const target = join(grant, "absent-secret");
+    await initializeAsrtSandbox({});
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [grant] });
+    try {
+      await resetAsrtSandbox();
+      await initializeAsrtSandbox({});
+      await wrapToolCommand("echo fresh", { commandId: TEST_COMMAND_ID,
+        filesystem: { denyRead: [target], denyWrite: [target] } });
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
+      expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+      const current = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [grant] });
+      try {
+        held.release();
+        await wrapToolCommand("echo current", { commandId: TEST_COMMAND_ID,
+          filesystem: { denyRead: [target], denyWrite: [target] } });
+        expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).toContain(target);
+        expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).toContain(target);
+      } finally {
+        current.release();
+      }
+    } finally {
+      held.release();
+    }
+  });
+
   it("drops absent denies reached only by a read grant", async () => {
     const wrap = captureRuntime();
     const target = join(profile, "credential");
@@ -339,7 +424,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("does not create an absent deny target during native initialization or execution", async () => {
     constrainNativeInitialization();
     const absent = join(root, "absent", "secret");
-    await initializeAsrtSandbox({ denyRead: [absent], denyWrite: [absent] });
+    await initializeAsrtSandbox({ allowRead: [root], denyRead: [absent], denyWrite: [absent] });
     expect(lstatSync(absent, { throwIfNoEntry: false })).toBeUndefined();
     const wrapped = await wrapToolCommand("echo fixture-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { denyRead: [absent], denyWrite: [absent] } });

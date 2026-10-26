@@ -1661,7 +1661,7 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   covers only the `srt-win` Rust sources.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
-On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; the lists are re-evaluated per wrap, so an omitted target created while a command is running is not denied until the next wrap or worker/session re-initialization.
+On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. The lists are re-evaluated per wrap, so an omitted target created while a command is running is not denied until the next wrap or worker/session re-initialization.
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
