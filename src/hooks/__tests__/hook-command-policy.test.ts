@@ -154,12 +154,21 @@ describe("hook command permission admission", () => {
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {
     const p = policy();
     // Exact: a hook runs without a sandbox, so a wildcard allow never admits it.
-    p.permissionManager.setRules([{ pattern: "Bash('node' '--version')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
-    const admitted = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
+    const pattern = "Bash('printf' 'ready')";
+    p.permissionManager.setRules([{ pattern, action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const admitted = await p.authorizeCommand({ ...hook, command: ["printf", "ready"] }, payload, process.cwd());
     expect(admitted.decision).toBe("allow");
-    p.permissionManager.setRules([{ pattern: "Bash('node' '--version')", action: "ask" }]);
+    p.permissionManager.setRules([{ pattern, action: "ask" }]);
     expect(admitted.assertAllowed).toBeTypeOf("function");
     expect(() => admitted.assertAllowed!()).toThrow("Hook command permission changed");
+  });
+
+  it("does not automatically admit an unsupported node option through an exact allow rule", async () => {
+    const p = policy();
+    p.permissionManager.setRules([{ pattern: "Bash('node' '--version')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const result = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
+    expect(result.decision).toBe("deny");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
   });
 
   it("requires approval for interpreter code even with a matching shell allow rule", async () => {
