@@ -14,6 +14,7 @@ import { FileEditDiff, WriteFileSidecarDiff } from "./FileEditDiff.js";
 import { McpAppView } from "./McpAppView.js";
 import { CompactedToolResult } from "./CompactedToolResult.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
+import { DocumentToolLink } from "./DocumentToolLink.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
 
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
@@ -311,6 +312,7 @@ function SingleToolInline({
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
       </div>
       <LiveToolOutput tool={tool} />
+      <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={isError} />
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-[10px] ave-anim-fade-in">
           {tool.input && (
@@ -499,6 +501,7 @@ export function ToolGroupCard({
                     : <ToolDurationBadge durationMs={tool.durationMs} />}
                 </div>
                 <LiveToolOutput tool={tool} />
+                <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={tool.status === "error"} />
                 {isExpanded && (
                   <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-[10px] ave-anim-fade-in">
                     {tool.input && (

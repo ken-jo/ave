@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setAppRelaunchRequested } from "../../main/app-relaunch-state.js";
 import {
   drainPluginInstallLockOperations,
   hasPluginInstallInFlight,
@@ -12,7 +13,24 @@ import {
 
 describe("plugin install locks", () => {
   afterEach(() => {
+    setAppRelaunchRequested(false);
     clearAppUpdateInstallRequested();
+  });
+
+  it("refuses per-plugin entry while a relaunch is reserved", async () => {
+    setAppRelaunchRequested(true);
+    const install = vi.fn(async () => undefined);
+    await expect(withPluginInstallLock("p", install)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(install).not.toHaveBeenCalled();
+    expect(hasPluginInstallInFlight()).toBe(false);
+  });
+
+  it("refuses all-plugin entry while a relaunch is reserved", async () => {
+    setAppRelaunchRequested(true);
+    const install = vi.fn(async () => undefined);
+    await expect(withAllPluginInstallLocks(install)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(install).not.toHaveBeenCalled();
+    expect(hasPluginInstallInFlight()).toBe(false);
   });
 
   it("reports contention for only the requested plugin from reservation through release", async () => {

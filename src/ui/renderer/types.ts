@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
@@ -479,6 +480,7 @@ export type NotificationClickPayload = {
 };
 
 export type AveApi = {
+  relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;
   /**
    * Deterministic file:// URL of the bundled `plugin-preload.js`. Computed in
    * the host preload from `__dirname` (= `dist/src/`) so the plugin <webview>
@@ -560,6 +562,8 @@ export type AveApi = {
   subscriptionStartLogin: (provider: SubscriptionRuntimeId, method: SubscriptionLoginMethod) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionOpenLoginBrowser: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionCancelLogin: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
+  /** Dismiss the card's sign-in notice (ChatGPT plan usage). */
+  subscriptionAcknowledgeNotice: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionLogout: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionListModels: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeModelsResult>;
   subscriptionUseForChat: (provider: SubscriptionRuntimeId, model?: string) => Promise<SubscriptionRuntimeActionResult>;
@@ -1705,7 +1709,7 @@ export type AvePolicyApi = {
      * `managed`/`source`.
      */
     editable: boolean;
-  }>;
+  } & AdminPolicyDiagnostic>;
   set: (patch: unknown) => Promise<{ ok: boolean; policy?: unknown; error?: string; message?: string }>;
 };
 
@@ -2008,6 +2012,8 @@ interface WorkspaceFileMatch {
  * Korean message; `message` is English dev detail.
  */
 export interface AvePreviewApi {
+  onDocumentOpen: (handler: (request: import("../../shared/document-open.js").DocumentOpenRequest) => void) => () => void;
+  acknowledgeDocumentOpen: (ack: import("../../shared/document-open.js").DocumentOpenAck) => Promise<{ ok: true } | { ok: false; error: string }>;
   readFile: (path: string) => Promise<{
     ok: boolean;
     content?: string;
@@ -2025,8 +2031,8 @@ export interface AvePreviewApi {
     message?: string;
   }>;
   /**
-   * Table document (csv/tsv/xlsx/xls/ods) parsed in main under the same guard
-   * as `readFile`; returns one sheet as a bounded grid of display strings.
+   * Read under `readFile` authority and parse in an isolated child. The
+   * zero-based index selects a sheet or page, according to the file format.
    */
   readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
 }

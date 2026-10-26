@@ -1,5 +1,5 @@
 // Session-owned checklist uses 1-based numbering and returns the full list after every action.
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import {
   SessionTaskIndexError,
   type SessionTasksStore,
@@ -36,13 +36,9 @@ function numbered(items: SessionTaskItem[]): Array<{ index: number; text: string
   return items.map((item, i) => ({ index: i + 1, text: item.content, status: item.status }));
 }
 
-function failure(error: string) {
-  return { output: JSON.stringify({ error }), isError: true };
-}
-
 // Fail no-op updates so failed-input retry policy prevents repeated full-context rounds.
 function noChange(detail: string) {
-  return failure(`${detail}: nothing changed. Do not retry session_tasks with the same input; continue with work tools and update a task only when it actually advances.`);
+  return toolErrorResult(`${detail}: nothing changed. Do not retry session_tasks with the same input; continue with work tools and update a task only when it actually advances.`);
 }
 
 export function createSessionTasksTool(store: SessionTasksStore): Tool {
@@ -75,43 +71,43 @@ export function createSessionTasksTool(store: SessionTasksStore): Tool {
     },
     execute: async (rawInput, ctx) => {
       if (typeof ctx.metadata?.sessionId !== "string" || ctx.metadata.sessionId.length === 0) {
-        return failure("missing sessionId metadata");
+        return toolErrorResult("missing sessionId metadata");
       }
       const sessionId = ctx.metadata.sessionId;
       const a = (rawInput ?? {}) as Record<string, unknown>;
       if (!isAction(a.action)) {
-        return failure(`action must be one of ${ACTIONS.join(", ")}`);
+        return toolErrorResult(`action must be one of ${ACTIONS.join(", ")}`);
       }
       const index = optionalInteger(a.index);
       const after = optionalInteger(a.after);
-      if (Number.isNaN(index)) return failure("index must be an integer task number (1-based)");
-      if (Number.isNaN(after)) return failure("after must be an integer task number (0 = front)");
+      if (Number.isNaN(index)) return toolErrorResult("index must be an integer task number (1-based)");
+      if (Number.isNaN(after)) return toolErrorResult("after must be an integer task number (0 = front)");
       try {
         let items: SessionTaskItem[];
         switch (a.action) {
           case "create": {
             const steps = parseSteps(a.steps);
-            if (steps.length === 0) return failure("create needs steps: a comma-separated list of tasks");
+            if (steps.length === 0) return toolErrorResult("create needs steps: a comma-separated list of tasks");
             items = await store.create(sessionId, steps);
             break;
           }
           case "add": {
             const steps = parseSteps(a.steps);
-            if (steps.length === 0) return failure("add needs steps: a comma-separated list of tasks");
+            if (steps.length === 0) return toolErrorResult("add needs steps: a comma-separated list of tasks");
             items = await store.add(sessionId, steps, after);
             break;
           }
           case "edit": {
-            if (index === undefined) return failure("edit needs index: the task number to change");
+            if (index === undefined) return toolErrorResult("edit needs index: the task number to change");
             const text = typeof a.text === "string" && a.text.trim() ? a.text.trim() : undefined;
             const status = (EDIT_STATUSES as readonly string[]).includes(a.status as string)
               ? (a.status as (typeof EDIT_STATUSES)[number])
               : undefined;
             if (a.status !== undefined && status === undefined) {
-              return failure(`status must be one of ${EDIT_STATUSES.join(", ")}; use action=complete to finish a task`);
+              return toolErrorResult(`status must be one of ${EDIT_STATUSES.join(", ")}; use action=complete to finish a task`);
             }
             if (text === undefined && status === undefined) {
-              return failure("edit needs text and/or status");
+              return toolErrorResult("edit needs text and/or status");
             }
             const current = store.list(sessionId)[index - 1];
             if (
@@ -125,12 +121,12 @@ export function createSessionTasksTool(store: SessionTasksStore): Tool {
             break;
           }
           case "delete": {
-            if (index === undefined) return failure("delete needs index: the task number to remove");
+            if (index === undefined) return toolErrorResult("delete needs index: the task number to remove");
             items = await store.delete(sessionId, index);
             break;
           }
           case "complete": {
-            if (index === undefined) return failure("complete needs index: the task number that is done");
+            if (index === undefined) return toolErrorResult("complete needs index: the task number that is done");
             if (store.list(sessionId)[index - 1]?.status === "completed") {
               return noChange(`task ${index} is already completed`);
             }

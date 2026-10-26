@@ -6,26 +6,15 @@ import {
   TracerProvider,
 } from "@opentelemetry/sdk-trace";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { TOOL_SPAN_PREFIX, TURN_SPAN_NAME } from "../telemetry/tracing.js";
+import { makeBasicConversationLoopDeps, ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
 
 const SECRET_RESULT = "SECRET-TOOL-OUTPUT-THAT-MUST-NOT-BE-EXPORTED";
-
-class ScriptedProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-  constructor(private readonly turns: StreamEvent[][]) {}
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
 
 function toolThenAnswer(): StreamEvent[][] {
   return [
@@ -51,15 +40,10 @@ function makeLoop(provider: LLMProvider, tracer?: unknown) {
     isReadOnly: () => true,
     execute: async () => ({ output: SECRET_RESULT, isError: false }),
   }));
-  const loop = new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
     ...(tracer ? { tracer } : {}),
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as unknown as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }

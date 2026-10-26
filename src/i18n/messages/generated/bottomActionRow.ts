@@ -18,6 +18,12 @@ export const en = {
   "bottomActionRow.modelPickerNoPins": "No pinned models yet. Pin one in Settings.",
   "bottomActionRow.modelPickerMore": "More models…",
   "bottomActionRow.setUpProvider": "Set up a provider",
+  "bottomActionRow.planSpeed": "Model speed",
+  "bottomActionRow.planSpeedInstant": "Instant",
+  "bottomActionRow.planSpeedMedium": "Medium",
+  "bottomActionRow.planSpeedHigh": "High",
+  "bottomActionRow.planSpeedRunsAt": "This model has no {speed} level, so it runs at {effort} effort.",
+  "bottomActionRow.planSpeedNotApplicable": "This model sets its own reasoning, so the speed choice does not apply to it.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "bottomActionRow.newline": "줄바꿈",
@@ -38,4 +44,10 @@ export const ko: Record<keyof typeof en, string> = {
   "bottomActionRow.modelPickerNoPins": "핀된 모델이 없습니다. 설정에서 핀을 지정하세요.",
   "bottomActionRow.modelPickerMore": "모델 더보기",
   "bottomActionRow.setUpProvider": "프로바이더를 설정하세요",
+  "bottomActionRow.planSpeed": "모델 속도",
+  "bottomActionRow.planSpeedInstant": "즉시",
+  "bottomActionRow.planSpeedMedium": "보통",
+  "bottomActionRow.planSpeedHigh": "높음",
+  "bottomActionRow.planSpeedRunsAt": "이 모델에는 {speed} 단계가 없어 {effort} 수준으로 실행됩니다.",
+  "bottomActionRow.planSpeedNotApplicable": "이 모델은 추론을 스스로 정하므로 속도 선택이 적용되지 않습니다.",
 };

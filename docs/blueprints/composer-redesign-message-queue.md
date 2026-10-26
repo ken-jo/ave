@@ -20,8 +20,36 @@ is empty; it reverts to send as soon as anything is typed. Stop runs the same
 action as `Escape` (see [Interrupt paths](#interrupt-paths)).
 
 `MessageQueuePanel` (`src/ui/renderer/components/MessageQueuePanel.tsx`) is a
-full-width band above the composer in `ChatComposerDock.tsx` (main chat) and
-`SideChatView.tsx` (side chat). It renders only when the queue is non-empty.
+card above the composer, aligned with its inset frame in `ChatComposerDock.tsx`
+(main chat) and `SideChatView.tsx` (side chat). It renders only when the queue is
+non-empty.
+
+### Surface levels
+
+Next-send context and rate-limit notices belong inside the composer's column,
+above its frame, with the same width. Context usage from 90% through 100% is a
+warning; usage above 100% remains a warning when automatic compaction will run
+before the next send. Above 100% with automatic compaction disabled, use the
+destructive icon and omit the automatic-compaction promise. Unknown policy also
+omits that promise. Side chats estimate their own transcript and draft against
+the selected model route's context window and prompt-input cap.
+
+Compaction is one transcript unit: an unadorned divider label, quiet secondary
+navigation buttons and a collapsible summary body inside one shared frame.
+The summary has no separate card border or accent bar. Available navigation
+stays visible below the divider label, retaining its behavior and accessible
+labels. A successful manual compaction uses the `compact_notice` checkpoint
+event rather than adding another result bar. The summary starts collapsed.
+The disclosure keeps native keyboard operation, sentence-case text, quiet
+surface edges and a focus ring only on keyboard focus. History cards and usage
+notices use `chatSurface` with its quiet, flat variant: the composer's
+`rounded-xl` radius, `bg-input-bar`, `border-border-subtle`, no shadow, and
+`text-xs` base typography. They use the shared motion tokens and reduced-motion rule.
+
+Per-turn change review ("Review latest turn changes") belongs to the stack of
+panels above the composer, alongside the queue, expanded task panel and question
+panels. It must never sit between the composer frame and its status row.
+Task/goal chips remain session metadata; their expanded panels use the upper stack.
 
 ## Message queue semantics
 

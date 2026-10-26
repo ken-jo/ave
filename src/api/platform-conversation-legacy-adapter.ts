@@ -1,5 +1,6 @@
 // Adapt the canonical semantic timeline to legacy IPC and SSE frames.
 import { CHANNELS } from "../contract/app-contract.js";
+import { createStreamBroadcaster } from "./stream-broadcaster.js";
 import type {
   LegacyChatStreamSink,
   PlatformConversationEvent,
@@ -189,15 +190,15 @@ export function createLegacyChatStreamEventSink(
 export function createPlatformConversationLegacyStreamAdapter(
   timeline: PlatformConversationTimeline,
 ): LegacyChatStreamEventSource {
-  const subscribers = new Set<LegacyChatStreamSink>();
+  const broadcaster = createStreamBroadcaster();
   let unsubscribeTimeline: (() => void) | undefined;
 
   const attach = () => {
-    if (unsubscribeTimeline || subscribers.size === 0) return;
+    if (unsubscribeTimeline || broadcaster.subscriberCount() === 0) return;
     unsubscribeTimeline = timeline.subscribe(deliver).unsubscribe;
   };
   const detach = () => {
-    if (subscribers.size !== 0 || !unsubscribeTimeline) return;
+    if (broadcaster.subscriberCount() !== 0 || !unsubscribeTimeline) return;
     unsubscribeTimeline();
     unsubscribeTimeline = undefined;
   };
@@ -206,28 +207,22 @@ export function createPlatformConversationLegacyStreamAdapter(
       streamId: readStreamIdFromTurnId(envelope.turnId),
     });
     if (!frame) return;
-    for (const subscriber of [...subscribers]) {
-      try {
-        subscriber(frame.channel, frame.payload);
-      } catch {
-        // A broken display must not block another adapter or the source turn.
-      }
-    }
+    broadcaster.sink(frame.channel, frame.payload);
   };
 
   return {
     subscribe: (subscriber) => {
-      subscribers.add(subscriber);
+      const unsubscribe = broadcaster.subscribe(subscriber);
       attach();
       let active = true;
       return () => {
         if (!active) return;
         active = false;
-        subscribers.delete(subscriber);
+        unsubscribe();
         detach();
       };
     },
-    subscriberCount: () => subscribers.size,
+    subscriberCount: broadcaster.subscriberCount,
   };
 }
 

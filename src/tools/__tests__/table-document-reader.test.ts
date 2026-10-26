@@ -99,12 +99,27 @@ describe("CSV / TSV", () => {
     expect((await refusal(() => parseTableDocument(Buffer.alloc(11, 0x61), "csv", 0, limits({ maxFileBytes: 10 })))).code)
       .toBe("too-large");
     expect((await refusal(() => parseTableDocument(Buffer.from("a\n"), "csv", 1))).code).toBe("sheet-not-found");
-    expect((await refusal(() => parseTableDocument(Buffer.from("a\n"), "csv", -1))).code).toBe("sheet-not-found");
+    expect((await refusal(() => parseTableDocument(Buffer.from("a\n"), "csv", -1))).code).toBe("invalid-index");
   });
 
   it("refuses an unterminated quoted field rather than repairing it", async () => {
     expect((await refusal(() => parseTableDocument(Buffer.from('a,b\n"unterminated,2'), "csv", 0))).code)
       .toBe("corrupt-document");
+  });
+
+  it.each(['a,b\nstray"quote,2', 'a,b\n"closed" ,2'])(
+    "refuses invalid field quoting without accepting parser repairs: %j", async (text) => {
+      expect((await refusal(() => parseTableDocument(Buffer.from(text), "csv", 0))).code)
+        .toBe("corrupt-document");
+    },
+  );
+
+  it.each([
+    ['a\tb\n5"\t2', [["a", "b"], ['5"', "2"]]],
+    ["a\tb\n\u201c\uc778\uc6a9\u201d \uad6c\uac04\t2", [["a", "b"], ["\u201c\uc778\uc6a9\u201d \uad6c\uac04", "2"]]],
+  ])("keeps a literal quote inside an unquoted TSV field: %j", async (text, rows) => {
+    const doc = await parseTableDocument(Buffer.from(text), "tsv", 0);
+    expect(doc.sheet.rows).toEqual(rows);
   });
 
   it("parses quoted records across bounded input chunks", async () => {

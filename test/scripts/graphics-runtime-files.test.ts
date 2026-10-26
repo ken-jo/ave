@@ -6,10 +6,11 @@ import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
+import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
 
 const require = createRequire(import.meta.url);
 const afterPack = require("../../scripts/electron-after-pack.cjs") as (
-  context: ReturnType<typeof createPackage>["context"],
+  context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
 const { assertGraphicsRuntimeFiles } = require("../../scripts/lib/graphics-runtime-files.cjs") as {
   assertGraphicsRuntimeFiles(directory: string, platform: string): void;
@@ -27,7 +28,7 @@ function putFile(path: string, content: string | Buffer = "runtime asset") {
   writeFileSync(path, content);
 }
 
-function createPackage(platform: keyof typeof RUNTIME_FILES) {
+async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   const root = mkdtempSync(join(tmpdir(), "graphics-package-"));
   roots.push(root);
   const contents = platform === "darwin" ? join(root, "Client.app", "Contents") : root;
@@ -64,6 +65,8 @@ function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   putFile(join(modules, "better-sqlite3", "prebuilds", `${platform}-x64.node`));
   writeImageRuntimePackage(modules, platform);
+  writeCanvasRuntimePackage(modules, platform);
+  writePageRuntimeResources(resources);
   const ripgrep = join(modules, "@vscode", `ripgrep-${platform}-x64`);
   putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${platform}-x64` }));
   putFile(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"));
@@ -74,6 +77,8 @@ function createPackage(platform: keyof typeof RUNTIME_FILES) {
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
   return {
     libraryDirectory,
+    resources,
+    modules,
     vendorDirectory: join(modules, "@anthropic-ai", "sandbox-runtime", "vendor"),
     context: {
       appOutDir: root,
@@ -90,7 +95,7 @@ afterEach(() => {
 
 describe("packaged graphics runtime", () => {
   it.each(["linux", "darwin", "win32"] as const)("retains rendering assets through %s packaging", async (platform) => {
-    const { context, libraryDirectory } = createPackage(platform);
+    const { context, libraryDirectory } = await createPackage(platform);
     await afterPack(context);
     for (const file of RUNTIME_FILES[platform]) {
       expect(readFileSync(join(libraryDirectory, file), "utf8")).toBe(file);
@@ -99,7 +104,7 @@ describe("packaged graphics runtime", () => {
   });
 
   it.each(["linux", "darwin", "win32"] as const)("rejects a missing %s rendering library at package creation", async (platform) => {
-    const { context, libraryDirectory } = createPackage(platform);
+    const { context, libraryDirectory } = await createPackage(platform);
     const missing = join(libraryDirectory, RUNTIME_FILES[platform][0]);
     rmSync(missing);
     await expect(afterPack(context)).rejects.toThrow(missing);
@@ -107,7 +112,7 @@ describe("packaged graphics runtime", () => {
   });
 
   it.each(["linux", "darwin"] as const)("requires the physical %s JVM proxy agent", async (platform) => {
-    const { context, vendorDirectory } = createPackage(platform);
+    const { context, vendorDirectory } = await createPackage(platform);
     const jar = join(vendorDirectory, "java-proxy-agent", "srt-proxy-agent.jar");
     rmSync(jar);
     await expect(afterPack(context)).rejects.toThrow("packaged JVM proxy agent missing or invalid");
@@ -119,7 +124,7 @@ describe("packaged graphics runtime", () => {
   });
 
   it("rejects a mismatching win32 sandbox helper at package creation", async () => {
-    const { context, vendorDirectory } = createPackage("win32");
+    const { context, vendorDirectory } = await createPackage("win32");
     const helper = join(vendorDirectory, "srt-win", "x64", "srt-win.exe");
     const bytes = readFileSync(helper);
     bytes[0x20] ^= 1;
@@ -127,8 +132,20 @@ describe("packaged graphics runtime", () => {
     await expect(afterPack(context)).rejects.toThrow("srt-win-integrity-mismatch: x64");
   });
 
-  it("rejects empty files and directories in place of runtime libraries", () => {
-    const { libraryDirectory } = createPackage("linux");
+  it("rejects a missing PDF page renderer, its pdf.js data or notices at package creation", async () => {
+    const { context, resources, modules } = await createPackage("linux");
+    const binding = join(modules, "@napi-rs", "canvas-linux-x64-gnu", "skia.linux-x64-gnu.node");
+    rmSync(binding);
+    await expect(afterPack(context)).rejects.toThrow("packaged page renderer file missing or empty");
+    putFile(binding, "native addon fixture");
+    rmSync(join(resources, "licenses", "canvas", "THIRD-PARTY-NOTICES.txt"));
+    await expect(afterPack(context)).rejects.toThrow("page renderer license notice missing");
+    writePageRuntimeResources(resources);
+    await expect(afterPack(context)).resolves.toBeUndefined();
+  });
+
+  it("rejects empty files and directories in place of runtime libraries", async () => {
+    const { libraryDirectory } = await createPackage("linux");
     const library = join(libraryDirectory, "libvk_swiftshader.so");
     writeFileSync(library, "");
     expect(() => assertGraphicsRuntimeFiles(libraryDirectory, "linux")).toThrow(library);

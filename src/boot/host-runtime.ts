@@ -49,6 +49,7 @@ export interface BootHost {
   resolveProxy?: (url: string) => Promise<string>;
   readonly desktop?: DesktopHostCapabilities;
   exit(code: number): never | void;
+  relaunch(): void;
   close(): Promise<void>;
 }
 

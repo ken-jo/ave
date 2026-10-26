@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewBody } from "../../components/ChatSidePanelPreview.js";
 import { resolveFilePreviewRoute } from "../preview-renderers.js";
@@ -9,6 +11,9 @@ import type { ChatPreviewTarget } from "../preview-targets.js";
 import type { PreviewReadDocumentResult, PreviewTableDocument } from "../../../../shared/preview-document.js";
 
 describe("resolveFilePreviewRoute", () => {
+  it.each([["/w/deck.PPTX", "pptx"], ["C:\\w\\document.pdf", "pdf"]])("routes %s to the page viewer", (path, format) => {
+    expect(resolveFilePreviewRoute(path)).toEqual({ kind: "page", format });
+  });
   it.each([
     ["/w/data.csv", "csv"],
     ["/w/data.TSV", "tsv"],
@@ -19,7 +24,7 @@ describe("resolveFilePreviewRoute", () => {
     expect(resolveFilePreviewRoute(path)).toEqual({ kind: "table", format });
   });
 
-  it.each(["/w/notes.md", "/w/flow.mmd", "/w/data.csv.bak", "/w/.csv", "/w/csv", "/w/sheet.xlsm", "/w/deck.pptx", "/w/a.constructor", "/w/a.toString"])(
+  it.each(["/w/notes.md", "/w/flow.mmd", "/w/data.csv.bak", "/w/.csv", "/w/csv", "/w/sheet.xlsm", "/w/a.constructor", "/w/a.toString"])(
     "keeps %s on the text path",
     (path) => {
       expect(resolveFilePreviewRoute(path)).toEqual({ kind: "text" });
@@ -79,6 +84,9 @@ describe("tableErrorKey", () => {
     expect(tableErrorKey("encrypted")).toBe("chatPreviewRail.tableErrorEncrypted");
     expect(tableErrorKey("parse-limit")).toBe("chatPreviewRail.tableErrorParseLimit");
     expect(tableErrorKey("busy")).toBe("chatPreviewRail.tableErrorBusy");
+    expect(tableErrorKey("invalid-index")).toBe("formatIpcError.invalidIndex");
+    expect(tableErrorKey("page-not-found")).toBe("pagePreview.notFound");
+    expect(tableErrorKey("renderer-unavailable")).toBe("pagePreview.rendererUnavailable");
   });
 });
 
@@ -106,7 +114,7 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
       totalColumns: 2,
       rowsTruncated: true,
       columnsTruncated: false,
-      cellsTruncated: false,
+      cellsTruncated: false, clippedCells: [],
     },
     {
       index: 1,
@@ -118,7 +126,7 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
       totalColumns: 1,
       rowsTruncated: false,
       columnsTruncated: false,
-      cellsTruncated: false,
+      cellsTruncated: false, clippedCells: [],
     },
   ];
   return {
@@ -133,6 +141,13 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
       sheet: sheets[sheetIndex]!,
     },
   };
+}
+
+function pageResult(path: string, index: number, totalPages = 2): PreviewReadDocumentResult {
+  return { ok: true, path, bytes: 1024, document: {
+    format: "pptx", totalPages, pagesTruncated: false,
+    page: { index, paragraphs: [`Outline ${index + 1}`], textTruncated: false, png: null, width: 0, height: 0 },
+  } };
 }
 
 let readFile: ReturnType<typeof vi.fn>;
@@ -156,6 +171,101 @@ afterEach(() => {
 });
 
 describe("file preview routing", () => {
+  it("shows a replaced page request as a recoverable error", async () => {
+    const path = "/w/slides.pptx";
+    readDocument.mockResolvedValueOnce({ ok: false, error: "superseded", message: "private supersession detail" })
+      .mockResolvedValueOnce(pageResult(path, 0));
+    render(<PreviewBody api={{} as never} target={fileTarget(path)} />);
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).toMatch(/replaced|취소/);
+    expect(error.textContent).not.toContain("private supersession detail");
+    fireEvent.click(screen.getByRole("button", { name: /Retry|다시 시도/ }));
+    await screen.findByText("Outline 1");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(readDocument).toHaveBeenCalledTimes(2);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("opens another page document at its first page after navigation", async () => {
+    readDocument.mockImplementation(async (path: string, index: number) => pageResult(path, index, path.endsWith("short.pptx") ? 1 : 2));
+    const view = render(<PreviewBody api={{} as never} target={fileTarget("/w/slides.pptx")} />);
+    await screen.findByText("Outline 1");
+    fireEvent.click(screen.getByRole("button", { name: /Next|다음/ }));
+    await screen.findByText("Outline 2");
+    view.rerender(<PreviewBody api={{} as never} target={fileTarget("/w/short.pptx")} />);
+    await screen.findByText("Outline 1");
+    expect(readDocument).toHaveBeenLastCalledWith("/w/short.pptx", 0);
+    expect(screen.getByRole("button", { name: /Next|다음/ }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("reports a page image decode failure instead of leaving a broken image", async () => {
+    const response = pageResult("/w/pages.pdf", 0);
+    if (!response.ok || !("page" in response.document)) throw new Error("Expected a page fixture");
+    const png = readFileSync(join(process.cwd(), "build", "icon.png"));
+    response.document.format = "pdf";
+    response.document.page.png = png.toString("base64");
+    response.document.page.width = png.readUInt32BE(16);
+    response.document.page.height = png.readUInt32BE(20);
+    readDocument.mockResolvedValueOnce(response);
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    fireEvent.error(await screen.findByTestId("chat-side-panel-pdf-page"));
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).not.toContain("chatPreviewRail.");
+    expect(screen.queryByTestId("chat-side-panel-pdf-page")).toBeNull();
+    expect(screen.getByRole("button", { name: /Retry|다시 시도/ })).toBeTruthy();
+  });
+
+  it("shows a PDF page image, its text and truncation notices without the outline caveat", async () => {
+    const png = readFileSync(join(process.cwd(), "build", "icon.png"));
+    readDocument.mockResolvedValueOnce({ ok: true, path: "/w/pages.pdf", bytes: 2048, document: {
+      format: "pdf", totalPages: 250, pagesTruncated: true,
+      page: { index: 0, paragraphs: ["Visible PDF text"], textTruncated: true, png: png.toString("base64"),
+        width: png.readUInt32BE(16), height: png.readUInt32BE(20) },
+    } } satisfies PreviewReadDocumentResult);
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    const image = await screen.findByTestId("chat-side-panel-pdf-page");
+    expect(image.getAttribute("src")).toMatch(/^data:image\/png;base64,iVBORw0KGgo/);
+    expect(image.getAttribute("alt")).toMatch(/1/);
+    const preview = screen.getByTestId("chat-side-panel-page-preview");
+    expect(preview.textContent).toContain("Visible PDF text");
+    expect(preview.textContent).toMatch(/200/);
+    expect(preview.textContent).toMatch(/shortened|일부만/);
+    expect(preview.textContent).not.toMatch(/Slide text outline|슬라이드 텍스트 개요/);
+    expect(preview.textContent).not.toContain("pagePreview.");
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("labels a presentation as a text outline and an empty page as having no text", async () => {
+    const response = pageResult("/w/slides.pptx", 0, 1);
+    if (!response.ok || !("page" in response.document)) throw new Error("Expected a page fixture");
+    response.document.page.paragraphs = [];
+    readDocument.mockResolvedValueOnce(response);
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/slides.pptx")} />);
+    const preview = await screen.findByTestId("chat-side-panel-page-text");
+    expect(preview.textContent).toMatch(/no extractable text|추출할 수 있는 텍스트가 없는/);
+    const panel = screen.getByTestId("chat-side-panel-page-preview");
+    expect(panel.textContent).toMatch(/Slide text outline|슬라이드 텍스트 개요/);
+    expect(screen.queryByTestId("chat-side-panel-pdf-page")).toBeNull();
+    expect(screen.getByRole("button", { name: /Previous|이전/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /Next|다음/ }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it.each([
+    ["corrupt-document", /damaged|손상/],
+    ["encrypted", /ncrypt|암호/],
+    ["parse-limit", /./],
+    ["page-not-found", /page isn't available|페이지를 찾을 수 없/],
+    ["renderer-unavailable", /renderer|렌더러/],
+  ] as const)("localizes a %s page refusal with a retry", async (code, text) => {
+    readDocument.mockResolvedValueOnce({ ok: false, error: code, message: "raw child detail" });
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).toMatch(text);
+    expect(error.textContent).not.toContain("raw child detail");
+    expect(error.textContent).not.toMatch(/pagePreview\.|chatPreviewRail\./);
+    expect(screen.getByRole("button", { name: /Retry|다시 시도/ })).toBeTruthy();
+  });
+
   it("reads a workbook through readDocument, never readFile, and shows tabs, banner and grid", async () => {
     render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
     await screen.findByTestId("chat-side-panel-table-preview");

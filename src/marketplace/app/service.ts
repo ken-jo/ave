@@ -98,6 +98,7 @@ import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
 import { OperationLock } from "./operation-lock.js";
+import { withMarketplaceInstall } from "./install-lifecycle.js";
 import { KeyedMutex, type MutexLease } from "./keyed-mutex.js";
 import { Tickets } from "./tickets.js";
 import type { ComponentApprovalState, InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
@@ -748,42 +749,36 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** Repair moves downloaded state aside and resyncs while preserving installed bindings and credentials. */
   async repairSource(id: string): Promise<SourceView[]> {
-    return this.operation(() => this.repairSourceNow(id));
-  }
-
-  private async repairSourceNow(id: string): Promise<SourceView[]> {
-    const source = this.source(id);
-    await this.options.syncer.resetLocalData(source.id);
-    this.catalogChanged();
-    await this.syncOne(source.id);
-    await this.enforceRevocations();
-    return this.listSources();
+    return this.operation(async () => {
+      const source = this.source(id);
+      await this.options.syncer.resetLocalData(source.id);
+      this.catalogChanged();
+      await this.syncOne(source.id);
+      await this.enforceRevocations();
+      return this.listSources();
+    });
   }
 
   async refresh(id?: string): Promise<SourceView[]> {
-    return this.operation(() => this.refreshNow(id));
-  }
-
-  private async refreshNow(id?: string): Promise<SourceView[]> {
-    if (id !== undefined) await this.syncAndEnforce([this.source(id).id]);
-    else await this.syncAll();
-    return this.listSources();
+    return this.operation(async () => {
+      if (id !== undefined) await this.syncAndEnforce([this.source(id).id]);
+      else await this.syncAll();
+      return this.listSources();
+    });
   }
 
   /** Offline means every source failed offline; broken or mixed sources make the result partial.
      * Abort prevents subsequent stages and progress; unexpected failures throw. */
   async discover(signal?: AbortSignal): Promise<SyncDiscovery> {
-    return this.operation(() => this.discoverNow(signal), signal);
-  }
-
-  private async discoverNow(signal?: AbortSignal): Promise<SyncDiscovery> {
-    const { results, broken } = await this.syncAll(signal);
-    const reached = [...results].filter(([, result]) => result.status === "ok").map(([sourceId]) => sourceId);
-    const failed = [...results.values()].filter((result) => result.status === "failed");
-    if (failed.length === 0 && broken === 0) return { result: "ok", reached };
-    const offline = broken === 0 && failed.length > 0 && failed.length === results.size
-      && failed.every((result) => result.status === "failed" && result.code === "SOURCE_UNREACHABLE" && result.detail?.reason === "offline");
-    return { result: offline ? "offline" : "partial", reached };
+    return this.operation(async () => {
+      const { results, broken } = await this.syncAll(signal);
+      const reached = [...results].filter(([, result]) => result.status === "ok").map(([sourceId]) => sourceId);
+      const failed = [...results.values()].filter((result) => result.status === "failed");
+      if (failed.length === 0 && broken === 0) return { result: "ok", reached };
+      const offline = broken === 0 && failed.length > 0 && failed.length === results.size
+        && failed.every((result) => result.status === "failed" && result.code === "SOURCE_UNREACHABLE" && result.detail?.reason === "offline");
+      return { result: offline ? "offline" : "partial", reached };
+    }, signal);
   }
 
   /** Broken sources count toward discovery status but are not synced. */
@@ -1561,7 +1556,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async executeInstall(planId: string, componentConsents: readonly ComponentConsent[] = [], reviewedAuthority = false): Promise<InstallResultView> {
-    return this.operation(() => this.executeInstallNow(planId, componentConsents, { reviewedAppVersion: reviewedAuthority ? getAveAppVersion() : null }));
+    return withMarketplaceInstall(() => this.operation(() => this.executeInstallNow(planId, componentConsents, { reviewedAppVersion: reviewedAuthority ? getAveAppVersion() : null })));
   }
 
   private async executeInstallNow(planId: string, componentConsents: readonly ComponentConsent[], review: InstallReview): Promise<InstallResultView> {
@@ -1983,7 +1978,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   /** Reauthorize queued updates under operation and package locks using current facts and settings.
      * Automatic updates check installed consent; required policy entries authorize their own review. */
   async applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal?: AbortSignal): Promise<ApplyOutcome> {
-    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal);
+    return withMarketplaceInstall(() => this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal));
   }
 
   private async applyUpdateNow(target: ApplyTarget, decide: ApplyDecision): Promise<ApplyOutcome> {
@@ -2185,7 +2180,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     applied: AppliedDefaults,
     signal?: AbortSignal,
   ): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
-    return this.operation(() => this.applyBootInstallsNow(defaults, applied, signal), signal);
+    return withMarketplaceInstall(() => this.operation(() => this.applyBootInstallsNow(defaults, applied, signal), signal));
   }
 
   private async applyBootInstallsNow(

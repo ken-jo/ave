@@ -38,9 +38,7 @@ const log = createLogger("ave");
 
 /** Packaged runs keep a file sink regardless of development flags; AVE_LOG_FILE=1 enables local diagnosis. */
 function shouldEnableFileLogSink(): boolean {
-  if (process.env.AVE_LOG_FILE === "1") return true;
-  if (process.env.NODE_ENV === "production") return true;
-  return getIsPackaged();
+  return process.env.AVE_LOG_FILE === "1" || process.env.NODE_ENV === "production" || getIsPackaged();
 }
 
 export interface CoreServices {

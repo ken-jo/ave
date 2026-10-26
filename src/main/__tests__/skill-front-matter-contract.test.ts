@@ -1,3 +1,4 @@
+import { withTempDirectory } from "./support/temp-directory.js";
 // Read the committed schema to verify both skill delivery paths without duplicating host constants.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -123,58 +124,43 @@ describe("skill front matter — the declared fields survive", () => {
     expect(fm.triggers).toEqual(["alpha", "beta"]);
   });
 
-  it("keeps the fields on a skill loaded from the user directory", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-skill-contract-"));
-    try {
-      mkdirSync(join(dir, "full-header"));
-      writeFileSync(join(dir, "full-header", "SKILL.md"), FULL_HEADER, "utf8");
-      const store = new SkillStore({ userDir: dir });
-      const skill = await store.load("full-header");
-      expect(skill?.triggers).toEqual(["alpha", "beta"]);
-      expect(skill?.license).toBe("MIT");
-      expect(skill?.compatibility).toBe("Requires network access.");
-      expect(skill?.metadata).toEqual({ author: "example", locale: "ko-KR" });
-      expect(skill?.allowedTools).toBe("Read Bash(git:*)");
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+  it("keeps the fields on a skill loaded from the user directory", withTempDirectory("ave-skill-contract-", async (dir) => {
+    mkdirSync(join(dir, "full-header"));
+    writeFileSync(join(dir, "full-header", "SKILL.md"), FULL_HEADER, "utf8");
+    const store = new SkillStore({ userDir: dir });
+    const skill = await store.load("full-header");
+    expect(skill?.triggers).toEqual(["alpha", "beta"]);
+    expect(skill?.license).toBe("MIT");
+    expect(skill?.compatibility).toBe("Requires network access.");
+    expect(skill?.metadata).toEqual({ author: "example", locale: "ko-KR" });
+    expect(skill?.allowedTools).toBe("Read Bash(git:*)");
+  }));
 
-  it("keeps the same fields on a skill bundled in a plugin generation", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-skill-contract-"));
-    try {
-      const store = new SkillStore({ userDir: dir });
-      store.publishPluginGeneration(pluginGeneration("plugin-one", BUNDLED_HEADER));
-      const skill = await store.load("plugin:plugin-one:full_header");
-      expect(skill?.triggers).toEqual(["alpha", "beta"]);
-      expect(skill?.license).toBe("MIT");
-      expect(skill?.compatibility).toBe("Requires network access.");
-      expect(skill?.metadata).toEqual({ author: "example", locale: "ko-KR" });
-      expect(skill?.allowedTools).toBe("Read Bash(git:*)");
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+  it("keeps the same fields on a skill bundled in a plugin generation", withTempDirectory("ave-skill-contract-", async (dir) => {
+    const store = new SkillStore({ userDir: dir });
+    store.publishPluginGeneration(pluginGeneration("plugin-one", BUNDLED_HEADER));
+    const skill = await store.load("plugin:plugin-one:full_header");
+    expect(skill?.triggers).toEqual(["alpha", "beta"]);
+    expect(skill?.license).toBe("MIT");
+    expect(skill?.compatibility).toBe("Requires network access.");
+    expect(skill?.metadata).toEqual({ author: "example", locale: "ko-KR" });
+    expect(skill?.allowedTools).toBe("Read Bash(git:*)");
+  }));
 
-  it("leaves the optional fields absent when the header omits them", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-skill-contract-"));
-    try {
-      mkdirSync(join(dir, "bare"));
-      writeFileSync(
-        join(dir, "bare", "SKILL.md"),
-        ["---", "name: bare", "description: d", "---", "b"].join("\n"),
-        "utf8",
-      );
-      const store = new SkillStore({ userDir: dir });
-      const skill = await store.load("bare");
-      expect(skill?.triggers).toEqual([]);
-      expect(skill?.license).toBeUndefined();
-      expect(skill?.metadata).toBeUndefined();
-      expect(skill?.allowedTools).toBeUndefined();
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+  it("leaves the optional fields absent when the header omits them", withTempDirectory("ave-skill-contract-", async (dir) => {
+    mkdirSync(join(dir, "bare"));
+    writeFileSync(
+      join(dir, "bare", "SKILL.md"),
+      ["---", "name: bare", "description: d", "---", "b"].join("\n"),
+      "utf8",
+    );
+    const store = new SkillStore({ userDir: dir });
+    const skill = await store.load("bare");
+    expect(skill?.triggers).toEqual([]);
+    expect(skill?.license).toBeUndefined();
+    expect(skill?.metadata).toBeUndefined();
+    expect(skill?.allowedTools).toBeUndefined();
+  }));
 });
 
 describe("skill front matter — a header that reads short, and one that does not read", () => {
@@ -281,43 +267,33 @@ describe("skill front matter — triggers are bounded where the record is built"
 });
 
 describe("skill front matter — triggers reach the catalog and leave with the skill", () => {
-  it("registers and unregisters a user skill's triggers with the skill itself", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-skill-contract-"));
-    try {
-      mkdirSync(join(dir, "full-header"));
-      writeFileSync(join(dir, "full-header", "SKILL.md"), FULL_HEADER, "utf8");
-      const store = new SkillStore({ userDir: dir });
-      expect(store.listCatalogSync()).toContainEqual({
-        name: "full-header",
-        description: "Every declared field, present.",
-        triggers: ["alpha", "beta"],
-      });
+  it("registers and unregisters a user skill's triggers with the skill itself", withTempDirectory("ave-skill-contract-", async (dir) => {
+    mkdirSync(join(dir, "full-header"));
+    writeFileSync(join(dir, "full-header", "SKILL.md"), FULL_HEADER, "utf8");
+    const store = new SkillStore({ userDir: dir });
+    expect(store.listCatalogSync()).toContainEqual({
+      name: "full-header",
+      description: "Every declared field, present.",
+      triggers: ["alpha", "beta"],
+    });
 
-      rmSync(join(dir, "full-header"), { recursive: true, force: true });
-      expect(store.listCatalogSync().map((entry) => entry.name)).not.toContain("full-header");
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+    rmSync(join(dir, "full-header"), { recursive: true, force: true });
+    expect(store.listCatalogSync().map((entry) => entry.name)).not.toContain("full-header");
+  }));
 
-  it("registers and unregisters a plugin skill's triggers with its generation", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-skill-contract-"));
-    try {
-      const store = new SkillStore({ userDir: dir });
-      store.publishPluginGeneration(pluginGeneration("plugin-one", BUNDLED_HEADER));
-      expect(store.listCatalogSync()).toContainEqual({
-        name: "plugin:plugin-one:full_header",
-        description: "Every declared field, present.",
-        triggers: ["alpha", "beta"],
-        pluginOwner: expect.objectContaining({ pluginId: "plugin-one" }),
-      });
+  it("registers and unregisters a plugin skill's triggers with its generation", withTempDirectory("ave-skill-contract-", async (dir) => {
+    const store = new SkillStore({ userDir: dir });
+    store.publishPluginGeneration(pluginGeneration("plugin-one", BUNDLED_HEADER));
+    expect(store.listCatalogSync()).toContainEqual({
+      name: "plugin:plugin-one:full_header",
+      description: "Every declared field, present.",
+      triggers: ["alpha", "beta"],
+      pluginOwner: expect.objectContaining({ pluginId: "plugin-one" }),
+    });
 
-      store.removePlugin("plugin-one");
-      expect(store.listCatalogSync()).toEqual([]);
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+    store.removePlugin("plugin-one");
+    expect(store.listCatalogSync()).toEqual([]);
+  }));
 });
 
 describe("skill name rule — one charset, and it is the schema's", () => {

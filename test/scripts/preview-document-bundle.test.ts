@@ -1,5 +1,6 @@
 import { build } from "esbuild";
-import { createRequire } from "node:module";
+import { existsSync, readdirSync } from "node:fs";
+import { builtinModules, createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAIN_BUNDLE_EXTERNALS } from "../../scripts/lib/main-bundle-externals.mjs";
@@ -33,9 +34,10 @@ describe("document child bundle boundary", () => {
         if (!imported.external) pending.push(imported.path);
       }
     }
-    const forbidden = /(?:table-document-reader|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse)\//;
+    const forbidden = /(?:table-document-reader|page-document-reader|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse|jszip|fast-xml-parser)\//;
     expect([...visited].filter((path) => forbidden.test(path))).toEqual([]);
     expect(Object.keys(inputs).some((path) => /node_modules\/xlsx\//.test(path))).toBe(true);
+    expect(Object.keys(inputs).some((path) => /node_modules\/jszip\//.test(path))).toBe(true);
     expect(MAIN_BUNDLE_ROOT_FILES).toContain("preview-document-child-main.js");
     const child = Object.entries(result.metafile!.outputs)
       .find(([, output]) => output.entryPoint === "src/tools/preview-document-child-main.ts");
@@ -43,5 +45,42 @@ describe("document child bundle boundary", () => {
     expect(isSafeMainBundleManifestPath("preview-document-child-main.js")).toBe(true);
     expect(isSafeMainBundleManifestPath("unexpected-document-child-main.js")).toBe(false);
     expect(resolve(root, child![0])).toMatch(/preview-document-child-main\.js$/);
+
+    // Every package bundled into the page reader ships its notice with the app.
+    const pageReader = new Set<string>();
+    const pagePending = ["src/tools/page-document-reader.ts"];
+    while (pagePending.length) {
+      const path = pagePending.pop()!;
+      if (pageReader.has(path)) continue;
+      pageReader.add(path);
+      for (const imported of inputs[path]?.imports ?? []) {
+        if (!imported.external) pagePending.push(imported.path);
+      }
+    }
+    const bundledPackages = new Set([...pageReader].flatMap((path) => {
+      const name = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(path)?.[1];
+      return name ? [name] : [];
+    }));
+    expect(bundledPackages).toContain("jszip");
+    expect(bundledPackages).toContain("fast-xml-parser");
+    const notices = readdirSync(resolve(root, "resources/licenses/document-preview"));
+    const missing = [...bundledPackages].filter((name) => {
+      const prefix = `${name.replace(/^@/, "").replace("/", "-")}-`;
+      return !notices.some((notice) => notice.startsWith(prefix));
+    });
+    expect(missing).toEqual([]);
+
+    // Externalized runtime packages ship as files; each needs a packaged notice.
+    const externals = new Set([...pageReader].flatMap((path) => (inputs[path]?.imports ?? [])
+      .filter((imported) => imported.external && !imported.path.startsWith("node:") && !builtinModules.includes(imported.path))
+      .map((imported) => /^((?:@[^/]+\/)?[^/]+)/.exec(imported.path)![1]!)));
+    expect([...externals].sort()).toEqual(["@napi-rs/canvas", "pdfjs-dist"]);
+    const externalNotices: Record<string, string[]> = {
+      "@napi-rs/canvas": ["resources/licenses/canvas/LICENSE", "resources/licenses/canvas/THIRD-PARTY-NOTICES.txt"],
+      "pdfjs-dist": ["node_modules/pdfjs-dist/LICENSE", "node_modules/pdfjs-dist/wasm/LICENSE_OPENJPEG", "node_modules/pdfjs-dist/wasm/LICENSE_QCMS", "node_modules/pdfjs-dist/wasm/LICENSE_JBIG2"],
+    };
+    for (const name of externals) {
+      for (const notice of externalNotices[name] ?? [""]) expect(existsSync(resolve(root, notice)), `${name}: ${notice}`).toBe(true);
+    }
   });
 });

@@ -11,6 +11,10 @@ import {
 } from "../tour-state-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+function tourState(overrides: Partial<Parameters<typeof writeTourState>[0]> = {}): Parameters<typeof writeTourState>[0] {
+  return { lastSeenScenario: null, completedScenarios: [], dismissedAt: null, ...overrides };
+}
+
 // POSIX mode checks are skipped on Windows, where these mode bits are not enforced.
 describe("tour-state-store", () => {
   let prevAveHome: string | undefined;
@@ -37,11 +41,7 @@ describe("tour-state-store", () => {
   });
 
   it("round-trips writeTourState → readTourState", async () => {
-    await writeTourState({
-      lastSeenScenario: "first-boot-essentials",
-      completedScenarios: ["first-boot-essentials"],
-      dismissedAt: null,
-    });
+    await writeTourState(tourState({ lastSeenScenario: "first-boot-essentials", completedScenarios: ["first-boot-essentials"] }));
     const state = await readTourState();
     expect(state.lastSeenScenario).toBe("first-boot-essentials");
     expect(state.completedScenarios).toEqual(["first-boot-essentials"]);
@@ -57,11 +57,7 @@ describe("tour-state-store", () => {
   });
 
   it("creates the namespace directory under ~/.ave/onboarding/", async () => {
-    await writeTourState({
-      lastSeenScenario: null,
-      completedScenarios: [],
-      dismissedAt: null,
-    });
+    await writeTourState(tourState());
     const dir = join(tempDir, "onboarding");
     const file = join(dir, "tour-state.json");
     expect(statSync(dir).isDirectory()).toBe(true);
@@ -73,11 +69,7 @@ describe("tour-state-store", () => {
 
   it("enforces 0o700 directory + 0o600 file modes (POSIX only)", async () => {
     if (process.platform === "win32") return;
-    await writeTourState({
-      lastSeenScenario: "x",
-      completedScenarios: [],
-      dismissedAt: null,
-    });
+    await writeTourState(tourState({ lastSeenScenario: "x" }));
     const dir = join(tempDir, "onboarding");
     const file = join(dir, "tour-state.json");
     const dirMode = statSync(dir).mode & 0o777;
@@ -110,11 +102,7 @@ describe("tour-state-store", () => {
     await writeTourState(DEFAULT_TOUR_STATE);
     writeFileSync(
       path,
-      JSON.stringify({
-        lastSeenScenario: null,
-        completedScenarios: ["a", "a", "b", "b", "a"],
-        dismissedAt: null,
-      }),
+      JSON.stringify(tourState({ completedScenarios: ["a", "a", "b", "b", "a"] })),
       "utf-8",
     );
     const state = await readTourState();

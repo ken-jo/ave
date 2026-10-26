@@ -772,6 +772,7 @@ describe("bootstrap() integration lock", () => {
         "refreshPluginEventBridge",
         "refreshSandboxNetworkConfig",
         "registerPluginEventBridge",
+        "relaunchApp",
         "releaseChatGroupLoop",
         "remoteA2AActionController",
         "remoteA2ABootGates",

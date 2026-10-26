@@ -67,6 +67,7 @@
       "src/plugins/validate/__tests__/adversarial-fixture.test.ts",
       "src/plugins/validate/__tests__/validate-plugin.test.ts",
       "src/tools/__tests__/archive-entry-reader-bundle.test.ts",
+      "src/tools/__tests__/document-tools-runtime.test.ts",
       "src/tools/__tests__/file-tools.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
       "src/tools/__tests__/preview-document-process.test.ts",

@@ -1,8 +1,6 @@
 // Drop only the provider-rejected schema and retry with the reduced tool set.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams, TurnSummary,
 } from "../llm/types.js";
@@ -12,6 +10,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -64,17 +63,13 @@ function makeLoop(
       }),
     );
   }
-  const loop = new ConversationLoop({
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     settingsService: {
       get: () => settings,
       getSecret: () => "test-key",
     },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as unknown as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }

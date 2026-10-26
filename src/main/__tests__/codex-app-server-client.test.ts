@@ -78,10 +78,7 @@ class FakeAppServer extends EventEmitter {
         this.heldInitialize = request;
         continue;
       }
-      this.stdout.write(`${JSON.stringify({
-        id: request.id,
-        result: this.handler(request),
-      })}\n`);
+      this.respond(request);
     }
   }
   private respond(request: RpcRequest): void {

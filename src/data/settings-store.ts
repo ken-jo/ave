@@ -1,3 +1,4 @@
+import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
   normalizeCorpCaCommonName,
@@ -7,6 +8,7 @@ import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
@@ -46,9 +48,12 @@ import {
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
 import {
+  DEFAULT_LOCALE,
+  isDefaultVisibleLocale,
+  normalizeLocale,
   normalizeLocaleSetting,
   type Locale,
-} from "../i18n/index.js";
+} from "../i18n/locale.js";
 import { normalizeAppMode, type InitialAppMode } from "../shared/initial-app-mode.js";
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
 import { type InlineViewKey } from "../shared/view-key.js";
@@ -56,7 +61,7 @@ import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.
 import {
   type LlmModelListCache,
 } from "../shared/llm-model-list.js";
-import type { ActiveChatRuntime } from "../shared/subscription-runtime.js";
+import type { ActiveChatRuntime, SubscriptionReasoningSpeed } from "../shared/subscription-runtime.js";
 import {
   isProcessingDisplayLevel,
   type ProcessingDisplayLevel,
@@ -98,6 +103,7 @@ import {
   withRenamedLlmVendorIds,
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
+  normalizeDocuments,
   isWebViewPreferredFlow,
   normalizeWebView,
   preserveInstalledProviderPresetMetadata,
@@ -385,6 +391,9 @@ export interface LLMSettings {
   /** The model catalog refresh (design `model-capability-catalog.md` §7). Absent means the default, `"auto"`: once a day the host fetches the public models.dev document and caches
    * it for the next launch. `"off"` keeps the catalog to the last cached copy or the bundled snapshot. The `AVE_MODEL_CATALOG` pin and the managed policy file can also turn it off. */
   modelCatalogRefresh?: "auto" | "off";
+  /** The model speed for a subscription runtime that `offersReasoningSpeed` (ChatGPT plan usage). Absent means
+   * `DEFAULT_SUBSCRIPTION_REASONING_SPEED`. API-key routes keep their own per-vendor thinking budget and never read it. */
+  subscriptionReasoningSpeed?: SubscriptionReasoningSpeed;
 }
 
 /** Patch shape for `SettingsService.patch()`. Vendor blocks are partial so a UI save touching a single vendor doesn't have to send every default or marketplace provider block. */
@@ -399,6 +408,7 @@ export interface LLMSettingsPatch {
   pricingOverrides?: PricingOverride[];
   pinnedModels?: string[];
   modelCatalogRefresh?: "auto" | "off";
+  subscriptionReasoningSpeed?: SubscriptionReasoningSpeed;
 }
 
 export interface ChatSettings {
@@ -546,6 +556,8 @@ export interface AppSettings {
   appearance: AppearanceSettings;
   /** §B1; external URL viewer policy (in-app BrowserWindow vs system browser). */
   webView: WebViewSettings;
+  /** User-owned document opening policy; agent writes remain blocked by the settings-file floor. */
+  documents: DocumentSettings;
   /** Window close-button behaviour (hide-to-tray vs quit). */
   system: SystemSettings;
   /** Global keyboard shortcuts (show/hide window toggle). */
@@ -928,7 +940,7 @@ export class SettingsService {
         this.secretStatesChanged(changed);
       },
     });
-    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion);
+    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion, options.systemLocale);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
     // Migration write-back (appearance v2, one-time markers): persist so the next load is clean.
@@ -988,12 +1000,15 @@ export class SettingsService {
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
-    this.settings[key] = value;
-    if (key === "llm" || key === "marketplace") this.providerConfigChanged();
-    await this.commit();
-    for (const listener of this.changeListeners.get(key) ?? []) {
-      try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
-    }
+    const persist = async () => {
+      this.settings[key] = value;
+      if (key === "llm" || key === "marketplace") this.providerConfigChanged();
+      await this.commit();
+      for (const listener of this.changeListeners.get(key) ?? []) {
+        try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+      }
+    };
+    return key === "marketplace" ? withInstalledStateMutation(persist) : persist();
   }
 
   /** Observes durable writes through set; callbacks must not block the writer. */
@@ -1019,6 +1034,12 @@ export class SettingsService {
       telemetry?: Partial<TelemetrySettings>;
     },
   ): Promise<AppSettings> {
+    return partial.marketplace
+      ? withInstalledStateMutation(() => this.patchSettings(partial))
+      : this.patchSettings(partial);
+  }
+
+  private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
     const chatPatch = partial.chat;
     if (
       chatPatch
@@ -1184,6 +1205,11 @@ export class SettingsService {
         nextAppearance.font = Object.keys(mergedFont).length > 0 ? mergedFont : undefined;
       }
       this.settings.appearance = nextAppearance;
+    }
+    if (partial.documents && typeof partial.documents === "object" && !Array.isArray(partial.documents)) {
+      const nextDocuments = { ...this.settings.documents };
+      acceptField(nextDocuments, "openMode", partial.documents.openMode, isDocumentOpenMode, "documents", PATCHED_FIELD);
+      this.settings.documents = nextDocuments;
     }
     if (partial.webView) {
       // Field-level validation (mirrors `system`/`shortcuts`): an out-of-enum `preferredFlow` is dropped and the existing preference kept, instead of persisting a
@@ -1360,31 +1386,33 @@ export class SettingsService {
   private async replaceMarketplaceProviderPresets(
     installedProviderPresets: readonly MarketplaceInstalledProviderPreset[],
   ): Promise<AppSettings> {
-    const previousSettings = this.getAll();
-    const nextMarketplace = normalizeMarketplace({
-      ...this.settings.marketplace,
-      installedProviderPresets,
+    return withInstalledStateMutation(async () => {
+      const previousSettings = this.getAll();
+      const nextMarketplace = normalizeMarketplace({
+        ...this.settings.marketplace,
+        installedProviderPresets,
+      });
+      const providerPresetSecretInvalidationIds = marketplaceProviderPresetSecretInvalidationIds(
+        this.settings.marketplace.installedProviderPresets,
+        nextMarketplace.installedProviderPresets,
+      );
+      this.settings.marketplace = nextMarketplace;
+      const prunedLlm = pruneLazyLlmVendorBlocks(
+        this.settings.llm,
+        nextMarketplace.installedProviderIds,
+        nextMarketplace.installedProviderPresets,
+        { inferInstalledFromCustom: false },
+      );
+      this.settings.llm = prunedLlm.llm;
+      this.settings.llm = withoutMarketplaceDefaultModels(
+        this.settings.llm,
+        nextMarketplace.installedProviderPresets,
+        this.settings.appliedMigrations ??= [],
+      );
+      this.providerConfigChanged();
+      await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
+      return this.getAll();
     });
-    const providerPresetSecretInvalidationIds = marketplaceProviderPresetSecretInvalidationIds(
-      this.settings.marketplace.installedProviderPresets,
-      nextMarketplace.installedProviderPresets,
-    );
-    this.settings.marketplace = nextMarketplace;
-    const prunedLlm = pruneLazyLlmVendorBlocks(
-      this.settings.llm,
-      nextMarketplace.installedProviderIds,
-      nextMarketplace.installedProviderPresets,
-      { inferInstalledFromCustom: false },
-    );
-    this.settings.llm = prunedLlm.llm;
-    this.settings.llm = withoutMarketplaceDefaultModels(
-      this.settings.llm,
-      nextMarketplace.installedProviderPresets,
-      this.settings.appliedMigrations ??= [],
-    );
-    this.providerConfigChanged();
-    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    return this.getAll();
   }
 
   /** Save the change just made in memory, then delete the preset keys it invalidated (`providerIds`: presets that moved or went). Called
@@ -1654,10 +1682,11 @@ export class SettingsService {
   // Historical note: hasApiKey() only checked the single `llm.apiKey` key, while the IPC handler uses vendor-specific `llm.apiKey.<vendor>`
   // secrets. Keep callers on the explicit `getSecret(...)` path so future vendor checks cannot accidentally return false for configured credentials.
 
-  private loadSettings(appVersion: string | undefined): { settings: AppSettings; writeBack: boolean } {
+  private loadSettings(appVersion: string | undefined, systemLocale: string | undefined): { settings: AppSettings; writeBack: boolean } {
     if (!existsSync(this.settingsPath)) {
       const defaults = structuredClone(DEFAULT_SETTINGS);
-      // Fresh installs stay English-first while non-English language packs move toward marketplace delivery. Stored user choices are still preserved by the migration/read path below.
+      const locale = normalizeLocale(systemLocale);
+      defaults.appearance.language = isDefaultVisibleLocale(locale) ? locale : DEFAULT_LOCALE;
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
       return { settings: defaults, writeBack: false };
     }
@@ -1814,6 +1843,7 @@ export class SettingsService {
         diagnostics: normalizeDiagnostics(parsed.diagnostics),
         appearance,
         webView: normalizeWebView(parsed.webView),
+        documents: normalizeDocuments(parsed.documents),
         system: normalizeSystem(parsed.system),
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},

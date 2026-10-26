@@ -43,15 +43,14 @@ const mockSaveOk = async (b64: string) => ({
   dataUrl: `data:image/png;base64,${b64}`,
 });
 
+function pasteOptions(overrides: Partial<Parameters<typeof handleClipboardPaste>[1]> = {}): Parameters<typeof handleClipboardPaste>[1] {
+  return { count: 0, allocateN: () => 1, saveClipboardImage: mockSaveOk, max: 5, ...overrides };
+}
+
 describe("handleClipboardPaste", () => {
   it("ignores short text paste (handled=false)", async () => {
     const ev = makePasteEvent({ text: "hello" });
-    const outcome = await handleClipboardPaste(ev, {
-      count: 0,
-      allocateN: () => 1,
-      saveClipboardImage: mockSaveOk,
-      max: 5,
-    });
+    const outcome = await handleClipboardPaste(ev, pasteOptions());
     expect(outcome.handled).toBe(false);
   });
 
@@ -59,12 +58,7 @@ describe("handleClipboardPaste", () => {
     const longText = "x".repeat(PASTE_INLINE_MAX_CHARS + 1);
     const ev = makePasteEvent({ text: longText });
     const allocate = vi.fn(() => 7);
-    const outcome = await handleClipboardPaste(ev, {
-      count: 0,
-      allocateN: allocate,
-      saveClipboardImage: mockSaveOk,
-      max: 5,
-    });
+    const outcome = await handleClipboardPaste(ev, pasteOptions({ allocateN: allocate }));
     expect(outcome.handled).toBe(true);
     expect(allocate).toHaveBeenCalled();
     expect(outcome.newAttachment?.kind).toBe("paste");
@@ -77,12 +71,7 @@ describe("handleClipboardPaste", () => {
     const crlf = `${"x".repeat(15)}\r\n`.repeat(30);
     for (const text of ["a\nb\nc\nd\ne", "y".repeat(PASTE_INLINE_MAX_CHARS), `${"line\n".repeat(99)}12345`, crlf]) {
       expect(text.replace(/\r\n/g, "\n").length).toBeLessThanOrEqual(PASTE_INLINE_MAX_CHARS);
-      const outcome = await handleClipboardPaste(makePasteEvent({ text }), {
-        count: 0,
-        allocateN: () => 1,
-        saveClipboardImage: mockSaveOk,
-        max: 5,
-      });
+      const outcome = await handleClipboardPaste(makePasteEvent({ text }), pasteOptions());
       expect(outcome.handled).toBe(false);
     }
   });
@@ -90,12 +79,7 @@ describe("handleClipboardPaste", () => {
   it("creates image attachment when image is on clipboard", async () => {
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
     const ev = makePasteEvent({ imageBlob: blob });
-    const outcome = await handleClipboardPaste(ev, {
-      count: 0,
-      allocateN: () => 4,
-      saveClipboardImage: mockSaveOk,
-      max: 5,
-    });
+    const outcome = await handleClipboardPaste(ev, pasteOptions({ allocateN: () => 4 }));
     expect(outcome.handled).toBe(true);
     expect(outcome.newAttachment?.kind).toBe("image");
     expect(outcome.insertText).toBe("[Image #4] ");
@@ -104,12 +88,7 @@ describe("handleClipboardPaste", () => {
   it("rejects when at MAX with image paste", async () => {
     const blob = new Blob([new Uint8Array([1])], { type: "image/png" });
     const ev = makePasteEvent({ imageBlob: blob });
-    const outcome = await handleClipboardPaste(ev, {
-      count: 5,
-      allocateN: () => 99,
-      saveClipboardImage: mockSaveOk,
-      max: 5,
-    });
+    const outcome = await handleClipboardPaste(ev, pasteOptions({ count: 5, allocateN: () => 99 }));
     expect(outcome.handled).toBe(true);
     expect(outcome.newAttachment).toBeUndefined();
     expect(outcome.warning).toBeTruthy();
@@ -117,24 +96,14 @@ describe("handleClipboardPaste", () => {
 
   it("allows short-text paste even at MAX", async () => {
     const ev = makePasteEvent({ text: "hi" });
-    const outcome = await handleClipboardPaste(ev, {
-      count: 5,
-      allocateN: () => 99,
-      saveClipboardImage: mockSaveOk,
-      max: 5,
-    });
+    const outcome = await handleClipboardPaste(ev, pasteOptions({ count: 5, allocateN: () => 99 }));
     expect(outcome.handled).toBe(false);
   });
 
   it("emits warning when saveClipboardImage fails", async () => {
     const blob = new Blob([new Uint8Array([1])], { type: "image/png" });
     const ev = makePasteEvent({ imageBlob: blob });
-    const outcome = await handleClipboardPaste(ev, {
-      count: 0,
-      allocateN: () => 1,
-      saveClipboardImage: async () => ({ ok: false, error: "disk full" }),
-      max: 5,
-    });
+    const outcome = await handleClipboardPaste(ev, pasteOptions({ saveClipboardImage: async () => ({ ok: false, error: "disk full" }) }));
     expect(outcome.handled).toBe(true);
     expect(outcome.newAttachment).toBeUndefined();
     expect(outcome.warning).toContain("disk full");

@@ -40,6 +40,20 @@ function makeMockWindow(opts: {
   };
 }
 
+function createService(
+  win: MockWindow | null,
+  notificationFactory: ConstructorParameters<typeof NotificationService>[0]["notificationFactory"],
+  options: Omit<ConstructorParameters<typeof NotificationService>[0], "getMainWindow" | "notificationFactory"> = {},
+) {
+  return new NotificationService({
+    getMainWindow: () => win as unknown as Electron.BrowserWindow,
+    notificationFactory,
+    isReady: () => true,
+    isTestEnv: () => false,
+    ...options,
+  });
+}
+
 function makeMockAuditLogger(): AuditLogger {
   // Only `log` is used by NotificationService; cast through unknown so we don't have to stub the full AuditLogger surface.
   const logger = { log: vi.fn() };
@@ -145,12 +159,8 @@ describe("NotificationService — routing decision", () => {
 
   it("focused, non-minimized system notification → in-app toast IPC", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
+    const svc = createService(win, factoryStub.factory, {
       auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
       isAnyWindowFocused: () => true, // multi-window probe: main is focused
     });
     svc.fire({
@@ -181,14 +191,7 @@ describe("NotificationService — routing decision", () => {
   it("focused turn-end is suppressed without composer toast or cooldown consumption", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     let anyFocused = true;
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => anyFocused,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => anyFocused });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
 
@@ -225,14 +228,7 @@ describe("NotificationService — routing decision", () => {
 
   it("system notifications route through the same in-app toast path", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => true });
 
     svc.fire({
       kind: "system",
@@ -253,13 +249,7 @@ describe("NotificationService — routing decision", () => {
 
   it("minimized window → OS notification path", () => {
     const win = makeMockWindow({ focused: false, minimized: true });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger });
     svc.fire({
       kind: "approval",
       title: "승인 필요",
@@ -287,13 +277,7 @@ describe("NotificationService — routing decision", () => {
 
   it("blurred (non-focused) window → OS path", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger });
     svc.fire({
       kind: "ask-user",
       title: "질문 도착",
@@ -306,13 +290,7 @@ describe("NotificationService — routing decision", () => {
 
   it("destroyed window → falls through to OS path (focused returns false)", () => {
     const win = makeMockWindow({ destroyed: true, focused: true });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger });
     svc.fire({ kind: "routine", title: "wakeup 완료", body: "morning briefing" });
     expect(win.webContents.send).not.toHaveBeenCalled();
     expect(factoryStub.calls.length).toBe(1);
@@ -320,13 +298,7 @@ describe("NotificationService — routing decision", () => {
 
   it("approval kind defaults urgent=true (silent=false, urgency=critical)", () => {
     const win = makeMockWindow({ focused: false });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger });
     svc.fire({ kind: "approval", title: "승인 필요", body: "do thing?" });
     expect(factoryStub.calls[0].silent).toBe(false);
     expect(factoryStub.calls[0].urgency).toBe("critical");
@@ -338,13 +310,7 @@ describe("NotificationService — quiet flags", () => {
     const win = makeMockWindow({ focused: true });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isTestEnv: () => true });
     svc.fire({ kind: "turn-end", title: "x", body: "y" });
     expect(win.webContents.send).not.toHaveBeenCalled();
     expect(factoryStub.calls.length).toBe(0);
@@ -354,12 +320,7 @@ describe("NotificationService — quiet flags", () => {
   it("isReady false → no-op", () => {
     const win = makeMockWindow({ focused: true });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => false,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { isReady: () => false });
     svc.fire({ kind: "turn-end", title: "x", body: "y" });
     expect(win.webContents.send).not.toHaveBeenCalled();
     expect(factoryStub.calls.length).toBe(0);
@@ -370,12 +331,7 @@ describe("NotificationService — click handler", () => {
   it("OS notification click sends IPC payload + restores/focuses window", () => {
     const win = makeMockWindow({ focused: false, minimized: true });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory);
     svc.fire({
       kind: "ask-user",
       title: "질문",
@@ -401,13 +357,7 @@ describe("NotificationService — click handler", () => {
     const win = makeMockWindow({ focused: false, minimized: true });
     const factoryStub = makeNotificationFactoryStub();
     const activationStub = makeActivationRegistrationStub();
-    new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      notificationActivationRegistration: activationStub.register,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    createService(win, factoryStub.factory, { notificationActivationRegistration: activationStub.register });
 
     expect(activationStub.register).toHaveBeenCalledTimes(1);
     activationStub.getHandler()?.({ arguments: "", type: "click" });
@@ -424,13 +374,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger });
     // Fire 3 within 1s — cooldown is 30s for turn-end, so only the first fires. Cooldown now uses performance.now() (monotonic) — stub it to control timing.
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
@@ -454,13 +398,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "turn-end", title: "응답", body: "a" });
@@ -475,12 +413,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
   it("routine cooldown is 0 — back-to-back fires both succeed", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory);
     svc.fire({ kind: "routine", title: "wakeup", body: "a" });
     svc.fire({ kind: "routine", title: "wakeup", body: "b" });
     expect(factoryStub.calls.length).toBe(2);
@@ -489,12 +422,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
   it("approval: 2s cooldown coalesces micro-bursts", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory);
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "approval", title: "승인", body: "a" });
@@ -510,13 +438,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
     // Boundary semantics: elapsedMs === cooldownMs must be allowed through. This test locks the `<` comparison so it can't accidentally become `<=`.
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     const cooldownMs = __test.COOLDOWN_MS_BY_KIND["turn-end"]; // 30_000
     const perfBase = 1_000_000;
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
@@ -532,12 +454,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
     // effect on the gate — fires proceed normally.
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-    });
+    const svc = createService(win, factoryStub.factory);
     const perfBase = performance.now();
     // First fire at perfBase, then advance monotonic clock past cooldown.
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
@@ -557,14 +474,7 @@ describe("NotificationService — title sanitization (M1)", () => {
     const win = makeMockWindow({ focused: true });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => true });
     svc.fire({
       kind: "routine",
       title: "wake\nup\r\x1b[1m완료",
@@ -584,11 +494,7 @@ describe("NotificationService — multi-window focus gate (#842)", () => {
     // classifies as in-app via the `isAnyWindowFocused` probe.
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
+    const svc = createService(win, factoryStub.factory, {
       isAnyWindowFocused: () => true, // an aux window holds focus
     });
     svc.fire({ kind: "system", title: "응답", body: "ok" });
@@ -602,13 +508,7 @@ describe("NotificationService — multi-window focus gate (#842)", () => {
   it("main blurred + no Ave window focused → focus gate INACTIVE (OS path)", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => false });
     svc.fire({ kind: "turn-end", title: "응답", body: "ok" });
     expect(factoryStub.calls.length).toBe(1);
   });
@@ -618,13 +518,8 @@ describe("NotificationService — multi-window focus gate (#842)", () => {
     // BrowserWindow call would throw — the wrapper returns false so notifications still fire via the OS path (degraded gracefully).
     const win = makeMockWindow({ focused: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      // isAnyWindowFocused omitted → default path exercised
-    });
+    // isAnyWindowFocused omitted → default path exercised
+    const svc = createService(win, factoryStub.factory);
     expect(() => svc.fire({ kind: "ask-user", title: "x", body: "y" })).not.toThrow();
   });
 });
@@ -634,14 +529,7 @@ describe("NotificationService — bypassFocusGate (#843)", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
     const auditLogger = makeMockAuditLogger();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => true });
     svc.fire({
       kind: "plugin",
       title: "meeting.starting-soon",
@@ -663,13 +551,7 @@ describe("NotificationService — bypassFocusGate (#843)", () => {
   it("bypassFocusGate=false (default) + focused window → in-app toast (gate honored)", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
     svc.fire({ kind: "plugin", title: "noise", body: "chatter" });
     expect(factoryStub.calls.length).toBe(0);
     expect(win.webContents.send).toHaveBeenCalled();
@@ -681,14 +563,7 @@ describe("NotificationService — plugin kind cooldown (#841)", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "plugin", title: "a", body: "1" });
@@ -711,14 +586,7 @@ describe("NotificationService — alert kind", () => {
     expect(__test.COOLDOWN_MS_BY_KIND.alert).toBe(5_000);
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger: makeMockAuditLogger(),
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger: makeMockAuditLogger(), isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "alert", title: "Mail needing a reply", body: "A mail that needs your reply arrived." });
@@ -732,12 +600,8 @@ describe("NotificationService — alert kind", () => {
   });
 
   function alertService(win: ReturnType<typeof makeMockWindow> | null, focused: boolean | (() => boolean)) {
-    return new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
+    return createService(win, makeNotificationFactoryStub().factory, {
       auditLogger: makeMockAuditLogger(),
-      notificationFactory: makeNotificationFactoryStub().factory,
-      isReady: () => true,
-      isTestEnv: () => false,
       isAnyWindowFocused: typeof focused === "function" ? focused : () => focused,
     });
   }
@@ -771,14 +635,7 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
     const win = makeMockWindow({ focused: false, minimized: false });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     // Routine plugin emit consumes the cooldown slot.
@@ -810,14 +667,7 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
     const win = makeMockWindow({ focused: false, minimized: false });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     // Bypass fire consumes the slot.
@@ -846,13 +696,7 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
     // when bypass is set (unless caller explicitly opts out).
     const win = makeMockWindow({ focused: true, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
     svc.fire({
       kind: "plugin",
       title: "meeting.starting-soon",
@@ -884,11 +728,7 @@ describe("NotificationService — never-throw contract (#2103)", () => {
   it("fire() does not throw when isAnyWindowFocused throws", () => {
     const win = makeMockWindow({ focused: false });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
+    const svc = createService(win, factoryStub.factory, {
       isAnyWindowFocused: () => {
         throw new Error("focus probe failed");
       },
@@ -903,27 +743,15 @@ describe("NotificationService — never-throw contract (#2103)", () => {
       throw new Error("Object has been destroyed");
     });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
     expect(() => svc.fire({ kind: "system", title: "x", body: "y" })).not.toThrow();
   });
 
   it("fire() does not throw when the OS notification factory throws", () => {
     const win = makeMockWindow({ focused: false, minimized: true });
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: () => {
+    const svc = createService(win, () => {
         throw new Error("no notification backend");
-      },
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+      }, { isAnyWindowFocused: () => false });
     expect(() => svc.fire({ kind: "approval", title: "x", body: "y" })).not.toThrow();
   });
 
@@ -933,27 +761,15 @@ describe("NotificationService — never-throw contract (#2103)", () => {
       throw new Error("webContents destroyed mid-fire");
     });
     const factoryStub = makeNotificationFactoryStub();
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
     // Toast path fails → OS fallback fires.
     expect(() => svc.fire({ kind: "system", title: "x", body: "y" })).not.toThrow();
     expect(factoryStub.calls.length).toBe(1);
 
     // Same scenario with the fallback factory ALSO failing — still no throw.
-    const svc2 = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      notificationFactory: () => {
+    const svc2 = createService(win, () => {
         throw new Error("no notification backend");
-      },
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => true,
-    });
+      }, { isAnyWindowFocused: () => true });
     expect(() => svc2.fire({ kind: "system", title: "x", body: "y" })).not.toThrow();
   });
 
@@ -965,14 +781,7 @@ describe("NotificationService — never-throw contract (#2103)", () => {
         throw new Error("audit disk full");
       }),
     } as unknown as AuditLogger;
-    const svc = new NotificationService({
-      getMainWindow: () => win as unknown as Electron.BrowserWindow,
-      auditLogger,
-      notificationFactory: factoryStub.factory,
-      isReady: () => true,
-      isTestEnv: () => false,
-      isAnyWindowFocused: () => false,
-    });
+    const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => false });
     expect(() => svc.fire({ kind: "routine", title: "x", body: "y" })).not.toThrow();
     expect(factoryStub.calls.length).toBe(1);
   });

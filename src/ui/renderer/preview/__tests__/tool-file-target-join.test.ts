@@ -1,5 +1,6 @@
 /** Activity paths must exactly match preview-target paths or clicks cannot resolve a preview. */
 import { describe, expect, it } from "vitest";
+import { toolGroup } from "./support/tool-group.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 import { collectChatPreviewModel } from "../preview-targets.js";
 import {
@@ -18,16 +19,6 @@ function activityFileTargets(entries: ChatEntry[]): string[] {
   return [...activity.readFiles, ...activity.changedFiles]
     .map((item) => item.target)
     .filter((target): target is string => typeof target === "string");
-}
-
-function toolGroup(tools: Array<Record<string, unknown>>): ChatEntry {
-  return {
-    kind: "tool_group",
-    groupId: "g1",
-    groupIds: ["g1"],
-    status: "done",
-    tools: tools as never,
-  } as ChatEntry;
 }
 
 /** Assert the invariant, and that the case is non-vacuous (it produced rows). */

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -410,7 +411,7 @@ describe("Windows NSIS installer smoke contracts", () => {
   );
   it.runIf(process.platform === "win32")(
     "preserves a real same-target partial-owned shortcut without aborting",
-    () => {
+    ({ skip }) => {
       const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
       if (!systemRoot) {
         throw new Error("SystemRoot/WINDIR is required for shortcut tests");
@@ -435,6 +436,13 @@ describe("Windows NSIS installer smoke contracts", () => {
       let shortcutPath: string | null = null;
       writeFileSync(installedExe, "test executable");
       writeFileSync(installMarker, "");
+      // The Programs known folder expands %APPDATA%; a fixture profile keeps the shortcut out of the real Start menu.
+      const fixtureProfile = join(installDir, "profile");
+      const shortcutEnv = {
+        ...process.env,
+        USERPROFILE: fixtureProfile,
+        APPDATA: join(fixtureProfile, "AppData", "Roaming"),
+      };
 
       try {
         const programsResult = spawnSync(
@@ -446,9 +454,9 @@ describe("Windows NSIS installer smoke contracts", () => {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "[PSCustomObject]@{ path = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs) } | ConvertTo-Json -Compress",
+            "[PSCustomObject]@{ path = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs, [Environment+SpecialFolderOption]::DoNotVerify) } | ConvertTo-Json -Compress",
           ],
-          { encoding: "utf8", timeout: 30_000, windowsHide: true, env: windowsPowerShellEnv() },
+          { encoding: "utf8", timeout: 30_000, windowsHide: true, env: windowsPowerShellEnv(shortcutEnv) },
         );
         expect(programsResult.error).toBeUndefined();
         expect(
@@ -459,8 +467,13 @@ describe("Windows NSIS installer smoke contracts", () => {
           path?: unknown;
         };
         expect(typeof programs.path).toBe("string");
-        expect((programs.path as string).trim().length).toBeGreaterThan(0);
-        shortcutPath = join(programs.path as string, `${shortcutName}.lnk`);
+        const programsDir = resolve(programs.path as string);
+        if (!programsDir.toLowerCase().startsWith(`${resolve(fixtureProfile).toLowerCase()}${sep}`)) {
+          // Folder redirection pins Programs to an absolute path; using it would touch the real Start menu.
+          skip(`Programs known folder does not follow %APPDATA% on this host: ${programsDir}`);
+        }
+        mkdirSync(programsDir, { recursive: true });
+        shortcutPath = join(programsDir, `${shortcutName}.lnk`);
         expect(existsSync(shortcutPath)).toBe(false);
 
         const createShortcutScript = buildPowerShellScript([
@@ -498,7 +511,7 @@ describe("Windows NSIS installer smoke contracts", () => {
           {
             encoding: "utf8",
             env: windowsPowerShellEnv({
-              ...process.env,
+              ...shortcutEnv,
               AVE_FIXTURE_SHORTCUT_PATH: shortcutPath,
               AVE_FIXTURE_EXE: installedExe,
               AVE_FIXTURE_INSTALL_DIR: installDir,
@@ -548,7 +561,7 @@ describe("Windows NSIS installer smoke contracts", () => {
             encoding: "utf8",
             timeout: 60_000,
             windowsHide: true,
-            env: windowsPowerShellEnv(),
+            env: windowsPowerShellEnv(shortcutEnv),
           },
         );
         expect(cleanupResult.error).toBeUndefined();

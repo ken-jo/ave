@@ -24,6 +24,8 @@ import {
   A2A_INPUT_REQUIRED_CONTROL_KIND,
   A2A_INPUT_REQUIRED_CONTROL_VERSION,
 } from "../../tools/agent-send.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 
 // Real filesystem I/O can schedule lock retries after fake time has advanced.
 const retrySleep = vi.hoisted(() => ({ skip: false }));
@@ -35,17 +37,6 @@ vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => {
 afterEach(() => {
   vi.useRealTimers();
 });
-
-class FakeProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-
-  constructor(private readonly turns: StreamEvent[][]) {}
-
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
 
 const CODEX_USAGE_SUBSCRIPTION = {
   kind: "subscription",
@@ -1388,12 +1379,7 @@ describe("ConversationLoop onTurnSummary", () => {
 
   it("reports estimated context tokens when provider usage is unavailable", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const loop = createLoopWithRegistry(provider, toolRegistry);
 
     let summary: { tokensIn: number; tokensOut: number; toolCount: number;
@@ -1431,12 +1417,7 @@ describe("ConversationLoop onTurnSummary", () => {
       execute: async () => ({ output: "ok", isError: false }),
     }),
     );
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const loop = createLoopWithRegistry(provider, toolRegistry, {
       systemPromptBuilder: {
         build: () => "system prompt overhead ".repeat(300),

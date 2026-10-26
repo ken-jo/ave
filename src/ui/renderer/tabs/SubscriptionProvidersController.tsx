@@ -111,6 +111,7 @@ function projectStatus(
     capabilities: status.capabilities,
     version: status.version,
     errorCode: state.errorCode,
+    ...(status.notice ? { notice: status.notice } : {}),
   };
 }
 
@@ -445,6 +446,17 @@ export function useSubscriptionProviders(api: AveApi) {
         );
         if (result.ok) await refreshSettings();
       });
+    },
+    acknowledgeNotice: async (provider) => {
+      await runAction(
+        provider,
+        "acknowledge-notice",
+        () => api.subscriptionAcknowledgeNotice(provider),
+      );
+    },
+    manageUsage: async (provider) => {
+      const url = subscriptionRuntimeDescriptor(provider).usageSettingsUrl;
+      if (url) await api.openExternalUrl(url);
     },
     useApiForChat: async () => {
       await runChatSelection(async () => {

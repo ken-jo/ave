@@ -1,3 +1,4 @@
+import { deferred } from "../../../__tests__/support/deferred.js";
 // The native picker supplies paths and caller attribution; a second concurrent chooser must be refused.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -82,12 +83,8 @@ describe("what the plugin gets back", () => {
 
 describe("one chooser per plugin", () => {
   it("refuses a second chooser while the first is still up", async () => {
-    let release: (value: { canceled: boolean; filePaths: string[] }) => void = () => {};
-    showOpenDialog.mockReturnValueOnce(
-      new Promise((resolve) => {
-        release = resolve;
-      }),
-    );
+    const { promise, resolve: release } = deferred<{ canceled: boolean; filePaths: string[] }>();
+    showOpenDialog.mockReturnValueOnce(promise);
 
     const first = pickFoldersForPlugin("local-indexer", withWindow);
     await expect(pickFoldersForPlugin("local-indexer", withWindow)).rejects.toBeInstanceOf(
@@ -103,12 +100,8 @@ describe("one chooser per plugin", () => {
   it("lets a DIFFERENT plugin ask while the first one's chooser is up", async () => {
     // The bound is per-plugin because it exists to stop ONE plugin stacking modals. A shared bound would let any plugin with a chooser open suppress every
     // other plugin's — a cross-plugin channel, and a denial of service.
-    let release: (value: { canceled: boolean; filePaths: string[] }) => void = () => {};
-    showOpenDialog.mockReturnValueOnce(
-      new Promise((resolve) => {
-        release = resolve;
-      }),
-    );
+    const { promise, resolve: release } = deferred<{ canceled: boolean; filePaths: string[] }>();
+    showOpenDialog.mockReturnValueOnce(promise);
     showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["/Users/example/C"] });
 
     const first = pickFoldersForPlugin("local-indexer", withWindow);

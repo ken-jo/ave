@@ -4,16 +4,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -46,16 +45,10 @@ function makeLoop(
   }),
   );
   configureTools?.(toolRegistry);
-  const loop = new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-    },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
     ...overrides,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }
@@ -401,12 +394,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
 
   it("fires onGuidanceDropped when round-cap blocks the extension", async () => {
     // At the round cap, drop queued guidance visibly instead of silently losing it.
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "응답" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("응답"));
     const loop = makeLoop(provider);
     const injected: string[] = [];
     const dropped: string[] = [];
@@ -433,12 +421,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   });
 
   it("`hasActiveTurn()` reflects in-flight runTurn for IPC gate", async () => {
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const loop = makeLoop(provider);
     expect(loop.hasActiveTurn()).toBe(false);
     const p = loop.runTurn("test", undefined, undefined, {
@@ -448,12 +431,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     expect(loop.hasActiveTurn()).toBe(false);
   });
   it("drops guidance queued during a deferred prompt denial and never leaks it into session B", async () => {
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "session B response" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("session B response"));
     const skillOverlay = { clear: vi.fn() };
     const loop = makeLoop(provider, { skillOverlay });
     const gate = new DeferredGate<{
@@ -928,15 +906,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       const dir = mkdtempSync(join(tmpdir(), "ave-host-injection-rollback-"));
       const memoryManager = new MemoryManager({ aveDir: dir });
       memoryManager.load();
-      const provider = new FakeProvider([
-        [
-          {
-            type: "text_delta",
-            text: "completed before post-turn failure",
-          } as StreamEvent,
-          { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-        ],
-      ]);
+      const provider = new FakeProvider(endTurnScript("completed before post-turn failure"));
       let dirtySnapshotSaved = false;
       const loop = makeLoop(provider, {
         memoryManager,

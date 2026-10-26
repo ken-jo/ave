@@ -532,6 +532,51 @@ describe("mandatory sandbox control-file writes", () => {
     expect(() => buildMandatorySandboxWritePolicy([root]).denyWrite).toThrow();
   });
 
+  // Exercises the identity check on hosts without O_NOFOLLOW.
+  it.skipIf(filesystem.constants.O_NOFOLLOW !== undefined)("rejects common-directory metadata replaced between inspection and open", () => {
+    const marker = join(root, ".git");
+    const pointer = join(marker, "commondir");
+    const replacement = join(root, "replacement");
+    mkdirSync(marker);
+    writeFileSync(pointer, "common");
+    writeFileSync(replacement, "common");
+    const open = filesystem.openSync;
+    vi.spyOn(filesystem, "openSync").mockImplementation((...args) => {
+      if (args[0] === pointer) filesystem.renameSync(replacement, pointer);
+      return open(...args);
+    });
+    expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("metadata changed during discovery");
+  });
+
+  // 2^53 and 2^53 + 1 are equal as Numbers, so only a bigint comparison sees the swap.
+  it.skipIf(filesystem.constants.O_NOFOLLOW !== undefined)("rejects common-directory metadata whose file ID differs only beyond Number precision", () => {
+    const marker = join(root, ".git");
+    const pointer = join(marker, "commondir");
+    mkdirSync(marker);
+    writeFileSync(pointer, "common");
+    const withIno = <T extends object>(stats: T, ino: number | bigint): T => Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino });
+    const lstat = filesystem.lstatSync;
+    const open = filesystem.openSync;
+    const fstat = filesystem.fstatSync;
+    let pointerFd: number | undefined;
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      const stats = lstat(path, options);
+      if (path !== pointer || stats === undefined) return stats;
+      return withIno(stats, options?.bigint ? 2n ** 53n : 2 ** 53);
+    }) as typeof filesystem.lstatSync);
+    vi.spyOn(filesystem, "openSync").mockImplementation((...args) => {
+      const fd = open(...args);
+      if (args[0] === pointer) pointerFd = fd;
+      return fd;
+    });
+    vi.spyOn(filesystem, "fstatSync").mockImplementation(((fd: number, options?: { bigint?: boolean }) => {
+      const stats = fstat(fd, options);
+      if (fd !== pointerFd) return stats;
+      return withIno(stats, options?.bigint ? 2n ** 53n + 1n : 2 ** 53);
+    }) as typeof filesystem.fstatSync);
+    expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("metadata changed during discovery");
+  });
+
   it("revokes an exhausted broad grant while retaining a separately scanned child grant and bounded policy", () => {
     const queued = join(root, "queued");
     mkdirSync(queued);
@@ -633,17 +678,24 @@ describe("mandatory sandbox control-file writes", () => {
     expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toEqual(expect.arrayContaining([firstMissing, target]));
   });
 
-  it.each(["gitdir", "commondir"] as const)("rejects unresolved parent traversal in a missing %s target", (kind) => {
+  // Win32 and Git for Windows resolve ".." lexically, so a missing component cannot later redirect it; the ambiguity is POSIX-only.
+  it.skipIf(process.platform === "win32")("rejects unresolved parent traversal in a missing gitdir target", () => {
     const marker = join(root, ".git");
-    const storage = join(root, `${kind}-storage`);
+    const storage = join(root, "gitdir-storage");
     mkdirSync(storage);
     const target = `${storage}${sep}missing${sep}..${sep}metadata`;
-    if (kind === "gitdir") {
-      writeFileSync(marker, `gitdir: ${target}\n`);
-    } else {
-      mkdirSync(marker);
-      writeFileSync(join(marker, "commondir"), `${target}\n`);
-    }
+    writeFileSync(marker, `gitdir: ${target}\n`);
+    expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("unresolved parent traversal");
+  });
+
+  // Win32 and Git for Windows resolve ".." lexically, so a missing component cannot later redirect it; the ambiguity is POSIX-only.
+  it.skipIf(process.platform === "win32")("rejects unresolved parent traversal in a missing commondir target", () => {
+    const marker = join(root, ".git");
+    const storage = join(root, "commondir-storage");
+    mkdirSync(storage);
+    const target = `${storage}${sep}missing${sep}..${sep}metadata`;
+    mkdirSync(marker);
+    writeFileSync(join(marker, "commondir"), `${target}\n`);
     expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("unresolved parent traversal");
   });
 
