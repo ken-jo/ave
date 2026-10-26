@@ -252,8 +252,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
   // Persist terminal directories and page addresses with the pane layout.
-  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab });
-  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab };
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId };
+  const sidePanelVisibleRef = useRef(false);
   useEffect(() => {
     if (chatGroupId === undefined) return undefined;
     const unregister = registerSideTabsSink(chatGroupId, {
@@ -274,6 +275,11 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           tab.kind === "browser" ? webSurfaceLocation(tab.id) ?? browserUrlByTab[tab.id] ?? null : null,
         ));
       },
+      visibleTabId: () => {
+        if (!sidePanelVisibleRef.current) return null;
+        const { tabs, activeTabId } = savedTabsRef.current;
+        return (tabs.find((tab) => tab.id === activeTabId) ?? tabs[0])?.id ?? null;
+      },
     });
     for (const tab of takeRestoredSideTabs(chatGroupId)) adoptTab({ id: tab.tabId, kind: tab.kind, ordinal: tab.ordinal }, tab.url);
     return () => {
@@ -283,9 +289,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     };
   }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
   const savedTabsKey = workspaceTabs.tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => `${tab.id}=${workspaceTabs.browserUrlByTab[tab.id] ?? ""}`).join("|");
-  useEffect(() => {
-    emitMainLayoutChange();
-  }, [savedTabsKey]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
   // Keep persisted panel width beside the tab store so it survives panel unmount.
   const {
@@ -312,6 +315,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const dockedPanelWidth = revealedPanelOverlay
     ? Math.min(panelLayout.max, Math.max(panelLayout.min, sidePanelWidth)) : columns.panelWidth;
   const dockedPanelShouldOpen = columns.panelVisible || revealedPanelOverlay;
+  sidePanelVisibleRef.current = dockedPanelShouldOpen && !hidden;
+  useEffect(() => {
+    emitMainLayoutChange();
+  }, [savedTabsKey, workspaceTabs.activeTabId, dockedPanelShouldOpen, hidden]);
   const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
   // Keep side-chat and agent-browser tabs mounted while hidden to preserve pending gates and working pages.
   const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>

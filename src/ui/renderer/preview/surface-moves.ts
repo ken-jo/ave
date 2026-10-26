@@ -55,6 +55,8 @@ export interface SideTabsSink {
   activate: (tabId: string) => boolean;
   /** This group's terminal and browser tabs, as a saved layout records them. */
   snapshot: () => SavedSurface[];
+  /** The selected tab when the panel is visible; absent for sinks without a rendered panel. */
+  visibleTabId?: () => string | null;
 }
 
 const sinks = new Map<string, SideTabsSink>();
