@@ -360,6 +360,10 @@ export function ChatComposerDock({
           onSendNow={onMessageQueueSendNow}
           heldByApproval={pendingApprovals.length > 0}
         />
+        <div className="px-3">
+          <TurnChangeReview api={api} sessionId={currentSessionId} streaming={streaming}
+            onReference={(reference) => composerRef.current?.insertFileReference(reference)} />
+        </div>
       </div>
       <div className={`${dockColumnClass} flex flex-col overflow-x-hidden pb-1`}>
         {/* This conversation's notices — an attachment the composer refused,
@@ -384,7 +388,7 @@ export function ChatComposerDock({
             is notifications-only.
             `ave-surface-raised` paints the edge as an inset hairline so
             the dock's overflow handling cannot clip the composer edge. */}
-        <div className="relative mx-3 mb-2 pt-9">
+        <div className={`relative mx-3 mb-2 ${hasApiKey === false || (emptyConversation && onNewChatForProject) ? "pt-9" : ""}`}>
           {/* Empty-state project selector — attached directly above the
               composer card, in the reserved strip it shares with the no-key
               chip. Offered only while the conversation is empty: a project is
@@ -513,7 +517,6 @@ export function ChatComposerDock({
               {t("app.visionNotSupported", { llmModel })} {imageInputRecoveryMessage(t)}
             </div>
           ) : null}
-          <TurnChangeReview api={api} sessionId={currentSessionId} streaming={streaming} />
           <ComposerStatusRow
             statusRow={inputStatusRow}
             ringSlot={ringSlot}

@@ -190,7 +190,7 @@ function setup(options?: {
       : deps);
   });
   return {
-    result, chatSend, chatAbort, setQuestion, setAttachments, onOpenSettings, dropUserEntry, setErrorWithThought,
+    result, chatSend, chatAbort, setQuestion, setAttachments, onOpenSettings, dropUserEntry, appendUserEntry, setErrorWithThought,
     beginStreamingRequest,
     resetStreamAccumulators, markLastAssistantInterrupted, unmarkLastAssistantInterrupted, appendSystemEntry,
     chat: () => chat as unknown as ReturnType<typeof useChatState>,
@@ -199,6 +199,20 @@ function setup(options?: {
 }
 
 describe("handleAsk — a turn carrying an attached resource", () => {
+  it("uses the same location selector for the optimistic echo and refused-send removal", async () => {
+    const attachments: Attachment[] = [{ id: "ref", n: 1, kind: "file", path: "src/app.ts", name: "app.ts",
+      ext: "ts", bytes: 0, reference: true,
+      location: { startLine: 3, endLine: 5, turnId: "turn-1", hunkId: "hunk-1" } }];
+    const refused = vi.fn(async () => ({ ok: false, error: "file-reference-stale" }));
+    const { result, appendUserEntry, dropUserEntry, setQuestion, setAttachments } = setup({ attachments, chatSend: refused });
+    await act(async () => { await result.current.handleAsk("explain [File #1]"); });
+    const display = 'explain [File #1 — path: "src/app.ts" — lines: 3-5 — turn: "turn-1" — hunk: "hunk-1"]';
+    expect(appendUserEntry).toHaveBeenCalledWith(display, undefined);
+    expect(dropUserEntry).toHaveBeenCalledWith(display);
+    expect(setQuestion.mock.calls.at(-1)?.[0]("")).toBe("explain [File #1]");
+    expect(setAttachments.mock.calls.at(-1)?.[0]([])).toEqual(attachments);
+  });
+
   it("passes the fence as an ATTACHMENT and never inside the input string", async () => {
     const { result, chatSend } = setup();
 

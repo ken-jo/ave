@@ -46,12 +46,15 @@ import {
   type SuggestedRepliesSnapshot,
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
+import { formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 export interface ComposerHandle {
   focus(): void;
   /** Insert text at the current caret position (or replace selection if any). Used by the action-bar attach flow so
    * file-picker markers land where the user is typing rather than always appending to the end of the body. */
   insertAtCursor(insertion: string): void;
+  /** Insert a location marker and its existing file attachment together, honoring the current composer gates. */
+  insertFileReference(reference: FileMentionReference): { inserted: boolean };
   /**
    * The live textarea element. Window-level shortcuts (⌘⏎, Esc) are owned by
    * the composer's keyboard hook, and several composers can be mounted at once
@@ -223,9 +226,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // Caret mirror — the inline "/" menu needs the cursor index, but the value is controlled so selectionStart lives only on
   // the DOM node. Synced on every event that can move the caret (change / keyup / click / select).
   const [caret, setCaret] = useState(0);
+  const selectionRef = useRef<{ start: number; end: number; text: string } | null>(null);
   const syncCaret = useCallback(() => {
     const ta = taRef.current;
-    if (ta) setCaret(ta.selectionStart ?? 0);
+    if (ta) {
+      setCaret(ta.selectionStart ?? 0);
+      selectionRef.current = { start: ta.selectionStart, end: ta.selectionEnd, text: ta.value };
+    }
   }, []);
 
   // Live MCP-server tools + registered skills back the inline menu's mcp / skills categories (real host IPC). Fetched only
@@ -279,6 +286,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [liveAttachments],
   );
   const chipStripCount = liveAttachments.length - resourceCount;
+  const referenceInputRef = useRef({ disabled, filesEnabled, chipStripCount });
+  referenceInputRef.current = { disabled, filesEnabled, chipStripCount };
   const [dropActive, setDropActive] = useState(false);
 
   // Shared by resource and file mentions: replace the `@token` with the marker and add the attachment in one flushSync.
@@ -296,17 +305,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       const removeTo = stillTheMention ? range.end : current.length;
       const needsSpace = !stillTheMention && current.length > 0 && !current.endsWith(" ");
       const insertion = needsSpace ? ` ${marker}` : marker;
+      const next = current.slice(0, insertAt) + insertion + current.slice(removeTo);
       flushSync(() => {
         onAttachmentsChange((prev) => [...prev, attachment]);
-        const ta = taRef.current;
-        onTextChange(current.slice(0, insertAt) + insertion + current.slice(removeTo));
-        const pos = insertAt + insertion.length;
-        requestAnimationFrame(() => {
-          if (ta) {
-            ta.setSelectionRange(pos, pos);
-            ta.focus();
-          }
-        });
+        onTextChange(next);
+      });
+      const ta = taRef.current;
+      if (!ta) return;
+      const selection = { start: ta.selectionStart, end: ta.selectionEnd };
+      const focused = document.activeElement;
+      const pos = insertAt + insertion.length;
+      requestAnimationFrame(() => {
+        // A newer edit, selection, or focus takes precedence over this pending caret placement.
+        if (ta !== taRef.current || ta.value !== next || ta.selectionStart !== selection.start
+          || ta.selectionEnd !== selection.end || document.activeElement !== focused) return;
+        ta.setSelectionRange(pos, pos);
+        ta.focus();
       });
   }, [onAttachmentsChange, onTextChange]);
 
@@ -373,6 +387,31 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [text, onTextChange],
   );
 
+  const insertFileReference = useCallback((reference: FileMentionReference): { inserted: boolean } => {
+    const input = referenceInputRef.current;
+    if (input.disabled || !input.filesEnabled || isComposingRef.current || !taRef.current) return { inserted: false };
+    if (input.chipStripCount >= ATTACH_MAX_COUNT) {
+      onWarning?.(t("composer.attachLimitPasteBlocked", { max: ATTACH_MAX_COUNT }));
+      return { inserted: false };
+    }
+    // Validation here protects draft state; the host independently verifies the selector and read authorization on send.
+    try { formatFileMentionReference(1, reference); } catch { return { inserted: false }; }
+    const current = textRef.current;
+    const ta = taRef.current;
+    const saved = selectionRef.current;
+    const range = document.activeElement === ta
+      ? { start: ta.selectionStart, end: ta.selectionEnd }
+      : saved?.text === current ? saved : { start: current.length, end: current.length };
+    const n = allocateN();
+    const { path, ...location } = reference;
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const extension = name.lastIndexOf(".");
+    spliceMention({ id: crypto.randomUUID(), n, kind: "file", path, name,
+      ext: extension < 0 ? "" : name.slice(extension + 1), bytes: 0, reference: true, location },
+    `[File #${n}]`, range, current.slice(range.start, range.end));
+    return { inserted: true };
+  }, [onWarning, t, allocateN, spliceMention]);
+
   // Expose imperative API to parents (focus + caret-aware insertion).
   // Deps include `insertAtCursor` (which itself depends on `text` /
   // `onTextChange`), so the handle is recreated whenever the closure's
@@ -382,9 +421,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     () => ({
       focus() { taRef.current?.focus(); },
       insertAtCursor(insertion: string) { insertAtCursor(insertion); },
+      insertFileReference,
       textarea() { return taRef.current; },
     }),
-    [insertAtCursor],
+    [insertAtCursor, insertFileReference],
   );
 
   const warnImageAttachmentUnavailable = useCallback(() => {
@@ -862,7 +902,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           // accelerator, or focus moved on — leaving focus ends the chord too,
           // so a later context-menu paste (which has no keydown to disarm it)
           // cannot inherit an intent the user expressed for a different one.
-          onBlur={() => { plainPasteRequestedRef.current = false; }}
+          onBlur={() => {
+            plainPasteRequestedRef.current = false;
+            syncCaret();
+          }}
           onCompositionStart={() => {
             isComposingRef.current = true;
             setIsComposing(true);

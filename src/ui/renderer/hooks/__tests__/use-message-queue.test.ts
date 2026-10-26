@@ -12,6 +12,68 @@ import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.
 import type { AveApi } from "../../types.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 
+describe("useMessageQueue location references", () => {
+  it("serializes the current reference for the guide shortcut and preserves refused draft state", async () => {
+    const reply = deferred<{ ok: false; error: string }>();
+    const inject = vi.fn(() => reply.promise);
+    const onError = vi.fn();
+    const guide = { inject, onError };
+    const initial: Attachment = { id: "ref", n: 1, kind: "file", path: "src/app.ts", name: "app.ts", ext: "ts", bytes: 0,
+      reference: true, location: { startLine: 3, endLine: 5, turnId: "turn-1", hunkId: "hunk-1" } };
+    const replacement: Attachment = { ...initial, location: { startLine: 8, endLine: 9, turnId: "turn-2", hunkId: "hunk-2" } };
+    const subscribeStream = () => () => {};
+    const { result } = renderHook(() => {
+      const [question, setQuestion] = useState("explain [File #1]");
+      const [attachments, setAttachments] = useState<Attachment[]>([initial]);
+      useMessageQueue({ surface: "main", subscribeStream,
+        composerRef: useRef<ComposerHandle | null>(null), currentSessionId: "session-1", question, attachments,
+        streaming: true, setQuestion, setAttachments, onAsk: vi.fn(), onAbort: vi.fn(), guide });
+      return { question, attachments, setAttachments };
+    });
+    act(() => { result.current.setAttachments([replacement]); });
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })); });
+    expect(inject).toHaveBeenCalledWith('explain [File #1 — path: "src/app.ts" — lines: 8-9 — turn: "turn-2" — hunk: "hunk-2"]');
+    expect(result.current.question).toBe("explain [File #1]");
+    expect(result.current.attachments).toEqual([replacement]);
+    await act(async () => { reply.resolve({ ok: false, error: "file-reference-active-turn" }); });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(result.current.question).toBe("explain [File #1]");
+    expect(result.current.attachments).toEqual([replacement]);
+  });
+
+  it("preserves selectors through attachment clearing and refused guide delivery before queue-auto send", async () => {
+    const onAsk = vi.fn();
+    const inject = vi.fn(async () => ({ ok: false as const, error: "streaming-active" }));
+    const onError = vi.fn();
+    let emit: (event: ChatStreamEvent) => void = () => {};
+    const subscribeStream = (handler: typeof emit) => { emit = handler; return () => {}; };
+    const { result } = renderHook(() => {
+      const [question, setQuestion] = useState("explain [File #1] and [File #2]");
+      const [attachments, setAttachments] = useState<Attachment[]>([
+        { id: "ref", n: 1, kind: "file", path: "src/app.ts", name: "app.ts", ext: "ts", bytes: 0,
+          reference: true, location: { startLine: 3, endLine: 5, turnId: "turn-1", hunkId: "hunk-1" } },
+        { id: "ordinary", n: 2, kind: "file", path: "/ws/notes.txt", name: "notes.txt", ext: "txt", bytes: 10 },
+      ]);
+      const queue = useMessageQueue({ surface: "main", subscribeStream,
+        composerRef: useRef<ComposerHandle | null>(null), currentSessionId: "session-1", question, attachments,
+        streaming: true, setQuestion, setAttachments, onAsk, onAbort: vi.fn(), guide: { inject, onError } });
+      return { queue, question, attachments };
+    });
+    act(() => result.current.queue.handleComposerSend({ inputOrigin: "user-keyboard", token: "" }));
+    const text = 'explain [File #1 — path: "src/app.ts" — lines: 3-5 — turn: "turn-1" — hunk: "hunk-1"] and [File #2]';
+    expect(result.current.queue.messageQueueStore.getPending()[0]?.text).toBe(text);
+    expect(result.current.attachments).toEqual([]);
+    expect(result.current.question).toBe("");
+    await act(async () => { emit({ type: "tool_end", name: "read_file", result: "read" }); });
+    expect(inject).toHaveBeenCalledWith(expect.stringContaining(text));
+    expect(result.current.queue.messageQueueStore.getPending()[0]?.text).toBe(text);
+    expect(onError).toHaveBeenCalledOnce();
+    await act(async () => { emit({ type: "done" }); });
+    expect(onAsk).toHaveBeenCalledWith(expect.stringContaining(text), undefined,
+      { injectHint: "queue", inputOrigin: "queue-auto" });
+  });
+});
+
 /** Queue drains must follow the surface's stale-frame verdict; an aborted turn's late done must not drain onto its
  * replacement turn. */
 

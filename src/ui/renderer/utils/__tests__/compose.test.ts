@@ -3,6 +3,7 @@ import { estimateOutgoingUserMessageTokens } from "../../../../shared/multimodal
 import {
   composeImportedTriggerOutgoing,
   composeOutgoing,
+  augmentFileReferenceMarkers,
 } from "../compose.js";
 import {
   countResourceAttachmentFences,
@@ -50,6 +51,38 @@ const paste3: PasteAttachment = {
 };
 
 describe("composeOutgoing", () => {
+  const reference: FileAttachment = {
+    id: "location-4", n: 4, kind: "file", path: "src/app.ts", name: "app.ts", ext: "ts", bytes: 0,
+    reference: true, location: { startLine: 3, endLine: 5, turnId: "turn-1", hunkId: "hunk-1" },
+  };
+  const referenceMarker = '[File #4 — path: "src/app.ts" — lines: 3-5 — turn: "turn-1" — hunk: "hunk-1"]';
+
+  it("encodes changed-location selectors before paste expansion without adding content parts", () => {
+    const pasted = { ...paste3, text: "quoted [File #4]" };
+    const result = compose("use [File #4] with [Pasted text #3 +3 lines]", [reference, pasted]);
+    expect(result.text).toContain(`use ${referenceMarker} with`);
+    expect(result.text).toContain("quoted [File #4]");
+    expect(result.attachments).toEqual([]);
+  });
+
+  it("augments only location references for queue and display text and is idempotent", () => {
+    const raw = "[File #4] [File #2] [Pasted text #3 +3 lines]";
+    const result = augmentFileReferenceMarkers(raw, [reference, file2, paste3]);
+    expect(result).toBe(`${referenceMarker} [File #2] [Pasted text #3 +3 lines]`);
+    expect(augmentFileReferenceMarkers(result, [reference])).toBe(result);
+  });
+
+  it("never expands marker-shaped path text introduced by another file selector", () => {
+    const markedPath = { ...reference, path: "src/[File #2].ts" };
+    const result = compose("[File #4] [File #2]", [markedPath, file2]);
+    expect(result.text).toBe('[File #4 — path: "src/[File #2].ts" — lines: 3-5 — turn: "turn-1" — hunk: "hunk-1"] '
+      + `[File #2 — path: ${file2.path}]`);
+    const encoded = augmentFileReferenceMarkers("[File #4]", [markedPath, { ...reference, n: 2 }]);
+    expect(encoded).toBe('[File #4 — path: "src/[File #2].ts" — lines: 3-5 — turn: "turn-1" — hunk: "hunk-1"]');
+    expect(augmentFileReferenceMarkers(encoded, [markedPath, { ...reference, n: 2 }])).toBe(encoded);
+    expect(compose(encoded, [file2]).text).toBe(encoded);
+  });
+
   it("returns plain text + empty attachments when no attachments", () => {
     const r = compose("hello");
     expect(r.text).toBe("hello");

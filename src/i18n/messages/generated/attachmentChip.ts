@@ -2,6 +2,7 @@
 export const en = {
   "attachmentChip.chipAriaLabel": "Attachment {label} — view info or open file",
   "attachmentChip.chipTitle": "View attachment info / open file",
+  "attachmentChip.locationSourceTurn": "Changed location from turn {turn}",
   "attachmentChip.collapsedAriaLabel": "{total} attachments — view list",
   "attachmentChip.collapsedTitle": "View attachment list",
   "attachmentChip.overlayCount": "{count} attachments",
@@ -17,6 +18,7 @@ export const en = {
 export const ko: Record<keyof typeof en, string> = {
   "attachmentChip.chipAriaLabel": "첨부 {label} — 정보 보기 또는 파일 열기",
   "attachmentChip.chipTitle": "첨부 정보 보기 / 파일 열기",
+  "attachmentChip.locationSourceTurn": "턴 {turn}에서 변경된 위치",
   "attachmentChip.collapsedAriaLabel": "첨부 {total}개 — 목록 보기",
   "attachmentChip.collapsedTitle": "첨부 목록 보기",
   "attachmentChip.overlayCount": "첨부 {count}개",

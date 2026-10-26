@@ -325,7 +325,6 @@ describe("preload contextBridge world shape lock", () => {
           "chatBranchFromCheckpoint": "function",
           "chatCompact": "function",
           "chatContinueLastUser": "function",
-          "chatDecideTurnHunk": "function",
           "chatEditResend": "function",
           "chatEnterCheckpointView": "function",
           "chatExitCheckpointView": "function",

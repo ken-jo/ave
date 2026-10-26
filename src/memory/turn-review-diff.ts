@@ -1,24 +1,35 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { TurnReviewHunk } from "../shared/turn-change-review.js";
 
 const MAX_DIFF_CELLS = 1_000_000;
 const MAX_DIFF_LINES = 2_000;
 
-export interface StoredReviewHunk extends TurnReviewHunk {
-  oldOffset: number;
-  oldEnd: number;
+/** Count current file lines with the same separator semantics as file previews. */
+export function countTurnReviewLines(text: string): number {
+  let count = 0;
+  for (const _match of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g)) count += 1;
+  return count;
 }
 
-/** Line tokens retain their terminators so applying a hunk preserves exact bytes. */
-export function createTurnReviewHunks(before: string, after: string, existenceChanged = false): StoredReviewHunk[] {
+/**
+ * Preserve source separators and use an exact whole-file diff for complex inputs.
+ * Deleted lines anchor to a surviving current line; an empty file's 1–1 range is not referenceable.
+ */
+export function createTurnReviewHunks(before: string, after: string, existenceChanged = false, identity = ""): TurnReviewHunk[] {
   if (before === after && !existenceChanged) return [];
-  const make = (oldOffset: number, oldEnd: number, oldStartLine: number, newStartLine: number, newText: string): StoredReviewHunk => ({
-    id: randomUUID(), oldOffset, oldEnd, oldStartLine, newStartLine,
-    oldText: before.slice(oldOffset, oldEnd), newText, decision: "pending",
-  });
+  const lineCount = countTurnReviewLines(after);
+  const make = (oldOffset: number, oldEnd: number, oldStartLine: number, newStartLine: number, newText: string): TurnReviewHunk => {
+    const oldText = before.slice(oldOffset, oldEnd);
+    const startLine = Math.min(newStartLine, Math.max(1, lineCount));
+    return {
+      id: createHash("sha256").update(JSON.stringify([identity, oldOffset, oldEnd, oldStartLine, newStartLine, oldText, newText])).digest("hex"),
+      oldText, newText, oldStartLine, newStartLine, startLine,
+      endLine: Math.min(Math.max(1, lineCount), startLine + Math.max(1, countTurnReviewLines(newText)) - 1),
+    };
+  };
   const tokenize = (text: string): string[] | undefined => {
     const lines: string[] = [];
-    for (const match of text.matchAll(/[^\n]*\n|[^\n]+$/g)) {
+    for (const match of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g)) {
       if (lines.length >= MAX_DIFF_LINES) return undefined;
       lines.push(match[0]);
     }
@@ -38,7 +49,7 @@ export function createTurnReviewHunks(before: string, after: string, existenceCh
         : Math.max(lengths[(i + 1) * width + j], lengths[i * width + j + 1]);
     }
   }
-  const hunks: StoredReviewHunk[] = [];
+  const hunks: TurnReviewHunk[] = [];
   let i = 0;
   let j = 0;
   let offset = 0;
@@ -61,16 +72,4 @@ export function createTurnReviewHunks(before: string, after: string, existenceCh
     hunks.push(make(start, offset, oldStart + 1, newStart + 1, inserted));
   }
   return hunks;
-}
-
-export function applyTurnReviewHunks(before: string, hunks: StoredReviewHunk[]): string {
-  let result = "";
-  let offset = 0;
-  for (const hunk of hunks) {
-    if (hunk.oldOffset < offset || hunk.oldEnd < hunk.oldOffset || hunk.oldEnd > before.length
-      || before.slice(hunk.oldOffset, hunk.oldEnd) !== hunk.oldText) throw new Error("Invalid review hunk offsets");
-    result += before.slice(offset, hunk.oldOffset) + (hunk.decision === "rejected" ? hunk.oldText : hunk.newText);
-    offset = hunk.oldEnd;
-  }
-  return result + before.slice(offset);
 }

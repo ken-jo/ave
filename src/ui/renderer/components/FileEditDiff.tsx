@@ -5,7 +5,8 @@ import { countDiffLines } from "../utils/file-diff.js";
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import type { TurnHunkDecisionRequest, TurnReviewHunk } from "../../../shared/turn-change-review.js";
+import type { TurnReviewHunk } from "../../../shared/turn-change-review.js";
+import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 const REVIEW_PREVIEW_MAX_LINES = 100;
 const REVIEW_PREVIEW_MAX_CHARACTERS = 8192;
@@ -20,7 +21,10 @@ export interface FileEditDiffReview {
   hunks: TurnReviewHunk[];
   hunkOffset?: number;
   disabled: boolean;
-  onDecision: (hunkId: string, decision: TurnHunkDecisionRequest["decision"]) => void;
+  turnId: string;
+  lineCount: number;
+  referenceable: boolean;
+  onReference?: (reference: FileMentionReference) => void;
 }
 
 export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?: FileEditDiffReview }) {
@@ -30,27 +34,8 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
   const totals = computeLineTotals(data.hunks, review !== undefined);
   const verb = t(data.isNewFile ? "fileEditDiff.verbCreate" : VERB_KEY_BY_TOOL[data.tool]);
   const Icon = data.isNewFile ? FilePlus2 : FilePenLine;
-
-  return (
-    <div
-      className="overflow-hidden rounded border border-border bg-background"
-      data-testid="file-edit-diff"
-      data-tool={data.tool}
-      data-new-file={data.isNewFile ? "true" : "false"}
-      data-truncated={data.truncated ? "true" : "false"}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-[11px] text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
-        aria-expanded={open}
-        aria-controls={contentId}
-      >
-        {open ? (
-          <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0 opacity-70" />
-        )}
+  const headerContent = (
+    <>
         <Icon className="h-3 w-3 shrink-0 opacity-70" />
         <span className="min-w-0 truncate text-left">
           <span className="font-medium">{verb}</span>
@@ -85,7 +70,49 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
             </span>
           )}
         </span>
+    </>
+  );
+
+  return (
+    <div
+      className="overflow-hidden rounded border border-border bg-background"
+      data-testid="file-edit-diff"
+      data-tool={data.tool}
+      data-new-file={data.isNewFile ? "true" : "false"}
+      data-truncated={data.truncated ? "true" : "false"}
+    >
+      {review ? (
+        <div className="flex min-w-0 items-center border-b border-border bg-muted/(--opacity-muted)">
+          <button type="button" onClick={() => setOpen((value) => !value)}
+            aria-expanded={open} aria-controls={contentId}
+            aria-label={t(open ? "fileEditDiff.reviewCollapseFile" : "fileEditDiff.reviewExpandFile", { path: data.path })}
+            className="shrink-0 rounded px-2 py-2 hover:bg-muted">
+            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          </button>
+          <button type="button"
+            disabled={review.disabled || !review.referenceable || !review.onReference}
+            aria-label={t("fileEditDiff.reviewReferenceFile", { path: data.path, end: review.lineCount })}
+            onClick={() => review.onReference?.({ path: data.path, startLine: 1, endLine: review.lineCount, turnId: review.turnId })}
+            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-3 text-[11px] hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+            {headerContent}
+          </button>
+        </div>
+      ) : (
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-[11px] text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
+        aria-expanded={open}
+        aria-controls={contentId}
+      >
+        {open ? (
+          <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 opacity-70" />
+        )}
+            {headerContent}
       </button>
+      )}
       {open && (
         <div id={contentId} className="font-mono text-xs leading-[1.55]">
           {data.hunks.map((hunk, i) => (
@@ -136,7 +163,23 @@ function DiffHunk({
   let oldLine = reviewHunk?.oldStartLine ?? startLine;
   let newLine = reviewHunk?.newStartLine ?? startLine + removed.length;
   return (
-    <>
+    <div
+      role={reviewHunk && review ? "button" : undefined}
+      tabIndex={reviewHunk && review && !review.disabled && review.referenceable && review.onReference ? 0 : undefined}
+      aria-disabled={reviewHunk && review ? review.disabled || !review.referenceable || !review.onReference : undefined}
+      aria-label={reviewHunk && review ? t("fileEditDiff.reviewReferenceHunk", { number: hunkNumber, path, start: reviewHunk.startLine, end: reviewHunk.endLine }) : undefined}
+      data-hunk-id={reviewHunk?.id}
+      className={reviewHunk ? "outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" : undefined}
+      onClick={() => {
+        if (reviewHunk && review && !review.disabled && review.referenceable) review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine, turnId: review.turnId, hunkId: reviewHunk.id });
+      }}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && reviewHunk && review && !review.disabled && review.referenceable && review.onReference) {
+          event.preventDefault();
+          review.onReference({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine, turnId: review.turnId, hunkId: reviewHunk.id });
+        }
+      }}
+    >
       {separator && (
         <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-[10px] text-muted-foreground">
           @@ {t("fileEditDiff.nextHunk")}
@@ -150,45 +193,10 @@ function DiffHunk({
         const n = newLine++;
         return <DiffLine key={`a-${i}`} kind="added" lineNo={n} text={text} />;
       })}
-      {reviewHunk && review && (
-        <div
-          className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2 font-sans text-[11px]"
-          role="group"
-          aria-label={t("fileEditDiff.reviewHunkLabel", { number: hunkNumber, path })}
-          data-hunk-id={reviewHunk.id}
-          data-decision={reviewHunk.decision}
-        >
-          {(oldPreview?.truncated || newPreview?.truncated) && (
-            <p className="w-full text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
-          )}
-          <span className="mr-auto text-muted-foreground">
-            {t(reviewHunk.decision === "accepted"
-              ? "fileEditDiff.reviewAccepted"
-              : reviewHunk.decision === "rejected"
-                ? "fileEditDiff.reviewRejected"
-                : "fileEditDiff.reviewPending")}
-          </span>
-          <button
-            type="button"
-            className="rounded border border-border px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={review.disabled || reviewHunk.decision !== "pending"}
-            aria-label={t("fileEditDiff.reviewAcceptLabel", { number: hunkNumber, path })}
-            onClick={() => review.onDecision(reviewHunk.id, "accept")}
-          >
-            {t("fileEditDiff.reviewAccept")}
-          </button>
-          <button
-            type="button"
-            className="rounded border border-border px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={review.disabled || reviewHunk.decision !== "pending"}
-            aria-label={t("fileEditDiff.reviewRejectLabel", { number: hunkNumber, path })}
-            onClick={() => review.onDecision(reviewHunk.id, "reject")}
-          >
-            {t("fileEditDiff.reviewReject")}
-          </button>
-        </div>
+      {(oldPreview?.truncated || newPreview?.truncated) && (
+        <p className="px-3 py-1 font-sans text-[11px] text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
       )}
-    </>
+    </div>
   );
 }
 

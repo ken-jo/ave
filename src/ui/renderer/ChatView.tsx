@@ -207,9 +207,16 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [openedDocuments, setOpenedDocuments] = useState<{ sessionId: string; targets: ChatPreviewTarget[] } | null>(null);
   const previewModel = useMemo(() => {
     const model = collectChatPreviewModel({ entries: visibleEntries, attachments });
-    if (openedDocuments?.sessionId === currentSessionId) model.targets.push(...openedDocuments.targets);
+    model.targets = model.targets.map((target) => target.kind === "file" && target.sourceTurnId !== undefined
+      ? { ...target, workspaceRoot: activeProject?.projectRoot }
+      : target);
+    if (openedDocuments?.sessionId === currentSessionId) {
+      const openedTargetIds = new Set(openedDocuments.targets.map((target) => target.id));
+      model.targets = model.targets.filter((target) => !openedTargetIds.has(target.id));
+      model.targets.push(...openedDocuments.targets);
+    }
     return model;
-  }, [attachments, visibleEntries, openedDocuments, currentSessionId]);
+  }, [attachments, visibleEntries, openedDocuments, currentSessionId, activeProject?.projectRoot]);
   const previewTargetIdKey = useMemo(
     () => previewModel.targets.map((target) => target.id).join("\u0001"),
     [previewModel.targets],
@@ -396,6 +403,16 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     (target: string, web: boolean) => routeActivity(target, web, "ephemeral"),
     [routeActivity],
   );
+  const handlePreviewTarget = useCallback((target: ChatPreviewTarget) => {
+    const openedTarget = target.kind === "file" ? { ...target, workspaceRoot: activeProject?.projectRoot } : target;
+    setOpenedDocuments((previous) => ({ sessionId: currentSessionId, targets: [
+      ...(previous?.sessionId === currentSessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []),
+      openedTarget,
+    ] }));
+    workspaceTabs.openInEphemeral({ source: "preview", targetId: target.id });
+    setSelectedPreviewId(target.id);
+    onSidePanelOpenChange(true);
+  }, [workspaceTabs, onSidePanelOpenChange, currentSessionId, activeProject?.projectRoot]);
   const routeActivityItemPinned = useCallback(
     (target: string, web: boolean) => routeActivity(target, web, "pinned"),
     [routeActivity],
@@ -722,6 +739,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       showTokenCostBadge={usageAvailable !== false}
       debugStreamEnabled={debugStreamEnabled}
       processingDisplayLevel={processingDisplayLevel}
+      onPreviewTarget={handlePreviewTarget}
     />
   );
 

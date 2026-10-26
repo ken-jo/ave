@@ -1,5 +1,5 @@
-import { decideTurnChangeHunk, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
-import type { TurnHunkDecisionRequest, TurnReviewResult } from "../../shared/turn-change-review.js";
+import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import { ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
@@ -85,6 +85,8 @@ import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js";
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
+import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
+import { expandFileMentionContext } from "../handlers/file-mention-context.js";
 
 const SESSION_OPEN_IN_OTHER_GROUP = "session-open-in-other-group";
 const log = createLogger("chat");
@@ -446,14 +448,7 @@ function latestReviewTurnId(loop: ConversationLoop): string | undefined {
   return typeof latest?.meta?.messageId === "string" ? latest.meta.messageId : undefined;
 }
 
-function isTurnHunkDecisionRequest(input: unknown): input is TurnHunkDecisionRequest {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
-  const value = input as Record<string, unknown>;
-  return hasOnlyKeys(value, ["sessionId", "turnId", "version", "hunkId", "decision"])
-    && ["sessionId", "turnId", "version", "hunkId"].every((key) =>
-      typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 512)
-    && (value.decision === "accept" || value.decision === "reject");
-}
+
 
 // Rewind returns the complete original input or refuses without truncating history.
 function restorableRewindInput(
@@ -524,6 +519,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       // Replay and edit/resend need the same input DLP boundary as ordinary sends.
       const replayStagedInputOrigin = parseStagedEnvelope(input)?.kind.inputOrigin;
       const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, attachments);
+      const safeDisplayText = displayText === undefined ? undefined
+        : sanitizeOutgoingInput(settingsService, sink, displayText);
       const result = await runStreamedTurn(
         loop,
         sanitized.input,
@@ -535,7 +532,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
             ? { attachments: sanitized.attachments }
             : {}),
           ...(rolePrompt ? { rolePrompt } : {}),
-          ...(displayText !== undefined ? { displayText } : {}),
+          ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
           ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
         },
       );
@@ -1023,6 +1020,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (typeof input !== "string" || input.trim().length === 0) {
       return { ok: false, error: "empty-text" };
     }
+    try {
+      if (parseFileMentionReferences(input).length > 0) return { ok: false, error: "file-reference-while-running" };
+    } catch {
+      return { ok: false, error: "file-reference-invalid" };
+    }
     // Guide text needs the same PII redaction as keyboard sends.
     const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), input);
     const queueResult = group.loop.queueGuidance(effective);
@@ -1187,9 +1189,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId.personaPromptId);
       if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
       const messages = [...history];
+      // Resolve fresh file selectors while the source turn still owns its current history boundary.
+      const expanded = await expandFileMentionContext(conversationLoop, newText, "user-keyboard");
       conversationLoop.getHistory().truncate(historyIndex);
       try {
-        const result = await group.turns.runStreamTurn(transport, newText, undefined, personaPrompt.rolePrompt);
+        const result = await group.turns.runStreamTurn(transport, expanded.input, undefined, personaPrompt.rolePrompt, expanded.displayText);
         return { ok: true, result };
       } catch (err) {
         // Restore history if provider-bound replay is refused before runTurn.
@@ -1214,49 +1218,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return getTurnChangeReview(expectedSessionId, turnId, () => ({
         cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
       }));
-    });
-    return mutation ?? { ok: false, error: STREAMING_ACTIVE };
-  });
-
-  ipcMain.handle(CHANNELS.chat.decideTurnHunk, async (e, input: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.decideTurnHunk, e); return { ok: false, error: "unauthorized-frame" }; }
-    if (!isTurnHunkDecisionRequest(input)) return { ok: false, error: "invalid-input" };
-    const group = groupOf(e, chatGroupId);
-    const mutation = group.turns.trackSessionMutation(async (): Promise<TurnReviewResult> => {
-      const loop = group.loop;
-      if (input.sessionId !== loop.getSessionId() || input.turnId !== latestReviewTurnId(loop)) {
-        return { ok: false, error: "turn-review-stale" };
-      }
-      const result = await decideTurnChangeHunk(input, () => ({
-        cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
-      }), async ({ path, content, expectedHash }) => {
-        const options = {
-          sessionId: input.sessionId,
-          executionCwd: loop.getSessionExecutionCwd(),
-          permissionContext: {
-            headless: loop.deps?.headless,
-            approvalSurface: loop.deps?.approvalSurface,
-            trustOrigin: "user-keyboard" as const,
-            additionalDirectories: loop.getTurnAdditionalDirectories(),
-            getAdditionalDirectories: () => loop.getTurnAdditionalDirectories(),
-            userIntent: "Revert the selected reviewed change in the latest turn.",
-            onTurnDirectoryGrant: (directory: string) => loop.addTurnAdditionalDirectory(directory),
-            onSessionDirectoryGrant: (directory: string) => loop.addSessionAdditionalDirectory(directory),
-          },
-        };
-        if (expectedHash !== null && content !== null) {
-          const reads = await loop.toolExecutor.executeAll([{ id: createDlpSafeUuid(), name: "read_file", input: { path } }], options);
-          if (reads.length !== 1 || reads[0].is_error) return { ok: false };
-        }
-        const results = await loop.toolExecutor.executeAll([{
-          id: createDlpSafeUuid(), name: content === null ? "delete_file" : "write_file",
-          input: content === null ? { path } : { path, content },
-        }], options);
-        return { ok: results.length === 1 && results[0].is_error !== true };
-      });
-      auditLogger.log({ timestamp: new Date().toISOString(), type: result.ok ? "info" : "warn", sessionId: input.sessionId,
-        input: `turn_hunk_decision:${input.turnId}:${input.hunkId}:${input.decision}`, output: result.ok ? "recorded" : result.error });
-      return result;
     });
     return mutation ?? { ok: false, error: STREAMING_ACTIVE };
   });

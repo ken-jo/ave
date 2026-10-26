@@ -8,9 +8,6 @@ import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js"
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { SessionGoalStore } from "../../../main/session-goal-store.js";
 import type { SessionGoal } from "../../../shared/session-goal.js";
-import type { TurnReviewResult } from "../../../shared/turn-change-review.js";
-import type { ToolUseBlock, ExecuteOptions } from "../../../tools/executor.js";
-import { ReadFileTool, WriteFileTool, DeleteFileTool } from "../../../tools/file-tools.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -70,7 +67,6 @@ vi.mock("../../../engine/conversation-surface-runtime.js", async (importOriginal
 });
 
 type FakeLoop = {
-  toolExecutor: { executeAll: ReturnType<typeof vi.fn> };
   id: string;
   sessionId: string;
   hasProvider: ReturnType<typeof vi.fn>;
@@ -100,7 +96,6 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
   let messages = [...seed];
   let transitioning = false;
   const loop: FakeLoop = {
-    toolExecutor: { executeAll: vi.fn() },
     id,
     sessionId: sessionUuid(`session-of-${id}`),
     hasProvider: vi.fn(() => id !== MAIN_CHAT_GROUP_ID),
@@ -305,109 +300,17 @@ describe("ave:chat:* with chat groups", () => {
         checkpointFileMutation([{ path: file, content: "agent" }], () => writeFile(file, "agent")));
       return { ...registered, tile, file };
     }
-    const REVIEW = "ave:chat:get-turn-review";
-    const DECIDE = "ave:chat:decide-turn-hunk";
-    async function reviewSetup() {
-      const state = await setup();
-      state.tile.toolExecutor.executeAll.mockImplementation(async (uses: ToolUseBlock[], opts: ExecuteOptions) => {
-        const tools = [new ReadFileTool(), new WriteFileTool(), new DeleteFileTool()];
-        return Promise.all(uses.map(async (use) => {
-          const tool = tools.find((candidate) => candidate.name === use.name)!;
-          const result = await tool.execute(use.input, {
-            cwd: opts.executionCwd!, extraAllowedDirectories: [], metadata: { sessionId: opts.sessionId },
-          });
-          return { tool_use_id: use.id, content: result.output, is_error: result.isError, durationMs: 0 };
-        }));
-      });
-      const result = await state.invoke(REVIEW, state.tile.getSessionId(), "group-2") as TurnReviewResult;
-      expect(result.ok).toBe(true);
-      if (!result.ok) throw new Error("Review was not available");
-      return { ...state, review: result.review };
-    }
-    it("reviews only the requested group's expected session", async () => {
-      const { invoke, tile, main, review, file } = await reviewSetup();
-      expect(review.sessionId).toBe(tile.getSessionId());
-      expect(review.files[0].path).toBe(file);
-      expect(await invoke(REVIEW, main.getSessionId(), "group-2")).toEqual({ ok: false, error: "turn-review-stale" });
-      expect(tile.toolExecutor.executeAll).not.toHaveBeenCalled();
-    });
-    it("persists accept without executing a write or changing the transcript", async () => {
-      const { invoke, tile, file, review, memoryManager } = await reviewSetup();
-      const result = await invoke(DECIDE, {
-        sessionId: review.sessionId, turnId: review.turnId, version: review.version,
-        hunkId: review.files[0].hunks[0].id, decision: "accept",
-      }, "group-2") as TurnReviewResult;
-      expect(result.ok && result.review.files[0].hunks[0].decision).toBe("accepted");
+    it("exposes only readonly workspace-relative latest turn hunks for its group", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      const result = await invoke("ave:chat:get-turn-review", tile.getSessionId(), "group-2");
+      expect(result).toMatchObject({ ok: true, review: { sessionId: tile.getSessionId(), turnId: "tile-q1", files: [{ path: "code.txt", hunks: [{ oldText: "before", newText: "agent" }] }] } });
       expect(await readFile(file, "utf8")).toBe("agent");
-      expect(tile.toolExecutor.executeAll).not.toHaveBeenCalled();
       expect(tile.getHistory().getMessages()).toHaveLength(2);
       expect(memoryManager.saveSession).not.toHaveBeenCalled();
     });
-    it("rejects through the target loop's governed read and write without rewinding history", async () => {
-      const { invoke, tile, file, review } = await reviewSetup();
-      expect(await invoke(DECIDE, {
-        sessionId: review.sessionId, turnId: review.turnId, version: review.version,
-        hunkId: review.files[0].hunks[0].id, decision: "reject",
-      }, "group-2")).toMatchObject({ ok: true });
-      expect(await readFile(file, "utf8")).toBe("before");
-      expect(tile.toolExecutor.executeAll.mock.calls.flatMap(([uses]) => uses.map((use: ToolUseBlock) => use.name))).toEqual(["read_file", "write_file"]);
-      expect(tile.toolExecutor.executeAll).toHaveBeenLastCalledWith(expect.any(Array), expect.objectContaining({
-        sessionId: tile.getSessionId(), executionCwd: root,
-        permissionContext: expect.objectContaining({ trustOrigin: "user-keyboard" }),
-      }));
-      expect(tile.getHistory().getMessages()).toHaveLength(2);
-    });
-    it("refuses a changed file without executing any tool", async () => {
-      const { invoke, tile, file, review } = await reviewSetup();
-      await writeFile(file, "external edit");
-      expect(await invoke(DECIDE, {
-        sessionId: review.sessionId, turnId: review.turnId, version: review.version,
-        hunkId: review.files[0].hunks[0].id, decision: "reject",
-      }, "group-2")).toEqual({ ok: false, error: "turn-review-conflict", conflictingFiles: [file] });
-      expect(await readFile(file, "utf8")).toBe("external edit");
-      expect(tile.toolExecutor.executeAll).not.toHaveBeenCalled();
-    });
-    it("refuses stale turns and payloads that try to supply filesystem authority", async () => {
-      const { invoke, review, tile } = await reviewSetup();
-      const request = { sessionId: review.sessionId, turnId: review.turnId, version: review.version,
-        hunkId: review.files[0].hunks[0].id, decision: "reject" };
-      expect(await invoke(DECIDE, { ...request, turnId: "older-turn" }, "group-2")).toEqual({ ok: false, error: "turn-review-stale" });
-      expect(await invoke(DECIDE, { ...request, path: join(root, "other.txt") }, "group-2")).toEqual({ ok: false, error: "invalid-input" });
-      expect(tile.toolExecutor.executeAll).not.toHaveBeenCalled();
-    });
-    it("refuses review and decisions while the target group's turn is active", async () => {
-      const { invoke, review, tile } = await reviewSetup();
-      let release!: () => void;
-      const held = runtimes.at(-1)!.activity.tryTrackTurn(() => new Promise<void>((resolve) => { release = resolve; }));
-      try {
-        expect(await invoke(REVIEW, review.sessionId, "group-2")).toEqual({ ok: false, error: "streaming-active" });
-        expect(await invoke(DECIDE, {
-          sessionId: review.sessionId, turnId: review.turnId, version: review.version,
-          hunkId: review.files[0].hunks[0].id, decision: "reject",
-        }, "group-2")).toEqual({ ok: false, error: "streaming-active" });
-        expect(tile.toolExecutor.executeAll).not.toHaveBeenCalled();
-      } finally { release(); await held; }
-    });
-    it("holds session mutation ownership until the governed rejection settles", async () => {
-      const { invoke, review, tile } = await reviewSetup();
-      let release!: () => void;
-      let started!: () => void;
-      const admission = new Promise<void>((resolve) => { started = resolve; });
-      tile.toolExecutor.executeAll.mockImplementationOnce(async () => {
-        started();
-        await new Promise<void>((resolve) => { release = resolve; });
-        return [{ tool_use_id: "read", content: "denied", is_error: true, durationMs: 0 }];
-      });
-      const deciding = invoke(DECIDE, {
-        sessionId: review.sessionId, turnId: review.turnId, version: review.version,
-        hunkId: review.files[0].hunks[0].id, decision: "reject",
-      }, "group-2");
-      await admission;
-      try {
-        expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "code")).toEqual({ ok: false, error: "streaming-active" });
-        expect(await invoke(REVIEW, review.sessionId, "group-2")).toEqual({ ok: false, error: "streaming-active" });
-        expect(tile.getSessionId()).toBe(review.sessionId);
-      } finally { release(); await deciding; }
+    it("does not resolve a review for another session", async () => {
+      const { invoke, main } = await setup();
+      expect(await invoke("ave:chat:get-turn-review", main.getSessionId(), "group-2")).toEqual({ ok: false, error: "turn-review-stale" });
     });
     it("restores code without truncating or persisting the conversation", async () => {
       const { invoke, tile, file, memoryManager } = await setup();

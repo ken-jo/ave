@@ -426,8 +426,10 @@ and commits turn artifacts back to the session store.
 
 The return-here action can restore conversation, native file-tool edits, or
 both at a durable user-message boundary. The [code rewind design](../design/code-rewind.md)
-owns capture boundaries, latest-turn hunk review, conflict refusal, persisted
-decisions, storage limits and untracked effects.
+owns capture boundaries, restore conflict refusal, storage limits and untracked
+effects. Its [latest-turn review contract](../design/code-rewind.md#latest-turn-change-review)
+defines read-only checkpoint diffs above the composer and existing file-mention
+references with host-authorized, bounded context and clickable file previews.
 
 Important rules:
 

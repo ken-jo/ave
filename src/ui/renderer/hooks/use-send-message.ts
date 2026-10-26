@@ -9,6 +9,7 @@ import { debugLog, isDebugStreamEnabled } from "../../../lib/debug-stream.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
 import {
+  augmentFileReferenceMarkers,
   composeImportedTriggerOutgoing,
   composeOutgoing as composeOutgoingUtil,
 } from "../utils/compose.js";
@@ -289,6 +290,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         ? composeOutgoing(trimmed)
         : composeImportedTriggerOutgoing(trimmed);
       const outgoing = composed.text;
+      const displayText = interactiveComposerSend ? augmentFileReferenceMarkers(trimmed, draftAttachments) : trimmed;
 
       const outgoingAttachments = opts?.inputOrigin === "queue-auto" ? [] : composed.attachments;
       // Staged modes skip only the user-bubble append. The imported_trigger marker
@@ -306,7 +308,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         resetStreamAccumulators();
       }
       if (mode === "default") {
-        appendUserEntry(trimmed, opts?.injectHint);
+        appendUserEntry(displayText, opts?.injectHint);
       }
       try {
         const result = await api.chatSend(
@@ -349,7 +351,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           : resolveIpcErrorKey(code);
         const message = mappedKey ? t(mappedKey) : t("app.errorGeneric", { message: rawMessage });
         // On refusal remove the optimistic bubble before adding its notice and restore the draft because main recorded no turn.
-        if (mode === "default") dropUserEntry(trimmed);
+        if (mode === "default") dropUserEntry(displayText);
         if (interrupt && err instanceof ChatSendRefusedError) {
           // The running turn is not closed here with an error: refused at admission it goes on untouched, and refused after the
           // abort its own closing frame finalizes it. Only the first case takes the badge back.

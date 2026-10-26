@@ -1,48 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { applyTurnReviewHunks, createTurnReviewHunks } from "../turn-review-diff.js";
+import { createTurnReviewHunks } from "../turn-review-diff.js";
 
-describe("exact text review hunks", () => {
-  it("separates changes at each common line and keeps original offsets", () => {
+describe("readonly turn review hunks", () => {
+  it("keeps exact text and stable identities for separated changes", () => {
     const before = "α\r\nkeep\r\nlast";
     const after = "β\r\nkeep\r\nend\n";
-    const hunks = createTurnReviewHunks(before, after);
+    const hunks = createTurnReviewHunks(before, after, false, "turn/source.txt");
+    expect(hunks).toEqual(createTurnReviewHunks(before, after, false, "turn/source.txt"));
     expect(hunks).toHaveLength(2);
-    expect(hunks.map((hunk) => [hunk.oldStartLine, hunk.newStartLine])).toEqual([[1, 1], [3, 3]]);
-    expect(applyTurnReviewHunks(before, hunks)).toBe(after);
-    hunks[0].decision = "rejected";
-    expect(applyTurnReviewHunks(before, hunks)).toBe("α\r\nkeep\r\nend\n");
-    hunks[1].decision = "rejected";
-    expect(applyTurnReviewHunks(before, hunks)).toBe(before);
+    expect(hunks[0]).toMatchObject({ oldText: "α\r\n", newText: "β\r\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 });
+    expect(hunks[1]).toMatchObject({ oldText: "last", newText: "end\n", oldStartLine: 3, newStartLine: 3, startLine: 3, endLine: 3 });
+    expect(hunks[0]).not.toHaveProperty("decision");
+    expect(hunks[0]).not.toHaveProperty("oldOffset");
+    expect(createTurnReviewHunks(before, after, false, "other/source.txt")[0].id).not.toBe(hunks[0].id);
   });
 
-  it("handles insertion and deletion separated by common text", () => {
-    const before = "remove\nkeep\ntail\n";
-    const after = "keep\ninsert\ntail\n";
-    const hunks = createTurnReviewHunks(before, after);
-    expect(hunks).toHaveLength(2);
-    expect(applyTurnReviewHunks(before, hunks)).toBe(after);
-    hunks[0].decision = "rejected";
-    expect(applyTurnReviewHunks(before, hunks)).toBe("remove\nkeep\ninsert\ntail\n");
+  it("clamps removed lines at the current file's last existing line", () => {
+    const hunks = createTurnReviewHunks("keep\nremove\n", "keep\n");
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0]).toMatchObject({ oldText: "remove\n", newText: "", newStartLine: 2, startLine: 1, endLine: 1 });
+    expect(createTurnReviewHunks("remove\nkeep\n", "keep\n")[0]).toMatchObject({ startLine: 1, endLine: 1 });
   });
 
-  it("uses a whole-file hunk when diff complexity or line count exceeds its bound", () => {
+  it("counts inserted current ranges across mixed line separators", () => {
+    expect(createTurnReviewHunks("keep\r", "one\rtwo\r\nkeep\r")[0]).toMatchObject({ startLine: 1, endLine: 2, newText: "one\rtwo\r\n" });
+  });
+
+  it("uses an exact whole-file hunk when diff complexity or line count exceeds its bound", () => {
     for (const count of [1_001, 2_001]) {
       const before = "a\n".repeat(count);
       const after = "b\n".repeat(count);
       const hunks = createTurnReviewHunks(before, after);
       expect(hunks).toHaveLength(1);
-      expect(applyTurnReviewHunks(before, hunks)).toBe(after);
+      expect(hunks[0]).toMatchObject({ oldText: before, newText: after, startLine: 1, endLine: count });
     }
   });
 
-  it("distinguishes unchanged empty text from an empty-file existence change", () => {
+  it("distinguishes unchanged empty text from empty-file existence changes", () => {
     expect(createTurnReviewHunks("", "")).toEqual([]);
-    expect(createTurnReviewHunks("", "", true)).toHaveLength(1);
-  });
-
-  it("refuses altered offsets and altered original text", () => {
-    const hunks = createTurnReviewHunks("before", "after");
-    expect(() => applyTurnReviewHunks("external", hunks)).toThrow();
-    expect(() => applyTurnReviewHunks("before", [{ ...hunks[0], oldEnd: 100 }])).toThrow();
+    expect(createTurnReviewHunks("", "", true)).toMatchObject([{ oldText: "", newText: "", startLine: 1, endLine: 1 }]);
   });
 });

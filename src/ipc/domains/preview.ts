@@ -16,6 +16,7 @@
 import { ipcMain, type WebContents, type WebFrameMain } from "electron";
 import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -53,6 +54,7 @@ export interface PreviewReadFileResult {
   bytes?: number;
   /** Text was truncated by the line window. */
   truncated?: boolean;
+  lineCount?: number;
   error?:
     | "unauthorized"
     | "path-not-allowed"
@@ -108,7 +110,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(
     CHANNELS.preview.readFile,
-    async (e, rawPath: string): Promise<PreviewReadFileResult> => {
+    async (e, rawPath: string, rawWindow?: unknown): Promise<PreviewReadFileResult> => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(auditLogger, CHANNELS.preview.readFile, e);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
@@ -117,8 +119,29 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
       }
 
+      let offset = 0;
+      let limit = PREVIEW_LINE_LIMIT;
+      let workspaceRoot: string | undefined;
+      if (rawWindow !== undefined) {
+        if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)
+          || Object.keys(rawWindow).some((key) => !["offset", "limit", "workspaceRoot"].includes(key))) {
+          return { ok: false, error: "read-failed", message: "Invalid preview window" };
+        }
+        const window = rawWindow as Record<string, unknown>;
+        if ((window.offset !== undefined && (!Number.isSafeInteger(window.offset) || (window.offset as number) < 0))
+          || (window.limit !== undefined && (!Number.isSafeInteger(window.limit) || (window.limit as number) < 1))
+          || (window.workspaceRoot !== undefined && (typeof window.workspaceRoot !== "string"
+            || window.workspaceRoot.length > 2_048 || !isAbsolute(window.workspaceRoot)))) {
+          return { ok: false, error: "read-failed", message: "Invalid preview window" };
+        }
+        offset = window.offset as number | undefined ?? 0;
+        limit = Math.min(window.limit as number | undefined ?? PREVIEW_LINE_LIMIT, PREVIEW_LINE_LIMIT);
+        workspaceRoot = window.workspaceRoot as string | undefined;
+      }
+
       const { cwd, extraAllowed } = currentReadScope();
-      const verdict = assertReadableFilePath(rawPath, cwd, extraAllowed);
+      const requestedPath = workspaceRoot === undefined ? rawPath : resolve(workspaceRoot, rawPath);
+      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed);
       if (!verdict.ok) {
         // "not-a-file" here means glob/argument, never a concrete file.
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
@@ -143,7 +166,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         if (await isBinaryFile(resolved)) {
           return { ok: false, error: "binary-file", path: resolved, bytes: stat.size, message: "binary file" };
         }
-        const window = await readTextFileWindow(resolved, 0, PREVIEW_LINE_LIMIT);
+        const window = await readTextFileWindow(resolved, offset, limit);
         // Audit the preview read the same way a `read_file` tool call is audited
         // — a file left the sandbox boundary for display. The path is redacted
         // (username stripped) via the shared DLP filter, consistent with the
@@ -164,6 +187,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           path: resolved,
           bytes: stat.size,
           truncated: window.truncated,
+          lineCount: window.lines.length,
         };
       } catch (err) {
         return {

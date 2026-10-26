@@ -36,6 +36,7 @@ import {
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
+import { expandFileMentionContext } from "./file-mention-context.js";
 import {
   runStreamedTurn,
   STREAM_TURN_OPTIONS,
@@ -457,7 +458,13 @@ export async function handleChatSend(
       return { ok: false, error: "remote-controller-revoked" };
     }
     // Redact only under an accepted lease; refused overlapping sends must not create DLP records or notices.
-    const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, validated);
+    const expanded = await expandFileMentionContext(conversationLoop, input, inputOrigin, validated);
+    if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
+      return { ok: false, error: "remote-controller-revoked" };
+    }
+    const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, expanded.input, validated);
+    const displayText = expanded.displayText === undefined ? undefined
+      : sanitizeOutgoingInput(settingsService, sink, expanded.displayText);
     // No await may separate the last authority check from the model effect.
     if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
       return { ok: false, error: "remote-controller-revoked" };
@@ -470,6 +477,7 @@ export async function handleChatSend(
         ...STREAM_TURN_OPTIONS,
         attachments: sanitized.attachments,
         inputOrigin,
+        ...(displayText === undefined ? {} : { displayText }),
         ...(inputOrigin === "user-keyboard" && userActivation === true
           ? { requestAnchorRawIntent: input }
           : {}),

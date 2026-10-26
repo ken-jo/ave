@@ -167,6 +167,26 @@ beforeEach(() => {
 });
 
 describe("preview:read-file handler", () => {
+  it("reads the selected relative file window under an already allowed workspace root", async () => {
+    const file = join(root, "range.txt");
+    writeFileSync(file, Array.from({ length: 750 }, (_, index) => `source ${index + 1}`).join("\n"));
+    const result = await invoke(CHANNELS.preview.readFile, OK_FRAME, "range.txt", { workspaceRoot: root, offset: 699, limit: 2 });
+    expect(result).toMatchObject({ ok: true, content: "source 700\nsource 701", lineCount: 2, truncated: true });
+  });
+  it("does not let a workspace hint authorize an outside read", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "ave-reference-outside-"));
+    try {
+      writeFileSync(join(outside, "secret.txt"), "unapproved contents");
+      expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, "secret.txt", { workspaceRoot: outside, offset: 0, limit: 1 }))
+        .toMatchObject({ ok: false, error: "path-not-allowed" });
+    } finally { await cleanupTmpDir(outside); }
+  });
+  it("refuses malformed range options before reading", async () => {
+    expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, join(root, "docs", "architecture.md"), { offset: -1, limit: 2 }))
+      .toMatchObject({ ok: false, error: "read-failed" });
+    expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, join(root, "docs", "architecture.md"), { offset: 0, limit: 0 }))
+      .toMatchObject({ ok: false, error: "read-failed" });
+  });
   it.each([
     ["crlf", "alpha\r\nbeta\r\n", "alpha\r\nbeta"],
     ["mixed", "alpha\rbeta\r\ngamma\n", "alpha\rbeta\r\ngamma"],

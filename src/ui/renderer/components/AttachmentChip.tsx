@@ -2,6 +2,7 @@ import { useState } from "react";
 import { File as FileIcon, ClipboardPaste, Database } from "lucide-react";
 import { displaySafeLabel } from "../../../shared/display-safe-text.js";
 import { MCP_RESOURCE_URI_MAX_CHARS } from "../../../shared/mcp-resource-bounds.js";
+import { fileMentionReferenceLabel } from "../../../shared/file-mention-reference.js";
 import {
   Popover,
   PopoverContent,
@@ -82,7 +83,9 @@ function ResourceThumb() {
 
 function chipLabel(att: Attachment): string {
   if (att.kind === "image") return `#${att.n}`;
-  if (att.kind === "file") return collapsePath(att.name);
+  if (att.kind === "file") return att.location
+    ? fileMentionReferenceLabel({ path: att.path, ...att.location })
+    : collapsePath(att.name);
   if (att.kind === "resource") return att.label;
   return `+${att.lines} lines`;
 }
@@ -160,7 +163,9 @@ export function AttachmentChip({
           data-testid="attachment-chip"
           aria-label={t("attachmentChip.chipAriaLabel", { label: chipLabel(attachment) })}
           className="flex max-w-20 flex-col items-center gap-1 rounded-sm select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          title={t("attachmentChip.chipTitle")}
+          title={attachment.kind === "file" && attachment.location
+            ? t("attachmentChip.locationSourceTurn", { turn: attachment.location.turnId })
+            : t("attachmentChip.chipTitle")}
         >
           {attachment.kind === "image" ? (
             <ImageThumb att={attachment} />
@@ -310,12 +315,14 @@ export function AttachmentOverlay({
               </div>
               <div
                 className="truncate font-mono text-[10px] text-muted-foreground"
-                title={att.kind === "image" || att.kind === "file" ? att.path : undefined}
+                title={att.kind === "file" && att.location
+                  ? t("attachmentChip.locationSourceTurn", { turn: att.location.turnId })
+                  : att.kind === "image" || att.kind === "file" ? att.path : undefined}
               >
                 {att.kind === "image"
                   ? collapsePath(att.path)
                   : att.kind === "file"
-                    ? collapsePath(att.path)
+                    ? att.location ? fileMentionReferenceLabel({ path: att.path, ...att.location }) : collapsePath(att.path)
                     : att.kind === "resource"
                       ? displaySafeLabel(att.uri, MCP_RESOURCE_URI_MAX_CHARS)
                       : `+${att.lines} lines · ${att.chars} chars`}
@@ -324,7 +331,9 @@ export function AttachmentOverlay({
                 {att.kind === "image"
                   ? `${att.mimeType} · ${att.width}×${att.height} · ${formatBytes(att.bytes)}`
                   : att.kind === "file"
-                    ? `${att.ext.toUpperCase()} · ${formatBytes(att.bytes)}`
+                    ? att.location
+                      ? t("attachmentChip.locationSourceTurn", { turn: att.location.turnId })
+                      : `${att.ext.toUpperCase()} · ${formatBytes(att.bytes)}`
                     : att.kind === "resource"
                       ? t(att.truncated
                         ? "attachmentChip.resourceClipped"
