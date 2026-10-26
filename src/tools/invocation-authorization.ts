@@ -160,7 +160,8 @@ export interface AuthorizationStageContext {
 
 export interface AuthorizedInvocation {
   outcome: "authorized";
-  automatedApproval: boolean;
+  /** True only after this action consumed verified native human consent. */
+  humanApproved: boolean;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -213,7 +214,9 @@ export async function authorizeToolInvocation(
     pluginOperationPrincipal,
   } = context;
   let { permissionResult, hostShellApprovalDecision } = context;
-  let automatedApproval = permissionResult?.decision === "allow" && permissionResult.reviewer !== undefined;
+  // Policy, remembered and reviewer receipts are automatic authority. Only
+  // a native manual answer below establishes fresh human consent.
+  let humanApproved = false;
   // The PermissionManager's own layer-3 allow-rule decision that authorized an
   // explicit host request, carried by identity to the permit mint.
   let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
@@ -997,7 +1000,6 @@ export async function authorizeToolInvocation(
         );
         if (memorySkip) {
           permissionResult = memorySkip;
-          automatedApproval = true;
         }
       }
     }
@@ -1036,7 +1038,6 @@ export async function authorizeToolInvocation(
       }
       if (reviewerResult) {
         permissionResult = reviewerResult;
-        automatedApproval = reviewerResult.decision === "allow";
       }
     }
     const needsRationaleSecurityContext =
@@ -1292,7 +1293,6 @@ export async function authorizeToolInvocation(
         }
         if (reviewerResult.allowed) {
           permissionResult = reviewerResult.permissionResult;
-          automatedApproval = true;
         } else {
           const msg = reviewerResult.message;
           const durationMs = Date.now() - startTime;
@@ -1415,7 +1415,6 @@ export async function authorizeToolInvocation(
           );
         }
       }
-      automatedApproval = reviewerLaneResult?.decision === "allow";
       permissionResult = reviewerLaneResult ?? {
         ...permissionResult,
         decision: "ask",
@@ -1454,7 +1453,6 @@ export async function authorizeToolInvocation(
       );
       if (memorySkip) {
         permissionResult = memorySkip;
-          automatedApproval = true;
       }
     }
     if (permissionResult.decision === "ask") {
@@ -1992,7 +1990,7 @@ export async function authorizeToolInvocation(
         // silently widen "this tool + this input" into tool-wide permission.
         // Out-of-directory approvals are handled earlier by invocation-runner
         // and retain their explicit reviewed-parent persistence contract.
-        automatedApproval = !manuallyApproved;
+        humanApproved = manuallyApproved;
         permissionResult = {
           decision: "allow",
           // Who actually answered. The deny branch above already says this;
@@ -2076,7 +2074,7 @@ export async function authorizeToolInvocation(
 
   return {
     outcome: "authorized",
-    automatedApproval,
+    humanApproved,
     permissionResult,
     hostShellApprovalDecision,
     // Only while no later lane replaced the rule decision: a reviewer, hook or

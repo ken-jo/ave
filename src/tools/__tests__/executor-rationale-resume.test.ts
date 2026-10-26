@@ -396,6 +396,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         "authorized-audit",
         "started-audit",
         "tool-start",
+        "audit-writable",
         "tool-execute",
         "config-post",
         "script-post",

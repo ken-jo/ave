@@ -2005,10 +2005,23 @@ approval card for interactive requests and denies with a reason naming the
 threshold when no user is available. Existing approval-card and notification
 surfaces explain the pause in English and Korean. Caller cancellation is
 terminal, and internal contract or active-audit failures propagate.
-One final pause check occurs at the handler boundary after all asynchronous
-pre-tool hooks. A paused automatic approval requires manual approval
-interactively or denies when no user is available. Existing manual authorization
-remains valid.
+Every allow is treated as automated for pause checks unless the host consumed
+verified fresh native human consent for that exact action. Policy grants,
+remembered approvals, reviewer and parent decisions, and sealed rationale
+receipts do not establish fresh human consent.
+Fresh native consent is a gate-verified response to the current signed approval
+card, [consumed once by the host](../../src/permissions/judge/manual-approval.ts).
+After all asynchronous hooks and route admission, one synchronous final gate
+rechecks cancellation, required audit integrity and writability, the shared
+breaker and plugin/remote authority immediately before entering the handler.
+No await separates that gate from handler entry. A paused invocation requires
+the normal forced one-shot native approval card interactively or denies when
+no user is available. Returning from a card or renewed route admission re-enters
+the same gate; fresh human consent bypasses only the pause requirement.
+Permission-request hooks and signed ask-audit preparation remain within a
+bounded, cancellable attempt. Only waiting for the user moves outside the tool
+execution ceiling and uses the ordinary five-minute card timeout. Actual
+execution keeps its bounded timeout and cancellation semantics.
 
 One chain-owned circuit breaker counts successful classifier blocks per root
 conversation. A final non-allow verdict counts once per host invocation

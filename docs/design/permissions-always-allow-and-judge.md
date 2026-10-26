@@ -296,10 +296,21 @@ and appends an item to the existing `DeferredQueue`. A paused breaker routes
 interactive requests to the normal user approval card; without an available
 user, it denies with a reason naming the threshold. The existing approval card
 and notification surfaces explain the pause in English and Korean.
-The host checks pause state once at the final handler boundary, after all
-asynchronous pre-tool hooks. A paused automatic approval returns to manual
-approval interactively or denies when no user is available; existing manual
-authorization remains valid.
+Every allow remains automated for pause checks unless the host has consumed
+verified fresh native human consent for that exact action. Policy grants,
+remembered approvals, reviewer decisions, parent decisions and sealed rationale
+receipts do not establish that provenance.
+One synchronous final gate runs immediately before the tool handler, after all
+asynchronous hooks and route admission. It rechecks cancellation, required audit
+integrity and writability, breaker state and plugin/remote authority, with no
+await before handler entry. A paused invocation returns to the normal forced
+one-shot native approval card interactively or denies when no user is available.
+After a card or renewed route admission, the same gate runs again. Verified
+fresh human consent bypasses only the pause requirement, never the other checks.
+Permission-request hooks and signed ask-audit preparation remain bounded and
+cancellable. Only the late card's user wait moves outside the tool execution
+ceiling and retains the normal five-minute card timeout; actual execution
+remains bounded and cancellable.
 Caller cancellation remains terminal; internal contract violations and failures
 to write the active audit propagate instead of becoming an approval.
 

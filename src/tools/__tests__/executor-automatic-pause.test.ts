@@ -12,12 +12,19 @@ import { DEFAULT_JUDGE_SETTINGS } from "../../permissions/judge/judge-settings.j
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
 import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from "../../permissions/reviewer/risk-classifier.js";
+import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import * as approvals from "../../permissions/user-approval-store.js";
 import type { ApprovalMemory } from "../../shared/permissions-events.js";
-import { createDynamicTool } from "../base.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { createDynamicTool, type ToolExecutionContext } from "../base.js";
 import { ToolExecutor } from "../executor.js";
 import { WriteFileTool } from "../file-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
+import { createTestRequestAnchor, rationaleResponseFor } from "../pipeline/__tests__/rationale-fixtures.js";
+import { InMemoryHostAnchorRoundCasStore } from "../pipeline/rationale-control.js";
+import { RationaleHostCoordinator } from "../pipeline/rationale-host-coordinator.js";
+import { InMemoryHostInvocationStartCasStore, type InvocationAuditRecord } from "../pipeline/rationale-ticket-lifecycle.js";
+import { InProcessRationaleTicketStore } from "../pipeline/rationale-ticket-store.js";
 import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
@@ -32,9 +39,10 @@ afterEach(async () => {
   approvals.__resetSessionStoreForTest();
   for (const logger of loggers.splice(0)) await logger.close();
   await resources.cleanup();
+  vi.useRealTimers();
 });
 
-async function subject() {
+async function subject(sessionId = SESSION_ID) {
   const root = resources.makeTmpDir("ave-executor-pause-");
   const audit = new AuditLogger(join(root, "audit"));
   loggers.push(audit);
@@ -66,7 +74,7 @@ async function subject() {
   });
   const review = (input: Record<string, unknown>) => manager.dispatchReviewer("write_probe", {
     invocationId: randomUUID(),
-    sessionId: SESSION_ID, source: "builtin", category: "write", pathFields: ["path"],
+    sessionId, source: "builtin", category: "write", pathFields: ["path"],
     finalInput: input, executionCwd: root, allowedDirectories: [root],
     sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
   }, undefined, { defer: "none" });
@@ -76,9 +84,75 @@ async function subject() {
       await review({ path: join(root, `blocked-${index}.txt`) });
     }
     level = "low";
-    expect(manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+    expect(manager.isAutomatedApprovalPaused(sessionId)).toBe(true);
   };
-  return { root, audit, auditSecret, manager, complete, pause, review, setLevel: (value: RiskVerdict["level"]) => { level = value; } };
+  return { root, audit, auditSecret, manager, complete, pause, review, sessionId, setLevel: (value: RiskVerdict["level"]) => { level = value; } };
+}
+
+function corruptAuditTail(audit: AuditLogger) {
+  const file = audit.getPermissionAuditLogFile();
+  const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+  const tail = JSON.parse(lines[lines.length - 1]);
+  tail.entryHash = "0".repeat(64);
+  lines[lines.length - 1] = JSON.stringify(tail);
+  writeFileSync(file, `${lines.join("\n")}\n`);
+}
+
+async function rationaleContinuation(surface: "native" | "unavailable" = "native") {
+  const current = await subject("ef975fd1-380d-4acf-8e50-7f1535885ebc");
+  current.setLevel("medium");
+  current.manager.setInteractiveAutoApprove("low");
+  const execute = vi.fn(async () => "sealed write completed");
+  const registry = new ToolRegistry();
+  registry.register(makeWriteProbeTool(execute));
+  const { hooks, reached, release } = heldPreToolUse();
+  const { gate, cards, approve } = manualGate();
+  const invocationAudits: InvocationAuditRecord[] = [];
+  const scopeComplete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
+    text: JSON.stringify({ level: "medium", reason: "bounded action", scopeAlignment: "aligned", scopeReasons: ["sealed target matches the request"] }),
+    tokensIn: 1, tokensOut: 1, costUsd: 0,
+  }));
+  const ticketStore = new InProcessRationaleTicketStore({ onAudit: () => {} });
+  const coordinator = new RationaleHostCoordinator({
+    requestAnchor: createTestRequestAnchor({ sessionId: current.sessionId }),
+    rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+    ticketStore,
+    rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "review-model"),
+    approvalGate: gate,
+    getRationalePolicyEpoch: () => "policy-one",
+    getRegistryGeneration: () => "registry-one",
+    getSandboxGeneration: () => "sandbox-one",
+    anchorRoundCas: new InMemoryHostAnchorRoundCasStore(),
+    hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
+    onInvocationAudit: (record) => { invocationAudits.push(record); },
+    onProjectionAudit: () => {},
+  });
+  const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+  const options = {
+    sessionId: current.sessionId, executionCwd: current.root,
+    permissionContext: userPermissionContext({
+      trustOrigin: "llm-tool-arg", additionalDirectories: [current.root],
+      ...(surface === "unavailable" ? { approvalSurface: "unavailable" as const } : {}),
+    }),
+  };
+  const initial = await executor.executeConversationBatch([
+    { id: "sealed-coordinator-write", name: "write_probe", input: { path: join(current.root, "sealed.txt") } },
+  ], { ...options, rationaleRuntime: coordinator });
+  expect(initial.outcome).toBe("rationale-required");
+  if (initial.outcome !== "rationale-required") throw new Error("Expected rationale control");
+  const control = initial.control.control;
+  const round = await coordinator.handleRationaleRoundResult({
+    ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "explain-sealed-write", name: "permission_rationale", input: rationaleResponseFor(control, "Write the requested sealed target.") }] },
+  });
+  expect(round).toMatchObject({ autoApproved: true, reevaluation: { outcome: "fresh", scopeAlignment: "aligned" } });
+  expect(scopeComplete).toHaveBeenCalledOnce();
+  expect(cards).toHaveLength(0);
+  const sealed = await coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: control.eligibilityContext });
+  if (!sealed) throw new Error("Expected authentic coordinator resume");
+  expect(ticketStore.isAuthenticConsumedAllowOnceReceipt(sealed.hostConsumedAllowOnceReceipt, Date.now())).toBe(true);
+  const resumeOptions = { ...options, rationaleResumeRuntime: coordinator };
+  return { ...current, execute, hooks, reached, release, gate, cards, approve, invocationAudits, executor, sealed, resumeOptions };
 }
 
 function manualGate() {
@@ -145,6 +219,276 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
 }
 
 describe("executor automated approval pause", () => {
+  it("cancels a pending late native card without entering the handler", async () => {
+    const f = await subject();
+    const controller = new AbortController();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "cancel-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    expect(gate.pendingCount).toBe(1);
+    controller.abort(new Error("caller cancelled pending late card"));
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(gate.pendingCount).toBe(0);
+    expect(approve(cards[0])).toBeNull();
+    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("settles caller cancellation while a late PermissionRequest hook is still held", async () => {
+    const f = await subject();
+    const controller = new AbortController();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const runPermissionRequest = hooks.runPermissionRequest.bind(hooks);
+    let enterPermission!: () => void;
+    let releasePermission!: () => void;
+    const permissionReached = new Promise<void>((resolve) => { enterPermission = resolve; });
+    const permissionHeld = new Promise<void>((resolve) => { releasePermission = resolve; });
+    vi.spyOn(hooks, "runPermissionRequest").mockImplementationOnce(async (...args) => {
+      enterPermission();
+      await permissionHeld;
+      return runPermissionRequest(...args);
+    });
+    const { gate, cards } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "cancel-held-permission-hook", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await permissionReached;
+    try {
+      controller.abort(new Error("caller cancelled held permission hook"));
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
+      expect((await pending)[0].is_error).toBe(true);
+      expect(cards).toHaveLength(0);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      releasePermission();
+      await pending;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(cards).toHaveLength(0);
+    expect(gate.pendingCount).toBe(0);
+    expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(rows.some((row) => row.decision === "ask" && row.toolUseId === "cancel-held-permission-hook")).toBe(false);
+  });
+
+  it.each(["caller abort", "execution ceiling"] as const)("propagates %s into the actual handler after late native approval", async (interruption) => {
+    const f = await subject();
+    const controller = new AbortController();
+    let enterHandler!: () => void;
+    const handlerReached = new Promise<void>((resolve) => { enterHandler = resolve; });
+    let handlerSignal: AbortSignal | undefined;
+    const execute = vi.fn(async (_input: unknown, context: ToolExecutionContext) => {
+      handlerSignal = context.abortSignal;
+      if (!handlerSignal) throw new Error("Handler cancellation signal is missing");
+      const signal = handlerSignal;
+      enterHandler();
+      return await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "write_probe", description: "write probe", source: "builtin", category: "write", pathFields: ["path"],
+      jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, execute,
+    }));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "interrupt-late-approved-handler", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    if (interruption === "execution ceiling") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    approve(cards[0]);
+    await handlerReached;
+    expect(handlerSignal?.aborted).toBe(false);
+    if (interruption === "caller abort") controller.abort(new Error("caller cancelled late-approved handler"));
+    else await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs);
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(cards).toHaveLength(1);
+    expect(gate.pendingCount).toBe(0);
+    expect(controller.signal.aborted).toBe(interruption === "caller abort");
+  });
+
+  it.each(["native", "unavailable"] as const)("rechecks a real coordinator receipt after sibling reviews pause during PreToolUse with %s approval", async (surface) => {
+    const f = await rationaleContinuation(surface);
+    const pending = f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
+    await f.reached;
+    expect(f.execute).not.toHaveBeenCalled();
+    await f.pause();
+    f.release();
+    if (surface === "native") {
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.cards[0]).toMatchObject({ kind: "tool", isReadOnly: false, allowedChoices: ["allow-once", "deny-once"] });
+      expect(f.cards[0].reason).toMatch(/3/);
+      f.approve(f.cards[0]);
+      expect((await pending).is_error).toBeUndefined();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.invocationAudits.map((record) => record.state)).toEqual(["authorized", "started", "completed"]);
+      const replay = await f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
+      expect(replay.is_error).toBe(true);
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.cards).toHaveLength(1);
+    } else {
+      const result = await pending;
+      expect(result.is_error).toBe(true);
+      expect(result.content).toMatch(/3/);
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.cards).toHaveLength(0);
+      expect(f.manager.isAutomatedApprovalPaused(f.sessionId)).toBe(true);
+    }
+  });
+
+  it.each(["policy", "remembered", "reviewer", "rationale", "fresh native", "late native"] as const)("applies the common final audit gate to %s approval", async (source) => {
+    if (source === "rationale") {
+      const f = await rationaleContinuation();
+      const order: string[] = [];
+      const check = f.audit.assertPermissionAuditWritable.bind(f.audit);
+      vi.spyOn(f.audit, "assertPermissionAuditWritable").mockImplementation(() => { order.push("audit"); check(); });
+      f.execute.mockImplementation(async () => { order.push("handler"); return "sealed write completed"; });
+      const pending = f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
+      await f.reached;
+      order.push("pre-hook-finished");
+      f.release();
+      expect((await pending).is_error).toBeUndefined();
+      expect(order.slice(-2)).toEqual(["audit", "handler"]);
+      expect(order.indexOf("pre-hook-finished")).toBeLessThan(order.lastIndexOf("audit"));
+      return;
+    }
+    const f = await subject();
+    const order: string[] = [];
+    const check = f.audit.assertPermissionAuditWritable.bind(f.audit);
+    vi.spyOn(f.audit, "assertPermissionAuditWritable").mockImplementation(() => { order.push("audit"); check(); });
+    const execute = vi.fn(async () => { order.push("handler"); return "wrote"; });
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const input = { path: join(f.root, "common-gate.txt") };
+    if (source === "policy") f.manager.setMode("allow");
+    if (source === "remembered") await remember(f.root, input);
+    if (source === "fresh native") f.setLevel("high");
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "common-gate-write", name: "write_probe", input }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    if (source === "fresh native") {
+      await vi.waitFor(() => expect(cards).toHaveLength(1));
+      approve(cards[0]);
+    }
+    await reached;
+    const expectedProviderCalls = source === "policy" || source === "remembered" ? 0 : 1;
+    expect(f.complete).toHaveBeenCalledTimes(expectedProviderCalls);
+    if (source === "late native") await f.pause();
+    order.push("pre-hook-finished");
+    release();
+    if (source === "late native") {
+      await vi.waitFor(() => expect(cards).toHaveLength(1));
+      expect(execute).not.toHaveBeenCalled();
+      order.push("late-card-approved");
+      approve(cards[0]);
+    }
+    expect((await pending)[0].is_error).toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(order.slice(-2)).toEqual(["audit", "handler"]);
+    expect(order.indexOf("pre-hook-finished")).toBeLessThan(order.lastIndexOf("audit"));
+    if (source === "late native") expect(order.indexOf("late-card-approved")).toBeLessThan(order.lastIndexOf("audit"));
+    expect(cards).toHaveLength(source === "fresh native" || source === "late native" ? 1 : 0);
+  });
+
+  it("refuses the handler when the authenticated audit tail changes while a late native card is pending", async () => {
+    const f = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "tampered-pending-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    corruptAuditTail(f.audit);
+    const settled = pending.then((results) => ({ results, error: undefined }), (error: unknown) => ({ results: undefined, error }));
+    approve(cards[0]);
+    const outcome = await settled;
+    expect(execute).not.toHaveBeenCalled();
+    const failure = outcome.error instanceof Error ? outcome.error.message : outcome.results?.[0].content;
+    expect(failure).toMatch(/permission audit active tail is not self-authenticated/);
+    if (outcome.results) expect(outcome.results[0].is_error).toBe(true);
+  });
+
+  it.each(["approved", "expired"] as const)("keeps a late native card outside the execution ceiling until %s at the ordinary deadline", async (settlement) => {
+    const f = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "long-wait-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+    expect(settled).toBe(false);
+    expect(execute).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(cards[0].createdAt + TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs - Date.now() - 1);
+    expect(settled).toBe(false);
+    if (settlement === "approved") approve(cards[0]);
+    else await vi.advanceTimersByTimeAsync(1);
+    const [result] = await pending;
+    if (settlement === "approved") expect(result.content).toBe("wrote");
+    expect(result.is_error).toBe(settlement === "approved" ? undefined : true);
+    expect(execute).toHaveBeenCalledTimes(settlement === "approved" ? 1 : 0);
+    expect(cards).toHaveLength(1);
+  });
+
   it("requires a native approval when sibling reviews pause an auto-approved write during PreToolUse", async () => {
     const current = await subject();
     const execute = vi.fn(async () => "wrote");

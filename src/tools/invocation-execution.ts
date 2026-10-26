@@ -1,5 +1,5 @@
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
-import type { ApprovalDecision } from "../permissions/approval-gate.js";
+import type { ApprovalDecision, ApprovalRequestInput } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
@@ -13,7 +13,7 @@ import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
 import { mintHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
-import { resolveEffectiveCeilingMs, runWithCeiling } from "./executor-ceiling.js";
+import { resolveEffectiveCeilingMs, runWithCeiling, type ToolCeilingOutcome } from "./executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerAuthorityCurrent } from "../shared/chat-origin.js";
 import {
@@ -84,6 +84,20 @@ import {
 
 const log = createLogger("executor");
 
+class HandlerPausedError extends Error {
+  constructor(readonly pause: "consecutive" | "total") {
+    super("Handler admission is paused");
+    this.name = "HandlerPausedError";
+  }
+}
+
+class HandlerApprovalRequiredError extends Error {
+  constructor(readonly request: ApprovalRequestInput & { sessionId: string }) {
+    super("Handler admission requires human approval");
+    this.name = "HandlerApprovalRequiredError";
+  }
+}
+
 type AuditToolCall = (...args: Parameters<AuditWriter["auditToolCall"]>) => Promise<void>;
 
 function boundInterruptionDetail(detail: string): string {
@@ -153,7 +167,7 @@ export interface ExecutionStageContext {
   ) => ToolExecutionAuditMetadata;
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   permissionResult: PermissionCheckResult | undefined;
-  automatedApproval: boolean;
+  humanApproved: boolean;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
@@ -203,7 +217,7 @@ export async function executeAuthorizedToolInvocation(
     auditCurrentToolCall,
     currentAuditMetadata,
     withHostShellExecutionPlan,
-    automatedApproval,
+    humanApproved: initialHumanApproved,
     abortSignal,
     hostShellExecutionPermitBinding,
     hostShellApprovalDecision,
@@ -230,6 +244,10 @@ export async function executeAuthorizedToolInvocation(
     pluginAuthLifecycle,
   } = context;
   let permissionResult = context.permissionResult;
+  if (typeof initialHumanApproved !== "boolean") {
+    throw new Error("Handler admission is missing human approval provenance");
+  }
+  let humanApproved = initialHumanApproved;
 
 
   const scriptPre = resolvedPluginOperation
@@ -431,7 +449,7 @@ export async function executeAuthorizedToolInvocation(
   let authorizationRequired: AuthorizationRequiredControl | undefined;
   let effectAuthorizationRequired: AuthorizationRequiredControl | undefined;
   let latePermissionHookChain: import("../audit/audit-schema.js").HookResult[] | undefined;
-  let handlerAdmissionBlocked = false;
+  let handlerAdmissionBlocked = true;
   let outputArtifact: ToolOutputArtifactInfo | undefined;
   let ownedOutputCapture: ToolOutputCapture | undefined;
   let outputArtifactDelivered = false;
@@ -816,164 +834,168 @@ export async function executeAuthorizedToolInvocation(
         + `(base ${TOOL_TIMEOUT_POLICY.globalCeilingMs}ms)`,
     });
   }
-  const outcome = await runWithCeiling(
-    async (signal) => {
-      const enterHandler = async (manuallyApproved: boolean): Promise<Awaited<ReturnType<Tool["execute"]>>> => {
-        // Operator confinement is re-observed here, after every async pre-hook,
-        // admission, rate, and audit gate. No await separates this one-shot grant
-        // from the synchronous handler-entry checks below.
-        const finalExecutionRouteGrant = finalizeExecutionRouteGrant === undefined
-          ? executionRouteGrant
-          : await finalizeExecutionRouteGrant();
-        const ctx: ToolExecutionContext = {
-          ...executionContext,
-          ...(finalExecutionRouteGrant === undefined
-            ? {}
-            : { executionRouteGrant: finalExecutionRouteGrant }),
-          abortSignal: signal,
+  // Every allow source reaches this gate. Only fresh native human consent
+  // satisfies a pause; policy, memory, parent and rationale receipts do not.
+  // Nothing asynchronous may separate this check from the handler call.
+  const assertHandlerAdmission = (signal: AbortSignal): void => {
+    signal.throwIfAborted();
+    if (services.requirePermissionAuditChain) {
+      try {
+        services.auditLogger.assertPermissionAuditWritable();
+      } catch (error) {
+        permissionResult = {
+          decision: "deny", reason: "permission audit chain unavailable before execution", layer: 6,
         };
-        // Bind the per-invocation effect ledger for the async chain of this
-        // execution so the in-process plugin hostApi closures record onto it.
-        // AsyncLocalStorage propagates through the loopback transport (the same
-        // path `currentInvocationOrigin` relies on); a re-entrant callTool opens
-        // its own ledger scope, so nested effects never double-count here.
-        //
-        // Effect-boundary ENFORCEMENT — bind the per-invocation gate context
-        // alongside the ledger so a host-classified WRITE reached during execute
-        // can ask AT THE EFFECT (foreground) or fail closed (headless).
-        // `headless` is the SAME signal that drives the pre-exec headless lane; the
-        // fresh `onceGrants` set dedups N writes to one target within this call.
-        // When `hostClassifiesRisk` is OFF (disabled/unset; the shipped default
-        // is ON, see settings-store.ts) the gate is a pass-through, so binding
-        // the context here is inert.
-        const execution = runWithToolExecutionCwd(executionCwd, () =>
-          runWithEffectLedger(effectLedger, () =>
-            runWithEffectGateContext(
-              {
-                headless: invocationPermissionContext.headless === true,
-                approvalSurface: invocationPermissionContext.approvalSurface,
-                toolName: toolUse.name,
-                ...(sessionId === undefined ? {} : { sessionId }),
-              },
-              () => {
-                // This is the single final automatic-authority boundary. Every
-                // asynchronous hook and route admission has completed before it.
-                const pause = automatedApproval && !manuallyApproved
-                  ? services.permissionManager?.getAutomatedApprovalPauseReason(sessionId)
-                  : undefined;
-                if (pause !== undefined) {
-                  handlerAdmissionBlocked = true;
-                  const userAvailable = invocationPermissionContext.headless !== true &&
-                    invocationPermissionContext.approvalSurface !== "unavailable" && services.approvalGate !== undefined;
-                  const reason = t(pause === "consecutive"
-                    ? userAvailable ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
-                    : userAvailable ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal");
-                  permissionResult = { decision: userAvailable ? "ask" : "deny", reason, layer: 5, forceModal: true };
-                  emitPermissionReview(callbacks, {
-                    status: userAvailable ? "needs_approval" : "failed", toolName: toolUse.name,
-                    toolCategory: invocationCategory, source, reason, ...meta,
-                  });
-                  if (!userAvailable) throw new Error(reason);
-                  if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
-                  const requestManualApproval = async () => {
-                    const permHook = await runScriptHook(
-                      services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
-                      finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
-                      undefined, undefined, tool.pluginGeneration !== undefined,
-                    );
-                    latePermissionHookChain = hookChainFromDispatch("perm", permHook);
-                    if (permHook.decision === "deny") {
-                      permissionResult = { decision: "deny", reason: permHook.reason, layer: 5, forceModal: true };
-                      throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
-                    }
-                    await services.auditWriter.auditPermissionAsk(
-                      toolUse.name, source, invocationCategory, finalInput,
-                      { decision: "ask", reason, layer: 5, forceModal: true }, executionCwd,
-                      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
-                    );
-                    if (signal.aborted) throw signal.reason;
-                    const decision = await services.approvalGate!.requestAndWait({
-                      id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: toolUse.name,
-                      toolCategory: invocationCategory, source, trustOrigin: invocationPermissionContext.trustOrigin,
-                      args: finalInput, reason, createdAt: Date.now(), abortSignal: signal,
-                      forceExplicit: true, isReadOnly: false, durableApprovalRecordAllowed: false,
-                      parentAdjudicationEligible: false, allowedChoices: ["allow-once", "deny-once"],
-                    });
-                    if (signal.aborted) throw signal.reason;
-                    if (!services.permissionManager!.resumeAutomatedApproval(sessionId, decision)) {
-                      permissionResult = { decision: "deny", reason, layer: 5, forceModal: true };
-                      throw new Error(reason);
-                    }
-                    permissionResult = { decision: "allow", reason: "user approved approval request (allow-once)", layer: 5 };
-                    // Manual consent supersedes automatic authority for this
-                    // exact action. Renew route admission after the card await.
-                    return enterHandler(true);
-                  };
-                  return requestManualApproval();
-                }
-                if (
-                  pluginOperationPrincipal &&
-                  operationExecutionDomain
-                ) {
-                  // No await may separate this final revocation check from
-                  // handler entry. Session/account/generation teardown that won
-                  // the race after lease admission therefore blocks dispatch.
-                  services.pluginOperationGrants.assertExecutionAuthorized(
-                    pluginOperationPrincipal,
-                    operationExecutionDomain,
-                  );
-                }
-                if (pluginAuthLifecycle) {
-                  if (!pluginOperationPrincipal || !operationExecutionDomain) {
-                    throw new Error(
-                      "host plugin auth lifecycle is missing governed operation admission",
-                    );
-                  }
-                  // This callback performs the host-owned auth-generation check
-                  // at the same final no-await boundary as the revocation check.
-                  pluginAuthLifecycle.beforeHandler(
-                    pluginOperationPrincipal,
-                    operationExecutionDomain,
-                  );
-                }
-                // No await may separate the paired-share check from handler
-                // entry. A local owner revoke that wins after approval therefore
-                // prevents the effectful tool adapter from receiving dispatch.
-                if (!isRemoteControllerAuthorityCurrent(
-                  invocationPermissionContext.remoteControllerAuthority,
-                )) {
-                  throw new Error("remote-controller-revoked");
-                }
-                handlerAdmissionBlocked = false;
-                return tool.execute(finalInput, ctx);
-              },
-              () => {
-                effectAuthorizationRequired ??= issueAuthorizationRequiredControl({
-                  kind: "tool",
-                  toolName: toolUse.name,
-                  source,
-                  category: invocationCategory,
-                  reason: "approval-surface-unavailable",
-                });
-              },
-            ),
+        throw new Error(t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(error) }));
+      }
+    }
+    const pause = !humanApproved
+      ? services.permissionManager?.getAutomatedApprovalPauseReason(sessionId)
+      : undefined;
+    if (pause !== undefined) throw new HandlerPausedError(pause);
+    if (pluginOperationPrincipal && operationExecutionDomain) {
+      services.pluginOperationGrants.assertExecutionAuthorized(
+        pluginOperationPrincipal,
+        operationExecutionDomain,
+      );
+    }
+    if (pluginAuthLifecycle) {
+      if (!pluginOperationPrincipal || !operationExecutionDomain) {
+        throw new Error("host plugin auth lifecycle is missing governed operation admission");
+      }
+      pluginAuthLifecycle.beforeHandler(pluginOperationPrincipal, operationExecutionDomain);
+    }
+    if (!isRemoteControllerAuthorityCurrent(invocationPermissionContext.remoteControllerAuthority)) {
+      throw new Error("remote-controller-revoked");
+    }
+    signal.throwIfAborted();
+  };
+
+  const preparePausedApproval = async (
+    pause: "consecutive" | "total",
+    signal: AbortSignal,
+  ): Promise<ApprovalRequestInput & { sessionId: string }> => {
+    const userAvailable = invocationPermissionContext.headless !== true &&
+      invocationPermissionContext.approvalSurface !== "unavailable" && services.approvalGate !== undefined;
+    const reason = t(pause === "consecutive"
+      ? userAvailable ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
+      : userAvailable ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal");
+    permissionResult = { decision: userAvailable ? "ask" : "deny", reason, layer: 5, forceModal: true };
+    emitPermissionReview(callbacks, {
+      status: userAvailable ? "needs_approval" : "failed", toolName: toolUse.name,
+      toolCategory: invocationCategory, source, reason, ...meta,
+    });
+    if (!userAvailable) throw new Error(reason);
+    if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
+    const permHook = await runScriptHook(
+      services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
+      finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
+      undefined, undefined, tool.pluginGeneration !== undefined,
+    );
+    signal.throwIfAborted();
+    latePermissionHookChain = hookChainFromDispatch("perm", permHook);
+    if (permHook.decision === "deny") {
+      permissionResult = { decision: "deny", reason: permHook.reason, layer: 5, forceModal: true };
+      throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
+    }
+    await services.auditWriter.auditPermissionAsk(
+      toolUse.name, source, invocationCategory, finalInput,
+      { decision: "ask", reason, layer: 5, forceModal: true }, executionCwd,
+      invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
+    );
+    signal.throwIfAborted();
+    return {
+      id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: toolUse.name,
+      toolCategory: invocationCategory, source, trustOrigin: invocationPermissionContext.trustOrigin,
+      args: finalInput, reason, createdAt: Date.now(), abortSignal,
+      forceExplicit: true, isReadOnly: false, durableApprovalRecordAllowed: false,
+      parentAdjudicationEligible: false, allowedChoices: ["allow-once", "deny-once"],
+    };
+  };
+
+  const requestPausedApproval = async (request: ApprovalRequestInput & { sessionId: string }): Promise<void> => {
+    abortSignal?.throwIfAborted();
+    const decision = await services.approvalGate!.requestAndWait(request);
+    abortSignal?.throwIfAborted();
+    humanApproved = services.permissionManager!.resumeAutomatedApproval(request.sessionId, decision);
+    if (!humanApproved) {
+      permissionResult = { decision: "deny", reason: request.reason, layer: 5, forceModal: true };
+      throw new Error(request.reason);
+    }
+    permissionResult = { decision: "allow", reason: "user approved approval request (allow-once)", layer: 5 };
+  };
+
+  const attemptHandler = async (signal: AbortSignal): Promise<Awaited<ReturnType<Tool["execute"]>>> => {
+    // Renew route admission after every asynchronous wait, including a card.
+    const finalExecutionRouteGrant = finalizeExecutionRouteGrant === undefined
+      ? executionRouteGrant
+      : await finalizeExecutionRouteGrant();
+    const ctx: ToolExecutionContext = {
+      ...executionContext,
+      ...(finalExecutionRouteGrant === undefined ? {} : { executionRouteGrant: finalExecutionRouteGrant }),
+      abortSignal: signal,
+    };
+    let execution: ReturnType<Tool["execute"]>;
+    try {
+      execution = runWithToolExecutionCwd(executionCwd, () =>
+        runWithEffectLedger(effectLedger, () =>
+          runWithEffectGateContext(
+            {
+              headless: invocationPermissionContext.headless === true,
+              approvalSurface: invocationPermissionContext.approvalSurface,
+              toolName: toolUse.name,
+              ...(sessionId === undefined ? {} : { sessionId }),
+            },
+            () => {
+              assertHandlerAdmission(signal);
+              handlerAdmissionBlocked = false;
+              return tool.execute(finalInput, ctx);
+            },
+            () => {
+              effectAuthorizationRequired ??= issueAuthorizationRequiredControl({
+                kind: "tool", toolName: toolUse.name, source, category: invocationCategory,
+                reason: "approval-surface-unavailable",
+              });
+            },
           ),
-        );
-        if (!awaitCancellationSettlement) return execution;
-        return execution.catch((error: unknown) => {
-          // The ceiling helper preserves interruption classification, which can
-          // replace a late rejection message. Keep the actual error for this
-          // builtin's bounded detail without exposing its stack or metadata.
-          settledTaskError = errorMessage(error);
-          throw error;
-        });
-      };
-      return enterHandler(false);
-    },
-    effectiveCeilingMs,
-    abortSignal,
-    toolUse.name,
-  );
+        ),
+      );
+    } catch (error) {
+      if (error instanceof HandlerPausedError) {
+        // Hook and required ask-audit work retain the attempt's cancellation
+        // and settlement ownership. Only waiting for the person moves outside.
+        const request = await preparePausedApproval(error.pause, signal);
+        throw new HandlerApprovalRequiredError(request);
+      }
+      throw error;
+    }
+    if (!awaitCancellationSettlement) return execution;
+    return execution.catch((error: unknown) => {
+      settledTaskError = errorMessage(error);
+      throw error;
+    });
+  };
+
+  const executeAdmittedHandler = async (): Promise<ToolCeilingOutcome<Awaited<ReturnType<Tool["execute"]>>>> => {
+    while (true) {
+      const attempt = await runWithCeiling(attemptHandler, effectiveCeilingMs, abortSignal, toolUse.name);
+      if (attempt.ok || attempt.reason !== "error" || !(attempt.error instanceof HandlerApprovalRequiredError)) {
+        return attempt;
+      }
+      // No execution timer survives a refused admission. User consent uses
+      // the same card timeout and caller cancellation as ordinary approval.
+      try {
+        await requestPausedApproval(attempt.error.request);
+      } catch (error) {
+        return {
+          ok: false,
+          reason: abortSignal?.aborted ? "user-abort" : "error",
+          error: error instanceof Error ? error : new Error(String(error)),
+        };
+      }
+    }
+  };
+  const outcome = await executeAdmittedHandler();
   // A tool that never closed its stream (an error path) still releases what
   // the relay held, masked, before the call's completion is reported.
   liveOutputRelay?.end();
