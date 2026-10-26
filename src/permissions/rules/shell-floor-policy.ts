@@ -1,19 +1,47 @@
 export const SHELL_FLOOR_INPUT_LIMIT = 8_000;
 export const SHELL_LITERAL_DATA_LIMIT = 65_536;
 const shellFloorLiteralDataLengths = new WeakMap<object, number>();
+const shellFloorLiteralDataWords = new WeakSet<object>();
+const shellFloorInspectionTexts = new WeakMap<object, string>();
 
 // Only the original-grammar heredoc verifier records this bounded data allowance.
-export function recordShellFloorLiteralData(input: { readonly command: string }, chars: number): void {
+export function recordShellFloorLiteralData(input: { readonly command: string }, chars: number, words: readonly object[] = []): void {
   if (!Number.isSafeInteger(chars) || chars < 0 || chars > SHELL_LITERAL_DATA_LIMIT || chars > input.command.length) {
     throw new Error("Invalid shell literal data length");
   }
   shellFloorLiteralDataLengths.set(input, chars);
+  for (const word of words) shellFloorLiteralDataWords.add(word);
+}
+export function isShellFloorLiteralData(word: object): boolean { return shellFloorLiteralDataWords.has(word); }
+
+// Flag detection reads original executable word parts. Verified body slices are
+// never included, even inside a substitution's enclosing source span.
+export function shellFloorInspectionText(input: { readonly command: string }): string {
+  if (!shellFloorLiteralDataLengths.has(input)) return input.command;
+  const cached = shellFloorInspectionTexts.get(input);
+  if (cached !== undefined) return cached;
+  const words: string[] = [];
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== "object" || shellFloorLiteralDataWords.has(node)) return;
+    if ("kind" in node && (node.kind === "literal" || node.kind === "pattern") && "value" in node && typeof node.value === "string") words.push(node.value);
+    if ("name" in node && "value" in node && "append" in node && typeof node.name === "string") words.push(`${node.name}=`);
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "facts" || key === "source") continue;
+      if (Array.isArray(value)) for (const child of value) visit(child);
+      else if (value !== null && typeof value === "object") visit(value);
+    }
+  };
+  visit(input);
+  const text = words.join(" ");
+  shellFloorInspectionTexts.set(input, text);
+  return text;
 }
 export const SHELL_FLOOR_BUDGET_REASON = "Shell floor analysis budget exceeded";
 const SHELL_PARSER_BUDGET_ERRORS = new Set([
   "Shell analysis source limit exceeded",
   "Shell analysis syntax limit exceeded",
   "Shell syntax output limit exceeded",
+  "Shell analysis total token limit exceeded",
 ]);
 
 export interface ShellFloorSignals {
@@ -34,5 +62,36 @@ export function shellFloorBudgetSignals(): ShellFloorSignals {
 
 // Stable limit errors emitted by the repository's parser runtime; syntax refusals are not exhaustion.
 export function shellFloorParserBudgetExceeded(reason: string): boolean {
-  return SHELL_PARSER_BUDGET_ERRORS.has(reason) || /^(?:\d+:\d+: )?shell (?:parser recursion|lexer work|command word) limit exceeded$/.test(reason);
+  return SHELL_PARSER_BUDGET_ERRORS.has(reason) || /^(?:\d+:\d+: )?shell (?:parser recursion|total token) limit exceeded$/.test(reason);
+}
+import { createPathCanonicalizer, createSensitiveLocationMatcher, createSensitivePathMatcher } from "../sensitive-paths.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
+
+export class ShellFloorLimitError extends Error {}
+
+// Facts live for one decision, independently of execution time or machine load.
+export class ShellFloorContext {
+  readonly facts = new Map<string, unknown>();
+  readonly canonicalize = createPathCanonicalizer();
+  readonly locationUnder = createSensitiveLocationMatcher(this.canonicalize);
+  private readonly match = createSensitivePathMatcher("read", undefined, this.canonicalize);
+  private readonly matches = new Map<string, string | null>();
+
+  matchPath(path: string): string | null {
+    const cached = this.matches.get(path);
+    if (cached !== undefined) return cached;
+    const hit = this.match(path);
+    this.matches.set(path, hit);
+    return hit;
+  }
+}
+
+// An unparsed tail cannot claim that apparent word boundaries are quoted data.
+// Count its existing visible spans before invoking any path or effect scanner.
+export function shellFloorFallbackInputExceeded(command: string): boolean {
+  let tokens = 0;
+  for (const _match of command.matchAll(/[^\s;|&()<>{}\[\],"'`]+/g)) {
+    if (++tokens > MAX_SHELL_ANALYSIS_TOKENS) return true;
+  }
+  return false;
 }

@@ -33,7 +33,7 @@ design must be reported explicitly.
 
 1. Explicit deny rules deny. The destructive/irreversible and sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Credential-exfiltration floors have the same behavior. An unsandboxed headless request that would ask under any floor or unreadable restriction denies with its reason and layer preserved.
 2. Explicit ask rules ask. A restriction whose command cannot be inspected also asks.
-3. A sandboxed command allows only after bounded inspection completes. The executable envelope is limited to 8,000 characters; Bash heredoc bodies have a separate aggregate 64 KiB data allowance only when every original heredoc delimiter is quoted and there is no known code-consuming receiver. Unsafe or ambiguous heredoc syntax and exceeded bounds require modal approval/L2. Shared budget exhaustion immediately stops all analysis: Lane A modal/L2, Lane B ask/L6 or headless deny; no reusable or reviewer allow can satisfy it.
+3. A sandboxed command allows only after bounded inspection completes. The executable envelope is limited to 8,000 characters; Bash heredoc bodies have a separate aggregate 64 KiB data allowance only when every original heredoc delimiter is quoted and there is no known code-consuming receiver. Unsafe or ambiguous heredoc syntax and exceeded bounds require modal approval/L2. A global 400-record executable-token cap also applies across the whole command. Character, data or token excess returns Lane A modal/L2 or Lane B ask/L6/headless deny; no rule, grant, mode or reviewer can satisfy it.
 4. A command that will run outside the sandbox runs unasked only on an exact allow rule for its proven literal argv (user, project or This session): `Bash(<command>)`, or `PowerShell(<command>)` for PowerShell; otherwise it asks, in every mode (owner decision 2026-10-25, unsandboxed shell exact-rule requirement). This includes sandbox-off/unavailable execution, excluded commands, an unsandboxed retry, an explicit host request and the Windows Plan B. The reviewer and judge are not consulted for it. Headless, a matching exact rule runs it; without one it is denied and audited.
 5. Prefix rules never authorize an unsandboxed command, whether or not a sandbox is active for other commands. This is checked at evaluation time; stored prefixes remain visible and revocable, and still match as deny and ask rules.
 
@@ -81,7 +81,7 @@ required to grant authority; lost quote provenance is not reconstructed.
 
 Deny wins over every allow, regardless of specificity or scope. Existing strict-mode and untrusted-origin gates remain before automatic lanes. A session approval never changes the execution plan or switches off the sandbox for later commands. Unsandboxed calls do not consume session or persistent exact-tuple approval memory from Store B: each retry asks afresh unless covered by a proven exact `Bash(<command>)` or `PowerShell(<command>)` allow rule for its dialect (unsandboxed shell exact-rule requirement).
 
-For shell rule subjects, the permission layer consumes one host-only input, `shellExecution: { runsSandboxed }`. The host invocation authorization pipeline derives this input for native shells from the sealed execution plan; the sandbox producer can supply its per-invocation answer at this single boundary. Whether a sandbox is active for other commands no longer matters (unsandboxed shell exact-rule requirement). Terminal commands carry an explicit plain route. A missing route is also treated as plain. Shell input receives destructive and sensitive-path inspection only within its lane's input and floor-work budgets. Unsandboxed input over 2,000 characters asks or denies before inspection; sandboxed input over its envelope/heredoc bounds requires modal approval. Shared budget exhaustion immediately stops all further analysis and returns Lane B ask/L6 or headless deny, or Lane A modal/L2. The dock never infers sandboxed execution from missing plan evidence. After mandatory human approval floors are satisfied, native fallback execution still requires a one-use, exact-action permit, minted from either authenticated user consent or the completed host policy/reviewer decision.
+For shell rule subjects, the permission layer consumes one host-only input, `shellExecution: { runsSandboxed }`. The host invocation authorization pipeline derives this input for native shells from the sealed execution plan; the sandbox producer can supply its per-invocation answer at this single boundary. Whether a sandbox is active for other commands no longer matters (unsandboxed shell exact-rule requirement). Terminal commands carry an explicit plain route. A missing route is also treated as plain. Shell input receives destructive and sensitive-path inspection only within its lane's character, data and total-token limits. Unsandboxed input over 2,000 characters asks or denies before inspection; sandboxed input over its envelope/heredoc bounds requires modal approval. Exceeding the global 400 executable word/value records stops analysis and returns Lane B ask/L6 or headless deny, or Lane A modal/L2. The dock never infers sandboxed execution from missing plan evidence. After mandatory human approval floors are satisfied, native fallback execution still requires a one-use, exact-action permit, minted from either authenticated user consent or the completed host policy/reviewer decision.
 
 **3. Bash command-rule matching** runs on the host's shell AST (`src/shared/shell-analysis.ts`, the mvdan/sh grammar). Implemented in `src/permissions/rules/shell-rule-matcher.ts`.
 - Every simple command must be covered by some allow rule. Different rules may cover different parts.
@@ -417,9 +417,9 @@ other inputs, checks run in this order:
    They also win over `allow` mode.
 5. Shell execution follows the actual route: Lane A allows at layer 3 only
    after bounded inspection completes. Exceeded envelope/heredoc bounds force
-   modal approval/L2. A shared work-budget hit anywhere immediately unwinds all
-   remaining analysis and returns Lane B ask/L6 or headless deny, or Lane A
-   modal/L2; no later floor, rule, proof or reviewer work runs. Lane B otherwise
+   modal approval/L2. The global 400-record executable-token limit also closes
+   Lane B with ask/L6 or headless deny, or Lane A with modal/L2, before later
+   analysis or automatic allowance. Lane B otherwise
    allows only on a current-format proven exact rule/L3. Prefixes, tool-wide
    rules, remembered grants, modes and judges cannot replace it.
 6. An unsandboxed shell without that proof and exact match asks at layer 6 in
@@ -437,7 +437,8 @@ The Layer-numbered gates already in place (remote controller, overlay, strict) a
 
 The [literal-command proof](../architecture/permission-policy-design.md#literal-command-proof)
 refuses unsandboxed input over 2,000 characters before further processing,
-parser or lexer/analysis-budget failure, nonliteral host-shell words and raw
+parser or lexer refusal, exceeded character/data/token limits, nonliteral
+host-shell words and raw
 word text that cannot be recovered unambiguously. Argument identity preserves
 original quotes and contents, including complete program-head spelling; only
 interword whitespace normalizes.
@@ -496,12 +497,12 @@ destructive, explicit-ask and one-shot requirements retain their own authority.
 | Bucket | Signal | Decision without another controlling rule |
 |---|---|---|
 | Floor | Sensitive/credential paths or retained credential-store, certificate-export and transport/sink catalogue effects | Per-call foreground ask with `forceModal`; unsandboxed headless deny; no saved approval, allow rule or mode bypass |
-| Work limit | Lane A envelope/body bounds or shared analysis-budget exhaustion | Immediate Lane B ask/L6 or headless deny, or Lane A modal/L2; no subsequent analysis or reusable allow |
+| Input limit | Character/data bounds or the global executable-token cap | Immediate Lane B ask/L6 or headless deny, or Lane A modal/L2; no later analysis or reusable allow |
 | Ordinary | Parser refusal, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No content floor by this signal alone; sandboxed execution follows its route only when floor inspection completes, while unsandboxed automatic allowance requires proven exact coverage or asks/denies |
 | Normal | No credential/sink floor or ordinary reason | Sandboxed execution follows its route; unsandboxed automatic allowance still requires proven exact coverage |
 
 These are visible-floor classifications, separate from exact-rule eligibility.
-An ordinary reason never makes a failed parse, exhausted budget, unresolved
+An ordinary reason never makes a failed parse, exceeded input limit, unresolved
 binding or ambiguous raw identity exact-allowable. A runner with fully literal
 raw words can still be eligible despite its ordinary runner
 label or delegated-code role.
@@ -509,10 +510,10 @@ Shell tool-wide allows and legacy saved grants remain inert and cannot repair
 failed proof. The card offers a remembered exact rule only when the shared
 proof and the other approval gates permit it.
 
-Path and floor analysis share one work budget across words, candidate paths,
-working directories, matcher loops and cross-dialect delegates. Spending that
-budget immediately unwinds to the cached lane-specific refusal. No fallback,
-remaining candidate or later analysis continues after it.
+Each request obtains one original-grammar lexical representation and performs
+literal proof once. Structural views, command facts, stored-rule parses and
+canonical-path/ancestry/catalogue results are reused within that request.
+Successful analysis is not cached across requests.
 
 For Lane A, Bash heredoc bodies have a separate aggregate 65,536-byte (64 KiB)
 data allowance only when every heredoc operator in the original command has a
@@ -522,8 +523,9 @@ or pipeline views keep full-body normal analysis and the 8,000-character cap.
 Quoted delimiters alone do not prove that a recipient treats stdin as data.
 The executable envelope remains within 8,000 characters. Body extent comes from
 the original source: no body is deleted, no remaining text is reparsed as proof,
-and no separate line-continuation reader is used. Eligible bodies receive only
-a linear metered data pass, never general code/floor inspection.
+and no separate line-continuation reader is used. Eligible bodies are original
+source slices scanned only to locate terminator lines. Their contents never
+become ordinary words, launcher/proof input or general code/floor inspection.
 
 One unquoted delimiter cancels every body's data allowance. All text after the
 first heredoc operator's line then receives normal literal checks under the
@@ -533,15 +535,18 @@ approval. Lane B caps the complete original input at 2,000 characters. Literal
 `cat`/`tee -a` data writes remain eligible. Unknown-program stdin remains the
 accepted indirection limit; no new name list or Lane B carrier gate is added.
 
-The shared budget charges actual lexer steps and subsequent analysis work,
-with a ceiling linear in the bounded input length. It does not reserve work
-per whitespace span or charge a loop's maximum possible operations. The original
-grammar bounds permission analysis at 64 actual argument-word records per
-command and counts its rune/token advances against the shared ceiling. Nested
-commands retain separate records without resetting their containing command.
-No host-side shadow lexer predicts grammar work or heredoc extents. General
-structural parsing retains its existing default limits. Exhaustion is sticky
-and terminates all remaining analysis with the lane-specific closed result.
+The original grammar enforces a global 400-record `MAX_SHELL_ANALYSIS_TOKENS`
+limit from `src/shared/shell-analysis-limits.ts`. Executable word/value records
+include nested commands, assignment values, empty assignments and declaration
+heads. Eligible quoted body data is excluded. The counter never resets at a
+simple-command boundary; there is no separate per-command word limit. Operators
+and separators remain bounded by source length. The parser refuses over-limit
+input before expensive serialization, while general structural parsing retains
+its existing safety limits.
+
+There is no shared work counter, elapsed-time cutoff or worker timeout in the
+decision. Character, data and total-token limits alone bound admission; timing
+checks are regression evidence and never production decision authority.
 
 These buckets describe visible-floor evidence; the actual execution route and
 literal proof complete the permission decision. A hard deny rejects the request
@@ -564,10 +569,10 @@ foreground ask in `checkDetailed` in every mode; unsandboxed headless execution
 denies instead. `~`, `~user`, `$HOME` and `${HOME}` normalize
 to a home directory; other expansions (`$(echo ~)/.aws/credentials`) keep their
 literal tail; brace expansion is expanded; a glob is instantiated against the
-sensitive names that exist where it would expand. The shared work limit stops
-this inspection immediately. Any already identified floor retains its meaning,
-but no fallback or lexical rescan runs
-after budget exhaustion; the lane-specific closed result is returned.
+sensitive names that exist where it would expand. Character, data and total-token limits admit the input before this inspection.
+Canonical-path results, ancestry and catalogue matches are reused across the
+request's candidate paths and working directories. Identified floors keep
+their precedence; no work counter or elapsed-time threshold decides permission.
 
 File-input values such as
 `--env-file=.env` retain this scan; a valueless `--env-file` retains its implicit
@@ -670,14 +675,15 @@ credential/sink reading of visible text plus a PowerShell-aware pass:
   explicit directory spellings. An unsuffixed literal path can be admitted when
   `statSync(...).isDirectory()` confirms a directory in the current host
   context. This metadata exception is disabled after possible filesystem
-  effects and in launcher/code-probe frames; queries consume the shared budget.
+  effects and in launcher/code-probe frames; repeated metadata results are
+  reused within the request.
   Missing extensionless paths, regular extensionless files, nonliteral values,
   expressions and splats stay ordinary unless an independent floor applies.
   Metadata does not prove future type stability or inspect file contents.
-- Parser refusal retains its specific ordinary reason. Shared work-budget
-  exhaustion immediately stops every delegated or remaining analysis and
-  returns Lane B ask/L6 or headless deny, or Lane A modal/L2. It never reaches
-  an automatic allow or a subsequent fallback scan. Executed nested
+- Parser refusal retains its specific ordinary reason. Exceeded character,
+  data or global executable-token limits close Lane B with ask/L6 or headless
+  deny, or Lane A with modal/L2. No reusable or automated allow bypasses those
+  limits; there is no shared work-budget decision path. Executed nested
   frames propagate ordinary asks. Literal quoted code is inspected for visible
   credentials and sinks without treating unknown code as exfiltration.
 
@@ -690,7 +696,7 @@ The rule classifier grades the builtin `powershell` tool with the same reading.
 `Bash(...)` matches Bash and `PowerShell(...)` matches PowerShell, with
 user, project and session scope in both dialects. Unsandboxed automatic allowance in
 either dialect requires proven literal raw words and an exact rule; parser refusal,
-lexer/analysis-budget exhaustion, nonliteral words, ambiguous raw identity and
+lexer refusal, exceeded input limits, nonliteral words, ambiguous raw identity and
 the conservative PowerShell e-leading-argument exclusion never match an allow. Tool-wide allows and
 saved shell grants remain inert. Sandboxed execution follows the actual route
 after explicit restrictions and visible floors. Exact PowerShell identity and

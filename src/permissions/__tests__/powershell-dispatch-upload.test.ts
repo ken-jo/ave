@@ -125,8 +125,6 @@ describe("dispatch approval and remote-write floors", () => {
   it("refuses oversized dispatch arguments before analysis", () => {
     const result = _inspectPowerShellForTest(`Get-ChildItem | % -MemberName InvokeScript -ArgumentList ${"'a',".repeat(3000)}'b'`, CWD);
     expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String), analysisLimited: true });
-    expect(result.exhausted).toBe(false);
-    expect(result.steps).toBe(0);
-    expect(result.chars).toBe(0);
+    expect(result.limited).toBe(true);
   });
 });

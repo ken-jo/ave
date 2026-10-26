@@ -1,3 +1,4 @@
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,8 +241,8 @@ describe.skipIf(process.platform === "win32")("executor session working director
     registry.register(new BashTool());
     const permissions = new PermissionManager(join(root, "permissions.json"));
     permissions.setRules([
-      { pattern: "Bash(cd sub)", action: "allow" },
-      { pattern: "Bash(pwd)", action: "allow" },
+      { pattern: "Bash(cd sub)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION },
+      { pattern: "Bash(pwd)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION },
     ]);
     const hooks = new HookRunner();
     const preHookInputs = vi.spyOn(hooks, "runPreHooks");

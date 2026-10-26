@@ -369,66 +369,65 @@ export function powerShellCommandsWithEffect(effect: PowerShellCommandPolicy["ef
   return new Set(Object.entries(POWERSHELL_COMMAND_POLICIES).filter(([, policy]) => policy.effects.includes(effect)).map(([name]) => name));
 }
 
-export const POWERSHELL_ANALYSIS_LIMITS = Object.freeze({
-  inputChars: 8_192,
-  chars: 65_536,
-  steps: 16_384,
-  frameSteps: 4_096,
-  depth: 16,
-  expressionDepth: 24,
-});
+export const POWERSHELL_ANALYSIS_LIMITS = Object.freeze({ inputChars: 8_000, depth: 16, expressionDepth: 24 });
 
 export type PowerShellExpressionKind = "literal" | "interpolation" | "group" | "hashtable" | "concatenation" | "format" | "join-path";
+export class PowerShellStructuralLimitError extends Error {}
 
-export class PowerShellBudgetError extends Error {}
+export function joinPowerShellText(parts: readonly string[], separator = ""): string {
+  let length = Math.max(0, parts.length - 1) * separator.length;
+  for (const part of parts) {
+    length += part.length;
+    if (length > POWERSHELL_ANALYSIS_LIMITS.inputChars) throw new PowerShellStructuralLimitError("PowerShell derived value limit exceeded");
+  }
+  return parts.join(separator);
+}
 
-// One budget spans lexing, value analysis, scans and every nested script.
-export class PowerShellAnalysisBudget {
-  steps = 0;
-  chars = 0;
-  exhausted = false;
-  private readonly frames: number[] = [];
+export function replacePowerShellText(source: string, expression: RegExp, replacement: (match: RegExpMatchArray) => string): string {
+  const parts: string[] = [];
+  let length = 0;
+  let end = 0;
+  const append = (part: string): void => {
+    length += part.length;
+    if (length > POWERSHELL_ANALYSIS_LIMITS.inputChars) throw new PowerShellStructuralLimitError("PowerShell derived value limit exceeded");
+    parts.push(part);
+  };
+  for (const match of source.matchAll(expression)) {
+    append(source.slice(end, match.index));
+    append(replacement(match));
+    end = match.index + match[0].length;
+  }
+  append(source.slice(end));
+  return parts.join("");
+}
+
+export function lowerPowerShellText(text: string): string {
+  let length = 0;
+  for (const char of text) {
+    length += char.toLowerCase().length;
+    if (length > POWERSHELL_ANALYSIS_LIMITS.inputChars) throw new PowerShellStructuralLimitError("PowerShell derived value limit exceeded");
+  }
+  return text.toLowerCase();
+}
+
+// Structural recursion is bounded independently of machine load.
+export class PowerShellAnalysisContext {
+  limited = false;
+  private frameDepth = 0;
   private expressionDepth = 0;
-  private stepLimit: number = POWERSHELL_ANALYSIS_LIMITS.steps;
-  private charLimit: number = POWERSHELL_ANALYSIS_LIMITS.chars;
-  private readonly frameLimits: number[] = [];
+  readonly facts = new Map<string, unknown>();
   constructor(private readonly disabled: ReadonlySet<PowerShellExpressionKind> = new Set()) {}
 
-  spend(steps = 1, chars = 0): void {
-    const frame = this.frames.length - 1;
-    if (this.steps + steps > this.stepLimit || this.chars + chars > this.charLimit
-      || (frame >= 0 && this.frames[frame]! + steps > this.frameLimits[frame]!)) this.exceed();
-    this.steps += steps;
-    this.chars += chars;
-    if (frame >= 0) this.frames[frame]! += steps;
-  }
-
   enter(source: string): void {
-    if (source.length > POWERSHELL_ANALYSIS_LIMITS.inputChars || this.frames.length >= POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
-    if (this.frames.length === 0) {
-      this.stepLimit = Math.max(this.stepLimit, source.length * 128);
-      this.charLimit = Math.max(this.charLimit, source.length * 128);
-    }
-    this.frames.push(0);
-    this.frameLimits.push(Math.max(POWERSHELL_ANALYSIS_LIMITS.frameSteps, source.length * 128));
-    this.spend(1, source.length);
+    if (source.length > POWERSHELL_ANALYSIS_LIMITS.inputChars || this.frameDepth >= POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
+    this.frameDepth += 1;
   }
-
-  leave(): void { this.frames.pop(); this.frameLimits.pop(); }
-
-  get workLimits(): { steps: number; chars: number } { return { steps: this.stepLimit, chars: this.charLimit }; }
-
-  expression<T>(tokens: number, read: () => T): T {
+  leave(): void { this.frameDepth -= 1; }
+  expression<T>(read: () => T): T {
     if (this.expressionDepth >= POWERSHELL_ANALYSIS_LIMITS.expressionDepth) this.exceed();
-    this.spend(tokens + 1);
     this.expressionDepth += 1;
     try { return read(); } finally { this.expressionDepth -= 1; }
   }
-
-  supports(kind: PowerShellExpressionKind): boolean { this.spend(); return !this.disabled.has(kind); }
-
-  private exceed(): never {
-    this.exhausted = true;
-    throw new PowerShellBudgetError("Analysis budget exceeded");
-  }
+  supports(kind: PowerShellExpressionKind): boolean { return !this.disabled.has(kind); }
+  private exceed(): never { this.limited = true; throw new PowerShellStructuralLimitError("PowerShell structural limit exceeded"); }
 }

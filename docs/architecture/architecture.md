@@ -1608,8 +1608,8 @@ consumers, including through retained wrapper/subshell/pipeline views, keep
 full-body inspection and the 8,000-character cap. The executable envelope also
 stays within 8,000 characters. Body extent comes from the original source:
 no body is deleted, no remaining text is reparsed as proof, and no separate
-line-continuation reader is used. Eligible bodies receive only a linear metered
-data pass, not general code/floor inspection. One unquoted delimiter cancels
+line-continuation reader is used. Eligible bodies stay original source slices;
+the lexer scans only for terminator lines, not general code/floor inspection. One unquoted delimiter cancels
 every body's data allowance; all text after the first heredoc operator's line
 then receives normal literal checks under the normal cap. Plain unquoted
 bodies without expansion remain eligible within that cap. Ambiguous syntax
@@ -1617,22 +1617,25 @@ fails closed. Literal `cat`/`tee -a` data writes remain eligible;
 unknown-program stdin remains an accepted limit. No new name list or Lane B
 carrier gate is introduced. Complete Lane B input remains capped at 2,000.
 
-The shared budget charges actual lexer steps and subsequent analysis work,
-with a ceiling linear in the bounded input length. It does not reserve work
-per whitespace span or charge a loop's maximum possible operations. The original
-grammar bounds permission analysis at 64 actual argument-word records per
-command and counts its rune/token advances against the shared ceiling. Nested
-commands retain separate records without resetting their containing command.
-No host-side shadow lexer predicts grammar work or heredoc extents. General
-structural parsing retains its existing default limits. Exhaustion is sticky
-and terminates all remaining analysis with the lane-specific closed result.
+Each request obtains one lexical representation from the original grammar and
+performs literal proof once. Structural views, command facts, stored-rule
+parses and canonical-path inspection results are reused within the request;
+successful analysis is not cached across requests.
 
-One shared work budget covers all analysis and delegation. Exhaustion stops all
-remaining analysis immediately: Lane B asks/L6 or denies headless; Lane A
-requires per-call modal approval/L2. Input or heredoc bounds in Lane A likewise
-require modal approval. Exact rules, reviewers, grants and modes cannot
-turn these refusals into an automatic allow. Visible floors run only within
-these budgets. Literal encoded display decoding remains presentation-only.
+The grammar enforces one global 400-record `MAX_SHELL_ANALYSIS_TOKENS` limit
+for executable word/value records across the complete command, including nested
+commands, assignment values, empty assignments and declaration heads. The
+counter never resets at simple-command boundaries. Eligible quoted body data
+is not ordinary word/launcher/proof input and contributes no executable-token
+records. Operators and separators are bounded by source length; the parser
+refuses over-limit input before expensive result serialization. General
+structural parsing retains its existing safety limits.
+
+Character, data or total-token limit failures close Lane B with ask/L6 or
+headless deny, or Lane A with modal/L2. No rule, grant, mode or reviewer supplies
+an automatic allow. There is no shared work counter, elapsed-time cutoff or
+worker timeout in the production decision. Timing checks are regression tests
+only. Literal encoded display decoding remains presentation-only.
 
 Remembered approvals saved for unsandboxed shells before this decision stay
 silently inert: they are not migrated, the card does not mark them, and they

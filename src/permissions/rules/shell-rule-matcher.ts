@@ -6,6 +6,8 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
+import { isShellFloorLiteralData } from "./shell-floor-policy.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { literalRuleWord, type RuleSpecifier } from "./rule-specifier.js";
@@ -19,7 +21,7 @@ import {
   type ShellCommandInput,
   opaqueRunnerReason,
   isShellWrapperProgram,
-  stripGlobalOptions,
+  globalOptionsEnd,
   wrapperCommand,
   wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
@@ -66,6 +68,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   if (parsed.parserError !== undefined) return { ok: false, reason: `shell parser failed: ${errorMessage(parsed.parserError)}` };
   const analysis = parsed.analysis;
   if (!analysis.ok) return { ok: false, reason: analysis.reason };
+  if (analysis.totalTokens !== undefined && analysis.totalTokens > MAX_SHELL_ANALYSIS_TOKENS) return { ok: false, reason: "shell analysis token limit exceeded" };
 
   const commands: ShellRuleCommand[] = [];
   const hidden: string[] = [];
@@ -73,9 +76,14 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   const globalBlockers: string[] = [];
   // Depth of `|` stages (after the first) being visited.
   let downstream = 0;
+  const literalWords = new Map<ShellWord, string | undefined>();
+  const literalWord = (word: ShellWord): string | undefined => {
+    if (!literalWords.has(word)) literalWords.set(word, literalRuleWord(word.source.raw, "bash"));
+    return literalWords.get(word);
+  };
 
   const scanWord = (word: ShellWord, blockers: string[] | null): void => {
-    if (literalRuleWord(word.source.raw, "bash") === undefined) (blockers ?? globalBlockers).push("non-literal argument");
+    if (literalWord(word) === undefined) (blockers ?? globalBlockers).push("non-literal argument");
     for (const part of word.parts) {
       switch (part.kind) {
         case "substitution":
@@ -108,7 +116,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         }
         for (const redirect of statement.redirects) {
           if (redirect.target) scanWord(redirect.target, blockers);
-          if (redirect.data) scanWord(redirect.data, blockers);
+          if (redirect.data && !isShellFloorLiteralData(redirect.data)) scanWord(redirect.data, blockers);
           if (redirect.effect === "write" && !redirect.descriptor) {
             const target = redirect.target ? staticShellWord(redirect.target) : undefined;
             if (target !== "/dev/null") blockers.push("write redirection");
@@ -126,7 +134,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           return;
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
-        const argv = statement.words.map((word) => staticShellWord(word));
+        const argv = statement.words.map((word) => literalWord(word) ?? staticShellWord(word));
         ordinaryAsk ??= wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
@@ -136,7 +144,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           const inner = wrapperPrefixLength(argv);
           if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
         }
-        const rawWords = statement.words.map((word) => literalRuleWord(word.source.raw, "bash") === undefined ? undefined : word.source.raw);
+        const rawWords = statement.words.map((word) => literalWord(word) === undefined ? undefined : word.source.raw);
         commands.push({ argv, rawWords, raw: statement.source.raw, allowBlockers: blockers, ...(downstream > 0 ? { piped: true as const } : {}) });
         return;
       }
@@ -231,25 +239,24 @@ function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | 
 }
 
 // Deny/ask semantics: argv0 compares by program basename (`/bin/rm`); when argv0 is a wrapper program (`sudo -u root rm`, `env A=1 rm`, `timeout 5 rm`, `xargs rm`, `busybox rm`) the rule may start at ANY later word — wrapper option grammars differ too much to skip them exactly; and a multi-verb tool's global options are also tried stripped (`git -C. push` matches `Bash(git push *)`). This only ever widens what a deny/ask rule sees; allow matching never strips wrappers or options.
-function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
+function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[], literalTokens: readonly (string | undefined)[], optionSuffixes: Map<string, Map<number, number>>): boolean {
   const head = argv[0];
   const starts = head !== undefined && isShellWrapperProgram(head)
     ? argv.map((_, index) => index)
     : [0];
-  const matchesWindow = (window: readonly (string | undefined)[]): boolean => {
-    if (window.length < spec.tokens.length) return false;
-    if (!spec.wildcard && window.length !== spec.tokens.length) return false;
-    return spec.tokens.every((rawToken, offset) => {
-      const token = literalRuleWord(rawToken, "bash");
+  const matchesWindow = (start: number, argumentStart = start + 1): boolean => {
+    const length = 1 + Math.max(0, argv.length - argumentStart);
+    if (argv[start] === undefined || length < spec.tokens.length) return false;
+    if (!spec.wildcard && length !== spec.tokens.length) return false;
+    return literalTokens.every((token, offset) => {
       if (token === undefined) return false;
-      const actual = window[offset];
+      const actual = argv[offset === 0 ? start : argumentStart + offset - 1];
       if (actual === undefined) return false;
       return offset === 0 ? actual === token || baseProgram(actual) === token : actual === token;
     });
   };
   return starts.some((start) => {
-    const window = argv.slice(start);
-    return matchesWindow(window) || matchesWindow(stripGlobalOptions(window));
+    return matchesWindow(start) || matchesWindow(start, globalOptionsEnd(argv, start, optionSuffixes));
   });
 }
 
@@ -280,8 +287,20 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (hasRestrictions) {
     // deny > ask: a deny rule that matches a visible command wins even when another part of the input is hidden; hidden code then asks, because a deny rule the matcher could not evaluate must not be bypassed.
     const visible = shape.ok ? shape.commands : [];
-    const matching = (list: readonly ShellRuleInput[]): ShellRuleInput | undefined =>
-      list.find((rule) => visible.some((cmd) => matchesBashRuleForRestriction(rule.spec, cmd.argv)));
+    const ruleLiterals = new Map<BashRuleSpecifier, readonly (string | undefined)[]>();
+    const optionSuffixes = new Map<ShellRuleCommand, Map<string, Map<number, number>>>();
+    const matching = (list: readonly ShellRuleInput[]): ShellRuleInput | undefined => list.find((rule) => {
+      let tokens = ruleLiterals.get(rule.spec);
+      if (tokens === undefined) {
+        tokens = rule.spec.tokens.map((raw) => literalRuleWord(raw, "bash"));
+        ruleLiterals.set(rule.spec, tokens);
+      }
+      return visible.some((cmd) => {
+        let suffixes = optionSuffixes.get(cmd);
+        if (suffixes === undefined) { suffixes = new Map(); optionSuffixes.set(cmd, suffixes); }
+        return matchesBashRuleForRestriction(rule.spec, cmd.argv, tokens, suffixes);
+      });
+    });
     const deny = matching(rules.deny);
     if (deny) return { decision: "deny", pattern: deny.pattern, reason: `deny rule ${deny.pattern}` };
     if (!shape.ok || shape.hidden.length > 0) {
