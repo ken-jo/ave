@@ -58,7 +58,7 @@ function checkedWindowsReadDenyEvidence(path: string, snapshot: WindowsReadDenyS
     if (evidence !== undefined) {
       if (pinRow === undefined || "error" in pinRow) return { status: "error", reason: "DACL snapshot target identity could not be checked" };
       const pin = pinRow.value;
-      if (admitWindowsReparse(pin) && evidence.identity !== undefined
+      if (admitWindowsReparse(pin, "evidence") && evidence.identity !== undefined
         && stat.dev === BigInt(evidence.identity.volumeSerialNumber) && stat.ino === BigInt(evidence.identity.fileId)
         && pin.exists === true && stat.dev === BigInt(pin.volumeSerialNumber!) && stat.ino === BigInt(pin.fileIndex!)) return evidence;
       return { status: "error", reason: "DACL snapshot target identity is unproven" };
@@ -81,7 +81,7 @@ export async function readWindowsReadDenyEvidence(paths: readonly string[]): Pro
       const row = result.value;
       const identity = row.exists === true
         ? { volumeSerialNumber: BigInt(row.volumeSerialNumber!).toString(), fileId: BigInt(row.fileIndex!).toString() } : undefined;
-      evidence = !admitWindowsReparse(row) ? { status: "reparse", ...(identity ? { identity } : {}) }
+      evidence = !admitWindowsReparse(row, "evidence") ? { status: "reparse", ...(identity ? { identity } : {}) }
         : row.exists === false ? { status: "missing" } : { ...evaluateWindowsReadDacl(row), identity };
     } catch (error) {
       evidence = { status: "error", reason: errorMessage(error) };

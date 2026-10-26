@@ -63,10 +63,10 @@ describe("aveHome", () => {
   });
 });
 describe("win32SystemBinary", () => {
-  it("pins the binary to System32 without changing other callers' fallback", () => {
+  it("pins the binary to System32 and refuses missing system roots", () => {
     expect(win32SystemBinary("icacls", { SystemRoot: "C:\\Windows" })).toBe(join("C:\\Windows", "System32", "icacls.exe"));
     expect(win32SystemBinary("icacls", { windir: "D:\\Win" })).toBe(join("D:\\Win", "System32", "icacls.exe"));
-    expect(win32SystemBinary("icacls", {})).toBe("icacls");
+    expect(() => win32SystemBinary("icacls", {})).toThrow(/system root/i);
   });
 });
 /** A refused result with the DACL it was refused for: owner, entries and inheritance flags. */

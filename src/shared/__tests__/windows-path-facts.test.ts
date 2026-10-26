@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsOwnerRules, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 const SID = "S-1-5-21-100-200-300-1001";
@@ -16,6 +17,24 @@ function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
 }
 
 describe("Windows path facts admission and evaluation", () => {
+  it("admits ordinary grant tags and resolves only supported name surrogates", () => {
+    expect(admitWindowsReparse(ORDINARY, "grant")).toBe(true);
+    for (const reparseTag of [0x80000015, 0x9000001a, 0x80000042]) {
+      const cloud = { ...ORDINARY, reparseTag, attributes: 0x410 };
+      expect(admitWindowsReparse(cloud, "grant")).toBe(true);
+      expect(admitWindowsReparse(cloud, "evidence")).toBe(false);
+    }
+    for (const reparseTag of [0xa0000003, 0xa000000c]) {
+      const link = { ...ORDINARY, reparseTag, attributes: 0x410 };
+      expect(admitWindowsReparse(link, "grant")).toBe("resolve");
+      expect(admitWindowsReparse({ ...ORDINARY, exists: null, ancestors: [link] }, "grant")).toBe("resolve");
+      expect(admitWindowsReparse(link, "evidence")).toBe(false);
+    }
+    expect(admitWindowsReparse({ ...ORDINARY, reparseTag: 0xa0000042, attributes: 0x410 }, "grant")).toBe(false);
+    expect(admitWindowsReparse({ ...ORDINARY, attributes: 0x410 }, "grant")).toBe(false);
+    expect(admitWindowsReparse({ ...ORDINARY, exists: null }, "grant")).toBe(false);
+  });
+
   it("refuses unfamiliar tags and every reparse ancestor through one admission rule", () => {
     expect(admitWindowsReparse(ORDINARY)).toBe(true);
     for (const reparseTag of [0xa0000003, 0xa000000c, 0x80000042]) {
@@ -27,7 +46,7 @@ describe("Windows path facts admission and evaluation", () => {
   });
 
   it("keeps every migrated consumer on the common reparse admission rule", () => {
-    for (const path of ["src/permissions/windows-deny-acl.ts", "src/shared/ave-home.ts", "src/shared/windows-admin-policy.ts", "src/shared/windows-read-deny-evidence.ts"]) {
+    for (const path of ["src/permissions/windows-deny-acl.ts", "src/shared/ave-home.ts", "src/shared/windows-admin-policy.ts", "src/shared/windows-read-deny-evidence.ts", "src/permissions/asrt-sandbox.ts"]) {
       const source = readFileSync(resolve(path), "utf8");
       expect(source).toContain("admitWindowsReparse(");
       expect(source).not.toMatch(/reparseTag|FILE_ATTRIBUTE_REPARSE_POINT|isSymbolicLink|FileAttributes\]::ReparsePoint/);
@@ -76,7 +95,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     writeFileSync(join(fixture, "directory", "file"), "pinned policy bytes");
     symlinkSync(join(fixture, "directory"), join(fixture, "junction"), "junction");
   });
-  afterAll(() => { if (fixture) rmSync(fixture, { recursive: true, force: true }); });
+  afterAll(() => { if (fixture) { removeLinksUnder(fixture); rmSync(fixture, { recursive: true, force: true }); } });
 
   it("proves Node dev and ino use the legacy serial and file index for files and directories", () => {
     for (const path of [join(fixture, "directory"), join(fixture, "directory", "file")]) {

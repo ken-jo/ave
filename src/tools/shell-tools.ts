@@ -5,6 +5,7 @@ import type {
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { SHELL_TASK_OUTPUT_PREVIEW_CHARS } from "../shared/shell-tasks.js";
 import { createLogger } from "../lib/logger.js";
+import { windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
  * Host shell tool family: the `bash` and `powershell` execution tools, the
  * session-scoped background-shell registry, and the `bash_output` /
@@ -3587,6 +3588,7 @@ async function spawnPowerShellInMxc(
   toolUseId?: string,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
+  const systemRoot = windowsSystemRoot();
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
   try {
     sandboxHome = createSandboxProcessHome();
@@ -3597,7 +3599,6 @@ async function spawnPowerShellInMxc(
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
-  const systemRoot = process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows";
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], hostHome, sandboxHome.path);

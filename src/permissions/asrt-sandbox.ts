@@ -4,10 +4,11 @@ import { spawn } from "node:child_process";
 import { containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
-import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readlinkSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { admitWindowsReparse, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
@@ -1126,11 +1127,12 @@ function keepWindowsProfileReadDeny(path: string, profile: string, evidence: Win
       ...(evidence.status === "readable" && evidence.principals?.length ? { principals: evidence.principals } : {}) });
   }
   const reason = evidence.reason ?? evidence.status;
+  const keep = evidence.status === "error" || evidence.status === "reparse" || !profileParent;
   if (!windowsReadDenyWarnings.has(key)) {
     windowsReadDenyWarnings.add(key);
-    log.warn(`[sandbox-profile-read-deny] ${profileParent ? "Filtering" : "Keeping"} ${path}: ${evidence.principals?.join(", ") ?? reason}${profileParent ? "; profile-root stamping cannot protect this target" : ""}`);
+    log.warn(`[sandbox-profile-read-deny] ${keep ? "Keeping" : "Filtering"} ${path}: ${evidence.principals?.join(", ") ?? reason}${profileParent ? "; profile-root stamping cannot protect this target" : ""}`);
   }
-  return !profileParent;
+  return keep;
 }
 
 function expandedWindowsDenyGrants(
@@ -2166,7 +2168,6 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
     grantWindowsAcl,
     stampWindowsAcl,
     revokeWindowsAcl,
-    expandWindowsFsPaths,
     resolveSrtWin,
   } = await import("@anthropic-ai/sandbox-runtime");
 
@@ -2184,17 +2185,21 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
     );
   }
 
-  const allowWrite = [
-    ...new Set(expandWindowsFsPaths([...(opts.allowWrite ?? [])])),
+  const requestedWrite = [
+    ...new Set((opts.allowWrite ?? []).map(path => expandWindowsEnvRefs(expandLeadingTilde(path)))),
   ];
-  const allowRead = [
-    ...new Set(expandWindowsFsPaths([
-      ...(opts.allowRead ?? []),
-      ...allowWrite,
-    ])),
+  const requestedRead = [
+    ...new Set([
+      ...(opts.allowRead ?? []).map(path => expandWindowsEnvRefs(expandLeadingTilde(path))),
+      ...requestedWrite,
+    ]),
   ];
 
-  assertPrivateHelperGrants(allowRead, allowWrite);
+  const pins = pinWindowsGrantTargets(requestedRead);
+  const resolved = new Map(requestedRead.map((path, index) => [path, stripExtendedPathPrefix(pins[index]!.canonical!)]));
+  const allowRead = [...new Set(resolved.values())];
+  const allowWrite = [...new Set(requestedWrite.map(path => resolved.get(path)!))];
+  assertWindowsGrantBoundaries(allowRead, allowWrite);
 
   const settings = withWorkerUnixSockets(_baseTrustedSettings);
   const revision = session.windowsDenyRevision;
@@ -2210,7 +2215,8 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
       const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
       const glob = (typeof entry === "string" || !entry.literal) && containsGlobCharsWin(path);
       const boundary = glob ? globPatternBaseDir(toForwardSlashes(path)) : path;
-      if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant))) continue;
+      if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant)
+        || lexicalWindowsOverlap(grant, boundary))) continue;
       if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
       const key = windowsReadDenyKey(path);
       const previousRow = obligations.get(key);
@@ -2257,6 +2263,9 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
   assertWindowsSession(session, revision);
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
+      assertWindowsGrantPins(allowRead, pins);
+      // srt-win writes the DACL by name: a swap between the pre-pin and native write
+      // cannot be excluded. Only the post-pin and revoke detect that remaining window.
       grantWindowsAcl({
         sandboxUserSid,
         holderPid: opts.holderPid,
@@ -2264,6 +2273,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
         write: allowWrite,
         srtWin,
       });
+      assertWindowsGrantPins(allowRead, pins);
     } catch (err) {
       revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin });
       throw err;
@@ -2310,6 +2320,88 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
     throw error;
   }
   return grant;
+}
+
+function assertWindowsGrantGrammar(path: string): void {
+  if (!/^[a-z]:[\\/]/i.test(path) || /[\0*?]/.test(path) || /:/.test(path.slice(2))) {
+    throw new Error(`Windows filesystem grant requires a literal local absolute path: ${path}`);
+  }
+  const normalized = win32.normalize(path);
+  if (normalized.slice(win32.parse(normalized).root.length).split(/[\\/]/).filter(Boolean).length < 2) {
+    throw new Error(`Windows filesystem grant refuses a root or one-component path: ${path}`);
+  }
+}
+
+function pinWindowsGrantTargets(paths: readonly string[]): WindowsPathFacts[] {
+  let pending = paths.map((path, index) => ({ path, index }));
+  const result: WindowsPathFacts[] = [];
+  for (let hop = 0; pending.length > 0 && hop < 40; hop++) {
+    for (const { path } of pending) assertWindowsGrantGrammar(path);
+    const rows = pinWindowsPaths(pending.map(row => row.path));
+    const next: typeof pending = [];
+    for (const [offset, request] of pending.entries()) {
+      const row = rows[offset]!;
+      const admission = admitWindowsReparse(row, "grant");
+      if (admission === "resolve") {
+        // Resolve one admitted link at a time so a later surrogate cannot hide behind it.
+        const components = [...row.ancestors, row];
+        const linkIndex = components.findIndex(component => admitWindowsReparse({ ...component, ancestors: [] }, "grant") === "resolve");
+        const link = stripExtendedPathPrefix(components[linkIndex]!.canonical!);
+        const normalized = win32.normalize(request.path);
+        const remaining = normalized.slice(win32.parse(normalized).root.length).split(/[\\/]/).filter(Boolean).slice(linkIndex);
+        next.push({ ...request, path: win32.resolve(dirname(link), stripExtendedPathPrefix(readlinkSync(link)), ...remaining) });
+      } else {
+        if (!admission || row.exists !== true || !row.canonical) throw new Error(`Windows filesystem grant identity is unproven: ${request.path}`);
+        assertWindowsGrantGrammar(stripExtendedPathPrefix(row.canonical));
+        result[request.index] = row;
+      }
+    }
+    pending = next;
+  }
+  if (pending.length) throw new Error(`Windows filesystem grant link resolution limit: ${pending[0]!.path}`);
+  return result;
+}
+
+function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[]): void {
+  assertPrivateHelperGrants(read, write);
+  assertWindowsMachineRootWriteGrants(write);
+  for (const path of read) {
+    if (windowsMachineRoots().some(root => win32.resolve(path).toLowerCase() === win32.resolve(root).toLowerCase())) {
+      throw new Error(`Windows filesystem grant refuses a machine root: ${path}`);
+    }
+    if ([process.cwd(), aveHome()].some(root => isGrantPathWithin(path, root))) {
+      throw new Error(`Windows filesystem grant refuses an ancestor of the workspace or Ave home: ${path}`);
+    }
+    if (protectedReadDenyCovering(path, getDefaultSensitiveReadDenyPaths())) {
+      throw new Error(`Windows filesystem grant is inside a protected sensitive target: ${path}`);
+    }
+  }
+  for (const path of write) {
+    if (protectedReadDenyCovering(path, getDefaultSensitiveWriteDenyPaths())) {
+      throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
+    }
+  }
+}
+
+function lexicalWindowsOverlap(left: string, right: string): boolean {
+  const a = win32.resolve(left).toLowerCase().replace(/[\\/]+$/, "");
+  const b = win32.resolve(right).toLowerCase().replace(/[\\/]+$/, "");
+  return a === b || a.startsWith(`${b}\\`) || b.startsWith(`${a}\\`);
+}
+
+function assertWindowsGrantPins(paths: readonly string[], initial: readonly WindowsPathFacts[]): void {
+  const identities = new Map(initial.map(row => [stripExtendedPathPrefix(row.canonical!).toLowerCase(), row]));
+  let rows: readonly WindowsPathFacts[];
+  try { rows = pinWindowsPaths(paths); }
+  catch (cause) { throw new Error(`Windows filesystem grant identity check failed: ${paths.join(", ")}`, { cause }); }
+  for (const [index, path] of paths.entries()) {
+    const row = rows[index]!;
+    const expected = identities.get(path.toLowerCase())!;
+    if (admitWindowsReparse(row, "grant") !== true || row.exists !== true
+      || row.volumeSerial !== expected.volumeSerial || row.fileId !== expected.fileId) {
+      throw new Error(`Windows filesystem grant target identity changed: ${path}`);
+    }
+  }
 }
 
 function assertPrivateHelperGrants(read: readonly string[], write: readonly string[]): void {

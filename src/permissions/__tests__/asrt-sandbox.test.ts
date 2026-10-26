@@ -1571,7 +1571,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const config = buildSandboxConfig({ denyRead: [exposed, privateFile, missing, failed] }, evidence);
       const denies = bare(config.filesystem.denyRead);
       expect(denies).toContain(exposed);
-      expect(denies).not.toContain(privateFile);
+      // A private snapshot without an object identity is still unproven.
+      expect(denies).toContain(privateFile);
       expect(denies).not.toContain(missing);
       expect(denies).toContain(failed);
     } finally {

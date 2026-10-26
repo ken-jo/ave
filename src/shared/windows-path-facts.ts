@@ -130,8 +130,22 @@ export function readWindowsDacls(paths: readonly string[], options: { parent?: b
 }
 
 /** This is the sole admission rule for Windows path pins, including unfamiliar tags. */
-export function admitWindowsReparse(facts: WindowsPathFacts): boolean {
-  return [...facts.ancestors, facts].every(component => component.exists !== null && component.reparseTag === 0 && (component.attributes & 0x400) === 0);
+export function admitWindowsReparse(facts: WindowsPathFacts, use: "grant" | "evidence" = "evidence"): boolean | "resolve" {
+  let follow = false;
+  for (const component of [...facts.ancestors, facts]) {
+    if (component.exists === null) {
+      // The non-following walk stops below a link; only resolution can prove the remaining components.
+      if (use === "grant" && follow) continue;
+      return false;
+    }
+    const tag = component.reparseTag;
+    if (tag === 0 && (component.attributes & 0x400) === 0) continue;
+    if (use === "evidence" || tag === 0) return false;
+    if ((tag & 0x20000000) === 0) continue;
+    if (tag !== 0xa0000003 && tag !== 0xa000000c) return false;
+    follow = true;
+  }
+  return follow ? "resolve" : true;
 }
 
 export function mapWindowsGenericRights(mask: number): number {

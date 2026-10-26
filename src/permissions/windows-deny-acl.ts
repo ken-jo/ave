@@ -14,7 +14,7 @@ export interface WindowsDenyAcl {
 export function readWindowsDenyAcls(paths: readonly string[], sandboxUserSid: string): readonly WindowsDenyAcl[] {
   try {
     return readWindowsDacls(paths.map(path => resolve(path)), { parent: true }).map(row => {
-      if (!admitWindowsReparse(row)) throw new Error("Reparse path refused");
+      if (!admitWindowsReparse(row, "evidence")) throw new Error("Reparse path refused");
       const target = leadingWindowsDenies(row.dacl, sandboxUserSid);
       if (!row.exists) return { denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false };
       if (!row.parent) throw new Error("Deny DACL parent is missing");

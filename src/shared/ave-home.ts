@@ -7,6 +7,8 @@ import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "./windows-owner-claim.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, readWindowsDacls, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
+import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
+export { win32SystemBinary } from "./windows-system-path.js";
 
 /** All user-data paths must use this resolver so AVE_HOME isolates every store, including secrets. */
 export function aveHome(): string {
@@ -94,7 +96,7 @@ const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
 
 /** Read native facts before and after the existing directory protection writes. */
 export function readWindowsDirectoryDacls(paths: readonly string[], protect = false, claimableRuntimeRoot?: string): WindowsDirectoryDacl[] {
-  if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
+  try { windowsSystemRoot(); } catch {
     return paths.map(path => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
   const results: WindowsDirectoryDacl[] = [];
@@ -103,7 +105,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     if (refused) { results.push({ path, category: refused, error: "An enclosing directory was refused" }); continue; }
     try {
       let row = readWindowsDacls([resolve(path)])[0]!;
-      if (!admitWindowsReparse(row)) {
+      if (!admitWindowsReparse(row, "evidence")) {
         refused = "reparse-point";
         results.push({ path, category: refused, error: "Directory is a link or junction" }); continue;
       }
@@ -111,7 +113,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
         runWindowsDirectoryWrite(path, row.currentUserSid, "create");
         row = readWindowsDacls([resolve(path)])[0]!;
       }
-      if (!admitWindowsReparse(row)) {
+      if (!admitWindowsReparse(row, "evidence")) {
         refused = "reparse-point";
         results.push({ path, category: refused, error: "Directory is a link or junction" }); continue;
       }
@@ -159,7 +161,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
 }
 
 function directoryDescriptor(path: string, row: WindowsDaclFacts): WindowsDirectoryDacl {
-  if (!admitWindowsReparse(row)) return { path, category: "reparse-point", error: "Directory is a link or junction" };
+  if (!admitWindowsReparse(row, "evidence")) return { path, category: "reparse-point", error: "Directory is a link or junction" };
   if (!row.dacl) return { path, error: "Directory DACL is missing" };
   return { path, currentUserSid: row.currentUserSid, elevated: row.elevated, ownerSid: row.dacl.owner,
     protected: row.dacl.protected, rules: windowsOwnerRules(row.dacl) };
@@ -248,15 +250,6 @@ export function _resetAveHomePrivacyForTest(): void {
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;
-}
-
-/** Resolve system security executables by absolute path to avoid incompatible or attacker-controlled PATH entries. */
-export function win32SystemBinary(
-  name: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const root = env.SystemRoot ?? env.windir;
-  return root ? join(root, "System32", `${name}.exe`) : name;
 }
 
 /** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */

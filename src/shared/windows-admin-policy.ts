@@ -14,7 +14,7 @@ export class WindowsPolicyReadError extends Error {
 export async function readWindowsAdminPolicy(path: string): Promise<Buffer> {
   try {
     const row = readWindowsDacls([path], { parent: true, content: true })[0]!;
-    if (!admitWindowsReparse(row)) throw new WindowsPolicyReadError(path, "Reparse point refused");
+    if (!admitWindowsReparse(row, "evidence")) throw new WindowsPolicyReadError(path, "Reparse point refused");
     if (row.exists === false) throw new WindowsPolicyReadError(path, "File not found", "ENOENT");
     if (!row.dacl || !row.parent || row.directory || row.contentHex == null) throw new WindowsPolicyReadError(path, "Incomplete policy snapshot");
     const failure = windowsPolicyTrustFailure(windowsPolicyDescriptor(row.dacl), windowsPolicyDescriptor(row.parent));

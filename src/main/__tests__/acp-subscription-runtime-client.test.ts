@@ -586,6 +586,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
       runtimeHome,
       {
         HOME: "C:\\Users\\outside-home",
+        SystemRoot: "C:\\Windows",
         GROK_MANAGED_CONFIG: "true",
         GROK_AGENT: "C:\\attacker\\profile.md",
         GROK_REQUIRED_MINIMUM_VERSION: "0.0.1",
