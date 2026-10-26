@@ -268,7 +268,7 @@ describe("ChatView", () => {
     });
   });
 
-  it("keeps the work-mode composer dock in the reading column", async () => {
+  it("keeps the empty composer dock in the reading column", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
     await waitFor(() => {
@@ -398,7 +398,7 @@ describe("ChatView", () => {
     expect(api.hasApiKey.mock.calls.length).toBe(apiKeyChecksBeforeSend);
   });
 
-  it("keeps an active conversation composer on the full-width chat-mode dock", async () => {
+  it("keeps an active conversation in the same reading-column layout", async () => {
     const { container } = await renderApp({
       hasApiKey: true,
       history: {
@@ -419,19 +419,12 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("활성 대화 답변");
     });
 
-    await act(async () => {
-      fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
-    });
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="app-mode-chat"]')?.getAttribute("aria-pressed")).toBe("true");
-      const dock = container.querySelector('[data-testid="composer-queue-dock"]');
-      expect(dock).not.toBeNull();
-      expect(dock).toHaveClass("w-full");
-      expect(dock).toHaveClass("max-w-full");
-      expect(dock).not.toHaveClass("mx-auto");
-      expect(dock).not.toHaveClass("max-w-(--reading-column-max)");
-    });
+    const dock = container.querySelector('[data-testid="composer-queue-dock"]');
+    const transcript = container.querySelector('[data-testid="chat-transcript-log"]');
+    expect(dock).not.toBeNull();
+    expect(dock).toHaveClass("w-full", "mx-auto", "max-w-(--reading-column-max)");
+    expect(transcript).toHaveClass("chat-reading-column", "max-w-(--reading-column-max)");
+    expect(container.querySelector('[data-testid="app-mode-toggle"]')).toBeNull();
   });
 
   it("renders assistant text after stream text_delta event", async () => {

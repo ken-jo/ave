@@ -73,6 +73,17 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
+  it("exposes no layout-driven window resize APIs or boot mode seed", async () => {
+    const api = await loadAveApi();
+    const windowApi = api.window as Record<string, unknown>;
+    expect(windowApi).not.toHaveProperty("resizeForMode");
+    expect(windowApi).not.toHaveProperty("resizeForSidePanel");
+    expect(CHANNELS.window).not.toHaveProperty("resizeForMode");
+    expect(CHANNELS.window).not.toHaveProperty("resizeForSidePanel");
+    expect(exposed.has("__aveInitialAppMode")).toBe(false);
+    expect(windowApi.openHtmlPreview).toBeTypeOf("function");
+  });
+
   afterEach(() => {
     if (originalDebugStreamEnv === undefined) {
       delete process.env.VITE_DEBUG_STREAM;

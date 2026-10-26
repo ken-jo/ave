@@ -69,11 +69,9 @@ test.describe("workspace rail redesign", () => {
     await expect(page.getByTestId("chat-side-panel-tab-browser")).toBeVisible();
   });
 
-  test("chat mode at its side-panel window width docks (no modal blur)", async () => {
-    // Chat-mode window reserves must preserve docking rather than accidentally triggering a modal drawer.
-    await page.getByTestId("app-mode-chat").click();
+  test("a canvas with space for the transcript and side panel docks", async () => {
+    await page.setViewportSize({ width: 1243, height: 768 });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
-    await page.setViewportSize({ width: 908, height: 840 });
 
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-width-splitter")).toBeVisible();
@@ -86,7 +84,7 @@ test.describe("workspace rail redesign", () => {
     await expect(motion).toHaveAttribute("data-panel-mode", "docked");
 
     // Below docking width, float inside the tile without dimming or narrowing the transcript.
-    await page.setViewportSize({ width: 460, height: 840 });
+    await page.setViewportSize({ width: 360, height: 840 });
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.
     await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();

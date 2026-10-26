@@ -69,7 +69,7 @@ per file (e.g. `chat-todo-queue.png` is 1600x830 ≈1.93:1, `chat-plugin-panel.p
 is 484x889 ≈0.54:1) — each existing
 asset was clearly cropped to its own target element/region after capture, not
 captured at one fixed app window size. 1600x1000 is wide enough to show the
-expanded work-mode rail + full chat column without clipping, and gives full
+expanded sidebar rail + full chat column without clipping, and gives full
 per-key crops (`locator`-scoped captures) plenty of source resolution.
 
 Animations/transitions are globally killed via `page.addStyleTag` in the
@@ -102,7 +102,7 @@ panel is also a plugin's first tool call.
 
 Navigation to a panel goes through the sidebar rail (`openPluginPanel` in
 `matrix.ts`): each rail row carries `data-viewkey="plugin:<id>:<view>"`. In
-**work mode** (the harness default) the panel opens inline, so it is
+the default wide viewport the panel opens inline, so it is
 screenshottable; the plugin's view renders inside an Electron `<webview>`.
 
 ## Capture coverage

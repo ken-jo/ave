@@ -154,8 +154,12 @@ const declarations = cssDeclarations(stripComments(cssSource, { lineComments: fa
 const constants = tsConstants(stripComments(tsSource, { lineComments: true }));
 const failures = [];
 
-const containerQueries = [...stripComments(cssSource, { lineComments: false }).matchAll(
-  /@container\s+([\w-]+)\s*\(min-width:\s*(\d+)px\)/g,
+const containerSource = stripComments(cssSource, { lineComments: false }).replace(
+  /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g,
+  (quoted) => quoted.replace(/[^\n]/g, " "),
+);
+const containerQueries = [...containerSource.matchAll(
+  /@container\s+([\w-]+)\s*\(min-width:\s*(\d+)px\)\s*\{/g,
 )];
 for (const { container, ts: tsName } of CONTAINER_MIRRORS) {
   const defined = constants.get(tsName);

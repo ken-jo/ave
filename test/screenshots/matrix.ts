@@ -32,11 +32,7 @@ export interface ScenarioEntry {
   captureViewport?: CaptureViewport;
 }
 
-async function openWorkMode(page: Page): Promise<void> {
-  const workToggle = page.locator('[data-testid="app-mode-work"]');
-  if (await workToggle.count()) {
-    await workToggle.click().catch(() => {});
-  }
+async function openChatSurface(page: Page): Promise<void> {
   await page.locator('[data-testid="chat-view-root"]').first().waitFor({ state: 'visible', timeout: 15_000 });
 }
 
@@ -59,7 +55,7 @@ async function openPluginPanel(page: Page, pluginId: string): Promise<void> {
 }
 
 async function selectPluginPanel(page: Page, pluginId: string): Promise<void> {
-  await openWorkMode(page);
+  await openChatSurface(page);
 
   // Scope selection to the portaled plugin-group menu to avoid matching another surface.
   await page.locator('[data-testid="primary-sidebar"] [data-testid="sidebar-group-plugins"]').first().click();
@@ -192,7 +188,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await sendChatMessage(page, '읽을 자료들 정리하고 요약 초안까지 만들어 줘.');
       await page
         .locator('[data-testid="session-tasks-panel"]')
@@ -277,7 +273,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await sendChatMessage(page, '노트에 정리해 둔 읽을 자료들 좀 요약해 줘.');
       const workGroup = page.getByTestId('work-group').filter({
         has: page.getByTestId('tool-duration'),
@@ -327,7 +323,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await sendChatMessage(page, '문서 폴더에 뭐가 있는지 확인해 줘.');
       await page
         .locator('[data-testid="permission-review-status-card"]')
@@ -358,7 +354,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await sendChatMessage(page, '문서 폴더에 있는 읽을 자료 목록도 같이 봐 줘.');
       const dock = page.locator('[data-testid="approval-dock"]').first();
       await dock.waitFor({ state: 'visible', timeout: 30_000 });
@@ -402,7 +398,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await sendChatMessage(page, '문서 폴더에 뭐가 있는지 확인해 줘.');
       const dock = page.locator('[data-testid="approval-dock"]').first();
       await dock.waitFor({ state: 'visible', timeout: 30_000 });
@@ -417,7 +413,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     topic: 'chat',
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       // Drive the synthetic update through the main IPC channel.
       await app.evaluate(({ BrowserWindow }) => {
         const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
@@ -461,7 +457,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await sendChatMessage(page, '노트에 정리해 둔 읽을 자료들 요약해 줘.');
       await page
         .locator('[data-testid="ask-user-question-card"]')
@@ -503,7 +499,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await pushAlertOverlay(app, page, {
         intent: 'meeting-summary',
         summary: ALERT_MEETING_SUMMARY,
@@ -537,7 +533,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       ],
     },
     steps: async ({ app, page }) => {
-      await openWorkMode(page);
+      await openChatSurface(page);
       await pushAlertOverlay(app, page, {
         intent: 'meeting-summary',
         summary: ALERT_MEETING_SUMMARY,

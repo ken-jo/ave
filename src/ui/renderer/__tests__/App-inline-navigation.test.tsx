@@ -6,20 +6,15 @@ import { MAX_PANES } from "../../../contract/app-contract.js";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 
-/** Drive navigation through actual controls to verify inline routing and sidebar selection in both app modes. */
+/** Drive navigation through actual controls to verify inline routing and sidebar selection across shell widths. */
 describe("App inline navigation", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  async function switchToChatMode(container: HTMLElement) {
-    const chatBtn = await waitFor(() => {
-      const el = container.querySelector('[data-testid="app-mode-chat"]');
-      expect(el).not.toBeNull();
-      return el as HTMLButtonElement;
-    });
-    await act(async () => {
-      fireEvent.click(chatBtn);
-    });
-    await waitFor(() => expect(chatBtn.getAttribute("aria-pressed")).toBe("true"));
+  async function collapseSidebar(container: HTMLElement) {
+    const toggle = container.querySelector<HTMLButtonElement>('[data-testid="sidebar-collapse-toggle"]');
+    expect(toggle).not.toBeNull();
+    await act(async () => { fireEvent.click(toggle!); });
+    await waitFor(() => expect(toggle!.getAttribute("aria-pressed")).toBe("false"));
   }
 
   // The built-in views live in the Features group's flyout in BOTH sidebar states — the collapsed rail opens the same flyout
@@ -33,9 +28,9 @@ describe("App inline navigation", () => {
     });
   }
 
-  it("renders a built-in view inline in chat mode and lights up its sidebar entry", async () => {
-    const { container } = await renderApp({ hasApiKey: true });
-    await switchToChatMode(container);
+  it("renders a built-in view inline on a narrow canvas and lights up its sidebar entry", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 600, canvasWidth: 600 });
+    await collapseSidebar(container);
     await openFeaturesFlyout(container);
 
     const workBoardNav = document.querySelector('[data-testid="toolbar-work-board"]') as HTMLButtonElement;
@@ -71,9 +66,7 @@ describe("App inline navigation", () => {
     expect(container.querySelector('[data-testid="sidebar-card"]')?.getAttribute("data-surface")).toBe("bare");
   });
 
-  it("renders the same view inline in work mode — the two modes no longer differ here", async () => {
-    // Work mode already behaved this way; pinning it makes the convergence the assertion rather than a coincidence of which
-    // mode the test happened to start in (the default is work).
+  it("renders a built-in view inline on a wide canvas", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     await clickSidebarNavRow("features", "sidebar-routines");
 
@@ -83,8 +76,8 @@ describe("App inline navigation", () => {
     expect(await sidebarNavRowActive("features", "sidebar-routines")).toBe(true);
   });
 
-  it("keeps navigating inline after a mode switch, in both directions", async () => {
-    const { container } = await renderApp({ hasApiKey: true });
+  it("keeps navigating inline after the canvas narrows", async () => {
+    const { container, resizeContainers } = await renderApp({ hasApiKey: true });
 
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => {
@@ -92,7 +85,7 @@ describe("App inline navigation", () => {
     });
     expect(await sidebarNavRowActive("features", "toolbar-work-board")).toBe(true);
 
-    await switchToChatMode(container);
+    await resizeContainers({ shellWidth: 600, canvasWidth: 600 });
 
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitFor(() => {
@@ -146,9 +139,8 @@ describe("App inline navigation", () => {
     expect(container.querySelector('[data-testid="view-path-current-routines"]')).toBeNull();
   });
 
-  it("offers no new-pane gesture in chat mode, which draws one pane and hides the rest", async () => {
-    const { container } = await renderApp({ hasApiKey: true });
-    await switchToChatMode(container);
+  it("offers no new-pane gesture on a narrow canvas", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 600, canvasWidth: 600 });
 
     await clickSidebarNavRow("features", "sidebar-routines", { metaKey: true });
 
@@ -171,7 +163,7 @@ describe("App inline navigation", () => {
     expect(band.querySelector('[data-testid="view-path-breadcrumb"]')).not.toBeNull();
     const expandedLead = Number.parseFloat(band.style.paddingLeft);
 
-    await switchToChatMode(container);
+    await collapseSidebar(container);
 
     // Collapsed: the card retracts but its cluster strip stays on the band, so the band pads past that strip (CDP:
     // `view-path-breadcrumb`.left must be >= `sidebar-cluster`.right + SHELL_GUTTER) instead of the rail reserve.

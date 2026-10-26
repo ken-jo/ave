@@ -289,7 +289,7 @@ describe("App plugin auth routing", () => {
     expect(await screen.findByRole("heading", { name: "OAuth Plugin" })).toBeInTheDocument();
   });
 
-  it("navigates an unauthenticated plugin view inline in work mode even with no loginTool (no silent abort)", async () => {
+  it("navigates an unauthenticated plugin view inline even with no loginTool (no silent abort)", async () => {
     // Plugins without loginTool still open inline; their view owns its auth affordance and the host must not invent a login
     // call.
     const user = makeUser();
@@ -326,7 +326,7 @@ describe("App plugin auth routing", () => {
       tool === "nlt_status" ? { authenticated: false } : { ok: true },
     );
 
-    // Default appMode is work — selection must navigate inline. The picker closing is the observable navigation side-effect
+    // Selection navigates inline. The picker closing is the observable navigation side-effect
     // (handleViewSelect ran to completion instead of bailing out early).
     await selectPluginView(user, "No-LoginTool Plugin");
 

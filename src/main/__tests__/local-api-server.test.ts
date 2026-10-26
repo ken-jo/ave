@@ -32,7 +32,6 @@ function stubSettings(
 ): SettingsService {
   const resolved: SystemSettings = {
     closeBehavior: "hide-to-tray",
-    appMode: "work",
     localApiServer: false,
     ...system,
   };

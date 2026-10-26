@@ -77,11 +77,11 @@ describe("main.ts — headless exec branch", () => {
   it("runs after setServices and before the workspace is opened", () => {
     const setServices = mainSource.indexOf("setServices(services)");
     const execBranch = mainSource.indexOf("if (execRequest !== null)");
-    const registerIpc = mainSource.indexOf("windowManager.registerIpc(");
+    const openSurface = mainSource.indexOf("const conversationSurfaceRuntime = createConversationSurfaceRuntime();");
 
     expect(setServices).toBeGreaterThanOrEqual(0);
     expect(execBranch).toBeGreaterThan(setServices);
-    expect(registerIpc).toBeGreaterThan(execBranch);
+    expect(openSurface).toBeGreaterThan(execBranch);
   });
 
   it("quits through before-quit cleanup rather than exiting hard", () => {

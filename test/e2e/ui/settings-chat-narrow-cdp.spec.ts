@@ -256,20 +256,15 @@ async function readSwitchAppearanceViaCdp(
   }
 }
 
-test('Work to Chat opens Settings as a two-depth narrow list without a forced resize (CDP)', async ({ app, mainWindow }) => {
+test('A narrow window opens Settings as a two-depth list without a forced resize (CDP)', async ({ app, mainWindow }) => {
   const originalBounds = await readMainWindowBounds(app);
-  const workMode = mainWindow.getByTestId('app-mode-work');
-  const chatMode = mainWindow.getByTestId('app-mode-chat');
-  const originalMode = await chatMode.getAttribute('aria-pressed') === 'true' ? 'chat' : 'work';
-
   try {
-    if (await workMode.getAttribute('aria-pressed') !== 'true') await workMode.click();
-    await expect(workMode).toHaveAttribute('aria-pressed', 'true');
-    await chatMode.click();
-    await expect(chatMode).toHaveAttribute('aria-pressed', 'true');
+    await setWindowSize(app, 600, 820);
     await expect.poll(() => mainWindow.evaluate(() => window.innerWidth), { timeout: 10_000 }).toBeLessThan(640);
 
+    const narrowBounds = await readMainWindowBounds(app);
     await activateSettingsWithoutResize(app, 'llm');
+    expect(await readMainWindowBounds(app)).toEqual(narrowBounds);
     const root = mainWindow.locator('[data-settings-layout]');
     await expect.poll(() => root.getAttribute('data-settings-layout'), { timeout: 5_000 }).toBe('narrow');
     await expect(mainWindow.getByTestId('settings-mobile-list')).toBeVisible();
@@ -278,7 +273,7 @@ test('Work to Chat opens Settings as a two-depth narrow list without a forced re
     await root.getByRole('tab').first().click();
     await expect(mainWindow.getByTestId(TEST_IDS.settingsMobileBack)).toBeVisible();
     await expect(mainWindow.getByTestId('settings-mobile-list')).not.toBeVisible();
-    await expectNoHorizontalOverflow(mainWindow, 'Chat settings detail');
+    await expectNoHorizontalOverflow(mainWindow, 'Narrow settings detail');
 
     await mainWindow.getByTestId(TEST_IDS.settingsMobileBack).click();
     await expect(mainWindow.getByTestId('settings-mobile-list')).toBeVisible();
@@ -292,25 +287,12 @@ test('Work to Chat opens Settings as a two-depth narrow list without a forced re
         target?.webContents.send('ave:view:activate', { viewKey: 'home' });
       });
     }
-    if (originalMode === 'work' && await workMode.getAttribute('aria-pressed') !== 'true') {
-      await workMode.click();
-      await expect(workMode).toHaveAttribute('aria-pressed', 'true');
-    } else if (originalMode === 'chat' && await chatMode.getAttribute('aria-pressed') !== 'true') {
-      await chatMode.click();
-      await expect(chatMode).toHaveAttribute('aria-pressed', 'true');
-    }
     await restoreMainWindowBounds(app, originalBounds);
   }
 });
 
-test('Chat-mode settings stay horizontally contained on every narrow tab (CDP)', async ({ app, mainWindow }) => {
+test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ app, mainWindow }) => {
   test.slow();
-
-  const chatMode = mainWindow.getByTestId('app-mode-chat');
-  if (await chatMode.getAttribute('aria-pressed') !== 'true') {
-    await chatMode.click();
-  }
-  await expect(chatMode).toHaveAttribute('aria-pressed', 'true');
 
   await setWindowSize(app, 400, 820);
   await activateSettingsWithoutResize(app, 'llm');

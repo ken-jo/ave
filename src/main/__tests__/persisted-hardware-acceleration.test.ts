@@ -54,7 +54,7 @@ describe("readPersistedHardwareAccelerationSync", () => {
   });
 
   it("reports absence when the field is missing from an existing file", () => {
-    writeSettingsFile(userDataPath, { system: { appMode: "work" } });
+    writeSettingsFile(userDataPath, { system: { closeBehavior: "hide-to-tray" } });
 
     expect(readPersistedHardwareAccelerationSync(userDataPath)).toBeUndefined();
   });

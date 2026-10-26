@@ -357,7 +357,7 @@ export type { LLMVendor, LLMVendorSettings };
 export { LLM_VENDORS };
 export type { ShortcutSettings, ShortcutSettingsPatch };
 
-/** Single source of truth for the settings file path. Both `SettingsService` (writer) and the pre-`whenReady` synchronous readers (e.g. `readPersistedAppModeSync`) derive the
+/** Single source of truth for the settings file path. Both `SettingsService` (writer) and the pre-`whenReady` synchronous readers derive the
  * settings path from this helper so the two can never drift onto different files. `userDataPath` is `app.getPath("userData")` (e.g. on macOS `~/Library/Application Support/Ave`). */
 export function settingsFilePath(userDataPath: string): string {
   return resolve(userDataPath, "ave-settings.json");

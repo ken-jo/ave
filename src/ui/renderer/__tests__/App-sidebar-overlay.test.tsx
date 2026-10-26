@@ -1,8 +1,8 @@
-/** Chat mode overlays the sidebar; work mode reserves its width. Focus returns to the toggle after dismissal. */
+/** Shell width chooses sidebar overlay or reserve; dismissal returns focus to the toggle. */
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
-import { renderApp, startInChatMode } from "../../../../test/renderer/render-app.js";
+import { renderApp } from "../../../../test/renderer/render-app.js";
 import {
   BAND_EDGE_PAD,
   CONTENT_TITLE_INSET,
@@ -37,132 +37,81 @@ function expectCollapsedGeometry(main: HTMLElement, band: HTMLElement) {
   expect(band.style.paddingLeft).toBe(COLLAPSED_BAND_LEAD);
 }
 
-describe("App sidebar overlay (chat mode)", () => {
+describe("App sidebar overlay", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("chat mode: expanding the sidebar floats the card over the tile — <main> and the band keep the collapsed geometry", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const { container } = await renderApp({ hasApiKey: true });
-      const { toggle, aside, main, band } = await mountShell(container);
-
-      // Chat mode seeds the rail collapsed; nothing overlays yet.
-      expect(toggle.getAttribute("aria-pressed")).toBe("false");
-      expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
-      expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
-      expectCollapsedGeometry(main, band);
-
-      await act(async () => { fireEvent.click(toggle); });
-
-      await waitFor(() => {
-        expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
-      });
-      expect(main.getAttribute("data-sidebar-overlay")).toBe("true");
-      expect(toggle.getAttribute("aria-pressed")).toBe("true");
-      // The card is the expanded card — same width preference as the pushed one.
-      const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
-      expect(card.getAttribute("data-surface")).toBe("card");
-      expect(card.style.width).toBe(`${SIDEBAR_DEFAULT_WIDTH}px`);
-      // The surface under it did not move: no reserve grew, no lead moved.
-      expectCollapsedGeometry(main, band);
-      // The card takes focus when it opens.
-      expect(card.contains(document.activeElement)).toBe(true);
-    } finally {
-      restoreMode();
-    }
-  });
-
-  it("chat mode: Escape collapses the overlay and hands focus back to the toggle", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const { container } = await renderApp({ hasApiKey: true });
-      const { toggle, aside, main, band } = await mountShell(container);
-
-      await act(async () => { fireEvent.click(toggle); });
-      await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-
-      await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });
-
-      await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
-      expect(toggle.getAttribute("aria-pressed")).toBe("false");
-      expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
-      expectCollapsedGeometry(main, band);
-      expect(document.activeElement).toBe(toggle);
-    } finally {
-      restoreMode();
-    }
-  });
-
-  it("chat mode: a pointer down on the content beside the card collapses it; one inside the card does not", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const { container } = await renderApp({ hasApiKey: true });
-      const { toggle, aside, main } = await mountShell(container);
-
-      await act(async () => { fireEvent.click(toggle); });
-      await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-
-      // Inside the card: stays open.
-      const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
-      await act(async () => { fireEvent.pointerDown(card); });
-      expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
-
-      // Beside it, on the content: collapses.
-      await act(async () => { fireEvent.pointerDown(main); });
-      await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
-      expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    } finally {
-      restoreMode();
-    }
-  });
-
-  it("work mode: the expanded sidebar stays a pushed sibling — no overlay, reserve and lead follow the card width", async () => {
-    const { container } = await renderApp({ hasApiKey: true });
+  it("expanding the sidebar on a narrow shell floats the card over the tile", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
     const { toggle, aside, main, band } = await mountShell(container);
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expectCollapsedGeometry(main, band);
+    await act(async () => { fireEvent.click(toggle); });
+    expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
+    await act(async () => { fireEvent.click(toggle); });
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    expect(main.getAttribute("data-sidebar-overlay")).toBe("true");
+    const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
+    expect(card.getAttribute("data-surface")).toBe("card");
+    expect(card.style.width).toBe(`${SIDEBAR_DEFAULT_WIDTH}px`);
+    expectCollapsedGeometry(main, band);
+    expect(card.contains(document.activeElement)).toBe(true);
+  });
 
-    // Work mode seeds the rail expanded.
+  it("Escape collapses the narrow overlay and hands focus back to the toggle", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { toggle, aside, main, band } = await mountShell(container);
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });
+    await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
+    expectCollapsedGeometry(main, band);
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it("a pointer down beside the overlay collapses it; one inside the card keeps it open", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { toggle, aside, main } = await mountShell(container);
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
+    await act(async () => { fireEvent.pointerDown(card); });
+    expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
+    await act(async () => { fireEvent.pointerDown(main); });
+    await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("the expanded sidebar reserves its width on a wide shell", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 1600, canvasWidth: 1200 });
+    const { toggle, aside, main, band } = await mountShell(container);
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
     expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
     expect(main.classList.contains("pl-(--shell-collapsed-rail-reserve)")).toBe(false);
     expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
     expect(band.style.paddingLeft).toBe(EXPANDED_BAND_LEAD);
-
-    // Escape is not an overlay lever here.
     await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
   });
 
-  it("mode flip while the overlay is open re-lays the shell from the verdict: work pushes, chat overlays", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const { container } = await renderApp({ hasApiKey: true });
-      const { toggle, aside, main, band } = await mountShell(container);
-
-      await act(async () => { fireEvent.click(toggle); });
-      await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-
-      // → work: the same expanded card becomes a pushed sibling.
-      await act(async () => {
-        fireEvent.click(container.querySelector('[data-testid="app-mode-work"]')!);
-      });
-      await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
-      expect(toggle.getAttribute("aria-pressed")).toBe("true");
-      expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
-      expect(band.style.paddingLeft).toBe(EXPANDED_BAND_LEAD);
-
-      // → chat: the transition collapses the rail (existing per-transition default); expanding it again overlays.
-      await act(async () => {
-        fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
-      });
-      await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("false"));
-      expectCollapsedGeometry(main, band);
-      await act(async () => { fireEvent.click(toggle); });
-      await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-      expectCollapsedGeometry(main, band);
-    } finally {
-      restoreMode();
-    }
+  it("resizing an expanded sidebar uses a dead band without changing its expanded choice", async () => {
+    const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { toggle, aside, main, band } = await mountShell(view.container);
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    const threshold = SIDEBAR_DEFAULT_WIDTH + 8 + 320;
+    await view.resizeContainers({ shellWidth: threshold + 59 });
+    expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
+    await view.resizeContainers({ shellWidth: threshold + 60 });
+    expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
+    expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
+    expect(band.style.paddingLeft).toBe(EXPANDED_BAND_LEAD);
+    await view.resizeContainers({ shellWidth: threshold });
+    expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
+    await view.resizeContainers({ shellWidth: threshold - 1 });
+    expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expectCollapsedGeometry(main, band);
   });
 });
