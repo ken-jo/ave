@@ -17,6 +17,7 @@ import type { AddressInfo } from "node:net";
 import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import type { SandboxManager as SandboxManagerType, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
@@ -619,8 +620,21 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — read evidence ide
 
 describe.runIf(process.platform === "win32")("asrt-sandbox — session read evidence", () => {
   let reader: MockInstance<typeof readDenyEvidenceModule.readWindowsReadDenyEvidence>;
+  let wrap: MockInstance<(typeof SandboxManagerType)["wrapWithSandboxArgv"]>;
+  let runtime: MockInstance[] = [];
 
+  // A fake runtime: the evidence path is Ave-side, so these cases run without the sandbox account and stamp nothing.
   beforeEach(async () => {
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    let config: SandboxRuntimeConfig | undefined;
+    wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
+    runtime = [
+      wrap,
+      vi.spyOn(SandboxManager, "initialize").mockImplementation(async next => { config = next; }),
+      vi.spyOn(SandboxManager, "getConfig").mockImplementation(() => config),
+      vi.spyOn(SandboxManager, "updateConfig").mockImplementation(next => { config = next; }),
+      vi.spyOn(SandboxManager, "reset").mockImplementation(async () => { config = undefined; }),
+    ];
     reader = vi.spyOn(readDenyEvidenceModule, "readWindowsReadDenyEvidence").mockImplementation(async paths =>
       new Map(paths.map(path => [windowsReadDenyKey(path), { status: "missing" as const }])));
     await initializeAsrtSandbox({ allowedDomains: [] });
@@ -631,6 +645,7 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
   afterEach(async () => {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
     reader.mockRestore();
+    for (const spy of runtime) spy.mockRestore();
   });
 
   it("tool wraps reuse base read evidence without a native query", async () => {
@@ -687,8 +702,6 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
   });
 
   it("all command wraps keep a base target created after initialization without a native query", async () => {
-    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
-    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     const target = join(homedir(), ".docker", "config.json");
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, "fixture");
@@ -703,7 +716,6 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
       expect(wrap.mock.calls[2]?.[2]?.filesystem?.denyRead).toContain(target);
       expect(reader).not.toHaveBeenCalled();
     } finally {
-      wrap.mockRestore();
       rmSync(target);
     }
   });
