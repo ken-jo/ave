@@ -380,6 +380,15 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     })).rejects.toThrow(/Sandbox stamp target identity changed/);
   });
 
+  it.each(["allowWrite", "allowRead", "denyWrite"] as const)("refuses a %s target the runtime would reread through an environment reference", async (list) => {
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    const template = join(scratch(), "%HOMEPATH%");
+    mkdirSync(join(template, "leaf"), { recursive: true });
+    const alias = link(template, join(scratch(), "alias"));
+    expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] }))
+      .toThrow(/reinterpreted by the runtime/);
+  });
+
   it("accepts a missing tail created as a plain directory before consumption", async () => {
     const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const parent = scratch();

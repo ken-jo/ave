@@ -66,12 +66,24 @@ function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
   return paths.map(path => ({ get path() { verify(); return path; }, literal: true }));
 }
 
+// The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath); hand one off only if that lands on a spelling checked here.
+function assertRuntimeReadsAs(path: string, target: string, mode: "grant" | "deny"): void {
+  const fold = (spelling: string) => spelling.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  const reread = expandWindowsFsPaths([{ path, literal: true }], { mode });
+  if (reread.length === 0 && mode === "grant" && !isUncPath(target) && lstatSync(target, { throwIfNoEntry: false }) === undefined) return;
+  if (reread.length !== 1 || ![path, target].some(checked => fold(checked) === fold(reread[0]!))) {
+    throw new Error(`Sandbox stamp target is reinterpreted by the runtime: ${path}`);
+  }
+}
+
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
   const pin = (entries: readonly FilesystemPathEntry[], mode: "grant" | "deny"): FilesystemPathEntry[] =>
     expandWindowsFsPaths(entries, { mode }).flatMap(path => {
       const canonical = isUncPath(path) ? path : canonicalStampPath(path);
-      return guardedStampLiterals(mode === "deny" && path !== canonical ? [path, canonical] : [canonical]);
+      const literals = mode === "deny" && path !== canonical ? [path, canonical] : [canonical];
+      for (const literal of literals) assertRuntimeReadsAs(literal, canonical, mode);
+      return guardedStampLiterals(literals);
     });
   return {
     ...filesystem,
