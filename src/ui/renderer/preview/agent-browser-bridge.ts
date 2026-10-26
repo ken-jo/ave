@@ -3,7 +3,8 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement } from "./web-surfaces.js";
+import { getWebSurfaceElement, noteWebSurfaceFavicon } from "./web-surfaces.js";
+import { guestFaviconSource } from "./favicon-source.js";
 
 export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
@@ -225,13 +226,24 @@ export function bindGuestToTab(
       if (!cancelled && sequence === bindSequence) sentFor = undefined;
     });
   };
-  const onAttachEvent = () => onAttach();
+  const clearFavicon = () => noteWebSurfaceFavicon(tabId, null);
+  const onAttachEvent = () => { clearFavicon(); onAttach(); };
+  const onNavigate = (event: Event) => {
+    if ((event as Event & { isMainFrame?: boolean }).isMainFrame !== false) clearFavicon();
+  };
+  const onFavicon = (event: Event) => {
+    const icons = (event as Event & { favicons?: unknown }).favicons;
+    const favicon = Array.isArray(icons) ? icons.find((icon) => guestFaviconSource(icon) !== null) : undefined;
+    noteWebSurfaceFavicon(tabId, guestFaviconSource(favicon));
+  };
   const onReady = () => {
     const webContentsId = guestId();
     if (webContentsId !== undefined && webContentsId !== sentFor) onAttach();
   };
   webview.addEventListener("did-attach", onAttachEvent);
   webview.addEventListener("dom-ready", onReady);
+  webview.addEventListener("did-navigate", onNavigate);
+  webview.addEventListener("page-favicon-updated", onFavicon);
   // Already attached (the tab id or request changed on a live guest).
   onAttach();
   return () => {
@@ -239,6 +251,8 @@ export function bindGuestToTab(
     if (retry !== undefined) clearTimeout(retry);
     webview.removeEventListener("did-attach", onAttachEvent);
     webview.removeEventListener("dom-ready", onReady);
+    webview.removeEventListener("did-navigate", onNavigate);
+    webview.removeEventListener("page-favicon-updated", onFavicon);
   };
 }
 

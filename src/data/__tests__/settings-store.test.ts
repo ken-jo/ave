@@ -24,6 +24,7 @@ import { SettingsService, type SystemSettings } from "../settings-store.js";
 import { SecretDocumentStore } from "../secret-document-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
+import { compactionModelRouteKey, selectedCompactionModel } from "../../shared/compaction-model.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
 import { registerInstalledLocales } from "../../i18n/locale.js";
 import {
@@ -112,6 +113,27 @@ describe("SettingsService upstream proxy (main-owned)", () => {
     expect(service.get("upstreamProxy").bypass).toBe(bypass);
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("upstreamProxy").bypass).toBe(bypass);
+  });
+});
+
+describe("SettingsService compaction model route", () => {
+  it("binds model saves atomically and rejects an expected route that another settings write changed", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "settings-compaction-route-"));
+    try {
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      const expectedRoute = compactionModelRouteKey(service.get("llm"));
+      await service.patch({ llm: { compactionModel: "summary-model", compactionModelRoute: expectedRoute } });
+      expect(selectedCompactionModel(service.get("llm"))).toBe("summary-model");
+      const vendor = service.get("llm").provider;
+      await service.patch({ llm: { vendors: { [vendor]: { baseUrl: "https://another.example.test/v1" } } } });
+      expect(selectedCompactionModel(service.get("llm"))).toBeUndefined();
+      await expect(service.patch({ llm: { compactionModel: "wrong-route-model", compactionModelRoute: expectedRoute } }))
+        .rejects.toThrow("Compaction provider route changed");
+      expect(service.get("llm").compactionModel).toBe("summary-model");
+      expect(selectedCompactionModel(service.get("llm"))).toBeUndefined();
+      await service.patch({ llm: { compactionModel: "new-route-model" } });
+      expect(selectedCompactionModel(service.get("llm"))).toBe("new-route-model");
+    } finally { await cleanupTmpDir(userDataPath); }
   });
 });
 
