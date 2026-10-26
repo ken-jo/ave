@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
+import { permissionDecisionCostTargetMs } from "../../__tests__/support/permission-decision-cost.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 
-const DECISION_COST_TARGET_MS = 40;
+
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 let cwd: string;
 let stateRoot: string;
@@ -61,6 +62,6 @@ describe("adversarial complete manager timing", () => {
     for (const result of results) expect(result).toMatchObject(runsSandboxed
       ? { decision: "ask", layer: 2, forceModal: true }
       : { decision: "ask", layer: 6 });
-    expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
+    expect(median).toBeLessThan(permissionDecisionCostTargetMs);
   });
 });
