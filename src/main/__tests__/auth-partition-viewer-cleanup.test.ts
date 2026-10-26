@@ -100,6 +100,7 @@ const electronMocks = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => ({
+  app: { getVersion: () => "0.14.1" },
   BrowserWindow: electronMocks.FakeBrowserWindow,
   screen: {},
   session: { fromPartition: electronMocks.fromPartition },
@@ -131,6 +132,11 @@ describe("auth partition viewer cleanup", () => {
     viewer.emit("ready-to-show");
     await opened;
     expect(__internals.activeViewerCount(partition)).toBe(1);
+    const browserSession = electronMocks.sessions.get(partition)!;
+    expect(browserSession.setUserAgent).toHaveBeenCalledWith(expect.stringMatching(/Safari\/537\.36 Ave\/0\.14\.1$/));
+    const permissionResult = vi.fn();
+    browserSession.setPermissionRequestHandler.mock.calls.at(-1)![0](null, "media", permissionResult);
+    expect(permissionResult).toHaveBeenCalledWith(false);
 
     await clearAuthPartition(partition);
 

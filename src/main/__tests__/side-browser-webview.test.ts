@@ -13,6 +13,7 @@ const electronMock = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => ({
+  app: { getVersion: () => "0.14.1" },
   session: {
     fromPartition: vi.fn((partition: string) =>
       partition === "persist:ave-side-browser" ? electronMock.sideBrowserSession : electronMock.otherSession

@@ -104,6 +104,7 @@ let currentFakeWindow: FakeBrowserWindow;
 
 // Shared partition session returned by session.fromPartition in grace-collect.
 const fakePartitionSession = {
+  setUserAgent: vi.fn(),
   cookies: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -129,7 +130,7 @@ vi.mock("electron", () => {
       fromPartition: vi.fn().mockReturnValue(fakePartitionSession),
     },
     shell: { openExternal: vi.fn() },
-    app: {},
+    app: { getVersion: () => "0.14.1" },
     ipcMain: {},
   };
 });

@@ -14,7 +14,7 @@ import {
 import { resolveAppIconPath } from "./app-icon.js";
 import { escapeHtml } from "../shared/escape-html.js";
 import { preloadPreferences } from "./preload-bundles.js";
-import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
+import { applyBrowserSessionIdentity } from "./browser-user-agent.js";
 
 // JSON escaping does not protect script tags; escape angle brackets so embedded text cannot close the script element.
 // Exported for direct testing — the HTML-safety of this escaping is the security property that keeps the shell document injection-proof.
@@ -79,7 +79,7 @@ export interface OpenLinkWindowOptions {
 // The dedicated viewer partition shares persistent sign-in behavior; deny permissions by default so reopening cannot accumulate site privileges.
 export function applyPersistentBrowserUserAgent(persistPartition: string): void {
   const ses = electronSession.fromPartition(persistPartition);
-  ses.setUserAgent(buildPersistentBrowserUserAgent());
+  applyBrowserSessionIdentity(ses);
   ses.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
   });

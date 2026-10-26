@@ -62,9 +62,9 @@ vi.mock("electron", () => {
     screen: {
       getPrimaryDisplay: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })),
     },
-    session: { fromPartition: vi.fn().mockReturnValue({ cookies: { get: vi.fn().mockResolvedValue([]) } }) },
+    session: { fromPartition: vi.fn().mockReturnValue({ setUserAgent: vi.fn(), cookies: { get: vi.fn().mockResolvedValue([]) } }) },
     shell: { openExternal: vi.fn() },
-    app: {},
+    app: { getVersion: () => "0.14.1" },
     ipcMain: {},
   };
 });
