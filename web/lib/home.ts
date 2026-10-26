@@ -38,13 +38,32 @@ export interface Tile {
   feature?: Feature;
 }
 
+/**
+ * A home section's words. Until the copy deck (product marketing, ko+en)
+ * lands, new copy is a visible placeholder in the form ⟦copy: key⟧; the
+ * build is not to be published while one remains.
+ */
+export interface SectionCopy {
+  eyebrow: string;
+  title: string;
+  body: string;
+  pic: Picture;
+}
+
+const TBD = (key: string) => `⟦copy: ${key}⟧`;
+
 export interface HomeCopy {
   meta: { title: string; description: string };
   hero: { title: string; dim: string; sub: string; download: string; docs: string; note: string; demo: HelloDemo };
-  /** The AWE statement, revealed word by word as it scrolls into view. */
+  /** Section 1, the Latin-hello story: a sentence revealed word by word, and a short body. */
   statement: string;
+  story: string;
+  /** Section 2: every browser with your agent, on one wide capture. */
+  browse: SectionCopy;
   work: { eyebrow: string; title: string; body: string; pic: Picture };
   hands: { title: string; body: string; tiles: Tile[] };
+  /** Section 5: a split, words beside one capture. */
+  pair: SectionCopy;
   close: { before: string; hello: string; after: string; body: string; cta: string };
   footer: { tagline: string; copy: string; menu: string; skip: string };
 }
@@ -56,9 +75,9 @@ const ko: HomeCopy = {
       "Ave는 에이전트가 내가 고른 모델로 내 컴퓨터의 파일과 터미널, 브라우저를 다루는 macOS, Windows, Linux용 데스크톱 앱입니다. 바꾸는 일은 실행 전에 묻습니다.",
   },
   hero: {
-    title: "Ave는 라틴어로 hello.",
-    dim: "에이전트 작업 환경, AWE.",
-    sub: "IDE가 코드를 쓰는 곳이라면, AWE는 에이전트가 일하는 곳입니다. Ave의 에이전트는 내가 고른 모델로 파일을 고치고 터미널과 브라우저를 다루며, 무언가를 바꾸기 전에는 묻습니다.",
+    title: TBD("hero.title"),
+    dim: TBD("hero.line2"),
+    sub: TBD("hero.sub"),
     download: "Ave 내려받기",
     docs: "문서 읽기",
     note: "Apple Silicon Mac, Windows 10 이상(x64), x86_64 Linux. 공개 빌드는 아직 코드 서명이 없습니다.",
@@ -71,7 +90,14 @@ const ko: HomeCopy = {
       done: "완료했습니다. `trail-notes export --json`이 트레일을 JSON으로 출력합니다. 테스트: `npm test` 6개 중 6개 통과.",
     },
   },
-  statement: "IDE는 코드를 쓰는 곳. AWE는 에이전트가 당신과 함께 일하는 곳.",
+  statement: TBD("story.sentence"),
+  story: TBD("story.body"),
+  browse: {
+    eyebrow: TBD("browse.eyebrow"),
+    title: TBD("browse.title"),
+    body: TBD("browse.body"),
+    pic: { k: "web-main", alt: "메인 영역에 trail-notes 미리보기 웹 패널과 터미널이 나란히 열린 화면" },
+  },
   work: {
     eyebrow: "작업 화면",
     title: "대화 넷을 나란히, 각자 따로 굴러갑니다",
@@ -127,11 +153,17 @@ const ko: HomeCopy = {
       },
     ],
   },
+  pair: {
+    eyebrow: TBD("pair.eyebrow"),
+    title: TBD("pair.title"),
+    body: TBD("pair.body"),
+    pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성(asrt)과 거절, 항상 허용, 한 번 허용 버튼" },
+  },
   close: {
-    before: "당신의 AWE에게 ",
+    before: TBD("close.before"),
     hello: "hello",
-    after: "라고 말해 보세요.",
-    body: "macOS, Windows, Linux 데스크톱 앱. 공개 빌드는 아직 코드 서명이 없어서 처음 실행할 때 한 단계가 더 필요합니다.",
+    after: TBD("close.after"),
+    body: TBD("close.body"),
     cta: "Ave 내려받기",
   },
   footer: {
@@ -149,9 +181,9 @@ const en: HomeCopy = {
       "Ave is a desktop app for macOS, Windows and Linux where agents read and change your files, use a terminal and a browser, with the model you choose. Anything that changes something asks first.",
   },
   hero: {
-    title: "Ave means hello.",
-    dim: "Meet your AWE.",
-    sub: "An IDE is where you write code. An AWE, the agentic work environment, is where agents work: in Ave they edit your files, run a terminal and drive a browser with the model you choose, and ask before they change anything.",
+    title: TBD("hero.title"),
+    dim: TBD("hero.line2"),
+    sub: TBD("hero.sub"),
     download: "Download Ave",
     docs: "Read the docs",
     note: "Apple Silicon Macs, Windows 10 or later (x64), x86_64 Linux. Public builds are not code-signed yet.",
@@ -164,7 +196,14 @@ const en: HomeCopy = {
       done: "Done. `trail-notes export --json` prints the trails as JSON. Tests: `npm test` passes, 6 of 6.",
     },
   },
-  statement: "An IDE is where you write code. An AWE is where agents work with you.",
+  statement: TBD("story.sentence"),
+  story: TBD("story.body"),
+  browse: {
+    eyebrow: TBD("browse.eyebrow"),
+    title: TBD("browse.title"),
+    body: TBD("browse.body"),
+    pic: { k: "web-main", alt: "The main area with the trail-notes preview in a web panel beside a terminal" },
+  },
   work: {
     eyebrow: "Workbench",
     title: "Four conversations side by side, each on its own loop",
@@ -220,11 +259,17 @@ const en: HomeCopy = {
       },
     ],
   },
+  pair: {
+    eyebrow: TBD("pair.eyebrow"),
+    title: TBD("pair.title"),
+    body: TBD("pair.body"),
+    pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active (asrt), and Reject, Always allow and Allow once" },
+  },
   close: {
-    before: "Say ",
+    before: TBD("close.before"),
     hello: "hello",
-    after: " to your AWE.",
-    body: "A desktop app for macOS, Windows and Linux. Public builds are not code-signed yet, so the first launch takes one extra step.",
+    after: TBD("close.after"),
+    body: TBD("close.body"),
     cta: "Download Ave",
   },
   footer: {

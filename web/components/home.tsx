@@ -47,11 +47,36 @@ export function Home({ locale }: { locale: Locale }) {
           </div>
         </section>
 
-        <section className="statement-sec" aria-label="AWE">
+        {/* 1. The Latin-hello story. */}
+        <section className="statement-sec" aria-label="Ave">
           <div className="wrap">
             <Statement text={c.statement} />
+            <p className="statement-body lead">{c.story}</p>
           </div>
         </section>
+
+        {/* 2. Every browser with your agent. */}
+        <section className="sec" aria-labelledby="browse">
+          <div className="wrap">
+            <div className="center-head">
+              <p className="eyebrow">{c.browse.eyebrow}</p>
+              <h2 id="browse" className="h2">
+                {c.browse.title}
+              </h2>
+              <p className="lead">{c.browse.body}</p>
+            </div>
+            <div className="work-stage stage-warm">
+              <Frame pic={c.browse.pic} />
+            </div>
+            <p className="center-foot">
+              <a className="more" href={more(locale, "browser").href}>
+                {more(locale, "browser").label}
+              </a>
+            </p>
+          </div>
+        </section>
+
+        {/* 3. The workbench. */}
 
         <section className="sec work-sec" aria-labelledby="work">
           <div className="wrap">
@@ -73,6 +98,7 @@ export function Home({ locale }: { locale: Locale }) {
           </div>
         </section>
 
+        {/* 4. Six hands. */}
         <section className="sec hands" aria-labelledby="hands">
           <div className="wrap">
             <div className="center-head">
@@ -86,6 +112,27 @@ export function Home({ locale }: { locale: Locale }) {
                 <TileCard key={t.title} tile={t} locale={locale} />
               ))}
             </ul>
+          </div>
+        </section>
+
+        {/* 5. Words beside one capture. */}
+        <section className="sec" aria-labelledby="pair">
+          <div className="wrap pair">
+            <div className="pair-text">
+              <p className="eyebrow">{c.pair.eyebrow}</p>
+              <h2 id="pair" className="h2">
+                {c.pair.title}
+              </h2>
+              <p className="lead">{c.pair.body}</p>
+              <p>
+                <a className="more" href={more(locale, "security").href}>
+                  {more(locale, "security").label}
+                </a>
+              </p>
+            </div>
+            <div className="work-stage stage-green">
+              <Frame pic={c.pair.pic} />
+            </div>
           </div>
         </section>
 

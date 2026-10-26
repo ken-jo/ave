@@ -520,6 +520,15 @@
   .statement .w { display: inline-block; transition: opacity 0.55s ease, filter 0.7s ease, transform 0.95s var(--ease); }
   .statement[data-live] .w:not([data-on]) { opacity: 0.16; filter: blur(6px); transform: translate3d(0, 0.12em, 0); }
 
+  .statement-body { margin: clamp(24px, 3vw, 36px) auto 0; max-width: 36em; text-align: center; }
+  .stage-warm { background: linear-gradient(160deg, var(--tile-a1), var(--tile-a2)); }
+  .stage-green { background: linear-gradient(160deg, var(--tile-b1), var(--tile-b2)); }
+  .pair { display: grid; gap: clamp(28px, 4vw, 64px); align-items: center; }
+  @media (min-width: 900px) { .pair { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); } }
+  .pair-text { display: grid; gap: 0.9rem; align-content: center; }
+  .pair-text > * { margin: 0; }
+  .pair .work-stage { padding: clamp(20px, 3vw, 40px); }
+  .pair .work-stage .shot { border-radius: 14px; width: auto; }
   /* Centred section heads, the workbench capture on a soft field, the tiles. */
   .center-head { display: grid; gap: 0.9rem; justify-items: center; text-align: center; max-width: 760px; margin: 0 auto clamp(36px, 4.5vw, 64px); }
   .center-head > * { margin: 0; }
@@ -584,6 +593,7 @@
     .closing-card h2, .closing-card p { margin-inline: 0; }
     .center-head { justify-items: start; text-align: left; }
     .center-foot { text-align: left; }
+    .statement-body { text-align: left; margin-inline: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     .hw-typed.caret::after { animation: none; }
