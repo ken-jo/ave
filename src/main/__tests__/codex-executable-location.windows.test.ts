@@ -83,8 +83,9 @@ function realHostFixture() {
       { capSidPath: join(tmpdir(), "absent-cap-fixture") });
     // Every real-host scenario starts with a complete response frame, so its later reuse or recovery cannot accidentally rely on early settlement.
     const lines = streams[0]!.stdout.trim().split(/\r?\n/);
-    expect(lines).toHaveLength(2);
-    expect(lines[1]).toBe(`END ${JSON.parse(lines[0]!).id}`);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe("READY");
+    expect(lines[2]).toBe(`END ${JSON.parse(lines[1]!).id}`);
   };
   const owners = async (id: number, paths: string[]) => (JSON.parse(await request(id, paths)) as RawReply).result.paths.map(({ owner }) => owner);
   return { host, streams, replies, request, owners, prime, get launch() { return launch!; } };
@@ -128,7 +129,7 @@ it.runIf(process.platform === "win32")("fails closed on a real native exception 
   child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
   const exited = new Promise<number | null>((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill(); reject(new Error("Exception host did not exit")); }, TOOL_TIMEOUT_POLICY.windowsAclRequestMs);
+    const timer = setTimeout(() => { child.kill(); reject(new Error("Exception host did not exit")); }, TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs);
     child.once("error", (error) => { clearTimeout(timer); reject(error); });
     child.once("close", (code) => { clearTimeout(timer); resolve(code); });
   });
@@ -138,7 +139,7 @@ it.runIf(process.platform === "win32")("fails closed on a real native exception 
   ].map((value) => JSON.stringify(value)).join("\n") + "\n");
   const exitCode = await exited;
   expect(exitCode).toBe(1);
-  expect(stdout).toBe("");
+  expect(stdout).toBe("READY\r\n");
   expect(stderr).toContain("MethodInvocationException");
   process.stdout.write(`ACL host exception evidence ${JSON.stringify({ previousPid, nextPid: host.pid, failedClosed: true, naturalExitCode: exitCode, followingRequestAnswered: false })}\n`);
 }, 45_000);
@@ -150,9 +151,10 @@ it.runIf(process.platform === "win32")("keeps real first-call module streams fre
   const output = streams[0]!;
   expect(output.stderr).toBe("");
   const lines = output.stdout.trim().split(/\r?\n/);
-  expect(lines).toHaveLength(2);
-  const reply = JSON.parse(lines[0]!);
-  expect(lines[1]).toBe(`END ${reply.id}`);
+  expect(lines).toHaveLength(3);
+  expect(lines[0]).toBe("READY");
+  const reply = JSON.parse(lines[1]!);
+  expect(lines[2]).toBe(`END ${reply.id}`);
   expect(reply.result.paths.length).toBeGreaterThan(0);
   process.stdout.write(`ACL host stream evidence ${JSON.stringify({ pid: host.pid, elapsedMs: Math.round(performance.now() - started), stdoutLines: lines.length, stderrBytes: Buffer.byteLength(output.stderr) })}\n`);
 }, 30_000);

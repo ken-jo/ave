@@ -643,7 +643,8 @@ describe("native access-rule admission", () => {
     await assertCodexExecutableLocation(fixture.candidate);
     const [, { command, args }] = aclRequest.mock.calls[0]!;
     const script = Buffer.from(args[4]!, "base64").toString("utf16le");
-    const fullResolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
+    const packageSetup = script.slice(script.indexOf("$appxReady ="), script.indexOf("[Console]::Out.WriteLine('READY')"));
+    const fullResolver = packageSetup + script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
     // An absent Appx module must reach the same deterministic outcome as a failed query.
     const resolver = testCase.appxModule === "absent"
       ? fullResolver.replace(String.raw`Appx\Appx.psd1`, String.raw`Appx\Absent.psd1`) : fullResolver;
@@ -925,9 +926,20 @@ describe("native access-rule admission", () => {
       String.raw`Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1`,
       String.raw`Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1`,
       String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
-      String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
       String.raw`Appx\Appx.psd1`,
     ]);
+    const ready = script.indexOf("[Console]::Out.WriteLine('READY')");
+    const loop = script.indexOf("while ($null -ne ($line = [Console]::In.ReadLine()))");
+    expect(ready).toBeGreaterThan(0);
+    expect(loop).toBeGreaterThan(ready);
+    for (const line of imports) expect(script.indexOf(line)).toBeLessThan(ready);
+    for (const setup of ["Get-LocalUser", "([ADSI]'WinNT://.').Children", "InvokeGet('Name')", "Get-AppxPackage"]) {
+      expect(script.slice(0, ready)).toContain(setup);
+      expect(script.slice(loop)).toContain(setup);
+    }
+    expect(script.slice(ready, loop)).toContain("[Console]::Out.Flush()");
+    expect(script.slice(loop)).toContain("if (-not $localAccountsReady) { throw");
+    expect(script.slice(loop)).toContain("if (-not $appxReady) { throw");
     // With autoloading off, every cmdlet the host calls must come from the engine itself or from a module it imports above.
     const powershell = script.replace(/@'\n[\s\S]*?\n'@/, "");
     const cmdlets = new Set(powershell.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g));
@@ -1268,6 +1280,7 @@ function aclHostFixture(fixture: ReturnType<typeof windowsFixture>, configureFir
     });
     if (hosts.length === 0) configureFirst?.(host);
     hosts.push(host);
+    queueMicrotask(() => { stdout.write("READY\n"); });
     return child as unknown as ChildProcess;
   }) as unknown as typeof spawn);
   return hosts;
@@ -1355,7 +1368,7 @@ describe("Windows ACL host", () => {
     const fixture = windowsFixture();
     const hosts = aclHostFixture(fixture, (host) => { host.answer = () => {}; });
     const admission = assertCodexExecutableLocation(fixture.candidate);
-    const settled = expect(admission).rejects.toThrow("Windows ACL host timed out");
+    const settled = expect(admission).rejects.toThrow("Windows ACL host request timed out");
     void settled.catch(() => {});
     const queued = assertCodexExecutableLocation(fixture.candidate);
     void queued.catch(() => {});

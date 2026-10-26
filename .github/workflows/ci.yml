@@ -529,6 +529,9 @@ jobs:
       # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      # Seven native-process suites start together on this 4-vCPU runner; at
+      # 4 workers their cold PowerShell and helper starts stall each other.
+      AVE_VITEST_MAX_WORKERS: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

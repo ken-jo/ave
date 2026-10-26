@@ -182,6 +182,18 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "}",
   "'@",
+  // Initialize pinned modules and account providers before READY; discard these reads and collect fresh evidence in every request.
+  "$localAccountsReady = $false",
+  "try { Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.LocalAccounts\\Microsoft.PowerShell.LocalAccounts.psd1') -ErrorAction Stop; $localAccountsReady = $true } catch {}",
+  "try { $null = Get-LocalUser -ErrorAction Stop | Select-Object -First 1 } catch {}",
+  "try { $null = ([ADSI]'WinNT://.').Children | Where-Object { $_.SchemaClassName -eq 'User' } | Select-Object -First 1 } catch {}",
+  "try { $null = ([ADSI]'WinNT://./CodexSandboxUsers,group').psbase.InvokeGet('Name') } catch {}",
+  "try { $null = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Translate([System.Security.Principal.NTAccount]) } catch {}",
+  "$appxReady = $false",
+  "try { Import-Module -Name ($PSHOME + '\\Modules\\Appx\\Appx.psd1') -ErrorAction Stop; $appxReady = $true } catch {}",
+  "try { $null = Get-AppxPackage -Name 'Claude' -ErrorAction Stop } catch {}",
+  "[Console]::Out.WriteLine('READY')",
+  "[Console]::Out.Flush()",
   "while ($null -ne ($line = [Console]::In.ReadLine())) {",
   "$request = ConvertFrom-Json -InputObject $line",
   // Direct assignment preserves the decoded array without nesting it inside a single pipeline object.
@@ -214,8 +226,7 @@ const WINDOWS_ACL_SCRIPT = [
   "})",
   "$machineDomainSid = $null",
   "try {",
-  // LocalAccounts and Appx are imported where they are used, inside the lookups whose failure already falls back or reports an unavailable package.
-  "  Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.LocalAccounts\\Microsoft.PowerShell.LocalAccounts.psd1') -ErrorAction Stop",
+  "  if (-not $localAccountsReady) { throw 'Local account module is unavailable' }",
   "  $localUser = Get-LocalUser -ErrorAction Stop | Select-Object -First 1",
   "  $machineDomainSid = $localUser.SID.AccountDomainSid.Value",
   "} catch {",
@@ -239,7 +250,7 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "} catch {",
   "  try {",
-  "    Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.LocalAccounts\\Microsoft.PowerShell.LocalAccounts.psd1') -ErrorAction Stop",
+  "    if (-not $localAccountsReady) { throw 'Local account module is unavailable' }",
   "    $group = Get-LocalGroup -Name 'CodexSandboxUsers' -ErrorAction Stop",
   "    if ($group.Name -ceq 'CodexSandboxUsers' -and $group.Description -ceq 'Codex sandbox internal group (managed)') {",
   "      $members = @(Get-LocalGroupMember -Group $group -ErrorAction Stop | ForEach-Object { $_.SID.Value })",
@@ -267,7 +278,7 @@ const WINDOWS_ACL_SCRIPT = [
   "  if ($mappings.Count -eq 0) { $desktopPackage.reason = 'mapping-not-found' }",
   "  elseif ($mappings.Count -ne 1) { $desktopPackage.reason = 'ambiguous-mapping' }",
   "  else {",
-  "    Import-Module -Name ($PSHOME + '\\Modules\\Appx\\Appx.psd1') -ErrorAction Stop",
+  "    if (-not $appxReady) { throw 'Package module is unavailable' }",
   "    $packages = @(Get-AppxPackage -Name 'Claude' -ErrorAction Stop | Where-Object { $_.PackageFamilyName -ieq $desktopPackageIdentity.familyName })",
   "    if ($packages.Count -eq 0) { $desktopPackage.reason = 'package-not-installed' }",
   "    elseif (@($packages | Where-Object { $_.PublisherId -ine $desktopPackageIdentity.publisherId }).Count -ne 0) { $desktopPackage.reason = 'publisher-mismatch' }",
@@ -291,7 +302,8 @@ const WINDOWS_ACL_SCRIPT = [
   "[Console]::Out.Flush()",
   "}",
 ].join("\n");
-const WINDOWS_ACL_ENCODED_SCRIPT = Buffer.from(WINDOWS_ACL_SCRIPT, "utf16le").toString("base64");
+// Drop indentation on the wire to keep the encoded command below the native command-line limit.
+const WINDOWS_ACL_ENCODED_SCRIPT = Buffer.from(WINDOWS_ACL_SCRIPT.replace(/^ +/gm, ""), "utf16le").toString("base64");
 
 function assertAbsolutePath(candidate: string): void {
   if (/[\u0000-\u001f\u007f]/.test(candidate)) {
