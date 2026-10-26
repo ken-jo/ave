@@ -135,6 +135,8 @@ export interface SidebarProps {
   onHide?: () => void;
   /** Expanded card width (px). Ignored while collapsed (fixed icon rail). */
   width?: number;
+  /** Available card width from the shell observer; caps rendering without changing the saved preference. */
+  maxWidth?: number;
   /** Per-move drag update of the sidebar width (state only). */
   onWidthChange?: (px: number) => void;
   /** Drag-end / keyboard commit of the sidebar width (persist). Also drives the resize bar's double-click reset (commits
@@ -1797,6 +1799,7 @@ export function Sidebar({
   onToggleCollapse,
   onHide,
   width = SIDEBAR_DEFAULT_WIDTH,
+  maxWidth,
   onWidthChange,
   onWidthCommit,
   onOpenUnifiedSearch,
@@ -1914,6 +1917,7 @@ export function Sidebar({
   const onToggleCollapseRef = useRef(onToggleCollapse);
   onToggleCollapseRef.current = onToggleCollapse;
   const overlayOpen = overlay && !collapsed;
+  const renderedWidth = overlayOpen ? Math.min(width, maxWidth ?? width) : width;
   useEffect(() => {
     if (!overlayOpen) return;
     const aside = asideRef.current;
@@ -1921,7 +1925,36 @@ export function Sidebar({
     cardRef.current?.focus({ preventScroll: true });
     const collapse = () => onToggleCollapseRef.current();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.defaultPrevented) return;
+      const active = document.activeElement;
+      // A portaled menu or dialog manages its own keyboard scope above this navigation surface.
+      if (active instanceof HTMLElement && !aside.contains(active)
+        && active.closest('[role="dialog"], [role="menu"], [data-radix-popper-content-wrapper]')) return;
+      if (event.key === "Tab") {
+        const controls = [...aside.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex], [contenteditable="true"]')]
+          .filter((element) => {
+            if (element.tabIndex < 0 || element.matches(':disabled, input[type="hidden"]')
+              || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+            for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) {
+              const style = getComputedStyle(parent);
+              if (style.display === "none" || style.visibility === "hidden") return false;
+              if (parent === aside) break;
+            }
+            return true;
+          });
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (!first || !last) {
+          event.preventDefault();
+          cardRef.current?.focus({ preventScroll: true });
+        } else if (!aside.contains(active) || active === cardRef.current
+          || (event.shiftKey ? active === first : active === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus({ preventScroll: true });
+        }
+        return;
+      }
+      if (event.key !== "Escape") return;
       // An editor inside the card (rename, search) owns its own Escape.
       const target = event.target;
       if (target instanceof HTMLElement && aside.contains(target) && target.closest("input, textarea, [contenteditable=true]")) return;
@@ -2024,7 +2057,10 @@ export function Sidebar({
             : // Anchor the resize handle relatively and stretch the card to the aside bottom; persisted inline width owns sizing.
               "ave-surface-raised relative flex-1 min-h-0 overflow-hidden rounded-2xl bg-card",
         ].join(" ")}
-        style={collapsed ? undefined : { width: `${width}px` }}
+        style={collapsed ? undefined : {
+          width: `${renderedWidth}px`,
+          maxWidth: overlayOpen ? maxWidth ?? `calc(100vw - ${SHELL_GUTTER * 2}px)` : undefined,
+        }}
       >
         {/* ── Inner-edge drag-to-resize bar (expanded only) — the SAME shared
             EdgeResizeBar + useEdgeResize primitive the right ChatSidePanel uses,
@@ -2035,13 +2071,13 @@ export function Sidebar({
             SIDEBAR_MIN_WIDTH/MAX; double-click resets to the default. */}
         {resizable ? (
           <EdgeResizeBar
-            width={width}
+            width={renderedWidth}
             edge="end"
             variant="inset"
             onWidthChange={handleWidthChange}
             onWidthCommit={handleWidthCommit}
             min={SIDEBAR_MIN_WIDTH}
-            max={SIDEBAR_MAX_WIDTH}
+            max={overlayOpen ? Math.min(SIDEBAR_MAX_WIDTH, maxWidth ?? SIDEBAR_MAX_WIDTH) : SIDEBAR_MAX_WIDTH}
             resetWidth={SIDEBAR_DEFAULT_WIDTH}
             applyElementRef={cardRef}
             ariaLabel={t("sidebar.resizeHandleAriaLabel")}

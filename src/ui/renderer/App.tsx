@@ -1855,6 +1855,7 @@ export function App() {
                 onToggleCollapse={() => setSidebarState(sidebarCollapsed ? "expanded" : "rail")}
                 onHide={hideSidebar}
                 width={sidebarWidth}
+                maxWidth={sidebarOverlay ? Math.max(0, shellWidth - SHELL_GUTTER * 2) : undefined}
                 onWidthChange={setSidebarWidth}
                 onWidthCommit={commitSidebarWidth}
                 onOpenUnifiedSearch={() => { searchOpenOverlay(); }}

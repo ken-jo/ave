@@ -2,6 +2,7 @@
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import {
   BAND_EDGE_PAD,
@@ -39,6 +40,43 @@ function expectCollapsedGeometry(main: HTMLElement, band: HTMLElement) {
 
 describe("App sidebar overlay", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it.each([false, true])("keeps keyboard focus inside the overlay when shift is %s", async (shift) => {
+    const user = userEvent.setup();
+    const view = await renderApp({
+      hasApiKey: true, shellWidth: 360, canvasWidth: 360,
+      settings: { system: { sidebarState: "expanded", sidebarWidth: 480 } },
+    });
+    const { aside } = await mountShell(view.container);
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    const first = view.container.querySelector('[data-testid="sidebar-resize-handle"]') as HTMLElement;
+    const last = view.container.querySelector('[data-testid="sidebar-hide"]') as HTMLElement;
+    expect(first).toBeTruthy();
+    expect(last).toBeTruthy();
+    (shift ? first : last).focus();
+    await user.tab({ shift });
+    expect(document.activeElement).toBe(shift ? last : first);
+    expect(aside.contains(document.activeElement)).toBe(true);
+  });
+
+  it("lets an open dialog own Escape while the sidebar remains expanded", async () => {
+    const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { aside } = await mountShell(view.container);
+    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const button = document.createElement("button");
+    dialog.append(button);
+    document.body.append(dialog);
+    try {
+      button.focus();
+      await act(async () => { fireEvent.keyDown(button, { key: "Escape" }); });
+      expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
+      expect(document.activeElement).toBe(button);
+    } finally {
+      dialog.remove();
+    }
+  });
 
   it("expanding the sidebar on a narrow shell floats the card over the tile", async () => {
     const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });

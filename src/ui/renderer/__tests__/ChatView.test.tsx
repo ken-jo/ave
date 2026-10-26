@@ -1014,10 +1014,11 @@ describe("ChatView", () => {
     });
   });
 
-  it("opens a saved file location directly in a workspace preview tab", async () => {
+  it.each([360, 1200])("opens a saved file location directly in a workspace preview tab at %s pixels", async (canvasWidth) => {
     const sessionId = "file-location-session";
     const reference = { path: "src/example.ts", startLine: 700, endLine: 701, turnId: "source-turn" };
     const { container } = await renderApp({
+      canvasWidth,
       workspaceRoots: [{ path: "/workspace/project", isDefault: true }],
       currentSession: sessionId,
       mainActiveState: { mainActiveSessionId: sessionId, mainActiveMode: "resume", updatedAt: new Date().toISOString() },
@@ -1032,6 +1033,11 @@ describe("ChatView", () => {
     });
     expect(container.querySelector(testIdSelector(TEST_IDS.chatSidePanel))).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-side-panel-launcher"]')).toBeNull();
+    await waitFor(() => {
+      const panel = container.querySelector('[data-testid="chat-side-panel-motion"]');
+      expect(panel?.getAttribute("aria-hidden")).toBe("false");
+      expect(panel?.getAttribute("data-panel-mode")).toBe(canvasWidth === 360 ? "overlay" : "docked");
+    });
   });
 
   it("keeps the selected project for reloaded file locations opened from the sidebar", async () => {

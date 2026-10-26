@@ -185,7 +185,10 @@ the same navigation in expanded and rail states.
 
 An expanded sidebar pushes the canvas only when enough width remains;
 otherwise it overlays the canvas, using the shell threshold and hysteresis
-above. Escape and an outside click collapse the overlay to the rail. The
+above. Its rendered width fits inside the window gutters while its saved
+width remains available when the window widens. Tab and Shift+Tab cycle within
+the overlay; an open menu or dialog retains its own keyboard scope.
+Escape and an outside click collapse the overlay to the rail. The
 transcript always uses the reading-column layout, with its composer spanning
 the available width below that column. The project selector and suggested
 tasks use their normal container layout wherever they fit.
