@@ -614,10 +614,11 @@ describe("RationaleHostCoordinator", () => {
   it("records an actual host modal timeout separately from a user deny", async () => {
     vi.useFakeTimers();
     try {
-      const gate = new ApprovalGate({
+      const nativeWebContents = {
         send: vi.fn(),
         isDestroyed: vi.fn(() => false),
-      } as never, undefined, 25);
+      };
+      const gate = new ApprovalGate(nativeWebContents as never, undefined, 25);
       const state = setup({ approvalGate: gate });
       const materialized = materialize(state);
       await state.coordinator.handleRationaleRoundResult({
@@ -634,12 +635,12 @@ describe("RationaleHostCoordinator", () => {
         { now: NOW + 2 },
       );
       await vi.advanceTimersByTimeAsync(0);
-      expect(gate.listPendingRendererRequests()).toEqual([expect.objectContaining({
+      expect(gate.listPendingRendererRequests(nativeWebContents as never)).toEqual([expect.objectContaining({
         id: materialized.control.ticketId,
         kind: "rationale",
         allowedChoices: ["allow-once", "deny-once"],
       })]);
-      expect(gate.listPendingRendererRequests()[0]).not.toHaveProperty("persistentApprovalCwd");
+      expect(gate.listPendingRendererRequests(nativeWebContents as never)[0]).not.toHaveProperty("persistentApprovalCwd");
       expect(gate.getRequestSnapshot(materialized.control.ticketId)).toBeNull();
       await vi.advanceTimersByTimeAsync(26);
       await expect(pending).resolves.toMatchObject({

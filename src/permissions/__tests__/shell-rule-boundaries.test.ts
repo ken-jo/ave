@@ -120,16 +120,17 @@ describe("missing shell route", () => {
   // Owner 2026-10-25 (five-choice shell card): This session saves the same exact rule as the persistent scopes, so it needs no sandbox evidence, only a conversation to hold it.
   it("offers This session as the exact rule on a dock request with a conversation", async () => {
     let displayed: ApprovalRequest | undefined;
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    const nativeWebContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
-    } } as never);
+    } };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const pending = gate.requestAndWait({
       id: "missing-route", sessionId: "conversation", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args: { command: "printf ready" }, reason: "Approval required", createdAt: Date.now(), trustOrigin: "user-keyboard", ruleVerdict: { level: "medium", reason: "Bounded command" },
       evaluationContext: buildPermissionEvaluationContext({ policyMode: "default", headless: false, source: "builtin", category: "shell", trustOrigin: "user-keyboard", executionCwd: project, allowedDirectories: [project], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [] }),
     });
     expect(displayed?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
-    gate.resolveFromDesktopRenderer("missing-route", { requestId: "missing-route", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac });
+    gate.resolveFromDesktopRenderer("missing-route", { requestId: "missing-route", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
   });
 });

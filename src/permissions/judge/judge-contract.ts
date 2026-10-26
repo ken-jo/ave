@@ -22,6 +22,8 @@ interface JudgePolicySnapshot {
 
 // Raw, host-side request. Never leaves the process as-is: the engine derives a RedactedJudgeRequest for anything that crosses the process boundary (external judges, audit). Tool RESULTS are deliberately absent — the judge sees the user's words and the call, never output a tool produced.
 export interface JudgeRequest {
+  // Host-owned identity shared by every assessment of this tool invocation.
+  invocationId: string;
   // Root conversation session id. Subagents pass their parent's root id so they share one circuit breaker.
   sessionId: string;
   lane: JudgeLane;

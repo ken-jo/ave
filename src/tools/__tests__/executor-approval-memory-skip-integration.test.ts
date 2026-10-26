@@ -11,6 +11,7 @@ import { ToolExecutor } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   approvalCacheKeyIdentity,
@@ -393,10 +394,11 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setMode("auto");
+    wireJudgeForTest(manager);
     manager.setInteractiveAutoApprove("low");
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
-    const gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== "ave:approval:request") return;
@@ -413,10 +415,11 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
           });
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id, choice: "allow-always", nonce: request.nonce, hmac: request.hmac,
-          });
+          }, nativeWebContents as never);
         })());
       },
-    } as never);
+    };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     const run = (id: string, cwd: string, nextCommand = command) => executor.executeAll(
       [{ id, name: tool.name, input: { command: nextCommand } }],

@@ -1,5 +1,7 @@
 /** Sequence isolated plan and execution children around per-run approval; persist their output and execution session id on the board. */
 import { randomUUID } from "node:crypto";
+import type { WebContents } from "electron";
+import { approvalSurfaceRegistry } from "../permissions/approval-surface-registry.js";
 import {
   exactToolScope,
   PARENT_ALL_TOOL_SCOPE,
@@ -91,6 +93,8 @@ export interface WorkBoardEngineDeps {
 
 interface RunItemOptions {
   agentName?: string;
+  /** Set by the host entrypoint, never copied from a renderer payload. */
+  approvalSurface?: WebContents | null;
 }
 
 interface RunItemResult {
@@ -116,6 +120,8 @@ export interface WorkBoardEngine {
 interface BriefingOptions {
   projectRoot?: string;
   includeUnscoped?: boolean;
+  /** A background survey explicitly has no interactive owner. */
+  approvalSurface?: WebContents | null;
 }
 
 /** The host bounds planning rounds because autonomous runs cannot ask for answers; return the best plan at the cap. */
@@ -359,10 +365,13 @@ export function createWorkBoardEngine(
       };
     }
     inFlight.add(itemId);
+    const originSessionId = workBoardOriginSessionId(itemId);
+    approvalSurfaceRegistry.register(originSessionId, opts.approvalSurface ?? null);
     try {
       return await runItemGuarded(itemId, item, opts);
     } finally {
       inFlight.delete(itemId);
+      approvalSurfaceRegistry.release(originSessionId);
     }
   }
 
@@ -462,6 +471,7 @@ export function createWorkBoardEngine(
       emit({ itemId, phase: "awaiting_approval" });
       const rawDecision = await approvalGate.requestAndWait({
         id: `work-board-run:${itemId}:${randomUUID()}`,
+        sessionId: originSessionId,
         category: "agent-action",
         kind: "agent-action",
         allowedChoices: ["allow-once", "deny-once"],
@@ -479,9 +489,10 @@ export function createWorkBoardEngine(
       if (isDenied(decision)) {
         await store.setRunResult(itemId, { runStatus: "denied", plan });
         record({ phase: "denied", kind: "decision", message: decision.choice });
-        emit({ itemId, phase: "denied", message: decision.choice });
+        const reason = decision.rememberPattern ?? decision.choice;
+        emit({ itemId, phase: "denied", message: reason });
         await flushTranscript();
-        return { status: "denied", plan, reason: decision.choice };
+        return { status: "denied", plan, reason };
       }
 
       // Full execution scope still passes every tool through its own approval gate.
@@ -581,6 +592,8 @@ export function createWorkBoardEngine(
       return { status: "error", kind, reason: `the ${kind} briefing is already running` };
     }
     briefingInFlight.add(kind);
+    const originSessionId = `work-board-briefing:${kind}`;
+    approvalSurfaceRegistry.register(originSessionId, opts.approvalSurface ?? null);
     try {
       const runner = getRunner();
       if (!runner) {
@@ -605,7 +618,7 @@ export function createWorkBoardEngine(
         title: `Briefing: ${kind}`,
         instructions: buildBriefingPrompt(kind, openItems),
         toolScope: exactToolScope(surveyTools),
-        originSessionId: `work-board-briefing:${kind}`,
+        originSessionId,
         ...(opts.projectRoot ? { projectRoot: opts.projectRoot } : {}),
         profileMode: "plan",
         maxRounds: BRIEFING_ROUND_BUDGET,
@@ -633,6 +646,7 @@ export function createWorkBoardEngine(
       return { status: "error", kind, reason };
     } finally {
       briefingInFlight.delete(kind);
+      approvalSurfaceRegistry.release(originSessionId);
     }
   }
 

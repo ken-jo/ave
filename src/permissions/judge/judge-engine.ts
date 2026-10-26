@@ -25,6 +25,9 @@ type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
 
 // What the layers before the judge concluded about this call.
 export interface JudgeGate {
+  // The host already selected its ordinary reviewer lane; category switches
+  // configure optional stages, not whether that baseline may review the call.
+  reviewerBaseline?: boolean;
   // Outcome of floors + user rules + mode matrix; the judge runs only on `undecided`.
   priorDecision: PriorRuleDecision;
   strictMode: boolean;
@@ -62,6 +65,9 @@ export interface JudgeChainStage {
 }
 
 export interface JudgeEngineDeps {
+  // The implicit builtin reviewer retains its classifier's timeout/retry policy.
+  // Configured chains use the user's stage and whole-chain budgets.
+  budget?: "configured" | "classifier";
   settings: JudgeSettings;
   // Constructed stages, in `settings.chain` order. Empty is off unless rejected.
   chain: readonly JudgeChainStage[];
@@ -86,12 +92,13 @@ type JudgeSkipReason =
   | "category-disabled"
   | "breaker-open";
 
-type JudgeOutcomeSource = "judge" | "hook" | "fallback";
+type JudgeOutcomeSource = "judge" | "hook" | "fallback" | "breaker";
 
 export interface JudgeAuditRecord {
   event: "permission-judge";
   ts: string;
   session: string;
+  invocationId: string;
   lane: JudgeRequest["lane"];
   mode: JudgeMode;
   tool: string;
@@ -112,6 +119,7 @@ export interface JudgeAuditRecord {
   latencyMs: number;
   fallback: JudgeFailureKind | null;
   breakerTripped: boolean;
+  pause?: "consecutive" | "total";
   // Input keys a beforeJudge hook hid from the judge.
   policyRedactedKeys?: string[];
 }
@@ -153,6 +161,7 @@ export type JudgeOutcome =
       suggestedRule?: string;
       rationale: string;
       breakerTripped: boolean;
+      pause?: "consecutive" | "total";
     };
 
 function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDeps): JudgeSkipReason | null {
@@ -162,8 +171,8 @@ function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDep
   if (gate.capabilityGrant) return "capability-grant";
   if (gate.remoteController) return "remote-controller";
   const category = request.invocation.category;
-  if (!isJudgeCategory(category)) return "category-not-judged";
-  if (!deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";
+  if (!gate.reviewerBaseline && !isJudgeCategory(category)) return "category-not-judged";
+  if (!gate.reviewerBaseline && isJudgeCategory(category) && !deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";
   if (!deps.chainRejected && !deps.settingsUnreadable && deps.breaker.isOpen(request.sessionId)) return "breaker-open";
   return null;
 }
@@ -194,7 +203,7 @@ interface JudgeRun {
 async function runJudge(
   judge: PermissionJudge | null,
   request: JudgeRequest,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   callerSignal: AbortSignal | undefined,
 ): Promise<JudgeRun> {
   // A caller that already cancelled gets its cancel back; the judge is never started.
@@ -202,7 +211,7 @@ async function runJudge(
   if (!judge) return { fallback: "unavailable", failureMessage: "judge provider unavailable" };
   const controller = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
     timedOut = true;
     controller.abort(new JudgeFailure("timeout", `judge timed out after ${timeoutMs}ms`));
   }, timeoutMs);
@@ -226,7 +235,7 @@ async function runJudge(
     }
     return { fallback: "error", failureMessage: errorMessage(err) };
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
     callerSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
@@ -265,13 +274,13 @@ async function runChain(
 ): Promise<ChainResult> {
   let lastFailure: JudgeRun | undefined;
   let ambiguous: { stage: JudgeChainStage; verdict: JudgeVerdict } | undefined;
-  const deadline = now() + deps.settings.chainDeadlineMs;
+  const deadline = deps.budget === "classifier" ? undefined : now() + deps.settings.chainDeadlineMs;
   for (let i = 0; i < deps.chain.length; i++) {
     const stage = deps.chain[i]!;
     const isLast = i === deps.chain.length - 1;
     const t0 = now();
-    const remaining = deadline - t0;
-    if (remaining <= 0) {
+    const remaining = deadline === undefined ? undefined : deadline - t0;
+    if (remaining !== undefined && remaining <= 0) {
       for (const rest of deps.chain.slice(i)) {
         records.push({
           id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
@@ -281,7 +290,7 @@ async function runChain(
       }
       return chainDeadlineFallback(deps);
     }
-    const stageTimeout = Math.min(deps.settings.timeoutMs, remaining);
+    const stageTimeout = remaining === undefined ? undefined : Math.min(deps.settings.timeoutMs, remaining);
     const run = await runJudge(stage.judge, view, stageTimeout, signal);
     const latencyMs = Math.max(0, now() - t0);
     const stderr = run.diagnostics?.stderr ?? run.verdict?.diagnostics?.stderr;
@@ -297,7 +306,7 @@ async function runChain(
     if (!run.verdict) {
       records.push({ ...base, decision: null, confidence: null, outcome: "failed", fallback: run.fallback ?? "error" });
       // The engine's timer fired on a budget the chain deadline capped: the deadline is spent and no later stage gets to run. A provider that reports its own timeout is an ordinary stage failure and escalates.
-      if (run.engineTimedOut && stageTimeout < deps.settings.timeoutMs) {
+      if (run.engineTimedOut && stageTimeout !== undefined && stageTimeout < deps.settings.timeoutMs) {
         for (const rest of deps.chain.slice(i + 1)) {
           records.push({
             id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
@@ -365,8 +374,17 @@ export async function resolveJudge(
   deps: JudgeEngineDeps,
   signal?: AbortSignal,
 ): Promise<JudgeOutcome> {
+  if (deps.budget !== undefined && deps.budget !== "configured" && deps.budget !== "classifier") {
+    throw new JudgeContractError("Invalid judge execution budget policy");
+  }
+  if (deps.budget === "classifier" &&
+      (deps.chain.length !== 1 || deps.chain[0]?.settings.provider !== "builtin-llm")) {
+    throw new JudgeContractError("Classifier execution budget requires one builtin reviewer stage");
+  }
   const skip = skipReason(gate, request, deps);
-  if (skip) return { judged: false, skip };
+  if (skip && skip !== "breaker-open") return { judged: false, skip };
+  if (signal?.aborted) throw signal.reason;
+  let pause = skip === "breaker-open" ? deps.breaker.pauseReason(request.sessionId) : undefined;
 
   const now = deps.now ?? Date.now;
   const started = now();
@@ -380,14 +398,16 @@ export async function resolveJudge(
   let rationale: string;
   const stages: JudgeStageRecord[] = [];
 
-  const before: BeforeJudgeResult = deps.hooks?.beforeJudge
+  const before: BeforeJudgeResult = pause
+    ? { action: "short-circuit", decision: "ask", reason: `Automated approval paused: ${pause === "consecutive" ? "3 consecutive" : "20 total"} classifier blocks` }
+    : deps.hooks?.beforeJudge
     ? await deps.hooks.beforeJudge(structuredClone(request))
     : { action: "continue" };
   if (before.action === "short-circuit") {
     if (before.decision !== "ask" && before.decision !== "deny") {
       throw new JudgeContractError("beforeJudge may only short-circuit to ask or deny");
     }
-    source = before.fallback ? "fallback" : "hook";
+    source = pause ? "breaker" : before.fallback ? "fallback" : "hook";
     fallback = before.fallback;
     decision = before.decision;
     rationale = before.reason;
@@ -433,17 +453,24 @@ export async function resolveJudge(
     }
   }
 
+  if (signal?.aborted) throw signal.reason;
   const headless = request.lane === "headless";
   if (headless && decision === "ask") decision = "deny";
   const applied = mode === "active";
   // Shadow must never change behavior, so it never asks the call site to defer.
-  const defer = applied && headless && decision !== "allow";
 
   let breakerTripped = false;
   if (applied && source === "judge" && verdict) {
     // One counter per session across the whole chain: the chain's final verdict.
-    breakerTripped = deps.breaker.record(request.sessionId, verdict.decision);
+    breakerTripped = deps.breaker.record(request.sessionId, verdict.decision, request.invocationId);
+    pause = deps.breaker.pauseReason(request.sessionId);
+    if (pause) {
+      source = "breaker";
+      decision = headless ? "deny" : "ask";
+      rationale = `Automated approval paused: ${pause === "consecutive" ? "3 consecutive" : "20 total"} classifier blocks`;
+    }
   }
+  const defer = applied && headless && decision !== "allow";
 
   // The audit always describes the call that executes, not the judge's view.
   const redacted = redactJudgeRequest(request);
@@ -452,6 +479,7 @@ export async function resolveJudge(
     event: "permission-judge",
     ts: new Date(started).toISOString(),
     session: request.sessionId,
+    invocationId: request.invocationId,
     lane: request.lane,
     mode,
     tool: request.invocation.toolName,
@@ -468,8 +496,16 @@ export async function resolveJudge(
     latencyMs: Math.max(0, now() - started),
     fallback: fallback ?? null,
     breakerTripped,
+    ...(pause ? { pause } : {}),
     ...(redactedKeys.length > 0 ? { policyRedactedKeys: [...redactedKeys] } : {}),
   });
+  if (signal?.aborted) throw signal.reason;
+
+  // A sibling review can trip the shared breaker while this call awaits its
+  // audit write. Publish a recorded pause instead of a stale automatic allow.
+  if (applied && source === "judge" && deps.breaker.isOpen(request.sessionId)) {
+    return resolveJudge(gate, request, deps, signal);
+  }
 
   return {
     judged: true,
@@ -491,5 +527,6 @@ export async function resolveJudge(
     ...(verdict?.suggestedRule ? { suggestedRule: verdict.suggestedRule } : {}),
     rationale: safeRationale,
     breakerTripped,
+    ...(pause ? { pause } : {}),
   };
 }

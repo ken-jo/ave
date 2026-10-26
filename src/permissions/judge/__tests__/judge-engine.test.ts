@@ -247,22 +247,83 @@ describe("resolveJudge — hooks", () => {
 });
 
 describe("resolveJudge — circuit breaker", () => {
-  it("3 consecutive judge denials pause automation for the session", async () => {
-    const d = deps(answering(DENY));
-    for (let i = 0; i < 3; i++) await resolveJudge(UNDECIDED, judgeRequest(), d);
-    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toEqual({ judged: false, skip: "breaker-open" });
+  it.each(["foreground", "headless"] as const)("three consecutive blocks pause the threshold-triggering %s request", async (lane) => {
+    const provider = answering(DENY);
+    const d = deps(provider);
+    const request = judgeRequest({ lane });
+    for (let i = 0; i < 2; i++) {
+      expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ decision: "deny", source: "judge" });
+    }
+    const paused = {
+      judged: true, source: "breaker", pause: "consecutive",
+      decision: lane === "foreground" ? "ask" : "deny", applied: true, defer: lane === "headless",
+    };
+    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ ...paused, breakerTripped: true });
+    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ ...paused, breakerTripped: false });
+    expect(provider.calls).toBe(3);
+    expect(judgeRecords(d).at(-1)).toMatchObject({
+      source: "breaker", pause: "consecutive", stages: [],
+      rationale: "Automated approval paused: 3 consecutive classifier blocks",
+    });
     // A subagent keyed by the same root session shares the pause.
-    expect(await resolveJudge(UNDECIDED, judgeRequest({ sessionId: "session-root" }), d)).toEqual({ judged: false, skip: "breaker-open" });
+    expect(await resolveJudge(UNDECIDED, { ...request, sessionId: "session-root" }, d)).toMatchObject(paused);
     // Another session is unaffected.
     expect((await resolveJudge(UNDECIDED, judgeRequest({ sessionId: "other" }), d)).judged).toBe(true);
   });
 
-  it("20 total judge denials pause automation even with allows between", async () => {
+  it.each(["foreground", "headless"] as const)("twenty total blocks pause %s and reset only the total counter", async (lane) => {
     let n = 0;
-    const d = deps(answering(async () => (n++ % 2 === 0 ? DENY : ALLOW)));
-    for (let i = 0; i < 39; i++) await resolveJudge(UNDECIDED, judgeRequest(), d);
-    expect(d.breaker.snapshot("session-root")).toMatchObject({ total: 20, open: true });
-    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toEqual({ judged: false, skip: "breaker-open" });
+    const provider = answering(async () => (n++ % 2 === 0 ? DENY : ALLOW));
+    const d = deps(provider);
+    for (let i = 0; i < 38; i++) await resolveJudge(UNDECIDED, judgeRequest({ lane }), d);
+    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 0, total: 19, open: false });
+    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({
+      judged: true, source: "breaker", pause: "total", breakerTripped: true,
+      decision: lane === "foreground" ? "ask" : "deny",
+      rationale: "Automated approval paused: 20 total classifier blocks",
+    });
+    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 0, open: true });
+    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({
+      judged: true, source: "breaker", pause: "total", breakerTripped: false,
+      decision: lane === "foreground" ? "ask" : "deny",
+    });
+    expect(provider.calls).toBe(39);
+    d.breaker.resume("session-root");
+    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ decision: "allow", source: "judge" });
+    expect(provider.calls).toBe(40);
+    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 0, total: 0, open: false });
+  });
+
+  it("a final ask is a classifier block and manual approval resumes the next review", async () => {
+    let allowed = false;
+    const provider = answering(async () => allowed ? ALLOW : { decision: "ask", rationale: "needs approval" });
+    const d = deps(provider);
+    const request = judgeRequest();
+    for (let i = 0; i < 2; i++) {
+      expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({ decision: "ask", source: "judge" });
+    }
+    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({
+      decision: "ask", source: "breaker", pause: "consecutive", breakerTripped: true,
+    });
+    d.breaker.resume(request.sessionId);
+    expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 3, open: false });
+    allowed = true;
+    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({ decision: "allow", source: "judge" });
+    expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 3, open: false });
+    expect(provider.calls).toBe(4);
+  });
+
+  it("host hooks do not manufacture classifier blocks", async () => {
+    const before = deps(answering(DENY), {}, {
+      beforeJudge: () => ({ action: "short-circuit", decision: "deny", reason: "host refusal" }),
+    });
+    const after = deps(answering(ALLOW), {}, { afterJudge: () => "deny" });
+    for (let i = 0; i < 4; i++) {
+      await resolveJudge(UNDECIDED, judgeRequest(), before);
+      await resolveJudge(UNDECIDED, judgeRequest(), after);
+    }
+    expect(before.breaker.snapshot("session-root")).toEqual({ consecutive: 0, total: 0, open: false });
+    expect(after.breaker.snapshot("session-root")).toEqual({ consecutive: 0, total: 0, open: false });
   });
 
   it("fallbacks and timeouts do not count as denials; shadow never trips", async () => {
@@ -321,4 +382,68 @@ describe("resolveJudge — audit", () => {
     expect(typeof records[0]!.argsHash).toBe("string");
     expect(typeof records[0]!.latencyMs).toBe("number");
   });
+});
+
+describe("shared pause across concurrent reviews", () => {
+  it.each(["provider", "audit"] as const)("replaces an in-flight allow when a sibling trips the breaker during %s", async (boundary) => {
+    let reached!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { reached = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const d = deps(answering(async () => {
+      if (boundary === "provider") { reached(); await held; }
+      return ALLOW;
+    }));
+    if (boundary === "audit") {
+      const append = d.audit.appendPermissionAuditEntry.bind(d.audit);
+      d.audit = {
+        ...d.audit,
+        async appendPermissionAuditEntry(entry) {
+          reached();
+          await held;
+          return append(entry);
+        },
+      };
+    }
+    const pending = resolveJudge(UNDECIDED, judgeRequest(), d);
+    await started;
+    const sibling = { ...deps(answering(DENY)), breaker: d.breaker };
+    for (let call = 0; call < 3; call += 1) await resolveJudge(UNDECIDED, judgeRequest(), sibling);
+    release();
+    expect(await pending).toMatchObject({ decision: "ask", pause: "consecutive", source: "breaker" });
+    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 3, total: 3, open: true });
+    expect(judgeRecords(d).at(-1)).toMatchObject({ decision: "ask", pause: "consecutive" });
+  });
+
+  it("does not count a block after caller cancellation during a host hook", async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller stopped review");
+    const d = deps(answering(DENY), {}, {
+      afterJudge() { controller.abort(reason); return "deny"; },
+    });
+    await expect(resolveJudge(UNDECIDED, judgeRequest(), d, controller.signal)).rejects.toBe(reason);
+    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 0, total: 0, open: false });
+    expect(judgeRecords(d)).toHaveLength(0);
+  });
+});
+
+it("retains a completed classifier block when the caller stops during its audit write", async () => {
+  const controller = new AbortController();
+  const reason = new Error("caller stopped during audit");
+  const d = deps(answering(DENY));
+  for (let block = 0; block < 19; block += 1) {
+    d.breaker.record("session-root", "deny", `completed-block-${block}`);
+    d.breaker.record("session-root", "allow", `allowed-after-block-${block}`);
+  }
+  const append = d.audit.appendPermissionAuditEntry.bind(d.audit);
+  d.audit = {
+    ...d.audit,
+    async appendPermissionAuditEntry(entry) {
+      controller.abort(reason);
+      return append(entry);
+    },
+  };
+  await expect(resolveJudge(UNDECIDED, judgeRequest(), d, controller.signal)).rejects.toBe(reason);
+  expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 0, open: true });
+  expect(d.breaker.pauseReason("session-root")).toBe("total");
 });

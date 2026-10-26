@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import {
   ApprovalGate,
   approvalAnswererAuditToken,
@@ -143,6 +145,41 @@ function makeAuditingGate(): {
 }
 
 describe("ApprovalGate", () => {
+  it.each(["timeout", "shutdown", "abort"] as const)("settles %s even when the live owner lookup fails after parking", async (termination) => {
+    vi.useFakeTimers();
+    const wc = makeMockWebContents();
+    const auditLogger = { log: vi.fn() };
+    let broken = false;
+    const gate = new ApprovalGate(() => {
+      if (broken) throw new Error("owner identity contract failed");
+      return wc as never;
+    }, undefined, 1_000, auditLogger as never);
+    const controller = new AbortController();
+    const request = makeRequest({ sessionId: "owner-session", abortSignal: controller.signal });
+    const pending = gate.requestAndWait(request);
+    try {
+      const integrity = lastSentNonceHmac(wc);
+      broken = true;
+      expect(() => gate.listPendingRendererRequests(wc as never)).toThrow("owner identity contract failed");
+      expect(() => gate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice: "allow-once", ...integrity,
+      }, wc as never)).toThrow("owner identity contract failed");
+      expect(gate.pendingCount).toBe(1);
+      if (termination === "timeout") await vi.advanceTimersByTimeAsync(1_000);
+      else if (termination === "shutdown") gate.disposeAll();
+      else controller.abort(new Error("turn stopped"));
+      await expect(pending).resolves.toMatchObject({ choice: "deny-once" });
+      expect(gate.pendingCount).toBe(0);
+      expect(announcedSettledIds(wc)).toContain(request.id);
+      expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
+        type: "approval", output: expect.stringContaining("[approval:notification-owner-failed]"),
+      }));
+    } finally {
+      gate.disposeAll();
+      vi.useRealTimers();
+    }
+  });
+
   it("requestAndWait resolves when resolve() is called", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
@@ -176,16 +213,24 @@ describe("ApprovalGate", () => {
     expect(result.requestId).toBe("req-1");
   });
 
-  it("an approval answered in one window dismisses the copy another window re-fetched", async () => {
+  it("moves a pending card to its current owner and dismisses each surface that displayed it", async () => {
     const windowA = makeMockWebContents();
     const windowB = makeMockWebContents();
-    const gate = new ApprovalGate(windowA as never);
+    let owner = windowA;
+    const auditLogger = { log: vi.fn() };
+    const gate = new ApprovalGate(() => owner as never, undefined, undefined, auditLogger as never);
     const promise = gate.requestAndWait(makeRequest({ id: "req-two-windows" }));
-    // Window B loaded later and drew the parked card too.
+    expect(gate.listPendingRendererRequests(windowB as never)).toEqual([]);
+    owner = windowB;
+    expect(gate.listPendingRendererRequests(windowA as never)).toEqual([]);
     expect(gate.listPendingRendererRequests(windowB as never).map((req) => req.id)).toEqual(["req-two-windows"]);
 
     const { nonce, hmac } = lastSentNonceHmac(windowA);
-    gate.resolve("req-two-windows", { requestId: "req-two-windows", choice: "allow-once", nonce, hmac });
+    const decision = { requestId: "req-two-windows", choice: "allow-once" as const, nonce, hmac };
+    expect(gate.resolveFromDesktopRenderer("req-two-windows", decision, windowA as never)).toBeNull();
+    expect(gate.pendingCount).toBe(1);
+    expect(auditRowTexts(auditLogger).some((row) => row.startsWith("[approval:surface-owner-required] req-two-windows"))).toBe(true);
+    expect(gate.resolveFromDesktopRenderer("req-two-windows", decision, windowB as never)).toMatchObject({ choice: "allow-once" });
     await promise;
     expect(announcedSettledIds(windowA)).toEqual(["req-two-windows"]);
     expect(announcedSettledIds(windowB)).toEqual(["req-two-windows"]);
@@ -197,12 +242,12 @@ describe("ApprovalGate", () => {
     const promise = gate.requestAndWait(makeRequest({ id: "req-parked" }));
 
     const sent = (wc.send.mock.calls[0] as unknown as [string, ApprovalRequest])[1];
-    expect(gate.listPendingRendererRequests()).toEqual([sent]);
+    expect(gate.listPendingRendererRequests(wc as never)).toEqual([sent]);
 
     const { nonce, hmac } = lastSentNonceHmac(wc);
     gate.resolve("req-parked", { requestId: "req-parked", choice: "deny-once", nonce, hmac });
     await promise;
-    expect(gate.listPendingRendererRequests()).toEqual([]);
+    expect(gate.listPendingRendererRequests(wc as never)).toEqual([]);
   });
 
   it("issues a private one-shot receipt only after an HMAC-verified allow-once", async () => {
@@ -704,19 +749,23 @@ describe("ApprovalGate", () => {
           pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
         }),
       });
-      const reviewer = await new PermissionManager("/workspace/permissions.json").dispatchReviewer(req.toolName, {
+      const manager = new PermissionManager("/workspace/permissions.json");
+      wireJudgeForTest(manager);
+      const reviewer = await manager.dispatchReviewer(req.toolName, {
+        invocationId: randomUUID(),
+        sessionId: "approval-gate-review-session",
         source: "builtin", category: "shell", finalInput: req.args as Record<string, unknown>,
         pathFields: [], executionCwd: req.evaluationContext!.executionCwd,
         allowedDirectories: ["/workspace/project"], sensitivePathsAdjacent: [],
         trustOrigin: "user-keyboard", approvalCacheKey: req.approvalCacheKey,
-      });
+      }, undefined, { defer: "none" });
       const pending = gate.requestAndWait({ ...req, reviewerApprovalBasis: reviewer.approvalBasis });
       const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
       expect(sent.persistentAllowAllowed).toBe(true);
       expect(sent.allowedChoices).toBeUndefined();
       expect(sent).not.toHaveProperty("reviewerOutcome");
       expect(gate.getRequestSnapshot(req.id)).toMatchObject({ persistentAllowAllowed: true, verdictAtApproval: "high", riskCeilingAtApproval: reviewer.approvalBasis!.ruleVerdict });
-      gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "allow-always", nonce: sent.nonce, hmac: sent.hmac });
+      gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "allow-always", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
       await expect(pending).resolves.toMatchObject({ choice: "allow-always" });
     },
   );
@@ -748,16 +797,20 @@ describe("ApprovalGate", () => {
       }),
       ...restriction,
     });
-    const reviewer = await new PermissionManager("/workspace/permissions.json").dispatchReviewer("bash", {
+    const manager = new PermissionManager("/workspace/permissions.json");
+    wireJudgeForTest(manager);
+    const reviewer = await manager.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "approval-gate-review-session",
       source: "builtin", category: "shell", finalInput: { command: "printf hello" },
       pathFields: [], executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"],
       sensitivePathsAdjacent: [], trustOrigin: "user-keyboard", approvalCacheKey: "scoped-exact-request",
-    });
+    }, undefined, { defer: "none" });
     const pending = gate.requestAndWait({ ...req, reviewerApprovalBasis: reviewer.approvalBasis });
     const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
     expect(sent.persistentAllowAllowed).toBe(false);
     expect(gate.getRequestSnapshot(req.id)?.persistentAllowAllowed).toBe(false);
-    gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "deny-once", nonce: sent.nonce, hmac: sent.hmac });
+    gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "deny-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
     await pending;
   });
 
@@ -2862,27 +2915,27 @@ describe("ApprovalGate", () => {
       const turn = new AbortController();
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
       const sent = (wc.send.mock.calls[0] as unknown as [string, ApprovalRequest])[1];
-      expect(gate.listPendingRendererRequests()).toEqual([sent]);
+      expect(gate.listPendingRendererRequests(wc as never)).toEqual([sent]);
 
       const { nonce, hmac } = lastSentNonceHmac(wc);
       gate.resolve("abort-1", { requestId: "abort-1", choice: "allow-once", nonce, hmac });
       expect((await parked).choice).toBe("allow-once");
-      expect(gate.listPendingRendererRequests()).toEqual([]);
+      expect(gate.listPendingRendererRequests(wc as never)).toEqual([]);
     });
 
     it("retires a parked request with the release that stopped its turn, and says so", async () => {
       // A tile the host let go of — closed, or released by a renderer reload — has no turn left to answer into; the request is not re-offered, and the row names the release rather than a stop the user never made.
-      const { auditLogger, gate } = makeAuditingGate();
+      const { wc, auditLogger, gate } = makeAuditingGate();
       const turn = new AbortController();
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
-      expect(gate.listPendingRendererRequests()).toHaveLength(1);
+      expect(gate.listPendingRendererRequests(wc as never)).toHaveLength(1);
 
       turn.abort(new Error("renderer reload released the tile"));
       const decision = await parked;
 
       expect(decision.choice).toBe("deny-once");
       expect(isHostApprovalRejectedDecision(decision)).toBe(true);
-      expect(gate.listPendingRendererRequests()).toEqual([]);
+      expect(gate.listPendingRendererRequests(wc as never)).toEqual([]);
       const cancelled = auditRowTexts(auditLogger).find((row) =>
         row.startsWith("[approval:cancelled]"),
       );

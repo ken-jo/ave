@@ -10,6 +10,7 @@ import {
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../../main/terminal/terminal-blocks.js";
 import { isTerminalLane, isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 
 const log = createLogger("terminal-ipc");
 
@@ -41,6 +42,14 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     }
     const ownerWindowId = senderWindowId(event);
     if (ownerWindowId === null) return { ok: false, reason: "unauthorized-frame", message: "sender has no app window" };
+    const owner = (deps.getAppWindows?.() ?? [deps.getMainWindow()]).find((window) =>
+      window && !window.isDestroyed() && window.id === ownerWindowId && window.webContents === event.sender);
+    if (!owner || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.terminal.spawn, event);
+      return { ok: false, reason: "unauthorized-frame", message: "sender is not an app window main frame" };
+    }
+    if (!terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, reason: "not-owner", message: "terminal belongs to another window" };
+    approvalSurfaceRegistry.registerTerminal(payload.tabId, event.sender);
     return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId,
       ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
       ...(payload.cols !== undefined ? { cols: payload.cols } : {}),

@@ -14,6 +14,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { registerPluginEventBridge } from "./ipc-bridge.js";
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { retainedDescendantWorkspaceRoots } from "../../permissions/workspace-root-reconciler.js";
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
 import { PreferenceRefreshService } from "../../memory/preference-refresh-service.js";
@@ -337,6 +338,7 @@ export async function wireConversation(
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
     ...rationaleBindings,
   });
+  approvalSurfaceRegistry.register(conversationLoop.getSessionId(), mainWindow?.webContents ?? null);
 
   // Side chat uses its own feature namespace while sharing main-chat model and permission policy.
   let sideChatConversationLoop!: ConversationLoop;
@@ -400,6 +402,8 @@ export async function wireConversation(
           getLoop: () => paneLoop,
         }),
       });
+      const owner = ctx.host.desktop?.getAppWindows().find((window) => window.id === windowId);
+      approvalSurfaceRegistry.register(paneLoop.getSessionId(), owner?.webContents ?? null);
       paneLoops.set(paneKey(windowId, tabId), { windowId, tabId, loop: paneLoop });
       return paneLoop;
     },
@@ -409,6 +413,7 @@ export async function wireConversation(
       if (!entry) return undefined;
       paneLoops.delete(paneKey(windowId, tabId));
       entry.loop.abortCurrentTurn(new Error("pane chat ended"));
+      approvalSurfaceRegistry.release(entry.loop.getSessionId());
       return entry.loop;
     },
     inWindow: (windowId) => [...paneLoops.values()]
@@ -487,6 +492,7 @@ export async function wireConversation(
     const loop = groupLoops.get(chatGroupId);
     if (!loop) return;
     loop.abortCurrentTurn();
+    approvalSurfaceRegistry.release(loop.getSessionId());
     groupLoops.delete(chatGroupId);
   };
 

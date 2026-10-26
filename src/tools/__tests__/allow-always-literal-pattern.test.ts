@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Always-grants match the exact (tool, args, source, trustOrigin, approvalCacheKey, directory) tuple.
 // Literal wildcards in cache keys or legacy rememberPattern values must never widen grants into glob rules.
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -63,7 +64,7 @@ function harness(
   permMgr.setMode("auto");
   permMgr.setInteractiveAutoApprove("low");
   // Only a non-LOW verdict reaches the approval modal that persists an always-grant.
-  permMgr.setReviewer({
+  setReviewerForTest(permMgr, {
     classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "needs confirmation" })) },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
     deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),

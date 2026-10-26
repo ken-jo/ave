@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { assertSrtWinSpawnIntegrity } from "../../permissions/srt-win-integrity.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildHostShellChildEnv, buildSandboxedChildEnv } from "../../tools/safe-env.js";
@@ -1330,6 +1331,7 @@ export function killTerminalsOwnedBy(ownerWindowId: number): number {
 
 /** Tab close releases logical ownership and terminates/cancels both lanes. */
 export function killTerminal(tabId: string): void {
+  approvalSurfaceRegistry.releaseTerminal(tabId);
   logicalTabs.delete(tabId);
   for (const lane of ["manual", "agent"] as const) {
     unregisterTerminalBlockTracker({ tabId, lane });

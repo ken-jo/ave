@@ -1905,20 +1905,24 @@ claim a benchmark score or task correctness.
 ## Automated Judge Chain
 
 [`PermissionJudge`](../../src/permissions/judge/judge-contract.ts) is the shared
-automated-decision seam. The existing auto-review dispatch remains the source of
-truth for builtin risk classification, caching, approval provenance and failure
-outcomes. The `builtin-llm` adapter maps those outcomes without changing legacy
-auto-mode decisions, including its eligible host-built-in `meta` lane. Absent
-judge settings or a valid empty `permissions.judge.chain` turn only the configured
-chain off; legacy auto-review remains intact.
+automated-decision seam. Auto mode, foreground LOW/MEDIUM review, headless review
+and the authoritative shadow baseline all enter the judge engine. The default
+chain contains the `builtin-llm` adapter around the existing classifier, retaining
+its risk composition, tracing, cancellation, cache, approval provenance and
+failure outcomes, including eligible host-built-in `meta` calls. Absent judge
+settings or a valid empty configured `permissions.judge.chain` use that default
+builtin reviewer chain. The shared pause and resume behavior below applies to
+every automated lane.
+Automated review requires a conversation or task session identity and a
+host-created invocation identity. Either missing identity fails clearly instead
+of sharing an unscoped counter or inventing a new invocation.
 
 The [judge settings contract](../design/permissions-always-allow-and-judge.md#p2-judge-slot)
 defines the persisted ordered chain, transports and model syntax. A configured
 chain defaults to `shadow`: stages run and are audited, but their results do not
-replace the existing permission result or create deferred entries. An existing
-auto-review allow therefore remains an allow; an undecided foreground request
-still goes to the user, including when the breaker is already open. Shadow
-creates no judge-induced deferred entries and does not change breaker counters.
+replace the authoritative builtin reviewer chain's result or create deferred
+entries. Shadow observations do not change breaker counters; the authoritative
+baseline counts once per request and observes the same pause and resume state.
 Selecting `active` applies the chain result to eligible calls. Shell and write
 categories default on; network defaults off.
 
@@ -1939,6 +1943,10 @@ allow. The [settings parser](../../src/permissions/judge/judge-settings.ts),
 [shared contract](../../src/permissions/judge/judge-contract.ts) and
 [engine](../../src/permissions/judge/judge-engine.ts) own complete fields/defaults,
 request/verdict types and chain semantics respectively.
+The implicit builtin chain imposes no additional stage or whole-chain timeout:
+the classifier retains its existing retry, streaming and transport limits.
+Explicit configured chains retain their budgets, and caller cancellation
+propagates in both cases.
 
 The model picker offers configured providers and their model options using the
 same source as chat selection. `permissions.judge.model` selects the permission
@@ -1964,7 +1972,8 @@ failure leaves no trustworthy mode. The host carries `settingsUnreadable` and
 conservatively applies the existing unavailable fallback to judgeable categories:
 forced foreground approval or headless deny plus defer, without legacy/provider
 fallback. Persisted mode and normalizer defaults remain unchanged. A missing file
-or block is valid off; a parsed rejected shadow chain keeps the baseline above.
+or block leaves the configured chain off and uses the default builtin reviewer
+chain; a parsed rejected shadow chain keeps the baseline above.
 
 Invalid writes fail before changing the file, and valid writes preserve unrelated
 settings. If runtime refresh fails, the write receipt restores the original raw
@@ -1989,28 +1998,81 @@ are bounded, redacted and audited rather than treated as decisions.
 An active foreground `deny` blocks execution; `ask` requests approval. An
 unavailable or failed final stage asks through the forced approval surface.
 In headless execution, an active non-allow denies the current invocation and
-appends to the existing `DeferredQueue`. An open breaker asks in the active
-foreground lane or denies and defers in the active headless lane; shadow keeps
-the pre-judge path. Caller cancellation is terminal, and internal
-contract or active-audit failures propagate.
+appends to the existing `DeferredQueue`. A paused breaker uses the normal user
+approval card for interactive requests and denies with a reason naming the
+threshold when no user is available. Existing approval-card and notification
+surfaces explain the pause in English and Korean. Caller cancellation is
+terminal, and internal contract or active-audit failures propagate.
+Every allow is treated as automated for pause checks unless the host consumed
+verified fresh native human consent for that exact action. Policy grants,
+remembered approvals, reviewer and parent decisions, and sealed rationale
+receipts do not establish fresh human consent.
+Fresh native consent is a gate-verified response to the current signed approval
+card, [consumed once by the host](../../src/permissions/judge/manual-approval.ts).
+The responder must be a registered application window's exact main frame and
+the live owner of the card's session or terminal. The host explicitly registers
+approval ownership when it creates a main chat, side panel, work pane or Work
+Board item run. Sub-agent children register a live link to their parent run's
+owner, including resumed children. Scheduled and background runs register their
+available trusted surface or explicitly register no surface. The approval
+resolver reads only this registry; chat holders, persisted ancestry and window
+focus cannot supply missing approval authority.
+Listing pending cards and answering them both read the current registration;
+moving the session or terminal updates it and transfers authority immediately,
+including to existing children. A valid card signature does not authorize a
+foreign window. Missing or foreign ownership rejects and audits the answer
+without settling the pending card or minting fresh consent. A new approval
+request with no registered live surface follows the headless deny path and
+explicitly names `no approval surface`.
+If an owner closes without aborting the turn, an already pending card remains
+pending until the normal five-minute deny timeout. Losing its owner never
+auto-approves it; a registered replacement owner can answer before timeout.
+Remembering exact approvals or shell rules and requesting scope proposals use
+the same frame and live-owner checks; knowing a card id grants neither operation.
+After all asynchronous hooks and route admission, one synchronous final gate
+rechecks cancellation, required audit integrity and writability, the shared
+breaker and plugin/remote authority immediately before entering the handler.
+No await separates that gate from handler entry. A paused invocation requires
+the normal forced one-shot native approval card interactively or denies when
+no user is available. Returning from a card or renewed route admission re-enters
+the same gate; fresh human consent bypasses only the pause requirement.
+Permission-request hooks and signed ask-audit preparation remain within a
+bounded, cancellable attempt. Only waiting for the user moves outside the tool
+execution ceiling and uses the ordinary five-minute card timeout. Actual
+execution keeps its bounded timeout and cancellation semantics.
 
-The circuit breaker counts final judge denials across the whole chain: by
-default 3 consecutive or 20 total denials pause automation. An `allow` resets the
-consecutive count; `ask`, timeouts and other failures neither increment nor reset
-it. Intermediate verdicts do not count, and shadow does not change counters.
-An open breaker remains open until the conversation ends; there is no Settings
-reset control. The host resolves a child session to its root conversation before
-judge dispatch, so parent and subagents share breaker and judge audit identity.
-Settings rewiring retains the counter. Deferred entries keep the requesting
-session's identity to route later approval correctly.
+One chain-owned circuit breaker counts successful classifier blocks per root
+conversation. A final non-allow verdict counts once per host invocation
+identity, including a builtin foreground `ask`. Scope review, ordinary review
+and cache assessments reuse that identity and cannot count the same invocation
+again. Distinct invocations count separately even with identical arguments.
+Intermediate verdicts, shadow observations, failures, timeouts
+and separate host safety rejections do not count. Thresholds are fixed at 3
+consecutive or 20 total blocks. An allowed action resets only the consecutive
+count. The total persists for the session and resets only when the total
+threshold itself triggers a fallback.
+Counting happens after the provider and host hook complete, before audit
+append. A stop during append retains the completed block; a stop before review
+completion counts nothing.
+
+Reaching either threshold pauses automation for the triggering request and
+every subsequent request. Authenticated human approval of a prompted action
+resumes automation and clears the consecutive count, preserving the total
+unless its threshold already triggered the reset. Parent-agent, away-authority
+and remembered automatic approvals cannot resume automation. The host resolves
+a child session to its root conversation before judge dispatch, so parent and
+subagents share breaker and judge audit identity. Settings rewiring retains the
+counter. Deferred entries keep the requesting session's identity to route later
+approval correctly.
 
 The existing audit writer records each stage's provider/version, resolved model,
-verdict and latency alongside the root session, argument hash, redacted request,
-final decision, rationale and fallback. Active decisions require a successful
-write to the HMAC-protected permission audit. Shadow records use the shadow
-channel. A judge may suggest a rule but cannot persist it. Hooks may redact or
-short-circuit to ask/deny before judging and may only retain or downgrade the
-result afterward.
+verdict and latency alongside the root session, invocation identity, argument
+hash, redacted request, final decision, rationale and fallback. Active decisions
+require a successful write to the HMAC-protected permission audit. Shadow records use the shadow
+channel. Normal builtin review and the authoritative shadow baseline preserve
+the resolved reviewer model in their stage audit. A judge may suggest a rule
+but cannot persist it. Hooks may redact or short-circuit to ask/deny before
+judging and may only retain or downgrade the result afterward.
 
 ## Reviewer Failure
 
@@ -2100,7 +2162,8 @@ failures, invalid plugin manifests, MCP tools, overlay prompt imports, and
 headless deferred queue behavior.
 
 Judge coverage must include the real foreground and headless dispatch lanes,
-unchanged legacy auto-mode tests, chain escalation, settings/model validation,
+trace/cancellation and failure parity, both block thresholds and resume on human
+approval, chain escalation, settings/model validation,
 the settings write floor, root-session breaker sharing and deferred routing.
 Module or mocked-classifier tests alone do not prove dispatch parity, Settings
 interaction or live-provider behavior; those require their own observed checks.

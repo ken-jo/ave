@@ -1,5 +1,5 @@
 // Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
-import { ipcMain } from "electron";
+import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
 import type { IpcDeps } from "../types.js";
@@ -72,6 +72,13 @@ function isAuthorizedStoredWorkItem(item: WorkItemResolved): boolean {
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
   const { workBoardStore, workBoardEngine, workBoardReport, auditLogger } = deps;
+
+  const isBoardOwnerFrame = (event: IpcMainInvokeEvent): boolean => {
+    const sender = event.sender;
+    if (!sender || sender.isDestroyed() || event.senderFrame !== sender.mainFrame) return false;
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    return windows.some((window) => window && !window.isDestroyed() && window.webContents === sender);
+  };
 
   const broadcastItemChanged = (
     itemId: number,
@@ -198,6 +205,10 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return { status: "error", reason: "no-store" } satisfies WorkItemRunResult;
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return { status: "not_found" } satisfies WorkItemRunResult;
+    if (!isBoardOwnerFrame(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.run, e);
+      return UNAUTHORIZED_FRAME;
+    }
 
     broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
       itemId: id,
@@ -206,7 +217,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     try {
       const result: WorkItemRunResult = await workBoardEngine.runItem(
         id,
-        opts?.agentName ? { agentName: opts.agentName } : undefined,
+        { ...(opts?.agentName ? { agentName: opts.agentName } : {}), approvalSurface: e.sender },
       );
       broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
         itemId: id,
@@ -339,10 +350,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
           reason: PROJECT_NOT_ALLOWED_REASON,
         } satisfies WorkBoardBriefingResult;
       }
+      if (!isBoardOwnerFrame(e)) {
+        auditUnauthorized(auditLogger, WORK_BOARD.runBriefing, e);
+        return UNAUTHORIZED_FRAME;
+      }
       try {
         const result = await workBoardEngine.runBriefing(briefingKind, {
           projectRoot: resolved.project.projectRoot,
           includeUnscoped: resolved.project.isDefault === true,
+          approvalSurface: e.sender,
         });
         if (result.status === "ok") {
           for (const id of [...result.filed, ...result.refreshed]) {

@@ -2,7 +2,7 @@ import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-ch
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
-import { ipcMain, type WebContents } from "electron";
+import { ipcMain, type IpcMainInvokeEvent, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
@@ -23,6 +23,7 @@ import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-ma
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import {
   getMainWindows,
   getPrimaryMainWindow,
@@ -674,6 +675,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (primary) return primary.webContents;
     return getMainWindows().length === 0 ? getMainWindow()?.webContents : undefined;
   };
+  const registerGroupApprovalOwner = (group: Pick<ChatGroupContext, "loop" | "owner">): void => {
+    const contents = groupTargetContents(group.owner);
+    // Only the host's registered app window may own this group's approvals.
+    const window = contents && mainWindowForContents(contents);
+    approvalSurfaceRegistry.register(group.loop.getSessionId(), window?.webContents ?? null);
+  };
   setSessionContentsLookup((sessionId) => {
     const holder = groupHolding(sessionId);
     return holder ? groupTargetContents(holder.owner) ?? null : null;
@@ -737,6 +744,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       unsubscribeStream,
     };
     groupContexts.set(chatGroupId, context);
+    registerGroupApprovalOwner(context);
     // Goal revival belongs to the group's held session and starts only after its turn lease releases.
     if (deps.sessionGoalStore) {
       const revival = createSessionGoalRevival({
@@ -776,7 +784,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
   const buildSink = mainGroup.buildSink;
 
   // Require the preload-stamped group id; omission must not address the primary conversation.
-  const groupOf = (event: { sender: unknown }, chatGroupId: unknown): ChatGroupContext => {
+  const isNativeGroupFrame = (event: IpcMainInvokeEvent): boolean => {
+    const contents = event.sender;
+    if (!contents || contents.isDestroyed() || event.senderFrame !== contents.mainFrame) return false;
+    const window = mainWindowForContents(contents);
+    return window !== null && !window.isDestroyed() && window.webContents === contents;
+  };
+  const groupOf = (event: IpcMainInvokeEvent, chatGroupId: unknown, channel: string): ChatGroupContext => {
+    if (!validateHostRendererSender(event) || !isNativeGroupFrame(event)) {
+      auditUnauthorized(auditLogger, channel, event);
+      throw new Error("unauthorized-frame");
+    }
     if (typeof chatGroupId !== "string" || !chatGroupId.trim()) {
       throw new Error("chat-group-required");
     }
@@ -811,6 +829,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return await context.loop.runSessionTransition("chat-group-release", async (lease) => {
         await context.loop.cleanupSession(lease);
         context.unsubscribeStream();
+        approvalSurfaceRegistry.release(context.loop.getSessionId());
         groupContexts.delete(id);
         deps.releaseChatGroupLoop?.(id);
         return true;
@@ -849,6 +868,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // Closing a tile releases its loop and leases to prevent hidden live conversations.
   ipcMain.handle(CHANNELS.chat.groupRelease, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.groupRelease, e); return UNAUTHORIZED_FRAME; }
+    if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.groupRelease, e); return UNAUTHORIZED_FRAME; }
     if (typeof chatGroupId !== "string" || !chatGroupId.trim()) return { ok: false, error: "chat-group-required" };
     const id = scopedGroupKey(ownerOf(e.sender), chatGroupId.trim());
     if (id === MAIN_CHAT_GROUP_ID) {
@@ -859,6 +879,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         await quiesce(mainGroup, "tile closed", admission.owner);
         return await mainGroup.loop.runSessionTransition("primary-chat-group-release", async (lease) => {
           await mainGroup.loop.newConversation("main", undefined, lease);
+          registerGroupApprovalOwner(mainGroup);
           await memoryManager.markMainActiveFresh();
           return { ok: true, released: true };
         });
@@ -869,15 +890,18 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true, released: await releaseGroup(id, "tile closed") };
   });
 
-  ipcMain.handle(CHANNELS.chat.hasProvider, (e, chatGroupId?: unknown) =>
-    groupOf(e, chatGroupId).loop.hasProvider());
+  ipcMain.handle(CHANNELS.chat.hasProvider, (e, chatGroupId?: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.hasProvider, e); return false; }
+    if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.hasProvider, e); return false; }
+    return groupOf(e, chatGroupId, CHANNELS.chat.hasProvider).loop.hasProvider();
+  });
   // Commands read disk; validate the sender and derive the project from the tile session.
   ipcMain.handle(CHANNELS.chat.listCustomCommands, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.listCustomCommands, e);
       return UNAUTHORIZED_FRAME;
     }
-    const { projectRoot } = groupOf(e, chatGroupId).loop.getSessionProjectContext();
+    const { projectRoot } = groupOf(e, chatGroupId, CHANNELS.chat.listCustomCommands).loop.getSessionProjectContext();
     return { commands: await listCustomCommands(projectRoot) };
   });
   ipcMain.handle(CHANNELS.llm.ping, async (e) => {
@@ -991,7 +1015,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.send, async (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.send, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.send);
     // Abort inside the interrupt send so a separate round-trip cannot expire keyboard activation.
     let interrupted = false;
     if (isInterruptSend(payload)) {
@@ -1018,7 +1042,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // Guide input queues for the next assistant-round boundary without interrupting the turn.
   ipcMain.handle(CHANNELS.chat.guide, async (e, input: string, chatGroupId?: unknown) => {
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.guide);
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.guide, e);
       return UNAUTHORIZED_FRAME;
@@ -1050,7 +1074,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.abort, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.abort, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.abort);
     // Pause the goal on Stop so it cannot immediately revive; retain the goal for explicit resume.
     const goalSessionId = group.loop.getSessionId();
     const pausingGoal = deps.sessionGoalStore?.get(goalSessionId)?.status === "running";
@@ -1066,7 +1090,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.listShellTasks, (e, chatGroupId: unknown, expectedSessionId: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.listShellTasks, e); return []; }
-    const sessionId = groupOf(e, chatGroupId).loop.getSessionId();
+    const sessionId = groupOf(e, chatGroupId, CHANNELS.chat.listShellTasks).loop.getSessionId();
     return sessionId === expectedSessionId ? listShellTasks(sessionId) : [];
   });
 
@@ -1076,7 +1100,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         (shellId !== undefined && (typeof shellId !== "string" || shellId.length === 0 || shellId.length > 128))) {
       return { ok: false, error: "invalid-shell-action" };
     }
-    const sessionId = groupOf(e, chatGroupId).loop.getSessionId();
+    const sessionId = groupOf(e, chatGroupId, CHANNELS.chat.controlShellTask).loop.getSessionId();
     if (sessionId !== expectedSessionId) return { ok: false, error: "session-changed" };
     const result = controlShellTask(sessionId, action, shellId as string | undefined);
     auditLogger.log({ timestamp: new Date().toISOString(), sessionId, type: "info", input: JSON.stringify({ event: "shell_task_control", action, ok: result.ok }) });
@@ -1085,7 +1109,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.new, async (e, rawProject?: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.new, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.new);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
       const parsed = resolveChatNewProjectPayload(rawProject, defaultWorkspaceProject().projectRoot);
@@ -1093,6 +1117,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (!resolved.authorized || !resolved.project) return PROJECT_NOT_ALLOWED;
       const { project } = resolved;
       await conversationLoop.newConversation("main", project);
+      registerGroupApprovalOwner(group);
       // Persist project identity only for explicit selections; default-directory access is not a project label.
       if (!project.isDefault && (project.projectRoot || project.projectName)) {
         await memoryManager.saveSessionMetadata(conversationLoop.getSessionId(), {
@@ -1117,7 +1142,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.compact, (e, chatGroupId?: unknown, focus?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.compact, e); return UNAUTHORIZED_FRAME; }
     if (focus !== undefined && typeof focus !== "string") throw new Error("invalid compact focus");
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.compact);
     // Wire compact callbacks for slash-triggered compaction too; no stream id exists outside a turn.
     const mutation = group.turns.trackSessionMutation(async () => {
       const sink = group.buildSink();
@@ -1154,7 +1179,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!isValidSessionId(sessionId)) {
       return { ok: false, compacted: false, compactedAt: null, removedMessageCount: 0 };
     }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.sessionResume);
     const conversationLoop = group.loop;
     // Name the holding tile so the renderer can reveal a folded conversation.
     const holder = groupHolding(sessionId);
@@ -1167,6 +1192,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     const mutation = group.turns.trackSessionMutation(async () => {
       const result = await conversationLoop.resetAndResume(sessionId);
+      if (result.ok) registerGroupApprovalOwner(group);
       if (result.ok && conversationLoop.getSessionKind() === "main" && isPrimaryGroup(group)) {
         await memoryManager.markMainActiveResume(sessionId).catch((err: unknown) => {
           log.warn("session-resume markMainActiveResume failed: %s", (err as Error).message);
@@ -1182,8 +1208,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
       error: STREAMING_ACTIVE,
     };
   });
-  ipcMain.handle(CHANNELS.chat.getHistory, (e, chatGroupId?: unknown) =>
-    handleChatGetHistory(groupOf(e, chatGroupId).deps));
+  ipcMain.handle(CHANNELS.chat.getHistory, (e, chatGroupId?: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getHistory, e); return []; }
+    if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getHistory, e); return []; }
+    return handleChatGetHistory(groupOf(e, chatGroupId, CHANNELS.chat.getHistory).deps);
+  });
 
   ipcMain.handle(CHANNELS.chat.mainActiveState, (e) => {
     if (!validateHostRendererSender(e)) {
@@ -1204,7 +1233,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.editResend, async (e, messageId: string, newText: string, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.editResend, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.editResend);
     const conversationLoop = group.loop;
     if (typeof messageId !== "string" || messageId.length === 0) return { ok: false, error: "invalid-message-id" };
     if (typeof newText !== "string" || newText.trim().length === 0) return { ok: false, error: "empty-text" };
@@ -1246,7 +1275,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return { ok: false, error: "invalid-input" };
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.getTurnReview);
     const mutation = group.turns.trackSessionMutation(async (): Promise<TurnReviewResult> => {
       const loop = group.loop;
       if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
@@ -1263,7 +1292,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown, mode: unknown = "conversation") => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.rewindTo, e); return UNAUTHORIZED_FRAME; }
     if (!isRewindMode(mode)) return { ok: false, error: "invalid-rewind-mode" };
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.rewindTo);
     const conversationLoop = group.loop;
     if (typeof messageId !== "string" || messageId.length === 0) return { ok: false, error: "invalid-message-id" };
     const mutation = group.turns.trackSessionMutation(async () => {
@@ -1310,7 +1339,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.fork, async (e, messageId: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.fork, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.fork);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
       const current = conversationLoop.getHistory().getMessages() as GenericMessage[];
@@ -1347,6 +1376,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         ...(currentMeta?.summaryPreamble ? { summaryPreamble: currentMeta.summaryPreamble } : {}),
       });
       const loaded = await conversationLoop.loadSession(newId);
+      if (loaded) registerGroupApprovalOwner(group);
       if (loaded && conversationLoop.getSessionKind() === "main" && isPrimaryGroup(group)) {
         await memoryManager.markMainActiveResume(newId).catch((err: unknown) => {
           log.warn("chat:fork markMainActiveResume failed: %s", (err as Error).message);
@@ -1358,7 +1388,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.chat.continueLastUser, async (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.continueLastUser, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.continueLastUser);
     const p = payload as { sessionId?: unknown };
     if (typeof p?.sessionId !== "string") return { ok: false, error: "invalid-args" };
     if (p.sessionId !== group.loop.getSessionId()) return { ok: false, error: "session-mismatch" };
@@ -1371,7 +1401,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     chatGroupId?: unknown,
   ) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.retryEffort, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.retryEffort);
     const turn = group.turns.tryStreamTurn(async (transport) => {
       const prevLlm = settingsService.get("llm");
       const provider = prevLlm.provider;
@@ -1627,7 +1657,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.enterCheckpointView, (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.enterCheckpointView, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.enterCheckpointView);
     const p = payload as { sessionId?: unknown; compactNum?: unknown };
     if (typeof p?.sessionId !== "string" || !Number.isSafeInteger(p?.compactNum) || (p.compactNum as number) < 0) {
       return { error: "invalid-args" };
@@ -1642,14 +1672,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.chat.exitCheckpointView, (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.exitCheckpointView, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.exitCheckpointView);
     group.loop.exitViewMode();
     return { ok: true };
   });
 
   ipcMain.handle(CHANNELS.chat.branchFromCheckpoint, async (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.branchFromCheckpoint, e); return UNAUTHORIZED_FRAME; }
-    const group = groupOf(e, chatGroupId);
+    const group = groupOf(e, chatGroupId, CHANNELS.chat.branchFromCheckpoint);
     const p = payload as { sessionId?: unknown; compactNum?: unknown };
     if (typeof p?.sessionId !== "string" || !Number.isSafeInteger(p?.compactNum) || (p.compactNum as number) < 0) {
       return { error: "invalid-args" };
@@ -1914,7 +1944,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.chat.getVerbatimToolResult, e);
         return null;
       }
-      const group = groupOf(e, chatGroupId);
+      const group = groupOf(e, chatGroupId, CHANNELS.chat.getVerbatimToolResult);
       if (sessionId !== group.loop.getSessionId()) return null;
       const messages = group.loop.getHistory().getMessages() as GenericMessage[];
       const msg = messages.find(
@@ -1946,7 +1976,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.chat.getSubAgentTranscript, e);
         return { ok: false, error: "unauthorized-frame" };
       }
-      const group = groupOf(e, chatGroupId);
+      const group = groupOf(e, chatGroupId, CHANNELS.chat.getSubAgentTranscript);
       const p = (payload ?? {}) as Record<string, unknown>;
       const originSessionId = typeof p.originSessionId === "string" && isValidSessionId(p.originSessionId)
         ? p.originSessionId

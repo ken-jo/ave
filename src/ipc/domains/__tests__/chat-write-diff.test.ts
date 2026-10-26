@@ -1,8 +1,7 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler, nativeChatFrameEvent as hostFrameEvent } from "../../../__tests__/support/native-chat-window.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   foreignFrameEvent,
-  hostFrameEvent,
-  invokeRegisteredHandler,
   invokeRegisteredHandlerWithEvent,
 } from "../../../__tests__/test-helpers.js";
 import type { MemoryCaptureService } from "../../../memory/memory-capture-service.js";
@@ -137,6 +136,7 @@ async function setupHandlers(loop: ReturnType<typeof makeConversationLoop>) {
   vi.clearAllMocks();
   const { registerChatHandlers } = await import("../chat.js");
   const deps = makeMinimalDeps(loop);
+  await installNativeChatWindow(deps.getMainWindow());
   registerChatHandlers(deps as any);
   return deps;
 }
@@ -256,6 +256,7 @@ describe("ave:memory:long-term:refresh", () => {
     deps.memoryConsolidationService = { refresh };
     handlers.clear();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow(deps.getMainWindow());
     registerChatHandlers(deps);
 
     const result = await invokeRegisteredHandlerWithEvent(handlers, CHANNEL, hostFrameEvent());
@@ -279,6 +280,7 @@ describe("ave:memory:long-term:refresh", () => {
     deps.memoryConsolidationService = { refresh };
     handlers.clear();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow(deps.getMainWindow());
     registerChatHandlers(deps);
 
     await invokeRegisteredHandlerWithEvent(handlers, CHANNEL, hostFrameEvent());
@@ -302,6 +304,7 @@ describe("ave:memory:long-term:refresh", () => {
     unavailableDeps.memoryConsolidationService = { refresh };
     handlers.clear();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow();
     registerChatHandlers(unavailableDeps);
 
     expect(await invokeRegisteredHandlerWithEvent(handlers, CHANNEL, hostFrameEvent())).toEqual({
@@ -317,6 +320,7 @@ describe("ave:memory:long-term:refresh", () => {
     deps.memoryConsolidationService = { refresh };
     handlers.clear();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow(deps.getMainWindow());
     registerChatHandlers(deps);
 
     const result = await invokeRegisteredHandlerWithEvent(handlers,
@@ -473,6 +477,7 @@ describe("ave:memory:entries:save review gate", () => {
   ): Promise<void> {
     handlers.clear();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow(deps.getMainWindow());
     registerChatHandlers(deps as any);
   }
 

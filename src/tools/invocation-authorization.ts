@@ -49,6 +49,7 @@ import {
 import {
   dispatchReviewerForHeadless as dispatchReviewerForHeadlessImpl,
   dispatchReviewerForInteractiveAuto as dispatchReviewerForInteractiveAutoImpl,
+  reviewerInvocationId,
 } from "./pipeline/reviewer-dispatch.js";
 import { returnUserAbort, type UserAbortDeps,
 } from "./pipeline/invocation-context.js";
@@ -159,6 +160,8 @@ export interface AuthorizationStageContext {
 
 export interface AuthorizedInvocation {
   outcome: "authorized";
+  /** True only after this action consumed verified native human consent. */
+  humanApproved: boolean;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -211,6 +214,9 @@ export async function authorizeToolInvocation(
     pluginOperationPrincipal,
   } = context;
   let { permissionResult, hostShellApprovalDecision } = context;
+  // Policy, remembered and reviewer receipts are automatic authority. Only
+  // a native manual answer below establishes fresh human consent.
+  let humanApproved = false;
   // The PermissionManager's own layer-3 allow-rule decision that authorized an
   // explicit host request, carried by identity to the permit mint.
   let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
@@ -984,6 +990,7 @@ export async function authorizeToolInvocation(
           invocationPermissionContext,
           approvalCacheKey,
           sandboxAttestation,
+          reviewerInvocationId(meta),
           tool.mcpServerId,
           tool.workerId,
           tool.pluginId,
@@ -1217,7 +1224,7 @@ export async function authorizeToolInvocation(
         if (!headlessReviewerRoute) {
           const headlessDeny: PermissionCheckResult = {
             decision: "deny",
-            reason: `headless explicit approval unavailable: ${permissionResult.reason}`,
+            reason: `headless explicit approval unavailable (no approval surface): ${permissionResult.reason}`,
             layer: permissionResult.layer,
           };
           const msg = t("be_executor.permBlockHeadlessDeny", {
@@ -1436,6 +1443,7 @@ export async function authorizeToolInvocation(
         invocationPermissionContext,
         approvalCacheKey,
         sandboxAttestation,
+          reviewerInvocationId(meta),
         tool.mcpServerId,
         tool.workerId,
         tool.pluginId,
@@ -1647,7 +1655,8 @@ export async function authorizeToolInvocation(
           source: source as ToolSource,
           createdAt: Date.now(),
           ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
-          isReadOnly: deriveApprovalIsReadOnly({
+          isReadOnly: permissionResult.forceModal === true && services.permissionManager?.isAutomatedApprovalPaused(sessionId)
+            ? false : deriveApprovalIsReadOnly({
             invocationCategory,
             approvalReasonPrefix,
             remoteControllerAuthority:
@@ -1872,6 +1881,8 @@ export async function authorizeToolInvocation(
         // Host-derived from the exact decision object the gate returned — a
         // structural lookalike arriving from anywhere else is not in that map,
         // so nothing a renderer or a child can build reads as a parent answer.
+        const manuallyApproved = sessionId !== undefined &&
+          services.permissionManager?.resumeAutomatedApproval(sessionId, decision) === true;
         const parentAnswer = parentAdjudicationOf(decision);
         if (parentAnswer !== undefined) {
           emitPermissionReview(callbacks, {
@@ -1979,6 +1990,7 @@ export async function authorizeToolInvocation(
         // silently widen "this tool + this input" into tool-wide permission.
         // Out-of-directory approvals are handled earlier by invocation-runner
         // and retain their explicit reviewed-parent persistence contract.
+        humanApproved = manuallyApproved;
         permissionResult = {
           decision: "allow",
           // Who actually answered. The deny branch above already says this;
@@ -2062,6 +2074,7 @@ export async function authorizeToolInvocation(
 
   return {
     outcome: "authorized",
+    humanApproved,
     permissionResult,
     hostShellApprovalDecision,
     // Only while no later lane replaced the rule decision: a reviewer, hook or
