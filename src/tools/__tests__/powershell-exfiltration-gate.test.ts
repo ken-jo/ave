@@ -72,7 +72,7 @@ describe("shell floors cover powershell in allow mode", () => {
   it.each([
     ["Get-ChildItem", true],
     ["Invoke-WebRequest https://example.com -OutFile page.html", true],
-    ["git status", true], ["dotnet build", false], ["cargo test", false],
+    ["git status", false], ["dotnet build", false], ["cargo test", false],
     ["Test-Path src", true],
     ["Get-Content notes.txt | Select-String TODO", true],
     ["Set-Clipboard 'hello'", false],

@@ -103,14 +103,16 @@ files supplied with `-f`/`--file`, exclusion files, and redirection targets
 remain subject to direct path checks. A substitution makes the request
 unproven rather than supplying a value to later analysis.
 
-For `git commit`, the operand classifier in
+For `git commit`, the retained operand classifier in
 [shell-path-policy.ts](../../src/tools/shell-path-policy.ts) recognizes message
 values as data, including attached option values. Path-like text in a literal
 message does not request filesystem access. Directory options, file-backed
 messages, templates and pathspec files retain path checks. Unsupported option
 arity is refused rather than used to infer later operand roles. Classification
 preserves the original command bytes. Redirection targets retain their direct
-path checks; substitutions make the request unproven.
+path checks; substitutions make the request unproven. These operand roles do
+not supply execution proof: Git commands remain unproven under the closed
+command catalogue below.
 
 Literal dollars and percent markers remain exact filename bytes when the parser
 classifies them as literal text. Active parameter, environment and command
@@ -268,6 +270,14 @@ complete grammar and its refusal tests, never by adding a denylist exception.
 If any stage is unproven, the whole command input is unproven; a proven sibling
 does not leave behind a separately reusable allow result.
 
+Option arity is explicit in the registered grammar. Required-value options may
+consume the following word when no attached value is present. An optional-value
+option never consumes the following word: a long option accepts a value only
+as `--option=value`, and a registered short option accepts it only as a
+same-word suffix. A bare optional-value option leaves every later word for
+ordinary option or operand parsing. An unknown following option therefore
+remains unproven instead of becoming an optional value.
+
 Command resolution is a finite grammar context, separate from the input quoting
 dialect. A direct shell command may use its registered builtin or cmdlet grammar.
 External delegation through `env`, a package runner or Bash `exec` permanently
@@ -280,8 +290,7 @@ The grammar's `changesState` flag is a conservative command-family property,
 not an inference about this invocation's effects. For families that can write
 through implicit or alternate modes, every admitted form is possible-write. The
 current family-level set covers all positively parsed native `curl`, `wget`,
-`sort` and `uniq` forms, plus `git branch`, package-task, script/module
-interpreter and `make` forms,
+`sort` and `uniq` forms, plus package-task and script/module interpreter forms,
 including read-looking forms with no write option. Therefore any such form in a
 multi-command input makes the whole input unproven. The authoritative flags and
 closed argv grammars live in
@@ -370,13 +379,24 @@ callbacks, command names built from output, and commands whose meaning depends
 on a file or cwd changed earlier in the same input. The floor does not simulate
 any of these constructs to recover an allow result.
 
-The callback-capable `git rebase`, `git grep` and `git submodule` families
-are conservatively `unproven` as a whole, including their ordinary operations.
-The pass identifies the subcommand after supported global options and wrappers;
-it neither binds callback options nor parses their payloads. These commands
-require per-call approval even with an exact rule. Other literal Git families,
-including `git commit -m 'message'`, retain ordinary exact-rule eligibility only
-when their registered subcommand grammar consumes every option and operand.
+`make` has no positive command grammar. Its variable assignments, evaluation
+options and build files can select executable code, so even a literal invocation
+is unproven. It has no literal-evaluation exact-rule exception.
+
+Git also has no positive command grammar. Direct and argv-delegated Git commands
+are unproven, including ordinary status, diff, log, show and commit forms, wrappers around
+them, and invocations containing `--no-pager`, `--no-ext-diff` or
+`--no-textconv`. The pass does not inspect configuration or environment to
+prove pagers, external diff, text conversion, filters, filesystem-monitor
+commands or hooks disabled. It does not interpret `-c` configuration, callback
+options or payloads to recover an allow. A quoted commit message remains
+literal data for raw-key identity and path-role classification, but that fact
+does not make `git commit -m 'message'` exact-rule eligible. All `make` and Git
+requests require per-call approval in the foreground and deny headless; neither
+exact nor broad allows can upgrade them. Supporting any of these forms requires
+a separate complete grammar review. Literal evaluator payloads retain the
+separate opaque-payload exact-rule exception above; the pass does not inspect
+their contents to discover a nested command.
 
 Catalogued package-runner forms remain rule-eligible only when the runner grammar
 consumes its complete outer argv and the delegated command range also satisfies

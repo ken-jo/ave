@@ -292,8 +292,9 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("npx prettier src", rules({ deny: ["Bash(prettier *)"] })).decision).toBeNull();
   });
 
-  it("keeps existing nonrunner and wrapper allow-rule behavior", () => {
-    expect(evaluateShellRules("git status", rules({ allow: ["Bash(git *)"] })).decision).toBe("allow");
+  it("requires positive nonrunner and wrapper proof before allow rules", () => {
+    expect(evaluateShellRules("git status", rules({ allow: ["Bash(git *)"] })).decision).toBeNull();
+    expect(evaluateShellRules("printf ready", rules({ allow: ["Bash(printf *)"] })).decision).toBe("allow");
     const pattern = "Bash(env A=1 npm *)";
     expect(evaluateShellRules("env A=1 npm test", rules({ allow: [pattern] })).decision).toBeNull();
     expect(evaluateShellRules("env A=1 npm test", rules({ ask: [pattern] })).decision).toBe("ask");
@@ -356,8 +357,11 @@ describe("AST shell matcher", () => {
 
   it("requires every subcommand of a compound command to be covered", () => {
     const set = rules({ allow: ["Bash(git status *)", "Bash(ls *)"] });
-    expect(evaluateShellRules("git status && ls -la | ls", set)).toMatchObject({ decision: "allow" });
-    expect(evaluateShellRules("git status; ls || git status -s", set).decision).toBe("allow");
+    expect(evaluateShellRules("git status && ls -la | ls", set).decision).toBeNull();
+    expect(evaluateShellRules("git status; ls || git status -s", set).decision).toBeNull();
+    const known = rules({ allow: ["Bash(printf *)", "Bash(ls *)"] });
+    expect(evaluateShellRules("printf ready && ls -la | ls", known).decision).toBe("allow");
+    expect(evaluateShellRules("printf ready; ls || printf other", known).decision).toBe("allow");
     expect(evaluateShellRules("git status && curl https://x.test", set).decision).toBeNull();
     expect(evaluateShellRules("(git status) & curl x", set).decision).toBeNull();
     expect(evaluateShellRules("for f in a b; do ls $f; done", set).decision).toBeNull();

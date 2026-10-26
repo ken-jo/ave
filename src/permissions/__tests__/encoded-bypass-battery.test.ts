@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { canonicalRuleSpecifier } from "../rules/rule-specifier.js";
 import * as shellPolicy from "../rules/shell-prefix-policy.js";
 import * as powerShellPolicy from "../rules/powershell-exfiltration.js";
 import * as shellFloors from "../rules/shell-exfiltration.js";
@@ -106,7 +107,7 @@ const COMPOSED_CASES = ([
 
 const UTF16_DATA_CASES = ([
   { name: "UTF-16LE payload as a print argument", command: `printf %s ${DESTRUCTIVE_PAYLOAD}`, allowBody: `printf %s ${DESTRUCTIVE_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
-  { name: "UTF-16LE payload inside a commit message", command: `git commit -m 'snapshot ${DESTRUCTIVE_PAYLOAD}'`, allowBody: "git commit *", decodedScript: DESTRUCTIVE_SCRIPT },
+  { ...EXPECTED_UNPROVEN, name: "UTF-16LE payload inside a commit message", command: `git commit -m 'snapshot ${DESTRUCTIVE_PAYLOAD}'`, allowBody: "git commit *", decodedScript: DESTRUCTIVE_SCRIPT },
   { ...EXPECTED_UNPROVEN, name: "UTF-16LE payload inside quoted data passed through a wrapper", command: `env printf %s '${INNER_COMMAND}'`, allowBody: "env *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE Base64 run inside a larger data token", command: `printf %s 'data:${DESTRUCTIVE_PAYLOAD}:end'`, allowBody: "printf *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE payload decoding to a benign script", command: `printf %s ${encodeScript("Get-Date")}`, allowBody: `printf %s ${encodeScript("Get-Date")}`, decodedScript: "Get-Date" },
@@ -288,6 +289,31 @@ describe("positive command proof boundaries", () => {
   });
 });
 
+const EXECUTABLE_OPERAND_CASES: readonly EncodedCase[] = ([
+  { name: "build-tool immediate variable evaluation", command: "make -f /dev/null 'X:=$(shell printf make-inline-probe >&2)'" },
+  { name: "history formatter followed by external diff", command: "git show --pretty --ext-diff 567197b83 -- src/permissions/rules/shell-argument-grammar.ts" },
+  { name: "build-tool optional jobs followed by evaluation", command: "make -j '--eval=X:=$(shell printf make-eval-probe >&2)'" },
+] as const).flatMap((fixture) => (["bash", "powershell"] as const).map((dialect) => ({
+  ...EXPECTED_UNPROVEN,
+  ...fixture,
+  dialect,
+  allowBody: fixture.command,
+})));
+
+describe("executable operands and optional argument boundaries", () => {
+  it.each(EXECUTABLE_OPERAND_CASES)("$dialect: $name", (fixture) => {
+    requireLaneBehavior(fixture);
+    const kind = fixture.dialect === "bash" ? "Bash" : "PowerShell";
+    manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `${kind}(${fixture.command})`, action: "allow" })]);
+    for (const sandboxed of [false, true]) {
+      expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed))
+        .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
+        .toMatchObject({ decision: "deny", layer: 2 });
+    }
+  });
+});
+
 const CARRIER_AND_DATA_CASES: readonly EncodedCase[] = [
   ...ENCODED_CASES,
   ...COMPOSED_CASES,
@@ -336,7 +362,7 @@ const VISIBLE_CODE_CASES: readonly (Omit<EncodedCase, "dialect"> & { readonly po
   { ...EXPECTED_UNPROVEN, name: "literal code delegated by file discovery", command: "find . -maxdepth 0 -exec sh -c 'printf ready' ';'", allowBody: "find *" },
   { ...EXPECTED_UNPROVEN, name: "literal code delegated through stdin substitution", command: "xargs -I X env X -c 'printf ready'", allowBody: "xargs *" },
   { ...EXPECTED_LITERAL_EVALUATION, powershellExactEligible: false, name: "literal runner code", command: "npm exec --call='printf ready'", allowBody: "npm exec *" },
-  { ...EXPECTED_STATIC, name: "literal task invocation", command: "make build", allowBody: "make *" },
+  { ...EXPECTED_UNPROVEN, name: "literal task invocation", command: "make build", allowBody: "make *" },
   { ...EXPECTED_STATIC, name: "literal interpreter script file", command: "python3 scripts/build.py", allowBody: "python3 *" },
   { ...EXPECTED_STATIC, name: "literal shell script file", command: "bash scripts/build.sh", allowBody: "bash *" },
   { ...EXPECTED_UNPROVEN, name: "literal script sourcing", command: "source scripts/build.sh", allowBody: "source *" },
@@ -455,13 +481,13 @@ const LONG_UTF8_DATA = "cmVjb3JkIGZpeHR1cmUgY2hhbmdlcw==";
 const LITERAL_COMMANDS = [
   { ...EXPECTED_STATIC, name: "a Base64 hash argument", command: `printf %s ${BASE64_SHA256}` },
   { ...EXPECTED_STATIC_NO_EXACT, name: "a synthetic JWT argument", command: `printf %s ${DATA_JWT}` },
-  { ...EXPECTED_STATIC, name: "a plain commit message", command: "git commit -m 'record fixture changes'" },
+  { ...EXPECTED_UNPROVEN, name: "a plain commit message", command: "git commit -m 'record fixture changes'" },
   { ...EXPECTED_UNPROVEN, name: "a literal distribution directory listing", command: "wsl ls" },
   { ...EXPECTED_LITERAL_EVALUATION, name: "a literal command-string invocation", command: "pwsh -Command Get-Date" },
-  { ...EXPECTED_STATIC, name: "a hexadecimal hash argument", command: `git show ${SHA256_HEX}` },
+  { ...EXPECTED_UNPROVEN, name: "a hexadecimal hash argument", command: `git show ${SHA256_HEX}` },
   { ...EXPECTED_STATIC, name: "UTF-8 Base64 passed as ordinary data", command: `printf %s ${UTF8_DATA}` },
   { ...EXPECTED_STATIC, name: "longer UTF-8 Base64 passed as ordinary data", command: `printf %s ${LONG_UTF8_DATA}` },
-  { ...EXPECTED_STATIC, name: "a commit message containing UTF-8 Base64 text", command: `git commit -m 'snapshot ${LONG_UTF8_DATA}'` },
+  { ...EXPECTED_UNPROVEN, name: "a commit message containing UTF-8 Base64 text", command: `git commit -m 'snapshot ${LONG_UTF8_DATA}'` },
   { ...EXPECTED_STATIC, name: "a wrapper passing plain literal text as data", command: "env printf %s 'record fixture changes'" },
   { ...EXPECTED_STATIC, name: "an encoded-looking flag passed as print data", command: "printf %s -enc 'not-base64!'" },
   { ...EXPECTED_STATIC, name: "a slash encoded-looking flag passed as print data", command: "printf %s /enc 'not-base64!'" },
@@ -497,23 +523,32 @@ describe("non-literal argument rule proposals", () => {
 });
 
 describe.each(["bash", "powershell"] as const)("quoted literal rule persistence (%s)", (dialect) => {
+  it("does not remember quoted text without a command grammar", () => {
+    const kind = dialect === "bash" ? "Bash" : "PowerShell";
+    for (const command of ["git commit -m 'record fixture changes'", 'git commit -m "record fixture changes"', "git commit -m 'different message'"]) {
+      expect(canonicalRuleSpecifier(`${kind}(${command})`)).toBe(`${kind}(${command})`);
+      requireLaneBehavior({ ...EXPECTED_UNPROVEN, name: "quoted command without a grammar", command, dialect, allowBody: command });
+    }
+  });
+
   it("saves raw quoted words without sharing another quote style", async () => {
-    const command = "git commit -m 'record fixture changes'";
+    const command = "printf %s 'record fixture changes'";
     const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
     const kind = dialect === "bash" ? "Bash" : "PowerShell";
-    expect(card.exactRule).toBe(`${kind}(git commit -m 'record fixture changes')`);
+    expect(card.exactRule).toBe(`${kind}(printf %s 'record fixture changes')`);
     await manager.addRulePersist({ pattern: card.exactRule!, action: "allow" }, { kind: "user" });
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
-    expect(checkShellPermission(manager, cwd, SESSION_ID, 'git commit -m "record fixture changes"', dialect, false)).toMatchObject({ decision: "ask", layer: 6 });
-    expect(checkShellPermission(manager, cwd, SESSION_ID, "git commit -m 'different message'", dialect, false).decision).toBe("ask");
+    expect(checkShellPermission(manager, cwd, SESSION_ID, 'printf %s "record fixture changes"', dialect, false)).toMatchObject({ decision: "ask", layer: 6 });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, "printf %s 'different message'", dialect, false).decision).toBe("ask");
   });
 
   it.each([
-    { name: "variable expansion", command: 'git commit -m "$MESSAGE"' },
-    { name: "command expansion", command: 'git commit -m "$(echo ready)"' },
-    { name: "escape expansion", command: dialect === "bash" ? 'git commit -m "line\\n"' : 'git commit -m "line`n"' },
-  ])("keeps $name unproven inside quotes", ({ name, command }) => {
+    { name: "variable expansion", command: 'git commit -m "$MESSAGE"', knownCommand: 'printf %s "$MESSAGE"' },
+    { name: "command expansion", command: 'git commit -m "$(echo ready)"', knownCommand: 'printf %s "$(echo ready)"' },
+    { name: "escape expansion", command: dialect === "bash" ? 'git commit -m "line\\n"' : 'git commit -m "line`n"', knownCommand: dialect === "bash" ? 'printf %s "line\\n"' : 'printf %s "line`n"' },
+  ])("keeps $name unproven inside quotes", ({ name, command, knownCommand }) => {
     requireLaneBehavior({ ...EXPECTED_UNPROVEN, name, command, dialect, allowBody: "git commit *" });
+    requireLaneBehavior({ ...EXPECTED_UNPROVEN, name, command: knownCommand, dialect, allowBody: "printf *" });
   });
 });
 

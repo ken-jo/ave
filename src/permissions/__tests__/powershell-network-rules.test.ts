@@ -223,10 +223,14 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
 
   it("keeps an allow literal: a pathed or .exe spelling is not the allowed command", () => {
     manager.setRules(([{ pattern: "PowerShell(git status)", action: "allow" }, { pattern: "PowerShell(gci src)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("git status", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("git status", false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(powershell("git.exe status", false)).toMatchObject({ decision: "ask" });
     expect(powershell("C:\\Git\\bin\\git.exe status", false)).toMatchObject({ decision: "ask" });
     expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "ask" });
+    manager.setRules(([{ pattern: "PowerShell(printf ready)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    expect(powershell("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("printf.exe ready", false)).toMatchObject({ decision: "ask" });
+    expect(powershell("C:\\tools\\printf.exe ready", false)).toMatchObject({ decision: "ask" });
   });
 });
 

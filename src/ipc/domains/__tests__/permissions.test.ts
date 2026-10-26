@@ -1657,10 +1657,10 @@ describe("state-mutating permission channels refuse non-host frames", () => {
 
 describe("rules recorded from live approval cards", () => {
   // Owner 2026-10-25 (unified approval card): the renderer names the choice's action and scope and, only when edited, the rule text; the host validates it against the card's own grammar and the live request.
-  const exactRule = "Bash(git status --short)";
+  const exactRule = "Bash(printf %s ready)";
   const body = { requestId: "live-shell", args: "{}", scope: "persistent", decision: "allow", verdictAtApproval: "medium", nlJustification: null, rule: { action: "allow", scope: "project" } };
   const shellRule = { dialect: "bash" as const, exactRule, denyRule: exactRule, denyAllowed: true, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
-  const live = { shellRule, snapshotArgs: { command: "git status --short" } };
+  const live = { shellRule, snapshotArgs: { command: "printf %s ready" } };
   const pm = (deps: Awaited<ReturnType<typeof setup>>["deps"]) => deps.conversationLoop.permissionManager;
 
   it("writes only the host's exact project rule and never also records an exact decision", async () => {
@@ -1691,24 +1691,24 @@ describe("rules recorded from live approval cards", () => {
 
   it("stores an edited exact rule in canonical spelling without a warning", async () => {
     const { deps } = await setup(live);
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always", pattern: "  Bash(git  status --short) " } })).toEqual({ ok: true });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always", pattern: "  Bash(printf  %s ready) " } })).toEqual({ ok: true });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
   });
 
   it("stores an edited wildcard allow and warns that it applies only to sandboxed runs", async () => {
     const { deps } = await setup(live);
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(git status *)" } }))
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git status *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });
 
   it.each([
     ["Bash(git push)", "rule-does-not-match"],
-    ["PowerShell(git status --short)", "rule-does-not-match"],
+    ["PowerShell(printf %s ready)", "rule-does-not-match"],
     ["Network(example.com)", "rule-does-not-match"],
     ["Bash(git status; rm -rf /)", "invalid-rule"],
-    ["git status --short", "invalid-rule"],
+    ["printf %s ready", "invalid-rule"],
     ["Bash(*)", "invalid-rule"],
   ])("refuses an edited allow %s that is not this card's rule for this command (%s)", async (pattern, error) => {
     const { deps } = await setup(live);
@@ -1725,7 +1725,17 @@ describe("rules recorded from live approval cards", () => {
 
   it("saves an edited wildcard deny with no warning", async () => {
     const { deps } = await setup(live);
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always", pattern: "Bash(git *)" } })).toEqual({ ok: true });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always", pattern: "Bash(printf *)" } })).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf *)", action: "deny" }, { kind: "user" });
+  });
+
+  it("keeps a narrowing Git deny saveable when the command has no allow proof", async () => {
+    const { deps } = await setup({ ...live, snapshotArgs: { command: "git status --short" }, shellRule: {
+      ...shellRule, denyRule: "Bash(git status --short)", exactRule: null, persistentAllowed: false, sessionAllowed: false,
+    } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: {
+      action: "deny", scope: "always", pattern: "Bash(git *)",
+    } })).toEqual({ ok: true });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git *)", action: "deny" }, { kind: "user" });
   });
 
@@ -1775,6 +1785,21 @@ describe("rules recorded from live approval cards", () => {
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...record, rule: { action: "allow", scope: ruleScope, pattern: exactRule } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
     expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
     expect(pm(deps).addSessionRule).not.toHaveBeenCalled();
+  });
+
+  it.each(["git status --short", "make build"])("cannot repair the unproven live tool %s with an edited allow", async (command) => {
+    const { deps } = await setup({ ...live, snapshotArgs: { command }, shellRule: {
+      ...shellRule, exactRule: null, persistentAllowed: false, sessionAllowed: false,
+    } });
+    for (const ruleScope of ["session", "project", "always"] as const) {
+      const scope = ruleScope === "session" ? "session" : "persistent";
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope, rule: {
+        action: "allow", scope: ruleScope, pattern: `Bash(${command})`,
+      } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    }
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    expect(pm(deps).addSessionRule).not.toHaveBeenCalled();
+    expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
   it("refuses Allow for session without a conversation", async () => {

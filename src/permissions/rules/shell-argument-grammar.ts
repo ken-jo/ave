@@ -11,6 +11,7 @@ export interface StaticArgvWork { staticTokens: number; staticChars: number }
 interface ArgumentGrammar {
   flags?: readonly string[];
   values?: readonly string[];
+  optionalValues?: readonly string[];
   minimum?: number;
   maximum?: number;
   changesState?: boolean;
@@ -29,7 +30,7 @@ const NATIVE_GRAMMARS: Readonly<Record<string, ArgumentGrammar>> = Object.freeze
   tail: { flags: ["-q", "-v", "-f", "-F"], values: ["-n", "-c", "--lines", "--bytes"] },
   base64: { flags: ["-d", "-D", "-i", "--decode", "--ignore-garbage"], values: ["-w", "--wrap"] },
   base32: { flags: ["-d", "--decode", "--ignore-garbage"], values: ["-w", "--wrap"] },
-  ls: { flags: ["-a", "-A", "-l", "-h", "-R", "-L", "-P", "-d", "-t", "-r", "-S", "-1", "--all", "--recursive"], values: ["--color", "--sort"] },
+  ls: { flags: ["-a", "-A", "-l", "-h", "-R", "-L", "-P", "-d", "-t", "-r", "-S", "-1", "--all", "--recursive"], values: ["--sort"], optionalValues: ["--color"] },
   grep: { flags: ["-i", "-v", "-n", "-l", "-L", "-r", "-R", "-h", "-H", "-q", "-F", "-E", "-P", "-w", "-x", "--recursive", "--dereference-recursive"], values: ["-e", "-f", "-m", "-A", "-B", "-C", "--regexp", "--file"], required: [["#0", "-e", "--regexp", "-f", "--file"]] },
   rg: { flags: ["-i", "-s", "-S", "-v", "-n", "-l", "-L", "-q", "-F", "-w", "-x", "-u", "--files", "--hidden", "--follow", "--no-ignore", "--line-number", "--files-with-matches"], values: ["-r", "-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "--glob", "--iglob", "--type", "--regexp", "--file"], required: [["#0", "-e", "--regexp", "-f", "--file", "--files"]] },
   sort: { flags: ["-r", "-n", "-u", "-f", "-b", "-h"], values: ["-k", "-t", "-o"], changesState: true },
@@ -42,24 +43,8 @@ const NATIVE_GRAMMARS: Readonly<Record<string, ArgumentGrammar>> = Object.freeze
   touch: { flags: ["-a", "-m", "-c", "-h"], values: ["-r", "-t", "-d"], minimum: 1, changesState: true },
   tee: { flags: ["-a", "-i", "--append"], changesState: true },
   rm: { flags: ["-r", "-R", "-f", "-i", "-v", "-d", "--recursive", "--force"], minimum: 1, changesState: true },
-  make: { flags: ["-n", "--dry-run", "-s", "--silent"], values: ["-C", "-f", "-j", "--directory", "--file", "--jobs"], changesState: true },
   curl: { flags: ["-s", "-S", "-f", "-L", "-k", "-v", "-i", "-I", "-N", "-q", "-g", "--silent", "--show-error", "--fail", "--location", "--insecure", "--head"], values: ["-X", "-H", "-d", "-F", "-T", "-K", "-o", "-u", "-w", "--request", "--header", "--proxy-header", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--upload-file", "--config", "--output", "--user", "--write-out", "--url", "--proxy", "--connect-timeout", "--max-time"], minimum: 1 },
   wget: { flags: ["-q", "-c", "--quiet", "--continue"], values: ["-O", "-o", "--output-document", "--output-file", "--post-file", "--body-file", "--post-data", "--body-data", "--header"], minimum: 1, changesState: true },
-});
-const GIT_GRAMMARS: Readonly<Record<string, ArgumentGrammar>> = Object.freeze({
-  status: { flags: ["-s", "-b", "--short", "--branch", "--porcelain", "--ignored"], values: ["--untracked-files"] },
-  diff: { flags: ["--cached", "--staged", "--stat", "--name-only", "--name-status", "--check", "--color", "--no-color", "-w", "--quiet"], values: ["--diff-filter"] },
-  log: { flags: ["--oneline", "--stat", "--graph", "--all", "--decorate", "--no-decorate"], values: ["-n", "--max-count", "--format", "--pretty", "--since", "--until"] },
-  show: { flags: ["--stat", "--name-only", "--name-status"], values: ["--format", "--pretty"] },
-  add: { flags: ["-A", "-u", "-f", "--all", "--update", "--force"], changesState: true },
-  commit: { flags: ["-a", "--all", "--amend", "--no-edit", "--allow-empty", "--signoff", "-s", "--no-verify"], values: ["-m", "--message", "-F", "--file", "--author"], changesState: true },
-  fetch: { flags: ["--all", "--tags", "--no-tags", "--dry-run"], changesState: true },
-  pull: { flags: ["--ff-only", "--no-rebase"], changesState: true },
-  clone: { flags: ["--bare", "--mirror", "--recursive"], values: ["--depth", "-b", "--branch"], minimum: 1, maximum: 2, changesState: true },
-  push: { flags: ["--dry-run", "--tags", "--set-upstream", "-u"], changesState: true },
-  branch: { flags: ["--list", "-a", "-r", "--all", "--remotes"], maximum: 1, changesState: true },
-  "rev-parse": { flags: ["--show-toplevel", "--git-dir", "--is-inside-work-tree", "--verify", "--short"] },
-  "ls-files": { flags: ["--cached", "--others", "--exclude-standard", "-z"] },
 });
 interface CmdletGrammar extends ArgumentGrammar { numeric?: readonly string[] }
 const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.freeze({
@@ -88,6 +73,54 @@ const PYTHON_PROGRAM = /^python(?:[23](?:\.\d+)?)?$/;
 const NODE_PROGRAMS = new Set(["node", "bun", "ruby", "perl"]);
 const BASH_BUILTINS = new Set([":", "true", "false", "pwd", "cd", "printf", "echo", "eval"]);
 
+function matchArgumentGrammar(argv: readonly (string | undefined)[], from: number, grammar: ArgumentGrammar, powershell: boolean, raw?: readonly string[], work?: StaticArgvWork): boolean {
+  const read = (index: number): string | undefined => {
+    const value = argv[index];
+    if (work !== undefined) { work.staticTokens += 1; work.staticChars += value?.length ?? 0; }
+    return value;
+  };
+  const isQuoted = (index: number): boolean => /^["']/.test(raw?.[index] ?? "");
+  const isParameter = (index: number, value: string): boolean => !isQuoted(index) && /^\p{Pd}/u.test(value);
+  let positions = 0, data = false;
+  const present = new Set<string>();
+  const flags = new Set(grammar.flags ?? []), values = new Set(grammar.values ?? []), optionalValues = new Set(grammar.optionalValues ?? []);
+  for (let index = from; index < argv.length; index += 1) {
+    const token = read(index);
+    if (token === undefined) return false;
+    if (powershell && !isQuoted(index) && /^\p{Pd}/u.test(token) && !token.startsWith("-")) return false;
+    if (!powershell && token === "--" && !data) { data = true; continue; }
+    if (data || token === "-" || !token.startsWith("-") || (powershell && isQuoted(index))) { present.add(`#${positions++}`); continue; }
+    if (powershell) {
+      const match = /^-([A-Za-z][A-Za-z0-9]*)(?::(.*))?$/.exec(token);
+      if (match === null) return false;
+      const name = match[1]!.toLowerCase(), attached = match[2];
+      if (flags.has(name)) { if (attached !== undefined && attached !== "$true" && attached !== "$false") return false; continue; }
+      if (!values.has(name)) return false;
+      present.add(name);
+      const value = attached ?? read(++index);
+      if (value === undefined || (attached === undefined && isParameter(index, value) && !/^-?\d+$/.test(value))) return false;
+      if ((grammar as CmdletGrammar).numeric?.includes(name) && !/^-?\d+$/.test(value)) return false;
+      continue;
+    }
+    const equal = token.indexOf("="), flag = equal < 0 ? token : token.slice(0, equal);
+    if (flags.has(flag)) { present.add(flag); if (equal >= 0) return false; continue; }
+    if (optionalValues.has(flag)) { present.add(flag); continue; }
+    if (values.has(flag)) { present.add(flag); if (equal < 0 && read(++index) === undefined) return false; continue; }
+    if (token.startsWith("--")) return false;
+    let accepted = token.length > 1;
+    for (let offset = 1; offset < token.length; offset += 1) {
+      const short = `-${token[offset]}`;
+      if (optionalValues.has(short)) { present.add(short); break; }
+      if (values.has(short)) { present.add(short); if (offset + 1 === token.length && read(++index) === undefined) return false; break; }
+      if (!flags.has(short)) { accepted = false; break; }
+      present.add(short);
+    }
+    if (!accepted) return false;
+  }
+  return positions >= (grammar.minimum ?? 0) && positions <= (grammar.maximum ?? Number.POSITIVE_INFINITY)
+    && (grammar.required?.every((group) => group.some((name) => present.has(name))) ?? true);
+}
+
 export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: "bash" | "powershell", raw?: readonly string[], work?: StaticArgvWork): StaticArgvProof {
   const read = (index: number): string | undefined => {
     const value = argv[index];
@@ -106,43 +139,8 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
   if (encodedPowerShellExecutionReason(argv, raw) !== null) return UNPROVEN;
   const isQuoted = (index: number): boolean => /^["']/.test(raw?.[index] ?? "");
   const isParameter = (index: number, value: string): boolean => !isQuoted(index) && /^\p{Pd}/u.test(value);
-  function matchesOptions(from: number, grammar: ArgumentGrammar, powershell = false): boolean {
-    let positions = 0, data = false;
-    const present = new Set<string>();
-    const flags = new Set(grammar.flags ?? []), values = new Set(grammar.values ?? []);
-    for (let index = from; index < argv.length; index += 1) {
-      const token = read(index)!;
-      if (powershell && !isQuoted(index) && /^\p{Pd}/u.test(token) && !token.startsWith("-")) return false;
-      if (!powershell && token === "--" && !data) { data = true; continue; }
-      if (data || token === "-" || !token.startsWith("-") || (powershell && isQuoted(index))) { present.add(`#${positions++}`); continue; }
-      if (powershell) {
-        const match = /^-([A-Za-z][A-Za-z0-9]*)(?::(.*))?$/.exec(token);
-        if (match === null) return false;
-        const name = match[1]!.toLowerCase(), attached = match[2];
-        if (flags.has(name)) { if (attached !== undefined && attached !== "$true" && attached !== "$false") return false; continue; }
-        if (!values.has(name)) return false;
-        present.add(name);
-        const value = attached ?? read(++index);
-        if (value === undefined || (attached === undefined && isParameter(index, value) && !/^-?\d+$/.test(value))) return false;
-        if ((grammar as CmdletGrammar).numeric?.includes(name) && !/^-?\d+$/.test(value)) return false;
-        continue;
-      }
-      const equal = token.indexOf("="), flag = equal < 0 ? token : token.slice(0, equal);
-      if (flags.has(flag)) { present.add(flag); if (equal >= 0) return false; continue; }
-      if (values.has(flag)) { present.add(flag); if (equal < 0 && read(++index) === undefined) return false; continue; }
-      if (token.startsWith("--")) return false;
-      let accepted = token.length > 1;
-      for (let offset = 1; offset < token.length; offset += 1) {
-        const short = `-${token[offset]}`;
-        if (values.has(short)) { present.add(short); if (offset + 1 === token.length && read(++index) === undefined) return false; break; }
-        if (!flags.has(short)) { accepted = false; break; }
-        present.add(short);
-      }
-      if (!accepted) return false;
-    }
-    return positions >= (grammar.minimum ?? 0) && positions <= (grammar.maximum ?? Number.POSITIVE_INFINITY)
-      && (grammar.required?.every((group) => group.some((name) => present.has(name))) ?? true);
-  }
+  const matchesOptions = (from: number, grammar: ArgumentGrammar, powershell = false): boolean =>
+    matchArgumentGrammar(argv, from, grammar, powershell, raw, work);
   function program(token: string): string | undefined {
     if (/[\/\\]/.test(token)) return undefined;
     return process.platform === "win32" ? token.toLowerCase().replace(/\.exe$/, "") : token;
@@ -217,16 +215,6 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
       if (["test", "build", "install", "ci"].includes(verb ?? "")) return matchesOptions(at + 2, { flags: ["--no-audit", "--ignore-scripts", "--frozen-lockfile"] }) ? complete(true) : UNPROVEN;
       return UNPROVEN;
     }
-    if (name === "git") {
-      let cursor = at + 1;
-      while (read(cursor) === "-C" || read(cursor) === "--git-dir" || read(cursor) === "--work-tree") {
-        if (read(cursor + 1) === undefined) return UNPROVEN;
-        cursor += 2;
-      }
-      const verb = read(cursor) ?? "";
-      const grammar = Object.hasOwn(GIT_GRAMMARS, verb) ? GIT_GRAMMARS[verb] : undefined;
-      return grammar !== undefined && matchesOptions(cursor + 1, grammar) ? complete(grammar.changesState === true) : UNPROVEN;
-    }
     if (name === "printf") {
       let format = at + 1;
       if (read(format) === "--") format += 1;
@@ -299,4 +287,13 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
 export function _proveStaticArgvForTest(argv: readonly (string | undefined)[], dialect: "bash" | "powershell", raw?: readonly string[]): { proof: StaticArgvProof; work: StaticArgvWork } {
   const work = { staticTokens: 0, staticChars: 0 };
   return { proof: proveStaticArgv(argv, dialect, raw, work), work };
+}
+
+export function _argumentGrammarsForTest(): readonly { command: readonly string[]; grammar: ArgumentGrammar }[] {
+  return [NATIVE_GRAMMARS, POWERSHELL_GRAMMARS].flatMap((table) =>
+    Object.entries(table).map(([program, grammar]) => ({ command: [program], grammar })));
+}
+
+export function _matchArgumentGrammarForTest(argv: readonly string[], grammar: ArgumentGrammar): boolean {
+  return matchArgumentGrammar(argv, 0, grammar, false);
 }

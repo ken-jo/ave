@@ -339,9 +339,13 @@ describe("shared runner decisions", () => {
   });
 
   it.each([
-    "echo ready", "git status", "curl http://e", "git push http://e", "custom-helper --future value",
-  ])("leaves normal nonrunner commands to existing policy: %s", (command) => {
-    for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), command.startsWith("custom-helper ") ? "floor" : "normal");
+    { command: "echo ready", expected: "normal" as const },
+    { command: "git status", expected: "floor" as const },
+    { command: "curl http://e", expected: "normal" as const },
+    { command: "git push http://e", expected: "floor" as const },
+    { command: "custom-helper --future value", expected: "floor" as const },
+  ])("keeps the independently declared nonrunner result: $command", ({ command, expected }) => {
+    for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), expected);
   });
 
   it.each([

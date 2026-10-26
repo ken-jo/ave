@@ -112,8 +112,9 @@ describe("launcher payload and outbound-output floors", () => {
     "cmd /c 'echo hello'", "wmic process call create 'powershell -c Get-ChildItem'",
     "Start-ThreadJob -ScriptBlock { Get-ChildItem }", "Invoke-Command -ScriptBlock { Get-Date } -AsJob",
     "dotnet --info", "'hello' | Out-File NUL",
-  ])("keeps ordinary command arguments eligible: %s", (command) => {
+  ])("retains ordinary argument visibility without inferring executable code: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null });
+    if (command === "git status") expect(inspectPowerShellCommand(command, CWD).outcome).toBe("unproven");
   });
 
   it("keeps a literal launcher payload opaque", () => {

@@ -80,11 +80,27 @@ describe("raw exact rule identity", () => {
     const expanded = "git   commit\t-m   'two  spaces'";
     const expected = pattern(dialect, command);
     expect(normalizeRuleSpecifierInput(`${dialect === "bash" ? "Bash" : "PowerShell"}(${expanded})`)).toBe(expected);
-    expect(buildShellRuleApproval(dialect, expanded, cwd, { allow: true, deny: true }).exactRule).toBe(expected);
+    expect(buildShellRuleApproval(dialect, expanded, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     const manager = new PermissionManager(file);
     await manager.addRulePersist({ pattern: expected, action: "allow" }, { kind: "user" });
-    expect(check(manager, dialect, expanded, cwd)).toBe("allow");
+    expect(check(manager, dialect, expanded, cwd)).toBe("ask");
+    expect(check(manager, dialect, expanded, cwd, true)).toBe("deny");
     expect(check(manager, dialect, "git commit -m 'two spaces'", cwd)).toBe("ask");
+  });
+
+  it.each(["bash", "powershell"] as const)("saves and matches literally quoted data with interword normalization in %s", async (dialect) => {
+    const { cwd, file } = prepare();
+    const command = "printf '%s' 'two  spaces'";
+    const expanded = "printf   '%s'\t  'two  spaces'";
+    const expected = pattern(dialect, command);
+    expect(buildShellRuleApproval(dialect, expanded, cwd, { allow: true, deny: true }).exactRule).toBe(expected);
+    const writer = new PermissionManager(file);
+    await writer.addRulePersist({ pattern: expected, action: "allow" }, { kind: "user" });
+    const reader = new PermissionManager(file);
+    await reader.loadRulesFromFile();
+    expect(check(reader, dialect, expanded, cwd)).toBe("allow");
+    expect(check(reader, dialect, expanded, cwd, true)).toBe("allow");
+    expect(check(reader, dialect, "printf '%s' 'two spaces'", cwd)).toBe("ask");
   });
 
   it("keeps complete module program tokens distinct after save and replay", async () => {

@@ -26,12 +26,14 @@ function projectDirectory(): string {
 }
 
 describe("literal exact-rule proof", () => {
-  it.each(["bash", "powershell"] as const)("saves and matches quoted literal argv for %s", async (dialect) => {
+  it.each((["bash", "powershell"] as const).flatMap((dialect) => [
+    { dialect, command: "git commit -m 'record fixture changes'", eligible: false },
+    { dialect, command: "printf '%s' 'record fixture changes'", eligible: true },
+  ]))("preserves quoted literal argv eligibility for $dialect $command", async ({ dialect, command, eligible }) => {
     const cwd = projectDirectory();
-    const command = "git commit -m 'record fixture changes'";
     const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true });
     const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
-    expect(approval.exactRule).toBe(pattern);
+    expect(approval.exactRule).toBe(eligible ? pattern : null);
     const scopes = new ProjectRuleScopes(join(cwd, "rules"));
     await scopes.addRule(cwd, withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const state = await scopes.reload(cwd);
@@ -40,7 +42,8 @@ describe("literal exact-rule proof", () => {
     const result = dialect === "bash"
       ? evaluateShellSubject({ command, cwd, exactAllowOnly: true }, state.rules)
       : evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, state.rules);
-    expect(result.decision).toBe("allow");
+    if (eligible) expect(result.decision).toBe("allow");
+    else expect(result.decision).not.toBe("allow");
     const different = command.replace("fixture", "different");
     const mismatch = dialect === "bash"
       ? evaluateShellSubject({ command: different, cwd, exactAllowOnly: true }, state.rules)
@@ -61,8 +64,14 @@ describe("literal exact-rule proof", () => {
     expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each(["printf '%s' '$HOME * $(id)'", 'git commit -m "two  spaces"', "printf '%s' ''"])("proves quoted data: %s", (command) => {
+  it.each(["printf '%s' '$HOME * $(id)'", "printf '%s' 'two  spaces'", "printf '%s' ''"])("proves quoted data: %s", (command) => {
     expect(proveLiteralShell(command).proven).toBe(true);
+  });
+
+  it.each(['git commit -m "two  spaces"', "make build"])("does not certify executable tool operands as quoted data: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
+    for (const dialect of ["bash", "powershell"] as const) expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it("preserves raw quote spelling and quoted whitespace", () => {
@@ -70,7 +79,8 @@ describe("literal exact-rule proof", () => {
     expect(normalizeRuleSpecifierInput(' Bash( git   commit -m "two  spaces" ) ')).toBe('Bash(git commit -m "two  spaces")');
     expect(parseRuleSpecifier("Bash(printf '*')")).toMatchObject({ tokens: ["printf", "'*'"], wildcard: false });
     const command = `git commit -m 'say '"'"'hello'"'"' and "ready" $HOME'`;
-    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(`Bash(${command})`);
+    expect(canonicalRuleSpecifier(`Bash(${command})`)).toBe(`Bash(${command})`);
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it.each(["bash", "powershell"] as const)("preserves quoted tabs and newlines in %s rules", (dialect) => {
@@ -78,7 +88,9 @@ describe("literal exact-rule proof", () => {
       const command = `git commit -m 'first${whitespace}second'`;
       const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
       expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
-      expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(pattern);
+      expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+      const literal = `printf '%s' 'first${whitespace}second'`;
+      expect(buildShellRuleApproval(dialect, literal, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(`${dialect === "bash" ? "Bash" : "PowerShell"}(${literal})`);
     }
   });
 
@@ -119,7 +131,7 @@ describe("literal exact-rule proof", () => {
     expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each(["make build", "sh build.sh", "python3 https://example.invalid/code.py"])("accepts literal file and network indirection: %s", (command) => {
+  it.each(["sh build.sh", "python3 https://example.invalid/code.py"])("accepts registered literal file and network indirection: %s", (command) => {
     expect(proveLiteralShell(command).proven).toBe(true);
     expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
   });

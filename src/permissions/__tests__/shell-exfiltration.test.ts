@@ -506,11 +506,11 @@ describe("security review: a sensitive path in any shell argument is a floor", (
   });
 
   it.each([
-    ["Bash(cat *)", "cat README.md"],
-    ["Bash(git diff *)", "git diff HEAD -- src"],
-    ["Bash(cat *)", "cat .env.example.md/README"],
-  ])("%s still allows %j", (allow, command) => {
-    expect(evaluateShellRules(command, { allow: [spec(allow)], deny: [], ask: [] }, CWD).decision).toBe("allow");
+    ["Bash(cat *)", "cat README.md", "allow"],
+    ["Bash(git diff *)", "git diff HEAD -- src", null],
+    ["Bash(cat *)", "cat .env.example.md/README", "allow"],
+  ] as const)("%s keeps its declared proof for %j", (allow, command, expected) => {
+    expect(evaluateShellRules(command, { allow: [spec(allow)], deny: [], ask: [] }, CWD).decision).toBe(expected);
   });
 
   it("keeps an ordinary tilde expansion outside literal rule coverage", () => {
@@ -714,23 +714,21 @@ describe("credential floor: cwd switches, whole-tree readers and && narrowing", 
     return shellScanOrdinaryAsk(command, cwd) !== null ? "ask" : "clean";
   }
 
-  // A switch alone is not a read (`git -C ~ status` stays clean); the floor
-  // comes from a relative operand resolving under the switched directory. A
-  // full store spelling (`.mozilla`) floors from any cwd through the table's
-  // `**/` patterns, so the git/make/npm rows point at ~/Library and name the
-  // store relative to it, which only the switch can resolve.
+  // Literal path evidence is separate from command proof. A full store
+  // spelling (`.mozilla`) floors from any cwd through `**/` patterns; unknown
+  // command/configuration semantics also ask without replaying cwd changes.
   it.each<[string, Verdict]>([
     ["env -C ~ grep -r x .", "ask"],
     ["env --chdir=~ rg x", "ask"],
     ["env -C src grep -r x .", "ask"],
     ["git -C ~/Library add 'Application Support/Google'", "ask"],
     ["git --work-tree=$HOME/Library add 'Application Support/Firefox'", "ask"],
-    ["git -C src add 'Application Support/Google'", "clean"],
+    ["git -C src add 'Application Support/Google'", "ask"],
     ["git -C ~ status", "ask"],
     ["tar -C ~ -czf /tmp/x.tgz .", "ask"],
     ["tar -C src -czf /tmp/x.tgz .", "ask"],
     ["make -C ~/Library -f 'Application Support/Firefox/x'", "ask"],
-    ["make -C src -f 'Application Support/Firefox/x'", "clean"],
+    ["make -C src -f 'Application Support/Firefox/x'", "ask"],
     ["make -C ~", "ask"],
     ["npm --prefix ~/Library pack 'Application Support/Firefox'", "ask"],
     ["npm --prefix src pack 'Application Support/Firefox'", "ask"],

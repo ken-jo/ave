@@ -29,7 +29,7 @@ design must be reported explicitly.
 - Shell rule storage normalizes only interword whitespace. Complete raw program and argument words retain module names, paths, casing and quotes without any head normalization.
 - Legacy Store A glob patterns (`web_fetch`, `write_file:path:/abs`) never start with `Name(`. They are classified by shape and keep their glob semantics unchanged.
 
-**2. Shell decision order.** A persistent exact shell allow rule authorizes execution outside the sandbox. An unsandboxed command over 2,000 characters immediately asks at L6 or denies headless before parsing, project loading, command rules, floors or review. For inputs within the limit, the host evaluates the actual per-invocation execution plan:
+**2. Shell decision order.** A current-format exact shell allow rule for an eligible command authorizes execution outside the sandbox. An unsandboxed command over 2,000 characters immediately asks at L6 or denies headless before parsing, project loading, command rules, floors or review. For inputs within the limit, the host evaluates the actual per-invocation execution plan:
 
 1. Explicit deny rules deny. The destructive/irreversible and visible sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Visible credential and upload floors have the same behavior.
 2. Explicit ask rules ask. Within-cap syntax refusal, unknown or incompletely consumed argv grammar, and runtime dependence also ask at L2 in the foreground and deny headless. A Lane B input-length or structural-cap refusal reached before static analysis follows the ordinary unsandboxed L6 ask and denies headless. No broad rule, mode or reviewer repairs either result.
@@ -107,6 +107,26 @@ for each supported program or wrapper form, including the exact option arity and
 operand roles; an absent grammar or remainder refuses instead of falling back to
 an unknown-command allow.
 
+Option arity distinguishes required and optional values. A required-value option
+may consume the next word. An optional-value option never does: its value must
+be attached as `--option=value` or, for a registered short option, a same-word
+suffix. A bare optional-value option preserves the next word's option or operand
+role, so a later unknown flag remains unproven.
+
+Direct and argv-delegated `make` and Git commands are outside the positive command
+catalogue. `make` variable assignments, evaluation options and build files can
+select executable code. Git configuration and environment can select pagers,
+external diff, text conversion, filters, filesystem-monitor commands and hooks;
+the floor does not inspect or simulate those settings. Literal messages or
+flags such as `--no-pager`, `--no-ext-diff` and `--no-textconv` do not establish
+the missing proof. These commands offer no exact allow rule and cannot use a
+stored exact or broad allow, even for `git commit -m 'message'`; foreground
+requires per-call approval and headless denies. Raw Git rule examples describe
+key identity only, not current allow eligibility. Any later support belongs in
+a separate complete grammar review. The separate literal-evaluator exception
+below still applies to a known outer evaluator's opaque literal payload; the
+pass does not inspect that payload for nested commands.
+
 Runtime-dependent execution, including substitutions, variables, splats,
 loops, callbacks, generated strings and runtime argv, produces no persistent
 suggestion. A registered evaluator grammar may recognize a fully literal,
@@ -138,7 +158,7 @@ static result, explicit restrictions and visible floors remain authoritative.
 - **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. These commands require per-call consent, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
   - Always: `mv`, `cp`, `install`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
   - `git clean` unless `-n`/`--dry-run`; `git reset --hard/--merge/--keep`; `git restore` unless index-only (`--staged` without `--worktree`); `git stash drop/clear`.
-  - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The exception is `-b <new> [<start>]` without `--` or paths; use `git switch <branch>` for a storable exact rule. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
+  - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The destructive-floor exception is `-b <new> [<start>]` without `--` or paths; it does not grant an allow because all Git forms remain unproven. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
   - `git prune`; `git gc --prune*`; `git tag -d/--delete`; `git remote remove/rm`; `git pull -f/--force`; `git reflog expire/delete`; `git worktree remove -f/--force` and `git worktree prune`; `git update-ref -d/--stdin`; `git fetch -f/--force/-p/--prune/--prune-tags` and `+ref` refspecs.
   - `git switch -f/-C/--discard-changes`; `git branch -d/-D/-M/-C/-f/--delete`; `git push -f/-d/--force/--force-with-lease/--delete/--mirror/--prune`, and `+ref` or `:ref` refspecs.
   - `docker`/`podman`/`nerdctl`/`docker-compose` `prune`/`rm`/`rmi`, and `compose down -v/--volumes/--rmi`.
@@ -159,7 +179,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - A dynamic root is an ordinary ask.
 - Known limits of the floor (accepted, round 6):
   - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
-  - A secret committed to the repository is reachable through the `git log -p`, `git show` and `git diff` prefix rules. The floor checks paths, not the content of history.
+  - The floor checks paths, not the content of repository history. Git commands now require per-call approval because no positive Git grammar is registered; retained prefix rules cannot authorize them.
   - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
   - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
 - The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
@@ -167,7 +187,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - `/proc/*/environ`, `/proc/*/mem` and `/proc/*/fd/**`, together with their `task/*` and `map_files` forms; `cmdline` and `status` stay readable.
   - Chromium-family `Cookies`, `Login Data`, `Web Data` and `Local State` under `~/Library/Application Support`, `~/.config` and Windows `User Data`, which covers Chrome, Edge, Brave, Arc and Chromium.
   - Firefox `logins.json`, `key4.db` and `cookies.sqlite` under `Firefox/Profiles` and `.mozilla/firefox`.
-- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` stay storable. Only `git remote remove/rm/rename/set-url/prune` is refused.
+- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain unproven with every other Git form. Retained narrowing and destructive floors still apply independently.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.
@@ -459,7 +479,7 @@ proven stage does not retain an independently reusable allow result.
 claim that this invocation was observed writing. Families that can write through
 implicit or alternate modes mark all admitted forms possible-write. This covers
 every positively parsed native `curl`, `wget`, `sort` and `uniq` form, plus
-`git branch`, package-task, script/module interpreter and `make` forms,
+package-task and script/module interpreter forms,
 including read-looking forms.
 Their presence in a multi-command input refuses the whole input. The single source is
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);

@@ -9,7 +9,7 @@ import type { ShellRuleApproval } from "../../../../shared/permissions-events.js
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 
-const EXACT_RULE = "Bash(git status --short)";
+const EXACT_RULE = "Bash(printf %s ready)";
 
 function shellRule(overrides: Partial<ShellRuleApproval> = {}): ShellRuleApproval {
   return {
@@ -22,7 +22,7 @@ function shellRule(overrides: Partial<ShellRuleApproval> = {}): ShellRuleApprova
 function shellRequest(overrides: Partial<ApprovalRequest> = {}, rule: Partial<ShellRuleApproval> = {}): ApprovalRequest {
   return {
     id: "shell-rule-request", category: "tool", kind: "tool", toolCategory: "shell",
-    toolName: "bash", args: { command: "git status --short" }, source: "builtin",
+    toolName: "bash", args: { command: "printf %s ready" }, source: "builtin",
     reason: "Review shell command", createdAt: Date.now(), requireExplicit: false,
     reviewerVerdict: { level: "medium", reason: "Review shell command" },
     persistentAllowAllowed: true, persistentApprovalCwd: "/workspace/project",
@@ -142,10 +142,10 @@ describe("shell approval card: the shared decision row", () => {
     expect(input).toHaveValue("");
     expect(screen.getByTestId("approval-rule-required")).toHaveTextContent(t("toolApprovalDialog.ruleEditRequired"));
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeDisabled();
-    fireEvent.change(input, { target: { value: "Bash(git *)" } });
+    fireEvent.change(input, { target: { value: "Bash(printf *)" } });
     expect(screen.queryByTestId("approval-rule-wildcard-warning")).toBeNull();
     fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { action: "deny", scope: "always", pattern: "Bash(git *)" } }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { action: "deny", scope: "always", pattern: "Bash(printf *)" } }));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("deny-once"));
   });
 
@@ -158,10 +158,10 @@ describe("shell approval card: the shared decision row", () => {
     const input = screen.getByTestId("approval-rule-input");
     expect(input).toHaveValue(EXACT_RULE);
     expect(screen.queryByTestId("approval-rule-wildcard-warning")).toBeNull();
-    fireEvent.change(input, { target: { value: "Bash(git status *)" } });
+    fireEvent.change(input, { target: { value: "Bash(printf %s *)" } });
     expect(screen.getByTestId("approval-rule-wildcard-warning")).toHaveTextContent(t("toolApprovalDialog.wildcardAllowSandboxedOnly"));
     fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { action: "allow", scope: "project", pattern: "Bash(git status *)" }, scope: "persistent" }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" }, scope: "persistent" }));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
   });
 
@@ -210,6 +210,16 @@ describe("shell approval card: the shared decision row", () => {
     for (const choice of ["allow-session", "allow-project", "allow-everywhere"]) {
       expect(screen.getByTestId(`approval-choice-${choice}`)).toHaveAttribute("data-disabled");
     }
+  });
+
+  it.each(["git status --short", "make build"])("offers no lasting allow for the unproven tool %s", (command) => {
+    renderApproval(shellRequest({ args: { command }, persistentAllowAllowed: false }, {
+      denyRule: `Bash(${command})`, exactRule: null, sessionAllowed: false, persistentAllowed: false,
+    }), vi.fn());
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toBeEnabled();
+    expect(screen.getByTestId("allow-always-unavailable-reason")).toHaveTextContent(t("toolApprovalDialog.shellExactRuleUnavailable"));
   });
 
   it("answers Allow once and Deny without saving anything", () => {

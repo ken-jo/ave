@@ -227,6 +227,7 @@ describe("PowerShell static floor analysis", () => {
 
   it("refuses callback-capable command families through shared wrapper boundaries", () => {
     for (const command of [
+      "git status",
       "git rebase main",
       "env git grep pattern",
       "npx git submodule status",
@@ -239,10 +240,10 @@ describe("PowerShell static floor analysis", () => {
       expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
     }
 
-    expect(inspectPowerShellCommand("git status", CWD)).toEqual({
+    expect(inspectPowerShellCommand("printf ready", CWD)).toEqual({
       outcome: "static-complete", sensitive: null, exfiltration: null,
     });
-    expect(proveLiteralPowerShell("git status")).toEqual(expect.objectContaining({ proven: true }));
+    expect(proveLiteralPowerShell("printf ready")).toEqual(expect.objectContaining({ proven: true }));
   });
 
   it("charges flat argv work once", () => {

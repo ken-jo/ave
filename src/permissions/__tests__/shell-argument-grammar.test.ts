@@ -1,7 +1,62 @@
 import { describe, expect, it } from "vitest";
-import { _proveStaticArgvForTest, proveStaticArgv } from "../rules/shell-argument-grammar.js";
+import { _argumentGrammarsForTest, _matchArgumentGrammarForTest, _proveStaticArgvForTest, proveStaticArgv } from "../rules/shell-argument-grammar.js";
+
+const argumentGrammars = _argumentGrammarsForTest();
+const optionalArgumentCases = argumentGrammars.flatMap(({ command, grammar }) =>
+  (grammar.optionalValues ?? []).map((option) => ({ name: [...command, option].join(" "), option, grammar })));
 
 describe("positive shell argument grammars", () => {
+  it("gives each registered option exactly one arity", () => {
+    expect(optionalArgumentCases.length).toBeGreaterThan(0);
+    for (const { grammar } of argumentGrammars) {
+      const names = [...(grammar.flags ?? []), ...(grammar.values ?? []), ...(grammar.optionalValues ?? [])];
+      expect(new Set(names).size).toBe(names.length);
+    }
+  });
+  it.each(optionalArgumentCases)("never consumes a following word for optional $name", ({ option, grammar }) => {
+    expect(grammar.values ?? []).not.toContain(option);
+    const isolated = { optionalValues: [option], flags: ["--retained"], maximum: 0 };
+    const attached = option.startsWith("--") ? `${option}=value` : `${option}value`;
+    expect(_matchArgumentGrammarForTest([option], isolated)).toBe(true);
+    expect(_matchArgumentGrammarForTest([attached], isolated)).toBe(true);
+    expect(_matchArgumentGrammarForTest([option, "--unknown"], isolated)).toBe(false);
+    expect(_matchArgumentGrammarForTest([option, "later"], isolated)).toBe(false);
+    expect(_matchArgumentGrammarForTest([option, "--retained"], { ...isolated, required: [["--retained"]] })).toBe(true);
+    expect(_matchArgumentGrammarForTest([attached, "--unknown"], isolated)).toBe(false);
+  });
+  it("uses attached-only optional values inside a short option group", () => {
+    const grammar = { optionalValues: ["-j"], flags: ["-q"], maximum: 0 };
+    for (const args of [["-j"], ["-j4"], ["-qj4"], ["-qj"], ["-j", "-q"]]) {
+      expect(_matchArgumentGrammarForTest(args, grammar)).toBe(true);
+    }
+    for (const args of [["-j", "4"], ["-qj", "4"], ["-j", "--eval=code"], ["-j4", "--unknown"]]) {
+      expect(_matchArgumentGrammarForTest(args, grammar)).toBe(false);
+    }
+    expect(_matchArgumentGrammarForTest(["-jq"], { ...grammar, required: [["-q"]] })).toBe(false);
+    expect(_matchArgumentGrammarForTest(["-qj4"], { ...grammar, required: [["-q"]] })).toBe(true);
+  });
+  it("keeps required-value options separate from optional-value options", () => {
+    const grammar = { values: ["--required", "-r"], optionalValues: ["--optional", "-o"], maximum: 0 };
+    for (const args of [["--required", "value"], ["--required=value"], ["-rvalue"], ["-r", "value"]]) {
+      expect(_matchArgumentGrammarForTest(args, grammar)).toBe(true);
+    }
+    for (const args of [["--required"], ["-r"], ["--optional", "value"], ["-o", "value"]]) {
+      expect(_matchArgumentGrammarForTest(args, grammar)).toBe(false);
+    }
+    expect(_matchArgumentGrammarForTest(["--optional=value"], grammar)).toBe(true);
+    expect(_matchArgumentGrammarForTest(["-ovalue"], grammar)).toBe(true);
+  });
+  it.each(["bash", "powershell"] as const)("refuses executable build and configured command families in %s", (dialect) => {
+    for (const argv of [
+      ["make", "-f", "/dev/null", "X:=$(shell printf make-inline-probe >&2)"],
+      ["make", "-j", "--eval=$(shell printf make-inline-probe >&2)"],
+      ["git", "show", "--pretty", "--ext-diff", "567197b83", "--", "src/permissions/rules/shell-argument-grammar.ts"],
+      ["make"], ["git", "status"], ["git", "--no-pager", "diff", "--no-ext-diff", "--no-textconv"],
+    ]) expect(proveStaticArgv(argv, dialect).kind).toBe("unproven");
+  });
+  it.each(["bash", "powershell"] as const)("does not swallow a later option as an optional value in %s", (dialect) => {
+    expect(proveStaticArgv(["ls", "--color", "--unknown"], dialect).kind).toBe("unproven");
+  });
   it.each(["bash", "powershell"] as const)("does not prove unknown heads or prototype names in %s", (dialect) => {
     for (const head of ["unknown-program", "constructor", "toString", "__proto__", "./printf", "fake-pwsh"]) {
       expect(proveStaticArgv([head, "ready"], dialect).kind).toBe("unproven");

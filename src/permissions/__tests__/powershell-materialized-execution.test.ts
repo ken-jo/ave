@@ -202,7 +202,7 @@ describe("retained file-execution corpus", () => {
     'iwr https://x.invalid -Headers @{ Authorization = "Bearer $env:TOKEN" }',
   ])("retains ordinary development and mutation input shape: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("$p") || command.includes("$env:") || command.includes("Set-Content")
+    if (["git status", "git status; npm test"].includes(command) || command.includes("$p") || command.includes("$env:") || command.includes("Set-Content")
       || command.includes("Expand-Archive") || command.startsWith("pwsh -c")) {
       expect(result.outcome).toBe("unproven");
     } else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
@@ -221,7 +221,7 @@ describe("retained file-execution corpus", () => {
     "git add 'report.pdf'", "Write-Host 'literal & punctuation'", "Write-Host @'\nhello\nworld\n'@",
   ])("retains data-operand and tool-switch input shape: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("$p") || command.includes("Set-Content") || command.includes("Copy-Item")) {
+    if (command === "git add 'report.pdf'" || command.includes("$p") || command.includes("Set-Content") || command.includes("Copy-Item")) {
       expect(result.outcome).toBe("unproven");
     } else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });

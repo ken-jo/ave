@@ -116,7 +116,7 @@ describe("static dispatch and remote-write boundaries", () => {
     if (command === String.raw`Copy-Item '\\host\share\notes.txt' notes.txt`) {
       expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.stringMatching(/UNC/i) });
     } else if (command.includes("$_") || command.includes("$env:") || command.includes("(('a','b')")
-      || command.startsWith("'hello' |") || ["dotnet build", "cargo test", "Unknown-Helper", "robocopy . backup notes.txt", "xcopy notes.txt backup.txt"].includes(command)) expect(result.outcome).toBe("unproven");
+      || command.startsWith("'hello' |") || ["git status", "dotnet build", "cargo test", "Unknown-Helper", "robocopy . backup notes.txt", "xcopy notes.txt backup.txt"].includes(command)) expect(result.outcome).toBe("unproven");
     else expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
   });
 

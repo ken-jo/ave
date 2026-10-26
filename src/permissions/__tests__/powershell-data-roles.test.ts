@@ -10,7 +10,8 @@ const PACKAGE_TASKS = [
   "bun run check", "bun run ./payload.ts", "bun test", "npx helper",
 ] as const;
 const UNPROVEN_LITERAL_COMMANDS = new Set([
-  "git log --oneline -5", "git --version", "npm install --save-dev x", "npm --version",
+  "git log --oneline", "git log --oneline -5", "git commit -m 'msg'", "git diff --stat", "git --version",
+  "npm install --save-dev x", "npm --version",
   "node --test", "node -v", "node --version", "python --version", "node.exe --test", "nodejs -v",
   "dotnet test --no-build", "dotnet build App.csproj --configuration Release",
 ]);

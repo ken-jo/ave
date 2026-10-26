@@ -41,8 +41,9 @@ describe("stored broad wildcard compatibility", () => {
     const path = scope === "user" ? permissionsFile : location.filePath;
     mkdirSync(dirname(path), { recursive: true });
     const inert = { pattern: "Bash(npm run *)", action: "allow" as const };
-    const healthy = withCurrentShellRuleVersion({ pattern: "Bash(git status)", action: "allow" as const });
-    writeFileSync(path, JSON.stringify({ version: 1, mode: "default", projectRoot: location.projectRoot, rules: [inert, healthy], updatedAt: "" }));
+    const healthy = withCurrentShellRuleVersion({ pattern: "Bash(printf ready)", action: "allow" as const });
+    const unproven = withCurrentShellRuleVersion({ pattern: "Bash(git status)", action: "allow" as const });
+    writeFileSync(path, JSON.stringify({ version: 1, mode: "default", projectRoot: location.projectRoot, rules: [inert, healthy, unproven], updatedAt: "" }));
     const manager = new PermissionManager(permissionsFile);
     await manager.loadRulesFromFile();
     await manager.ensureProjectRulesLoaded(project);
@@ -51,7 +52,8 @@ describe("stored broad wildcard compatibility", () => {
       ruleSubject: shellSubject(command), shellExecution: plainRoute, projectRulesCwd: project,
     });
     expect(manager.getRulesLoadError()).toBeUndefined();
-    expect(check("git status")).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready")).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("git status")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(check("npm run build")).toMatchObject({ decision: "ask", layer: 6 });
     expect(check("npm run build").forceModal).toBeUndefined();
     const listed = await manager.listScopedRules();
@@ -68,7 +70,8 @@ describe("stored broad wildcard compatibility", () => {
     const restarted = new PermissionManager(permissionsFile);
     await restarted.loadRulesFromFile();
     await restarted.ensureProjectRulesLoaded(project);
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("git status"), projectRulesCwd: project })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready"), projectRulesCwd: project })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("git status"), projectRulesCwd: project })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 });
 
@@ -83,7 +86,7 @@ describe("bounded rule consent", () => {
 
   it.each([
     ["printf ready", true],
-    ["git status --short", true],
+    ["git status --short", false],
     ["git -c core.pager=less log", false],
   ] as const)("defaults to positive exact argv proof when supported: %s", (command, exactAllowed) => {
     expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation")).toMatchObject(exactAllowed
