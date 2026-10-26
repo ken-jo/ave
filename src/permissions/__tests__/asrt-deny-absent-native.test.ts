@@ -23,7 +23,6 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
   let root: string;
 
   beforeEach(async (context) => {
-    if (!/^d:[\\/]/i.test(os.tmpdir())) throw new Error("Native ACL fixtures require D: temporary storage");
     root = mkdtempSync(join(os.tmpdir(), "deny-absent-native-"));
     vi.stubEnv("HOME", root);
     vi.stubEnv("USERPROFILE", root);
