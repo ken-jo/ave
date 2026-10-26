@@ -1,4 +1,5 @@
 /** Main owns tab authority; renderer-issued ids are unique per window and omit UI placement. */
+import { hasOnlyKeys, isRecord } from "./is-record.js";
 
 type WorkspaceSurfaceKind = "browser" | "terminal";
 
@@ -156,14 +157,6 @@ export interface BrowserTabsApi {
   onTabOp(handler: (request: BrowserTabOpRequest) => void): () => void;
   /** Future full snapshots only; use getState after subscribing for initial state. */
   onControl(handler: (state: BrowserTabControlState) => void): () => void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
 }
 
 export function parseBrowserSessionActor(value: unknown): BrowserSessionActor | null {

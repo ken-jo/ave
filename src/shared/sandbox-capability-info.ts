@@ -1,4 +1,5 @@
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import type { WindowsReadDenyPrincipal } from "./windows-read-deny-evidence.js";
 
 /** Report actual confinement only: full filesystem/process/network on macOS/Linux; filesystem and egress on Windows.
  * Windows uses one sandbox account, so filesystem confinement protects the host and does not isolate plugins from each other. */
@@ -33,6 +34,10 @@ export interface SandboxWindowsStatusInfo {
     category: AveHomePrivacyFailureCategory;
     extraPrincipals?: AveHomePrincipal[];
   };
+  profileReadDenyWarnings?: readonly {
+    path: string;
+    principals?: readonly WindowsReadDenyPrincipal[];
+  }[];
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
 }
@@ -278,6 +283,7 @@ export interface SandboxCapabilityInfo {
   /** Host-issued default shell route, distinct from the platform potential. */
   shellExecutionPlan?: HostShellExecutionPlanAuditProjection;
   homePrivacyError?: SandboxWindowsStatusInfo["homePrivacyError"];
+  profileReadDenyWarnings?: SandboxWindowsStatusInfo["profileReadDenyWarnings"];
   platform: NodeJS.Platform;
   /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env escape-hatch `AVE_SANDBOX_ENABLED=1`) is currently enabled. */
   enabled: boolean;
@@ -294,6 +300,7 @@ export interface SandboxCapabilityInfo {
   runtime?: SandboxRuntimeCapabilityInfo;
   /** What EXTENSION processes run under in this process (the plugin-worker confinement scope). ASRT is one runtime, so either scope can be active while the other reports none. */
   workerRuntime?: SandboxRuntimeCapabilityInfo;
+  workerRestartPending: boolean;
   /** What the boot gate decided for this process. `null` when boot has not run the gate (tests, or a host
    * that never called sandbox init); absence is not "off", so the renderer must not render it as such. */
   boot?: SandboxBootOutcomeView | null;

@@ -3,6 +3,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
 import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
+import { SandboxRestartDialog } from "../components/SandboxRestartDialog.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -337,6 +338,7 @@ export function PermissionsTab({
   const [policyBusy, setPolicyBusy] = useState(false);
   const [policySource, setPolicySource] = useState<"defaults" | "user" | "admin" | "merged">("defaults");
   const [policyAdminPath, setPolicyAdminPath] = useState<string | undefined>(undefined);
+  const [policyAdminReason, setPolicyAdminReason] = useState<string | undefined>(undefined);
 
   // ── Rule Editor ───────────────────────────────────
   const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
@@ -377,6 +379,9 @@ export function PermissionsTab({
   const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxCapability } =
     useSandboxCapability(window.ave?.permission, getApi().onSettingsUpdated);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [sandboxRestartOpen, setSandboxRestartOpen] = useState(false);
+  const sandboxRestartPending = sandboxCapability?.shell?.state === "pending-on"
+    || sandboxCapability?.shell?.state === "pending-off" || sandboxCapability?.workerRestartPending === true;
   // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the variable set the toggle cannot turn the sandbox off for
   // this run. The stored value still decides the next run without it, so the control stays usable; what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
@@ -429,6 +434,7 @@ export function PermissionsTab({
       setPolicyManaged(!policyRes.editable);
       setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
       setPolicyAdminPath(policyRes.adminPath as string | undefined);
+      setPolicyAdminReason(policyRes.adminStatus === "invalid" ? policyRes.adminReason : undefined);
       setRules(rulesRes.rules);
       setRuleLoadErrors(rulesRes.errors);
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
@@ -779,7 +785,11 @@ export function PermissionsTab({
         return;
       }
       // Re-read capability so the activation note reflects the new state.
-      await refreshSandboxCapability();
+      const capability = await refreshSandboxCapability();
+      const pending = isShell
+        ? capability?.shell?.state === "pending-on" || capability?.shell?.state === "pending-off"
+        : capability?.workerRestartPending === true;
+      setSandboxRestartOpen(pending);
     } catch (e) {
       setEnabled(!next);
       showBanner("error", t(isShell
@@ -1253,7 +1263,9 @@ export function PermissionsTab({
           </div>
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
-              {(policySource === "admin" || policySource === "merged") && policyAdminPath
+              {policyAdminReason
+                ? t("permissionsTab.invalidAdminPolicy", { reason: policyAdminReason })
+                : (policySource === "admin" || policySource === "merged") && policyAdminPath
                 ? t("permissionsTab.adminPolicyWithPath", { policyAdminPath })
                 : t("permissionsTab.adminPolicyNoPath")}
             </p>
@@ -1267,6 +1279,8 @@ export function PermissionsTab({
           description={t("permissionsTab.osSandboxDescription")}
         >
           <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
+          <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
+          {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
           <div className="flex items-start gap-3">
             <Checkbox
               checked={sandboxEnabled}
@@ -1342,7 +1356,6 @@ export function PermissionsTab({
                       ? t("permissionsTab.osSandboxCapabilityWindows")
                       : t("permissionsTab.osSandboxCapabilityOther")}
               </p>
-              <p className="italic">{t("permissionsTab.osSandboxRestartNote")}</p>
               {sandboxPotentialReason ? (
                 <p data-testid="os-sandbox-potential-reason">
                   {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
@@ -1430,6 +1443,14 @@ export function PermissionsTab({
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}
+          {(sandboxCapability?.profileReadDenyWarnings ?? windowsStatus?.profileReadDenyWarnings ?? []).map(({ path, principals }) => (
+            <p key={path} data-testid="os-sandbox-windows-profile-read-deny-warning" role="alert"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+              {principals?.length
+                ? t("permissionsTab.osSandboxWindowsProfileReadDenyReadable", { path, principals: principals.join(", ") })
+                : t("permissionsTab.osSandboxWindowsProfileReadDenyUnverified", { path })}
+            </p>
+          ))}
           {windowsInstallOutcome ? (
             <p
               data-testid="os-sandbox-windows-install-outcome"
@@ -1470,6 +1491,7 @@ export function PermissionsTab({
                     "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
                     "not-protected": t("permissionsTab.homePrivacyNotProtected"),
                     "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
+                    "owner-claim-failed": t("permissionsTab.homePrivacyOwnerClaimFailed"),
                     "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
                     "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
                       principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),

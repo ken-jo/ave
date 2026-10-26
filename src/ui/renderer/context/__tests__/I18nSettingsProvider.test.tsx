@@ -33,6 +33,10 @@ function LocaleProbe() {
   );
 }
 
+function renderLocaleProbe() {
+  return render(<I18nSettingsProvider><LocaleProbe /></I18nSettingsProvider>);
+}
+
 afterEach(() => {
   cleanup();
   delete (window as unknown as { aveApi?: unknown }).aveApi;
@@ -42,11 +46,7 @@ describe("I18nSettingsProvider lazy locale loading", () => {
   it("hydrates a persisted lazy locale before switching the rendered catalog", async () => {
     installApi("ko");
 
-    render(
-      <I18nSettingsProvider>
-        <LocaleProbe />
-      </I18nSettingsProvider>,
-    );
+    renderLocaleProbe();
 
     await waitFor(() => {
       expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
@@ -57,11 +57,7 @@ describe("I18nSettingsProvider lazy locale loading", () => {
   it("loads the selected locale catalog before applying a user language switch", async () => {
     const { api } = installApi("en");
 
-    render(
-      <I18nSettingsProvider>
-        <LocaleProbe />
-      </I18nSettingsProvider>,
-    );
+    renderLocaleProbe();
 
     expect(screen.getByTestId("language-title")).toHaveTextContent("Language");
 
@@ -79,11 +75,7 @@ describe("I18nSettingsProvider lazy locale loading", () => {
   it("loads a lazy locale received from cross-window settings sync", async () => {
     const { settingsUpdatedHandlers } = installApi("en");
 
-    render(
-      <I18nSettingsProvider>
-        <LocaleProbe />
-      </I18nSettingsProvider>,
-    );
+    renderLocaleProbe();
 
     expect(screen.getByTestId("language-title")).toHaveTextContent("Language");
 
@@ -100,11 +92,7 @@ describe("I18nSettingsProvider lazy locale loading", () => {
     const restore = __setLocaleLoaderForTest("ko", () => Promise.reject(new Error("missing chunk")));
 
     try {
-      render(
-        <I18nSettingsProvider>
-          <LocaleProbe />
-        </I18nSettingsProvider>,
-      );
+      renderLocaleProbe();
 
       expect(screen.getByTestId("language-title")).toHaveTextContent("Language");
 

@@ -1,10 +1,11 @@
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 
 import type { PolicyFile } from "../policy-store.js";
 import type { PlatformBridgeAuthority } from "../../shared/chat-origin.js";
 import type { ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import {
+  buildSandboxConfig,
   checkAsrtDependencies,
   isAsrtSandboxSupported,
   DEFAULT_WINDOWS_PROXY_PORT_RANGE,
@@ -86,7 +87,20 @@ export async function asrtCanInitialize(): Promise<boolean> {
   const deps = await checkAsrtDependencies();
   if (deps.errors.length > 0) return false;
   if (process.platform === "win32" && !(await windowsSandboxCanSpawn())) return false;
+  assertNoMachineDenyTargets();
   return true;
+}
+
+// Real init stamps srt-win ACLs on every deny target, creating missing ones; fail before it can touch a machine-owned directory.
+function assertNoMachineDenyTargets(): void {
+  if (process.platform !== "win32") return;
+  const roots = [process.env.ProgramData, process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.SystemRoot]
+    .filter((root): root is string => Boolean(root?.trim()))
+    .map((root) => caseFoldForMatch(resolve(root)) + sep);
+  const reached = buildSandboxConfig({ allowedDomains: [] }).filesystem.denyWrite
+    .map((entry) => typeof entry === "string" ? entry : entry.path)
+    .filter((path) => roots.some((root) => caseFoldForMatch(resolve(path)).startsWith(root)));
+  if (reached.length > 0) throw new Error(`Real sandbox init would stamp machine-owned paths: ${reached.join(", ")}`);
 }
 
 // A paired-platform controller authority whose revocation guard answers `current`. Shared because two suites need the same fixture for opposite reasons — one drives the away answerer directly, the other drives it through `ApprovalGate` — and a second copy would let the two drift into testing different objects. The guard is the only thing that can retire an already-admitted turn, so tests control it here rather than standing up a whole platform runtime.

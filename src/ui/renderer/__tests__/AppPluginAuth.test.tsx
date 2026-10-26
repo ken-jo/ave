@@ -4,6 +4,30 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
+import { makePluginCard } from "./support/plugin-card.js";
+
+function preparingIndexer() {
+  return makePluginCard({
+    id: "local-indexer",
+    name: "Local Indexer",
+    description: "Indexes local documents",
+    loadStatus: "preparing",
+    preparationStatus: {
+      phase: "installing-python",
+      message: "Python 3.12 설치 중...",
+      progressPct: 10,
+      updatedAt: "2026-05-21T00:00:00.000Z",
+    },
+    icon: "Plug",
+    uiExtensions: [{
+      id: "local-indexer-control",
+      slot: "sidebar",
+      kind: "embedded-module",
+      title: "로컬 인덱서",
+      entry: "dist/ui/indexer-control.js",
+    }],
+  });
+}
 
 describe("App plugin auth routing", () => {
   // Use the inline menu in jsdom because native menus are outside the DOM; selection still passes through App's auth/detach
@@ -29,19 +53,15 @@ describe("App plugin auth routing", () => {
   };
   const authPluginFixture = {
     pluginCards: [
-      {
+      makePluginCard({
         id: "token-plugin",
         name: "Token Plugin",
         description: "Uses plugin UI auth",
-        sampleTools: [],
-        capabilities: [],
-        tools: [],
-        loadStatus: "loaded" as const,
         auth: {
           statusTool: "token_status",
           loginTool: "token_login",
         },
-      },
+      }),
     ],
     pluginUiExtensions: [
       {
@@ -62,33 +82,7 @@ describe("App plugin auth routing", () => {
     // At the App level the contract is: a preparing plugin card that declares a UI extension still appears as a reachable
     // entry in the composer's command surface.
     const { api } = await renderApp({
-      pluginCards: [
-        {
-          id: "local-indexer",
-          name: "Local Indexer",
-          description: "Indexes local documents",
-          sampleTools: [],
-          capabilities: [],
-          tools: [],
-          loadStatus: "preparing",
-          preparationStatus: {
-            phase: "installing-python",
-            message: "Python 3.12 설치 중...",
-            progressPct: 10,
-            updatedAt: "2026-05-21T00:00:00.000Z",
-          },
-          icon: "Plug",
-          uiExtensions: [
-            {
-              id: "local-indexer-control",
-              slot: "sidebar",
-              kind: "embedded-module",
-              title: "로컬 인덱서",
-              entry: "dist/ui/indexer-control.js",
-            },
-          ],
-        },
-      ],
+      pluginCards: [preparingIndexer()],
       pluginUiExtensions: [],
     });
 
@@ -104,33 +98,7 @@ describe("App plugin auth routing", () => {
     // Preparing plugin views must open their loading destination and wait for registration.
     const user = makeUser();
     const { api } = await renderApp({
-      pluginCards: [
-        {
-          id: "local-indexer",
-          name: "Local Indexer",
-          description: "Indexes local documents",
-          sampleTools: [],
-          capabilities: [],
-          tools: [],
-          loadStatus: "preparing",
-          preparationStatus: {
-            phase: "installing-python",
-            message: "Python 3.12 설치 중...",
-            progressPct: 10,
-            updatedAt: "2026-05-21T00:00:00.000Z",
-          },
-          icon: "Plug",
-          uiExtensions: [
-            {
-              id: "local-indexer-control",
-              slot: "sidebar",
-              kind: "embedded-module",
-              title: "로컬 인덱서",
-              entry: "dist/ui/indexer-control.js",
-            },
-          ],
-        },
-      ],
+      pluginCards: [preparingIndexer()],
       pluginUiExtensions: [],
     });
 
@@ -276,19 +244,15 @@ describe("App plugin auth routing", () => {
   it("auto-calls loginTool for an unauthenticated inline embedded view before navigating", async () => {
     const { api, emitPluginEvent } = await renderApp({
       pluginCards: [
-        {
+        makePluginCard({
           id: "oauth-plugin",
           name: "OAuth Plugin",
           description: "Uses host auth",
-          sampleTools: [],
-          capabilities: [],
-          tools: [],
-          loadStatus: "loaded",
           auth: {
             statusTool: "oauth_status",
             loginTool: "oauth_login",
           },
-        },
+        }),
       ],
       pluginUiExtensions: [
         {

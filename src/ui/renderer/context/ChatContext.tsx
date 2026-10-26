@@ -75,6 +75,10 @@ export interface ChatContextValue {
   contextOverflowPct: number;
   usedTokens: number;
   contextBudget: number;
+  /** Shared route limits; side chats apply them to their own transcript and draft. */
+  llmContextWindow?: number;
+  llmInputLimit?: number;
+  autoCompactEnabled?: boolean;
 
   effectiveBudget: number;
   // Hide TPM hints when the model has no host default.

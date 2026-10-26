@@ -912,6 +912,7 @@ describe("native access-rule admission", () => {
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     expect(args).toHaveLength(5);
+    expect([command, ...args].join(" ").length + 1).toBeLessThan(32767);
     const script = Buffer.from(args[4]!, "base64").toString("utf16le");
     expect(script).toContain("CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000");
     expect(script).toContain("GetSecurityInfo");

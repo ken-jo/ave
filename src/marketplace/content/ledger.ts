@@ -1,6 +1,7 @@
 /** Ledger entries bind installed bytes and provenance; unreadable ledgers stop the store.
  * Current installs have unique payload directories; legacy installs use version directories. */
 import { readFile } from "node:fs/promises";
+import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
@@ -129,18 +130,22 @@ export class ContentLedger {
   }
 
   async put(entry: LedgerEntry): Promise<void> {
-    const next = new Map(this.entries);
-    next.set(ledgerKey(entry.kind, entry.name), entry);
-    await this.write(next);
+    return withInstalledStateMutation(async () => {
+      const next = new Map(this.entries);
+      next.set(ledgerKey(entry.kind, entry.name), entry);
+      await this.write(next);
+    });
   }
 
   async remove(kind: ContentKind, name: string): Promise<boolean> {
-    const key = ledgerKey(kind, name);
-    if (!this.entries.has(key)) return false;
-    const next = new Map(this.entries);
-    next.delete(key);
-    await this.write(next);
-    return true;
+    return withInstalledStateMutation(async () => {
+      const key = ledgerKey(kind, name);
+      if (!this.entries.has(key)) return false;
+      const next = new Map(this.entries);
+      next.delete(key);
+      await this.write(next);
+      return true;
+    });
   }
 
   /** The file is written first, so a failed write leaves memory and disk agreeing. */

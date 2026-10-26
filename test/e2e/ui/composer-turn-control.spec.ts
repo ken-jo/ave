@@ -1,6 +1,7 @@
 // Computed-style failures need real CSS; renderer markup assertions alone cannot prove legibility or alignment.
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 // Scope locators to the main dock; side chat renders the same controls and test ids.
 const MAIN = '[data-composer-surface="main"] ';
@@ -68,7 +69,7 @@ test('typing turns the quiet control solid', async ({ mainWindow }) => {
   expect(after.borderWidth).toBe('0px');
 });
 
-test('message queue panel stays a full-bleed band and paints visible actions', async ({ mainWindow }) => {
+test('message queue panel shares the composer frame edges and paints visible actions', async ({ mainWindow }) => {
   await mainWindow.evaluate(() => {
     const store = (window as unknown as { __ave_message_queue_store__?: { add: (t: string) => void } })
       .__ave_message_queue_store__;
@@ -82,10 +83,8 @@ test('message queue panel stays a full-bleed band and paints visible actions', a
 
   const measured = await panel.evaluate((el) => {
     const panelBox = el.getBoundingClientRect();
-    // Compare strip alignment with its dock column; the main region also includes the sidebar.
-    const dockBox = document
-      .querySelector('[data-testid="composer-queue-dock"]')
-      ?.getBoundingClientRect();
+    const frameBox = el.closest('[data-composer-surface="main"]')!
+      .querySelector('[data-testid="composer-frame"]')!.getBoundingClientRect();
     const injectEl = el.querySelector('[data-testid="message-queue-row-send-now-button"]')!;
     // Translucent panel backgrounds require contrast against the nearest opaque ancestor.
     let opaque: HTMLElement | null = el as HTMLElement;
@@ -100,53 +99,58 @@ test('message queue panel stays a full-bleed band and paints visible actions', a
     return {
       left: Math.round(panelBox.left),
       right: Math.round(panelBox.right),
-      dockLeft: dockBox ? Math.round(dockBox.left) : null,
-      dockRight: dockBox ? Math.round(dockBox.right) : null,
+      frameLeft: Math.round(frameBox.left),
+      frameRight: Math.round(frameBox.right),
+      frameWidth: frameBox.width,
       injectWidth: Math.round(injectEl.getBoundingClientRect().width),
       injectColor: getComputedStyle(injectEl).color,
       behindPanel,
     };
   });
 
-  // Strips fill the dock column; only the composer is inset.
-  expect(measured.left).toBe(measured.dockLeft);
-  expect(measured.right).toBe(measured.dockRight);
+  expect(measured.frameWidth).toBeGreaterThan(0);
+  expect(measured.left).toBe(measured.frameLeft);
+  expect(measured.right).toBe(measured.frameRight);
 
   // Measure visible width and contrast against the actual action backdrop.
   expect(measured.injectWidth).toBeGreaterThan(0);
   expect(contrastRatio(measured.injectColor, measured.behindPanel)).toBeGreaterThanOrEqual(4.5);
 });
 
-test('edit bubble is a single frame with a readable save button', async ({ mainWindow }) => {
-  const textarea = mainWindow.locator(MAIN + '[data-testid="composer-textarea"]');
-  await textarea.click();
-  await textarea.fill('포털 세션 유지 시간 확인할 수 있나?');
-  await mainWindow.locator(MAIN + '[data-testid="composer-send-button"]').click();
+test('edit bubble is a single frame with a readable save button', async () => {
+  // This layout check starts with stored history; creating its row must not require a configured model.
+  const ctx = await launchSeededElectron({ historyRows: [
+    { index: 0, role: "user", content: "포털 세션 유지 시간 확인할 수 있나?", createdAt: Date.now() - 1000 },
+  ] });
+  const mainWindow = ctx.page;
+  try {
+    const actions = mainWindow.locator('[data-testid="user-message-actions"]').first();
+    await expect(actions).toBeAttached({ timeout: 15_000 });
+    await actions.locator('button').first().click({ force: true });
 
-  const actions = mainWindow.locator('[data-testid="user-message-actions"]').first();
-  await expect(actions).toBeAttached({ timeout: 15_000 });
-  await actions.locator('button').first().click({ force: true });
+    const bubble = mainWindow.locator('[data-testid="user-message-editor"]');
+    await expect(bubble).toBeVisible({ timeout: 10_000 });
 
-  const bubble = mainWindow.locator('[data-testid="user-message-editor"]');
-  await expect(bubble).toBeVisible({ timeout: 10_000 });
+    const measured = await bubble.evaluate((el) => {
+      const inner = el.querySelector('textarea')!;
+      const save = el.querySelector('[data-testid="user-message-editor-save"]')!;
+      const saveCs = getComputedStyle(save);
+      return {
+        bubbleBorderWidth: getComputedStyle(el).borderTopWidth,
+        innerBorderWidth: getComputedStyle(inner).borderTopWidth,
+        saveLabel: (save.textContent ?? '').trim(),
+        saveColor: saveCs.color,
+        saveBackground: saveCs.backgroundColor,
+      };
+    });
 
-  const measured = await bubble.evaluate((el) => {
-    const inner = el.querySelector('textarea')!;
-    const save = el.querySelector('[data-testid="user-message-editor-save"]')!;
-    const saveCs = getComputedStyle(save);
-    return {
-      bubbleBorderWidth: getComputedStyle(el).borderTopWidth,
-      innerBorderWidth: getComputedStyle(inner).borderTopWidth,
-      saveLabel: (save.textContent ?? '').trim(),
-      saveColor: saveCs.color,
-      saveBackground: saveCs.backgroundColor,
-    };
-  });
+    expect(measured.bubbleBorderWidth).not.toBe('0px');
+    expect(measured.innerBorderWidth).toBe('0px');
 
-  expect(measured.bubbleBorderWidth).not.toBe('0px');
-  expect(measured.innerBorderWidth).toBe('0px');
-
-  // Caption typography must not cause class merging to drop the button foreground color.
-  expect(measured.saveLabel.length).toBeGreaterThan(0);
-  expect(contrastRatio(measured.saveColor, measured.saveBackground)).toBeGreaterThanOrEqual(4.5);
+    // Caption typography must not cause class merging to drop the button foreground color.
+    expect(measured.saveLabel.length).toBeGreaterThan(0);
+    expect(contrastRatio(measured.saveColor, measured.saveBackground)).toBeGreaterThanOrEqual(4.5);
+  } finally {
+    await teardownSeededElectron(ctx);
+  }
 });

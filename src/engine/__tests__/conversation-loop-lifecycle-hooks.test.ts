@@ -1,22 +1,11 @@
 // SessionStart and Stop are observe-only; dispatch denial must not change control flow.
 import { describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { MAX_STOP_HOOK_CONTINUATIONS } from "../turn/query-loop.js";
-
-class FakeProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-  constructor(private readonly turns: StreamEvent[][]) {}
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
+import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 
 function completeTurn(): StreamEvent[] {
   return [
@@ -70,19 +59,15 @@ function buildLoop(
   scriptHookManager?: ReturnType<typeof stubManager>,
 ): ConversationLoop {
   const toolRegistry = new ToolRegistry();
-  return new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-    },
+  return new ConversationLoop(makeBasicConversationLoopDeps({
     systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn(),
     },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
     memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [], loadSessionMetadata: () => null,
     },
     disableSessionPersistence: true,
     ...(scriptHookManager ? { scriptHookManager } : {}),
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
 }
 
 describe("ConversationLoop — #811 m2 lifecycle events", () => {

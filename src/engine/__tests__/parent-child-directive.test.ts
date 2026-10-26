@@ -26,6 +26,7 @@ import type { FeatureNamespaceHandle } from "../../main/storage/feature-namespac
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
 
 const ROOT_SESSION = "11111111-1111-4111-8111-111111111111";
 const OTHER_ROOT = "22222222-2222-4222-8222-222222222222";
@@ -487,10 +488,7 @@ describe("parent directive delivery into a live sub-agent run", () => {
     );
     expect(queued).toMatchObject({ ok: true, disposition: "mailbox" });
 
-    const resumeProvider = new TwoRoundProvider([[
-      { type: "text_delta", text: "acknowledged" },
-      { type: "message_complete", stopReason: "end_turn" },
-    ]]);
+    const resumeProvider = new TwoRoundProvider(endTurnScript("acknowledged"));
     restore = useProvider(resumeProvider);
     let resumed;
     try {

@@ -1,5 +1,5 @@
 // Stream spawn lifecycle frames to the originating conversation's sub-agent viewer.
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolSessionId, type Tool } from "./base.js";
 import {
   exactToolScope,
   PARENT_ALL_TOOL_SCOPE,
@@ -31,6 +31,13 @@ import {
   authorizationRequiredStateForOutput,
   issueAuthorizationRequiredControl,
 } from "../shared/authorization-required.js";
+
+function spawnFailure(error: string, state: "rejected" | "error" = "rejected") {
+  return {
+    output: JSON.stringify({ error, taskState: projectSubAgentRunState(state) }),
+    isError: true,
+  };
+}
 
 // Authorized turns can fail through deterministic remote rejection; retry guidance must distinguish that from transient failure.
 // Keep the child's resumeId, but reserve resumeRefusal for host decisions made before a turn runs.
@@ -165,8 +172,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         };
       }
       // Require an originating conversation to own progress frames and child approvals.
-      const originSessionId =
-        typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
+      const originSessionId = toolSessionId(ctx);
       if (originSessionId === undefined) {
         return {
           output: JSON.stringify({
@@ -183,32 +189,17 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         && ctx.metadata?.approvalSurface !== "unavailable";
       const runner = deps.getRunner();
       if (!runner) {
-        return {
-          output: JSON.stringify({
-            error: "agent_spawn runner not configured",
-            taskState: projectSubAgentRunState("error"),
-          }),
-          isError: true,
-        };
+        return spawnFailure("agent_spawn runner not configured", "error");
       }
       const agentName = typeof a.agentName === "string" ? a.agentName.trim() : "";
       if (agentName && !AGENT_NAME_ALLOWLIST.test(agentName)) {
-        return {
-          output: JSON.stringify({
-            error: `invalid agentName: must match ${AGENT_NAME_ALLOWLIST.source}`,
-            taskState: projectSubAgentRunState("rejected"),
-          }),
-          isError: true,
-        };
+        return spawnFailure(`invalid agentName: must match ${AGENT_NAME_ALLOWLIST.source}`);
       }
       const profile = agentName && deps.getAgentProfile
         ? await deps.getAgentProfile(agentName)
         : null;
       if (agentName && !profile) {
-        return {
-          output: JSON.stringify({ error: `agent profile not found: ${agentName}`, taskState: projectSubAgentRunState("rejected") }),
-          isError: true,
-        };
+        return spawnFailure(`agent profile not found: ${agentName}`);
       }
       const title = typeof a.title === "string" && a.title.trim()
         ? a.title.trim()
@@ -221,13 +212,7 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
         : undefined;
 
       if (!instructions || (!resumeId && !title)) {
-        return {
-          output: JSON.stringify({
-            error: "instructions are required; title is required when agentName is not provided (unless resumeId is set)",
-            taskState: projectSubAgentRunState("rejected"),
-          }),
-          isError: true,
-        };
+        return spawnFailure("instructions are required; title is required when agentName is not provided (unless resumeId is set)");
       }
       // Resolve scope once: explicit usable names, then profile scope, then the parent's registry.
       const requestedSourceTools = Array.isArray(a.sourceTools)
@@ -573,10 +558,7 @@ export function createAgentStatusTool(deps: Pick<AgentSpawnToolDeps, "getRunner"
           isError: true,
         };
       }
-      const originSessionId =
-        typeof ctx.metadata?.sessionId === "string"
-          ? (ctx.metadata.sessionId as string)
-          : "";
+      const originSessionId = toolSessionId(ctx) ?? "";
       if (!originSessionId) {
         return {
           output: JSON.stringify({ error: "agent_status requires a session id" }),
@@ -648,10 +630,7 @@ export function createAgentInterruptTool(deps: Pick<AgentSpawnToolDeps, "getRunn
           isError: true,
         };
       }
-      const originSessionId =
-        typeof ctx.metadata?.sessionId === "string"
-          ? (ctx.metadata.sessionId as string)
-          : "";
+      const originSessionId = toolSessionId(ctx) ?? "";
       if (!originSessionId) {
         return {
           output: JSON.stringify({ error: "agent_interrupt requires a session id" }),

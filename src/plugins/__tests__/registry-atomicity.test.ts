@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createChildTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import lockfile from "proper-lockfile";
-import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
+import { readPluginRegistry, updatePluginRegistry, migratePluginRegistry } from "../registry.js";
+import { setAppRelaunchRequested } from "../../main/app-relaunch-state.js";
+import { hasInstalledStateMutationInFlight } from "../../main/installed-state-mutation.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const childFixture = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/registry-process-child.ts");
@@ -53,10 +55,33 @@ describe("plugin registry transaction atomicity", () => {
   });
 
   afterEach(async () => {
+    setAppRelaunchRequested(false);
     vi.restoreAllMocks();
     // Stop children before removing directories they may lock.
     await children.reap();
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("refuses direct registry update and migration after relaunch reservation without creating files", async () => {
+    const mutate = vi.fn();
+    setAppRelaunchRequested(true);
+    await expect(updatePluginRegistry(registryPath, mutate)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    await expect(migratePluginRegistry(registryPath)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("counts a direct registry transaction synchronously through publication", async () => {
+    const pending = updatePluginRegistry(registryPath, () => {
+      expect(hasInstalledStateMutationInFlight()).toBe(true);
+    });
+    try {
+      expect(hasInstalledStateMutationInFlight()).toBe(true);
+    } finally {
+      await pending;
+    }
+    expect(hasInstalledStateMutationInFlight()).toBe(false);
+    expect(await readPluginRegistry(registryPath)).toEqual({ version: 1, plugins: [] });
   });
 
   it("serializes two child-process first writes without creating an empty registry target", async () => {

@@ -24,6 +24,7 @@ function capability({
     activeCapability: { kind: active ? "asrt" : "none", platform, confidence: "verified", reason: "fixture", confines },
   });
   return {
+    workerRestartPending: false,
     platform,
     enabled: requestedSandbox,
     available: platform === "darwin" || platform === "linux" || platform === "win32",

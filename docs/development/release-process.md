@@ -9,6 +9,29 @@ Source files and workflows win when this page drifts: `package.json`
 (`aveRelease`, `build`), `.github/workflows/build-installers.yml`,
 `scripts/release.mjs`.
 
+## Settings relaunch and downloaded updates
+
+`src/main/auto-updater.ts` preserves the updater's normal automatic installation
+on quit. Reserving a settings relaunch synchronously sets
+`autoInstallOnAppQuit = false` before scheduling the relaunch or entering quit
+cleanup. This restart applies the requested settings without installing an
+unrelated downloaded update. Cancelling the reservation restores the previous
+value; stopping the updater during accepted quit cleanup leaves it disabled for
+that quit. Explicit update installation remains refused during the reservation.
+
+Installed package changes share one admission counter in
+`src/main/installed-state-mutation.ts`. Content operations hold admission from
+queue entry through payload writes, ledger publication, activation/deactivation
+and rollback or removal. Direct ledger writes hold it through disk and memory
+publication. Server package operations hold it through config, files, records
+and rollback; plugin registry transactions hold it through queue and file-lock
+release. Existing plugin lifecycle locks additionally cover the surrounding
+plugin operation. Marketplace install wrappers share this counter and retain
+admission across staging, multiple stores, migration and boot bookkeeping.
+Deferred deletion of retired content acquires a separate admission after
+retirement; a reserved relaunch leaves these unused files for the next boot
+sweep instead of delaying shutdown for a live generation's retirement.
+
 ## Immutable Public Tag Release Profile
 
 The current public tag profile is deliberately **unsigned only**. The

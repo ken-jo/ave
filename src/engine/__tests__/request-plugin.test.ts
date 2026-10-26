@@ -10,6 +10,7 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { EAGER_TOOL_EXPOSURE_CEILING } from "../../shared/tool-exposure-policy.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -470,12 +471,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
   });
 
   it("keeps explicitly allowlisted tools visible even when allowedPluginIds is deny-all", async () => {
-    const provider = new RecordingProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new RecordingProvider(endTurnScript("done"));
     const loop = makeLoop({
       provider,
       availablePluginIds: ["com.example.meeting"],

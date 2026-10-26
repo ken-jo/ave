@@ -1,6 +1,7 @@
 /** Renderer forms and main validation share schema support; display labels must not redefine acceptance. */
 
 import { isRecord } from "./is-record.js";
+import { trimmedString } from "./trimmed-string.js";
 
 export type ElicitationFieldKind = "string" | "number" | "integer" | "boolean";
 
@@ -46,12 +47,6 @@ function supportedKind(value: unknown): ElicitationFieldKind | undefined {
     return value;
   }
   return undefined;
-}
-
-function trimmedString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /** Reject unsupported schemas whole, never partial forms; empty scalar enum values remain valid. */

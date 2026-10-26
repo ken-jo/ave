@@ -64,10 +64,14 @@ retains ownership of request projection and attachment limits.
 
 ## Process Boundaries
 
-Local table previews use a bounded and killable child. Admission covers reading
+Local document previews use a bounded and killable child. Admission covers reading
 and parsing; separate startup and parse deadlines cover the child lifecycle.
 The [table preview contract](table-document-preview.md) owns request replacement,
 container checks, expansion refusals and bounded display windows.
+The [page preview contract](page-document-preview.md) adds presentation outlines
+and rendered PDF pages through that same lifecycle.
+The [agent document tools](agent-document-tools.md) reuse that parser with bounded
+model-context selections and policy-checked, session-bound panel requests.
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and
@@ -1337,6 +1341,31 @@ separate policy bypass.
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
 
+On Windows, sandbox write denies beneath machine roots (`ProgramData`, the
+program-files roots and the system directory) are omitted unless a grant
+strictly beneath the machine root contains the target: ordinary ACLs already
+refuse users writes there. Denies inside writable workspaces remain protected.
+A missing deny target can create placeholders and change its parent's DACL,
+requiring `WRITE_DAC` on machine-owned directories that ordinary users cannot
+change. Read denies are never omitted this way; one the helper cannot stamp
+fails sandbox initialization. Write grants equal to or above a machine root are
+refused before policy narrowing. Unproven path identities retain the deny. Administrative policy
+protection outside grants instead lives at the read boundary:
+all administrative section readers share a non-following, handle-based reader.
+The file must belong to Administrators or SYSTEM. Its parent must belong to
+Administrators, SYSTEM or the trusted installer service. The file's DACL may not
+grant another principal write, deletion or ownership/security changes. The parent
+may not grant delete-child, deletion or ownership/security changes; add-file
+rights, which ProgramData's default inheritance gives Users, cannot replace an
+existing file and are allowed. The file and
+parent handles reject reparse points, remain pinned against replacement, and
+must have matching final parent paths; bytes and security descriptors come from
+those same handles. Marketplace reads recheck trust even if file timestamps are
+unchanged, because a parent DACL change does not change file timestamps.
+Untrusted or malformed policy locks editing and requires approval. Settings
+shows the path and cause, and the audit logger records the failure without policy
+contents. Other platforms retain their existing read behavior.
+
 ### Structured File Transfers
 
 `copy_path({sourcePath, destinationPath})` copies ordinary binary/text files or complete directory trees, including hidden ordinary entries and empty directories. `extract_archive({archivePath, destinationPath})` extracts tar and gzip-compressed tar, detected from content. Both are builtin write tools registered through `createFileTools()` in [file-tools.ts](../../src/tools/file-tools.ts). ZIP extraction and archive creation are unsupported. Shell recursive-copy and archive-mutation denials remain in force; denial guidance describes the supported alternatives and explicitly limits the tar alternative to extraction.
@@ -1755,6 +1784,8 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   is read-only on Windows too, as it already is on macOS and Linux.
   `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
   covers only the `srt-win` Rust sources.
+
+On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
@@ -2230,7 +2261,9 @@ group rather than by the user. Admission (`assertCodexLocations` in
    - an object the user already owns is kept, without asking for
      `WRITE_OWNER`;
    - an object owned by `S-1-5-32-544` is given to the user, on a handle that
-     re-reads the owner before it sets it;
+     re-reads the owner before it sets it. For a non-reparse directory, that
+     same write sets a protected owner-only DACL with inheritable full control;
+     files and reparse points use an ownership-only write;
    - an object with any other owner refuses its request, and nothing in that
      request changes. A claim is sent in requests of at most 128 paths and
      24,576 characters of JSON-encoded paths. When it spans several requests,
@@ -2267,7 +2300,8 @@ with its own owner rule:
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
 - **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
-  When `AVE_HOME` or its `secrets` directory does not exist yet,
+  When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
+  directory does not exist yet,
   `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
   create it with the user as owner and an owner-only protected DACL, so no
   grant for the token's default owner is left behind. Before it changes an
@@ -2282,6 +2316,11 @@ with its own owner rule:
   root, but it does not take ownership of it. `isOwnerOnlyDacl` in
   `src/shared/ave-home.ts` applies this rule. It takes an elevated
   Administrators token as its sign that the default owner is `S-1-5-32-544`.
+  On a non-elevated boot, only an existing non-reparse `subscription-runtimes`
+  root owned by `S-1-5-32-544` is claimed for the token user before DACL protection,
+  with the owner rechecked on the same non-following handle; other foreign owners
+  remain refused. A failed claim refuses privacy as `owner-claim-failed`, naming
+  the path and advising one elevated run or an owner repair.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.

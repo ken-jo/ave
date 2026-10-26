@@ -460,7 +460,12 @@ describe("pty-manager happy path (fs-contained)", () => {
     wrapWorkerCommandMock.mockResolvedValueOnce({
       argv: ["wrapped-shell"], env: {}, notices: ["write access narrowed to project"], cleanupCompleted,
     });
-    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
     expect(emitted.some(entry => (entry.payload as { chunk?: string }).chunk?.includes("write access narrowed to project"))).toBe(true);
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
     lastPty!.emitData(`\u001b]133;C;cmdline_url=exit;${spawnedNonce(opts.env)}\u0007`);

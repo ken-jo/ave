@@ -21,11 +21,12 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
   };
 });
 
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { createBootHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
@@ -409,9 +410,12 @@ function killControl(child: ChildProcess, group: boolean): void {
   }
 }
 
+// The control's shutdown is observed while later tests run; a synchronous probe here would freeze the event loop that relays their workers' exits (a blocking `sample` failed 1a by delegation as `exit: "timeout"`).
+const execFileAsync = promisify(execFile);
+
 /** Use process listings rather than signal 0; macOS reports EPERM for zombie-only groups. */
-function controlGroupAlive(pid: number): boolean {
-  const table = execFileSync("/bin/ps", ["-Ao", "pgid=,stat="], { encoding: "utf-8" });
+async function controlGroupAlive(pid: number): Promise<boolean> {
+  const { stdout: table } = await execFileAsync("/bin/ps", ["-Ao", "pgid=,stat="], { encoding: "utf-8" });
   return table.split("\n").some((row) => {
     const [pgid, stat] = row.trim().split(/\s+/);
     return pgid === String(pid) && stat !== undefined && !stat.startsWith("Z");
@@ -419,8 +423,9 @@ function controlGroupAlive(pid: number): boolean {
 }
 
 /** Check descendants outside the process group because group termination cannot reach them. */
-function controlDescendantsOutsideGroup(pid: number): { readonly pid: number; readonly row: string }[] {
-  const rows = execFileSync("/bin/ps", ["-Ao", "pid=,ppid=,pgid=,stat=,command="], { encoding: "utf-8" })
+async function controlDescendantsOutsideGroup(pid: number): Promise<{ readonly pid: number; readonly row: string }[]> {
+  const { stdout: listing } = await execFileAsync("/bin/ps", ["-Ao", "pid=,ppid=,pgid=,stat=,command="], { encoding: "utf-8" });
+  const rows = listing
     .split("\n")
     .map((row) => {
       const [own, parent, pgid, stat] = row.trim().split(/\s+/);
@@ -443,12 +448,12 @@ function controlDescendantsOutsideGroup(pid: number): { readonly pid: number; re
 }
 
 /** Report stack and group diagnostics independently; a missing diagnostic tool is never a clean result. */
-function controlDiagnostics(pid: number, userData: string): string {
+async function controlDiagnostics(pid: number, userData: string): Promise<string> {
   const parts: string[] = [];
   if (process.platform === "darwin") {
     const sampleFile = join(userData, "control.sample.txt");
     try {
-      execFileSync("/usr/bin/sample", [String(pid), "2", "-file", sampleFile], { stdio: "ignore", timeout: 20_000 });
+      await execFileAsync("/usr/bin/sample", [String(pid), "2", "-file", sampleFile], { timeout: 20_000 });
       const sample = readFileSync(sampleFile, "utf-8");
       const top = sample.indexOf("Sort by top of stack");
       const tree = Math.max(0, sample.indexOf("Call graph:"));
@@ -461,7 +466,7 @@ function controlDiagnostics(pid: number, userData: string): string {
   }
   if (process.platform !== "win32") {
     try {
-      const table = execFileSync("/bin/ps", ["-Ao", "pid,ppid,pgid,etime,stat,command"], { encoding: "utf-8" });
+      const { stdout: table } = await execFileAsync("/bin/ps", ["-Ao", "pid,ppid,pgid,etime,stat,command"], { encoding: "utf-8" });
       const group = table
         .split("\n")
         .filter((row, index) => index === 0 || row.trim().split(/\s+/)[2] === String(pid))
@@ -539,7 +544,7 @@ async function runElectronControl(): Promise<ControlRun> {
   }
   const line = reportLine();
   if (line === undefined) {
-    const diagnostics = outcome === "timeout" && pid !== undefined ? controlDiagnostics(pid, userData) : "";
+    const diagnostics = outcome === "timeout" && pid !== undefined ? await controlDiagnostics(pid, userData) : "";
     if (pid !== undefined) killControl(child, group);
     const end = await ended;
     liveControl = undefined;
@@ -555,13 +560,13 @@ async function runElectronControl(): Promise<ControlRun> {
     let diagnostics = "";
     let reaped = false;
     let escaped: readonly string[] = [];
-    const grace = setTimeout(() => {
-      if (pid === undefined) return;
+    let reaping: Promise<void> | undefined;
+    const reap = async (controlPid: number): Promise<void> => {
       reaped = true;
-      diagnostics = controlDiagnostics(pid, userData);
+      diagnostics = await controlDiagnostics(controlPid, userData);
       if (group) {
         // Sample descendants before the parent exits so reparenting cannot hide escaped helpers.
-        const outside = controlDescendantsOutsideGroup(pid);
+        const outside = await controlDescendantsOutsideGroup(controlPid);
         escaped = outside.map((entry) => entry.row);
         killControl(child, group);
         for (const entry of outside) {
@@ -574,19 +579,27 @@ async function runElectronControl(): Promise<ControlRun> {
       } else {
         killControl(child, group);
       }
+    };
+    const grace = setTimeout(() => {
+      if (pid === undefined) return;
+      reaping = reap(pid);
+      // Rejections surface at the await below, not as an unhandled rejection while the control still runs.
+      reaping.catch(() => {});
     }, CONTROL_EXIT_GRACE_MS);
     const end = await ended;
     clearTimeout(grace);
+    // A reap in flight still owns the diagnostics and the escaped-helper kills; finish it before reading either.
+    await reaping;
     // After reaping, the control PID and group ID may be recycled; stop signaling them.
     liveControl = undefined;
     // A surviving group member prevents group-ID reuse; report it before terminating the group.
     let survivor = false;
     if (pid !== undefined && group) {
       const settle = Date.now() + 2_000;
-      while (controlGroupAlive(pid) && Date.now() < settle) await new Promise((resolve) => setTimeout(resolve, 100));
-      survivor = controlGroupAlive(pid);
+      while ((await controlGroupAlive(pid)) && Date.now() < settle) await new Promise((resolve) => setTimeout(resolve, 100));
+      survivor = await controlGroupAlive(pid);
       if (survivor) {
-        diagnostics += `\n\n${controlDiagnostics(pid, userData)}`;
+        diagnostics += `\n\n${await controlDiagnostics(pid, userData)}`;
         killControl(child, group);
       }
     }

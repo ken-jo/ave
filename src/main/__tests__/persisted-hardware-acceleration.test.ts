@@ -1,3 +1,4 @@
+import { writeSettingsFile } from "./support/settings-file.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 // An unset toggle must remain distinct from explicit false to preserve the first-run Windows GPU default.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -53,21 +54,13 @@ describe("readPersistedHardwareAccelerationSync", () => {
   });
 
   it("reports absence when the field is missing from an existing file", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { appMode: "work" } }),
-      "utf-8",
-    );
+    writeSettingsFile(userDataPath, { system: { appMode: "work" } });
 
     expect(readPersistedHardwareAccelerationSync(userDataPath)).toBeUndefined();
   });
 
   it("reports absence for a non-boolean value rather than coercing it", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { hardwareAcceleration: "false" } }),
-      "utf-8",
-    );
+    writeSettingsFile(userDataPath, { system: { hardwareAcceleration: "false" } });
 
     // The string "false" is truthy — a coercing reader would turn the GPU ON for a profile that says the opposite.
     expect(readPersistedHardwareAccelerationSync(userDataPath)).toBeUndefined();

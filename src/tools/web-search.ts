@@ -4,23 +4,6 @@ import { t } from "../i18n/index.js";
 
 // Treat provider shapes as untrusted: mismatches must report explicit errors, never silently become empty results.
 
-interface TavilyResult {
-  title?: unknown;
-  content?: unknown;
-  url?: unknown;
-}
-interface TavilyResponse {
-  results?: TavilyResult[];
-}
-interface SerperOrganic {
-  title?: unknown;
-  snippet?: unknown;
-  link?: unknown;
-}
-interface SerperResponse {
-  organic?: SerperOrganic[];
-}
-
 interface NormalizedSearchResult {
   title: string;
   snippet: string;
@@ -38,42 +21,36 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-// Require results-array responses; shape mismatch must surface as a tool error.
-export function parseTavilyResponse(data: unknown): NormalizedSearchResult[] {
+function parseSearchResponse(
+  data: unknown,
+  provider: string,
+  listKey: string,
+  snippetKey: string,
+  urlKey: string,
+): NormalizedSearchResult[] {
   if (typeof data !== "object" || data === null) {
-    throw new WebSearchShapeError("Tavily response was not a JSON object");
+    throw new WebSearchShapeError(`${provider} response was not a JSON object`);
   }
-  const { results } = data as TavilyResponse;
+  const results = (data as Record<string, unknown>)[listKey];
   if (results === undefined) {
-    throw new WebSearchShapeError("Tavily response missing `results`");
+    throw new WebSearchShapeError(`${provider} response missing \`${listKey}\``);
   }
   if (!Array.isArray(results)) {
-    throw new WebSearchShapeError("Tavily `results` was not an array");
+    throw new WebSearchShapeError(`${provider} \`${listKey}\` was not an array`);
   }
   return results.map((r) => ({
     title: asString(r?.title),
-    snippet: asString(r?.content),
-    url: asString(r?.url),
+    snippet: asString(r?.[snippetKey]),
+    url: asString(r?.[urlKey]),
   }));
 }
 
-// Require organic-array responses; shape mismatch must surface as a tool error.
+export function parseTavilyResponse(data: unknown): NormalizedSearchResult[] {
+  return parseSearchResponse(data, "Tavily", "results", "content", "url");
+}
+
 export function parseSerperResponse(data: unknown): NormalizedSearchResult[] {
-  if (typeof data !== "object" || data === null) {
-    throw new WebSearchShapeError("Serper response was not a JSON object");
-  }
-  const { organic } = data as SerperResponse;
-  if (organic === undefined) {
-    throw new WebSearchShapeError("Serper response missing `organic`");
-  }
-  if (!Array.isArray(organic)) {
-    throw new WebSearchShapeError("Serper `organic` was not an array");
-  }
-  return organic.map((r) => ({
-    title: asString(r?.title),
-    snippet: asString(r?.snippet),
-    url: asString(r?.link),
-  }));
+  return parseSearchResponse(data, "Serper", "organic", "snippet", "link");
 }
 
 // Boot injects provider settings and host-network fetch so requests honor system proxy and certificate configuration.
@@ -101,11 +78,9 @@ export function createWebSearchTool(
       const query = args.query as string;
       // Bound count to 1-10 with default 5 before sending it to a provider or HTML parser.
       const rawCount = args.count;
-      let count = 5;
-      if (typeof rawCount === "number" && Number.isFinite(rawCount)) {
-        const clamped = Math.min(10, Math.max(1, Math.floor(rawCount)));
-        count = clamped;
-      }
+      const count = typeof rawCount === "number" && Number.isFinite(rawCount)
+        ? Math.min(10, Math.max(1, Math.floor(rawCount)))
+        : 5;
       const ws = settingsService.get("webSearch");
       const apiKey = settingsService.getSecret(`web.apiKey.${ws.provider}`);
       try {

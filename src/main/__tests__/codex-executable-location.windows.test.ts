@@ -1,7 +1,7 @@
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
@@ -21,6 +21,7 @@ import {
 } from "../windows-acl-host.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
+import { readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 
 // Mocked access rules answer at the request level. The real case empties the seam, so the product's own ACL host runs.
 const fakeRequest = vi.fn(async (request: WindowsAclRequest): Promise<string> => {
@@ -205,6 +206,53 @@ function setOwner(path: string, sid: string): void {
 }
 
 interface ClaimReply { result: { currentSid: string; claims: { path: string; previousOwner: string; outcome: string }[] } }
+
+it.runIf(process.platform === "win32")("replaces inherited foreign access when claiming a private runtime directory", async (context) => {
+  const fixture = realHostFixture();
+  await fixture.prime();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-access-")));
+  roots.push(parent);
+  expect(readWindowsDirectoryDacls([parent], true)[0]).toMatchObject({ protected: true });
+  execFileSync(join(process.env.SystemRoot!, "System32", "icacls.exe"),
+    [parent, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/q"], { windowsHide: true, stdio: "pipe" });
+  const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
+  const [before] = readWindowsDirectoryDacls([directory]);
+  expect(before.rules).toContainEqual(expect.objectContaining({ sid: "S-1-5-32-545", isInherited: true }));
+  if (!before.elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
+  setOwner(directory, "S-1-5-32-544");
+  expect(readWindowsDirectoryDacls([directory])[0].ownerSid).toBe("S-1-5-32-544");
+  await claimPrivateOwnership([directory]);
+  const [after] = readWindowsDirectoryDacls([directory]);
+  expect(after.ownerSid).toBe(after.currentUserSid);
+  expect(after.protected).toBe(true);
+  expect(after.rules).toEqual([expect.objectContaining({
+    sid: after.currentUserSid, accessControlType: 0, fileSystemRights: 2032127,
+    inheritanceFlags: 3, propagationFlags: 0, isInherited: false,
+  })]);
+}, 45_000);
+
+it.runIf(process.platform === "win32")("admits a private runtime directory claimed from Administrators", async (context) => {
+  if (!readWindowsDirectoryDacls([tmpdir()])[0].elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
+  const fixture = realHostFixture();
+  await fixture.prime();
+  // Admission walks every ancestor: root the fixture in the real profile, not a runner temp tree owned by an image account.
+  const base = process.env.LOCALAPPDATA!;
+  const parent = realpathSync(mkdtempSync(join(base, "ave-owner-admit-")));
+  roots.push(parent);
+  const trust = { capSidPath: join(parent, "absent-cap-fixture") };
+  const refusal = await assertCodexLocations([{ path: parent, kind: "directory", routeKind: "native" }], trust)
+    .then(() => "", (error: unknown) => String(error));
+  if (refusal.includes("untrusted owner")) {
+    const chain: string[] = [];
+    for (let path = parent; dirname(path) !== path; path = dirname(path)) chain.push(path);
+    const owners = readWindowsDirectoryDacls(chain).map(({ path, ownerSid }) => `${path}=${ownerSid}`);
+    context.skip(`An ancestor of ${base} is not admissible: ${owners.join(", ")}`);
+  }
+  const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
+  setOwner(directory, "S-1-5-32-544");
+  await claimPrivateOwnership([directory]);
+  await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }], trust)).resolves.toBeUndefined();
+}, 45_000);
 
 it.runIf(process.platform === "win32")("keeps a directory the account already owns without asking for WRITE_OWNER", async () => {
   const fixture = realHostFixture();

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { UsageSummaryShape } from "../types.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
@@ -11,6 +12,21 @@ interface InsightsUsageBreakdownProps {
 
 function byTokensDesc<T extends { totalTokens?: number }>(rows: readonly T[] | undefined): T[] {
   return [...(rows ?? [])].sort((a, b) => (b.totalTokens ?? 0) - (a.totalTokens ?? 0));
+}
+
+function UsageTable({ testId, label, children }: { testId: string; label: string; children: ReactNode }) {
+  const { t } = useTranslation();
+  return (
+    <table data-testid={testId} className="w-full text-xs">
+      <thead>
+        <tr className="text-left text-muted-foreground">
+          <th className="pb-1 font-medium">{label}</th>
+          <th className="pb-1 text-right font-medium">{t("usageDashboard.colTokens")}</th>
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
+  );
 }
 
 export function InsightsUsageBreakdown({
@@ -46,22 +62,14 @@ export function InsightsUsageBreakdown({
         </header>
         <div className="max-h-64 space-y-3 overflow-y-auto p-3">
           {apiProviders.length > 0 ? (
-            <table data-testid="insights-api-provider-usage" className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="pb-1 font-medium">{t("usageDashboard.colVendor")}</th>
-                  <th className="pb-1 text-right font-medium">{t("usageDashboard.colTokens")}</th>
+            <UsageTable testId="insights-api-provider-usage" label={t("usageDashboard.colVendor")}>
+              {apiProviders.map((row) => (
+                <tr key={row.vendor} className="border-t">
+                  <td className="break-all py-1.5 font-mono">{row.vendor}</td>
+                  <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {apiProviders.map((row) => (
-                  <tr key={row.vendor} className="border-t">
-                    <td className="break-all py-1.5 font-mono">{row.vendor}</td>
-                    <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              ))}
+            </UsageTable>
           ) : null}
 
           {subscriptionProviders.length > 0 ? (
@@ -69,22 +77,14 @@ export function InsightsUsageBreakdown({
               <p className="mb-1 text-xs font-medium text-muted-foreground">
                 {t("usageDashboard.subscriptionUsageTitle")}
               </p>
-              <table data-testid="insights-subscription-provider-usage" className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-muted-foreground">
-                    <th className="pb-1 font-medium">{t("usageDashboard.subscriptionRuntime")}</th>
-                    <th className="pb-1 text-right font-medium">{t("usageDashboard.colTokens")}</th>
+              <UsageTable testId="insights-subscription-provider-usage" label={t("usageDashboard.subscriptionRuntime")}>
+                {subscriptionProviders.map((row) => (
+                  <tr key={row.provider} className="border-t">
+                    <td className="break-all py-1.5 font-mono">{row.provider}</td>
+                    <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {subscriptionProviders.map((row) => (
-                    <tr key={row.provider} className="border-t">
-                      <td className="break-all py-1.5 font-mono">{row.provider}</td>
-                      <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                ))}
+              </UsageTable>
             </div>
           ) : null}
 
@@ -104,24 +104,16 @@ export function InsightsUsageBreakdown({
         </header>
         <div className="max-h-64 space-y-3 overflow-y-auto p-3">
           {apiModels.length > 0 ? (
-            <table data-testid="insights-api-model-usage" className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="pb-1 font-medium">{t("usageDashboard.colModel")}</th>
-                  <th className="pb-1 text-right font-medium">{t("usageDashboard.colTokens")}</th>
+            <UsageTable testId="insights-api-model-usage" label={t("usageDashboard.colModel")}>
+              {apiModels.map((row) => (
+                <tr key={`${row.vendor}:${row.model}`} className="border-t">
+                  <td className="break-all py-1.5 font-mono">
+                    <span className="text-muted-foreground">{row.vendor}/</span>{row.model}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {apiModels.map((row) => (
-                  <tr key={`${row.vendor}:${row.model}`} className="border-t">
-                    <td className="break-all py-1.5 font-mono">
-                      <span className="text-muted-foreground">{row.vendor}/</span>{row.model}
-                    </td>
-                    <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              ))}
+            </UsageTable>
           ) : null}
 
           {subscriptionModels.length > 0 ? (
@@ -129,24 +121,16 @@ export function InsightsUsageBreakdown({
               <p className="mb-1 text-xs font-medium text-muted-foreground">
                 {t("usageDashboard.subscriptionUsageTitle")}
               </p>
-              <table data-testid="insights-subscription-model-usage" className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-muted-foreground">
-                    <th className="pb-1 font-medium">{t("usageDashboard.colModel")}</th>
-                    <th className="pb-1 text-right font-medium">{t("usageDashboard.colTokens")}</th>
+              <UsageTable testId="insights-subscription-model-usage" label={t("usageDashboard.colModel")}>
+                {subscriptionModels.map((row) => (
+                  <tr key={`${row.provider}:${row.model}`} className="border-t">
+                    <td className="break-all py-1.5 font-mono">
+                      <span className="text-muted-foreground">{row.provider}/</span>{row.model}
+                    </td>
+                    <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {subscriptionModels.map((row) => (
-                    <tr key={`${row.provider}:${row.model}`} className="border-t">
-                      <td className="break-all py-1.5 font-mono">
-                        <span className="text-muted-foreground">{row.provider}/</span>{row.model}
-                      </td>
-                      <td className="py-1.5 text-right tabular-nums">{formatTokensExact(row.totalTokens)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                ))}
+              </UsageTable>
             </div>
           ) : null}
 

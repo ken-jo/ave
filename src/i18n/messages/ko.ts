@@ -3,6 +3,13 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "documentSettings.title": "문서 열기",
+  "documentSettings.description": "에이전트가 문서를 열 때 표시하는 방식을 선택합니다. 이 설정은 사용자만 변경할 수 있습니다.",
+  "documentSettings.direct": "사이드 패널에서 열기",
+  "documentSettings.directHint": "읽기가 허용된 문서를 추가 확인 없이 바로 엽니다.",
+  "documentSettings.link": "파일 링크 표시",
+  "documentSettings.linkHint": "패널을 변경하지 않고 직접 열 수 있는 링크를 표시합니다.",
+  "documentSettings.saveFailed": "문서 설정을 불러오거나 저장하지 못했습니다. 설정을 다시 열고 시도하세요.",
   "sandboxPolicy.quarantined": "샌드박스가 보호하는 Git 항목을 삭제하지 않고 격리 위치로 옮겼습니다:\n{moves}\n내용을 확인한 뒤 표시된 격리 경로에서 원래 경로로 각 항목을 복원하세요.",
   "sandboxPolicy.quarantineFailed": "{path} 항목 격리 실패: {reason}. 삭제를 시도하지 않았습니다. 이미 옮긴 항목은 다음 위치에 보존됩니다:\n{moves}",
   "sandboxPolicy.scanNarrowed": "{reason}. 쓰기 허용 범위를 {roots}(으)로 축소했습니다. 스캔하지 못했거나 허용하지 않은 루트: {removed}.",

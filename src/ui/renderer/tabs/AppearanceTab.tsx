@@ -10,10 +10,8 @@ import { getApi } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
-  LOCALE_INFO,
   isInstalledLocale,
   localeInfo,
-  recommendedMarketplaceLocaleForSystem,
   visibleLocalesFor,
 } from "../../../i18n/index.js";
 import { useInstalledContent } from "../installed-content.js";
@@ -338,8 +336,6 @@ function LanguageSection({
   useInstalledContent();
   const visibleLocales = visibleLocalesFor([locale]);
   const installedLocaleIdSet = new Set(visibleLocales.filter(isInstalledLocale));
-  const systemLocale = typeof navigator === "undefined" ? undefined : navigator.language;
-  const recommendedLocale = recommendedMarketplaceLocaleForSystem(systemLocale, [locale]);
   return (
     <SettingsSection
       data-settings-section="appearance-language"
@@ -395,29 +391,6 @@ function LanguageSection({
           );
         })}
       </div>
-      {recommendedLocale && onOpenMarketplace && (
-        <div
-          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/(--opacity-subtle) px-3 py-2 text-xs text-muted-foreground"
-          data-testid="appearance-tab:language-recommendation"
-        >
-          <span>
-            {t("appearanceTab.languageRecommendation", {
-              language: LOCALE_INFO[recommendedLocale].englishName,
-            })}
-          </span>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 text-xs"
-            data-testid={`appearance-tab:language-recommendation-open:${recommendedLocale}`}
-            onClick={() => onOpenMarketplace("language")}
-          >
-            <Store className="size-3.5" aria-hidden={true} />
-            {t("appearanceTab.openMarketplace")}
-          </Button>
-        </div>
-      )}
     </SettingsSection>
   );
 }

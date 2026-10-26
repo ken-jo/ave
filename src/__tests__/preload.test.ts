@@ -365,6 +365,7 @@ describe("preload — plugin webview asset URLs", () => {
     ["subscriptionStartLogin", "ave:settings:subscription:start-login", ["codex", "browser"]],
     ["subscriptionOpenLoginBrowser", "ave:settings:subscription:open-login-browser", ["kimi-code"]],
     ["subscriptionCancelLogin", "ave:settings:subscription:cancel-login", ["codex"]],
+    ["subscriptionAcknowledgeNotice", "ave:settings:subscription:acknowledge-notice", ["chatgpt-plan"]],
     ["subscriptionLogout", "ave:settings:subscription:logout", ["codex"]],
     ["subscriptionListModels", "ave:settings:subscription:list-models", ["codex"]],
     ["subscriptionUseForChat", "ave:settings:subscription:use-for-chat", ["codex", "gpt-5"]],

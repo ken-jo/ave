@@ -31,7 +31,7 @@ hard-deny, and reviewer gates still apply independently.
 [admin-policy-file.ts](../../src/lib/admin-policy-file.ts) classifies a failed read
 as absence only when it reports `ENOENT` and `lstat` confirms no directory entry.
 A dangling symlink, `ENOTDIR`, or an inconclusive entry probe remains unreadable.
-All three administrative policy readers use this classification. Marketplace
+Administrative policy readers use this classification. Marketplace
 policy returns a blocked result on unreadable input; service resolution throws
 instead of falling back to the public endpoint.
 
@@ -43,6 +43,11 @@ and saving rejects before creating or opening user state. Diagnostics record
 the path and failure reason without policy contents or parser exception text.
 Any valid admin file also locks app-mediated user-policy edits, including one
 that omits `managed` or sets it to `false`.
+On Windows, the shared reader also verifies administrative ownership and DACLs
+on the file and its parent using pinned, non-following handles. The
+[architecture contract](architecture.md#tool-governance) describes that trust
+boundary. Untrusted input follows the invalid-file path; Settings displays the
+path and sanitized cause, and audit records the failure.
 An invalid user file contributes no permission fields and does not create an
 administrative edit lock when the admin file is absent.
 

@@ -620,6 +620,7 @@ jobs:
         working-directory: ave
         run: >
           bun run test --
+          src/permissions/__tests__/asrt-sandbox.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
           src/permissions/__tests__/policy-home.test.ts
@@ -648,10 +649,15 @@ jobs:
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
           src/lib/__tests__/admin-policy-file.test.ts
+          src/permissions/__tests__/policy-store-windows.test.ts
+          src/shared/__tests__/windows-admin-policy.test.ts
+          src/shared/__tests__/windows-read-deny-evidence.test.ts
           src/tools/__tests__/file-read-core.test.ts
+          src/tools/__tests__/preview-document-process.test.ts
           src/tools/__tests__/shell-path-policy.test.ts
           src/tools/__tests__/prepared-shell-invocation.test.ts
           src/permissions/__tests__/windows-sandbox-logic.test.ts
+          src/permissions/__tests__/sandbox-write-policy.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
           src/permissions/__tests__/srt-win-integrity.test.ts
           src/permissions/__tests__/egress-runtime-proxy.test.ts
@@ -669,6 +675,29 @@ jobs:
           src/plugins/__tests__/marketplace-update-recovery.test.ts
           src/plugins/__tests__/install-local.test.ts
           src/plugins/__tests__/trust-boundary.test.ts
+          src/__tests__/ave-home-isolation.test.ts
+          src/__tests__/support/native-executable-sid.test.ts
+          src/__tests__/support/tmp-dir-teardown-foreign-lock.test.ts
+          src/audit/__tests__/permission-audit-proof.test.ts
+          src/data/__tests__/node-secret-encryption.test.ts
+          src/data/__tests__/settings-store-atomic-write.test.ts
+          src/main/__tests__/codex-conversation-runtime.test.ts
+          src/main/__tests__/managed-child-tree-termination.test.ts
+          src/memory/__tests__/code-checkpoints-storage-errors.test.ts
+          src/permissions/__tests__/asrt-sandbox-mxc-proxy.test.ts
+          src/permissions/__tests__/egress-grant-class-routing.test.ts
+          src/permissions/__tests__/egress-mxc-review-regressions.test.ts
+          src/permissions/__tests__/sandbox-process-home.test.ts
+          src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/shared/__tests__/shell-execution.test.ts
+          src/shared/__tests__/shell-filesystem-path.test.ts
+          src/shared/__tests__/windows-powershell-env.test.ts
+          src/tools/__tests__/powershell-ast.test.ts
+          src/tools/__tests__/shell-path-policy-config.test.ts
+          src/tools/__tests__/shell-path-policy-windows.test.ts
+          src/tools/__tests__/shell-tools.test.ts
+          src/workload/__tests__/runtime.test.ts
+          test/scripts/smoke-windows-nsis-installer.test.ts
 
   macos-permission-tests:
     name: macOS permission path tests

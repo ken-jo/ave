@@ -86,6 +86,10 @@ const OFF_VIEW: TailnetObserverConfigView = Object.freeze({
   webOrigin: "",
 });
 
+function enabledView(overrides: Partial<TailnetObserverConfigView> = {}): TailnetObserverConfigView {
+  return { ...OFF_VIEW, enabled: true, authorization: APP_CAPABILITY, pairedSharingEnabled: true, ...overrides };
+}
+
 describe("Tailnet observer configuration service", () => {
   it("reports a never-configured observer as off, not as missing", async () => {
     const snapshot = await service().snapshot();
@@ -119,15 +123,7 @@ describe("Tailnet observer configuration service", () => {
 
   it("persists only what was chosen, not the negatives", async () => {
     const writeConfigFile = vi.fn(async () => undefined);
-    await service({ writeConfigFile }).apply({
-      enabled: true,
-      authorization: APP_CAPABILITY,
-      port: 46_173,
-      controllerEnabled: false,
-      pairedSharingEnabled: true,
-      webEnabled: false,
-      webOrigin: "",
-    });
+    await service({ writeConfigFile }).apply(enabledView());
 
     expect(writeConfigFile).toHaveBeenCalledWith({
       enabled: true,
@@ -146,15 +142,7 @@ describe("Tailnet observer configuration service", () => {
 
     it("persists the derived origin and ignores whatever the proposal carried", async () => {
       const writeConfigFile = vi.fn(async () => undefined);
-      await service({ writeConfigFile }).apply({
-        enabled: true,
-        authorization: APP_CAPABILITY,
-        port: 46_173,
-        controllerEnabled: false,
-        pairedSharingEnabled: true,
-        webEnabled: true,
-        webOrigin: "https://someone-typed-this.ts.net",
-      });
+      await service({ writeConfigFile }).apply(enabledView({ webEnabled: true, webOrigin: "https://someone-typed-this.ts.net" }));
 
       expect(writeConfigFile).toHaveBeenCalledWith(expect.objectContaining({
         webEnabled: true,
@@ -170,15 +158,7 @@ describe("Tailnet observer configuration service", () => {
       });
 
       expect((await surface.snapshot()).derivedWebOrigin).toBeNull();
-      await expect(surface.apply({
-        enabled: true,
-        authorization: APP_CAPABILITY,
-        port: 46_173,
-        controllerEnabled: false,
-        pairedSharingEnabled: true,
-        webEnabled: true,
-        webOrigin: "",
-      })).rejects.toThrow("tailnet-web-origin-underivable");
+      await expect(surface.apply(enabledView({ webEnabled: true, webOrigin: "" }))).rejects.toThrow("tailnet-web-origin-underivable");
       expect(writeConfigFile).not.toHaveBeenCalled();
     });
   });

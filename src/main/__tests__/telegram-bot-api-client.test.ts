@@ -17,6 +17,10 @@ function client(fetchImplementation: typeof fetch) {
   return createTelegramBotApiClient({ botToken: BOT_TOKEN, fetchImplementation });
 }
 
+function clientWithJson(value: unknown, init: ResponseInit = {}) {
+  return client(vi.fn(async () => json(value, init)) as unknown as typeof fetch);
+}
+
 function requestBody(call: unknown[]): Record<string, unknown> {
   const init = call[1] as RequestInit;
   return JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -55,7 +59,7 @@ describe("TelegramBotApiClient", () => {
   });
 
   it("treats an empty webhook url as no webhook", async () => {
-    const api = client(vi.fn(async () => json({ ok: true, result: { url: "" } })) as unknown as typeof fetch);
+    const api = clientWithJson({ ok: true, result: { url: "" } });
     await expect(api.getWebhookInfo()).resolves.toEqual({ ok: true, value: { hasWebhook: false } });
   });
 
@@ -74,7 +78,7 @@ describe("TelegramBotApiClient", () => {
 
   it("returns each update as the exact bytes the ingress core will re-validate", async () => {
     const updates = [message(10, "first"), message(11, "second")];
-    const api = client(vi.fn(async () => json({ ok: true, result: updates })) as unknown as typeof fetch);
+    const api = clientWithJson({ ok: true, result: updates });
 
     const result = await api.getUpdates();
     expect(result.ok).toBe(true);
@@ -89,68 +93,44 @@ describe("TelegramBotApiClient", () => {
       "Conflict: can't use getUpdates method while webhook is active",
       "something Telegram has not documented",
     ]) {
-      const api = client(vi.fn(async () => json(
-        { ok: false, error_code: 409, description },
-        { status: 409 },
-      )) as unknown as typeof fetch);
+      const api = clientWithJson({ ok: false, error_code: 409, description }, { status: 409 });
       await expect(api.getUpdates()).resolves.toEqual({ ok: false, reason: "conflict" });
     }
   });
 
   it("surfaces flood control with the retry hint when Telegram supplies one", async () => {
-    const withHeader = client(vi.fn(async () => json(
-      { ok: false, error_code: 429 },
-      { status: 429, headers: { "retry-after": "7" } },
-    )) as unknown as typeof fetch);
+    const withHeader = clientWithJson({ ok: false, error_code: 429 }, { status: 429, headers: { "retry-after": "7" } });
     await expect(withHeader.getUpdates()).resolves.toEqual({
       ok: false,
       reason: "rate-limited",
       retryAfterMs: 7_000,
     });
 
-    const withoutHeader = client(vi.fn(async () => json(
-      { ok: false, error_code: 429 },
-      { status: 429 },
-    )) as unknown as typeof fetch);
+    const withoutHeader = clientWithJson({ ok: false, error_code: 429 }, { status: 429 });
     await expect(withoutHeader.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited" });
   });
 
   it("reads the flood wait Telegram documents in parameters.retry_after", async () => {
-    const fromBody = client(vi.fn(async () => json(
-      { ok: false, error_code: 429, description: "Too Many Requests: retry after 31", parameters: { retry_after: 31 } },
-      { status: 429 },
-    )) as unknown as typeof fetch);
+    const fromBody = clientWithJson({ ok: false, error_code: 429, description: "Too Many Requests: retry after 31", parameters: { retry_after: 31 } }, { status: 429 });
     await expect(fromBody.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited", retryAfterMs: 31_000 });
 
-    const headerWins = client(vi.fn(async () => json(
-      { ok: false, error_code: 429, parameters: { retry_after: 31 } },
-      { status: 429, headers: { "retry-after": "7" } },
-    )) as unknown as typeof fetch);
+    const headerWins = clientWithJson({ ok: false, error_code: 429, parameters: { retry_after: 31 } }, { status: 429, headers: { "retry-after": "7" } });
     await expect(headerWins.getUpdates()).resolves.toMatchObject({ retryAfterMs: 7_000 });
 
     // A stated wait of zero is still flood control; both sources floor at 1 s.
-    const zeroBody = client(vi.fn(async () => json(
-      { ok: false, error_code: 429, parameters: { retry_after: 0 } },
-      { status: 429 },
-    )) as unknown as typeof fetch);
+    const zeroBody = clientWithJson({ ok: false, error_code: 429, parameters: { retry_after: 0 } }, { status: 429 });
     await expect(zeroBody.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited", retryAfterMs: 1_000 });
-    const zeroHeader = client(vi.fn(async () => json(
-      { ok: false, error_code: 429 },
-      { status: 429, headers: { "retry-after": "0" } },
-    )) as unknown as typeof fetch);
+    const zeroHeader = clientWithJson({ ok: false, error_code: 429 }, { status: 429, headers: { "retry-after": "0" } });
     await expect(zeroHeader.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited", retryAfterMs: 1_000 });
 
     for (const retryAfter of [-1, 1.5, "31", 3_601]) {
-      const malformed = client(vi.fn(async () => json(
-        { ok: false, error_code: 429, parameters: { retry_after: retryAfter } },
-        { status: 429 },
-      )) as unknown as typeof fetch);
+      const malformed = clientWithJson({ ok: false, error_code: 429, parameters: { retry_after: retryAfter } }, { status: 429 });
       await expect(malformed.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited" });
     }
   });
 
   it("rejects a wrong token as unauthorized rather than unreachable", async () => {
-    const api = client(vi.fn(async () => json({ ok: false, error_code: 401 }, { status: 401 })) as unknown as typeof fetch);
+    const api = clientWithJson({ ok: false, error_code: 401 }, { status: 401 });
     await expect(api.getMe()).resolves.toEqual({ ok: false, reason: "unauthorized" });
   });
 
@@ -171,10 +151,7 @@ describe("TelegramBotApiClient", () => {
   });
 
   it("refuses a batch it could not confirm, rather than skipping updates", async () => {
-    const api = client(vi.fn(async () => json({
-      ok: true,
-      result: [message(5, "ok"), { message: { text: "no update_id" } }],
-    })) as unknown as typeof fetch);
+    const api = clientWithJson({ ok: true, result: [message(5, "ok"), { message: { text: "no update_id" } }], });
     await expect(api.getUpdates()).resolves.toEqual({ ok: false, reason: "invalid-response" });
   });
 
@@ -250,7 +227,7 @@ describe("TelegramBotApiClient", () => {
     expect(fetchStub).not.toHaveBeenCalled();
 
     // A provider answer with no message id is unusable for a later edit.
-    const noMessageId = client(vi.fn(async () => json({ ok: true, result: {} })) as unknown as typeof fetch);
+    const noMessageId = clientWithJson({ ok: true, result: {} });
     await expect(noMessageId.sendDecisionCard("123456789", "text", [
       { label: "Approve once", callbackData: "token" },
     ])).resolves.toEqual({ ok: false, reason: "invalid-response" });

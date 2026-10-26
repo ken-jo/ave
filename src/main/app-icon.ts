@@ -11,6 +11,20 @@ export interface AppIconPathOptions {
   exists?: (path: string) => boolean;
 }
 
+export function findIconPath(
+  fileName: string,
+  resourcesPath: string | undefined,
+  devProjectRoot: string,
+  cwd: string,
+  exists: (path: string) => boolean,
+): string | undefined {
+  return [
+    resourcesPath ? join(resourcesPath, fileName) : null,
+    join(devProjectRoot, "build", fileName),
+    join(cwd, "build", fileName),
+  ].find((candidate) => candidate !== null && exists(candidate)) ?? undefined;
+}
+
 export function resolveAppIconPath(options: AppIconPathOptions = {}): string | undefined {
   const useCache = Object.keys(options).length === 0;
   if (useCache && cachedIconPath !== undefined) {
@@ -21,13 +35,7 @@ export function resolveAppIconPath(options: AppIconPathOptions = {}): string | u
   const devProjectRoot = options.projectRoot ?? projectRoot;
   const cwd = options.cwd ?? process.cwd();
   const exists = options.exists ?? existsSync;
-  const candidates = [
-    resourcesPath ? join(resourcesPath, "icon.png") : null,
-    join(devProjectRoot, "build", "icon.png"),
-    join(cwd, "build", "icon.png"),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  const iconPath = candidates.find((candidate) => exists(candidate)) ?? null;
+  const iconPath = findIconPath("icon.png", resourcesPath, devProjectRoot, cwd, exists) ?? null;
   if (useCache) cachedIconPath = iconPath;
   return iconPath ?? undefined;
 }

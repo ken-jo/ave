@@ -439,11 +439,7 @@ export function upsertStreamingReasoning(
   }
 
   const next = [...entries];
-  const reasoningIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "reasoning" }> =>
-      entry.kind === "reasoning" && !!entry.streaming,
-  );
+  const reasoningIdx = streamingEntryIdx(next, "reasoning");
 
   if (reasoningIdx >= 0) {
     next[reasoningIdx] = { ...(next[reasoningIdx] as ReasoningEntry), text, streaming: true, lastDeltaAt: Date.now() };
@@ -452,16 +448,7 @@ export function upsertStreamingReasoning(
   const now = Date.now();
   const reasoning = { kind: "reasoning" as const, text, streaming: true, createdAt: now, lastDeltaAt: now };
 
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
-  if (assistantIdx >= 0) {
-    next.splice(assistantIdx, 0, reasoning);
-  } else {
-    next.push(reasoning);
-  }
+  insertReasoning(next, reasoning);
   return next;
 }
 
@@ -548,11 +535,7 @@ export function finalizeStreamingReasoning(
   fallbackText: string,
 ): ChatEntry[] {
   const next = [...entries];
-  const reasoningIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "reasoning" }> =>
-      entry.kind === "reasoning" && !!entry.streaming,
-  );
+  const reasoningIdx = streamingEntryIdx(next, "reasoning");
 
   if (reasoningIdx >= 0) {
     const reasoning = next[reasoningIdx] as ReasoningEntry;
@@ -581,16 +564,7 @@ export function finalizeStreamingReasoning(
     text: fallbackText,
     streaming: false,
   };
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
-  if (assistantIdx >= 0) {
-    next.splice(assistantIdx, 0, reasoning);
-  } else {
-    next.push(reasoning);
-  }
+  insertReasoning(next, reasoning);
   return next;
 }
 
@@ -615,11 +589,7 @@ export function finalizeStreamingAssistant(
   },
 ): ChatEntry[] {
   const next = [...entries];
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
+  const assistantIdx = streamingEntryIdx(next, "assistant");
 
   if (assistantIdx >= 0) {
     const assistant = { ...(next[assistantIdx] as AssistantEntry) };
@@ -631,36 +601,10 @@ export function finalizeStreamingAssistant(
       const hasTurnSiblings = next
         .slice(turnStartIdx + 1, nextTurnStartIdx === -1 ? next.length : nextTurnStartIdx)
         .some((e) => e.kind === "tool_group" || e.kind === "checkpoint");
-      if (hasTurnSiblings) {
-        next[assistantIdx] = {
-          ...assistant,
-          text: "",
-          streaming: false,
-          route: opts?.route,
-          phase: opts?.phase,
-          createdAt: opts?.createdAt ?? assistant.createdAt ?? Date.now(),
-          ...(opts?.messageId ?? assistant.messageId
-            ? { messageId: opts?.messageId ?? assistant.messageId }
-            : {}),
-          ...(opts?.systemNotice !== undefined
-            ? { systemNotice: opts.systemNotice }
-            : assistant.systemNotice !== undefined
-              ? { systemNotice: assistant.systemNotice }
-              : {}),
-          ...(opts?.interrupted === true || assistant.interrupted === true
-            ? { interrupted: true }
-            : {}),
-          ...(opts?.interruptedBy ?? assistant.interruptedBy
-            ? { interruptedBy: opts?.interruptedBy ?? assistant.interruptedBy }
-            : {}),
-          ...(opts?.restored === true || assistant.restored === true
-            ? { restored: true }
-            : {}),
-        };
+      if (!hasTurnSiblings) {
+        next.splice(assistantIdx, 1);
         return next;
       }
-      next.splice(assistantIdx, 1);
-      return next;
     }
     next[assistantIdx] = {
       ...assistant,
@@ -723,11 +667,7 @@ export function setAssistantError(
 ): ChatEntry[] {
   // Stamp live host-error notices immediately so styling matches replay.
   const next = finalizeStreamingReasoning(entries, fallbackThought);
-  const assistantIdx = findLastIdx(
-    next,
-    (entry): entry is Extract<ChatEntry, { kind: "assistant" }> =>
-      entry.kind === "assistant" && !!entry.streaming,
-  );
+  const assistantIdx = streamingEntryIdx(next, "assistant");
 
   const current = assistantIdx >= 0 ? (next[assistantIdx] as AssistantEntry) : undefined;
   // Aborts retain partial content, even empty; do not replace it with an error message.
@@ -1032,6 +972,15 @@ function findLastIdx<T>(items: T[], predicate: (value: T) => boolean): number {
     }
   }
   return -1;
+}
+
+function streamingEntryIdx(entries: ChatEntry[], kind: "assistant" | "reasoning"): number {
+  return findLastIdx(entries, (entry) => entry.kind === kind && !!entry.streaming);
+}
+
+function insertReasoning(entries: ChatEntry[], reasoning: ReasoningEntry): void {
+  const assistantIdx = streamingEntryIdx(entries, "assistant");
+  entries.splice(assistantIdx < 0 ? entries.length : assistantIdx, 0, reasoning);
 }
 
 function getAdjacentToolGroupIndex(entries: ChatEntry[]): number {
