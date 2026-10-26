@@ -31,6 +31,8 @@ async function setupChanges() {
     historyRows: [
       { role: "user", content: "Update the workspace files.", meta: { messageId: TURN_ID } },
       { role: "assistant", content: "The workspace files are ready.", meta: { messageId: "summary-answer" } },
+      { role: "user", content: "Keep the queued instruction in this turn.", meta: { messageId: "queued-guidance-row", hostInjectionId: "queued-guidance-batch" } },
+      { role: "assistant", content: "The queued instruction is complete.", meta: { messageId: "queued-answer" } },
     ],
   });
   const page = context.page;

@@ -59,7 +59,7 @@ function assertAttachmentBudget(
 
 function latestTurnId(loop: ConversationLoop): string | undefined {
   return loop.getHistory().getMessages().findLast((message) =>
-    message.role === "user" && message.meta?.compactBoundary !== true)?.meta?.messageId;
+    message.role === "user" && message.meta?.compactBoundary !== true && message.meta?.hostInjectionId === undefined)?.meta?.messageId;
 }
 
 function selectedHunks(review: TurnChangeReview, reference: FileMentionReference): TurnReviewHunk[] {
@@ -154,7 +154,7 @@ export async function expandFileMentionContext(
     assertCurrent();
     const result = await getTurnChangeReview(sessionId, turnId, () => ({
       cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
-    }));
+    }), { selectedPaths: mentions.map(({ reference }) => reference.path) });
     assertCurrent();
     if (!result.ok) throw new Error("file-reference-stale");
     return result.review;

@@ -285,3 +285,26 @@ describe("readonly latest turn change review", () => {
     expect(available(await currentReview()).files[0]).toMatchObject({ added: 1, removed: 1, countsKnown: true });
   });
 });
+
+
+describe("selected checkpoint file validation", () => {
+  it("isolates strict selection without relaxing the full-turn or selected-file hash guards", async () => {
+    await tracked("before", "after");
+    const other = join(root, "other.txt");
+    await writeFile(other, "before other");
+    await checkpoints.withCodeCheckpoint({ sessionId, messageId: "latest" }, () =>
+      checkpoints.checkpointFileMutation([{ path: other, content: "after other" }], () => writeFile(other, "after other")));
+    await writeFile(other, "external other");
+    expect(await review()).toEqual({ ok: false, error: "turn-review-stale" });
+    const selected = available(await checkpoints.getTurnChangeReview(sessionId, "latest", context, { selectedPaths: ["source.txt"] }));
+    expect(selected.files).toHaveLength(1);
+    expect(selected.files[0]).toMatchObject({ path: "source.txt", referenceable: true });
+    await writeFile(path, "external selected");
+    expect(await checkpoints.getTurnChangeReview(sessionId, "latest", context, { selectedPaths: ["source.txt"] })).toEqual({ ok: false, error: "turn-review-stale" });
+  });
+
+  it.each([{ selectedPaths: [] }, { selectedPaths: ["untracked.txt"] }, { selectedPaths: ["../outside.txt"] }])("refuses empty or uncaptured selections: $selectedPaths", async ({ selectedPaths }) => {
+    await tracked("before", "after");
+    expect(await checkpoints.getTurnChangeReview(sessionId, "latest", context, { selectedPaths })).toEqual({ ok: false, error: "turn-review-unavailable" });
+  });
+});

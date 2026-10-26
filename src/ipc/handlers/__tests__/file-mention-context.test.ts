@@ -31,7 +31,7 @@ async function capture(before = "before\n", after = "after\n", path = "source.tx
     checkpoints.checkpointFileMutation([{ path: absolute, content: after }], () => writeFile(absolute, after)));
   const result = await checkpoints.getTurnChangeReview(loop.getSessionId(), "latest", () => ({ cwd: root, extraAllowedDirectories: [] }));
   if (!result.ok) throw new Error(result.error);
-  const hunk = result.review.files[0]!.hunks[0]!;
+  const hunk = result.review.files.find((file) => file.path === path)!.hunks[0]!;
   return { path, turnId: "latest", hunkId: hunk.id, startLine: hunk.startLine, endLine: hunk.endLine };
 }
 function marker(reference: FileMentionReference, n = 1) { return formatFileMentionReference(n, reference); }
@@ -139,6 +139,27 @@ describe("host file mention context", () => {
     await expect(expandFileMentionContext(loop, marker(reference), "user-keyboard")).resolves.toHaveProperty("displayText");
     loop.history.append({ role: "user", content: "next", meta: { messageId: "next" } });
     await expect(expandFileMentionContext(loop, marker(reference), "user-keyboard")).rejects.toThrow("file-reference-stale");
+  });
+
+  it("resolves the initiating turn reference after queued guidance is injected", async () => {
+    const reference = await capture();
+    loop.history.append({ role: "user", content: "Queued follow-up", meta: { messageId: "injected-row", hostInjectionId: "guidance-batch" } });
+    const result = await expandFileMentionContext(loop, marker(reference), "user-keyboard");
+    expect(contextOf(result.input).references[0]).toMatchObject({ path: "source.txt", before: "before\n", after: "after\n" });
+  });
+
+  it("resolves a selected unchanged file when another file from the same turn is stale", async () => {
+    const reference = await capture();
+    const other = join(root, "other.txt");
+    await writeFile(other, "other-before\n");
+    await checkpoints.withCodeCheckpoint({ sessionId: loop.getSessionId(), messageId: "latest" }, () =>
+      checkpoints.checkpointFileMutation([{ path: other, content: "other-after\n" }], () => writeFile(other, "other-after\n")));
+    await writeFile(other, "external update\n");
+    const read = vi.spyOn(readTool, "execute");
+    const result = await expandFileMentionContext(loop, marker(reference), "user-keyboard");
+    expect(contextOf(result.input).references).toEqual([expect.objectContaining({ path: "source.txt", before: "before\n", after: "after\n" })]);
+    expect(read).toHaveBeenCalledOnce();
+    expect(read.mock.calls[0]?.[0]).toMatchObject({ path: join(root, "source.txt") });
   });
 
   it("accepts whole-file references only with the exact existing file line range", async () => {
@@ -304,5 +325,46 @@ describe("host file mention context", () => {
     const input = `${marker(reference)}${"[File #2 — path: a".repeat(6_000)}`;
     await expect(expandFileMentionContext(loop, input, "user-keyboard")).rejects.toThrow("file-reference-too-large");
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("selected file reference isolation", () => {
+  it("keeps selected-file permission checks when an unrelated file is stale", async () => {
+    const selected = await capture();
+    await capture("before other\n", "after other\n", "other.txt");
+    await writeFile(join(root, "other.txt"), "external\n");
+    permissions.setRules([{ pattern: "read_file", action: "deny" }]);
+    const read = vi.spyOn(readTool, "execute");
+    await expect(expandFileMentionContext(loop, marker(selected), "user-keyboard")).rejects.toThrow("file-reference-read-denied");
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses a stale selected sibling before any authorization or context disclosure", async () => {
+    const first = await capture();
+    const second = await capture("before other\n", "after other\n", "other.txt");
+    await writeFile(join(root, "other.txt"), "external\n");
+    const read = vi.spyOn(loop.toolExecutor, "executeAll");
+    await expect(expandFileMentionContext(loop, marker(first) + marker(second, 2), "user-keyboard")).rejects.toThrow("file-reference-stale");
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("ignores unrelated file changes during authorization of the selected file", async () => {
+    const selected = await capture();
+    await capture("before other\n", "after other\n", "other.txt");
+    hooks.registerPostHook("change-unselected-file", async () => { await writeFile(join(root, "other.txt"), "external\n"); });
+    const result = await expandFileMentionContext(loop, marker(selected), "user-keyboard");
+    expect(contextOf(result.input).references).toEqual([expect.objectContaining({ path: "source.txt", after: "after\n" })]);
+  });
+
+  it("rechecks an earlier selected file when another selected file is authorized", async () => {
+    const first = await capture();
+    const second = await capture("before other\n", "after other\n", "other.txt");
+    let reads = 0;
+    hooks.registerPostHook("change-prior-selected-file", async () => {
+      if (++reads === 2) await writeFile(join(root, first.path), "external\n");
+    });
+    await expect(expandFileMentionContext(loop, marker(first) + marker(second, 2), "user-keyboard")).rejects.toThrow("file-reference-stale");
+    expect(reads).toBe(2);
   });
 });

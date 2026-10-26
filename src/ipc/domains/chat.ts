@@ -444,7 +444,7 @@ function historyIndexOfMessageId(history: GenericMessage[], messageId: string): 
 
 function latestReviewTurnId(loop: ConversationLoop): string | undefined {
   const latest = loop.getHistory().getMessages().findLast((message) =>
-    message.role === "user" && message.meta?.compactBoundary !== true);
+    message.role === "user" && message.meta?.compactBoundary !== true && message.meta?.hostInjectionId === undefined);
   return typeof latest?.meta?.messageId === "string" ? latest.meta.messageId : undefined;
 }
 

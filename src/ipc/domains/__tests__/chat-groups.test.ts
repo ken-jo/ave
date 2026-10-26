@@ -308,6 +308,13 @@ describe("ave:chat:* with chat groups", () => {
       expect(tile.getHistory().getMessages()).toHaveLength(2);
       expect(memoryManager.saveSession).not.toHaveBeenCalled();
     });
+    it("retains the initiating review turn after queued guidance is injected", async () => {
+      const { invoke, tile } = await setup();
+      tile.getHistory().getMessages().push({ role: "user", content: "Queued follow-up", meta: { messageId: "injected-row", hostInjectionId: "guidance-batch" } });
+      const result = await invoke("ave:chat:get-turn-review", tile.getSessionId(), "group-2");
+      expect(result).toMatchObject({ ok: true, review: { turnId: "tile-q1", files: [{ path: "code.txt" }] } });
+    });
+
     it("keeps recorded totals while the Files workspace details show subsequent current edits", async () => {
       const { invoke, tile, file } = await setup();
       await writeFile(file, "external\nextra\n");

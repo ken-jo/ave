@@ -580,7 +580,7 @@ export async function getTurnChangeReview(
   sessionId: string,
   turnId: string,
   context: () => RestoreContext,
-  options?: { currentDetails: true },
+  options?: { currentDetails?: true; selectedPaths?: readonly string[] },
 ): Promise<TurnReviewResult> {
   return exclusive(async () => {
     try {
@@ -593,12 +593,19 @@ export async function getTurnChangeReview(
         throw new TurnReviewReadError("turn-review-unavailable");
       }
       const workspaceRoot = resolve(context().cwd);
+      // Reference sends validate only their selected files; the ordinary review still checks the complete turn.
+      const selectedPaths = options?.selectedPaths === undefined ? undefined
+        : new Set(options.selectedPaths.map((path) => resolve(workspaceRoot, path)));
       const plan = new Map<string, { first: StoredChange; last: StoredChange; local: string }>();
       for (const change of turn.changes) {
+        if (selectedPaths && !selectedPaths.has(change.path)) continue;
         const local = turnReviewPath(change.path, context);
         const previous = plan.get(change.path);
         if (previous && previous.last.afterHash !== change.beforeHash) throw new TurnReviewReadError("turn-review-stale");
         plan.set(change.path, { first: previous?.first ?? change, last: change, local });
+      }
+      if (selectedPaths && (selectedPaths.size === 0 || [...selectedPaths].some((path) => !plan.has(path)))) {
+        throw new TurnReviewReadError("turn-review-unavailable");
       }
       const currentFile = async (path: string, expectedHash: string | null, requireMatch = true) => {
         turnReviewPath(path, context);

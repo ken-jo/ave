@@ -2559,6 +2559,35 @@ describe("ChatSidePanel", () => {
     expect(selected.closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
   });
 
+  it("preserves an indexed session file inline preview when its source is unavailable locally", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace();
+    const readFile = vi.fn(async () => ({ ok: false as const, error: "read-failed" as const }));
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    const target: ChatPreviewTarget = { id: "indexed-result", kind: "file", title: "search.md", sourceLabel: "search", createdOrder: 1,
+      path: "/unavailable/docs/search.md", inlineText: "Supplied indexed document preview", canOpenExternal: false };
+    const files: WorkspaceFileItem[] = [{ id: "indexed-file", path: target.path, label: target.title, detail: target.path,
+      sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="indexed" files={files} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    expect(await screen.findByText("Supplied indexed document preview")).toBeVisible();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("prefers latest-turn diff detail over a matching inline session preview", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace();
+    const target: ChatPreviewTarget = { id: "indexed-changed", kind: "file", title: "readme.md", sourceLabel: "search", createdOrder: 1,
+      path: "/ws/readme.md", inlineText: "Older indexed preview", canOpenExternal: false };
+    const files: WorkspaceFileItem[] = [{ id: "changed-file", path: target.path, label: target.title, detail: target.path,
+      sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
+    const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/ws", review: { sessionId: "indexed", turnId: "latest",
+      files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true,
+        hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }] }] } });
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="indexed" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    expect(await screen.findByTestId("turn-change-detail")).toHaveTextContent("after");
+    expect(screen.queryByText("Older indexed preview")).toBeNull();
+  });
+
   it("previews the current image when a recorded changed file no longer has readable diff hunks", async () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     const readFile = vi.fn(async () => ({ ok: true, path: "/ws/source.png", image: { dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png" }, truncated: false }));

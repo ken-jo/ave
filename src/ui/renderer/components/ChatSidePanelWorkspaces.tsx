@@ -818,7 +818,7 @@ export function FileBrowserWorkspace({
     if (!selectedPath) return selectedTarget ?? null;
     const root = fsRoot ?? changes.workspaceRoot;
     const normalized = workspaceFilePath(selectedPath, root);
-    if (selectedTarget?.kind === "file" && selectedTarget.startLine !== undefined
+    if (selectedTarget?.kind === "file"
       && workspaceFilePath(selectedTarget.path, selectedTarget.workspaceRoot ?? root) === normalized) return selectedTarget;
     const normalizedRoot = root ? normalizeWorkspaceTreePath(root, null) : undefined;
     const previewRoot = normalizedRoot && isPathWithinRoot(normalizedRoot, normalized) ? normalizedRoot
