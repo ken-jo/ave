@@ -1,4 +1,5 @@
 /** Classify bounded untrusted app input as notification or turn text; sinks own sanitization. */
+import { isRecord } from "../shared/is-record.js";
 
 /** Bound app text below the guidance-queue capacity. */
 const MCP_APP_MESSAGE_MAX_CHARS = 4096;
@@ -20,16 +21,10 @@ export type McpUiMessageIntent =
   | { kind: "text"; text: string }
   | { kind: "invalid"; error: string; message: string };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 /** Whitelist title, body and severity so app fields cannot widen host delivery authority. */
 function parseNotificationMeta(raw: unknown): AppNotificationMeta | null {
-  const meta = asRecord(raw);
-  if (!meta) return null;
+  if (!isRecord(raw)) return null;
+  const meta = raw;
   const { title, body } = meta;
   if (typeof title !== "string" || typeof body !== "string") return null;
   const severity = meta.severity;
@@ -44,23 +39,21 @@ function parseNotificationMeta(raw: unknown): AppNotificationMeta | null {
 
 /** Any notification metadata selects notifications exclusively; only plain text reaches the turn path. */
 export function parseUiMessageIntent(params: unknown): McpUiMessageIntent {
-  const record = asRecord(params);
-  const content = record?.content;
+  const content = isRecord(params) ? params.content : undefined;
   if (!Array.isArray(content) || content.length === 0) {
     return { kind: "invalid", error: "invalid-content", message: "content must be a non-empty array" };
   }
 
   for (const block of content) {
-    const blockRecord = asRecord(block);
-    if (!blockRecord) continue;
-    const meta = asRecord(blockRecord._meta);
-    if (!meta) continue;
+    if (!isRecord(block)) continue;
+    const meta = block._meta;
+    if (!isRecord(meta)) continue;
     const notification = parseNotificationMeta(meta[APP_NOTIFICATION_META_KEY]);
     if (notification) return { kind: "notification", notification };
   }
 
   const text = content
-    .map((block) => asRecord(block))
+    .map((block) => isRecord(block) ? block : null)
     .filter((block): block is Record<string, unknown> => block?.type === "text")
     .map((block) => (typeof block.text === "string" ? block.text : ""))
     .join("\n")

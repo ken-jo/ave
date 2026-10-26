@@ -1,3 +1,4 @@
+import { chatSurface } from "./chat-surface.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 
@@ -14,7 +15,7 @@ export function InterruptedTurnBanner({
   if (!offer) return null;
   return (
     <div
-      className="flex w-full max-w-full items-center gap-2 border-t bg-warning/(--opacity-soft) px-3 py-1.5 text-xs text-warning"
+      className={`${chatSurface()} mx-3 mb-2 flex min-w-0 items-center gap-2 px-3 py-2 text-xs text-foreground`}
       data-testid="interrupted-turn-banner"
       data-offer={offer}
       role="status"

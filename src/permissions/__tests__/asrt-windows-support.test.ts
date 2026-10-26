@@ -565,8 +565,11 @@ describe("asrt-windows-support adapter", () => {
     expect(source).not.toContain("'--allow-write'");
   });
 
-  it("reads user + WFP from the single checkWindowsSandboxStatusAsync spawn (ASRT 0.0.80)", async () => {
+  it("reads readiness and profile read warnings in one status snapshot", async () => {
     const ORIGINAL_PLATFORM = process.platform;
+    const warnings = [{ path: String.raw`D:\Users\tester\.ssh`, principals: ["Everyone"] as const },
+      { path: String.raw`D:\Users\tester\.aws` }];
+    const readWarnings = vi.spyOn(asrtSandbox, "getWindowsProfileReadDenyWarnings").mockReturnValue(warnings);
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     // On a real Windows host the install cases above already reach `readAsrtWindowsStatus` through this mock, and nothing clears it between cases, so the call count below would include their calls.
     checkWindowsSandboxStatusAsyncMock.mockReset();
@@ -597,6 +600,7 @@ describe("asrt-windows-support adapter", () => {
         userState: "ready",
         wfpState: "installed",
         ready: true,
+        profileReadDenyWarnings: warnings,
       });
     } finally {
       Object.defineProperty(process, "platform", {
@@ -604,6 +608,7 @@ describe("asrt-windows-support adapter", () => {
         configurable: true,
       });
       checkWindowsSandboxStatusAsyncMock.mockReset();
+      readWarnings.mockRestore();
     }
   });
 

@@ -21,6 +21,7 @@ import { SecretDocumentStore } from "../secret-document-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
+import { registerInstalledLocales } from "../../i18n/locale.js";
 import {
   LOG_RETENTION_DAYS,
   LOG_RETENTION_MIN_DAYS,
@@ -2827,9 +2828,11 @@ describe("SettingsService system locale detection", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  it("fresh install with systemLocale=ko-KR keeps English as the default language", () => {
+  it("fresh install with systemLocale=ko-KR selects the compiled Korean locale", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "ko-KR" });
-    expect(service.get("appearance").language).toBe("en");
+    expect(service.get("appearance").language).toBe("ko");
+    await service.set("chat", service.get("chat"));
+    expect(JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")).appearance.language).toBe("ko");
   });
 
   it("fresh install with systemLocale=en-US keeps English as the default language", () => {
@@ -2837,14 +2840,26 @@ describe("SettingsService system locale detection", () => {
     expect(service.get("appearance").language).toBe("en");
   });
 
-  it("fresh install with unsupported systemLocale falls back to 'en'", () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "it-IT" });
+  it("fresh install with unsupported systemLocale falls back to 'en'", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "fr-FR" });
     expect(service.get("appearance").language).toBe("en");
+    await service.set("chat", service.get("chat"));
+    expect(JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")).appearance.language).toBe("en");
   });
 
   it("fresh install without systemLocale defaults to 'en'", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("appearance").language).toBe("en");
+  });
+
+  it("does not seed a third-party system locale even when its package is registered", () => {
+    registerInstalledLocales([{ locale: "fr", nativeName: "Français", englishName: "French" }]);
+    try {
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "fr-FR" });
+      expect(service.get("appearance").language).toBe("en");
+    } finally {
+      registerInstalledLocales([]);
+    }
   });
 
   it("existing settings file with explicit language is not overridden by systemLocale", () => {
@@ -2866,6 +2881,12 @@ describe("SettingsService system locale detection", () => {
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "en-US" });
     expect(service.get("appearance").language).toBe("ko");
+  });
+
+  it("does not seed an existing settings file whose language is absent", () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({}), "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "ko-KR" });
+    expect(service.get("appearance").language).toBe("en");
   });
 });
 

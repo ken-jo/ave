@@ -16,6 +16,7 @@ import {
   makeConversationTurnProvider as makeTurnProvider,
   makeSyntheticCompactResult,
 } from "./conversation-loop-test-helpers.js";
+import { ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
 
 vi.mock("../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
@@ -52,17 +53,6 @@ function makeSyntheticContentTruncatedResult(messages: GenericMessage[]): import
     truncatedDir: "/tmp/ave-truncated",
     truncatedCount: 2,
   };
-}
-
-class ScriptedProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-
-  constructor(private readonly turns: StreamEvent[][]) {}
-
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
 }
 
 describe("runPreflightGuard — estimate-based trigger", () => {

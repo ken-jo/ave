@@ -9,6 +9,8 @@
  * reader enforced.
  */
 
+import type { PreviewPageDocument } from "./preview-page-document.js";
+
 export type PreviewDocumentFormat = "csv" | "tsv" | "xlsx" | "xls" | "ods";
 
 const FORMAT_BY_EXTENSION: ReadonlyMap<string, PreviewDocumentFormat> = new Map([
@@ -93,6 +95,31 @@ export const PREVIEW_DOCUMENT_LIMITS: Readonly<PreviewDocumentLimits> = Object.f
   delimitedChunkChars: 64 * 1024,
 });
 
+/** An absolute source rectangle. Omitted offsets use the used-range origin. */
+export interface PreviewTableWindow {
+  rowOffset?: number;
+  columnOffset?: number;
+  rowCount: number;
+  columnCount: number;
+}
+
+/** Window validation shared by the host, child and parser boundaries. */
+export function isPreviewTableWindow(value: unknown, limits: Readonly<PreviewDocumentLimits> = PREVIEW_DOCUMENT_LIMITS): value is PreviewTableWindow {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["rowOffset", "columnOffset", "rowCount", "columnCount"].includes(key))) return false;
+  for (const key of ["rowOffset", "columnOffset"] as const) {
+    if (record[key] !== undefined && (!Number.isSafeInteger(record[key]) || (record[key] as number) < 0)) return false;
+  }
+  const { rowCount, columnCount } = record;
+  return typeof rowCount === "number" && typeof columnCount === "number"
+    && Number.isSafeInteger(rowCount) && Number.isSafeInteger(columnCount)
+    && rowCount > 0 && rowCount <= limits.maxRows && columnCount > 0 && columnCount <= limits.maxColumns
+    && rowCount * columnCount <= limits.maxReturnedCells
+    && Number.isSafeInteger(((record.rowOffset as number | undefined) ?? 0) + rowCount)
+    && Number.isSafeInteger(((record.columnOffset as number | undefined) ?? 0) + columnCount);
+}
+
 /** One sheet's bounded grid. Every cell is a display string. */
 export interface PreviewTableSheet {
   index: number;
@@ -105,10 +132,14 @@ export interface PreviewTableSheet {
   /** Used-range size; truncated delimited input reports an inspected lower bound. */
   totalRows: number;
   totalColumns: number;
+  /** Source used-range origin and count certainty, only for explicit window reads. */
+  sourceRange?: { firstRow: number; firstColumn: number; totalsExact: boolean };
   rowsTruncated: boolean;
   columnsTruncated: boolean;
   /** At least one cell was cut to `maxCellChars`. */
   cellsTruncated: boolean;
+  /** Absolute source coordinates of returned cells shortened by the parser. */
+  clippedCells: { row: number; column: number }[];
 }
 
 export interface PreviewTableDocument {
@@ -130,7 +161,10 @@ export type PreviewDocumentError =
   | "unsupported-format"
   | "too-large"
   | "archive-too-large"
+  | "invalid-index"
   | "sheet-not-found"
+  | "page-not-found"
+  | "renderer-unavailable"
   | "encrypted"
   | "unsupported-encoding"
   | "corrupt-document"
@@ -140,5 +174,5 @@ export type PreviewDocumentError =
   | "read-failed";
 
 export type PreviewReadDocumentResult =
-  | { ok: true; path: string; bytes: number; document: PreviewTableDocument }
+  | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument }
   | { ok: false; error: PreviewDocumentError; path?: string; bytes?: number; message: string };

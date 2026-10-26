@@ -237,16 +237,13 @@ function extractGlobMatches(result: unknown): string[] {
   if (!isRecord(parsed)) return [];
   const rawMatches = parsed.matches;
   if (!Array.isArray(rawMatches)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
+  const paths = new Set<string>();
   for (const item of rawMatches) {
     if (typeof item !== "string") continue;
     if (isGlobPattern(item) || !isLikelyPath(item)) continue;
-    if (seen.has(item)) continue;
-    seen.add(item);
-    out.push(item);
+    paths.add(item);
   }
-  return out;
+  return [...paths];
 }
 
 function visitUnknown(value: unknown, visit: (key: string | null, item: unknown) => void, key: string | null = null): void {

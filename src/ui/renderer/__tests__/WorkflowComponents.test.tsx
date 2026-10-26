@@ -10,6 +10,22 @@ import { SessionGoalPanel } from "../components/SessionGoalPanel.js";
 import { SkillBadge } from "../components/SkillBadge.js";
 import { t } from "../../../i18n/runtime.js";
 import type { AveApi } from "../types.js";
+import type { ComponentProps } from "react";
+
+function renderQuestion(
+  api: AveApi,
+  id: string,
+  questions: ComponentProps<typeof AskUserQuestionCard>["request"]["questions"],
+  onResolved = vi.fn(),
+) {
+  return render(
+    <AskUserQuestionCard
+      api={api}
+      request={{ id, sessionId: "session-1", questions, createdAt: 0 }}
+      onResolved={onResolved}
+    />,
+  );
+}
 
 function fakeApi(overrides: Partial<AveApi> = {}): AveApi {
   const stub = (..._args: unknown[]) => Promise.resolve({ ok: true });
@@ -33,24 +49,21 @@ function fakeApi(overrides: Partial<AveApi> = {}): AveApi {
   } as unknown as AveApi;
 }
 
+function completedAndPendingTasks(): Awaited<ReturnType<AveApi["listSessionTasks"]>> {
+  return [
+    { id: "t1", content: "done thing", status: "completed" },
+    { id: "t2", content: "current thing", status: "in_progress" },
+    { id: "t3", content: "next thing", status: "pending" },
+  ];
+}
+
 describe("AskUserQuestionCard — single question", () => {
   it("renders question + choices and dispatches answers[] on click", async () => {
     const respond = vi.fn().mockResolvedValue({ ok: true });
     const api = fakeApi({ respondAskUserQuestion: respond as never });
     const onResolved = vi.fn();
-    const { getByText, container, queryByTestId } = render(
-      <AskUserQuestionCard
-        api={api}
-        request={{
-          id: "q1",
-          sessionId: "session-1",
-          questions: [
-            { question: "Continue?", choices: ["yes", "no"] },
-          ],
-          createdAt: 0,
-        }}
-        onResolved={onResolved}
-      />,
+    const { getByText, container, queryByTestId } = renderQuestion(
+      api, "q1", [{ question: "Continue?", choices: ["yes", "no"] }], onResolved,
     );
     expect(container.textContent).toContain("Continue?");
     // Single-question card has no pagination label.
@@ -68,23 +81,8 @@ describe("AskUserQuestionCard — single question", () => {
 
   it("renders Recommend badge only on the recommendedIndex chip", async () => {
     const api = fakeApi();
-    const { getAllByTestId } = render(
-      <AskUserQuestionCard
-        api={api}
-        request={{
-          id: "q-recommend",
-          sessionId: "session-1",
-          questions: [
-            {
-              question: "수정 방향?",
-              choices: ["A안", "B안", "C안"],
-              recommendedIndex: 1,
-            },
-          ],
-          createdAt: 0,
-        }}
-        onResolved={vi.fn()}
-      />,
+    const { getAllByTestId } = renderQuestion(
+      api, "q-recommend", [{ question: "수정 방향?", choices: ["A안", "B안", "C안"], recommendedIndex: 1 }],
     );
     const recommendBadges = getAllByTestId("ask-badge-recommend");
     expect(recommendBadges).toHaveLength(1);
@@ -97,17 +95,8 @@ describe("AskUserQuestionCard — single question", () => {
     const respond = vi.fn().mockResolvedValue({ ok: false, error: "invalid-answer" });
     const api = fakeApi({ respondAskUserQuestion: respond as never });
     const onResolved = vi.fn();
-    const { getByText, getByTestId } = render(
-      <AskUserQuestionCard
-        api={api}
-        request={{
-          id: "q-rejected",
-          sessionId: "session-1",
-          questions: [{ question: "Continue?", choices: ["yes", "no"] }],
-          createdAt: 0,
-        }}
-        onResolved={onResolved}
-      />,
+    const { getByText, getByTestId } = renderQuestion(
+      api, "q-rejected", [{ question: "Continue?", choices: ["yes", "no"] }], onResolved,
     );
 
     await act(async () => {
@@ -122,25 +111,12 @@ describe("AskUserQuestionCard — single question", () => {
 
   it("renders 대안 badges only on altIndices chips and skips the recommend slot", async () => {
     const api = fakeApi();
-    const { getAllByTestId, queryAllByTestId } = render(
-      <AskUserQuestionCard
-        api={api}
-        request={{
-          id: "q-alt",
-          sessionId: "session-1",
-          questions: [
-            {
-              question: "방향?",
-              choices: ["A", "B", "C"],
-              recommendedIndex: 0,
-              // 0 is the recommend slot — UI must dedupe and not double-tag.
-              altIndices: [0, 2],
-            },
-          ],
-          createdAt: 0,
-        }}
-        onResolved={vi.fn()}
-      />,
+    const { getAllByTestId, queryAllByTestId } = renderQuestion(
+      api, "q-alt", [{
+        question: "방향?", choices: ["A", "B", "C"], recommendedIndex: 0,
+        // 0 is the recommend slot — UI must dedupe and not double-tag.
+        altIndices: [0, 2],
+      }],
     );
     expect(getAllByTestId("ask-badge-recommend")).toHaveLength(1);
     const altBadges = queryAllByTestId("ask-badge-alt");
@@ -150,24 +126,8 @@ describe("AskUserQuestionCard — single question", () => {
 
   it("renders the free-text field with its placeholder when the question asks for one", async () => {
     const api = fakeApi();
-    const { getByTestId, getByPlaceholderText } = render(
-      <AskUserQuestionCard
-        api={api}
-        request={{
-          id: "q-ph",
-          sessionId: "session-1",
-          questions: [
-            {
-              question: "?",
-              choices: ["A", "B"],
-              allowFreeText: true,
-              placeholder: "다른 방향을 한 줄로",
-            },
-          ],
-          createdAt: 0,
-        }}
-        onResolved={vi.fn()}
-      />,
+    const { getByTestId, getByPlaceholderText } = renderQuestion(
+      api, "q-ph", [{ question: "?", choices: ["A", "B"], allowFreeText: true, placeholder: "다른 방향을 한 줄로" }],
     );
     expect(getByPlaceholderText("다른 방향을 한 줄로")).toBe(getByTestId("ask-freetext-input"));
   });
@@ -175,17 +135,8 @@ describe("AskUserQuestionCard — single question", () => {
   it("dismiss surfaces dismissed:true with no answers", async () => {
     const respond = vi.fn().mockResolvedValue({ ok: true });
     const api = fakeApi({ respondAskUserQuestion: respond as never });
-    const { getByText } = render(
-      <AskUserQuestionCard
-        api={api}
-        request={{
-          id: "q-dismiss",
-          sessionId: "session-1",
-          questions: [{ question: "?", choices: ["계속", "중단"] }],
-          createdAt: 0,
-        }}
-        onResolved={vi.fn()}
-      />,
+    const { getByText } = renderQuestion(
+      api, "q-dismiss", [{ question: "?", choices: ["계속", "중단"] }],
     );
     await act(async () => {
       fireEvent.click(getByText("건너뛰기"));
@@ -429,12 +380,7 @@ describe("SessionTasksPanel", () => {
 
   it("numbers rows from 1 in list order, keeps completed rows listed and struck through, and counts completed/total on the chip", async () => {
     const api = fakeApi({
-      listSessionTasks: () =>
-        Promise.resolve([
-          { id: "t1", content: "done thing", status: "completed" },
-          { id: "t2", content: "current thing", status: "in_progress" },
-          { id: "t3", content: "next thing", status: "pending" },
-        ]),
+      listSessionTasks: () => Promise.resolve(completedAndPendingTasks()),
     });
     const { container } = render(<SessionTasksPanel api={api} sessionId="session-tasks" />);
     const chip = await screen.findByTestId("session-tasks-panel");
@@ -456,12 +402,7 @@ describe("SessionTasksPanel", () => {
 
   it("pulses the in-progress row in the expanded view so it's the focal point", async () => {
     const api = fakeApi({
-      listSessionTasks: () =>
-        Promise.resolve([
-          { id: "t1", content: "done thing", status: "completed" },
-          { id: "t2", content: "current thing", status: "in_progress" },
-          { id: "t3", content: "next thing", status: "pending" },
-        ]),
+      listSessionTasks: () => Promise.resolve(completedAndPendingTasks()),
     });
     const { findByTestId, queryAllByTestId, container } = render(<SessionTasksPanel api={api} sessionId="session-tasks" />);
     await screen.findByTestId("session-tasks-panel");
@@ -474,12 +415,7 @@ describe("SessionTasksPanel", () => {
 
   it("shows the active item next to the count when collapsed, with pulse", async () => {
     const api = fakeApi({
-      listSessionTasks: () =>
-        Promise.resolve([
-          { id: "t1", content: "done thing", status: "completed" },
-          { id: "t2", content: "current thing", status: "in_progress" },
-          { id: "t3", content: "next thing", status: "pending" },
-        ]),
+      listSessionTasks: () => Promise.resolve(completedAndPendingTasks()),
     });
     const { findByText, container } = render(<SessionTasksPanel api={api} sessionId="session-tasks" />);
     // Panel starts collapsed by default — the active item should already show next to the count without any toggle.

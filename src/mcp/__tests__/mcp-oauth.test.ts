@@ -56,6 +56,7 @@ interface Fixture {
   cimdDocument?: Record<string, unknown>;
   rejectMetadataDocument?: "callback" | "token";
   preregistered: Map<string, string[]>;
+  registrationResponse?: Record<string, unknown>;
 }
 
 const PUBLISHED_CLIENT_DOCUMENT = join(__dirname, "..", "..", "..", "web", "public", "oauth", "mcp-client.json");
@@ -141,7 +142,7 @@ async function fixture(): Promise<Fixture> {
       state.registrations.push(registration);
       const clientId = `native-client-${state.registrations.length}`;
       state.clients.set(clientId, registration.redirect_uris as string[]);
-      json({ ...registration, client_id: clientId, token_endpoint_auth_method: "none" }, 201); return;
+      json({ ...registration, client_id: clientId, token_endpoint_auth_method: "none", ...state.registrationResponse }, 201); return;
     }
     if (url.pathname === "/authorize") {
       state.authorizations.push(url);
@@ -716,6 +717,27 @@ describe("remote authorization", () => {
     await session.authenticate().catch(() => undefined);
     expect(state.cimdFetches).toHaveLength(0);
     expect(state.registrations).toHaveLength(1);
+  });
+
+  it("accepts a public client the registration issued when the token endpoint lists only secret methods", async () => {
+    const state = await fixture();
+    state.tokenAuthMethods = ["client_secret_basic", "client_secret_post"];
+    const { session } = createSession(state);
+    await session.authenticate();
+    expect(session.getStatus()).toBe("authenticated");
+    expect(state.registrations).toHaveLength(1);
+    expect(state.grants[0].get("client_id")).toBe("native-client-1");
+    expect(state.grants[0].has("client_secret")).toBe(false);
+  });
+
+  it("refuses a registered secret method the token endpoint does not advertise", async () => {
+    const state = await fixture();
+    state.tokenAuthMethods = ["client_secret_basic"];
+    state.registrationResponse = { token_endpoint_auth_method: "client_secret_post", client_secret: "registered-secret-1" };
+    const { session } = createSession(state);
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(state.registrations).toHaveLength(1);
+    expect(state.grants).toHaveLength(0);
   });
 
   it("fails clearly when the configuration requires a metadata document the server does not support", async () => {

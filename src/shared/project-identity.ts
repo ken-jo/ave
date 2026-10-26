@@ -1,3 +1,5 @@
+import { trimmedString } from "./trimmed-string.js";
+
 export interface ProjectIdentity {
   projectRoot: string;
   projectName: string;
@@ -75,20 +77,8 @@ export function projectBasename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-function normalizeProjectRoot(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function normalizeProjectName(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
 export function projectRootKey(value: unknown): string | undefined {
-  const root = normalizeProjectRoot(value);
+  const root = trimmedString(value);
   if (!root) return undefined;
   const hadWindowsSeparator = root.includes("\\");
   let normalized = root.replace(/\\/g, "/").replace(/\/+$/g, "");
@@ -148,8 +138,8 @@ export function projectIdentityFromPayload(
   payload: { projectRoot?: unknown; projectName?: unknown; isDefault?: unknown } | null | undefined,
   fallbackName = "default",
 ): ProjectIdentity | undefined {
-  const projectRoot = normalizeProjectRoot(payload?.projectRoot);
-  const projectName = normalizeProjectName(payload?.projectName);
+  const projectRoot = trimmedString(payload?.projectRoot);
+  const projectName = trimmedString(payload?.projectName);
   if (!projectRoot) return undefined;
   return {
     projectRoot,
@@ -165,7 +155,7 @@ export function workspaceRootsToProjects(
 ): ProjectIdentity[] {
   const byRoot = new Map<string, ProjectIdentity>();
   const add = (path: string | undefined, isDefault: boolean) => {
-    const root = normalizeProjectRoot(path);
+    const root = trimmedString(path);
     const key = projectRootKey(root);
     if (!root || !key || byRoot.has(key)) return;
     byRoot.set(key, projectIdentityFromRoot(root, fallbackName, isDefault));

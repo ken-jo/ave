@@ -1,3 +1,4 @@
+import { chatSurface } from "./components/chat-surface.js";
 import type { RewindMode } from "../../shared/code-rewind.js";
 import { RewindDialog } from "./dialogs/RewindDialog.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -31,7 +32,8 @@ import type { McpPromptEntry } from "./components/slash-picker-data.js";
 import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
 import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
-import { collectChatPreviewModel } from "./preview/preview-targets.js";
+import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/preview-targets.js";
+import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
@@ -61,6 +63,7 @@ import { useAttachmentPicker } from "./hooks/use-attachment-picker.js";
 import { TranscriptRenderer, type TurnSummary } from "./components/TranscriptRenderer.js";
 import { ChatTranscript } from "./components/ChatTranscript.js";
 import { ChatComposerDock } from "./components/ChatComposerDock.js";
+import { ComposerContextNotice } from "./components/ComposerContextNotice.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 import { usePrefersReducedMotion } from "./hooks/use-prefers-reduced-motion.js";
@@ -169,7 +172,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     question, setQuestion, chatEndRef, currentSessionId, hidden,
     hasApiKey, settingsLoaded, onOpenSettings,
     searchOpen, searchMatches, searchMatchSet, searchIdx, searchHighlight,
-    contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
+    contextOverflowPct, usedTokens, contextBudget, effectiveBudget, autoCompactEnabled,
     tpmLimit, tpmPct,
     rolePresets, activePresetId, setActivePresetId,
     attachments, setAttachments, attachmentNCounter,
@@ -203,10 +206,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     if (!emptyConversation) setProjectSelectorOpen(false);
   }, [emptyConversation]);
   // Sub-agent rows come only from live spawn events with addressable child session ids.
-  const previewModel = useMemo(
-    () => collectChatPreviewModel({ entries: visibleEntries, attachments }),
-    [attachments, visibleEntries],
-  );
+  const [openedDocuments, setOpenedDocuments] = useState<{ sessionId: string; targets: ChatPreviewTarget[] } | null>(null);
+  const previewModel = useMemo(() => {
+    const model = collectChatPreviewModel({ entries: visibleEntries, attachments });
+    if (openedDocuments?.sessionId === currentSessionId) model.targets.push(...openedDocuments.targets);
+    return model;
+  }, [attachments, visibleEntries, openedDocuments, currentSessionId]);
   const previewTargetIdKey = useMemo(
     () => previewModel.targets.map((target) => target.id).join("\u0001"),
     [previewModel.targets],
@@ -292,6 +297,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [dockedPanelExpanded, setDockedPanelExpanded] = useState(false);
   const [sidePanelResizing, setSidePanelResizing] = useState(false);
   const reduceMotion = usePrefersReducedMotion();
+  useAgentDocumentPanel({
+    api: window.ave?.preview, sessionId: currentSessionId ?? undefined, workspaceTabs,
+    panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth,
+    element: () => chatViewRootRef.current, targets: previewModel.targets,
+    addTarget: (sessionId, target) => setOpenedDocuments((previous) => ({ sessionId, targets: [
+      ...(previous?.sessionId === sessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []), target,
+    ] })),
+    openPanel: () => onSidePanelOpenChange(true),
+  });
 
   // Resizing must disable transitions without retriggering mount expansion.
   useEffect(() => {
@@ -733,7 +747,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       {forkToast && (
         <div
           data-testid="fork-toast"
-          className="sticky top-0 z-30 mx-3 mt-2 rounded-md border border-[hsl(var(--action-branch)/0.4)] bg-[hsl(var(--action-branch)/0.1)] px-3 py-2 text-xs text-[hsl(var(--action-branch))]"
+          className={`${chatSurface()} sticky top-0 z-30 mx-3 mt-2 px-3 py-2 text-xs text-foreground`}
         >
           {forkToast}
         </div>
@@ -741,7 +755,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       {currentSessionKind === "routine" && (
         <div
           data-testid="current-session-kind-banner"
-          className="sticky top-0 z-20 mx-3 mt-2 rounded-md border border-action-view/(--opacity-muted) bg-action-view/(--opacity-subtle) px-3 py-2 text-xs text-action-view"
+          className={`${chatSurface()} sticky top-0 z-20 mx-3 mt-2 px-3 py-2 text-xs text-action-view`}
         >
           <span className="font-medium">{t("chatView.routineSessionLabel")}</span>
           {currentSessionTitle ? <span className="ml-2 text-muted-foreground">{currentSessionTitle}</span> : null}
@@ -780,48 +794,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       </div>
       </div>
       </div>
-      {contextOverflowPct >= 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-destructive/(--opacity-subtle) px-3 py-1.5 text-xs text-destructive">
-          <span className="font-semibold">{t("chatView.contextUsagePercent", { pct: Math.round(contextOverflowPct * 100) })}</span>
-          <span>{t("chatView.contextOverflowWarning")}</span>
-        </div>
-      )}
-      {contextOverflowPct >= 0.80 && contextOverflowPct < 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-warning/(--opacity-soft) px-3 py-1.5 text-xs text-warning">
-          <span className="font-semibold">{t("chatView.contextUsagePercent", { pct: Math.round(contextOverflowPct * 100) })}</span>
-          <span>{t("chatView.contextNearingWarning")}</span>
-        </div>
-      )}
-      {/*
-        Issue #900 #1 — per-request TPM (Tokens Per Minute) hint. *Cumulative*
-        context-budget 와 별 metric — 작은-tier 모델 (nano 등) 은 단발 input
-        이 contextBudget 안이라도 분당 처리 한도 초과로 429 가능. tpmLimit 가
-        등록된 모델 (현재 gpt-5.4-nano 만) + 80% 이상 사용 시 표시. 사용자
-        영상의 271K nano 사고 patterns 를 사전 경고.
-      */}
-      {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-destructive/(--opacity-subtle) px-3 py-1.5 text-xs text-destructive">
-          <span className="font-semibold">{t("chatView.tpmUsagePercent", { pct: Math.round(tpmPct * 100), used: formatTokensExact(usedTokens), limit: formatTokensExact(tpmLimit) })}</span>
-          <span>{t("chatView.tpmOverflowWarning")}</span>
-        </div>
-      )}
-      {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.80 && tpmPct < 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-warning/(--opacity-soft) px-3 py-1.5 text-xs text-warning">
-          <span className="font-semibold">{t("chatView.tpmUsagePercent", { pct: Math.round(tpmPct * 100), used: formatTokensExact(usedTokens), limit: formatTokensExact(tpmLimit) })}</span>
-          <span>{t("chatView.tpmNearingWarning")}</span>
-        </div>
-      )}
-      {/* Assistant tasks panel — anchored above the input cluster, below the
-          chat scroll area. Stays visible regardless of where the user has
-          scrolled the chat. The panel collapses by default once it has
-          content; in the collapsed state the active item title streams next
-          to the count so the user always sees what step is running. */}
-      {/* Composer dock — seamless. No opaque background (the outer fill behind
-          the composer box was clipping the floating sidebar's drop shadow) and
-          no top border seam: the dock now blends into the bg-background content
-          surface, so there is no hard line / pink bar between the messages and
-          the composer. The composer box (border + bg-input-bar) still reads as a
-          distinct surface on its own. */}
       <InterruptedTurnBanner
         offer={interruptedOffer}
         onContinue={() => {
@@ -836,6 +808,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       />
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
+        notices={<>
+          <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={autoCompactEnabled} />
+          {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.80 && (
+            <div className={`${chatSurface({ edge: "quiet", elevation: "flat" })} mb-2 flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-xs text-warning`} role="status" aria-live="polite">
+              <span className="font-medium">{t("chatView.tpmUsagePercent", { pct: Math.round(tpmPct * 100), used: formatTokensExact(usedTokens), limit: formatTokensExact(tpmLimit) })}</span>
+              <span>{t(tpmPct >= 0.95 ? "chatView.tpmOverflowWarning" : "chatView.tpmNearingWarning")}</span>
+            </div>
+          )}
+        </>}
         emptyConversation={emptyConversation}
         onOpenSettings={onOpenSettings}
         workflowApi={workflowApi}

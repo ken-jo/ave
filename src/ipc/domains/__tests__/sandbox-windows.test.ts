@@ -5,6 +5,7 @@ import { setProcessPlatform } from "../../../__tests__/support/process-platform.
 import { setAveHomePrivacyAtBoot, areExtensionsWithoutIsolationApproved, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { readdirSync } from "node:fs";
 import * as srtIntegrity from "../../../permissions/srt-win-integrity.js";
+import * as asrtSandbox from "../../../permissions/asrt-sandbox.js";
 import {
   foreignFrameEvent,
   hostFrameEvent,
@@ -208,6 +209,20 @@ describe("extension isolation session approval", () => {
 });
 
 describe("sandboxWindowsStatus", () => {
+  it("includes readable and unverified profile rows in both status surfaces", async () => {
+    setProcessPlatform("win32");
+    const warnings = [{ path: String.raw`D:\Users\tester\.ssh`, principals: ["Users", "INTERACTIVE"] as const },
+      { path: String.raw`D:\Users\tester\.aws` }];
+    const readWarnings = vi.spyOn(asrtSandbox, "getWindowsProfileReadDenyWarnings").mockReturnValue(warnings);
+    try {
+      await setup();
+      expect(await invoke(PERMISSIONS.sandboxWindowsStatus, hostFrameEvent())).toMatchObject({ profileReadDenyWarnings: warnings });
+      expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ profileReadDenyWarnings: warnings });
+    } finally {
+      readWarnings.mockRestore();
+    }
+  });
+
   it("surfaces an integrity failure without reporting ready or missing", async () => {
     setProcessPlatform("win32");
     await setup();
@@ -488,6 +503,28 @@ describe("sandboxCapability win32 reconcile", () => {
 });
 
 describe("sandboxCapability shell status (the permission card's checkbox)", () => {
+  it("reports worker restart pending from the sealed boot intent and clears it on reversal", async () => {
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setSandboxBootOutcome({ action: "skip", reason: "gate-off", onSignal: "off", dependencyErrors: [], causes: [] });
+    capability.setPluginWorkerConfinementRequestedAtBoot(false);
+    await setup({ pluginWorkerConfinement: true });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: true });
+    await setup({ pluginWorkerConfinement: false });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: false });
+    capability.setPluginWorkerConfinementRequestedAtBoot(true);
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: true });
+    await setup({ pluginWorkerConfinement: true });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: false });
+  });
+
+  it("does not mark an environment-forced worker scope pending when its stored value changes", async () => {
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setSandboxBootOutcome({ action: "activate", reason: "deps-present", onSignal: "explicit-env", dependencyErrors: [], causes: [] });
+    capability.setPluginWorkerConfinementRequestedAtBoot(true);
+    vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "1");
+    await setup({ pluginWorkerConfinement: false });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: false });
+  });
   async function readShell(features: FeatureFixture) {
     await setup(features);
     const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as {

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
+import { WINDOWS_OWNER_CLAIM_SOURCE } from "./windows-owner-claim.js";
 
 /** All user-data paths must use this resolver so AVE_HOME isolates every store, including secrets. */
 export function aveHome(): string {
@@ -51,6 +52,7 @@ export type AveHomePrivacyFailureCategory =
   | "extra-principals"
   | "not-protected"
   | "invalid-owner-grant"
+  | "owner-claim-failed"
   | "reparse-point";
 
 export interface AveHomePrincipal {
@@ -80,7 +82,7 @@ export interface WindowsAccessRule extends AveHomePrincipal {
 
 export interface AveHomePrivacyRuntime {
   platform: NodeJS.Platform;
-  readDacls(paths: readonly string[], protect?: boolean): WindowsDirectoryDacl[];
+  readDacls(paths: readonly string[], protect?: boolean, claimableRuntimeRoot?: string): WindowsDirectoryDacl[];
 }
 
 const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
@@ -89,7 +91,7 @@ const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
 };
 
 /** Pass one-shot ACL input as UTF-16 environment JSON, never command interpolation or console-codepage stdin. */
-export function readWindowsDirectoryDacls(paths: readonly string[], protect = false): WindowsDirectoryDacl[] {
+export function readWindowsDirectoryDacls(paths: readonly string[], protect = false, claimableRuntimeRoot?: string): WindowsDirectoryDacl[] {
   if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
     return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
@@ -147,6 +149,17 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
           $refused = 'directory-failed'; @{ path = $path; category = $refused; error = 'Path is not a directory' }; continue
         }
         $owner = (Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
+        if ($path -eq $request.claimableRuntimeRoot -and -not $elevated -and $owner -eq 'S-1-5-32-544') {
+          try {
+            Add-Type -TypeDefinition @'
+${WINDOWS_OWNER_CLAIM_SOURCE}
+'@;
+            [WindowsOwnerClaim]::ClaimFromAdministrators($path, $identity.User, $true);
+            $owner = $sid;
+          } catch {
+            $refused = 'owner-claim-failed'; @{ path = $path; category = $refused; error = ('Directory "' + $path + '" is owned by Administrators and could not be claimed. Run Ave once elevated or fix the directory owner. ' + $_.Exception.Message) }; continue
+          }
+        }
         if ($owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')) {
           $refused = 'invalid-owner-grant'; @{ path = $path; category = $refused; error = 'Directory is owned by another account' }; continue
         }
@@ -165,7 +178,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     }
     ConvertTo-Json -InputObject @($results) -Depth 5 -Compress`,
   ], { encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, icacls: win32SystemBinary("icacls") }) }) });
+    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, claimableRuntimeRoot, icacls: win32SystemBinary("icacls") }) }) });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length < paths.length) {
     throw new Error("Directory DACL read-back returned an invalid result set");
@@ -258,12 +271,12 @@ export function ensureAveHomePrivate(
   let path = home;
   let category: AveHomePrivacyFailureCategory = "directory-failed";
   try {
-    // The protection helper creates home and secrets with current-user ownership; create only the parent here.
+    // The protection helper creates private directories with current-user ownership.
     mkdirSync(dirname(home), { recursive: true });
     category = "read-back-failed";
     path = home;
-    const paths = [home, join(home, "secrets")];
-    const descriptors = runtime.readDacls(paths, true);
+    const paths = [home, join(home, "secrets"), join(home, "subscription-runtimes")];
+    const descriptors = runtime.readDacls(paths, true, join(home, "subscription-runtimes"));
     const sid = descriptors[0]?.currentUserSid;
     for (const target of paths) {
       if (!descriptors.some((entry) => entry.path === target && !entry.child)) {

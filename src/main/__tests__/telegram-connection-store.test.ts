@@ -63,6 +63,11 @@ function openStore(
   return store.open().then(() => store);
 }
 
+async function freshStore() {
+  const clock = { value: 1_700_000_000_000 };
+  return { clock, store: await openStore(tempDirectory(), clock) };
+}
+
 // connect → mint → redeem → approve, the whole owner-driven happy path.
 async function connectedAndApproved(
   store: TelegramConnectionStore,
@@ -186,8 +191,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("charges an attempt for a candidate rejected before digest comparison", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await store.setConnected(BOT_FINGERPRINT);
     await store.createPendingCode({ codeDigest: CODE_DIGEST, maxAttempts: 3 });
 
@@ -200,8 +204,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("does not redeem an expired pending code", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { clock, store } = await freshStore();
     await store.setConnected(BOT_FINGERPRINT);
     await store.createPendingCode({ codeDigest: CODE_DIGEST, ttlMs: 60_000 });
 
@@ -218,8 +221,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("resolves an approval only for the exact live actor and conversation", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { clock, store } = await freshStore();
     await connectedAndApproved(store, { ttlMs: HOUR_MS });
 
     expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toMatchObject({
@@ -266,8 +268,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("makes every approval unresolvable once the pairing is revoked", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
     const pairingId = store.ownerSnapshot().pairing?.id;
     expect(pairingId).toBeDefined();
@@ -291,8 +292,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("does not resolve an approval while the bridge is paused", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
 
     expect(await store.setPaused()).toBe(true);
@@ -331,8 +331,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("drops pairing state when a different bot is connected but keeps it on reconnect", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
     await store.recordPollOffset(77);
 
@@ -512,8 +511,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("keeps the digest as the authorization key even when the plaintext is intact", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
 
     // Same untouched record, same conversation, wrong account.
@@ -542,8 +540,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("shares one conversation at a time, so the newest grant replaces the old", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { clock, store } = await freshStore();
     await connectedAndApproved(store);
     const firstId = store.ownerSnapshot().approval?.id;
     expect(store.resolveBoundConversation(ACTOR)).toBe(RAW_CONVERSATION_ID);
@@ -604,8 +601,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("reports no bound conversation once the share or the connection ends", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
     expect(store.resolveBoundConversation(ACTOR)).toBe(RAW_CONVERSATION_ID);
 
@@ -620,8 +616,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("resolves an approval synchronously so an egress fence never awaits", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await connectedAndApproved(store);
 
     const resolved = store.resolveActiveApproval(ACTOR, CONVERSATION);
@@ -633,8 +628,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("notifies subscribers on every persisted change until they unsubscribe", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     let changes = 0;
     const unsubscribe = store.subscribe(() => {
       changes += 1;
@@ -673,8 +667,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("closes the egress fence on a pairing whose actor key no longer loads", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await store.setConnected(BOT_FINGERPRINT);
     await store.reconcileActorKey(ACTOR_KEY_DIGEST);
     await connectedAndApproved(store);
@@ -694,8 +687,7 @@ describe("createTelegramConnectionStore", () => {
   });
 
   it("rejects malformed digests and durations instead of storing them", async () => {
-    const clock = { value: 1_700_000_000_000 };
-    const store = await openStore(tempDirectory(), clock);
+    const { store } = await freshStore();
     await expect(store.setConnected("not-a-digest")).rejects.toThrow(
       "telegram-connection-store-input-invalid",
     );

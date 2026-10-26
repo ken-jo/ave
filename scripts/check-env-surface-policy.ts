@@ -22,8 +22,14 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 
 // Host-owned child environment, not user configuration.
 const INTERNAL: readonly string[] = [
+  "AVE_DEV_LAUNCHER",
   // Pass ACL paths as JSON data, never interpolate them into the child command.
   "AVE_DACL_REQUEST",
+  // Pass the policy path and reader source to the PowerShell reader as data, never interpolated.
+  "AVE_POLICY_READ_PATH",
+  "AVE_POLICY_READ_SOURCE",
+  "AVE_READ_DENY_PATHS",
+  "AVE_READ_DENY_SOURCE",
   // Hook metadata is host-owned; matcher and payload fields are conditional.
   "AVE_HOOK_EVENT",
   "AVE_HOOK_MATCHER",

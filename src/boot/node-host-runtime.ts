@@ -5,7 +5,8 @@ import { createSafeLlmFetch } from "../main/safe-llm-fetch.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import { ensureCorporateCaInjected } from "../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../main/persisted-corp-ca.js";
-import { getRuntimeSensitiveKeyPaths } from "../permissions/sensitive-paths.js";
+import { getRuntimeSensitiveKeyPaths, protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
+import { settingsFilePath } from "../data/settings-store.js";
 import { WIRE_BYTES_MAX } from "../plugins/isolation/host-api-wire.js";
 import type { BootHost } from "./host-runtime.js";
 
@@ -88,7 +89,7 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
   setGlobalDispatcher(dispatcher);
   const networkFetch: typeof fetch = (input, init) => fetch(input, init);
   const singleHopNetworkFetch = createNodeHostFetchTransport(dispatcher);
-  return {
+  const host: BootHost = {
     userDataPath: options.userDataPath,
     resourcePath: options.resourcePath,
     isPackaged: options.isPackaged,
@@ -98,6 +99,13 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
     singleHopNetworkFetch,
     llmFetch: createSafeLlmFetch(networkFetch),
     exit: (code) => process.exit(code),
+    relaunch: () => { throw new Error("relaunch-unsupported"); },
     close: () => dispatcher.destroy(),
   };
+  const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
+  const close = host.close.bind(host);
+  host.close = async () => {
+    try { await close(); } finally { releaseSettingsPath(); }
+  };
+  return host;
 }

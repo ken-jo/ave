@@ -2,7 +2,7 @@
 import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
-const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code"] as const;
+const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code", "chatgpt-plan"] as const;
 
 export type SubscriptionRuntimeId = (typeof SUBSCRIPTION_RUNTIME_IDS)[number];
 export const MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH = 200;
@@ -149,7 +149,8 @@ export function isSubscriptionRuntimeStatusUpdatedEvent(
     && payload.revision > 0;
 }
 
-type SubscriptionRuntimeTransport = "codex-app-server" | "acp" | "claude-cli";
+/** `chatgpt-plan-direct` is Sign in with ChatGPT plan usage: Ave's own OAuth session and `POST /v1/responses`, no CLI. */
+type SubscriptionRuntimeTransport = "codex-app-server" | "acp" | "claude-cli" | "chatgpt-plan-direct";
 
 export type SubscriptionLoginMethod = "browser" | "device-code";
 
@@ -178,8 +179,8 @@ interface ApiChatRuntimeSelection {
 
 export type ActiveChatRuntime = ApiChatRuntimeSelection | SubscriptionChatRuntimeSelection;
 
-/** Discovered runtimes use installed CLI locations; user-selected runtimes allow an executable picker. */
-export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected";
+/** Discovered runtimes use installed CLI locations; user-selected runtimes allow an executable picker; `none` runs no executable. */
+export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected" | "none";
 
 export interface SubscriptionRuntimeDescriptor {
   id: SubscriptionRuntimeId;
@@ -196,6 +197,49 @@ export interface SubscriptionRuntimeDescriptor {
   installGuidance?: SubscriptionRuntimeInstallGuidance;
   /** No model selection uses the runtime default, offered explicitly rather than guessed as a model name. */
   offersCliDefaultModel: boolean;
+  /** The runtime has no default model at all: chat can be selected only with a model from its list. */
+  requiresModelSelection?: true;
+  /** Where the provider lets the user review and limit this app's plan usage. */
+  usageSettingsUrl?: string;
+  /**
+   * Original images are sent only when the selected model accepts them, judged by this API vendor's model catalog
+   * (the same predicate as that vendor's API-key route). Absent: the runtime's verified capability alone decides.
+   */
+  imageInputFollowsModelOf?: "openai";
+  /**
+   * The runtime runs on Ave's own request path, so Ave chooses its reasoning: the user picks a speed
+   * (`SUBSCRIPTION_REASONING_SPEEDS`) and each turn asks the model for that speed's effort.
+   */
+  offersReasoningSpeed?: true;
+}
+
+/** The model speed menu of a runtime that `offersReasoningSpeed`, fastest first, as the provider's own app labels it. */
+export const SUBSCRIPTION_REASONING_SPEEDS = Object.freeze(["instant", "medium", "high"] as const);
+export type SubscriptionReasoningSpeed = (typeof SUBSCRIPTION_REASONING_SPEEDS)[number];
+/** The provider's own app opens on Medium. */
+export const DEFAULT_SUBSCRIPTION_REASONING_SPEED: SubscriptionReasoningSpeed = "medium";
+
+export function isSubscriptionReasoningSpeed(value: unknown): value is SubscriptionReasoningSpeed {
+  return typeof value === "string" && (SUBSCRIPTION_REASONING_SPEEDS as readonly string[]).includes(value);
+}
+
+/**
+ * The reasoning effort a speed asks for. The model's own accepted levels still decide what is sent: a model that
+ * refuses `none` runs Instant at its lowest accepted level, and the speed menu says so.
+ */
+export function subscriptionReasoningSpeedEffort(speed: SubscriptionReasoningSpeed): "none" | "medium" | "high" {
+  switch (speed) {
+    case "instant":
+      return "none";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    default: {
+      const unknownSpeed: never = speed;
+      throw new Error(`unknown reasoning speed: ${String(unknownSpeed)}`);
+    }
+  }
 }
 
 /** Install instructions are display text; the app never executes them. */
@@ -242,6 +286,58 @@ export const SUBSCRIPTION_RUNTIME_API_COUNTERPART: Readonly<
   "kimi-code": "moonshot",
 });
 
+/**
+ * Runtimes that are another way into a provider row already owned by a primary runtime. ChatGPT plan usage is the
+ * third OpenAI sign-in beside the Codex CLI and the API key, so it joins the Codex row instead of adding a second
+ * "OpenAI" row.
+ */
+export const SUBSCRIPTION_RUNTIME_ROW_PARTNER: Readonly<
+  Partial<Record<SubscriptionRuntimeId, SubscriptionRuntimeId>>
+> = Object.freeze({
+  "chatgpt-plan": "codex",
+});
+
+/** The three ways chat reaches OpenAI. Exactly one is in effect, chosen by the persisted `activeChatRuntime`. */
+export type OpenAiLoginType = "codex-cli" | "api-key" | "chatgpt-plan";
+
+/**
+ * Which OpenAI login type a subscription runtime is, or null for another company's runtime. Exhaustive over
+ * `SubscriptionRuntimeId`: adding a runtime is a compile error here until it is classified.
+ */
+export function openAiLoginTypeOfRuntime(
+  runtimeId: SubscriptionRuntimeId,
+): Exclude<OpenAiLoginType, "api-key"> | null {
+  switch (runtimeId) {
+    case "codex":
+      return "codex-cli";
+    case "chatgpt-plan":
+      return "chatgpt-plan";
+    case "kimi-code":
+    case "grok-build":
+    case "claude-code":
+      return null;
+    default: {
+      const unclassified: never = runtimeId;
+      throw new Error(`unclassified subscription runtime: ${String(unclassified)}`);
+    }
+  }
+}
+
+/**
+ * Name the OpenAI sign-in a chat selection uses, or null when chat is not on OpenAI. This is derived from the one
+ * persisted selection (`activeChatRuntime` plus the API vendor), never stored separately, so the two cannot disagree:
+ * `{kind:"subscription", provider:"codex"}` is the Codex CLI, `{kind:"subscription", provider:"chatgpt-plan"}` is
+ * plan usage, and `{kind:"api"}` with vendor `openai` is the API key. Settings saved before plan usage existed hold
+ * one of the first two shapes and so keep their sign-in.
+ */
+export function openAiLoginTypeFor(
+  runtime: ActiveChatRuntime | undefined,
+  apiVendor: string | undefined,
+): OpenAiLoginType | null {
+  if (runtime?.kind === "subscription") return openAiLoginTypeOfRuntime(runtime.provider);
+  return apiVendor === "openai" ? "api-key" : null;
+}
+
 /** Safe capability projection when a runtime has not verified a feature. */
 export const DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES: SubscriptionRuntimeCapabilities = Object.freeze({
   chat: false,
@@ -283,6 +379,24 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
       ]),
     }),
     offersCliDefaultModel: false,
+  },
+  {
+    id: "chatgpt-plan",
+    label: "ChatGPT plan",
+    planName: "ChatGPT",
+    // No CLI is involved; the name the card shows for this way in.
+    cliName: "Sign in with ChatGPT",
+    transport: "chatgpt-plan-direct",
+    executable: "none",
+    loginMethods: ["browser"],
+    supportsManagedLogout: true,
+    // The account's own `GET /v1/models` list; there is no runtime default to fall back on.
+    supportsModelSelection: true,
+    offersCliDefaultModel: false,
+    requiresModelSelection: true,
+    usageSettingsUrl: "https://chatgpt.com/settings/usage",
+    imageInputFollowsModelOf: "openai",
+    offersReasoningSpeed: true,
   },
   {
     id: "kimi-code",
@@ -340,6 +454,23 @@ export function subscriptionRuntimeDescriptor(
     ?? SUBSCRIPTION_RUNTIME_DESCRIPTORS[0]!;
 }
 
+/**
+ * Something the user should be told about a runtime's sign-in, until they dismiss it (ChatGPT plan usage only today).
+ * `welcome`: the first sign-in with plan usage enabled. `plan-usage-disabled`: signed in without the plan grant.
+ * `reconnect-required`: the session ended at the provider. `revocation-unconfirmed`: signed out locally but the
+ * provider did not confirm it. `declined`, `account-mismatch`, `state-mismatch`, `sign-in-failed`: why the last
+ * sign-in did not finish.
+ */
+export type SubscriptionRuntimeNotice =
+  | "welcome"
+  | "plan-usage-disabled"
+  | "reconnect-required"
+  | "revocation-unconfirmed"
+  | "declined"
+  | "account-mismatch"
+  | "state-mismatch"
+  | "sign-in-failed";
+
 /** Never include verification URLs, access tokens, raw CLI output, or executable paths in renderer status. */
 export interface SubscriptionRuntimeStatus {
   provider: SubscriptionRuntimeId;
@@ -352,6 +483,8 @@ export interface SubscriptionRuntimeStatus {
   version: string | null;
   /** Missing or false capability projections are unavailable; provider-native claims alone do not enable them. */
   capabilities: SubscriptionRuntimeCapabilities;
+  /** A fixed notice code for the card; omitted by runtimes that have none. */
+  notice?: SubscriptionRuntimeNotice | null;
 }
 
 export interface SubscriptionRuntimeModel {

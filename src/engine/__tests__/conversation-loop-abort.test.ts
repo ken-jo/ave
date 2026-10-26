@@ -5,27 +5,21 @@ import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { NotificationService } from "../../main/notification-service.js";
 import { issueAuthorizationRequiredControl } from "../../shared/authorization-required.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 function makeHarness(notificationService?: NotificationService): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
   const toolRegistry = new ToolRegistry();
   const inputClassifier = new InputClassifier();
   const routeEngine = new RouteEngine();
 
-  const loop = new ConversationLoop({
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     notificationService,
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: { build: () => "system" },
     inputClassifier,
     routeEngine,
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
 
   return { loop, toolRegistry };
 }

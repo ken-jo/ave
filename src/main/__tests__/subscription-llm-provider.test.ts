@@ -80,6 +80,13 @@ function sessionWith(events: StreamEvent[]): {
   };
 }
 
+function providerWith(
+  service: Parameters<typeof createSubscriptionLlmProvider>[0]["service"],
+  provider: Parameters<typeof createSubscriptionLlmProvider>[0]["selection"]["provider"] = "codex",
+) {
+  return createSubscriptionLlmProvider({ selection: { kind: "subscription", provider }, service });
+}
+
 describe("SubscriptionLlmProvider", () => {
   it("offers the live Codex catalog through every provider wrapper", async () => {
     const listModels = vi.fn(async () => ({
@@ -231,10 +238,7 @@ describe("SubscriptionLlmProvider", () => {
   });
 
   it("falls back to the generic projection when native input cannot serialize", () => {
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service: { openTextSession: vi.fn() } as Pick<SubscriptionRuntimeService, "openTextSession">,
-    });
+    const provider = providerWith({ openTextSession: vi.fn() } as Pick<SubscriptionRuntimeService, "openTextSession">);
 
     expect(provider.projectRequestInput({
       systemPrompt: "system",
@@ -261,10 +265,7 @@ describe("SubscriptionLlmProvider", () => {
 
   it.each(["codex", "kimi-code"] as const)("shares host-directory guidance with the %s transport without adding local path metadata", async (providerId) => {
     const { session, streamTurn } = sessionWith([{ type: "message_complete", stopReason: "end_turn" }]);
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: providerId },
-      service: { openTextSession: vi.fn(async () => session) },
-    });
+    const provider = providerWith({ openTextSession: vi.fn(async () => session) }, providerId);
     const input = params();
     await collect(provider.streamTurn(input));
     const serialized = streamTurn.mock.calls[0]?.[0] as string;
@@ -411,10 +412,7 @@ describe("SubscriptionLlmProvider", () => {
       SubscriptionRuntimeService,
       "openTextSession"
     >;
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service,
-    });
+    const provider = providerWith(service);
 
     await collect(provider.streamTurn(params({
       messages: [{
@@ -439,10 +437,7 @@ describe("SubscriptionLlmProvider", () => {
     const service = {
       openTextSession: vi.fn(async () => session),
     } as Pick<SubscriptionRuntimeService, "openTextSession">;
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "kimi-code" },
-      service,
-    });
+    const provider = providerWith(service, "kimi-code");
 
     const events = await collect(provider.streamTurn(params({
       messages: [{
@@ -479,10 +474,7 @@ describe("SubscriptionLlmProvider", () => {
       SubscriptionRuntimeService,
       "openTextSession"
     >;
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service,
-    });
+    const provider = providerWith(service);
     const events = await collect(provider.streamTurn(input));
 
     expect(events).toEqual([{
@@ -532,10 +524,7 @@ describe("SubscriptionLlmProvider", () => {
     const png = "iVBORw0KGgo=";
     const gif = "R0lGODlh";
     const { session, streamTurn } = sessionWith([{ type: "message_complete", stopReason: "end_turn" }]);
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service: { openTextSession: vi.fn(async () => session) },
-    });
+    const provider = providerWith({ openTextSession: vi.fn(async () => session) });
     const input = params({ messages: [
       { role: "user", content: [{ type: "image", image: `data:image/png;base64,${png}` }] },
       { role: "assistant", content: "Previous answer." },
@@ -574,10 +563,7 @@ describe("SubscriptionLlmProvider", () => {
     { data: "c2VjcmV0", mimeType: "image/png" },
   ])("rejects malformed tool image data before opening a native session: %j", async (image) => {
     const openTextSession = vi.fn();
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service: { openTextSession },
-    });
+    const provider = providerWith({ openTextSession });
     const events = await collect(provider.streamTurn(params({
       messages: [{ role: "tool_result", toolUseId: "tool-1", content: "image result", image }],
     })));
@@ -586,10 +572,7 @@ describe("SubscriptionLlmProvider", () => {
   });
 
   it("estimates retained tool images and excludes pixels removed by wire compaction", () => {
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service: { openTextSession: vi.fn() },
-    });
+    const provider = providerWith({ openTextSession: vi.fn() });
     const input: ProviderRequestInputProjectionParams = {
       systemPrompt: "Inspect the retained tool output.", toolSchemas: [],
       messages: [
@@ -605,10 +588,7 @@ describe("SubscriptionLlmProvider", () => {
   });
 
   it("projects a bounded truncated result without host display metadata", () => {
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service: { openTextSession: vi.fn() },
-    });
+    const provider = providerWith({ openTextSession: vi.fn() });
     const title = "z".repeat(10_000);
     const uiPayload = { serverId: "server-1", resourceUri: "ui://large-output", title };
     const input: ProviderRequestInputProjectionParams = {
@@ -652,10 +632,7 @@ describe("SubscriptionLlmProvider", () => {
 
   it.each(["codex", "kimi-code"] as const)("continues with bounded images and an explicit delivery error above the %s count limit", async (providerId) => {
     const { session, streamTurn } = sessionWith([{ type: "message_complete", stopReason: "end_turn" }]);
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: providerId },
-      service: { openTextSession: vi.fn(async () => session) },
-    });
+    const provider = providerWith({ openTextSession: vi.fn(async () => session) }, providerId);
     const messages = Array.from({ length: MAX_SUBSCRIPTION_PROMPT_ATTACHMENTS + 1 }, (_, index) => ({
         role: "tool_result" as const, toolUseId: String(index), content: "image loaded",
         image: { data: "iVBORw0KGgo=", mimeType: "image/png" },
@@ -678,10 +655,7 @@ describe("SubscriptionLlmProvider", () => {
     Buffer.from("iVBORw0KGgo=", "base64").copy(bytes);
     const data = bytes.toString("base64");
     const { session, streamTurn } = sessionWith([{ type: "message_complete", stopReason: "end_turn" }]);
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: providerId },
-      service: { openTextSession: vi.fn(async () => session) },
-    });
+    const provider = providerWith({ openTextSession: vi.fn(async () => session) }, providerId);
     const request = params({ messages: [
         { role: "user", content: [{ type: "image", image: `data:image/png;base64,${data}` }] },
         { role: "tool_result", toolUseId: "tool-image", content: "image loaded", image: { data, mimeType: "image/png" } },
@@ -694,10 +668,7 @@ describe("SubscriptionLlmProvider", () => {
 
   it("dispatches a sixth sequential image and projects only the five images actually sent", async () => {
     const { session, streamTurn } = sessionWith([{ type: "message_complete", stopReason: "end_turn" }]);
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service: { openTextSession: vi.fn(async () => session) },
-    });
+    const provider = providerWith({ openTextSession: vi.fn(async () => session) });
     const messages: StreamTurnParams["messages"] = [{ role: "user", content: "Read the images sequentially." }];
     for (let index = 0; index < 6; index++) {
       messages.push({ role: "assistant", content: "Read the next image." });
@@ -779,10 +750,7 @@ describe("SubscriptionLlmProvider", () => {
     const service = {
       openTextSession: vi.fn(async () => session),
     } as Pick<SubscriptionRuntimeService, "openTextSession">;
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "kimi-code" },
-      service,
-    });
+    const provider = providerWith(service, "kimi-code");
     const tools = [{
       name: "list_directory",
       description: "List an approved directory through Ave.",
@@ -836,10 +804,7 @@ describe("SubscriptionLlmProvider", () => {
     const service = {
       openTextSession: vi.fn(async () => session),
     } as Pick<SubscriptionRuntimeService, "openTextSession">;
-    const provider = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service,
-    });
+    const provider = providerWith(service);
     const tools = [{
       name: "read_file",
       description: "Read an approved project file through Ave.",
@@ -982,10 +947,7 @@ describe("SubscriptionLlmProvider", () => {
         throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
       }),
     } as Pick<SubscriptionRuntimeService, "openTextSession">;
-    const primary = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service,
-    });
+    const primary = providerWith(service);
     const retrying = new FallbackProvider(primary, [], () => {
       throw new Error("API-key fallback must not be created");
     });
@@ -1010,10 +972,7 @@ describe("SubscriptionLlmProvider", () => {
     const service = {
       openTextSession: vi.fn(),
     } as Pick<SubscriptionRuntimeService, "openTextSession">;
-    const primary = createSubscriptionLlmProvider({
-      selection: { kind: "subscription", provider: "codex" },
-      service,
-    });
+    const primary = providerWith(service);
     const onStatus = vi.fn();
     const retrying = new FallbackProvider(primary, [], () => {
       throw new Error("API-key fallback must not be created");

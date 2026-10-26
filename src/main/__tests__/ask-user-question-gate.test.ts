@@ -6,6 +6,15 @@ import {
 import { MAX_FREE_TEXT_LENGTH } from "../../shared/ask-user-question-limits.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 
+function questionGate() {
+  const wc = makeMockWebContents();
+  return { wc, gate: new AskUserQuestionGate(wc as never, 60_000) };
+}
+
+function requestCall(wc: ReturnType<typeof makeMockWebContents>) {
+  return wc.send.mock.calls.find((call) => call[0] === "ave:ask-user-question:request");
+}
+
 function single(question: string) {
   return { sessionId: "session-1", questions: [{ question, choices: ["Continue", "Stop"] }] };
 }
@@ -43,8 +52,7 @@ describe("AskUserQuestionGate — timeout path", () => {
   });
 
   it("caps concurrent pending requests to 5", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { gate } = questionGate();
     const slots: Array<Promise<unknown>> = [];
     for (let i = 0; i < 5; i++) {
       slots.push(gate.ask(single(`q-${i}`)));
@@ -63,8 +71,7 @@ describe("AskUserQuestionGate — timeout path", () => {
   // Regression: the user's 중단 button must unblock a pending question immediately. Before this, the gate sat on its 5-minute timer even after the
   // conversation loop had aborted, and the abort button felt dead.
   it("aborts immediately when the abortSignal fires and notifies the renderer", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
     const ac = new AbortController();
     const promise = gate.ask({ ...single("blocking?"), abortSignal: ac.signal });
     expect(gate.pendingCount).toBe(1);
@@ -84,15 +91,12 @@ describe("AskUserQuestionGate — timeout path", () => {
 
   // Reusing one AbortController across questions must not accumulate abort listeners after IPC resolution.
   it("removes the abort listener when the user resolves via IPC (no leak across sequential asks)", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
     const ac = new AbortController();
     const removeSpy = vi.spyOn(ac.signal, "removeEventListener");
 
     const slot = gate.ask({ ...single("first?"), abortSignal: ac.signal });
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     const requestId = (reqCall![1] as { id: string }).id;
 
     // User confirms — this is what `ipcMain.handle("ave:ask-user-question:respond")` calls.
@@ -106,8 +110,7 @@ describe("AskUserQuestionGate — timeout path", () => {
   });
 
   it("returns immediately as dismissed when called with an already-aborted signal", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
     const ac = new AbortController();
     ac.abort();
 
@@ -148,8 +151,7 @@ describe("AskUserQuestionGate — timeout path", () => {
 
 describe("AskUserQuestionGate — multi-question contract", () => {
   it("rejects empty or oversized questions[] without engaging the timer", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const empty = await gate.ask({ sessionId: "session-1", questions: [] });
     expect(empty.dismissed).toBe(true);
@@ -199,8 +201,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("emits one request payload carrying all questions in order", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const slot = gate.ask({ sessionId: "session-1",
       questions: [
@@ -210,9 +211,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
       ],
     });
 
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     expect(reqCall).toBeDefined();
     const payload = reqCall![1] as { sessionId: string; questions: Array<{ question: string }> };
     expect(payload.questions.map((q) => q.question)).toEqual(["Where?", "When?", "Why?"]);
@@ -224,8 +223,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("preserves recommendation metadata and labels in the renderer request", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const slot = gate.ask({ sessionId: "session-1",
       questions: [
@@ -239,9 +237,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
       ],
     });
 
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     expect(reqCall).toBeDefined();
     expect(reqCall![1]).toMatchObject({
       questions: [
@@ -260,8 +256,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("propagates per-question answers from resolve() back to the awaiting caller", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const slot = gate.ask({ sessionId: "session-1",
       questions: [
@@ -269,9 +264,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
         { question: "When?", choices: ["오늘", "내일"] },
       ],
     });
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     const requestId = (reqCall![1] as { id: string }).id;
 
     gate.resolve({
@@ -285,8 +278,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("keeps the request pending until every answer is bound to its declared choices", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const slot = gate.ask({ sessionId: "session-1",
       questions: [
@@ -294,9 +286,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
         { question: "Tags?", choices: ["AI", "보안", "UX"], allowMultiple: true },
       ],
     });
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     const requestId = (reqCall![1] as { id: string }).id;
 
     // Neither question asked for a typed answer, so text is not an answer channel the renderer may open on its own.
@@ -326,8 +316,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("carries allowFreeText and its placeholder into the renderer request", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const slot = gate.ask({
       sessionId: "session-1",
@@ -338,9 +327,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
       ],
     });
 
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     expect(reqCall![1]).toMatchObject({
       questions: [
         { choices: [], allowFreeText: true, placeholder: "숫자" },
@@ -356,8 +343,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("rejects a question that offers neither choices nor a typed answer", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     await expect(
       gate.ask({ sessionId: "session-1", questions: [{ question: "Pick", choices: [] }] }),
@@ -366,8 +352,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
   });
 
   it("admits a typed answer only where the question asked for one, trimmed and capped", async () => {
-    const wc = makeMockWebContents();
-    const gate = new AskUserQuestionGate(wc as never, 60_000);
+    const { wc, gate } = questionGate();
 
     const slot = gate.ask({
       sessionId: "session-1",
@@ -376,9 +361,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
         { question: "분야?", choices: ["AI", "UX"], allowMultiple: true, allowFreeText: true },
       ],
     });
-    const reqCall = wc.send.mock.calls.find(
-      (c) => c[0] === "ave:ask-user-question:request",
-    );
+    const reqCall = requestCall(wc);
     const requestId = (reqCall![1] as { id: string }).id;
 
     // Blank once trimmed is no answer at all.

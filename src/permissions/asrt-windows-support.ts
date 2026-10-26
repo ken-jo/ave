@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { dirname, win32 as win32Path } from "node:path";
 import {
   DEFAULT_WINDOWS_PROXY_PORT_RANGE,
+  getWindowsProfileReadDenyWarnings,
   getVendoredSrtWinExePath,
   rewriteAsarPathToUnpacked,
 } from "./asrt-sandbox.js";
@@ -328,6 +329,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
 
   const { getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } = await import("../shared/ave-home.js");
   const failure = getAveHomePrivacyFailure();
+  const profileReadDenyWarnings = getWindowsProfileReadDenyWarnings();
   if (failure !== undefined) {
     return {
       applicable: true,
@@ -336,6 +338,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
       ready: false,
       homePrivacyError: { path: failure.failedPath ?? failure.home, category: failure.category, extraPrincipals: failure.extraPrincipals,
         approvedForSession: areExtensionsWithoutIsolationApproved() },
+      profileReadDenyWarnings,
       instructions: "",
     };
   }
@@ -355,6 +358,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
       wfpState: null,
       ready: false,
       helperError: error instanceof SrtWinIntegrityError ? error.code : "srt-win-not-found",
+      profileReadDenyWarnings,
       instructions: mod.windowsInstallInstructions(undefined),
     };
   }
@@ -375,6 +379,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     wfpState,
     ready,
     instructions: mod.windowsInstallInstructions(undefined),
+    profileReadDenyWarnings,
   };
 }
 

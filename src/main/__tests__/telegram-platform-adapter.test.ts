@@ -1,3 +1,4 @@
+import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import type {
   PlatformBridgeDeliveryTransportSendOptions,
@@ -44,6 +45,15 @@ function successfulFetch() {
     status: 200,
     headers: { "content-type": "application/json" },
   }));
+}
+
+function outboundTransport(fetchSpy: ReturnType<typeof successfulFetch>) {
+  return createTelegramOutboundTransport({
+    botToken: BOT_TOKEN,
+    fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    minIntervalMs: 1,
+    wait: async () => undefined,
+  });
 }
 
 function coalesceQueue(
@@ -243,12 +253,7 @@ describe("Telegram platform adapter", () => {
 
   it("renders empty snapshots and statuses with fixed safe text", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
     const messages: readonly PlatformBridgeOutboundMessage[] = [
       { kind: "snapshot", cursor: 1, status: "awaiting-local-approval", text: "" },
       { kind: "status", cursor: 2, status: "tool-running" },
@@ -271,12 +276,7 @@ describe("Telegram platform adapter", () => {
 
   it("renders a failed turn with its category and safe summary, failing closed otherwise", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
     const messages: readonly PlatformBridgeOutboundMessage[] = [
       {
         kind: "status",
@@ -345,12 +345,7 @@ describe("Telegram platform adapter", () => {
 
   it("names the waiting tool in the approval notice and resumes with the plain working status", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
     const messages: readonly PlatformBridgeOutboundMessage[] = [
       { kind: "status", cursor: 1, status: "awaiting-local-approval", tool: "builtin:list_files" },
       // The approval decision itself never crosses the bridge; the turn simply resumes through the ordinary tool status once it is approved locally.
@@ -372,12 +367,7 @@ describe("Telegram platform adapter", () => {
 
   it("keeps the fixed approval text when the tool identifier is missing or unsafe", async () => {
     const fetchSpy = successfulFetch();
-    const transport = createTelegramOutboundTransport({
-      botToken: BOT_TOKEN,
-      fetch: fetchSpy as unknown as typeof globalThis.fetch,
-      minIntervalMs: 1,
-      wait: async () => undefined,
-    });
+    const transport = outboundTransport(fetchSpy);
 
     for (const tool of [undefined, "unsafe tool C:\\private\\path"]) {
       await transport.send(
@@ -645,8 +635,7 @@ describe("Telegram platform adapter", () => {
     const newChannel = Object.freeze({ chatId: "42", deliveryLease: "new-lease" });
     let activeDeliveryLease: string | undefined = oldChannel.deliveryLease;
     let resolveResponse: ((response: Response) => void) | undefined;
-    let markFetchStarted: (() => void) | undefined;
-    const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+    const { promise: fetchStarted, resolve: markFetchStarted } = deferred<void>();
     const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => {
       resolveResponse = resolve;
       markFetchStarted?.();
@@ -681,8 +670,7 @@ describe("Telegram platform adapter", () => {
     vi.useFakeTimers();
     try {
       let requestSignal: AbortSignal | undefined;
-      let markFetchStarted: (() => void) | undefined;
-      const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+      const { promise: fetchStarted, resolve: markFetchStarted } = deferred<void>();
       const hangingFetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
         const signal = init?.signal;
         requestSignal = signal ?? undefined;

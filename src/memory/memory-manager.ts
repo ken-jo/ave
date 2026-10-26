@@ -547,16 +547,8 @@ const MEMORY_STATES = new Set<MemoryState>(["candidate", "active"]);
 const MEMORY_CAPTURE_TRIGGERS = new Set<MemoryCaptureTrigger>(["automatic", "explicit"]);
 const MEMORY_SOURCES = new Set<MemorySourceKind>(["user", "assistant", "import", "capture"]);
 
-function getDefaultAgentsMd(): string {
-  return t("be_memoryManager.defaultAgentsMd");
-}
-
 function getDefaultMemoryIndex(): string {
   return t("be_memoryManager.defaultMemoryIndex");
-}
-
-function getDefaultUserPrefs(): string {
-  return t("be_memoryManager.defaultUserPrefs");
 }
 
 // Own session-file limits here and share them with import validation.
@@ -3080,8 +3072,8 @@ export class MemoryManager implements PromptMemorySource {
     this.restrictSessionsDirWrites();
 
     // Use exclusive creation to eliminate check-then-write races.
-    this.writeDefaultIfAbsent(join(this.aveDir, "AGENTS.md"), getDefaultAgentsMd());
-    this.writeDefaultIfAbsent(join(this.aveDir, "user-preferences.md"), getDefaultUserPrefs());
+    this.writeDefaultIfAbsent(join(this.aveDir, "AGENTS.md"), t("be_memoryManager.defaultAgentsMd"));
+    this.writeDefaultIfAbsent(join(this.aveDir, "user-preferences.md"), t("be_memoryManager.defaultUserPrefs"));
     this.writeDefaultIfAbsent(join(this.memoryDir, "MEMORY.md"), getDefaultMemoryIndex());
   }
 

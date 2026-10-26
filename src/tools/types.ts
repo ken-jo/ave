@@ -51,6 +51,8 @@ export function trustFromSource(source: ToolSource): TrustLevel {
  * working directory enforced by the sandbox path validator; `metadata` is a free-form bag for hooks and future plumbing. */
 export interface ToolExecutionContext {
   cwd: string;
+  /** Host-derived execution surface; UI-opening tools must refuse unattended calls. */
+  headless?: boolean;
   /** Host-built per-hop permission gate for mediated network requests. */
   authorizeNetworkTarget?: (url: URL) => Promise<void>;
   /** User-authorized filesystem roots beyond `cwd` for this invocation. The executor derives this once from `permissions.additionalDirectories` and

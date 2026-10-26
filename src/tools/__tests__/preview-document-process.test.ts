@@ -8,6 +8,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { buildPreviewDocumentRuntime } from "../../__tests__/support/preview-document-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
+import { pdfFixture, presentationFixture } from "../../__tests__/support/page-document-fixtures.js";
+import type { PreviewPageFormat } from "../../shared/preview-page-document.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewDocumentFormat } from "../../shared/preview-document.js";
 import { asarCliPath } from "../../../test/scripts/gate-script-runner.js";
 
@@ -83,6 +85,58 @@ async function runProbe(program: string): Promise<Record<string, number>> {
 }
 
 describe("isolated table parsing", () => {
+  it("transports absolute windows to the isolated parser", async () => {
+    const slot = await acquireParseSlot("window-transport");
+    try {
+      const document = await slot.parse(offsetWorkbook("xlsx"), "xlsx", 0,
+        { rowOffset: 10001, columnOffset: 1, rowCount: 1, columnCount: 1 });
+      expect(document.sheet).toMatchObject({ firstRow: 10001, firstColumn: 1, rows: [["42"]],
+        sourceRange: { firstRow: 10000, firstColumn: 0 } });
+    } finally { slot.release(); }
+  });
+
+  it("refuses malformed windows before spawning a child", async () => {
+    const slot = await acquireParseSlot("invalid-window");
+    const spawned = vi.spyOn(managedChildren, "spawnManaged");
+    try {
+      await expect(slot.parse(Buffer.from("a,b"), "csv", 0,
+        { rowOffset: -1, rowCount: 1, columnCount: 1 })).rejects.toMatchObject({ code: "invalid-index" });
+      expect(spawned).not.toHaveBeenCalled();
+    } finally { spawned.mockRestore(); slot.release(); }
+  });
+
+  it.each([
+    '{"rowCount":0,"columnCount":1}',
+    '{"rowCount":1,"columnCount":1,"extra":true}',
+    'not-json',
+  ])("rejects malformed window arguments in the child: %s", (windowArg) => {
+    const child = spawnSync(process.execPath, [entry, "csv", "0", "0", windowArg], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8",
+      timeout: PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs,
+    });
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe(JSON.stringify({ ok: false, error: "read-failed" }));
+  });
+
+  it("does not accept a default preview response for a window request", async () => {
+    const expected = await parseTableDocumentIsolated(Buffer.from("a,b"), "csv", 0);
+    childProgram(`process.stdout.write(${JSON.stringify(JSON.stringify({ ok: true, document: expected }))})`);
+    const slot = await acquireParseSlot("mismatched-window");
+    try {
+      await expect(slot.parse(Buffer.from("a,b"), "csv", 0,
+        { rowCount: 1, columnCount: 1 })).rejects.toMatchObject({ code: "read-failed" });
+    } finally { slot.release(); }
+  });
+
+  it.each([["pptx", presentationFixture], ["pdf", pdfFixture]] as const)("loads a real %s page through the split child", async (format, fixture) => {
+    const slot = await acquireParseSlot(`page-test:${format}`);
+    try {
+      const document = await slot.parse(fixture(), format as PreviewPageFormat, 0);
+      expect(document).toMatchObject({ format, totalPages: 2, page: { index: 0 } });
+      expect(document.page.paragraphs.join(" ")).toContain(format === "pdf" ? "First PDF page" : "First & safe");
+    } finally { slot.release(); }
+    expect(getManagedChildProcessCount()).toBe(0);
+  });
   it("returns only the bounded display model from a real split child bundle", async () => {
     const document = await parseTableDocumentIsolated(Buffer.from("a,b\n1,2"), "csv", 0);
     expect(document.sheet.rows).toEqual([["a", "b"], ["1", "2"]]);
@@ -243,7 +297,9 @@ describe("isolated table parsing", () => {
     await expect(parseTableDocumentIsolated(Buffer.alloc(PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1), "csv", 0))
       .rejects.toMatchObject({ code: "too-large" });
     await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", Number.NaN))
-      .rejects.toMatchObject({ code: "sheet-not-found" });
+      .rejects.toMatchObject({ code: "invalid-index" });
+    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", -1))
+      .rejects.toMatchObject({ code: "invalid-index" });
     expect(getManagedChildProcessCount()).toBe(0);
   });
 

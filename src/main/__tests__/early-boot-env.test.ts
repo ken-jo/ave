@@ -1,6 +1,6 @@
 // Chromium resolver overrides bypass the Node DNS checks used by the SSRF guard and must stay disabled.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -35,6 +35,8 @@ vi.mock("../ensure-workspace-cwd.js", () => ({
 
 import { runEarlyBootEnv } from "../early-boot-env.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { writeSettingsFile as writeSettings } from "./support/settings-file.js";
+
 
 describe("runEarlyBootEnv", () => {
   let userDataPath: string;
@@ -52,13 +54,9 @@ describe("runEarlyBootEnv", () => {
     mockedElectron.app.getPath.mockReturnValue(userDataPath);
     // A settings file written by an older build, still carrying the removed manual host-resolver map. Anything that reads settings at boot will find a
     // syntactically valid map here — so the guard test below fails loudly if a reader and `appendSwitch` are ever reinstated.
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+    writeSettings(userDataPath, {
         llm: { provider: "openai", hostResolverMap: "10.0.0.10 internal-endpoint.example.com" },
-      }),
-      "utf-8",
-    );
+      });
     // The WSL/ozone branch is the one command-line path that is exercised on every platform this suite runs on, so it doubles as proof that the
     // `appendSwitch` recorder above is live.
     setProcessPlatform("linux");
@@ -90,11 +88,7 @@ describe("runEarlyBootEnv", () => {
     expect(mockedElectron.app.disableHardwareAcceleration).toHaveBeenCalledOnce();
 
     vi.clearAllMocks();
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { hardwareAcceleration: true } }),
-      "utf-8",
-    );
+    writeSettings(userDataPath, { system: { hardwareAcceleration: true } });
 
     runEarlyBootEnv();
     expect(mockedElectron.app.disableHardwareAcceleration).not.toHaveBeenCalled();
@@ -117,11 +111,7 @@ describe("runEarlyBootEnv", () => {
   });
 
   it("lets AVE_KEEP_GPU=1 override a persisted off", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { hardwareAcceleration: false } }),
-      "utf-8",
-    );
+    writeSettings(userDataPath, { system: { hardwareAcceleration: false } });
     vi.stubEnv("AVE_KEEP_GPU", "1");
 
     runEarlyBootEnv();

@@ -1,3 +1,4 @@
+import { allowedCommandCase, deniedCommandCase } from "./support/bash-validation-cases.js";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,10 +27,7 @@ describe("literal program data in complete statement scopes", () => {
     "cd work &&\n# comment before the program\npython -c '# eval note\nprint(1)' 2>&1\n",
     "python -c 'print(\"eval ; | & && || ( ) $LITERAL\")' 1>&-",
     "cd work && py\\\nthon -c '# eval note\nprint(1)' 2>&1"
-  ])("preserves literal data without assigning shell execution: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("allow");
-  });
+  ])("preserves literal data without assigning shell execution: %s", allowedCommandCase(validate));
 
   it.each([
     "eval 'printf 1'",
@@ -40,19 +38,11 @@ describe("literal program data in complete statement scopes", () => {
     "python -c \"# eval marker\nprint('$(eval printf 1)')\"",
     "python -c '# eval marker\nprint(1)' <(eval printf 1)",
     "cd work && python -c '# eval note\nprint(1)' && e\"\"val 'printf 1'"
-  ])("refuses actual nested or subsequent eval execution: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("deny");
-    expect(result.patternId).toBe("eval-untrusted");
-  });
+  ])("refuses actual nested or subsequent eval execution: %s", deniedCommandCase(validate, "eval-untrusted"));
 
   it.each([
     "python -c '# eval marker\nprint(1)' | sh"
-  ])("refuses a pipe whose shell program is unknown: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("deny");
-    expect(result.patternId).toBe("subst-pipe-shell");
-  });
+  ])("refuses a pipe whose shell program is unknown: %s", deniedCommandCase(validate, "subst-pipe-shell"));
 
   it.each([
     "$RUNNER -c '# eval marker\nprint(1)'",
@@ -64,11 +54,7 @@ describe("literal program data in complete statement scopes", () => {
     "cd work; && python -c '# eval note\nprint(1)'",
     "cd work && python -c '# eval note\nprint(1)' 2>&$FD",
     "cd work && python -c '# eval note\nprint(1)' && $RUNNER"
-  ])("refuses missing command values or incomplete syntax: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("deny");
-    expect(result.patternId).toBe("shell-analysis");
-  });
+  ])("refuses missing command values or incomplete syntax: %s", deniedCommandCase(validate, "shell-analysis"));
 
   it.each([
     "bash -c 'python -c \"# eval marker\nprint(1)\"'",
@@ -99,10 +85,7 @@ describe("literal program data in complete statement scopes", () => {
     "cd work && python -c '# eval note\nprint(1)' && printf '%s' <(printf done)",
     "cd work && python -c '# eval note\nprint(1)' && printf -v destination '%s' value",
     "cd 'eval location' && python -c '# eval note\nprint(1)'"
-  ])("preserves literal program data through scopes and wrappers: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("allow");
-  });
+  ])("preserves literal program data through scopes and wrappers: %s", allowedCommandCase(validate));
 
   it.skipIf(process.platform === "win32")("preserves native program argument bytes through a wrapper and cwd change", () => {
     const receiver = join(fixture.cwd, "argument-receiver");

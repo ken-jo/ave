@@ -1,8 +1,8 @@
 /**
  * i18n locale definitions — single source of truth for UI languages.
  *
- * Ave ships a global build with English as the default UI language. The
- * built-in locales have complete compiled catalogs; every other language is
+ * Ave exposes every compiled UI locale out of the box and follows the system
+ * language on fresh installs, falling back to English. Every other language is
  * an installed language package (design §5.2) whose catalog is
  * layered over English, registered here at runtime by the process that loaded
  * it. The registry is open: a locale is any BCP 47 tag a built-in catalog or
@@ -21,29 +21,15 @@ type BuiltInLocale = (typeof SUPPORTED_LOCALES)[number];
 /** A UI locale: a built-in one, or the BCP 47 tag of an installed language package. */
 export type Locale = string;
 
-/** Default UI locale for the global build. English-first. */
+/** Fallback UI locale when the requested language is unavailable. */
 export const DEFAULT_LOCALE = "en" satisfies BuiltInLocale;
 
-/**
- * Locales shown in the default in-app language picker. Every other built-in
- * locale is a marketplace language pack, lazily loaded once installed.
- */
-export const DEFAULT_VISIBLE_LOCALES = ["en"] as const satisfies readonly BuiltInLocale[];
+/** Legacy package identities remain valid independently of built-in visibility. */
+export const OFFICIAL_PACKAGE_LOCALES = ["ko"] as const satisfies readonly BuiltInLocale[];
 
-export type DefaultVisibleLocale = (typeof DEFAULT_VISIBLE_LOCALES)[number];
+export type OfficialPackageLocale = (typeof OFFICIAL_PACKAGE_LOCALES)[number];
 
-const DEFAULT_VISIBLE_LOCALE_SET = new Set<string>(DEFAULT_VISIBLE_LOCALES);
-
-export type MarketplaceEligibleLocale = Exclude<BuiltInLocale, DefaultVisibleLocale>;
-
-export const MARKETPLACE_ELIGIBLE_LOCALES = SUPPORTED_LOCALES.filter(
-  (locale): locale is MarketplaceEligibleLocale =>
-    !DEFAULT_VISIBLE_LOCALE_SET.has(locale),
-);
-
-const MARKETPLACE_ELIGIBLE_LOCALE_SET = new Set<string>(
-  MARKETPLACE_ELIGIBLE_LOCALES,
-);
+const OFFICIAL_PACKAGE_LOCALE_SET = new Set<string>(OFFICIAL_PACKAGE_LOCALES);
 
 interface LocaleInfo {
   /** Shown to users in their own language. */
@@ -53,7 +39,7 @@ interface LocaleInfo {
 }
 
 /** Display metadata of the built-in locales; {@link localeInfo} covers installed ones too. */
-export const LOCALE_INFO: Record<BuiltInLocale, LocaleInfo> = {
+const LOCALE_INFO: Record<BuiltInLocale, LocaleInfo> = {
   en: { nativeName: "English", englishName: "English" },
   ko: { nativeName: "한국어", englishName: "Korean" },
 };
@@ -92,7 +78,7 @@ export function localeInfo(locale: string): LocaleInfo | undefined {
 }
 
 function renderable(locale: string): boolean {
-  return (SUPPORTED_LOCALES as readonly string[]).includes(locale) || installedLocales.has(locale);
+  return isDefaultVisibleLocale(locale) || installedLocales.has(locale);
 }
 
 /** Type guard: is `value` a locale this process can render (built in or installed)? */
@@ -102,19 +88,19 @@ export function isLocale(value: unknown): value is Locale {
 
 export function isDefaultVisibleLocale(
   value: unknown,
-): value is DefaultVisibleLocale {
+): value is BuiltInLocale {
   return (
     typeof value === "string" &&
-    DEFAULT_VISIBLE_LOCALE_SET.has(value)
+    (SUPPORTED_LOCALES as readonly string[]).includes(value)
   );
 }
 
-export function isMarketplaceEligibleLocale(
+export function isOfficialPackageLocale(
   value: unknown,
-): value is MarketplaceEligibleLocale {
+): value is OfficialPackageLocale {
   return (
     typeof value === "string" &&
-    MARKETPLACE_ELIGIBLE_LOCALE_SET.has(value)
+    OFFICIAL_PACKAGE_LOCALE_SET.has(value)
   );
 }
 
@@ -147,21 +133,11 @@ export function normalizeLocaleSetting(value: unknown): Locale {
 }
 
 export function visibleLocalesFor(currentLocales: readonly unknown[] = []): Locale[] {
-  const visible: Locale[] = [...DEFAULT_VISIBLE_LOCALES];
+  const visible: Locale[] = [...SUPPORTED_LOCALES];
   for (const value of [...currentLocales, ...installedLocales.keys()]) {
     const locale = normalizeLocale(value);
     if (visible.includes(locale)) continue;
     visible.push(locale);
   }
   return visible;
-}
-
-export function recommendedMarketplaceLocaleForSystem(
-  systemLocale: unknown,
-  currentLocales: readonly unknown[] = [],
-): MarketplaceEligibleLocale | undefined {
-  const locale = normalizeLocale(systemLocale);
-  if (!isMarketplaceEligibleLocale(locale)) return undefined;
-  const current = visibleLocalesFor(currentLocales);
-  return current.includes(locale) ? undefined : locale;
 }

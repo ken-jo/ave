@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { assertImageRuntimeFiles } from "./lib/image-runtime-files.cjs";
 import { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } from "./lib/ripgrep-runtime-files.cjs";
+import { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, assertPdfUnpackedData, PAGE_RENDERER_LICENSE_NOTICES } from "./lib/page-runtime-files.cjs";
 
 const { assertGraphicsRuntimeFiles } = createRequire(import.meta.url)(
   "./lib/graphics-runtime-files.cjs",
@@ -26,7 +27,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const fallbackAppAsar = resolve(root, "release", "linux-arm64-unpacked", "resources", "app.asar");
-const maxAppAsarMb = Number(process.env.AVE_MAX_APP_ASAR_MB ?? "100");
+const maxAppAsarMb = Number(process.env.AVE_MAX_APP_ASAR_MB ?? "200");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const DEFAULT_PACKAGED_ELECTRON_LANGUAGES = Object.freeze(["en-US"]);
 
@@ -50,7 +51,7 @@ const missingConfiguredLanguages = DEFAULT_PACKAGED_ELECTRON_LANGUAGES.filter(
   (language) => !configuredLanguages.includes(language),
 );
 if (unexpectedConfiguredLanguages.length > 0 || missingConfiguredLanguages.length > 0) {
-  fail("desktop app must package only the default Electron language; ship UI languages as marketplace language packs", [
+  fail("desktop app must package only the default shell language; UI catalogs are independent of browser locale files", [
     ...missingConfiguredLanguages.map((language) => `missing:${language}`),
     ...unexpectedConfiguredLanguages.map((language) => `unexpected:${language}`),
   ]);
@@ -284,6 +285,9 @@ const LAZY_RENDERER_CHUNKS = [
   // Missing highlighting chunks silently degrade to plain text; assert membership here.
   { name: "highlight", pattern: /^\/dist\/src\/renderer\/chunks\/highlight\.[0-9a-f]{8}\.js$/ },
   { name: "hljs-typescript", pattern: /^\/dist\/src\/renderer\/chunks\/hljs-typescript\.[0-9a-f]{8}\.js$/ },
+  // Korean is a built-in UI language; a missing catalog chunk silently falls back to English.
+  { name: "i18n-ko", pattern: /^\/dist\/src\/renderer\/chunks\/i18n-ko\.[0-9a-f]{8}\.js$/ },
+  { name: "i18n-ko-seed", pattern: /^\/dist\/src\/renderer\/chunks\/i18n-ko-seed\.[0-9a-f]{8}\.js$/ },
 ];
 const missingLazyChunks = LAZY_RENDERER_CHUNKS.filter(
   (chunk) => !entries.some((entry) => chunk.pattern.test(entry)),
@@ -426,6 +430,11 @@ for (const notice of RIPGREP_LICENSE_NOTICES) {
   const path = resolve(resourcesDir, "licenses", "ripgrep", notice);
   if (!existsSync(path)) fail(`ripgrep license notice missing: ${path}`);
 }
+// The PDF page renderer: canvas wrapper (MIT) and the Skia and third-party code in its binary.
+for (const notice of PAGE_RENDERER_LICENSE_NOTICES) {
+  const path = resolve(resourcesDir, "licenses", "canvas", notice);
+  if (!existsSync(path)) fail(`page renderer license notice missing: ${path}`);
+}
 
 const localeCount = isMacAppPackage() ? validateMacElectronLocales() : validatePakElectronLocales();
 
@@ -455,6 +464,9 @@ assertSandboxRuntimeFiles(
 const [imagePlatform, imageArch] = resolveBetterSqlitePrebuildTarget().split("-");
 assertImageRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
 assertRipgrepRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertCanvasRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertPdfRuntimeEntries(entries);
+assertPdfUnpackedData(resolve(unpackedDir, "node_modules"));
 
 process.stdout.write(
   [

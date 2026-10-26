@@ -4,18 +4,17 @@
  *
  * Renderer reaches these via window.ave.preview.readFile(path) and
  * window.ave.preview.readDocument(path, sheetIndex). readDocument runs the SAME
- * guard and returns a parsed, bounded table (never the file bytes).
+ * guard and returns a bounded sheet or page (never source document bytes).
  *
- * SECURITY INVARIANT: the set of files this handler will read for preview is
- * EXACTLY the set the builtin `read_file` tool reads without approval — the
- * guard ({@link assertReadableFilePath}) and text-window core
- * ({@link readTextFileWindow}) are the SAME functions the tool uses
- * (`src/tools/file-read-core.ts`). This IPC adds ZERO new read authority.
+ * Preview reads always use the allowed-root guard, independently of the
+ * native agent read policy's optional directory fencing. Text windows share
+ * readTextFileWindow; this IPC does not widen either caller's read authority.
  *
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
  * reach it (fail-closed). Frame-guarded via validateHostRendererSender.
  */
 import { ipcMain, type WebContents, type WebFrameMain } from "electron";
+import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
@@ -34,6 +33,7 @@ import { TableDocumentError } from "../../tools/table-document-error.js";
 import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
+import { previewPageFormatOf } from "../../shared/preview-page-document.js";
 import {
   PREVIEW_DOCUMENT_LIMITS,
   previewDocumentFormatOf,
@@ -103,6 +103,7 @@ function observeDocumentOwner(sender: WebContents, frame: WebFrameMain, abort: (
 }
 
 export function registerPreviewHandlers(deps: IpcDeps): void {
+  registerDocumentOpenHandlers(deps);
   const { auditLogger } = deps;
 
   ipcMain.handle(
@@ -185,7 +186,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
       }
       if (typeof sheetIndex !== "number" || !Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
-        return { ok: false, error: "sheet-not-found", message: "sheetIndex must be a non-negative integer" };
+        return { ok: false, error: "invalid-index", message: "sheetIndex must be a non-negative integer" };
       }
 
       const { cwd, extraAllowed } = currentReadScope();
@@ -194,9 +195,9 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
       }
       const resolved = verdict.resolved;
-      const format = previewDocumentFormatOf(resolved);
+      const format = previewDocumentFormatOf(resolved) ?? previewPageFormatOf(resolved);
       if (!format) {
-        return { ok: false, error: "unsupported-format", path: resolved, message: "not a table document" };
+        return { ok: false, error: "unsupported-format", path: resolved, message: "Unsupported preview document format." };
       }
 
       try {

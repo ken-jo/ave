@@ -88,19 +88,17 @@ describe("StatusBar", () => {
     expect(text).toHaveTextContent(message);
   });
 
-  it("tints toast background by severity", () => {
+  it("keeps a shared notice frame while the status mark carries severity", () => {
     const { container, rerender } = render(
       <StatusBar persistent={[]} visibleToast={toast({ severity: "warning" })} />,
     );
-    let toastCard = container.querySelector('[data-testid="status-toast-message"]')?.parentElement;
-    expect(toastCard?.className).toContain("bg-warning");
-    expect(toastCard?.className).toContain("border-warning");
-    expect(toastCard?.className).not.toContain("shadow");
+    const toastCard = () => container.querySelector('[data-testid="status-toast-message"]')?.parentElement;
+    expect(toastCard()?.className).toContain("bg-input-bar");
+    expect(toastCard()?.querySelector("[aria-hidden]")?.className).toContain("bg-warning");
 
     rerender(<StatusBar persistent={[]} visibleToast={toast({ severity: "error" })} />);
-    toastCard = container.querySelector('[data-testid="status-toast-message"]')?.parentElement;
-    expect(toastCard?.className).toContain("bg-destructive");
-    expect(toastCard?.className).toContain("border-destructive");
+    expect(toastCard()?.className).toContain("bg-input-bar");
+    expect(toastCard()?.querySelector("[aria-hidden]")?.className).toContain("bg-destructive");
   });
 
   it("shows no toast when visibleToast is null", () => {

@@ -15,6 +15,14 @@ function started(toolUseId: string): ChatEntry[] {
   return applyToolStart([], { groupId: GROUP, toolUseId, name: "bash", displayOrder: 0 });
 }
 
+function failedToolHistory(userContent: string, result: string, overrides: Partial<PersistedHistoryMessage> = {}): PersistedHistoryMessage[] {
+  return [
+    { index: 0, role: "user", content: userContent },
+    { index: 1, role: "assistant", content: "", toolCalls: [{ id: "t1", name: "bash", input: {} }] },
+    { index: 2, role: "tool_result", toolUseId: "t1", toolName: "bash", content: result, isError: true, ...overrides },
+  ];
+}
+
 describe("cancelled tool calls", () => {
   it("marks a stopped call cancelled rather than error (live)", () => {
     const entries = applyToolEnd(started("t1"), {
@@ -59,46 +67,13 @@ describe("cancelled tool calls", () => {
 
   it("carries the persisted flag onto the replayed tool row", () => {
     // On reload there is no stream event; `toolDisplay.cancelled` is the only witness that the halt was deliberate.
-    const messages: PersistedHistoryMessage[] = [
-      { index: 0, role: "user", content: "긴 작업 시작" },
-      {
-        index: 1,
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "t1", name: "bash", input: {} }],
-      },
-      {
-        index: 2,
-        role: "tool_result",
-        toolUseId: "t1",
-        toolName: "bash",
-        content: "도구 실행이 취소되었습니다.",
-        isError: true,
-        toolDisplay: { cancelled: true },
-      },
-    ];
+    const messages: PersistedHistoryMessage[] = failedToolHistory("긴 작업 시작", "도구 실행이 취소되었습니다.", { toolDisplay: { cancelled: true } });
 
     expect(toolsOf(historyToEntries(messages))[0]?.status).toBe("cancelled");
   });
 
   it("replays a real failure as error after reload", () => {
-    const messages: PersistedHistoryMessage[] = [
-      { index: 0, role: "user", content: "실패하는 작업" },
-      {
-        index: 1,
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "t1", name: "bash", input: {} }],
-      },
-      {
-        index: 2,
-        role: "tool_result",
-        toolUseId: "t1",
-        toolName: "bash",
-        content: "command not found",
-        isError: true,
-      },
-    ];
+    const messages: PersistedHistoryMessage[] = failedToolHistory("실패하는 작업", "command not found");
 
     expect(toolsOf(historyToEntries(messages))[0]?.status).toBe("error");
   });

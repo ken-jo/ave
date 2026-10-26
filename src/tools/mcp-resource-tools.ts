@@ -1,6 +1,6 @@
 // Model resource access shares client capability, listed-URI, fetch, and size gates with user mentions (docs/development/mcp-resources-policy.md).
 // Server content is untrusted tool data, never trusted overlay or turn provenance; builtin-name collisions roll back registration.
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import { createLogger } from "../lib/logger.js";
 import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
@@ -35,10 +35,6 @@ export interface McpResourceToolDeps {
   }>;
 }
 
-function errorResult(message: string): { output: string; isError: true } {
-  return { output: JSON.stringify({ error: message }), isError: true };
-}
-
 // Resolve access per call because manager initialization follows tool registration.
 export type McpResourceAccessResolver = () => McpResourceToolDeps | undefined;
 
@@ -66,11 +62,11 @@ export function createMcpResourceListTool(getAccess: McpResourceAccessResolver):
     },
     execute: async (rawInput) => {
       const access = getAccess();
-      if (!access) return errorResult(t("be_mcpResourceTools.notReady"));
+      if (!access) return toolErrorResult(t("be_mcpResourceTools.notReady"));
       const a = (rawInput ?? {}) as Record<string, unknown>;
       // Reject unusable serverId instead of silently widening to all servers; list guidance must not request uri.
       if (a.serverId !== undefined && typeof a.serverId !== "string") {
-        return errorResult(t("be_mcpResourceTools.invalidServerId"));
+        return toolErrorResult(t("be_mcpResourceTools.invalidServerId"));
       }
       // Source-trimmed resources are absent from result-chunk paging and need a resource offset.
       const offsetRaw = a.offset;
@@ -80,13 +76,13 @@ export function createMcpResourceListTool(getAccess: McpResourceAccessResolver):
           || !Number.isSafeInteger(offsetRaw)
           || offsetRaw < 0)
       ) {
-        return errorResult(t("be_mcpResourceTools.invalidOffset"));
+        return toolErrorResult(t("be_mcpResourceTools.invalidOffset"));
       }
       const offset = typeof offsetRaw === "number" ? offsetRaw : 0;
       const wanted = typeof a.serverId === "string" ? a.serverId : undefined;
       // Require serverId for offsets; a shared cross-server cursor would skip catalogue entries.
       if (offset > 0 && wanted === undefined) {
-        return errorResult(t("be_mcpResourceTools.offsetNeedsServerId"));
+        return toolErrorResult(t("be_mcpResourceTools.offsetNeedsServerId"));
       }
       const servers = access
         .listResources()
@@ -227,12 +223,12 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
     },
     execute: async (rawInput) => {
       const access = getAccess();
-      if (!access) return errorResult(t("be_mcpResourceTools.notReady"));
+      if (!access) return toolErrorResult(t("be_mcpResourceTools.notReady"));
       const a = (rawInput ?? {}) as Record<string, unknown>;
       const serverId = typeof a.serverId === "string" ? a.serverId.trim() : "";
       const uri = typeof a.uri === "string" ? a.uri.trim() : "";
       if (serverId.length === 0 || uri.length === 0 || uri.length > MCP_RESOURCE_URI_MAX_CHARS) {
-        return errorResult(t("be_mcpResourceTools.invalidRequest"));
+        return toolErrorResult(t("be_mcpResourceTools.invalidRequest"));
       }
       try {
         const read = await access.readDeclaredResource(serverId, uri);
@@ -254,7 +250,7 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
             + `uri=${uri.slice(0, 256)}: `
             + scrubShortError(errorMessage(err)),
         );
-        return errorResult(t("be_mcpResourceTools.readFailed"));
+        return toolErrorResult(t("be_mcpResourceTools.readFailed"));
       }
     },
   });

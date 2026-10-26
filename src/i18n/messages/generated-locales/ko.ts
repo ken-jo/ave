@@ -119,6 +119,7 @@ import { ko as ko_messageQueuePanel } from "../generated/messageQueuePanel.js";
 import { ko as ko_messageQueueStore } from "../generated/messageQueueStore.js";
 import { ko as ko_overlayCard } from "../generated/overlayCard.js";
 import { ko as ko_overlayCardRegion } from "../generated/overlayCardRegion.js";
+import { ko as ko_pagePreview } from "../generated/pagePreview.js";
 import { ko as ko_pendingAnswerDot } from "../generated/pendingAnswerDot.js";
 import { ko as ko_permissionDecisionCard } from "../generated/permissionDecisionCard.js";
 import { ko as ko_permissionEvaluationContextPanel } from "../generated/permissionEvaluationContextPanel.js";
@@ -310,6 +311,7 @@ export const koMessages: Record<string, string> = {
   ...ko_messageQueueStore,
   ...ko_overlayCard,
   ...ko_overlayCardRegion,
+  ...ko_pagePreview,
   ...ko_pendingAnswerDot,
   ...ko_permissionDecisionCard,
   ...ko_permissionEvaluationContextPanel,

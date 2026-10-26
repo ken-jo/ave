@@ -35,6 +35,8 @@ import type { RetiredPluginConfigRecord } from "../../../shared/alerts-types.js"
 import type { InstallerPorts, PluginInstallerPort, TokenStore } from "../ports.js";
 import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
+import { hasMarketplaceInstallInFlight } from "../install-lifecycle.js";
+import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
 import { marketplaceEvents, startMarketplaceBackground, type BackgroundService } from "../background.js";
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
@@ -116,6 +118,7 @@ describe("MarketplaceService", () => {
   let activateHold: (() => Promise<void>) | null;
   /** Runs between the first revocation check and the content-store write. */
   let duringContentInstall: (() => Promise<void>) | null;
+  let deactivateHold: (() => Promise<void>) | null;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
@@ -159,6 +162,7 @@ describe("MarketplaceService", () => {
     pruneHold = null;
     activateHold = null;
     duringContentInstall = null;
+    deactivateHold = null;
     await build();
   });
 
@@ -212,7 +216,7 @@ describe("MarketplaceService", () => {
           adopting.push(adopt);
           return { retired: Promise.resolve() };
         },
-        deactivate: async () => {},
+        deactivate: async () => { await deactivateHold?.(); },
         approveComponents: async () => {},
       },
       now: () => now,
@@ -334,6 +338,7 @@ describe("MarketplaceService", () => {
   }
 
   afterEach(async () => {
+    setAppRelaunchRequested(false);
     _resetAveHomePrivacyForTest();
     __resetSandboxRequestedAtBootForTest();
     setProcessPlatform(ORIGINAL_PLATFORM);
@@ -402,11 +407,132 @@ describe("MarketplaceService", () => {
     market.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations }) }, "revoke");
   }
 
+  async function installedForRemoval(kind: "skill" | "mcp") {
+    const source = market();
+    await addMarket(source.url);
+    const key = { sourceId: "acme-tools", kind, name: kind === "mcp" ? "notes" : "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    const recordPath = join(root, "packages", kind === "mcp" ? "mcp-installs.json" : "ledger.json");
+    return { source, key, recordPath, before: readFileSync(recordPath, "utf8") };
+  }
+
+  it("refuses content uninstall after reservation without changing the installed ledger", async () => {
+    const { key, recordPath, before } = await installedForRemoval("skill");
+    setAppRelaunchRequested(true);
+    await expect(service.uninstall(key)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(readFileSync(recordPath, "utf8")).toBe(before);
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it("refuses server uninstall after reservation without changing records or config", async () => {
+    const { key, recordPath, before } = await installedForRemoval("mcp");
+    setAppRelaunchRequested(true);
+    await expect(service.uninstall(key)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(readFileSync(recordPath, "utf8")).toBe(before);
+    expect(manager.configs.has("notes")).toBe(true);
+  });
+
+  it("keeps content installed when a catalog sync revokes it after relaunch reservation", async () => {
+    const { source, recordPath, before } = await installedForRemoval("skill");
+    createRevocations(source, [{ kind: "skill", name: "review", versions: "*", reason: "unsafe", at: AT.toISOString(), action: "uninstall" }]);
+    setAppRelaunchRequested(true);
+    await service.refresh();
+    expect(readFileSync(recordPath, "utf8")).toBe(before);
+    expect(service.takeRevocationNotice()?.revoked).toEqual([expect.objectContaining({ outcome: "failed", message: expect.stringMatching(/restart/i) })]);
+  });
+
+  it("keeps server records when a catalog sync revokes them after relaunch reservation", async () => {
+    const { source, recordPath, before } = await installedForRemoval("mcp");
+    createRevocations(source, [{ kind: "mcp", name: "notes", versions: "*", reason: "unsafe", at: AT.toISOString(), action: "uninstall" }]);
+    setAppRelaunchRequested(true);
+    await service.refresh();
+    expect(readFileSync(recordPath, "utf8")).toBe(before);
+    expect(manager.configs.has("notes")).toBe(true);
+    expect(service.takeRevocationNotice()?.revoked).toEqual([expect.objectContaining({ outcome: "failed", message: expect.stringMatching(/restart/i) })]);
+  });
+
+  async function heldRemoval(kind: "skill" | "mcp", revoke: boolean) {
+    const { source, key, recordPath, before } = await installedForRemoval(kind);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hold = async () => { entered(); await held; };
+    if (kind === "skill") deactivateHold = hold;
+    else vi.spyOn(manager, "removeConfig").mockImplementationOnce(async (id) => { await hold(); manager.configs.delete(id); });
+    if (revoke) createRevocations(source, [{ kind, name: key.name, versions: "*", reason: "unsafe", at: AT.toISOString(), action: "uninstall" }]);
+    const pending = revoke ? service.refresh() : service.uninstall(key);
+    await started;
+    try {
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+      expect(readFileSync(recordPath, "utf8")).toBe(before);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  }
+
+  it("keeps relaunch busy across content deactivation and ledger removal", async () => {
+    await heldRemoval("skill", false);
+  });
+
+  it("keeps relaunch busy across server disconnect and record removal", async () => {
+    await heldRemoval("mcp", false);
+  });
+
+  it("keeps relaunch busy during catalog content revocation", async () => {
+    await heldRemoval("skill", true);
+  });
+
+  it("keeps relaunch busy during catalog server revocation", async () => {
+    await heldRemoval("mcp", true);
+  });
+
   async function addMarket(url: string) {
     const preview = await service.previewSource({ input: url, auth: "none" });
     expect(preview.type).toBe("marketplace");
     return service.addSource({ previewId: previewIdOf(preview) });
   }
+
+  it("refuses boot installs before legacy migration while relaunch is reserved", async () => {
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    setAppRelaunchRequested(true);
+    await expect(service.applyBootInstalls([], applied)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(legacyRuns).toEqual([]);
+    expect(contentReports).toEqual([]);
+    expect(existsSync(join(root, "packages", "legacy-migration.json"))).toBe(false);
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("registers boot installs before yielding and releases the reservation on completion", async () => {
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    const pending = service.applyBootInstalls([], applied);
+    try {
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+    } finally {
+      await pending;
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("refuses automatic updates before reading installed state while relaunch is reserved", async () => {
+    setAppRelaunchRequested(true);
+    await expect(service.applyUpdate({ key: { sourceId: "acme-tools", kind: "language", name: "french" }, from: "1.0.0", to: "2.0.0", switchSource: false }, () => true)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(feedCalls).toBe(0);
+    expect(store.list()).toEqual([]);
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("registers automatic updates before yielding and releases superseded work", async () => {
+    const pending = service.applyUpdate({ key: { sourceId: "acme-tools", kind: "language", name: "french" }, from: "1.0.0", to: "2.0.0", switchSource: false }, () => true);
+    try {
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+    } finally {
+      await expect(pending).resolves.toEqual({ state: "superseded" });
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
 
   it("returns an install plan while home privacy refuses extension starts", async () => {
     const { url } = market();
