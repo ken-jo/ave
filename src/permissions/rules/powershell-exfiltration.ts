@@ -36,7 +36,8 @@ function retainVisibleUpload(command: string, context: PowerShellAnalysisContext
     const name = [...expression[1]!.matchAll(/'([^']*)'|"([^"$`]*)"/g)].map(part => part[1] ?? part[2]).join("");
     sender ||= HTTP_CMDLETS.has(canonicalName(name));
   }
-  if (sender && /(?:^|[\s"'])-inf(?:ile)?(?::|\s)/i.test(visible) && /https?:\/\//i.test(visible)) {
+  // PowerShell binds any prefix of -InFile on these cmdlets (common -Information* lose), even -I.
+  if (sender && /(?:^|[\s"'])-i(?:n(?:f(?:i(?:le?)?)?)?)?(?::|\s)/i.test(visible) && /https?:\/\//i.test(visible)) {
     sharedWork(context).retained.exfiltration ??= "PowerShell upload of a file (visible -InFile)";
   }
 }

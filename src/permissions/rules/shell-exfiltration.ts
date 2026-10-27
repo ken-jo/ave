@@ -3,7 +3,7 @@ import { modelShellPath } from "../../shared/shell-native-path.js";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
 import { analyzeShell, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord } from "../../shared/shell-analysis.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators, isConfiguredSessionReadPath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { literalRuleWord } from "./rule-specifier.js";
 import { proveStaticArgv } from "./shell-argument-grammar.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
@@ -113,7 +113,7 @@ function nativePathProbe(candidate: string, cwd: string | undefined, context: Sh
     const canonical = caseFoldForMatch(context.canonicalize(modeled.normalizedPath, true));
     const hit = context.matchPath(canonical);
     if (hit) return { hit, paths: [], sessionRead: false };
-    sessionRead = isConfiguredSessionReadPath(canonical);
+    sessionRead = context.isSessionReadPath(canonical);
   } else context.unresolvedPath = true;
   // Canonical containment and all its exclusions precede any extra floor view.
   const paths = sessionRead ? [] : modeled.floorPaths;
@@ -138,7 +138,7 @@ export function sensitivePathInArgumentText(text: string, cwd: string | undefine
     const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd });
     const originalSegments = foldCanonicalPathSeparators(globSource).split("/"), first = originalSegments.findIndex((segment) => /[*?[\]]/.test(segment));
     if (first > 0) { const { hit } = nativePathProbe(originalSegments.slice(0, first).join("/") || "/", cwd, context); if (hit) return hit; }
-    const sessionRead = modeled.nativePath !== undefined && isConfiguredSessionReadPath(caseFoldForMatch(context.canonicalize(modeled.normalizedPath, true)));
+    const sessionRead = modeled.nativePath !== undefined && context.isSessionReadPath(caseFoldForMatch(context.canonicalize(modeled.normalizedPath, true)));
     for (const path of [modeled.normalizedPath, ...modeled.floorPaths]) {
     const segments = foldCanonicalPathSeparators(path).split("/");
     // Sensitive entries have fixed, short segment lists. Compare those lists
