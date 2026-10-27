@@ -8,21 +8,20 @@ interface WideningFixture {
   readonly saved: "allow" | "ask";
   readonly headless: "allow" | "deny";
 }
-const STATIC = { installation: true, plan: true, exact: true, sandbox: "allow", saved: "allow", headless: "allow" } as const;
 const EVALUATION = { installation: true, plan: true, exact: true, sandbox: "ask", saved: "allow", headless: "allow" } as const;
 const UNPROVEN = { installation: true, plan: false, exact: false, sandbox: "ask", saved: "ask", headless: "deny" } as const;
 
 // Verdicts and exact eligibility are fixed policy expectations, not analysis output.
 export const CLASSIFIER_WIDENING_FIXTURES: readonly WideningFixture[] = [
-  { ...STATIC, command: "git log" },
-  { ...STATIC, command: "git log --oneline -n 2" },
-  { ...STATIC, command: "git log 'HEAD'" },
-  { ...STATIC, command: "git show --no-patch HEAD" },
-  { ...STATIC, command: "git diff --cached --name-only" },
-  { ...STATIC, command: "git diff HEAD main --name-status" },
-  { ...STATIC, command: "git rev-parse --verify HEAD" },
-  { ...STATIC, command: "git rev-parse --show-toplevel" },
-  { ...STATIC, command: "git branch --list" },
+  { ...UNPROVEN, command: "git log" },
+  { ...UNPROVEN, command: "git log --oneline -n 2" },
+  { ...UNPROVEN, command: "git log 'HEAD'" },
+  { ...UNPROVEN, command: "git show --no-patch HEAD" },
+  { ...UNPROVEN, command: "git diff --cached --name-only" },
+  { ...UNPROVEN, command: "git diff HEAD main --name-status" },
+  { ...UNPROVEN, command: "git rev-parse --verify HEAD" },
+  { ...UNPROVEN, command: "git rev-parse --show-toplevel" },
+  { ...UNPROVEN, command: "git branch --list" },
   { ...EVALUATION, command: "bash --noprofile --norc -p -c 'printf ready'" },
   { ...EVALUATION, command: "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'" },
   { ...UNPROVEN, command: "git status" },

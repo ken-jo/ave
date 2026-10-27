@@ -114,33 +114,34 @@ suffix. A bare optional-value option preserves the next word's option or operand
 role, so a later unknown flag remains unproven.
 
 `make` remains outside the positive command catalogue: assignments, evaluation
-options and build files can select executable code. Git admits only the closed
-macOS/Linux (`darwin`/`linux`) read-only forms in the
-[canonical native-command contract](../architecture/permission-policy-design.md#shell-credential-and-sink-classification).
-Canonical host Bash/PowerShell tools must carry a sealed in-process handle bound
-to the original raw command, dialect and cwd, the verified absolute image, and
-owned argv/environment. Only one literal simple command qualifies; wrappers,
-compound syntax, redirects and state changes refuse. Execution consumes that
-plan while rule and cache identity keep the original raw text. Other consumers
-and manual terminals have no handle and receive no native proof or exact upgrade.
+options and build files can select executable code. Every direct or
+wrapper-delegated Git form also remains unproven on every platform and
+repository. Foreground requires per-call approval; headless denies;
+no stored exact/broad rule, saved grant or mode
+repairs the missing proof. The classifier issues no Git capability and launches
+no Git version/configuration probe.
 
-The Git subset covers fixed-format metadata log, explicit no-patch show,
-explicit cached/two-revision metadata diff, closed rev-parse queries and branch
-listing with reset sorting. No-patch show can display selected object content,
-including raw blob bytes. The subset requires a verified plain-version image
-at or above 2.45.0 and child-effective environment/configuration guards. Status,
-worktree diff, default show, patch/stat output, commit, user global options,
-paths and unknown forms stay unproven. Inherited Git variables, pager and
-loader controls are removed; owned configuration suppresses executable hooks,
-monitoring, helpers, content conversions, submodule traversal and lazy fetch.
-These guards add to the shared host Git argument builder and workspace
-availability checks, preserving the existing bare-repository and write-hold
-boundaries.
-Repository configuration/includes and metadata indirections still allow data
-reads beyond the workspace; this is not a workspace-read confinement proof.
-Retained visible floors win. Literal messages or suppression flags alone cannot
-authorize an unproved form. The floor does not inspect opaque evaluator payloads
-to discover a Git invocation.
+Repository configuration/includes, mailmap/order-file settings, gitfiles,
+worktree/common-directory routing, object alternates and reference storage can
+select inputs outside the original command. Those implicit reads are not an
+accepted permission residual. Future admission must atomically bind authorized
+config bytes and all metadata, worktree, object and ref roots to actual child
+opens. A pre-read or pathname recheck leaves a replacement window and cannot
+supply that proof. The
+[canonical repository-input contract](../architecture/permission-policy-design.md#shell-credential-and-sink-classification)
+owns the refusal boundary; separately governed host Git services remain under
+their existing controls.
+
+Verified launcher admission is limited to the canonical host Bash/PowerShell
+tools. A sealed in-process handle binds the original raw command, dialect and
+cwd to the verified absolute image and owned argv/environment. One literal
+simple outer command qualifies; wrappers, compound syntax, redirects and state
+changes refuse. Execution consumes the plan while rule and cache identity keep
+the original raw text. Other consumers and manual terminals cannot mint proof.
+The only registered nested recipe is the exact-only Bash form below; the outer
+syntax restriction leaves its payload opaque. Exact-approved evaluator payloads
+retain their existing semantics and are not inspected to discover a Git
+invocation or mint Git proof.
 
 Configuration-dependent programs require an argv proof that implicit user and
 system settings cannot add execution, arguments, uploads or output writes.
@@ -255,7 +256,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - A dynamic root is an ordinary ask.
 - Known limits of the floor (accepted, round 6):
   - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
-  - The floor checks paths, not the content of repository history or raw objects. Only the host-bound Git read-only subset has positive proof; retained prefix rules cannot authorize other Git forms.
+  - The floor checks paths, not the content of repository history or raw objects. Every Git form remains unproven; retained exact or prefix rules cannot authorize it.
   - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
   - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
 - The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
@@ -263,7 +264,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - `/proc/*/environ`, `/proc/*/mem` and `/proc/*/fd/**`, together with their `task/*` and `map_files` forms; `cmdline` and `status` stay readable.
   - Chromium-family `Cookies`, `Login Data`, `Web Data` and `Local State` under `~/Library/Application Support`, `~/.config` and Windows `User Data`, which covers Chrome, Edge, Brave, Arc and Chromium.
   - Firefox `logins.json`, `key4.db` and `cookies.sqlite` under `Firefox/Profiles` and `.mozilla/firefox`.
-- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain unproven outside the host-bound read-only subset. Retained narrowing and destructive floors still apply independently.
+- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain unproven with every other Git form. Retained narrowing and destructive floors still apply independently.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.
@@ -575,7 +576,7 @@ The baseline work used `integration/permissions`. The approval rules UI is deliv
 - `src/permissions/rules/scoped-rule-matcher.ts`: edit, network and MCP precedence, mandatory scoped gates and host-resolved depth candidates.
 - `src/permissions/rules/shell-prefix-policy.ts`: the suggestion; `shell-prefix-values.ts` holds the refused-prefix list and destructive/irreversible classification.
 - [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts): baseline positive argv proof and closed command, wrapper and literal-evaluator grammars.
-- [verified-shell-command.ts](../../src/permissions/verified-shell-command.ts): sealed host-native proof and execution identity, using the closed [Git](../../src/permissions/rules/git-readonly-argv.ts) and [launcher](../../src/permissions/rules/verified-launcher-argv.ts) grammars.
+- [verified-shell-command.ts](../../src/permissions/verified-shell-command.ts): sealed host-launcher proof and execution identity, using the closed [launcher](../../src/permissions/rules/verified-launcher-argv.ts) grammar.
 - `src/permissions/rules/shell-rule-matcher.ts`: the AST walk and deny/ask/allow evaluation.
 - `src/permissions/rules/rule-files.ts`: rule validation and `PermissionRulesFileCorruptError`.
 - `src/permissions/rules/project-rule-files.ts`: per-project files in Ave home.
@@ -639,7 +640,7 @@ every positively parsed native `curl`, `sort` and `uniq` form, including
 read-looking forms.
 Their presence in a multi-command input refuses the whole input. Their baseline flags and grammars live in
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
-sealed native proof extensions use the verified command owner and grammars
+sealed launcher proof uses the verified command owner and launcher grammar
 linked above. The analyzer does not refine the flag through file-state or provenance
 simulation. That source also limits `printf` to known non-state-mutating format
 conversions; an incomplete, unknown or state-mutating conversion is unproven.

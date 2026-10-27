@@ -111,8 +111,8 @@ messages, templates and pathspec files retain path checks. Unsupported option
 arity is refused rather than used to infer later operand roles. Classification
 preserves the original command bytes. Redirection targets retain their direct
 path checks; substitutions make the request unproven. These operand roles do
-not supply execution proof: commit remains unproven under the closed Git
-catalogue below.
+not supply execution proof: every Git form remains unproven under the repository
+input boundary below.
 
 Literal dollars and percent markers remain exact filename bytes when the parser
 classifies them as literal text. Active parameter, environment and command
@@ -294,10 +294,9 @@ current family-level set covers all positively parsed native `curl`,
 multi-command input makes the whole input unproven. The authoritative flags and
 baseline argv grammars live in
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
-host-bound native extensions use the sealed proof owner in
+host-bound launcher proof uses the sealed owner in
 [verified-shell-command.ts](../../src/permissions/verified-shell-command.ts) and
-the closed [Git](../../src/permissions/rules/git-readonly-argv.ts) and
-[launcher](../../src/permissions/rules/verified-launcher-argv.ts) grammars.
+the closed [launcher](../../src/permissions/rules/verified-launcher-argv.ts) grammar.
 The floor never restores an allow by tracking files, provenance or later use.
 
 The same source owns the closed `printf` format grammar. It accepts only known
@@ -387,7 +386,7 @@ any of these constructs to recover an allow result.
 options and build files can select executable code, so even a literal invocation
 is unproven. It has no literal-evaluation exact-rule exception.
 
-Verified native command admission is available only to the canonical host Bash
+Verified launcher admission is available only to the canonical host Bash
 and PowerShell tools. The host issues a sealed in-process handle bound to the
 original raw command, dialect and resolved cwd. The same handle carries the
 original parse and a plan containing the proved absolute executable, owned argv
@@ -398,73 +397,40 @@ The original command remains the exact-rule and cache identity. Serialized input
 other classifier consumers and manually typed terminal commands cannot mint the
 handle and receive no native proof or exact-rule upgrade.
 
-This admission accepts one fully literal simple command only. Assignments,
+This admission accepts one fully literal simple outer command only. Assignments,
 unregistered wrappers, compound commands, pipelines, redirects and preceding
 state changes refuse. The closed Bash launcher recipe below is a separate
 literal-evaluation form, not general wrapper delegation. An absolute path alone
-or startup-suppression flags alone supply no authority. The closed Git grammar
-is owned by
-[git-readonly-argv.ts](../../src/permissions/rules/git-readonly-argv.ts):
+or startup-suppression flags alone supply no authority.
 
-| Original user form | Status with matching host proof |
-| --- | --- |
-| `git log` with optional `-n N`/`--max-count N`/`--max-count=N`, `--oneline`, `--no-patch` and at most one simple revision or revision range | Metadata-only `static-complete`; host fixes a built-in format and suppresses patches |
-| `git show --no-patch` with at most one simple revision | Read-only `static-complete`; reads the selected object without diff or external text conversion; the user must request `--no-patch` |
-| `git diff --cached` or `--staged`, with at most one revision and exactly one of `--name-only`, `--name-status`, `--raw` | Metadata-only `static-complete` |
-| `git diff` with exactly two separate simple revisions and exactly one of those metadata output options | Metadata-only `static-complete` |
-| `git rev-parse` with one registered repository query, or `--verify [--quiet] REV` | `static-complete`; no additional operands or revision options |
-| `git branch --list` with optional all/remote scope | `static-complete`; host resets configured sorting before selecting refname order |
-| Status, worktree diff, default show, patch/stat output, commit and every unregistered form | `unproven`; no exact or broad allow upgrade |
+Every direct or wrapper-delegated Git form is unproven on every platform and
+repository, including literal status, log, show, diff, rev-parse and
+branch-listing commands. Foreground execution requires per-call approval;
+headless execution denies. Stored exact
+or broad rules, saved grants and modes cannot upgrade these requests. The
+classifier issues no Git proof and performs no Git version or configuration
+probe. A verified executable and closed literal argv cannot prove the inputs
+the repository operation will open.
 
-Counts are nonnegative decimal integers. Simple revisions exclude paths,
-object-path syntax, reflog selectors and dynamic syntax. Registered standalone rev-parse queries are `--show-toplevel`,
-`--show-prefix`, `--git-dir`, `--absolute-git-dir`, `--is-inside-work-tree` and
-`--is-bare-repository`. Branch scope is at most one of `-a`/`--all` or
-`-r`/`--remotes`, without patterns. Unknown or abbreviated options, pathspecs,
-user global options, every `-C` form, user `-c`/`--config-env`, arbitrary
-format/sort and wrappers refuse.
-Git native admission supports macOS (`darwin`) and Linux (`linux`) only.
-It requires a verified image reporting the plain supported version form at or
-above 2.45.0; an absent, unknown-version or unproved installation refuses. The
-absolute version probe receives the sanitized environment too. Its supported or
-refused result is cached by absolute image path for the process lifetime,
-including probe errors. Protected administrator updates remain within the
-installation's host-trust boundary; version changes are not re-probed until
-application restart.
-Both probe and admitted child argv use the shared
-[host-git.ts](../../src/shared/host-git.ts) builder, preserving mandatory
-`safe.bareRepository=explicit`, filesystem-monitor and hooks hardening. Native
-admission checks the workspace's shared Git availability gate before granting
-proof and again before claiming native execution, after parser preflight where
-applicable; an overlapping retained write hold refuses that path. The version
-probe does not inspect workspace metadata and needs no workspace hold.
+Repository configuration and conditional includes can select files absent from
+the visible command. Mailmap and diff-order settings can cause additional reads.
+Gitfiles, worktree/common-directory routing, object alternates and reference
+storage can select different metadata, object and ref roots from the cwd.
+These implicit outside reads are not an accepted permission residual. Binding
+only cwd, clearing environment selectors or checking a path at execution time
+does not seal the identities of Git's later opens.
 
-The actual child drops every inherited `GIT_*` variable, `PAGER` and loader
-injection input before adding host-owned configuration. System and global
-configuration are disabled with `GIT_CONFIG_NOSYSTEM` and null-device paths;
-owned `GIT_CONFIG_COUNT` entries override filesystem monitoring, hooks,
-auto-refresh, submodule recursion and signature/pretty defaults. Owned argv
-disables pagination, optional locks, lazy fetch, external diff, text conversion,
-submodule traversal and rename detection; history gets fixed built-in formats,
-retaining ordinary notes in full-format output and abbreviated commit IDs for
-oneline output. Branch listing clears every configured sort key. Host-owned
-environment also forbids transport protocols and interactive prompting. These controls
-add to the shared host Git controls, survive execution wrapping and reach the
-effective child.
-
-Status and worktree diff remain unproven because content comparisons can invoke
-clean/process filters; patch/stat modes await a complete content-loading proof.
-Explicit no-patch show can display raw blob content, tree names or a tag and its
-referenced object; it is not restricted to commit metadata. Object contents
-remain data and do not receive inferred path or credential roles.
-Repository and worktree configuration, includes, gitfiles, common directories
-and on-disk alternates remain data-read indirections. This admission does not
-prove that every read stays inside the workspace. Visible path, credential and
-sink floors retain precedence. A quoted commit message remains literal data
-for raw identity and path roles, without making commit exact-rule eligible.
-Opaque evaluator payloads are not inspected to discover a Git invocation.
-An unproven Git form requires foreground per-call approval and denies headless;
-no exact or broad rule repairs the missing proof.
+Future admission requires a sealed execution proof that binds the authorized
+configuration bytes and every reached metadata, worktree, object and ref root
+to the actual child opens. Reading configuration in advance and then
+rechecking pathname identities leaves a replacement window between validation
+and use; includes or routing entries can change during that window. No atomic
+binding of this complete input graph is established, so all repositories retain
+refusal. Visible path, credential and sink floors still run independently.
+Commit-message operands retain their literal data roles without supplying
+execution proof. This is an admission boundary for the original outer parse.
+Opaque exact-approved evaluator payloads retain their existing semantics and
+are not inspected to discover a Git invocation or mint Git proof.
 
 Implicit configuration is part of the argument-grammar proof. A program that
 can load user or system settings which execute a helper, add arguments, upload
@@ -577,8 +543,9 @@ The outer host's startup proof does not transfer to a child runtime.
 | Windows PowerShell | `unproven`; Windows startup configuration proof is unresolved |
 
 The Bash recipe suppresses profile/rc loading and inherited startup files,
-functions and shell-option imports. Its code remains opaque and possible
-effects are not inferred. It uses only the literal-evaluation exact-rule
+functions and shell-option imports. The simple-command restriction governs
+the outer launcher; payload syntax stays opaque and its effects are not
+inferred. It uses only the literal-evaluation exact-rule
 exception: a current-format exact rule for the complete original raw command
 is required, including in a sandbox; broad allows cannot satisfy it. No other
 nested form receives an exact upgrade. Script-file, module, stdin, interactive,
@@ -959,15 +926,13 @@ Linux invocation preparation also registers canonical retained write roots
 with `holdSandboxGitWrites` after taking its metadata snapshot and before
 spawning the child. The shared `isHostGitWorkspaceAvailable` check defers
 queries in overlapping roots, including ancestor or descendant workspaces;
-independent siblings remain available. User-project metadata consumers include
-the synchronous project-instruction `check-ignore` host service and the sealed
-user-tool native Git path above. While a hold is active, `check-ignore` returns
-its conservative "not ignored" answer without spawning Git or memoizing that
-temporary answer. The user-tool path checks availability at admission and
-again before claiming native execution, after parser preflight where applicable;
-a new overlapping hold refuses that execution. Future Ave-owned callers that
-read user-workspace Git metadata must use the same availability check as well
-as the shared argument builder.
+independent siblings remain available. The synchronous project-instruction
+`check-ignore` host service reads user-project metadata. While a hold is active,
+it returns its conservative "not ignored" answer without spawning Git or
+memoizing that temporary answer. Future Ave-owned callers that read
+user-workspace Git metadata must use the same availability check as well as the
+shared argument builder. These separately governed host services supply no
+shell-classifier Git proof or user-tool admission.
 
 The invocation releases its hold only after quarantine succeeds. A failed
 cleanup retains the hold for that host process's remaining lifetime, deferring
