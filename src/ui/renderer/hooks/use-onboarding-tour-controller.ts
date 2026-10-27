@@ -14,6 +14,8 @@ export interface UseOnboardingTourControllerResult {
   checkApiKey: () => Promise<boolean>;
   /** Null only while the initial key probe is in progress. */
   effectiveHasApiKey: boolean | null;
+  documentEngineOnboardingOpen: boolean;
+  dismissDocumentEngineOnboarding: () => void;
 }
 
 /** Request pending proposals once per launch after optional tour completion, or immediately when the boot probe skips the
@@ -24,6 +26,7 @@ export function useOnboardingTourController(
   const { locale } = useTranslation();
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [proposalGateOpen, setProposalGateOpen] = useState(false);
+  const [documentEngineOnboardingOpen, setDocumentEngineOnboardingOpen] = useState(false);
   const firstBootTourStartedRef = useRef(false);
   const onboardingPersistedRef = useRef(false);
   const proposalsRequestedRef = useRef(false);
@@ -91,7 +94,10 @@ export function useOnboardingTourController(
     onboardingPersistedRef.current = true;
     // Only a COMPLETED tour opens the proposal gate. A user who dismissed the tour said they did not want to be walked through
     // the app; the gate opens for them on the next launch, as a returning user.
-    if (completed) setProposalGateOpen(true);
+    if (completed) {
+      setProposalGateOpen(true);
+      setDocumentEngineOnboardingOpen(true);
+    }
     void markOnboardingCompleted();
   }, [markOnboardingCompleted]);
 
@@ -130,10 +136,14 @@ export function useOnboardingTourController(
     return () => window.removeEventListener("keydown", handler);
   }, [api]);
 
+  const dismissDocumentEngineOnboarding = useCallback(() => setDocumentEngineOnboardingOpen(false), []);
+
   return {
     onTourComplete,
     onTourDismiss,
     checkApiKey,
     effectiveHasApiKey: hasApiKey,
+    documentEngineOnboardingOpen,
+    dismissDocumentEngineOnboarding,
   };
 }

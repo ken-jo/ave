@@ -2,6 +2,7 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
+import { buildDocumentEngineApiSurface } from "./document-engine-api-surface.js";
 import type { DocumentObservationAck, DocumentObservationEvent } from "../shared/agent-observation.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
@@ -227,6 +228,7 @@ export function buildAveNamespaceExtras() {
     },
     acknowledgeDocumentObservation: (ack: DocumentObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
   },
+  documentEngine: buildDocumentEngineApiSurface(),
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),
     pickRoot: (opts?: { ackToken?: string }) =>

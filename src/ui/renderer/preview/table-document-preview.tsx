@@ -58,6 +58,16 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
       return "pagePreview.notFound";
     case "renderer-unavailable":
       return "pagePreview.rendererUnavailable";
+    case "engine-unavailable":
+      return "documentEngine.previewUnavailable";
+    case "engine-integrity-failed":
+      return "documentEngine.previewIntegrity";
+    case "engine-confinement-unavailable":
+      return "documentEngine.previewConfinement";
+    case "engine-runtime-unavailable":
+      return "documentEngine.previewRuntime";
+    case "engine-failed":
+      return "documentEngine.previewFailed";
     case "unsupported-format":
       return "chatPreviewRail.tableErrorUnsupported";
     case "read-failed":
