@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { runWindowsNative } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 /** Match native ledger output to requests; this spelling key is never object identity. */
@@ -18,6 +19,8 @@ interface WindowsPathComponentFacts {
   readonly volumeSerialNumber: string | null;
   /** The legacy 64-bit file index exposed as Node's bigint ino. */
   readonly fileIndex: string | null;
+  /** Filesystem reported by the retained native handle; absent in older helper output. */
+  readonly fileSystemName?: string | null;
   /** FILE_BASIC_INFO.ChangeTime from the pinned handle; changes on content, metadata or ACL change. */
   readonly changeTime: string | null;
   readonly attributes: number;
@@ -74,6 +77,8 @@ function isUint(value: unknown, maximum = 0xffffffff): value is number {
 function isComponent(value: unknown): value is WindowsPathComponentFacts {
   if (value === null || typeof value !== "object") return false;
   const row = value as WindowsPathComponentFacts;
+  if (row.fileSystemName !== undefined && row.fileSystemName !== null
+    && (typeof row.fileSystemName !== "string" || !/^[A-Za-z0-9_-]{1,255}$/.test(row.fileSystemName))) return false;
   if (row.reparseTarget !== null && (typeof row.reparseTarget !== "string" || !row.reparseTarget || row.reparseTarget.includes("\0"))) return false;
   if (![true, false, null].includes(row.exists) || !isUint(row.attributes) || !isUint(row.reparseTag) || typeof row.directory !== "boolean") return false;
   if (row.exists === true ? typeof row.changeTime !== "string" || !HEX_64_PATTERN.test(row.changeTime) : row.changeTime !== null) {
@@ -106,11 +111,15 @@ function isDescriptor(value: unknown): value is WindowsDacl {
 function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const output = execFileSync(resolveWindowsPathKindHelper(), [mode, ...flags, ...paths], {
+  const output = runWindowsNative(() => execFileSync(resolveWindowsPathKindHelper(), [mode, ...flags, ...paths], {
     encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 8 * 1024 * 1024,
-  });
+  }));
+  return decodeWindowsPathFacts(output, paths.length, mode, flags);
+}
+
+export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   const response: unknown = JSON.parse(output);
-  if (!Array.isArray(response) || response.length !== paths.length) throw new Error("Invalid Windows path facts response");
+  if (!Array.isArray(response) || response.length !== expectedRows) throw new Error("Invalid Windows path facts response");
   // The wire descriptor is flat; the typed view distinguishes an absent DACL
   // snapshot from a present descriptor whose ACL is unrestricted.
   const rows = response.map((row: unknown) => {

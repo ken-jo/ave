@@ -689,16 +689,6 @@
     },
     {
       "type": "types",
-      "file": "src/permissions/permission-settings-store.ts",
-      "name": "PermissionSettingsBlock"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/permission-settings-store.ts",
-      "name": "ReviewerInteractiveBlock"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/permission-slash.ts",
       "name": "PermissionAuditVerb"
     },

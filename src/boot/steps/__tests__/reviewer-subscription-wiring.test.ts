@@ -1,17 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { LLMProvider } from "../../../engine/llm/types.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+
 describe("wireReviewerAndPermissions subscription runtime", () => {
   it("blocks API reviewer credentials and parent-session adjudication while retirement is unresolved", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "reviewer-retired-"));
     vi.resetModules();
+    const resources = await import("../../../main/host-resources.js");
+    resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const wireReviewerAgent = vi.fn((_input: unknown) => ({ rationaleScopeReviewer: {} }));
     vi.doMock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
     vi.doMock("../reviewer-wiring.js", () => ({ wireReviewerAgent, LlmReviewerProviderAdapter: class {} }));
@@ -53,6 +58,8 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
   it.each([undefined, "copilot"] as const)("uses the explicitly selected subscription without releasing the API retirement marker %s", async (retiredProvider) => {
     const tempDir = mkdtempSync(join(tmpdir(), "reviewer-subscription-"));
     vi.resetModules();
+    const resources = await import("../../../main/host-resources.js");
+    resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const wireReviewerAgent = vi.fn((_input: unknown) => ({ rationaleScopeReviewer: {} }));
     vi.doMock("electron", () => ({
       BrowserWindow: { getAllWindows: () => [] },

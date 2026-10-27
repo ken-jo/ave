@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync } from "node:fs";

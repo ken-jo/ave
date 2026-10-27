@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 // Write and read grants must never reopen the protected deny floor. All wraps share this rule; private temp/HOME roots re-allow only their own process directory.
 import { spawnSync } from "node:child_process";
@@ -8,6 +12,8 @@ import { join, relative, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";

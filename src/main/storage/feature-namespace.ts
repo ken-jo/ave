@@ -1,10 +1,10 @@
-/** Feature storage centralizes 0o700 directories, 0o600 files, atomic replacement, and missing/corrupt JSON defaults.
- * Windows access depends on inherited ACLs, not POSIX modes. */
+/** Private feature storage; Windows boundary creation belongs to boot. */
 import { randomBytes } from "node:crypto";
 import { chmodSync, constants, promises as fs, linkSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, relative, resolve, sep } from "node:path";
 import { platform } from "node:process";
-import { aveHome } from "../../shared/ave-home.js";
+import { aveHome, AVE_HOME_PROTECTED_DIRECTORIES } from "../../shared/ave-home.js";
+import { admitWindowsReparse, pinWindowsPaths } from "../../shared/windows-path-facts.js";
 import { createLogger } from "../../lib/logger.js";
 import {
   RENAME_FILE_LOCK_CODES,
@@ -16,9 +16,36 @@ import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
-/** Create `dir` with 0o700 and best-effort `chmod` it back to 0o700 in case it pre-existed with a wider mode (e.g. created under
- * a permissive umask). The chmod failure is swallowed; a pre-existing dir on a host that forbids chmod must not block the write. */
+function assertProtectedBoundary(dir: string): string | undefined {
+  if (platform !== "win32") return undefined;
+  const home = aveHome();
+  const segment = relative(home, resolve(dir)).split(sep)[0];
+  const boundaryName = AVE_HOME_PROTECTED_DIRECTORIES.find((name) => name.toLowerCase() === segment.toLowerCase());
+  if (!boundaryName) return undefined;
+  const boundary = join(home, boundaryName);
+  try {
+    const entry = pinWindowsPaths([resolve(boundary)])[0]!;
+    if (!entry.exists || !entry.directory || !admitWindowsReparse(entry, "evidence")) throw new Error("Invalid boundary");
+  } catch {
+    throw new Error(`Protected boundary directory "${boundary}" is missing or invalid; boot must create it`);
+  }
+  return boundary;
+}
+
+/** Never let recursive creation recreate a missing protected boundary. */
 async function ensureDir(dir: string): Promise<void> {
+  const boundary = assertProtectedBoundary(dir);
+  if (boundary) {
+    let current = boundary;
+    const remainder = relative(boundary, resolve(dir));
+    if (!remainder) return;
+    for (const segment of remainder.split(sep)) {
+      current = join(current, segment);
+      try { await fs.mkdir(current, { mode: PRIVATE_DIR_MODE }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    }
+    return;
+  }
   await fs.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   try {
     await fs.chmod(dir, PRIVATE_DIR_MODE);
@@ -29,7 +56,12 @@ async function ensureDir(dir: string): Promise<void> {
 
 /** Exclusive slots never chmod a path that another process can replace. */
 async function createExclusiveChild(parent: string, name: string): Promise<void> {
-  await fs.mkdir(parent, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await ensureDir(parent);
+  const child = resolve(parent, name);
+  const boundary = assertProtectedBoundary(child);
+  if (boundary && child.toLowerCase() === boundary.toLowerCase()) {
+    throw Object.assign(new Error(`Protected boundary directory "${boundary}" already exists`), { code: "EEXIST" });
+  }
   if (platform === "win32") {
     await fs.mkdir(join(parent, name), { mode: PRIVATE_DIR_MODE });
     return;
@@ -122,7 +154,7 @@ async function renameStagedFile(from: string, to: string): Promise<void> {
 }
 
 /** Random exclusive staging prevents planted symlinks and shared-writer splices; fsync bytes before rename and the parent afterward.
- * Clean up failures and retry transient Windows locks; POSIX modes carry with the inode, while Windows privacy requires the home DACL. */
+ * Clean up failures and retry transient Windows locks; Windows privacy comes from the owning directory's DACL. */
 export async function writeFileAtomicAtPath(
   filePath: string,
   body: string | Uint8Array,
@@ -167,7 +199,7 @@ export interface FeatureNamespaceHandle {
   childDir(name: string, options?: { exclusive?: boolean }): Promise<string>;
 }
 
-/** Open a handle to the `~/.ave/<featureId>/` namespace. The directory is NOT created eagerly; it is materialized (0o700) on the first `writeJson` / `childDir`, so a read-only consumer never creates an empty directory. `featureId` is a single path segment
+/** Open a handle to the `~/.ave/<featureId>/` namespace. Ordinary directories materialize on first write; Windows boundaries must already exist. `featureId` is a single path segment
  * (the domain name or plugin id). The directory path is resolved through {@link aveHome} on every operation (never cached) so a module-level handle still respects a later `AVE_HOME` override; matching the lazy-resolution contract documented on `aveHome`. */
 export function openFeatureNamespace(featureId: string): FeatureNamespaceHandle {
   if (!featureId || featureId.includes("/") || featureId.includes("\\") || featureId.includes("..")) {
@@ -202,8 +234,9 @@ export function adoptLegacyRootFileSync(
   const home = aveHome();
   const legacyPath = join(home, legacyRootFileName);
   const destinationPath = join(home, featureId, destinationName);
+  const boundaryExists = assertProtectedBoundary(join(home, featureId));
   try {
-    mkdirSync(join(home, featureId), { recursive: true, mode: PRIVATE_DIR_MODE });
+    if (!boundaryExists) mkdirSync(join(home, featureId), { recursive: true, mode: PRIVATE_DIR_MODE });
     linkSync(legacyPath, destinationPath);
   } catch (err) {
     // ENOENT; no legacy file, which is the steady state from the second run onward. EEXIST; the destination already owns the name. Both

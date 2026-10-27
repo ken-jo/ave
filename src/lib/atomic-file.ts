@@ -11,6 +11,7 @@ import {
 import * as fsp from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pid, platform } from "node:process";
+import { observeDirectoryMutation } from "./directory-mutation-observer.js";
 import {
   RENAME_FILE_LOCK_CODES,
   SYNC_UI_BLOCKING_ATTEMPTS,
@@ -56,7 +57,7 @@ export function replaceStagedFile(
   for (let attempt = 1; ; attempt += 1) {
     beforeRename?.();
     try {
-      rename(from, to);
+      observeDirectoryMutation(dirname(to), () => rename(from, to));
       return;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -178,7 +179,7 @@ function writeUtf8FileAtomicSyncInternal(
   let operationError: unknown;
 
   try {
-    fd = openSync(tempPath, "wx", mode);
+    fd = observeDirectoryMutation(parentDir, () => openSync(tempPath, "wx", mode));
     writeFileSync(fd, content, { encoding: "utf8" });
     fsyncSync(fd);
     closeSync(fd);

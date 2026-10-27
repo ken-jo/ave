@@ -2647,28 +2647,103 @@ with its own owner rule:
   `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
   Any remaining legacy ACE requires owner-approved inspection and repair of the
   exact explicit ACE or its inheritance source, with active holders accounted for.
-- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
-  When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
-  directory does not exist yet,
-  `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
-  create it with the user as owner and an owner-only protected DACL, so no
-  grant for the token's default owner is left behind. Before it changes an
-  existing directory's DACL, the step refuses a link or junction and an owner
-  this rule does not accept, and nothing inside a refused directory is
-  touched; the permission command then acts on a link itself (`icacls /L`),
-  never on its target. An existing `AVE_HOME` the app did not create may be
-  owned by `S-1-5-32-544` only when the current token's default owner is
-  `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,
-  the user's own full-control grant, inherited by files and folders and not
-  itself inherited; no system principal is granted. The app protects such a
-  root, but it does not take ownership of it. `isOwnerOnlyDacl` in
-  `src/shared/ave-home.ts` applies this rule. It takes an elevated
-  Administrators token as its sign that the default owner is `S-1-5-32-544`.
-  On a non-elevated boot, only an existing non-reparse `subscription-runtimes`
-  root owned by `S-1-5-32-544` is claimed for the token user before DACL protection,
-  with the owner rechecked on the same non-following handle; other foreign owners
-  remain refused. A failed claim refuses privacy as `owner-claim-failed`, naming
-  the path and advising one elevated run or an owner repair.
+- **Private storage boundaries are protected at creation.**
+  On Windows, boot creates `AVE_HOME` and the `secrets`,
+  `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
+  `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
+  `OBJ_DONT_REPARSE` relative to a pinned directory handle.
+  The boundary list is checked against the sensitive-path table. Permission
+  settings, user policy and legacy root secrets migrate into `config` by
+  copying into a fresh staged file, publishing it inside the protected directory,
+  then flushing a staged `config/.ave-config-migrated` and atomically renaming it
+  before deleting any copied root file. Both path owners use the root until commit.
+  The holder of the shared host-instance lock migrates, whether desktop or
+  headless. Execution-mode and child processes without that lock only resolve
+  the current on-disk layout.
+  A refused home stays root-only, without migration.
+  No process caches the configuration location. Every read and write inspects
+  `config/` and its marker without following links. Windows read certificates key
+  the home root's RootSafe and protected `config` OwnerOnly checks on each object's
+  volume serial, file ID and ChangeTime. These predicates inspect no ancestor
+  DACL. Every path ancestor is keyed by volume serial and file ID, without its
+  ChangeTime: unrelated child-entry writes must not invalidate verification.
+  Every read checks directory-entry reparse state and directory shape along the
+  path. Cold native verification returns identities from its actual handles,
+  which must equal observations before and after verification. An ancestor swap
+  refuses the read; a DACL timestamp change requires full verification. Stable
+  reads spawn no process. POSIX directory verification retains device/inode checks.
+  Configuration ownership comes only from the live shared host-instance lock;
+  other processes start read-only and receive `AveHomeConfigurationNotOwnerError`
+  with "Ave is running; close it or use the app" on mutation. Existing host routes retain
+  their permission gates. Execution-mode secret provisioning is refused and
+  non-owner boot skips secret migrations. There is no configuration file lock,
+  process-start identity or stale-record recovery. Owner mutations share an
+  in-process FIFO queue, verify boundaries and resolve their destination inside
+  that queue. Within this scope, synchronous atomic staging creates and renames
+  check the previous certificate immediately before their syscall and re-key only
+  the affected directory's ChangeTime immediately afterward, without yielding.
+  A changed identity, ancestor or other boundary refuses re-keying. Async callback
+  completion never re-keys a certificate. Foreign changes after the immediate
+  observation still force verification. A concurrent same-account DACL change
+  inside the syscall-to-observation window remains a residual race: that account
+  already controls these protected objects; other accounts lack WRITE_DAC.
+  Synchronous owner migration completes before services start.
+  `AVE_HOME` is used exactly as supplied, even when its basename is `config`.
+  Readers reject reparse entries, compare file identity before/open/after,
+  require a regular file of at most 4 MiB and check stable timestamps and bytes.
+  A vanished file triggers one fresh resolution; persistent absence after an
+  observed file or commit raises `AveHomeConfigurationUntrustedError`.
+  Defaults require both candidate files and the migration marker to be absent.
+  Before a new commit, absent source documents become explicit default documents;
+  missing documents in an already committed home are never silently recreated.
+  Before commit, every retry atomically replaces published copies from validated
+  root sources. A linked, unreadable or invalid root source prevents commit and
+  retains all roots with a diagnostic. A malformed regular marker can be removed
+  for retry only inside a verified protected directory.
+  Before committing the marker, migration atomically records each copied source's
+  SHA-256 in `config/.ave-config-sources.json`. Protected-boot cleanup deletes a
+  regular root copy only if its bytes still match that recorded hash. A changed
+  or newly appearing root file moves to `<name>.post-migration-<UTC timestamp>`;
+  a diagnostic and a system boot notice name the preserved copy. Cleanup never
+  merges root data into committed configuration. Per-entry no-follow cleanup
+  preserves links and reports failures for retry. Interactive boot trust failures show a
+  localized native error with the cause, path and recovery instructions before exit.
+  Feature storage asserts that boundaries already
+  exist and never creates them on Windows.
+  Boot reads each boundary's own descriptor on a pinned no-reparse handle.
+  The owner must be the user, or `S-1-5-32-544` under an elevated token;
+  its protected DACL must hold exactly one explicit user FullControl ACE
+  with object and container inheritance. A conforming boundary is never
+  rewritten, and its children are never inspected. Traverse bypass does
+  not grant access through a child's own protected DACL, so a foreign
+  read grant on the root cannot open a boundary.
+  The root retains its protected user FullControl rule. Foreign root
+  grants contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
+  (`0x1200a9`, including SYNCHRONIZE) emit diagnostics without disabling
+  confinement. Any write, delete, WRITE_DAC, WRITE_OWNER or other wider
+  right refuses confinement before boundary repair.
+  A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
+  replaced with a freshly protected directory, and copied without carrying
+  its ACLs or read-only attributes. Links and junctions are skipped and logged.
+  Copy destinations are created exclusively. A fresh repair directory receives
+  a flushed marker before any copied content. On retry, the marker is checked
+  through the pinned handle; the partial live directory is renamed aside and
+  copying restarts in a fresh protected directory. Unmarked partial directories
+  are retained with a diagnostic. The pending aside remains authoritative.
+  Once copying and verification finish, the aside is renamed to
+  `<name>.unprotected-complete` before deletion. A completed aside beside a
+  protected live directory needs deletion only; an aside without a live
+  directory is renamed back and repaired again. The deleter opens entries
+  relative to pinned handles and removes reparse entries themselves, including
+  read-only entries when extended deletion is supported. Cleanup never changes
+  attributes; an undeletable aside is retained with its path in a warning while
+  the protected live directory remains usable. Other failed repair steps refuse
+  confinement and name the boundary and step.
+  Each successful repair emits one localized system notification recommending
+  sign-out and sign-in because credentials may have been readable. Headless
+  hosts log the notice without desktop delivery. A flushed pending-notice marker
+  precedes aside deletion and survives restart until the notification service
+  accepts desktop delivery; failed or headless delivery keeps the marker.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.

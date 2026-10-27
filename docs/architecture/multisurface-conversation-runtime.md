@@ -433,7 +433,7 @@ ave --exec="<prompt>"              prompt inline; `--exec` or `--exec=-` reads s
                                     path resolves against it). Must be the
                                     default workspace or a directory listed in
                                     permissions.additionalDirectories of
-                                    ~/.ave/settings.json — or, with the
+                                    ~/.ave/config/settings.json — or, with the
                                     workload-broker flags, exactly the guest
                                     cwd — the run refuses (exit 64) rather than
                                     re-rooting elsewhere

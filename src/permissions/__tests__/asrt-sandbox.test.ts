@@ -1,3 +1,6 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 // The adapter stays inactive until initialized and resets inactive; per-command overrides contain only filesystem policy and cannot weaken sandbox/network gates. Isolate home paths without changing USERPROFILE needed by process creation.
 import {
@@ -57,6 +60,8 @@ beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), i
 it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on a captured %s host after platform simulation", async platform => {
   const original = process.platform;
   vi.resetModules();
+  const resources = await import("../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   setProcessPlatform(platform);
   try {
     const sandbox = await import("../asrt-sandbox.js");
@@ -71,7 +76,8 @@ it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+  const { simulatedConfigurationFs } = await import("../../__tests__/support/simulated-win32-drive.js");
+  return { ...simulatedConfigurationFs(actual), lstatSync: vi.fn(actual.lstatSync) };
 });
 
 vi.mock("node:os", async (importOriginal) => {
@@ -1597,6 +1603,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it.each(["linux", "darwin", "win32"] as const)("Windows: profile read denies retain exposed targets and evidence failures on a captured %s host", async host => {
     vi.resetModules();
+    const resources = await import("../../main/host-resources.js");
+    resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     setProcessPlatform(host);
     const sandbox = await import("../asrt-sandbox.js");
     const previousHome = process.env.AVE_ASRT_TEST_HOME;

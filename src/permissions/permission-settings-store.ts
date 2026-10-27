@@ -1,11 +1,12 @@
 // Absent additionalDirectories means host defaults only, never silent allow; callers compose through buildAllowedScope (docs/architecture/permission-policy-design.md).
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
-import { withFileLock } from "../lib/with-file-lock.js";
 import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
+import { parseConfigurationObject } from "../shared/configuration-document.js";
+import { readAveHomeConfigurationFile, resolveConfigurationFile, tryWithAveHomeConfigurationWrite, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 import {
   PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
   PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
@@ -28,6 +29,10 @@ import {
 } from "./judge/judge-settings.js";
 
 const log = createLogger("permission-settings");
+
+async function withPermissionSettingsWrite<T>(path: string, callback: (filePath: string) => Promise<T>): Promise<T> {
+  return withAveHomeConfigurationWrite(path, callback);
+}
 
 // Disabled bypasses review as LOW while matrix/hard gates still apply; rule is deterministic, llm composes with rule floors, and strict returns HIGH/defer for every review.
 export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
@@ -177,18 +182,20 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
 ]);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
-export function permissionSettingsPath(): string {
-  return pathResolve(aveHome(), "settings.json");
+export function permissionSettingsPath(home = aveHome()): string {
+  return pathResolve(aveHomeConfigurationDirectory(home), "settings.json");
 }
 
 // Unreadable existing settings return deny-shaped defaults with a visible fault, log an error and rewrite nothing. Migrate unmarked legacy disabled to strict and persist once; failed persistence still returns strict so upgrades cannot silently weaken policy.
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
-  const filePath = pathOverride ?? permissionSettingsPath();
-  if (!existsSync(filePath)) return structuredClone(DEFAULT_FILE);
+  const filePath = resolveConfigurationFile(pathOverride ?? permissionSettingsPath());
   let parsed: Record<string, unknown>;
   try {
-    parsed = readSettingsDocument(filePath);
+    const bytes = readAveHomeConfigurationFile(pathOverride ?? permissionSettingsPath());
+    if (bytes === undefined) return structuredClone(DEFAULT_FILE);
+    parsed = parseConfigurationObject(bytes.toString("utf8"), true);
   } catch (err) {
+    if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     const detail = (err as Error).message;
     log.error(
       "permission settings at %s are unreadable: %s — file preserved untouched, no directories granted",
@@ -204,14 +211,23 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
     const migrated = migrateLegacyDisabledMode(parsed);
     const normalized = normalizePermissionSettings(parsed, filePath);
     if (migrated) {
-      // Persist the migration synchronously so the file converges to the post-shape. We do a best-effort write — if the file is locked or the disk is read-only, we still return the migrated in-memory result so the user's runtime behaviour is fail-closed (strict).
+      // Persist only when immediately available; the normalized runtime result stays strict.
+      let persistFailure: string | undefined;
       try {
-        writeUtf8FileAtomicSync(filePath, JSON.stringify(parsed, null, 2), 0o600);
+        const acquired = tryWithAveHomeConfigurationWrite(filePath, (target) => {
+          const latest = readSettingsDocument(target);
+          if (migrateLegacyDisabledMode(latest)) writeUtf8FileAtomicSync(target, JSON.stringify(latest, null, 2), 0o600);
+        });
+        if (!acquired) persistFailure = "Configuration owner is unavailable or busy";
       } catch (persistErr) {
+        if (persistErr instanceof AveHomeConfigurationUntrustedError) throw persistErr;
+        persistFailure = (persistErr as Error).message;
+      }
+      if (persistFailure !== undefined) {
         log.warn(
           "issue-664 migration: failed to persist migrated settings to %s — runtime still strict (%s)",
           filePath,
-          (persistErr as Error).message,
+          persistFailure,
         );
       }
     }
@@ -219,23 +235,25 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
   }
 }
 
-// Read the settings document off disk, throwing when it cannot be interpreted. An empty file is not damage: `withFileLock` creates the target as a zero-byte placeholder so `proper-lockfile` can stat it, so every first write this store ever performs starts from one. A non-object root (`null`, an array, a bare number) IS damage — every reader below indexes the result as a record — so it is rejected here rather than in each of them.
+// Preserve empty legacy documents; reject non-object roots before callers merge fields.
 function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
-  const raw = readFileSync(filePath, "utf-8");
-  if (allowEmpty && raw.trim().length === 0) return {};
-  const parsed = JSON.parse(raw) as unknown;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("settings root is not a JSON object");
+  filePath = resolveConfigurationFile(filePath);
+  const bytes = readAveHomeConfigurationFile(filePath);
+  if (bytes === undefined) {
+    const error: NodeJS.ErrnoException = new Error("Configuration file does not exist");
+    error.code = "ENOENT";
+    throw error;
   }
-  return parsed as Record<string, unknown>;
+  return parseConfigurationObject(bytes.toString("utf8"), allowEmpty);
 }
 
 // Read the settings object a write path is about to merge into. Refusing an unparseable file is the whole point: the previous `catch {}` here merged into an empty object, so the next successful write replaced the user's entire settings document — every unrelated top-level key included — with whatever that one mutation happened to hold.
 function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> {
-  if (!existsSync(filePath)) return {};
   try {
     return readSettingsDocument(filePath);
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     throw new PermissionSettingsUnreadableError(filePath, (err as Error).message, { cause: err });
   }
 }
@@ -507,7 +525,7 @@ function composeSettingsForPersist(
   };
 }
 
-// Atomically rewrite `~/.ave/settings.json` with a fresh `permissions.additionalDirectories` value. Preserves any other top-level keys present in the existing file. Permission policy also accepts a `reviewer` patch (partial). Provided keys overwrite; missing keys preserve existing values.
+// Atomically rewrite `~/.ave/config/settings.json` with a fresh `permissions.additionalDirectories` value. Preserves any other top-level keys present in the existing file. Permission policy also accepts a `reviewer` patch (partial). Provided keys overwrite; missing keys preserve existing values.
 export async function writePermissionSettings(
   patch: {
     additionalDirectories?: string[];
@@ -516,7 +534,7 @@ export async function writePermissionSettings(
   pathOverride?: string,
 ): Promise<void> {
   const filePath = pathOverride ?? permissionSettingsPath();
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = (existing.permissions ?? {}) as Record<string, unknown>;
     const existingReviewer = normalizeReviewerBlock(existingPerm.reviewer);
@@ -605,6 +623,7 @@ export function readJudgeSettings(
     }
     return normalizeJudgeSettings((permissions as Record<string, unknown> | undefined)?.judge, catalog);
   } catch (error) {
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return normalizeJudgeSettings(undefined, catalog);
     log.warn("Judge settings could not be read: %s", (error as Error).message);
     return { ...normalizeJudgeSettings(undefined, catalog), issues: ["Judge settings file could not be read"], unreadable: true };
@@ -620,7 +639,7 @@ function storedJudgeModelRef(raw: unknown): StoredJudgeModelRef | null {
   return slash > 0 && isLLMVendor(vendor) ? { vendor, model: raw.slice(slash + 1) } : null;
 }
 
-// The models the stored judge settings name, as written and read without the model catalog: the reviewer model (`permissions.judge.model`) and each chain stage's own `model`, in chain order. A change to such a model's route or catalogue must re-wire even when the model is not (or no longer) offered. An entry is `null` when unset, absent or not a known provider; unreadable settings name nothing.
+// The models the stored judge settings name, as written and read without the model catalog: the reviewer model (`permissions.judge.model`) and each chain stage's own `model`, in chain order. A change to such a model's route or catalogue must re-wire even when the model is not (or no longer) offered. An entry is `null` when unset, absent or not a known provider; read failures must surface to the caller.
 export function readJudgeStoredModels(pathOverride?: string): {
   reviewer: StoredJudgeModelRef | null;
   stages: Array<StoredJudgeModelRef | null>;
@@ -634,9 +653,9 @@ export function readJudgeStoredModels(pathOverride?: string): {
       stages: chain.map((stage) =>
         stage && typeof stage === "object" ? storedJudgeModelRef((stage as Record<string, unknown>).model) : null),
     };
-  } catch {
-    // Unreadable settings re-wire through their own fault path; here they name no provider.
-    return { reviewer: null, stages: [] };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { reviewer: null, stages: [] };
+    throw error;
   }
 }
 
@@ -686,7 +705,7 @@ export async function setJudgeSettingsPersist(
   }
   const filePath = pathOverride ?? permissionSettingsPath();
   let receipt: JudgeSettingsWriteReceipt | undefined;
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const document = readSettingsObjectForUpdate(filePath);
     const permissions = judgePermissionsForUpdate(document);
     const previous = { present: Object.hasOwn(permissions, "judge"), value: permissions.judge };
@@ -720,7 +739,7 @@ export async function setJudgeSettingsPersist(
     receipt = {
       settings,
       async rollback() {
-        await withFileLock(filePath, async () => {
+        await withPermissionSettingsWrite(filePath, async (filePath) => {
           const latest = readSettingsObjectForUpdate(filePath);
           const latestPermissions = judgePermissionsForUpdate(latest);
           if (!Object.hasOwn(latestPermissions, "judge") || JSON.stringify(latestPermissions.judge) !== appliedIdentity) {
@@ -760,7 +779,7 @@ async function mutateAllowedDirectoriesPersist(
 ): Promise<string[]> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let result: string[] = [];
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const current = Array.isArray(existingPerm.additionalDirectories)
@@ -841,7 +860,7 @@ export async function beginWorkspaceRootRemovalPersist(
 ): Promise<BeginWorkspaceRootRemovalResult | null> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let result: BeginWorkspaceRootRemovalResult | null = null;
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const current = Array.isArray(existingPerm.additionalDirectories)
@@ -916,7 +935,7 @@ export async function completeWorkspaceRootRemovalPersist(
 ): Promise<boolean> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let completed = false;
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const journal = partitionPendingWorkspaceRootRemovals(

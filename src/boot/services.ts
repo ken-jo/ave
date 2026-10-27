@@ -1,4 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
+import { isAveHomeConfigurationOwner } from "../shared/ave-home-configuration-access.js";
 /** Create core services before loading plugins. */
 import type { BrowserWindow } from "electron";
 import { SettingsService } from "../data/settings-store.js";
@@ -115,10 +116,12 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     encryption: host.encryption,
     appVersion: getAveAppVersion(),
   });
-  await settingsService.migrateSecrets();
-  await settingsService.migrateRenamedVendorSecrets();
-  await settingsService.deleteRetiredMarketplaceApiKey();
-  await settingsService.deleteRetiredLlmVendorApiKeys();
+  if (isAveHomeConfigurationOwner()) {
+    await settingsService.migrateSecrets();
+    await settingsService.migrateRenamedVendorSecrets();
+    await settingsService.deleteRetiredMarketplaceApiKey();
+    await settingsService.deleteRetiredLlmVendorApiKeys();
+  }
   applyBootPiiRedactionPolicy(settingsService);
 
   // Apply persisted UI locale before native surfaces are created.
