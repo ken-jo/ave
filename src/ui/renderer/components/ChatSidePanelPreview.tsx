@@ -152,7 +152,7 @@ export function PreviewDetail({ api, sessionId, target, visible }: { api: AveApi
       data-testid="chat-side-panel-preview-detail"
     >
       {target.kind !== "file" ? <DetailHeader target={target} /> : null}
-      {target.kind !== "file" || visible ? <PreviewBody api={api} sessionId={sessionId} target={target} /> : null}
+      <PreviewBody api={api} sessionId={sessionId} target={target} observe={visible} />
     </div>
   );
 }
@@ -173,23 +173,31 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
-function FilePreviewBody({ target, sessionId }: { target: Extract<ChatPreviewTarget, { kind: "file" }>; sessionId?: string }) {
+/**
+ * `observe` is the panel's visibility. A hidden panel keeps every body mounted
+ * (sheet, scroll and page position survive) while observing views release
+ * their subscription; showing it again takes a fresh baseline.
+ */
+function FilePreviewBody({ target, sessionId, observe }: { target: Extract<ChatPreviewTarget, { kind: "file" }>; sessionId?: string; observe: boolean }) {
   const route = target.startLine !== undefined || target.inlineText !== undefined ? "text" : resolveFilePreviewRoute(target.path).kind;
   if (route === "table") return <TableDocumentPreview key={target.path} path={target.path} sessionId={sessionId}
-    workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} />;
+    workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} observe={observe} />;
   if (route === "page") return <PageDocumentPreview key={target.path} path={target.path} sessionId={sessionId}
     workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} />;
-  return <TextDocumentPreview target={target} sessionId={sessionId} />;
+  return <TextDocumentPreview target={target} sessionId={sessionId} observe={observe} />;
 }
 
 export function PreviewBody({
   api,
   sessionId,
   target,
+  observe,
 }: {
   api: AveApi;
   sessionId?: string;
   target: ChatPreviewTarget;
+  /** Whether the hosting panel is shown; see {@link FilePreviewBody}. */
+  observe: boolean;
 }) {
   const { t } = useTranslation();
   const [loadedStub, setLoadedStub] = useState<string | null>(null);
@@ -265,7 +273,7 @@ export function PreviewBody({
   }
 
   if (target.kind === "file") {
-    return <FilePreviewBody key={`${target.id}:${target.workspaceRoot}:${target.startLine}:${target.endLine}`} target={target} sessionId={sessionId} />;
+    return <FilePreviewBody key={`${target.id}:${target.workspaceRoot}:${target.startLine}:${target.endLine}`} target={target} sessionId={sessionId} observe={observe} />;
   }
 
   if (target.kind === "url") {

@@ -111,17 +111,23 @@ describe("retained panel document observation", () => {
       before: "Initial disk value", after, advisory: true });
     act(() => { handlers.forEach((handler) => handler([event(1, "Agent overlay")])); });
     await screen.findByText("Agent overlay");
+    const body = screen.getByTestId(format === "xlsx" ? "chat-side-panel-table-preview" : "chat-side-panel-file-preview");
     fireEvent.click(screen.getByTestId("chat-side-panel-close"));
     expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release", targetId: FIRST_TARGET, sessionId: SESSION, seq: 1 });
     expect(handlers.size).toBe(0);
     expect(retained?.isConnected).toBe(true);
+    // The hidden body stays mounted (sheet, scroll and page position survive) without agent overlays.
+    expect(body.isConnected).toBe(true);
+    expect(screen.queryByText("Agent overlay")).toBeNull();
     const read = format === "xlsx" ? readDocument : readFile;
     expect(read).toHaveBeenCalledTimes(1);
     reopened = true;
     act(() => { handlers.forEach((handler) => handler([event(2, "Hidden edit")])); });
     expect(read).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByText("Reopen panel"));
+    expect(screen.getByText("Initial disk value")).toBeTruthy();
     await screen.findByText("Fresh disk value");
+    expect(body.isConnected).toBe(true);
     expect(read).toHaveBeenCalledTimes(2);
     expect(onDocumentObservation).toHaveBeenCalledTimes(2);
     expect(handlers.size).toBe(1);

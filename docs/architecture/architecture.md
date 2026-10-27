@@ -196,9 +196,12 @@ snapshot, never an unbounded replay. Snapshot payloads retain the existing
 4 MiB preview cap. Renderer acknowledgements advance the rendered baseline
 only for the matching snapshot sequence; a delivered snapshot is not assumed
 rendered. Releasing a view, changing its session, navigating or destroying
-its frame, closing the panel, ending a journal invocation or shutting down
-disposes the corresponding capabilities and bounded buffers. No observation
-survives a host restart.
+its frame, closing or hiding the panel, ending a journal invocation or
+shutting down disposes the corresponding capabilities and bounded buffers. A
+closed or hidden panel may stay mounted for a retained side chat or browser
+tab; its document views keep their sheet, scroll and page position but hold no
+subscription, and showing the panel again reads a fresh baseline. No
+observation survives a host restart.
 
 Private observation push and acknowledgement IPC require the same registered
 app-window main-frame identity as preview reads: a live registered window,

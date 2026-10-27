@@ -111,10 +111,21 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
   );
 }
 
-/** Callers key this by path so a new file starts on its first sheet. */
-export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal }: { path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean }) {
+/**
+ * Callers key this by path so a new file starts on its first sheet.
+ *
+ * `observe` is false while the hosting panel is hidden. A session-bound view
+ * then holds no subscription or host binding but stays mounted, so the
+ * selected sheet and the grid's scroll survive; observing again re-reads the
+ * same sheet as a fresh baseline. A view without a session never observes, so
+ * the flag does not touch it.
+ */
+export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe }: { path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean }) {
   const { t } = useTranslation();
   const [sheetIndex, setSheetIndex] = useState(0);
+  const [sheetFallback, setSheetFallback] = useState(false);
+  const active = sessionId === undefined || observe;
+  const resumed = useRef(false);
   const [state, setState] = useState<LoadState>({ phase: "loading" });
   const [revision, setRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -124,6 +135,14 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
   const lastAcknowledgement = useRef("");
 
   useEffect(() => {
+    if (!active) {
+      // The previous run's cleanup already released its binding; the grid stays without agent overlays.
+      resumed.current = true;
+      setState((previous) => previous.phase === "ok"
+        ? { ...previous, observation: undefined, changes: [], status: undefined, latest: undefined } : previous);
+      return;
+    }
+    const refresh = revision > 0 || resumed.current;
     let cancelled = false;
     let binding: DocumentObservationBinding | undefined;
     let lastSeq = 0;
@@ -133,8 +152,8 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     setOpenFailed(false);
     setRefreshFailed(false);
     setRefreshing(true);
-    setState((previous) => previous.phase === "ok" && previous.document.sheet.index === sheetIndex && revision > 0
-      ? { ...previous, changes: [], observation: undefined, status: undefined }
+    setState((previous) => previous.phase === "ok" && previous.document.sheet.index === sheetIndex && refresh
+      ? { ...previous, changes: [], observation: undefined, status: undefined, latest: undefined }
       : { phase: "loading" });
     const api = window.ave.preview;
     const release = (value: DocumentObservationBinding) => {
@@ -205,7 +224,14 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
             return;
           }
         }
+        if (!result.ok && result.error === "sheet-not-found" && sheetIndex !== 0) {
+          // The selected sheet left the file while it was not shown: say so and show the first sheet.
+          setSheetFallback(true);
+          setSheetIndex(0);
+          return;
+        }
         if (result.ok) {
+          resumed.current = false;
           observedPath = result.path;
           binding = result.observation?.sessionId === sessionId ? result.observation : undefined;
           lastSeq = binding?.seq ?? 0;
@@ -213,15 +239,15 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
             ? { phase: "ok", path: result.path, document: result.document, observation: binding, seq: lastSeq, changes: [] }
             : { phase: "error", code: "unsupported-format" });
         } else if (result.error !== "superseded") {
-          if (revision > 0) setRefreshFailed(true);
-          setState((previous) => previous.phase === "ok" && revision > 0
+          if (refresh) setRefreshFailed(true);
+          setState((previous) => previous.phase === "ok" && refresh
             ? previous : { phase: "error", code: result.error as Exclude<PreviewDocumentError, "superseded"> });
         }
         setRefreshing(false);
       }).catch(() => {
         if (!cancelled) {
-          if (revision > 0) setRefreshFailed(true);
-          setState((previous) => previous.phase === "ok" && revision > 0
+          if (refresh) setRefreshFailed(true);
+          setState((previous) => previous.phase === "ok" && refresh
             ? previous : { phase: "error", code: "read-failed" });
           setRefreshing(false);
         }
@@ -235,7 +261,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
       stopObserving();
       if (binding) release(binding);
     };
-  }, [path, sessionId, sheetIndex, revision]);
+  }, [path, sessionId, sheetIndex, revision, active]);
 
   const acknowledgeRendered = useCallback(() => {
     if (state.phase !== "ok" || !state.observation) return;
@@ -263,7 +289,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
   const header = <PreviewDocumentHeader path={state.phase === "ok" ? state.path : path} workspaceRoot={workspaceRoot}
     canOpenExternal={Boolean(canOpenExternal) || (state.phase === "ok" && previewSupportsExternalOpen(state.path))}
     onOpenError={() => setOpenFailed(true)}
-    onReload={() => setRevision((previous) => previous + 1)} refreshing={refreshing} />;
+    onReload={() => { setSheetFallback(false); setRevision((previous) => previous + 1); }} refreshing={refreshing} />;
   if (state.phase === "error") return <div className="space-y-2">{header}
     <PreviewDocumentLiveStrip error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />
     <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
@@ -285,13 +311,14 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
       {header}
       <PreviewDocumentLiveStrip status={status} summary={summary} ts={latest?.ts}
         error={openFailed ? t("chatPreviewRail.openDefaultAppError")
-          : refreshFailed ? t("chatPreviewRail.documentObservationRefreshFailed") : undefined} />
+          : refreshFailed ? t("chatPreviewRail.documentObservationRefreshFailed")
+          : sheetFallback ? t("chatPreviewRail.tableSheetFallback") : undefined} />
       {table.sheetNames.length > 1 ? (
         <div role="tablist" aria-label={t("chatPreviewRail.tableSheetsLabel")}
           className="flex min-w-0 shrink-0 gap-1 overflow-x-auto pb-1">
           {table.sheetNames.map((name, index) => (
             <button key={`${index}:${name}`} type="button" role="tab" aria-selected={index === sheet.index}
-              disabled={refreshing} onClick={() => setSheetIndex(index)}
+              disabled={refreshing} onClick={() => { setSheetFallback(false); setSheetIndex(index); }}
               className={index === sheet.index
                 ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground"
                 : "shrink-0 rounded-md border border-transparent px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground"}
