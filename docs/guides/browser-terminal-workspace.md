@@ -69,6 +69,12 @@ user gesture. Bounded events support the current strip without adding a history
 viewer; they stay in memory and clear with the session. See the [observation contract](../architecture/architecture.md#agent-activity-observation)
 for attribution, retention and lifecycle details.
 
+When the agent's tab is open in another panel, the second panel shows a small
+live picture of that tab instead of a plain notice. It appears only for tabs the
+agent is driving, pauses when you take over the tab or the agent is idle for 30
+seconds, and stops whenever its panel is hidden. While the page updates, the
+last picture stays with an "Updating" label. Pictures are never saved.
+
 ## Know which tabs remain
 
 An agent-created tab retains its creator separately from whoever currently

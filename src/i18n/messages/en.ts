@@ -22,6 +22,8 @@ export const en = {
   "agentBrowser.observationDownloadInterrupted": "interrupted",
   "agentBrowser.observationError": "Browser observation failed. The page remains available.",
   "agentBrowser.observationResync": "Browser activity exceeded the live view limit. New activity will resume the strip.",
+  "agentBrowser.observationPreview": "Live view of the agent's tab",
+  "agentBrowser.observationPreviewUpdating": "Updating…",
   "providerSettingsError.title": "Unable to load provider settings",
   "providerSettingsError.detail": "The settings file contains an invalid field.\n\nFile: {path}\nField: {field}\n\nCorrect this field and restart Ave. The file has not been changed.",
   "oauthWindow.title": "Sign in",

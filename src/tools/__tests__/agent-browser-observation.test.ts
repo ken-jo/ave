@@ -2,6 +2,7 @@ import { AsyncResource } from "node:async_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
+import { runAdmittedAgentWork } from "../../__tests__/support/agent-observation-admission.js";
 import { observeAgentBrowserCommand, setAgentBrowserObservationSink, type AgentBrowserObservationSink } from "../agent-browser-observation.js";
 import type { BrowserGuest, BrowserTabRecord } from "../../main/browser/browser-tab-registry.js";
 const identity = { sessionId: "browser-session", turnId: "turn", toolUseId: "tool" };
@@ -11,7 +12,6 @@ const complete = vi.fn();
 const dispose = vi.fn();
 const target = vi.fn();
 let sink: AgentBrowserObservationSink;
-function admitted<T>(run: () => Promise<T>) { return runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity, run)); }
 beforeEach(() => {
   destroyed = false;
   tab = { handle: "tab-1", rendererTabId: "browser-one", windowId: 1, guest: { id: 10, isDestroyed: () => destroyed, getURL: () => "https://example.test/", getTitle: () => "Example" },
@@ -29,7 +29,7 @@ describe("agent browser command admission", () => {
     await observeAgentBrowserCommand(tab, "click", async () => 1);
     await runWithAgentObservationTurn(identity, () => observeAgentBrowserCommand(tab, "click", async () => 1));
     expect(sink.begin).not.toHaveBeenCalled();
-    expect(await admitted(() => observeAgentBrowserCommand(tab, "click", async () => 42))).toBe(42);
+    expect(await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "click", async () => 42))).toBe(42);
     expect(sink.begin).toHaveBeenCalledTimes(1);
     expect(complete).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
   });
@@ -40,17 +40,17 @@ describe("agent browser command admission", () => {
   });
   it.each(["human", "human-paused"] as const)("excludes an uncontrolled %s tab", async (mode) => {
     tab.controlMode = mode;
-    await admitted(() => observeAgentBrowserCommand(tab, "click", async () => 1));
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "click", async () => 1));
     expect(sink.begin).not.toHaveBeenCalled();
   });
   it("excludes another session's lease", async () => {
     tab.lease = { ...tab.lease!, actor: { sessionId: "other-session" } };
-    await admitted(() => observeAgentBrowserCommand(tab, "click", async () => 1));
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "click", async () => 1));
     expect(sink.begin).not.toHaveBeenCalled();
   });
   it.each(["pause", "replace", "abort", "failed-result", "throw"])("does not record a command after %s", async (failure) => {
     const controller = new AbortController();
-    const work = admitted(() => observeAgentBrowserCommand(tab, "click", async () => {
+    const work = runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "click", async () => {
       if (failure === "pause") tab.controlMode = "human-paused";
       if (failure === "replace") tab.guest = { ...tab.guest!, id: 11 };
       if (failure === "abort") controller.abort();
@@ -67,7 +67,7 @@ describe("agent browser command admission", () => {
       valid = isCurrent;
       return { complete, dispose, target };
     });
-    await admitted(() => observeAgentBrowserCommand(tab, "click", async () => {
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "click", async () => {
       expect(foreign.runInAsyncScope(() => valid!())).toBe(true);
     }));
     expect(foreign.runInAsyncScope(() => valid!())).toBe(false);
@@ -75,12 +75,12 @@ describe("agent browser command admission", () => {
   });
   it("observes authorized owned close after original destruction without inventing a new guest", async () => {
     tab.lease = null; tab.controlMode = "human";
-    await admitted(() => observeAgentBrowserCommand(tab, "tab-close", async () => { destroyed = true; tab.guest = null; }));
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-close", async () => { destroyed = true; tab.guest = null; }));
     expect(complete).toHaveBeenCalledOnce();
   });
   it("does not turn release of a human tab into a close observation", async () => {
     tab.opener = "user"; tab.owner = null; tab.lease = null; tab.controlMode = "human";
-    await admitted(() => observeAgentBrowserCommand(tab, "tab-close", async () => 1));
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-close", async () => 1));
     expect(sink.begin).not.toHaveBeenCalled();
   });
 });

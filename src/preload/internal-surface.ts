@@ -2,7 +2,9 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
-import type { ObservationAck, AgentObservationEvent } from "../shared/agent-observation.js";
+import type {
+  ObservationAck, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
+} from "../shared/agent-observation.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
 import {
@@ -226,6 +228,12 @@ export function buildAveNamespaceExtras() {
       return () => ipcRenderer.removeListener(CHANNELS.preview.observationEvents, listener);
     },
     acknowledgeObservation: (ack: ObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
+    onObservationPreview: (handler: (message: BrowserObservationPreviewMessage) => void) => {
+      const listener = (_event: unknown, message: BrowserObservationPreviewMessage) => handler(message);
+      ipcRenderer.on(CHANNELS.preview.observationPreviewFrames, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.preview.observationPreviewFrames, listener);
+    },
+    requestObservationPreview: (request: BrowserObservationPreviewRequest) => ipcRenderer.invoke(CHANNELS.preview.observationPreview, request),
   },
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),

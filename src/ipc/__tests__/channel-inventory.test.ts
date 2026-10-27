@@ -228,9 +228,13 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
   it("keeps document observation push outbound-only and its read-only acknowledgement private", () => {
     const event = CHANNELS.preview.observationEvents;
     const acknowledgement = CHANNELS.preview.observationAck;
+    const frames = CHANNELS.preview.observationPreviewFrames;
+    const preview = CHANNELS.preview.observationPreview;
     expect(channels).not.toContain(event);
+    expect(channels).not.toContain(frames);
     expect(channels.filter((channel) => channel === acknowledgement)).toEqual([acknowledgement]);
-    for (const channel of [event, acknowledgement]) {
+    expect(channels.filter((channel) => channel === preview)).toEqual([preview]);
+    for (const channel of [event, acknowledgement, frames, preview]) {
       expect(PUBLIC_CHANNELS).not.toContain(channel);
       expect(isPublicChannel(channel)).toBe(false);
       expect(CHANNEL_GESTURE[channel]).toBeUndefined();
@@ -504,6 +508,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:policy:set",
         "ave:preview:document-open-ack",
         "ave:preview:observation-ack",
+        "ave:preview:observation-preview",
         "ave:preview:read-document",
         "ave:preview:read-file",
         "ave:prompts:delete",

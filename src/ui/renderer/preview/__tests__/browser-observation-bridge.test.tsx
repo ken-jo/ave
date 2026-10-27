@@ -126,7 +126,8 @@ describe("browser observation live strip", () => {
     const off = vi.fn();
     const acknowledge = vi.fn(async () => ({ ok: true }));
     const api = { onAgentObservation: (handler: typeof emit) => { emit = handler; return off; },
-      acknowledgeObservation: acknowledge } as unknown as AvePreviewApi;
+      acknowledgeObservation: acknowledge, onObservationPreview: () => () => {},
+      requestObservationPreview: async () => ({ ok: true }) } as unknown as AvePreviewApi;
     disconnect = connectBrowserObservations(api);
     return { emit, off, acknowledge };
   }

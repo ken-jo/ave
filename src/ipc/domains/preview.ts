@@ -131,6 +131,13 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
     }
     return observation.acknowledge(e, request);
   });
+  ipcMain.handle(CHANNELS.preview.observationPreview, (e, request: unknown) => {
+    if (!validateAppWindowMainFrameSender(e, deps)) {
+      auditUnauthorized(auditLogger, CHANNELS.preview.observationPreview, e);
+      return { ok: false, error: "unauthorized" };
+    }
+    return observation.browserPreview(e, request);
+  });
 
   ipcMain.handle(
     CHANNELS.preview.readFile,

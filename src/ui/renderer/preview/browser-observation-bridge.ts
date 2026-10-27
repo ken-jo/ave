@@ -6,6 +6,7 @@ import {
   type ObservationAck,
 } from "../../../shared/agent-observation.js";
 import type { AvePreviewApi } from "../types.js";
+import { BrowserObservationPreviewStore } from "./browser-observation-preview.js";
 
 interface BrowserObservationHistory {
   sessionId: string;
@@ -129,6 +130,7 @@ export class BrowserObservationStore {
 }
 
 let store: BrowserObservationStore | undefined;
+let previews: BrowserObservationPreviewStore | undefined;
 const listeners = new Set<() => void>();
 function notify(): void { for (const listener of listeners) listener(); }
 
@@ -136,15 +138,23 @@ function notify(): void { for (const listener of listeners) listener(); }
 export function connectBrowserObservations(api: AvePreviewApi): () => void {
   if (store) throw new Error("Browser observation listener already registered.");
   const current = new BrowserObservationStore((ack) => api.acknowledgeObservation(ack));
+  const preview = new BrowserObservationPreviewStore(api);
   store = current;
+  previews = preview;
   const stopChanges = current.subscribe(notify);
+  const stopPreviewChanges = preview.subscribe(notify);
   const stopEvents = api.onAgentObservation((events) => current.accept(events));
+  const stopFrames = api.onObservationPreview((message) => preview.accept(message));
   notify();
   return () => {
     stopEvents();
+    stopFrames();
     current.dispose();
+    preview.dispose();
     stopChanges();
+    stopPreviewChanges();
     if (store === current) store = undefined;
+    if (previews === preview) previews = undefined;
     notify();
   };
 }
@@ -154,6 +164,11 @@ export function releaseBrowserObservationSession(sessionId: string): void { stor
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+
+/** The connected window's preview store; undefined before connection or after teardown. */
+export function useBrowserObservationPreviewStore(): BrowserObservationPreviewStore | undefined {
+  return useSyncExternalStore(subscribe, () => previews, () => undefined);
 }
 
 export function useBrowserObservation(tabId: string, sessionId?: string): BrowserObservationEvent | undefined {

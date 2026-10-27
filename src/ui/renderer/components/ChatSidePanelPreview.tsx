@@ -479,7 +479,8 @@ export function UrlDocumentViewer({
       ) : null}
       {surfaceTabId ? <BrowserObservationLiveStrip tabId={surfaceTabId} sessionId={sessionId} /> : null}
       {surfaceTabId ? (
-        <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" {...(bindRequestId === undefined ? {} : { bindRequestId })} />
+        <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" {...(bindRequestId === undefined ? {} : { bindRequestId })}
+          {...(sessionId === undefined ? {} : { sessionId })} />
       ) : createElement("webview", {
         ref: setWebviewElement,
         "data-testid": "chat-side-panel-browser-webview",

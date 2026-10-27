@@ -138,6 +138,10 @@ export class DocumentObservationRuntime {
     return { targetId: id, sessionId, seq: 0 };
   }
 
+  browserPreview(event: IpcMainInvokeEvent, raw: unknown): { ok: boolean; error?: string } {
+    return this.browser.previewRequest(event, raw);
+  }
+
   acknowledge(event: IpcMainInvokeEvent, raw: unknown): { ok: boolean; error?: string } {
     if (!validateAppWindowMainFrameSender(event, this.deps)) return { ok: false, error: "unauthorized" };
     if (!isObservationAck(raw)) return { ok: false, error: "bad-request" };

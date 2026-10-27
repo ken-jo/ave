@@ -258,6 +258,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
   ["preview", CHANNELS.preview.observationAck, [{ action: "rendered", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", seq: 0 }]],
+  ["preview", CHANNELS.preview.observationPreview, [{ action: "start", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", tabId: "tab-1", frame: 0 }]],
   ["preview", CHANNELS.preview.documentOpenAck, [{ requestId: "request", sessionId: "session", opened: true }]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
@@ -446,6 +447,19 @@ describe("document observation sender refusal", () => {
 
   it("never registers a handler for the outbound observation stream", () => {
     expect(handleMap.has(CHANNELS.preview.observationEvents)).toBe(false);
+    expect(handleMap.has(CHANNELS.preview.observationPreviewFrames)).toBe(false);
+  });
+
+  it("refuses a browser preview request from a plugin shell and an unissued preview target from the host", async () => {
+    const preview = { action: "start", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", tabId: "tab-1", frame: 0 };
+    expect(await invoke(CHANNELS.preview.observationPreview, pluginShellFrameEvent(), [preview]))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(guardRowsFor(CHANNELS.preview.observationPreview)).toHaveLength(1);
+    expect(await invoke(CHANNELS.preview.observationPreview, registeredHostEvent(), [preview]))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(await invoke(CHANNELS.preview.observationPreview, registeredHostEvent(), [{ ...preview, url: "https://example.test/" }]))
+      .toEqual({ ok: false, error: "bad-request" });
+    expect(guardRowsFor(CHANNELS.preview.observationPreview)).toHaveLength(1);
   });
 });
 

@@ -24,6 +24,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "agentBrowser.observationDownloadInterrupted": "중단",
   "agentBrowser.observationError": "브라우저 관찰에 실패했습니다. 페이지는 계속 사용할 수 있습니다.",
   "agentBrowser.observationResync": "브라우저 동작이 실시간 보기 한도를 초과했습니다. 다음 동작부터 표시됩니다.",
+  "agentBrowser.observationPreview": "에이전트 탭 실시간 보기",
+  "agentBrowser.observationPreviewUpdating": "업데이트 중…",
   "providerSettingsError.title": "공급자 설정을 불러올 수 없습니다",
   "providerSettingsError.detail": "설정 파일에 올바르지 않은 필드가 있습니다.\n\n파일: {path}\n필드: {field}\n\n이 필드를 수정한 뒤 Ave를 다시 시작하세요. 파일은 변경되지 않았습니다.",
   "oauthWindow.title": "로그인",

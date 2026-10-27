@@ -6,6 +6,7 @@ import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import { BrowserObservationPreview } from "../preview/BrowserObservationPreview.js";
 import type { AveApi } from "../types.js";
 import {
   getWebSurfaceOccluders,
@@ -367,6 +368,7 @@ export function WebSurfaceSlot({
   url,
   location,
   bindRequestId,
+  sessionId,
 }: {
   tabId: string;
   /** The url the host wants this tab on; navigates the guest when it changes. */
@@ -375,6 +377,8 @@ export function WebSurfaceSlot({
   location: string;
   /** The agent request the tab was opened for, bound with its guest (see `WebSurface`). */
   bindRequestId?: string;
+  /** The hosting conversation; scopes the agent's live preview while this tab is open in another panel. */
+  sessionId?: string;
 }) {
   const { t } = useTranslation();
   const mount = useSurfaceMount(tabId, location);
@@ -399,13 +403,15 @@ export function WebSurfaceSlot({
       data-owned={mount.owned ? "true" : "false"}
     >
       {mount.owned ? null : (
-        <div
-          className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground"
-          data-testid="web-surface-mounted-elsewhere"
-          data-owner-location={mount.ownerLocation ?? ""}
-        >
-          {t("webSurface.mountedElsewhere")}
-        </div>
+        <BrowserObservationPreview tabId={tabId} {...(sessionId === undefined ? {} : { sessionId })}>
+          <div
+            className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground"
+            data-testid="web-surface-mounted-elsewhere"
+            data-owner-location={mount.ownerLocation ?? ""}
+          >
+            {t("webSurface.mountedElsewhere")}
+          </div>
+        </BrowserObservationPreview>
       )}
     </div>
   );

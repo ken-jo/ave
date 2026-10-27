@@ -95,6 +95,23 @@ describe("preload — plugin webview asset URLs", () => {
     expect(Object.keys(request).sort()).toEqual(["action", "seq", "sessionId", "targetId"]);
   });
 
+  it("passes only the bounded browser preview request and subscribes to transient frames", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const request = { action: "rendered" as const, targetId: "11111111-1111-4111-8111-111111111111", sessionId: "browser-session",
+      tabId: "tab-1", frame: 2 };
+    await preview.requestObservationPreview(request);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationPreview, request);
+    const handler = vi.fn();
+    const unsubscribe = preview.onObservationPreview(handler);
+    const listener = mockOn.mock.calls.findLast(([channel]) => channel === CHANNELS.preview.observationPreviewFrames)?.[1] as
+      (event: unknown, message: unknown) => void;
+    const message = { targetId: request.targetId, sessionId: request.sessionId, tabId: "tab-1", kind: "state", state: "updating" };
+    listener({}, message);
+    expect(handler).toHaveBeenCalledWith(message);
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationPreviewFrames, listener);
+  });
+
   it("preserves preview reads and adds a session binding only when supplied", async () => {
     const preview = (await loadAveNamespace()).preview as AvePreviewApi;
     await preview.readDocument("/workspace/budget.xlsx", 0);
