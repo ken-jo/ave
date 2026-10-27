@@ -172,6 +172,7 @@ describe("native repository read controls", () => {
       ? 'printf "executed\\n" > "$CONTROL_MARKER"\ncat'
       : 'printf "executed\\n" > "$CONTROL_MARKER"\nexit 1');
     configure(`filter.aftercheck.${kind}`, helper.helper);
+    configure("filter.aftercheck.required", "true");
     writeFileSync(join(cwd, ".gitattributes"), "alpha.txt filter=aftercheck\n");
     // Same-size content makes conversion necessary beyond the size comparison.
     writeFileSync(join(cwd, "alpha.txt"), "altered\n");
