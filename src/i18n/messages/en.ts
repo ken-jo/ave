@@ -3,6 +3,8 @@
 export const en = {
   "be_streamCollector.runtimeUnauthenticated": "The subscription runtime publisher could not be verified. Follow the official setup guide to verify or reinstall it, then check again.",
   "formatIpcError.subscriptionRuntimeUnauthenticated": "The subscription runtime publisher could not be verified. Follow the official setup guide to verify or reinstall it, then check again.",
+  "be_streamCollector.runtimeReleaseMetadataUnavailable": "The subscription runtime release could not be verified: on Linux, Ave checks Anthropic's signed release manifest from downloads.claude.ai, and that host could not be reached. Allow HTTPS access to downloads.claude.ai (directly or through the system proxy), then check again. Verification has no offline bypass.",
+  "formatIpcError.subscriptionRuntimeReleaseMetadataUnavailable": "The subscription runtime release could not be verified: on Linux, Ave checks Anthropic's signed release manifest from downloads.claude.ai, and that host could not be reached. Allow HTTPS access to downloads.claude.ai (directly or through the system proxy), then check again. Verification has no offline bypass.",
   "be_streamCollector.nativeRuntimeRequired": "This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again.",
   "modelBilling.subscription": "Billed to your own {plan} subscription, not an API key.",
   "modelBilling.apiKey": "Billed to your configured API key.",

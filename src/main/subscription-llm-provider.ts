@@ -198,7 +198,8 @@ function subscriptionFailure(
   if (
     failure instanceof SubscriptionRuntimeServiceError
     && (failure.code === "subscription-chat-unavailable" || failure.code === "subscription-model-not-supported"
-      || failure.code === "subscription-runtime-native-required" || failure.code === "subscription-runtime-unauthenticated")
+      || failure.code === "subscription-runtime-native-required" || failure.code === "subscription-runtime-unauthenticated"
+      || failure.code === "subscription-runtime-release-metadata-unavailable")
   ) {
     return {
       type: "error",
@@ -214,7 +215,9 @@ function subscriptionFailure(
             ? "native subscription runtime installation required"
             : failure.code === "subscription-runtime-unauthenticated"
               ? "subscription runtime publisher could not be authenticated"
-              : "subscription runtime chat unavailable",
+              : failure.code === "subscription-runtime-release-metadata-unavailable"
+                ? "subscription runtime release metadata unavailable"
+                : "subscription runtime chat unavailable",
       },
     };
   }

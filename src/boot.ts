@@ -121,6 +121,7 @@ import { createRemoteA2AActionController } from "./main/remote-a2a-action-contro
 import { buildSingleFlightAgentActionApprover } from "./permissions/agent-action-approver.js";
 import { PluginBundleLifecycle } from "./plugins/plugin-bundle-lifecycle.js";
 import { configureChatGptPlanRuntime } from "./main/chatgpt-plan/runtime.js";
+import { configureClaudeCodeReleaseFetch } from "./main/claude-code-authenticity.js";
 const log = createLogger("ave");
 
 /**
@@ -843,6 +844,9 @@ export async function bootstrap(
   // Subscription-authenticated reviewers run before conversation wiring, so
   // construct the one main-owned provider factory here and share it with both
   // the reviewer and all conversation-loop variants below.
+  // Claude Code publisher verification on Linux fetches Anthropic's signed release metadata through the host network stack (OS proxy and trust store)
+  // behind its own request allowlist. Configured before the subscription service is first created.
+  configureClaudeCodeReleaseFetch(host.networkFetch);
   // ChatGPT plan usage keeps its account record in the encrypted secret store and sends every request through the
   // host network stack behind its own egress allowlist. Configured before the subscription service is first created.
   configureChatGptPlanRuntime({

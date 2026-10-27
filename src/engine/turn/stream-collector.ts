@@ -215,6 +215,8 @@ export async function collectRoundStream(
             && event.providerError?.providerCode === "subscription-runtime-native-required";
           const subscriptionUnauthenticated = provider.subscriptionRuntime !== undefined
             && event.providerError?.providerCode === "subscription-runtime-unauthenticated";
+          const subscriptionReleaseMetadataUnavailable = provider.subscriptionRuntime !== undefined
+            && event.providerError?.providerCode === "subscription-runtime-release-metadata-unavailable";
           const classification = imageInputRefused || subscriptionModelRefused
             ? "model" : event.providerError?.classification ?? classified.category;
           const userMessage = imageInputRefused
@@ -225,7 +227,9 @@ export async function collectRoundStream(
                 ? t("be_streamCollector.nativeRuntimeRequired")
                 : subscriptionUnauthenticated
                   ? t("be_streamCollector.runtimeUnauthenticated")
-                  : classified.userMessage;
+                  : subscriptionReleaseMetadataUnavailable
+                    ? t("be_streamCollector.runtimeReleaseMetadataUnavailable")
+                    : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
             classification,

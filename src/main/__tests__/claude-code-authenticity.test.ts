@@ -4,7 +4,10 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { authenticateClaudeCodeExecutable, ClaudeCodeAuthenticityError } from "../claude-code-authenticity.js";
+import {
+  authenticateClaudeCodeExecutable, ClaudeCodeAuthenticityError, ClaudeCodeVersionUnsupportedError, createClaudeCodeReleaseFetch,
+  isAllowedClaudeCodeReleaseRequest,
+} from "../claude-code-authenticity.js";
 import * as locations from "../codex-executable-location.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import * as systemDirectory from "../windows-path-kind-launcher.js";
@@ -27,6 +30,7 @@ interface VerifierCall { command: string; args: readonly string[]; options: Exec
 const calls: VerifierCall[] = [];
 let processReply: (call: VerifierCall) => string | Error;
 let fetchReply: (url: string) => Response;
+let releaseFetch: ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>>;
 
 function validSignature(primary = FINGERPRINT, signer = FINGERPRINT): string {
   return `[GNUPG:] GOODSIG ${signer.slice(-16)} Release Signing\n[GNUPG:] VALIDSIG ${signer} 2026-10-27 1793059200 0 4 0 1 10 00 ${primary}\n`;
@@ -43,7 +47,7 @@ async function artifact(): Promise<string> {
 }
 async function authenticate(platform: NodeJS.Platform = "linux", source = SOURCE, arch: NodeJS.Architecture = "x64"): Promise<string> {
   const executable = await artifact();
-  await authenticateClaudeCodeExecutable(executable, source, CONTENT_HASH, platform, arch);
+  await authenticateClaudeCodeExecutable(executable, source, CONTENT_HASH, platform, arch, releaseFetch as unknown as typeof fetch);
   return executable;
 }
 
@@ -64,7 +68,9 @@ beforeEach(() => {
     return {} as ChildProcess;
   }) as typeof execFile);
   fetchReply = (url) => new Response(url.endsWith("manifest.json") ? manifest() : "fixture-signature-or-key");
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => fetchReply(url)));
+  releaseFetch = vi.fn(async (url: string) => fetchReply(url));
+  // Authentication must use the supplied host transport, never the process-global fetch.
+  vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Process-global fetch used"); }));
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -85,12 +91,13 @@ describe("native publisher verifier simulations", () => {
     const requirement = call.args[4]!;
     for (const value of ["anchor apple generic", "1.2.840.113635.100.6.2.6", "1.2.840.113635.100.6.1.13", 'subject.OU] = "Q6L2SF6YDW"', 'subject.CN] = "Developer ID Application: Anthropic PBC (Q6L2SF6YDW)"', 'identifier "com.anthropic.claude-code"']) expect(requirement).toContain(value);
     expect(locations.assertCodexExecutableLocation).toHaveBeenCalledWith("/usr/bin/codesign", "native");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(releaseFetch).not.toHaveBeenCalled();
   });
 
-  it.each(["unsigned", "ad-hoc signature", "wrong publisher", "changed code pages"])("refuses a failed platform requirement: %s", async () => {
+  // Which signatures codesign rejects is proven against the real verifier in claude-code-authenticity-native.test.ts; this only maps its refusal.
+  it("maps any non-zero codesign result to the typed publisher refusal without a second verifier", async () => {
     processReply = () => new Error("Platform rejected fixture signature");
-    await expect(authenticate("darwin")).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
+    await expect(authenticate("darwin")).rejects.toMatchObject({ name: "ClaudeCodeAuthenticityError", reason: "publisher-rejected" });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.command).toBe("/usr/bin/codesign");
   });
@@ -108,7 +115,7 @@ describe("native publisher verifier simulations", () => {
     for (const value of ["Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:AVE_SIGNATURE_FILE", "$signature.Status -ne 'Valid'", "$subject -cne 'Anthropic, PBC'", "1.3.6.1.5.5.7.3.3", "X509EnhancedKeyUsageExtension", "SubjectName.Decode", "^O=(?:", "exit 1"]) expect(script).toContain(value);
     expect(script).not.toContain(executable);
     expect(call.options.env?.AVE_SIGNATURE_FILE).toBe(executable);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(releaseFetch).not.toHaveBeenCalled();
   });
 
   it.skipIf(HOST !== "win32")("rejects an unsigned file with the actual system verifier despite a shadow signature module", { timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs }, async () => {
@@ -154,7 +161,7 @@ describe("native publisher verifier simulations", () => {
     vi.mocked(systemDirectory.queryWindowsSystemDirectory).mockRejectedValue(new Error("Native helper failed"));
     await expect(authenticate("win32")).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
     expect(calls).toEqual([]);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(releaseFetch).not.toHaveBeenCalled();
   });
 
   it.each(["platform signature refusal", "unexpected verifier result"])("fails closed on %s", async (reason) => {
@@ -180,16 +187,16 @@ describe("native publisher verifier simulations", () => {
 
   it("refuses a mismatched sealed hash before any platform verifier or network request", async () => {
     const executable = await artifact();
-    await expect(authenticateClaudeCodeExecutable(executable, SOURCE, "0".repeat(64), "darwin", "arm64")).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
+    await expect(authenticateClaudeCodeExecutable(executable, SOURCE, "0".repeat(64), "darwin", "arm64", releaseFetch as unknown as typeof fetch)).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
     expect(calls).toEqual([]);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(releaseFetch).not.toHaveBeenCalled();
   });
 
   it("refuses bytes replaced during successful platform verification", async () => {
     const executable = await artifact();
     const { writeFileSync, chmodSync } = await import("node:fs");
     processReply = () => { chmodSync(executable, 0o700); writeFileSync(executable, "replacement"); return ""; };
-    await expect(authenticateClaudeCodeExecutable(executable, SOURCE, CONTENT_HASH, "darwin", "arm64")).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
+    await expect(authenticateClaudeCodeExecutable(executable, SOURCE, CONTENT_HASH, "darwin", "arm64", releaseFetch as unknown as typeof fetch)).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
   });
 
   it("refuses unsupported platforms before any verifier executes", async () => {
@@ -208,12 +215,12 @@ describe("signed release checksum verifier simulations", () => {
     expect(importCall!.args).toEqual(["--no-options", "--homedir", home, "--batch", "--no-tty", "--no-autostart", "--no-auto-key-retrieve", "--import", join(home, "release.asc")]);
     expect(verifyCall!.args).toEqual(["--no-options", "--homedir", home, "--batch", "--no-tty", "--no-autostart", "--no-auto-key-retrieve", "--status-fd", "1", "--verify", join(home, "manifest.json.sig"), join(home, "manifest.json")]);
     expect(await fs.readdir(dirname(executable))).toEqual(["runtime"]);
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
+    expect(releaseFetch.mock.calls.map(([url]) => url)).toEqual([
       "https://downloads.claude.ai/keys/claude-code.asc",
       "https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json",
       "https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json.sig",
     ]);
-    for (const [, options] of vi.mocked(fetch).mock.calls) {
+    for (const [, options] of releaseFetch.mock.calls) {
       expect(options).toMatchObject({ redirect: "error", credentials: "omit", signal: expect.any(AbortSignal) });
     }
   });
@@ -261,15 +268,54 @@ describe("signed release checksum verifier simulations", () => {
   it.each([
     ["/usr/bin/dpkg-query", "2.1.311-1", ["--show", "--showformat=${Version}", "claude-code"]],
     ["/usr/bin/rpm", "2.1.311", ["--query", "--file", "/usr/bin/claude", "--queryformat", "%{VERSION}"]],
-    ["/sbin/apk", "claude-code-2.1.311-r0 owns /usr/bin/claude", ["info", "--who-owns", "/usr/bin/claude"]],
-  ] as const)("uses %s only to locate signed metadata for a packaged binary", async (query, version, args) => {
+    // apk-tools `info --who-owns` at its default verbosity: "<path> [symlink target ]is owned by <name>-<version>-r<N>" (src/app_info.c).
+    ["/sbin/apk", "/usr/bin/claude is owned by claude-code-2.1.311-r1\n", ["info", "--who-owns", "/usr/bin/claude"]],
+    ["/sbin/apk", "/usr/bin/claude symlink target is owned by claude-code-2.1.311-r0\n", ["info", "--who-owns", "/usr/bin/claude"]],
+  ] as const)("uses %s only to locate signed metadata for a packaged binary (%s)", async (query, version, args) => {
     processReply = ({ command, args }) => command === query ? version
       : command.endsWith("/gpg") ? args.includes("--verify") ? validSignature() : ""
       : new Error("Database absent");
     await expect(authenticate("linux", "/usr/bin/claude")).resolves.toEqual(expect.any(String));
+    expect(releaseFetch.mock.calls.map(([url]) => url)).toContain("https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json");
     expect(calls).toContainEqual(expect.objectContaining({ command: query, args }));
     expect(calls.some(({ command }) => command === "/usr/bin/claude")).toBe(false);
     expect(calls.at(-1)!.args).toContain("--verify");
+  });
+
+  it.each([
+    ["another path", "/usr/local/bin/claude is owned by claude-code-2.1.311-r1"],
+    ["another package", "/usr/bin/claude is owned by claude-code-helper-2.1.311-r1"],
+    ["the quiet package-name form", "claude-code"],
+    ["the former unsupported format", "claude-code-2.1.311-r0 owns /usr/bin/claude"],
+  ])("refuses apk output naming %s without fetching metadata", async (_reason, output) => {
+    processReply = ({ command }) => command === "/sbin/apk" ? output : new Error("Database absent");
+    await expect(authenticate("linux", "/usr/bin/claude")).rejects.toMatchObject({ reason: "publisher-rejected" });
+    expect(releaseFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses an apk-located version whose signed manifest names another release", async () => {
+    processReply = ({ command, args }) => command === "/sbin/apk" ? "/usr/bin/claude is owned by claude-code-2.1.311-r1"
+      : command.endsWith("/gpg") ? args.includes("--verify") ? validSignature() : ""
+      : new Error("Database absent");
+    fetchReply = (url) => new Response(url.endsWith("manifest.json") ? manifest(CONTENT_HASH, "linux-x64", "2.1.310") : "fixture-signature-or-key");
+    await expect(authenticate("linux", "/usr/bin/claude")).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
+  });
+
+  it.each([
+    ["a versioned native install", "/home/example/.local/share/claude/versions/2.1.88"],
+    ["a versioned cask payload", "/home/linuxbrew/.linuxbrew/Caskroom/claude-code/2.0.76/claude"],
+  ])("refuses %s below the supported minimum before any metadata request", async (_reason, source) => {
+    const failure = authenticate("linux", source);
+    await expect(failure).rejects.toBeInstanceOf(ClaudeCodeVersionUnsupportedError);
+    await expect(failure).rejects.toMatchObject({ version: source.match(/\d+\.\d+\.\d+/u)![0] });
+    expect(calls).toEqual([]);
+    expect(releaseFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses an apk-located release below the supported minimum before any metadata request", async () => {
+    processReply = ({ command }) => command === "/sbin/apk" ? "/usr/bin/claude is owned by claude-code-2.1.88-r0" : new Error("Database absent");
+    await expect(authenticate("linux", "/usr/bin/claude")).rejects.toMatchObject({ name: "ClaudeCodeVersionUnsupportedError", version: "2.1.88" });
+    expect(releaseFetch).not.toHaveBeenCalled();
   });
 
   it("does not treat package database version output as publisher authentication", async () => {
@@ -280,15 +326,19 @@ describe("signed release checksum verifier simulations", () => {
   it.each(["/custom/claude", "/tmp/../../release.json", "/home/example/versions/2.1.311-malicious"])("refuses an unknown version locator %s without probing the candidate", async (source) => {
     await expect(authenticate("linux", source)).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
     expect(calls).toEqual([]);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(releaseFetch).not.toHaveBeenCalled();
   });
 
-  it.each(["unreachable", "missing detached signature", "oversized metadata"])("refuses %s and removes temporary verification material", async (reason) => {
+  it.each([
+    ["unreachable", "release-metadata-unavailable"],
+    ["missing detached signature", "release-metadata-unavailable"],
+    ["oversized metadata", "publisher-rejected"],
+  ] as const)("refuses %s as %s and removes temporary verification material", async (reason, expected) => {
     fetchReply = () => {
       if (reason === "unreachable") throw new Error("Network unavailable");
       return reason === "missing detached signature" ? new Response("missing", { status: 404 }) : new Response("x".repeat(256 * 1024 + 1));
     };
-    await expect(authenticate()).rejects.toBeInstanceOf(ClaudeCodeAuthenticityError);
+    await expect(authenticate()).rejects.toMatchObject({ name: "ClaudeCodeAuthenticityError", reason: expected });
     expect(await fs.readdir(roots.at(-1)!)).toEqual(["runtime"]);
     expect(calls).toEqual([]);
   });
@@ -296,5 +346,33 @@ describe("signed release checksum verifier simulations", () => {
   it("does not expose raw verifier diagnostics in the typed failure", async () => {
     processReply = () => new Error("Sensitive path and subprocess diagnostics");
     await expect(authenticate()).rejects.toThrow(/^Subscription runtime publisher could not be authenticated$/u);
+  });
+});
+
+describe("release metadata transport", () => {
+  it.each([
+    ["GET", "https://downloads.claude.ai/keys/claude-code.asc", true],
+    ["GET", "https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json", true],
+    ["get", "https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json.sig", true],
+    ["POST", "https://downloads.claude.ai/keys/claude-code.asc", false],
+    ["GET", "http://downloads.claude.ai/keys/claude-code.asc", false],
+    ["GET", "https://downloads.claude.ai.example/keys/claude-code.asc", false],
+    ["GET", "https://user:secret@downloads.claude.ai/keys/claude-code.asc", false],
+    ["GET", "https://downloads.claude.ai/keys/claude-code.asc?token=1", false],
+    ["GET", "https://downloads.claude.ai/claude-code-releases/latest", false],
+    ["GET", "https://downloads.claude.ai/claude-code-releases/2.1.311/linux-x64/claude", false],
+    ["GET", "https://downloads.claude.ai/claude-code-releases/2.1.311-x/manifest.json", false],
+    ["GET", "not a url", false],
+  ] as const)("admits only the fixed verification requests: %s %s -> %s", (method, url, allowed) => {
+    expect(isAllowedClaudeCodeReleaseRequest(method, url)).toBe(allowed);
+  });
+
+  it("sends allowed requests on the host stack without redirects or credentials, and refuses others before sending", async () => {
+    const networkFetch = vi.fn(async () => new Response("ok"));
+    const transport = createClaudeCodeReleaseFetch(networkFetch as unknown as typeof fetch);
+    await transport("https://downloads.claude.ai/keys/claude-code.asc", { redirect: "follow", credentials: "include" });
+    expect(networkFetch).toHaveBeenCalledWith("https://downloads.claude.ai/keys/claude-code.asc", expect.objectContaining({ redirect: "error", credentials: "omit" }));
+    await expect(transport("https://example.com/keys/claude-code.asc")).rejects.toThrow(/outside the verification allowlist/u);
+    expect(networkFetch).toHaveBeenCalledTimes(1);
   });
 });

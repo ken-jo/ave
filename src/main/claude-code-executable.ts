@@ -53,11 +53,12 @@ async function contentHash(path: string, trustInputs: CodexLocationTrustInputs):
   try { return await hashExecutableFile(file); } finally { await file.close(); }
 }
 
-// Only native bytes are admitted; scripts and package launchers are never probed or executed.
+// Only native bytes are admitted; scripts and package launchers are never probed or executed. `releaseFetch` carries Linux release-metadata requests.
 export async function pinClaudeCodeExecutable(
   candidate: string,
   runtimeDirectory: string,
   discovery: CliDiscoveryEnvironment,
+  releaseFetch: typeof fetch,
 ): Promise<ClaudeCodeExecutable> {
   const source = await fs.realpath(candidate);
   if (isNpmInstallation(candidate) || isNpmInstallation(source) || /\.(?:cmd|bat|[cm]?js)$/iu.test(source)) {
@@ -82,7 +83,7 @@ export async function pinClaudeCodeExecutable(
     });
     if (primary.contentHash !== sourceHash) throw new Error("Subscription executable changed");
     const artifact: CodexExecutableArtifact = Object.freeze({ ...primary, companion: null });
-    await authenticateClaudeCodeExecutable(artifact.executable, source, sourceHash, discovery.platform, process.arch);
+    await authenticateClaudeCodeExecutable(artifact.executable, source, sourceHash, discovery.platform, process.arch, releaseFetch);
     const verify = async (): Promise<void> => {
       await assertCodexExecutableLocation(candidate, "native", trustInputs);
       if (await fs.realpath(candidate) !== source || await contentHash(source, trustInputs) !== sourceHash) {

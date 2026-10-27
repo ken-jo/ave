@@ -17,6 +17,9 @@ import * as locations from "../codex-executable-location.js";
 import * as managed from "../managed-child-processes.js";
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
 
+// Release metadata is fetched only by real Linux publisher verification; these fixtures never reach it.
+const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
+
 // Direct dependencies are reviewed capabilities; a new helper must reopen this policy review.
 const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   "claude-code-subscription-client.ts": {
@@ -28,11 +31,12 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
     "node:string_decoder": ["StringDecoder"],
     "node:util": ["TextDecoder"],
     "../shared/is-record.js": ["isRecord"],
-    "../shared/claude-code-subscription.js": ["CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID", "claudeCodeSubscriptionStatus", "ClaudeCodeSubscriptionErrorCode", "ClaudeCodeSubscriptionStatus"],
+    "../shared/claude-code-subscription.js": ["CLAUDE_CODE_CLI_MINIMUM_VERSION", "CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID", "claudeCodeSubscriptionStatus", "ClaudeCodeSubscriptionErrorCode", "ClaudeCodeSubscriptionStatus"],
+    "../shared/subscription-runtime.js": ["meetsMinimumCliVersion"],
     "./managed-child-processes.js": ["forceKillManagedChildProcess", "spawnManaged"],
     "./user-cli-discovery.js": ["cliEnvironmentValue", "cliExecutableCandidates", "cliPathApi", "usableCliDirectory", "CliDiscoveryEnvironment"],
     "./claude-code-executable.js": ["ClaudeCodeNativeRequiredError", "pinClaudeCodeExecutable", "ClaudeCodeExecutable"],
-    "./claude-code-authenticity.js": ["ClaudeCodeAuthenticityError"],
+    "./claude-code-authenticity.js": ["ClaudeCodeAuthenticityError", "ClaudeCodeVersionUnsupportedError"],
     "./codex-executable-location.js": ["assertCodexLocations", "CodexExecutableLocationError", "createPrivateTempDirectory"],
   },
   "claude-code-conversation-runtime.ts": {
@@ -74,14 +78,14 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
 const TRANSPORT_FS_OWNER_DIGESTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "claude-code-subscription-client.ts": {
     "resolveClaudeCodeSubscriptionExecutable": "36bc9fe7fcd9e3e16e2c6ed000dc51c93ecc2607d95bdb612e6475e493cd82a9",
-    "locate": "73dc324ebff936797f80532cfdf6cc2c3ab2dc68bfcb1afb969bbd23c199cd2b",
-    "qualify": "d671cee95ea05b799fdd37e884e004307fdaba78cb9a89c7965e46389c999e62"
+    "locate": "53e5ea65aa2a88866a40f7a902bf83af0453913ddc9188b2d49abbcd1e853ec0",
+    "qualify": "81f861d5ef6826959f50114311c601673f1ffefe0e5e3d0b340f694bf0fcaffb"
   },
   "claude-code-conversation-runtime.ts": {
     "streamTurn": "10159534fafced47164c2004cdb93928ecddd7a51534125005201c7e204fbc1a"
   },
   "claude-code-executable.ts": {
-    "pinClaudeCodeExecutable": "a1ebd35029282839c954792d27cfa9ca705bf45f4979ab0d5c63f4c53189e2ec"
+    "pinClaudeCodeExecutable": "16a71e85746f5a6e33d086638a947327418304903228c7f48aafb7fd3176fdd1"
   }
 };
 
@@ -287,14 +291,14 @@ describe("subscription launch policy", () => {
       const child = new PolicyChild(); children.push(child);
       calls.push({ command, args, options, child });
       setImmediate(() => {
-        if (args.includes("--version")) child.stdout.write("2.1.0 (Claude Code)\n");
+        if (args.includes("--version")) child.stdout.write("2.1.311 (Claude Code)\n");
         else if (args.includes("--help")) child.stdout.write("Commands:\n  login [options]\n  logout\n  status [options]\n");
         else if (args[1] === "status") child.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro", accessToken: "fixture-cli-private-token" }));
         if (args[1] !== "login") child.close();
       });
       return child as unknown as ChildProcess;
     });
-    const client = new ClaudeCodeSubscriptionClient({ ...f, spawn,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...f, spawn,
       candidates: () => [f.artifact.executable], resolveExecutable: async (candidate) => candidate,
       _pinExecutableForTest: async () => f.artifact,
     });
@@ -329,7 +333,7 @@ describe("subscription launch policy", () => {
     await fs.mkdir(join(candidate, ".."), { recursive: true });
     await fs.writeFile(candidate, native ? nativeExecutableBytes(process.platform) : "#!/usr/bin/env node\nfixture script\n", { mode: 0o700 });
     const spawn = vi.fn(() => { throw new Error("Rejected installation must not launch"); });
-    const client = new ClaudeCodeSubscriptionClient({ ...f, spawn, candidates: () => [candidate], resolveExecutable: async (path) => path });
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...f, spawn, candidates: () => [candidate], resolveExecutable: async (path) => path });
     owners.push(client);
     await expect(client.startBrowserLogin()).rejects.toMatchObject({ code: "claude-code-runtime-native-required" });
     expect(spawn).not.toHaveBeenCalled();
@@ -395,7 +399,7 @@ describe("subscription launch policy", () => {
     const source = readFileSync(new URL("../claude-code-authenticity.ts", import.meta.url));
     expect(createHash("sha256").update(source).digest("hex"),
       "Publisher verifier changed; review fixed origins, subprocess commands, private public-metadata paths and credential isolation before updating this source freeze")
-      .toBe("3cb8920356f0637156bddb84f37b8c267efeb01b0d8e5c09651c50e107b02df8");
+      .toBe("6733b8f52312090a3c55dc670516e417f0d0e4f28ac516d44d3902337f6754d2");
   });
 
   it.each([

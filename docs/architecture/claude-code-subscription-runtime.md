@@ -28,8 +28,8 @@ rejected; macOS also rejects unsafe extended ACL entries. On Linux, named
 ACL writers admitted by the mask on these exact mutable directories share
 the same mutation authority as group writers. Such writers can deny service
 or replace a source with another valid signed release, including an older
-one; this policy does not enforce a minimum release version. They cannot
-admit arbitrary executable bytes: the sealed copy must still pass publisher
+one at or above the supported minimum (see below). They cannot admit
+arbitrary executable bytes: the sealed copy must still pass publisher
 verification. Custom prefixes and other locations retain the shared strict
 rule; they do not cause selection of a later candidate.
 
@@ -67,19 +67,48 @@ Publisher verification uses the platform's trust mechanism:
   compares the platform checksum with the sealed copy. A release version used
   to locate metadata is untrusted data; matching that version alone admits
   nothing. Signature verification uses a private temporary keyring rather
-  than the user's keyring. Verification requires `/usr/bin/gpg` and network
-  access to the fixed release origin, with no offline metadata cache. The
-  native install's versioned source path supplies the version. For
+  than the user's keyring. Verification requires `/usr/bin/gpg` and HTTPS
+  access to `https://downloads.claude.ai` on every admission, with no offline
+  metadata cache and no cached trust: each discovery re-fetches the key,
+  manifest and detached signature. The requests go through the host network
+  stack, so the system proxy and trust store apply, behind a fixed allowlist
+  (`GET /keys/claude-code.asc` and
+  `GET /claude-code-releases/<version>/manifest.json[.sig]` on that origin
+  only, no redirects, no credentials). This is host-owned egress: plugin
+  `hostFetch` allowlists do not govern it and need no entry. The native
+  install's versioned source path supplies the version. For
   `/usr/bin/claude` or `/usr/local/bin/claude`, system package metadata may
-  locate it; that metadata never replaces the signed checksum check. A custom
-  path without a version and a release without a detached signature fail
-  explicitly.
+  locate it (`dpkg-query`, `rpm`, or `apk info --who-owns`, whose
+  `<path> [symlink target ]is owned by claude-code-<version>-r<N>` line is
+  parsed); that metadata never replaces the signed checksum check. A custom
+  path without a version fails explicitly.
 
-Unavailable verification tools or metadata, unsigned or mismatched signatures,
-and checksum failures stop discovery with
-`subscription-runtime-unauthenticated`. The UI offers reinstall and publisher
-verification guidance; Ave does not probe the rejected binary or try another
-candidate or authentication route.
+Unavailable verification tools, unsigned or mismatched signatures, and
+checksum failures stop discovery with `subscription-runtime-unauthenticated`.
+The UI offers reinstall and publisher verification guidance. When the Linux
+release metadata cannot be fetched (offline, blocked by a firewall or proxy,
+or an HTTP error), discovery stops with
+`subscription-runtime-release-metadata-unavailable`: nothing about the binary
+was decided, and the message names `downloads.claude.ai`, asks the user to
+allow HTTPS access to it (directly or through the system proxy) and check
+again, and states there is no offline bypass. In every case Ave does not probe
+the rejected binary or try another candidate or authentication route.
+
+The supported minimum is `CLAUDE_CODE_CLI_MINIMUM_VERSION` (2.1.89) in
+`src/shared/claude-code-subscription.ts`, also the descriptor's
+`minimumVersion` shown in settings. It is the first release whose Linux
+manifest carries Anthropic's detached signature, so the first one Ave can
+authenticate on every platform, and it accepts every flag Ave passes (the
+newest, `--bare`, arrived in 2.1.81). On Linux the located version is checked
+before any metadata request; on macOS and Windows the authenticated binary's
+own `--bare --version` answer is checked before any other probe. An older
+release fails with `subscription-runtime-version-unsupported` and update
+guidance. Any signed release at or above the minimum is accepted, including
+one older than the previously admitted install: Anthropic publishes no
+revocation list, its `stable` channel deliberately trails `latest`, so pinning
+to the newest release would refuse supported stable installs. A writer who can
+swap the installed release can therefore choose among signed releases at or
+above the minimum, never below it and never unsigned bytes.
 
 The macOS check authenticates the embedded signature on the sealed copy;
 copying unchanged bytes preserves that signature. It does not assert a fresh

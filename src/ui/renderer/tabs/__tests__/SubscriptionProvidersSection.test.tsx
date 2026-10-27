@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
+import { CLAUDE_CODE_CLI_MINIMUM_VERSION } from "../../../../shared/claude-code-subscription.js";
 import {
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeCapabilities,
@@ -392,6 +393,33 @@ describe("SubscriptionAuthControls", () => {
       .toHaveTextContent("The Claude Code CLI on this computer is too old for Ave.");
     expect(screen.getByTestId("subscription-provider:claude-code:check-again")).toBeInTheDocument();
     for (const id of PICKER_TEST_IDS) expect(screen.queryByTestId(`subscription-provider:claude-code:${id}`)).toBeNull();
+  });
+
+  it("says which Claude Code release is required when the authenticated one is below the supported minimum", () => {
+    const claude = subscriptionRuntimeDescriptor("claude-code");
+    expect(claude.minimumVersion).toBe(CLAUDE_CODE_CLI_MINIMUM_VERSION);
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", version: "2.1.88", errorCode: "subscription-runtime-version-unsupported" })],
+      { refreshStatus: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:claude-code:minimum-version"))
+      .toHaveTextContent(`Claude Code CLI ${CLAUDE_CODE_CLI_MINIMUM_VERSION}+ required (found 2.1.88).`);
+    expect(screen.getByTestId("subscription-provider:claude-code:update-guidance")).toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+  });
+
+  it.each([
+    ["en", "The subscription runtime release could not be verified: on Linux, Ave checks Anthropic's signed release manifest from downloads.claude.ai, and that host could not be reached. Allow HTTPS access to downloads.claude.ai (directly or through the system proxy), then check again. Verification has no offline bypass."],
+    ["ko", "구독 실행 환경의 릴리스를 확인하지 못했습니다. Linux에서는 downloads.claude.ai에서 Anthropic이 서명한 릴리스 매니페스트를 받아 확인하는데, 이 호스트에 연결할 수 없었습니다. downloads.claude.ai로의 HTTPS 연결(직접 또는 시스템 프록시 경유)을 허용한 뒤 다시 확인하세요. 오프라인으로 확인을 건너뛰는 방법은 없습니다."],
+  ] as const)("names the release host and offers Check again when signed release metadata is unreachable in %s", async (locale, message) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const refreshStatus = vi.fn();
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-release-metadata-unavailable" })],
+      { refreshStatus, beginLogin: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:claude-code:error")).toHaveTextContent(message);
+    expect(screen.queryByTestId("subscription-provider:claude-code:publisher-verification-guidance")).toBeNull();
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+    fireEvent.click(screen.getByTestId("subscription-provider:claude-code:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("claude-code");
   });
 
   it("offers Check again when a found CLI could not be used for another reason", () => {

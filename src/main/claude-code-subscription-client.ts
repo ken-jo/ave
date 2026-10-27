@@ -9,11 +9,13 @@ import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { isRecord } from "../shared/is-record.js";
 import {
+  CLAUDE_CODE_CLI_MINIMUM_VERSION,
   CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID,
   claudeCodeSubscriptionStatus,
   type ClaudeCodeSubscriptionErrorCode,
   type ClaudeCodeSubscriptionStatus,
 } from "../shared/claude-code-subscription.js";
+import { meetsMinimumCliVersion } from "../shared/subscription-runtime.js";
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
 import {
   cliEnvironmentValue,
@@ -24,7 +26,7 @@ import {
 } from "./user-cli-discovery.js";
 
 import { ClaudeCodeNativeRequiredError, pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "./claude-code-executable.js";
-import { ClaudeCodeAuthenticityError } from "./claude-code-authenticity.js";
+import { ClaudeCodeAuthenticityError, ClaudeCodeVersionUnsupportedError } from "./claude-code-authenticity.js";
 import { assertCodexLocations, CodexExecutableLocationError, createPrivateTempDirectory } from "./codex-executable-location.js";
 
 const PROBE_TIMEOUT_MS = 15_000;
@@ -60,6 +62,8 @@ export interface ClaudeCodeSubscriptionClientOptions {
   runtimeTempDir?: string;
   // Opens a trusted login page only when the CLI prints one.
   openAuthorizationUrl?: OpenOAuthLogin;
+  // The host network stack behind the release allowlist ({@link createClaudeCodeReleaseFetch}); Linux publisher verification fetches signed metadata.
+  releaseFetch: typeof fetch;
   // Test seam; production uses the managed-child registry.
   spawn?: SpawnClaude;
   // Test seam for filesystem-based executable validation.
@@ -71,6 +75,12 @@ export interface ClaudeCodeSubscriptionClientOptions {
   homeDir?: string;
   // Test seam: where to look, most specific first. Production uses {@link claudeCodeExecutableCandidates}.
   candidates?: () => readonly string[];
+}
+
+// An answer about the probed bytes themselves, cached by content identity; anything else is asked again.
+function isBinaryVerdict(error: unknown): boolean {
+  return error instanceof ClaudeCodeSubscriptionError
+    && (error.code === "claude-code-runtime-incompatible" || error.code === "claude-code-runtime-version-unsupported");
 }
 
 // A found CLI that passed qualification, bound to the bytes it was probed on.
@@ -320,9 +330,10 @@ export class ClaudeCodeSubscriptionClient {
     this.platform = options.platform ?? process.platform;
     this.env = options.env ?? process.env;
     this.homeDir = options.homeDir ?? homedir();
+    const releaseFetch = options.releaseFetch;
     this.pinExecutable = options._pinExecutableForTest ?? ((candidate) => pinClaudeCodeExecutable(candidate, this.runtimeHome, {
       platform: this.platform, env: this.env, homeDir: this.homeDir,
-    }));
+    }, releaseFetch));
     this.candidates = options.candidates ?? (() => claudeCodeExecutableCandidates({
       platform: this.platform, env: this.env, homeDir: this.homeDir,
     }));
@@ -548,7 +559,14 @@ export class ClaudeCodeSubscriptionClient {
       this.adopt(null);
       if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
       if (error instanceof ClaudeCodeNativeRequiredError) throw new ClaudeCodeSubscriptionError("claude-code-runtime-native-required");
-      if (error instanceof ClaudeCodeAuthenticityError) throw new ClaudeCodeSubscriptionError("claude-code-runtime-unauthenticated");
+      if (error instanceof ClaudeCodeVersionUnsupportedError) {
+        this.lastVersion = error.version;
+        throw new ClaudeCodeSubscriptionError("claude-code-runtime-version-unsupported");
+      }
+      if (error instanceof ClaudeCodeAuthenticityError) {
+        throw new ClaudeCodeSubscriptionError(error.reason === "release-metadata-unavailable"
+          ? "claude-code-runtime-release-metadata-unavailable" : "claude-code-runtime-unauthenticated");
+      }
       throw new ClaudeCodeSubscriptionError("claude-code-runtime-invalid-executable");
     }
     if (this.stopped || this.epoch !== epoch) {
@@ -563,7 +581,7 @@ export class ClaudeCodeSubscriptionClient {
       this.qualifications.set(identity, verdict);
       verdict.catch((error: unknown) => {
         // Only an answer about the binary is a verdict; a probe that could not run says nothing and is asked again next time.
-        if (!(error instanceof ClaudeCodeSubscriptionError && error.code === "claude-code-runtime-incompatible")) {
+        if (!isBinaryVerdict(error)) {
           if (this.qualifications.get(identity) === verdict) this.qualifications.delete(identity);
         }
       });
@@ -579,7 +597,7 @@ export class ClaudeCodeSubscriptionClient {
       return qualified;
     } catch (error) {
       this.adopt(null);
-      if (!(error instanceof ClaudeCodeSubscriptionError && error.code === "claude-code-runtime-incompatible")) {
+      if (!isBinaryVerdict(error)) {
         if (this.qualifications.get(identity) === verdict) this.qualifications.delete(identity);
       }
       if (this.artifacts.get(retained.executable) === retained) {
@@ -628,6 +646,10 @@ export class ClaudeCodeSubscriptionClient {
       const version = parseClaudeCodeVersion(await probe(["--bare", "--version"]));
       this.lastVersion = version;
       if (!version) throw incompatible();
+      // The bytes are publisher-authenticated, so the release reports its own version truthfully. Older signed releases are refused, not run further.
+      if (!meetsMinimumCliVersion(version, CLAUDE_CODE_CLI_MINIMUM_VERSION)) {
+        throw new ClaudeCodeSubscriptionError("claude-code-runtime-version-unsupported");
+      }
       const authHelp = await probe(["auth", "--help"]);
       if (missingClaudeCodeAuthCommands(authHelp).length > 0) throw incompatible();
       return Object.freeze({ artifact, executable, identity, version });

@@ -163,6 +163,7 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-runtime-unsafe-location": "subscriptionProvidersSection.errorRuntimeUnsafeLocation",
   "subscription-runtime-native-required": "formatIpcError.subscriptionRuntimeNativeRequired",
   "subscription-runtime-unauthenticated": "formatIpcError.subscriptionRuntimeUnauthenticated",
+  "subscription-runtime-release-metadata-unavailable": "formatIpcError.subscriptionRuntimeReleaseMetadataUnavailable",
   "subscription-runtime-version-unsupported": "subscriptionProvidersSection.errorRuntimeVersionUnsupported",
   "subscription-runtime-incompatible": "subscriptionProvidersSection.errorRuntimeIncompatible",
   "subscription-login-in-progress": "subscriptionProvidersSection.errorLoginInProgress",

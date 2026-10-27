@@ -78,6 +78,8 @@ describe("provider completion boundary", () => {
     ["ko", "subscription-runtime-unauthenticated", "unknown", "오류: 구독 실행 환경의 배포자를 확인할 수 없습니다. 공식 설치 안내에 따라 서명을 확인하거나 다시 설치한 뒤 다시 확인하세요."],
     ["ko", "subscription-model-not-supported", "model", "오류: 선택한 모델을 찾을 수 없습니다. 설정에서 모델을 확인해주세요."],
     ["en", "subscription-runtime-native-required", "unknown", "Error: This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again."],
+    ["en", "subscription-runtime-release-metadata-unavailable", "unknown", "Error: The subscription runtime release could not be verified: on Linux, Ave checks Anthropic's signed release manifest from downloads.claude.ai, and that host could not be reached. Allow HTTPS access to downloads.claude.ai (directly or through the system proxy), then check again. Verification has no offline bypass."],
+    ["ko", "subscription-runtime-release-metadata-unavailable", "unknown", "오류: 구독 실행 환경의 릴리스를 확인하지 못했습니다. Linux에서는 downloads.claude.ai에서 Anthropic이 서명한 릴리스 매니페스트를 받아 확인하는데, 이 호스트에 연결할 수 없었습니다. downloads.claude.ai로의 HTTPS 연결(직접 또는 시스템 프록시 경유)을 허용한 뒤 다시 확인하세요. 오프라인으로 확인을 건너뛰는 방법은 없습니다."],
     ["ko", "subscription-runtime-native-required", "unknown", "오류: 이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요."],
   ] as const)("localizes %s %s without exposing diagnostics", async (locale, code, classification, userMessage) => {
     setLocale(locale);

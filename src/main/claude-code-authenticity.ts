@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { dirname, join, posix, win32 } from "node:path";
+import { CLAUDE_CODE_CLI_MINIMUM_VERSION } from "../shared/claude-code-subscription.js";
 import { isRecord } from "../shared/is-record.js";
+import { meetsMinimumCliVersion } from "../shared/subscription-runtime.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { hashExecutableFile, openExecutableFile } from "./codex-executable-artifact.js";
@@ -22,11 +24,68 @@ const MAX_METADATA_BYTES = 256 * 1024;
 const RELEASE_VERSION = /^\d+\.\d+\.\d+$/u;
 const POSIX_VERIFIER_ENV = Object.freeze({ PATH: "/usr/bin:/bin", LC_ALL: "C", LANG: "C" });
 
+/**
+ * Why admission stopped, as a closed set: `publisher-rejected` is an answer about the bytes; `release-metadata-unavailable` means the signed Linux
+ * release metadata could not be fetched, so nothing was decided. Neither carries verifier, path or network diagnostics.
+ */
+export type ClaudeCodeAuthenticityFailure = "publisher-rejected" | "release-metadata-unavailable";
+
 export class ClaudeCodeAuthenticityError extends Error {
-  constructor() {
-    super("Subscription runtime publisher could not be authenticated");
+  constructor(readonly reason: ClaudeCodeAuthenticityFailure = "publisher-rejected") {
+    super(reason === "publisher-rejected"
+      ? "Subscription runtime publisher could not be authenticated"
+      : "Subscription runtime release metadata is unavailable");
     this.name = "ClaudeCodeAuthenticityError";
   }
+}
+
+/** The release predates {@link CLAUDE_CODE_CLI_MINIMUM_VERSION}; reported before any metadata is fetched. */
+export class ClaudeCodeVersionUnsupportedError extends Error {
+  constructor(readonly version: string) {
+    super("Subscription runtime release is older than the supported minimum");
+    this.name = "ClaudeCodeVersionUnsupportedError";
+  }
+}
+
+/**
+ * Every request release verification may make, by method and path shape on the fixed origin. Anything else is refused before it leaves the process;
+ * queries, fragments and credentials never appear.
+ */
+const RELEASE_REQUEST_PATHS = Object.freeze([
+  /^\/keys\/claude-code\.asc$/u,
+  /^\/claude-code-releases\/\d+\.\d+\.\d+\/manifest\.json(?:\.sig)?$/u,
+]);
+
+export function isAllowedClaudeCodeReleaseRequest(method: string, url: string): boolean {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  if (method.toUpperCase() !== "GET" || parsed.origin !== RELEASE_ORIGIN) return false;
+  if (parsed.search || parsed.hash || parsed.username || parsed.password) return false;
+  return RELEASE_REQUEST_PATHS.some((pattern) => pattern.test(parsed.pathname));
+}
+
+/**
+ * Release metadata travels on the host network stack (the machine's proxy and trust store apply), behind the allowlist above, never following a
+ * redirect and never sending credentials.
+ */
+export function createClaudeCodeReleaseFetch(networkFetch: typeof fetch): typeof fetch {
+  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    if (!isAllowedClaudeCodeReleaseRequest(method, url)) throw new Error("Claude Code release request is outside the verification allowlist");
+    return networkFetch(input, { ...(init ?? {}), redirect: "error", credentials: "omit" });
+  }) as typeof fetch;
+}
+
+let configuredReleaseFetch: typeof fetch | null = null;
+
+/** Boot supplies the host network stack once, before the subscription service is first created. */
+export function configureClaudeCodeReleaseFetch(networkFetch: typeof fetch): void {
+  configuredReleaseFetch = createClaudeCodeReleaseFetch(networkFetch);
+}
+
+export function configuredClaudeCodeReleaseFetch(): typeof fetch | null {
+  return configuredReleaseFetch;
 }
 
 async function executeVerifier(command: string, args: readonly string[], env: NodeJS.ProcessEnv = POSIX_VERIFIER_ENV): Promise<string> {
@@ -90,18 +149,23 @@ async function authenticateWindows(executable: string): Promise<void> {
   if (output !== "authenticated") throw new ClaudeCodeAuthenticityError();
 }
 
-async function downloadMetadata(path: string): Promise<Uint8Array> {
+async function downloadMetadata(releaseFetch: typeof fetch, path: string): Promise<Uint8Array> {
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), TOOL_TIMEOUT_POLICY.networkFetchDefaultMs);
   try {
-    const response = await fetch(`${RELEASE_ORIGIN}${path}`, { signal: controller.signal, redirect: "error", credentials: "omit" });
-    if (!response.ok || !response.body) throw new ClaudeCodeAuthenticityError();
+    let response: Response;
+    try {
+      response = await releaseFetch(`${RELEASE_ORIGIN}${path}`, { signal: controller.signal, redirect: "error", credentials: "omit" });
+    } catch {
+      throw new ClaudeCodeAuthenticityError("release-metadata-unavailable");
+    }
+    if (!response.ok || !response.body) throw new ClaudeCodeAuthenticityError("release-metadata-unavailable");
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let bytes = 0;
     try {
       for (;;) {
-        const chunk = await reader.read();
+        const chunk = await reader.read().catch(() => { throw new ClaudeCodeAuthenticityError("release-metadata-unavailable"); });
         if (chunk.done) break;
         bytes += chunk.value.byteLength;
         if (bytes > MAX_METADATA_BYTES) throw new ClaudeCodeAuthenticityError();
@@ -116,16 +180,19 @@ async function downloadMetadata(path: string): Promise<Uint8Array> {
 }
 
 // A version locates signed metadata; neither a path nor a package database authenticates the executable.
-async function linuxReleaseVersion(source: string): Promise<string> {
+async function locateLinuxReleaseVersion(source: string): Promise<string> {
   const leaf = posix.basename(source);
   if (RELEASE_VERSION.test(leaf)) return leaf;
   const parent = posix.basename(posix.dirname(source));
   if (leaf === "claude" && RELEASE_VERSION.test(parent)) return parent;
   if (source !== "/usr/bin/claude" && source !== "/usr/local/bin/claude") throw new ClaudeCodeAuthenticityError();
+  const escapedSource = source.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
   const queries = [
     { command: "/usr/bin/dpkg-query", args: ["--show", "--showformat=${Version}", "claude-code"], pattern: /^(?:\d+:)?(\d+\.\d+\.\d+)(?:-[\w.+~]+)?$/u },
     { command: "/usr/bin/rpm", args: ["--query", "--file", source, "--queryformat", "%{VERSION}"], pattern: /^(\d+\.\d+\.\d+)$/u },
-    { command: "/sbin/apk", args: ["info", "--who-owns", source], pattern: /^claude-code-(\d+\.\d+\.\d+)-r\d+ owns \/usr\/(?:local\/)?bin\/claude$/u },
+    // apk-tools prints `<path> [symlink target ]is owned by <name>-<version>-r<N>` at its default verbosity (1) in both 2.x and 3.x (src/app_info.c).
+    { command: "/sbin/apk", args: ["info", "--who-owns", source],
+      pattern: new RegExp(`^${escapedSource} (?:symlink target )?is owned by claude-code-(\\d+\\.\\d+\\.\\d+)-r\\d+$`, "u") },
   ];
   for (const query of queries) {
     try {
@@ -138,6 +205,13 @@ async function linuxReleaseVersion(source: string): Promise<string> {
     }
   }
   throw new ClaudeCodeAuthenticityError();
+}
+
+// A release below the floor stops before any metadata request: no signed manifest exists for it, and Ave's flags need it anyway.
+async function linuxReleaseVersion(source: string): Promise<string> {
+  const version = await locateLinuxReleaseVersion(source);
+  if (!meetsMinimumCliVersion(version, CLAUDE_CODE_CLI_MINIMUM_VERSION)) throw new ClaudeCodeVersionUnsupportedError(version);
+  return version;
 }
 
 function manifestChecksum(manifest: Uint8Array, version: string, arch: NodeJS.Architecture, hash: string): void {
@@ -165,15 +239,18 @@ function assertReleaseSignature(status: string): void {
   if (primary !== PUBLISHER_IDENTITIES.linux.fingerprint) throw new ClaudeCodeAuthenticityError();
 }
 
-async function authenticateLinux(executable: string, source: string, contentHash: string, arch: NodeJS.Architecture): Promise<void> {
-  const version = await linuxReleaseVersion(source);
-  const directory = await createPrivateTempDirectory(join(dirname(executable), "signature-"));
+/**
+ * Verify Anthropic's detached release-manifest signature with `/usr/bin/gpg` in a private keyring created under `parent` and removed afterwards. Only a
+ * single valid signature whose primary key is the pinned release fingerprint passes; the key file itself grants nothing without that fingerprint.
+ */
+export async function verifyClaudeCodeReleaseManifest(
+  parent: string,
+  key: Uint8Array,
+  manifest: Uint8Array,
+  signature: Uint8Array,
+): Promise<void> {
+  const directory = await createPrivateTempDirectory(join(parent, "signature-"));
   try {
-    const [key, manifest, signature] = await Promise.all([
-      downloadMetadata("/keys/claude-code.asc"),
-      downloadMetadata(`/claude-code-releases/${version}/manifest.json`),
-      downloadMetadata(`/claude-code-releases/${version}/manifest.json.sig`),
-    ]);
     const keyPath = join(directory, "release.asc");
     const manifestPath = join(directory, "manifest.json");
     const signaturePath = join(directory, "manifest.json.sig");
@@ -186,29 +263,50 @@ async function authenticateLinux(executable: string, source: string, contentHash
     await executeVerifier("/usr/bin/gpg", [...args, "--import", keyPath]);
     const status = await executeVerifier("/usr/bin/gpg", [...args, "--status-fd", "1", "--verify", signaturePath, manifestPath]);
     assertReleaseSignature(status);
-    manifestChecksum(manifest, version, arch, contentHash);
+  } catch (error) {
+    if (error instanceof ClaudeCodeAuthenticityError) throw error;
+    throw new ClaudeCodeAuthenticityError();
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 }
 
-// Authentication examines the sealed bytes. No command here executes the candidate or learns its identity from its own output.
+async function authenticateLinux(
+  executable: string,
+  source: string,
+  contentHash: string,
+  arch: NodeJS.Architecture,
+  releaseFetch: typeof fetch,
+): Promise<void> {
+  const version = await linuxReleaseVersion(source);
+  const [key, manifest, signature] = await Promise.all([
+    downloadMetadata(releaseFetch, "/keys/claude-code.asc"),
+    downloadMetadata(releaseFetch, `/claude-code-releases/${version}/manifest.json`),
+    downloadMetadata(releaseFetch, `/claude-code-releases/${version}/manifest.json.sig`),
+  ]);
+  await verifyClaudeCodeReleaseManifest(dirname(executable), key, manifest, signature);
+  manifestChecksum(manifest, version, arch, contentHash);
+}
+
+// Authentication examines the sealed bytes. No command here executes the candidate or learns its identity from its own output. `releaseFetch` is the
+// host network stack behind the release allowlist ({@link createClaudeCodeReleaseFetch}); only Linux uses it.
 export async function authenticateClaudeCodeExecutable(
   executable: string,
   source: string,
   contentHash: string,
   platform: NodeJS.Platform,
   arch: NodeJS.Architecture,
+  releaseFetch: typeof fetch,
 ): Promise<void> {
   try {
     if (await sealedHash(executable) !== contentHash) throw new ClaudeCodeAuthenticityError();
     switch (platform) {
       case "darwin": await authenticateDarwin(executable); break;
       case "win32": await authenticateWindows(executable); break;
-      case "linux": await authenticateLinux(executable, source, contentHash, arch); break;
+      case "linux": await authenticateLinux(executable, source, contentHash, arch, releaseFetch); break;
       default: throw new ClaudeCodeAuthenticityError();
     }
     if (await sealedHash(executable) !== contentHash) throw new ClaudeCodeAuthenticityError();
   } catch (error) {
-    if (error instanceof ClaudeCodeAuthenticityError) throw error;
+    if (error instanceof ClaudeCodeAuthenticityError || error instanceof ClaudeCodeVersionUnsupportedError) throw error;
     throw new ClaudeCodeAuthenticityError();
   }
 }

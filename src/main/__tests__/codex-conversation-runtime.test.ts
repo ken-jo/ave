@@ -41,6 +41,9 @@ import { createPrivateDirectory } from "../codex-executable-location.js";
 import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 
+// Release metadata is fetched only by real Linux publisher verification; these services never reach it.
+const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
+
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
 
@@ -154,7 +157,7 @@ function requestId(message: JsonRecord): number {
 
 async function createServiceForRuntimes(harness: Harness, runtimes: CodexConversationRuntime[]) {
   const audit = vi.fn();
-  const service = await SubscriptionRuntimeService.create(async () => undefined, {
+  const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
     audit,
     namespace: {
       dir: harness.runtimeRoot,

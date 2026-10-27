@@ -17,6 +17,9 @@ import { ClaudeCodeSubscriptionClient, validateClaudeCodeRuntimeDirectories } fr
 import * as locations from "../codex-executable-location.js";
 import type { CliDiscoveryEnvironment } from "../user-cli-discovery.js";
 
+// Release metadata is fetched only by real Linux publisher verification; these fixtures never reach it.
+const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
+
 vi.mock("node:child_process", async (importOriginal) => {
   const original = (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal());
   return { ...original, execFile: vi.fn(original.execFile), spawn: vi.fn(() => { throw new Error("Unexpected executable launch"); }) };
@@ -126,7 +129,7 @@ describe("subscription executable admission", () => {
       expect(createHash("sha256").update(readFileSync(copy)).digest("hex")).toBe(hash);
       throw new authenticity.ClaudeCodeAuthenticityError();
     });
-    await expect(pinClaudeCodeExecutable(f.source, f.runtime, f.discovery)).rejects.toBeInstanceOf(authenticity.ClaudeCodeAuthenticityError);
+    await expect(pinClaudeCodeExecutable(f.source, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toBeInstanceOf(authenticity.ClaudeCodeAuthenticityError);
     expect(authenticate).toHaveBeenCalledTimes(1);
     expect(readdirSync(f.runtime)).toEqual([]);
   });
@@ -135,7 +138,7 @@ describe("subscription executable admission", () => {
     const f = await fixture();
     vi.mocked(authenticity.authenticateClaudeCodeExecutable).mockRejectedValue(new authenticity.ClaudeCodeAuthenticityError());
     const probe = vi.fn(() => { throw new Error("Unexpected qualification probe"); });
-    const client = new ClaudeCodeSubscriptionClient({ runtimeHome: f.runtime, workspaceDir: f.root,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, runtimeHome: f.runtime, workspaceDir: f.root,
       candidates: () => [f.source, join(f.root, "later", "claude")], spawn: probe });
     try {
       await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unauthenticated" });
@@ -148,7 +151,7 @@ describe("subscription executable admission", () => {
   it("rejects source replacement during publisher verification before returning the authenticated copy", async () => {
     const f = await fixture();
     vi.mocked(authenticity.authenticateClaudeCodeExecutable).mockImplementation(async () => changeBytesKeepingMetadata(f.source));
-    await expect(pinClaudeCodeExecutable(f.source, f.runtime, f.discovery)).rejects.toThrow("Subscription executable changed");
+    await expect(pinClaudeCodeExecutable(f.source, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toThrow("Subscription executable changed");
     expect(readdirSync(f.runtime)).toEqual([]);
   });
 
@@ -157,8 +160,8 @@ describe("subscription executable admission", () => {
     ["/home/linuxbrew/.linuxbrew", "claude-code", "linux"],
   ] as const)("admits authenticated default cask layout %s/%s on %s with 0775 package directories", async (prefix, cask, platform) => {
     const f = await caskFixture(prefix, cask, platform);
-    const proof = await pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery);
-    expect(authenticity.authenticateClaudeCodeExecutable).toHaveBeenCalledWith(proof.executable, f.source, expect.any(String), platform, process.arch);
+    const proof = await pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery, RELEASE_FETCH);
+    expect(authenticity.authenticateClaudeCodeExecutable).toHaveBeenCalledWith(proof.executable, f.source, expect.any(String), platform, process.arch, RELEASE_FETCH);
     await expect(proof.verify()).resolves.toBeUndefined();
     await proof.discard();
   });
@@ -166,17 +169,17 @@ describe("subscription executable admission", () => {
   it.skipIf(process.platform === "win32")("rejects mutation of a cask ancestor outside the admitted prefix", async () => {
     const f = await caskFixture("/opt/homebrew", "claude-code", "darwin");
     chmodSync(f.translate("/opt"), 0o777);
-    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery)).rejects.toThrow("writable by another account");
+    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toThrow("writable by another account");
     expect(authenticity.authenticateClaudeCodeExecutable).not.toHaveBeenCalled();
   });
 
   it.skipIf(process.platform !== "darwin")("rejects world-write, foreign ownership, and mutable payloads inside a default cask layout", async () => {
     const f = await caskFixture("/opt/homebrew");
     chmodSync(f.translate("/opt/homebrew/bin"), 0o777);
-    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery)).rejects.toThrow("writable by another account");
+    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toThrow("writable by another account");
     chmodSync(f.translate("/opt/homebrew/bin"), 0o775);
     chmodSync(f.translate(f.source), 0o775);
-    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery)).rejects.toThrow("writable by another account");
+    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toThrow("writable by another account");
     chmodSync(f.translate(f.source), 0o755);
     const read = vi.mocked(fs.lstat).getMockImplementation()!;
     vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
@@ -184,13 +187,13 @@ describe("subscription executable admission", () => {
       return String(args[0]) === "/opt/homebrew/bin" ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat,
         { uid: (process.getuid?.() ?? 0) + 1 }) : stat;
     }) as typeof fs.lstat);
-    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery)).rejects.toThrow("untrusted owner");
+    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toThrow("untrusted owner");
     expect(authenticity.authenticateClaudeCodeExecutable).not.toHaveBeenCalled();
   });
 
   it.skipIf(process.platform !== "darwin")("keeps arbitrary cask packages outside the directory exception", async () => {
     const f = await caskFixture("/opt/homebrew", "other-package");
-    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery)).rejects.toThrow("writable by another account");
+    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toThrow("writable by another account");
     expect(authenticity.authenticateClaudeCodeExecutable).not.toHaveBeenCalled();
   });
   it("maps a native private directory rejection to the location code", async () => {
@@ -202,7 +205,7 @@ describe("subscription executable admission", () => {
   it("maps a rejected location to the unsafe-location code before probing", async () => {
     const { root, runtime, source } = await fixture();
     const rejected = new locations.CodexExecutableLocationError("Rejected fixture location");
-    const client = new ClaudeCodeSubscriptionClient({
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH,
       runtimeHome: runtime, workspaceDir: root, candidates: () => [source],
       _pinExecutableForTest: async () => { throw rejected; },
     });
@@ -217,7 +220,7 @@ describe("subscription executable admission", () => {
     const { runtime, source, discovery } = await fixture();
     const executableLocation = vi.spyOn(locations, "assertCodexExecutableLocation").mockResolvedValue();
     const privateDirectory = vi.spyOn(locations, "assertCodexPrivateRuntimeDirectory").mockResolvedValue();
-    const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
+    const proof = await pinClaudeCodeExecutable(source, runtime, discovery, RELEASE_FETCH);
     await proof.verify();
     expect(executableLocation.mock.calls.length).toBeGreaterThan(0);
     expect(privateDirectory.mock.calls.length).toBeGreaterThan(0);
@@ -229,7 +232,7 @@ describe("subscription executable admission", () => {
   it("pins a hash and a sealed private native copy with no-follow opens", async () => {
     const { runtime, source, discovery } = await fixture();
     const open = vi.spyOn(fs, "open");
-    const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
+    const proof = await pinClaudeCodeExecutable(source, runtime, discovery, RELEASE_FETCH);
     expect(proof.executable).not.toBe(source);
     expect(dirname(dirname(proof.executable))).toBe(runtime);
     expect(proof).not.toHaveProperty("args");
@@ -249,7 +252,7 @@ describe("subscription executable admission", () => {
 
   it("refuses the next verification after installed bytes change despite matching path and metadata", async () => {
     const { runtime, source, discovery } = await fixture();
-    const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
+    const proof = await pinClaudeCodeExecutable(source, runtime, discovery, RELEASE_FETCH);
     const pinnedBytes = readFileSync(proof.executable);
     changeBytesKeepingMetadata(source);
     expect(readFileSync(proof.executable)).toEqual(pinnedBytes);
@@ -258,7 +261,7 @@ describe("subscription executable admission", () => {
 
   it("refuses modified private bytes even after permissions and modification time are restored", async () => {
     const { runtime, source, discovery } = await fixture();
-    const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
+    const proof = await pinClaudeCodeExecutable(source, runtime, discovery, RELEASE_FETCH);
     utimesSync(proof.executable, fixtureTimestamp, fixtureTimestamp);
     await expect(proof.verify()).resolves.toBeUndefined();
     changeBytesKeepingMetadata(proof.executable);
@@ -268,7 +271,7 @@ describe("subscription executable admission", () => {
   it.skipIf(process.platform === "win32").each(["file", "parent"] as const)("rejects a writable %s before any executable runs", async (target) => {
     const { runtime, source, bin, discovery } = await fixture();
     chmodSync(target === "file" ? source : bin, 0o777);
-    await expect(pinClaudeCodeExecutable(source, runtime, discovery)).rejects.toThrow("writable by another account");
+    await expect(pinClaudeCodeExecutable(source, runtime, discovery, RELEASE_FETCH)).rejects.toThrow("writable by another account");
     expect(readdirSync(runtime)).toEqual([]);
   });
 
@@ -285,7 +288,7 @@ describe("subscription executable admission", () => {
         ? Object.assign(Object.create(Object.getPrototypeOf(result)), result, { uid: (process.getuid?.() ?? 0) + 1 })
         : result;
     }) as typeof fs.lstat);
-    await expect(pinClaudeCodeExecutable(launcher, runtime, discovery)).rejects.toThrow("untrusted owner");
+    await expect(pinClaudeCodeExecutable(launcher, runtime, discovery, RELEASE_FETCH)).rejects.toThrow("untrusted owner");
     expect(readdirSync(runtime)).toEqual([]);
   });
 
@@ -298,13 +301,13 @@ describe("subscription executable admission", () => {
     const launcher = join(root, "launcher");
     symlinkSync(relay, launcher);
     chmodSync(unsafe, 0o777);
-    await expect(pinClaudeCodeExecutable(launcher, runtime, discovery)).rejects.toThrow("writable by another account");
+    await expect(pinClaudeCodeExecutable(launcher, runtime, discovery, RELEASE_FETCH)).rejects.toThrow("writable by another account");
   });
 
   it("rejects a generic shell launcher instead of trying to execute it", async () => {
     const { source, runtime, discovery } = await fixture();
     writeFileSync(source, "#!/bin/sh\necho unsupported\n");
-    await expect(pinClaudeCodeExecutable(source, runtime, discovery)).rejects.toBeInstanceOf(ClaudeCodeNativeRequiredError);
+    await expect(pinClaudeCodeExecutable(source, runtime, discovery, RELEASE_FETCH)).rejects.toBeInstanceOf(ClaudeCodeNativeRequiredError);
   });
 
   it.skipIf(process.platform === "win32").each(["file", "parent"] as const)("refuses an unsafe %s before the client's first probe without trying another candidate", async (target) => {
@@ -312,7 +315,7 @@ describe("subscription executable admission", () => {
     const trustedAlternative = writeNativeExecutable(join(root, "trusted", "claude"));
     chmodSync(target === "file" ? source : bin, 0o777);
     const probe = vi.fn(() => { throw new Error("Unexpected qualification probe"); });
-    const client = new ClaudeCodeSubscriptionClient({
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH,
       runtimeHome: runtime,
       workspaceDir: root,
       platform: discovery.platform,
@@ -333,7 +336,7 @@ describe("unsupported subscription installations", () => {
   it.each(["darwin", "win32"] as const)("refuses a package launcher on %s without probing it or choosing a later native install", async (platform) => {
     const f = await npmFixture(platform);
     const spawn = vi.fn(() => { throw new Error("Unexpected process launch"); });
-    const client = new ClaudeCodeSubscriptionClient({ runtimeHome: f.runtime, workspaceDir: f.root,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, runtimeHome: f.runtime, workspaceDir: f.root,
       platform, env: f.discovery.env, homeDir: f.root, candidates: () => [f.launcher, f.interpreter], spawn });
     try {
       await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-native-required" });
@@ -346,7 +349,7 @@ describe("unsupported subscription installations", () => {
   it.each(["claude-code", "claude-code-darwin-arm64"])("refuses native bytes managed by a package installation %s", async (packageName) => {
     const f = await fixture();
     const target = writeNativeExecutable(join(f.bin, "node_modules", "@anthropic-ai", packageName, "claude"));
-    await expect(pinClaudeCodeExecutable(target, f.runtime, f.discovery)).rejects.toBeInstanceOf(ClaudeCodeNativeRequiredError);
+    await expect(pinClaudeCodeExecutable(target, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toBeInstanceOf(ClaudeCodeNativeRequiredError);
     expect(readdirSync(f.runtime)).toEqual([]);
   });
 
@@ -355,7 +358,7 @@ describe("unsupported subscription installations", () => {
     const target = writeNativeExecutable(join(f.bin, "node_modules", "@anthropic-ai", "claude-code", "native"));
     const launcher = join(f.bin, "package-link");
     symlinkSync(target, launcher);
-    await expect(pinClaudeCodeExecutable(launcher, f.runtime, f.discovery)).rejects.toBeInstanceOf(ClaudeCodeNativeRequiredError);
+    await expect(pinClaudeCodeExecutable(launcher, f.runtime, f.discovery, RELEASE_FETCH)).rejects.toBeInstanceOf(ClaudeCodeNativeRequiredError);
     expect(readdirSync(f.runtime)).toEqual([]);
   });
 });

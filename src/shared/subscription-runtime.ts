@@ -1,4 +1,5 @@
 /** Subscription runtimes own credentials and stateful transport; keep their settings, pricing, and execution assumptions separate from API-key vendors. */
+import { CLAUDE_CODE_CLI_MINIMUM_VERSION } from "./claude-code-subscription.js";
 import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
@@ -359,6 +360,25 @@ export const DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES: SubscriptionRuntimeCapab
   subagent: false,
 });
 
+/**
+ * Whether a CLI `version` is at least `minimum` (both `major.minor.patch`). A pre-release of the minimum is below it; `+build` metadata is ignored, as in
+ * semantic versioning. Unparseable input is below every minimum.
+ */
+export function meetsMinimumCliVersion(version: string, minimum: string): boolean {
+  const parse = (value: string) => {
+    const [core, prerelease] = value.replace(/\+.*$/su, "").split(/-(.*)/s, 2) as [string, string | undefined];
+    return { parts: core.split(".").map((part) => Number(part)), prerelease: prerelease !== undefined };
+  };
+  const found = parse(version);
+  const required = parse(minimum);
+  if (found.parts.length !== 3 || found.parts.some((part) => !Number.isSafeInteger(part))) return false;
+  for (let index = 0; index < 3; index += 1) {
+    const difference = found.parts[index]! - (required.parts[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return !found.prerelease || required.prerelease;
+}
+
 export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescriptor[] = [
   {
     id: "codex",
@@ -439,6 +459,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     // No model selection leaves the CLI on its default; selected IDs come from provider models.
     supportsModelSelection: true,
     offersCliDefaultModel: true,
+    minimumVersion: CLAUDE_CODE_CLI_MINIMUM_VERSION,
     installGuidance: Object.freeze({
       documentationUrl: "https://code.claude.com/docs/en/setup",
       commands: Object.freeze([
@@ -504,6 +525,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-runtime-unsafe-location"
   | "subscription-runtime-native-required"
   | "subscription-runtime-unauthenticated"
+  | "subscription-runtime-release-metadata-unavailable"
   | "subscription-runtime-version-unsupported"
   | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"
