@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirFile } from "../../__tests__/test-helpers.js";
@@ -10,6 +14,14 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
+    openSync: (...args: unknown[]) => {
+      if (readFailure.path === String(args[0])) throw Object.assign(new Error("Settings read denied"), { code: "EACCES" });
+      return Reflect.apply(actual.openSync, undefined, args);
+    },
+    lstatSync: (...args: unknown[]) => {
+      if (readFailure.path === String(args[0])) throw Object.assign(new Error("Settings read denied"), { code: "EACCES" });
+      return Reflect.apply(actual.lstatSync, undefined, args);
+    },
     readFileSync: (...args: unknown[]) => {
       if (readFailure.path === String(args[0])) throw Object.assign(new Error("Settings read denied"), { code: "EACCES" });
       return Reflect.apply(actual.readFileSync, undefined, args);
@@ -198,14 +210,14 @@ describe("judge settings persistence", () => {
     }
   });
 
-  it("marks a directory and a denied file read unreadable", () => {
+  it("raises a boundary fault for a directory and a denied file read", () => {
     const { path: directory } = fixture();
     mkdirSync(directory);
-    expect(readJudgeSettings(directory)).toMatchObject({ unreadable: true });
+    expect(() => readJudgeSettings(directory)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     const { path } = fixture();
     writeFileSync(path, "{}");
     readFailure.path = path;
-    expect(readJudgeSettings(path)).toMatchObject({ unreadable: true });
+    expect(() => readJudgeSettings(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
   });
 
   it("keeps absent files and blocks valid off without fatal read metadata", () => {

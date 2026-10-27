@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
@@ -60,6 +61,7 @@ function deniedItem(projectRoot: string): WorkItemResolved {
 }
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   oldHome = process.env.AVE_HOME;
   oldCwd = process.cwd();
   root = mkdtempSync(join(tmpdir(), "ave-work-board-project-"));

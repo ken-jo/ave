@@ -1,8 +1,11 @@
 import { createRequire } from "node:module";
 import { cpSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import { buildJavaToolOptions, getJavaProxyAgentJarPathAsync } from "@anthropic-ai/sandbox-runtime/dist/sandbox/java-proxy-agent.js";
 import { buildSandboxConfig, getVendoredJavaProxyAgentJarPath, rewriteAsarPathToUnpacked } from "../asrt-sandbox.js";
 

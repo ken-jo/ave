@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
-import type { AveApi } from "../ui/renderer/types.js";
+import type { DocumentObservationEvent } from "../shared/agent-observation.js";
+import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -84,6 +85,51 @@ describe("preload — plugin webview asset URLs", () => {
       "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
     ]);
     expect(windowApi.openHtmlPreview).toBeTypeOf("function");
+  });
+
+  it.each(["rendered", "release"] as const)("passes only the read-only %s observation acknowledgement", async (action) => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const request = { action, targetId: "11111111-1111-4111-8111-111111111111", sessionId: "document-session", seq: 3 };
+    await preview.acknowledgeDocumentObservation(request);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationAck, request);
+    expect(Object.keys(request).sort()).toEqual(["action", "seq", "sessionId", "targetId"]);
+  });
+
+  it("preserves preview reads and adds a session binding only when supplied", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    await preview.readDocument("/workspace/budget.xlsx", 0);
+    await preview.readDocument("/workspace/budget.xlsx", 1, "document-session");
+    expect(mockInvoke.mock.calls).toEqual([
+      [CHANNELS.preview.readDocument, "/workspace/budget.xlsx", 0],
+      [CHANNELS.preview.readDocument, "/workspace/budget.xlsx", 1, "document-session"],
+    ]);
+  });
+
+  it("passes the optional text observation session through the existing read channel", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    await preview.readFile("src/value.ts");
+    await preview.readFile("src/value.ts", { workspaceRoot: "/workspace", sessionId: "document-session" });
+    expect(mockInvoke.mock.calls).toEqual([
+      [CHANNELS.preview.readFile, "src/value.ts"],
+      [CHANNELS.preview.readFile, "src/value.ts", { workspaceRoot: "/workspace", sessionId: "document-session" }],
+    ]);
+  });
+
+  it("subscribes to local document observations and removes the same listener", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const handler = vi.fn();
+    const unsubscribe = preview.onDocumentObservation(handler);
+    expect(mockOn).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, expect.any(Function));
+    const listener = mockOn.mock.calls.findLast(([channel]) => channel === CHANNELS.preview.observationEvents)?.[1] as
+      (event: unknown, events: DocumentObservationEvent[]) => void;
+    const events: DocumentObservationEvent[] = [{ source: "document", actor: "agent", sessionId: "document-session",
+      target: { id: "11111111-1111-4111-8111-111111111111", path: "/workspace/budget.xlsx" },
+      seq: 3, ts: 1_000, kind: "element", element: { kind: "cell", sheet: "Budget", row: 0, column: 1 },
+      before: "12", after: "84", advisory: true }];
+    listener({}, events);
+    expect(handler).toHaveBeenCalledWith(events);
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, listener);
   });
 
   afterEach(() => {

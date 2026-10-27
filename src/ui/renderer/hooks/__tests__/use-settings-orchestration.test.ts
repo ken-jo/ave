@@ -285,7 +285,7 @@ describe("useSettingsOrchestration", () => {
     expect(result.current.processingDisplayLevel).toBe("full");
   });
 
-  it("updates the budget bound on output broadcasts without overwriting form edits or the output cap", async () => {
+  it("preserves effort intent across output broadcasts without overwriting form edits", async () => {
     const settings = makeSettings();
     settings.llm.vendors.openai = {
       ...settings.llm.vendors.openai!, thinkingBudgetTokens: 14_000, outputTokenLimit: 32_000,
@@ -304,11 +304,11 @@ describe("useSettingsOrchestration", () => {
       } } },
     }));
     expect(result.current.outputTokenLimit).toBe(16_000);
-    expect(result.current.thinkingBudget).toBe(8_000);
+    expect(result.current.thinkingBudget).toBe(14_000);
     expect(result.current.model).toBe("unsaved-model");
     await act(async () => result.current.save("llm"));
     const patch = api.updateSettings.mock.calls[0]![0] as { llm: { vendors: { openai: Record<string, unknown> } } };
-    expect(patch.llm.vendors.openai).toMatchObject({ model: "unsaved-model", thinkingBudgetTokens: 8_000 });
+    expect(patch.llm.vendors.openai).toMatchObject({ model: "unsaved-model", thinkingBudgetTokens: 14_000 });
     expect(patch.llm.vendors.openai).not.toHaveProperty("outputTokenLimit");
     await act(async () => broadcast({
       ...settings, llm: { ...settings.llm, vendors: { openai: {
@@ -316,7 +316,7 @@ describe("useSettingsOrchestration", () => {
       } } },
     }));
     expect(result.current.outputTokenLimit).toBe(64_000);
-    expect(result.current.thinkingBudget).toBe(8_000);
+    expect(result.current.thinkingBudget).toBe(14_000);
   });
 
   // Start with no selected provider so the pre-hydration UI cannot flash a stale default.

@@ -558,6 +558,19 @@ describe("parent adjudication — every failure escalates", () => {
     await expect(decision).resolves.toMatchObject({ choice: "deny-once" });
     expect(wc.send).not.toHaveBeenCalled();
   });
+
+  it("shuts down an in-flight adjudication even when the provider ignores cancellation", async () => {
+    const adjudicator: ParentAdjudicator = {
+      forgetChildRun() {},
+      adjudicate: () => new Promise<never>(() => {}),
+    };
+    const { gate, wc } = makeGate(adjudicator);
+    const running = gate.requestAndWait(makeChildRequest());
+    gate.disposeAll();
+    await expect(running).resolves.toMatchObject({ choice: "deny-once" });
+    expect(wc.send).not.toHaveBeenCalled();
+    expect(gate.pendingCount).toBe(0);
+  });
 });
 
 describe("parent adjudication — a repeated denial reaches the user", () => {

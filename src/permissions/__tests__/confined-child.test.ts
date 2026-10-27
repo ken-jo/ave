@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 // Per-command deny arrays replace the boot floor, even when empty; the confinement primitive must restate it so children cannot regain secret reads.
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";

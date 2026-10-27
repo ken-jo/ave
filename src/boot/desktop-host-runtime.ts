@@ -42,6 +42,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
     relaunch: () => relaunchDesktopHost(app),
     close: async () => {},
     desktop: {
+      hasSingleInstanceLock: () => app.hasSingleInstanceLock(),
       getAppWindows,
       openOAuthLogin: openLogin,
       getFocusedWindow: () => BrowserWindow.getFocusedWindow(),

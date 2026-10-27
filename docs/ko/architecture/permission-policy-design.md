@@ -304,7 +304,7 @@ export function canonicalizePathForMatch(rawPath: string): string {
 
 ### Layer 1 — Path policy (NEW, collapsed from Layer 1+10)
 
-**Setting:** `~/.ave/settings.json`:
+**Setting:** `~/.ave/config/settings.json`:
 ```jsonc
 {
   "permissions": {
@@ -325,7 +325,7 @@ export function canonicalizePathForMatch(rawPath: string): string {
 
 Shell leaf 의 read/write 판정은 risk classifier 의 verb table (`permissions/reviewer/host-risk-inspector.ts` 의 `isReadOnlyShellLeaf`) 하나에서만 나온다. path containment 쪽에 두 번째 verb table 을 두지 않는다 — 두 분류기가 같은 명령을 다르게 읽으면 한쪽이 검사하지 않는 틈이 생긴다. 단 `cd` 의 목적지는 read verb 임에도 **write 로 취급**한다: `cd` 는 이후 모든 leaf 의 상대 경로가 resolve 되는 기준 디렉토리를 바꾸고, bare filename (`rm passwd`) 은 path candidate 가 아니라 어느 layer 도 보지 못하기 때문이다. 밖을 읽어야 하는 호출은 절대 경로 (`cat /etc/hosts`) 로 이름을 대면 되고 그건 허용된다.
 
-**Setting — `permissions.blockReadsOutsideWorkingDirectories`** (기본 `false`, UI 없음, `~/.ave/settings.json` 직접 편집): `true` 로 두면 읽기도 다시 `additionalDirectories` 안으로 fence 하여 비대칭 이전의 대칭 경계로 되돌린다. UI 를 두지 않는 이유는 이것이 배포 단위 posture 이지 프로젝트별 선호가 아니고, 이 스위치가 안전 기능처럼 보이지만 실제로 비밀을 못 읽게 하는 것은 Layer 0 deny-list 이지 이 키가 아니기 때문이다. Boot 와 이후 모든 `settings:update` 에서 `PermissionManager.setBlockReadsOutsideWorkingDirectories()` 로 push 되며, 값이 바뀌면 `policyGeneration` 이 증가해 이전 fence 아래에서 나온 reviewer verdict 가 재사용되지 않는다.
+**Setting — `permissions.blockReadsOutsideWorkingDirectories`** (기본 `false`, UI 없음, `~/.ave/config/settings.json` 직접 편집): `true` 로 두면 읽기도 다시 `additionalDirectories` 안으로 fence 하여 비대칭 이전의 대칭 경계로 되돌린다. UI 를 두지 않는 이유는 이것이 배포 단위 posture 이지 프로젝트별 선호가 아니고, 이 스위치가 안전 기능처럼 보이지만 실제로 비밀을 못 읽게 하는 것은 Layer 0 deny-list 이지 이 키가 아니기 때문이다. Boot 와 이후 모든 `settings:update` 에서 `PermissionManager.setBlockReadsOutsideWorkingDirectories()` 로 push 되며, 값이 바뀌면 `policyGeneration` 이 증가해 이전 fence 아래에서 나온 reviewer verdict 가 재사용되지 않는다.
 
 **Audit:** 목록 밖 읽기가 허용된 경우는 dialog 도 grant 도 남기지 않으므로 Layer 1 `AuditAllow` row 에 `policyRule: "path-scope/read-anywhere"` 로 기록한다 (사용자 승인으로 열린 grant 는 대신 `grantLifetime` 을 갖는다 — 둘은 상호배타적이다).
 
@@ -1012,8 +1012,8 @@ PR #664 + PR #860 ratified.
 
 **Material changes (Layer 5):**
 
-- Reviewer mode model: **3-mode → 4-mode**. `disabled` semantics flipped from defer-all-HIGH to pass-through-LOW; the fail-closed semantic moved to the new honest name `strict`. Default for fresh installs is `rule` (not `disabled`) — a fresh install with no `~/.ave/settings.json` no longer silently queues every plugin write/auth tool in `~/.ave/permissions/deferred-queue.jsonl` (pre-#664 reproducer: mail `mail_auth` interactive AAD popup silently deferred).
-- Migration shim: `migrateLegacyDisabledMode()` runs on every load of `~/.ave/settings.json`. Detector signature = `mode==="disabled"` ∧ no `disabledMigratedAt` marker. Migration is idempotent and persisted on first read.
+- Reviewer mode model: **3-mode → 4-mode**. `disabled` semantics flipped from defer-all-HIGH to pass-through-LOW; the fail-closed semantic moved to the new honest name `strict`. Default for fresh installs is `rule` (not `disabled`) — a fresh install with no `~/.ave/config/settings.json` no longer silently queues every plugin write/auth tool in `~/.ave/permissions/deferred-queue.jsonl` (pre-#664 reproducer: mail `mail_auth` interactive AAD popup silently deferred).
+- Migration shim: `migrateLegacyDisabledMode()` runs on every load of `~/.ave/config/settings.json`. Detector signature = `mode==="disabled"` ∧ no `disabledMigratedAt` marker. Migration is idempotent and persisted on first read.
 - Sandbox-write auto-LOW (P1): the manifest self-attestation field `toolSchemas[*].writesToOwnSandbox?` was **removed in #885 Phase R** — containment is now host-derived from the worker effect-boundary, not a plugin declaration. When the write's resolved `pathFields` value canonically stays inside `~/.ave/plugins/<ownerPluginId>/`, the reviewer auto-LOWs the write. Sound-by-construction — the runtime verifies the path-containment claim, the declaration alone is insufficient. Without this rule plugins like mail that write MSAL token cache to their own sandbox get caught by the "write outside allowed dirs" HIGH rule because the host's `allowedDirectories` does not include plugin sandboxes by design (§5 file-based memory).
 - Origin-chain propagation (P2): UI-rooted invocations keep `origin:"ui"` through nested `ctx.callTool` calls via `runWithInvocationOrigin()` (AsyncLocalStorage). A wrapper plugin handler invoked from a UI panel no longer demotes its inner `ctx.callTool` to `plugin` origin — that pre-fix demotion routed the inner call through the headless reviewer lane and silently queued the AAD popup forever.
 - Path canonicalization (security MAJOR-3): both the sensitive-path hard-block (Layer 0) and the sandbox-write LOW rule (Layer 5) canonicalize via the shared `canonicalizePathForMatch()` helper before any prefix compare. Closes the `..` / NFD / mixed-case (darwin/win32) / trailing-slash / duplicate-slash bypass vectors.

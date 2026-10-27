@@ -1,6 +1,9 @@
 import net, { type AddressInfo, type Socket } from "node:net";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type SandboxAskCallback, type ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { editWorkbookFile } from "./xlsx-edit.js";
+import { WorkbookJournalCompletionError } from "./xlsx-edit-journal.js";
 import { errorMessage } from "../shared/error-message.js";
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<number> {
@@ -9,8 +10,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<numb
     console.log(JSON.stringify(await editWorkbookFile(args[0]!, request)));
     return 0;
   } catch (error) {
-    console.error(`XLSX edit refused: ${errorMessage(error)}`);
-    return 1;
+    const saved = error instanceof WorkbookJournalCompletionError;
+    console.error(`${saved ? "XLSX edit saved with observation error" : "XLSX edit refused"}: ${errorMessage(error)}`);
+    return saved ? 2 : 1;
   }
 }
 

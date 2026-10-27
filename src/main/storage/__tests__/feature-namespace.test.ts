@@ -3,7 +3,7 @@ import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability
  * POSIX mode assertions do not apply on Windows. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, statSync, writeFileSync, readdirSync, existsSync, symlinkSync, readFileSync, lstatSync, mkdirSync, promises as fs, renameSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   openFeatureNamespace,
@@ -13,6 +13,9 @@ import {
   adoptLegacyRootFileSync,
 } from "../feature-namespace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import { configureHostResources } from "../../host-resources.js";
 
 const POSIX = process.platform !== "win32";
 
@@ -21,8 +24,10 @@ describe("feature-namespace", () => {
   let tempDir: string;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     prevAveHome = process.env.AVE_HOME;
     tempDir = mkdtempSync(join(tmpdir(), "ave-feature-ns-"));
+    setFixtureOwner(tempDir);
     process.env.AVE_HOME = tempDir;
   });
 
@@ -39,6 +44,58 @@ describe("feature-namespace", () => {
   it("resolves dir to ~/.ave/<feature>/", () => {
     const ns = openFeatureNamespace("widgets");
     expect(ns.dir).toBe(join(tempDir, "widgets"));
+  });
+
+  it.runIf(process.platform === "win32")("asserts all boot-owned boundaries instead of creating them on write", async () => {
+    for (const name of ["secrets", "subscription-runtimes", "keys", "certs", "config"]) {
+      await expect(openFeatureNamespace(name).writeJson("state.json", {})).rejects.toThrow(`Protected boundary directory "${join(tempDir, name)}"`);
+      expect(existsSync(join(tempDir, name))).toBe(false);
+    }
+  });
+  it.runIf(process.platform === "win32")("asserts the boundary before either child creation path", async () => {
+    const ns = openFeatureNamespace("subscription-runtimes");
+    await expect(ns.childDir("nested/deep")).rejects.toThrow("boot must create it");
+    await expect(ns.childDir("exclusive", { exclusive: true })).rejects.toThrow("boot must create it");
+    expect(existsSync(ns.dir)).toBe(false);
+  });
+  it.runIf(process.platform === "win32")("asserts a missing boundary before legacy adoption", () => {
+    const legacy = join(tempDir, "legacy.json");
+    writeFileSync(legacy, "retained"); setFixtureOwner(legacy);
+    expect(() => adoptLegacyRootFileSync("secrets", "adopted.json", "legacy.json")).toThrow("boot must create it");
+    expect(existsSync(join(tempDir, "secrets"))).toBe(false);
+    expect(readFileSync(legacy, "utf8")).toBe("retained");
+  });
+  it.runIf(process.platform === "win32")("does not recreate a boundary removed before nested creation", async () => {
+    const home = join(tempDir, "home"); process.env.AVE_HOME = home;
+    expect(ensureAveHomePrivate(home)).toMatchObject({ enforcement: "win32-dacl" });
+    const boundary = join(home, "secrets");
+    const mkdir = fs.mkdir.bind(fs);
+    vi.spyOn(fs, "mkdir").mockImplementation((async (path, options) => {
+      await fs.rmdir(boundary);
+      return mkdir(path, options);
+    }) as typeof fs.mkdir);
+    await expect(openFeatureNamespace("secrets").childDir("nested/deep")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(existsSync(boundary)).toBe(false);
+  });
+  it.runIf(process.platform === "win32")("never asks mkdir to create the boundary as an exclusive child", async () => {
+    const home = join(tempDir, "home"); process.env.AVE_HOME = home;
+    expect(ensureAveHomePrivate(home)).toMatchObject({ enforcement: "win32-dacl" });
+    const mkdir = vi.spyOn(fs, "mkdir");
+    await expect(openFeatureNamespace("keys").childDir(".", { exclusive: true })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+  it.runIf(process.platform === "win32")("allows writes children and hardlink adoption after boot creates a boundary", async () => {
+    const home = join(tempDir, "home"); process.env.AVE_HOME = home;
+    expect(ensureAveHomePrivate(home)).toMatchObject({ enforcement: "win32-dacl" });
+    const ns = openFeatureNamespace("secrets");
+    await ns.writeJson("state.json", { ok: true });
+    expect(await ns.readJson("state.json", {})).toEqual({ ok: true });
+    expect(await ns.childDir("nested/deep")).toBe(join(ns.dir, "nested/deep"));
+    expect(await ns.childDir("exclusive", { exclusive: true })).toBe(join(ns.dir, "exclusive"));
+    writeFileSync(join(home, "legacy.json"), "legacy"); setFixtureOwner(join(home, "legacy.json"));
+    adoptLegacyRootFileSync("secrets", "adopted.json", "legacy.json");
+    expect(readFileSync(join(ns.dir, "adopted.json"), "utf8")).toBe("legacy");
+    expect(existsSync(join(home, "legacy.json"))).toBe(false);
   });
 
   it("does not create the directory until first write", () => {

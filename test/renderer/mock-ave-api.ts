@@ -1075,6 +1075,9 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
       // renderApp-based test that opens the file-browser tab renders without a real preload bridge.
       preview: {
         readFile: vi.fn(async (path: string) => ({ ok: true, content: "", path, truncated: false })),
+        readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "Unsupported preview document format." })),
+        onDocumentObservation: vi.fn(() => () => {}),
+        acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot, roots })),

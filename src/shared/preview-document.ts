@@ -176,5 +176,6 @@ export type PreviewDocumentError =
   | "read-failed";
 
 export type PreviewReadDocumentResult =
-  | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument }
+  | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument;
+      observation?: import("./agent-observation.js").DocumentObservationBinding }
   | { ok: false; error: PreviewDocumentError; path?: string; bytes?: number; message: string };

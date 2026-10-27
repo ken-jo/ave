@@ -13,21 +13,24 @@ const image = { mimeType: "image/png", dataUrl: "data:image/png;base64,iVBORw0KG
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("directory image preview", () => {
-  it("keeps an absolute directory target path hidden behind its relative display hint", async () => {
+  it("shows the relative directory beside its file name and retains the full path tooltip", async () => {
     const actualPath = "/work/project/images/source.png";
     const readFile = vi.fn().mockResolvedValue({ ok: true, image, bytes: 8, path: actualPath });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={{ ...target, path: actualPath, workspaceRoot: "/work/project" }} />);
+    render(<PreviewBody observe api={{} as never} target={{ ...target, path: actualPath, workspaceRoot: "/work/project" }} />);
     await screen.findByRole("img", { name: "source.png" });
     const body = screen.getByTestId("chat-side-panel-file-preview");
     expect(body.textContent).not.toContain("/work/project");
-    expect(body.textContent).toContain("images/source.png");
+    expect(screen.getByRole("heading", { name: "source.png" })).toBeVisible();
+    expect(screen.getByTestId("preview-document-path")).toHaveTextContent("images/");
+    expect(screen.getByTestId("preview-document-path")).toHaveAttribute("title", "/work/project/images/source.png");
+    expect(screen.getByTestId("document-preview-footer")).toHaveTextContent(/^PNG$/);
   });
 
   it("forwards the workspace resolution hint for a relative image without exposing an absolute label", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, image, bytes: 8, path: "/work/project/images/source.png" });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={{ ...target, workspaceRoot: "/work/project" }} />);
+    render(<PreviewBody observe api={{} as never} target={{ ...target, workspaceRoot: "/work/project" }} />);
     await screen.findByRole("img", { name: "source.png" });
     expect(readFile).toHaveBeenCalledWith(target.path, { workspaceRoot: "/work/project" });
     expect(screen.getByTestId("chat-side-panel-file-preview").textContent).not.toContain("/work/project");
@@ -36,7 +39,7 @@ describe("directory image preview", () => {
   it("renders image data from the governed file preview response", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, image, bytes: 8, path: target.path });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={target} />);
+    render(<PreviewBody observe api={{} as never} target={target} />);
     const rendered = await screen.findByRole("img", { name: "source.png" });
     expect(rendered).toHaveAttribute("src", image.dataUrl);
     expect(readFile).toHaveBeenCalledWith(target.path);
@@ -44,7 +47,7 @@ describe("directory image preview", () => {
   it("does not turn a selected line reference into an image preview", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: false, error: "binary-file" });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={{ ...target, startLine: 1, endLine: 2, sourceTurnId: "turn" }} />);
+    render(<PreviewBody observe api={{} as never} target={{ ...target, startLine: 1, endLine: 2, sourceTurnId: "turn" }} />);
     await screen.findByTestId("chat-side-panel-file-error");
     expect(screen.queryByRole("img")).toBeNull();
     expect(readFile).toHaveBeenCalledWith(target.path, { offset: 0, limit: 2 });

@@ -1,8 +1,13 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({
@@ -18,7 +23,10 @@ const mxcLaunchMock = vi.hoisted(() => ({
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, spawn: childProcessMock.spawn, execFileSync: childProcessMock.execFileSync };
+  return { ...actual, spawn: childProcessMock.spawn,
+    execFileSync: (...args: Parameters<typeof actual.execFileSync>) => String(args[0]).endsWith("ave-path-kind.exe")
+      ? Reflect.apply(actual.execFileSync, undefined, args) : Reflect.apply(childProcessMock.execFileSync, undefined, args),
+  };
 });
 vi.mock("../mxc-shell-launch.js", () => ({ prepareMxcShellLaunch: mxcLaunchMock.prepare }));
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
@@ -124,6 +132,7 @@ function context(toolUseId: string): ToolExecutionContext {
 
 describe("builtin shell — Windows MXC containers", () => {
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     vi.stubEnv("SystemRoot", "C:\\Windows");
     installationMock.resolve.mockReturnValue({ executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, kind: "windows-powershell" });
     __resetShellResolverCache();

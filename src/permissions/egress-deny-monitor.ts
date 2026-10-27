@@ -1,10 +1,11 @@
-// Subscribe before proxy startup and audit every new refusal once, attributed to live invocations or unattributed after release. Never persist the client-controlled key; DLP-mask every parsed field because even host bytes are attacker-controlled. Keep every attempt without sampling; this observer never changes egress policy.
+// Subscribe before proxy startup and audit every new refusal or transport failure once, attributed to live invocations or unattributed after release. Never persist the client-controlled key; DLP-mask every parsed field because even host bytes are attacker-controlled. Keep every attempt without sampling; this observer never changes egress policy.
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import {
   buildSandboxEgressDenyAuditEntry,
   type SandboxEgressDecisionAuditEntry,
+  type SandboxEgressFailureAuditEntry,
   type SandboxEgressDenyAuditEntry,
   type SandboxEgressDenyInvocation,
 } from "../audit/sandbox-audit.js";
@@ -20,6 +21,8 @@ const log = createLogger("egress-deny-monitor");
 
 // A proxy refusal parsed from one ASRT violation line.
 export type ParsedEgressDeny = SandboxEgressDenyAuditEntry["deny"];
+
+const TRANSPORT_FAILURE = /^fail network-outbound (\S+):(\d+) \((dns|connect|timeout|routing): (.*)\)$/;
 
 const NETWORK_OUTBOUND = /^deny network-outbound (\S+):(\d+) \((.*)\)$/;
 const SOCKS_TUNNEL = /^deny socks-tunnel (\S+):(\d+) \((.*)\)$/;
@@ -138,25 +141,41 @@ export interface EgressDenyMonitorDeps {
   // ASRT's violation store subscription (`subscribeAsrtViolations`).
   readonly subscribe: (listener: (violations: readonly AsrtViolationRecord[]) => void) => Promise<() => void>;
   // The audit sink (`emitSandboxAudit`).
-  readonly emit: (entry: SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry) => Promise<void>;
+  readonly emit: (entry: SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressFailureAuditEntry) => Promise<void>;
   // The active sandbox capability, recorded on every row.
   readonly capability: () => Pick<SandboxCapability, "kind" | "confidence">;
 }
 
-// Start recording proxy denies. Returns the unsubscribe function. The store hands its whole retained tail to the listener on every change and once at subscription; a record is handled once, recognised by identity (the store keeps the same objects while it retains them). Records already in the store when the monitor starts are handled too: they were refused in this process and are not in the audit log yet. The owner is looked up synchronously inside the listener, which the store calls from `addViolation`, while the refused process is still alive and its token still live.
+// Start recording proxy denials and transport failures. Returns the unsubscribe function. The store hands its whole retained tail to the listener on every change and once at subscription; a record is handled once, recognised by identity (the store keeps the same objects while it retains them). Records already in the store when the monitor starts are handled too: they were refused in this process and are not in the audit log yet. The owner is looked up synchronously inside the listener, which the store calls from `addViolation`, while the refused process is still alive and its token still live.
 export async function startEgressDenyMonitor(deps: EgressDenyMonitorDeps): Promise<() => void> {
   const seen = new WeakSet<AsrtViolationRecord>();
   return deps.subscribe((violations) => {
     for (const violation of violations) {
       if (seen.has(violation)) continue;
       seen.add(violation);
-      const deny = parseEgressDenyLine(violation.line);
-      if (deny === undefined) continue;
       const attributionKey = violation.encodedCommand === undefined
         ? undefined
         : decodeEgressAttributionKey(violation.encodedCommand);
       const owner = attributionKey === undefined ? undefined : egressInvocationOwner(attributionKey);
       const invocation = auditInvocationFor(owner);
+      const failure = TRANSPORT_FAILURE.exec(violation.line);
+      if (failure !== null) {
+        const host = mask(failure[1]!);
+        const port = Number(failure[2]);
+        const kind = failure[3] as SandboxEgressFailureAuditEntry["failure"]["kind"];
+        consumeCallbackDecision(attributionKey, host, port);
+        deps.emit({
+          timestamp: violation.timestamp.toISOString(),
+          entryKind: "egress-failure",
+          sandbox: deps.capability(),
+          invocation,
+          destination: { host, port },
+          failure: { kind, httpStatus: kind === "timeout" ? 504 : 502, reason: mask(failure[4]!) },
+        }).catch((error: unknown) => log.warn("could not record a proxy failure: %s", errorMessage(error)));
+        continue;
+      }
+      const deny = parseEgressDenyLine(violation.line);
+      if (deny === undefined) continue;
       const entry = buildSandboxEgressDenyAuditEntry({
         timestamp: violation.timestamp,
         sandbox: deps.capability(),

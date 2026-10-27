@@ -27,8 +27,10 @@
  * of the host fields.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../__tests__/test-helpers.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const { CHANNELS } = await import("../../contract/app-contract.js");
 const { ALERTS, ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
@@ -37,8 +39,9 @@ const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
 const handleMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 
-const { searchWorkspaceFiles } = vi.hoisted(() => ({
+const { searchWorkspaceFiles, defaultSession } = vi.hoisted(() => ({
   searchWorkspaceFiles: vi.fn(async () => ({ matches: [], truncated: false })),
+  defaultSession: { setSpellCheckerEnabled: vi.fn() },
 }));
 
 vi.mock("../domains/workspace-file-search.js", async (importOriginal) => ({
@@ -81,7 +84,7 @@ vi.mock("electron", () => {
     nativeTheme: { shouldUseDarkColors: false, on: vi.fn() },
     clipboard: { readImage: vi.fn(() => ({ isEmpty: () => true })) },
     webContents: { fromId: vi.fn(() => null), getAllWebContents: () => [] },
-    session: { fromPartition: vi.fn(() => ({ webRequest: { onBeforeRequest: vi.fn() }, protocol: { handle: vi.fn() } })) },
+    session: { defaultSession, fromPartition: vi.fn(() => ({ webRequest: { onBeforeRequest: vi.fn() }, protocol: { handle: vi.fn() } })) },
     net: { fetch: vi.fn() },
   };
 });
@@ -105,10 +108,22 @@ const auditLogger = {
  * reaches handler bodies, so their dependencies stay inert. Workspace search
  * returns the deterministic result above to keep this sender matrix scoped.
  */
+const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
+
+function registeredHostEvent(): IpcMainInvokeEvent {
+  const event = hostFrameEvent();
+  Object.assign(event.senderFrame!, { processId: 1, routingId: 0, detached: false, isDestroyed: () => false });
+  Object.assign(event.sender, { id: 1, mainFrame: event.senderFrame, session: defaultSession,
+    getType: () => "window", isDestroyed: () => false });
+  appWindows.push({ isDestroyed: () => false, webContents: event.sender });
+  return event;
+}
+
 function makeDeps(): never {
   return {
     auditLogger,
     getMainWindow: () => null,
+    getAppWindows: () => appWindows,
     conversationLoop: {
       getSessionId: () => "test-session",
       permissionManager: undefined,
@@ -244,6 +259,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
+  ["preview", CHANNELS.preview.observationAck, [{ action: "rendered", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", seq: 0 }]],
   ["preview", CHANNELS.preview.documentOpenAck, [{ requestId: "request", sessionId: "session", opened: true }]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
@@ -267,7 +283,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
 ];
 
 beforeEach(async () => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   handleMap.clear();
+  appWindows.length = 0;
   auditRows.length = 0;
   vi.clearAllMocks();
   // The dev domain refuses everything when packaged, which would hide its
@@ -343,6 +361,19 @@ beforeEach(async () => {
 });
 
 describe("host-renderer-only IPC channels", () => {
+  it.each(HOST_ONLY_CHANNELS.filter(([domain]) => domain === "preview"))(
+    "%s %s refuses a file-backed webview and an app-window subframe",
+    async (_domain, channel, args) => {
+      const webview = registeredHostEvent();
+      Object.assign(webview.senderFrame!, { url: "file:///plugins/plugin-ui-shell.js" });
+      Object.assign(webview.sender, { getType: () => "webview", session: {} });
+      expect(await invoke(channel, webview, args)).toMatchObject({ ok: false, error: "unauthorized" });
+      const subframe = registeredHostEvent();
+      Object.assign(subframe, { senderFrame: { ...subframe.senderFrame, routingId: 1 } });
+      expect(await invoke(channel, subframe, args)).toMatchObject({ ok: false, error: "unauthorized" });
+      expect(guardRowsFor(channel)).toHaveLength(2);
+    },
+  );
   it.each(HOST_ONLY_CHANNELS)("%s %s refuses a plugin shell frame", async (_domain, channel, args) => {
     await invoke(channel, pluginShellFrameEvent(), args);
     expect(guardRowsFor(channel).length).toBeGreaterThan(0);
@@ -351,8 +382,8 @@ describe("host-renderer-only IPC channels", () => {
     }
   });
 
-  it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
-    const event = hostFrameEvent();
+  it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (domain, channel, args) => {
+    const event = domain === "preview" ? registeredHostEvent() : hostFrameEvent();
     if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
     await invoke(channel, event, args);
     expect(guardRowsFor(channel)).toEqual([]);
@@ -378,6 +409,46 @@ describe("side-chat child transcript sender refusal", () => {
 
     expect(result).toEqual({ ok: false, error: "side-chat-unavailable" });
     expect(guardRowsFor(CHANNELS.sidechat.getSubAgentTranscript)).toEqual([]);
+  });
+});
+
+describe("document observation sender refusal", () => {
+  const request = { action: "rendered", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", seq: 0 };
+
+  it("returns unauthorized to a plugin shell before consuming an observation identity", async () => {
+    expect(await invoke(CHANNELS.preview.observationAck, pluginShellFrameEvent(), [request]))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toHaveLength(1);
+  });
+
+  it("admits the host main frame before refusing an unissued observation identity", async () => {
+    const event = registeredHostEvent();
+    expect(await invoke(CHANNELS.preview.observationAck, event, [request]))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toEqual([]);
+    expect((await import("electron")).dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it.each(["path", "script", "value"])("rejects an extra %s field before looking up an observation", async (field) => {
+    const event = registeredHostEvent();
+    expect(await invoke(CHANNELS.preview.observationAck, event, [{ ...request, [field]: "untrusted" }]))
+      .toEqual({ ok: false, error: "bad-request" });
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toEqual([]);
+  });
+
+  it("refuses a webview after navigation between the shell assets", async () => {
+    const event = registeredHostEvent();
+    Object.assign(event.sender, { getType: () => "webview", session: {} });
+    for (const extension of ["html", "js"]) {
+      Object.assign(event.senderFrame!, { url: `file:///plugins/plugin-ui-shell.${extension}` });
+      expect(await invoke(CHANNELS.preview.observationAck, event, [request]))
+        .toEqual({ ok: false, error: "unauthorized" });
+    }
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toHaveLength(2);
+  });
+
+  it("never registers a handler for the outbound observation stream", () => {
+    expect(handleMap.has(CHANNELS.preview.observationEvents)).toBe(false);
   });
 });
 

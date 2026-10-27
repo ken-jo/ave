@@ -1,3 +1,4 @@
+import { permissionSettingsPath } from "../../src/permissions/permission-settings-store.js";
 import { VIEW_FIXTURE } from '../fixtures/e2e-plugins/view-fixture.js';
 import {
   writeFixturePlugin,
@@ -17,7 +18,7 @@ export function seedReviewerMode(
   aveHomeForTest: string,
   mode: 'disabled' | 'rule' | 'llm' | 'strict',
 ): void {
-  const aveHomeSettingsPath = path.join(aveHomeForTest, 'settings.json');
+  const aveHomeSettingsPath = permissionSettingsPath(aveHomeForTest);
   let aveHomeSettings: Record<string, unknown> = {};
   try {
     // Read directly to avoid an existence-check race.

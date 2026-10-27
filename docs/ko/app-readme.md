@@ -42,7 +42,7 @@
 
 설치된 익스텐션은 `~/.ave/plugins/<id>/plugin.json`에 위치하며, 활성 목록은 `~/.ave/plugins/registry.json`가 관리합니다. 메인 앱은 익스텐션 구현을 직접 import하지 않고 `PluginRuntime`이 manifest를 읽어 host entry를 동적으로 로드합니다.
 
-더 넓게 보면 `~/.ave/` 루트에는 여러 도메인에 걸치는 자원(`settings.json`, `audit.log`, `secrets/`)만 두고, 도메인 하나가 소유하는 자료는 모두 `~/.ave/<feature>/` 아래에 둡니다. 그래야 도메인 하나를 디렉토리 하나 단위로 백업하거나 지울 수 있습니다. 스킬 승인 기록은 `~/.ave/skills/approvals.json`에서, 고정한 메시지는 `~/.ave/sessions/starred.json`에서 읽습니다. 이전 버전이 루트에 남긴 파일은 처음 로드할 때 해당 namespace 로 옮깁니다.
+더 넓게 보면 `~/.ave/` 루트에는 여러 도메인에 걸치는 자원(`config/`, `audit.log`, `secrets/`)만 두고, 도메인 하나가 소유하는 자료는 모두 `~/.ave/<feature>/` 아래에 둡니다. 그래야 도메인 하나를 디렉토리 하나 단위로 백업하거나 지울 수 있습니다. 스킬 승인 기록은 `~/.ave/skills/approvals.json`에서, 고정한 메시지는 `~/.ave/sessions/starred.json`에서 읽습니다. 이전 버전이 루트에 남긴 파일은 처음 로드할 때 해당 namespace 로 옮깁니다.
 
 익스텐션은 capability, method, UI extension, emitted event, subscription, notification event를 manifest에 선언합니다. 메인 프로세스는 IPC를 익스텐션 method 호출로 브리지하고, lifecycle은 runtime이 `start`/`stop` 단위로 관리합니다.
 

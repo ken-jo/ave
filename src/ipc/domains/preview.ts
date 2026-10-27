@@ -11,13 +11,14 @@
  * readTextFileWindow; this IPC does not widen either caller's read authority.
  *
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
- * reach it (fail-closed). Frame-guarded via validateHostRendererSender.
+ * reach it (fail-closed). Restricted to registered app-window main frames.
  */
 import { ipcMain, type WebContents, type WebFrameMain } from "electron";
 import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
+import { auditUnauthorized } from "../gated.js";
+import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
@@ -32,6 +33,10 @@ import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-direct
 import { errorMessage } from "../../shared/error-message.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
 import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
+import { installDocumentObservation } from "../../main/document-observation.js";
+import { parseObservedTextDocument } from "../../observation/text-document.js";
+import { recordPreviewFileAccess } from "../../main/preview-file-access.js";
+import { OBSERVATION_LIMITS, type DocumentObservationBinding, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
 import { previewPageFormatOf } from "../../shared/preview-page-document.js";
@@ -56,6 +61,8 @@ export interface PreviewReadFileResult {
   /** Text was truncated by the line window. */
   truncated?: boolean;
   lineCount?: number;
+  observation?: DocumentObservationBinding;
+  document?: PreviewObservedTextDocument;
   /** Signature-verified passive image bytes; line-window requests remain text-only. */
   image?: { dataUrl: string; mimeType: string };
   error?:
@@ -107,14 +114,28 @@ function observeDocumentOwner(sender: WebContents, frame: WebFrameMain, abort: (
   };
 }
 
+interface TextPreviewRequest {
+  controller: AbortController;
+  stop: () => void;
+}
+
 export function registerPreviewHandlers(deps: IpcDeps): void {
   registerDocumentOpenHandlers(deps);
   const { auditLogger } = deps;
+  const observation = installDocumentObservation(deps);
+  const textRequests = new Map<string, TextPreviewRequest>();
+  ipcMain.handle(CHANNELS.preview.observationAck, (e, request: unknown) => {
+    if (!validateAppWindowMainFrameSender(e, deps)) {
+      auditUnauthorized(auditLogger, CHANNELS.preview.observationAck, e);
+      return { ok: false, error: "unauthorized" };
+    }
+    return observation.acknowledge(e, request);
+  });
 
   ipcMain.handle(
     CHANNELS.preview.readFile,
     async (e, rawPath: string, rawWindow?: unknown): Promise<PreviewReadFileResult> => {
-      if (!validateHostRendererSender(e)) {
+      if (!validateAppWindowMainFrameSender(e, deps)) {
         auditUnauthorized(auditLogger, CHANNELS.preview.readFile, e);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
@@ -125,22 +146,26 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       let offset = 0;
       let limit = PREVIEW_LINE_LIMIT;
       let workspaceRoot: string | undefined;
+      let sessionId: string | undefined;
       let hasLineWindow = false;
       if (rawWindow !== undefined) {
         if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)
-          || Object.keys(rawWindow).some((key) => !["offset", "limit", "workspaceRoot"].includes(key))) {
+          || Object.keys(rawWindow).some((key) => !["offset", "limit", "workspaceRoot", "sessionId"].includes(key))) {
           return { ok: false, error: "read-failed", message: "Invalid preview window" };
         }
         const window = rawWindow as Record<string, unknown>;
         if ((window.offset !== undefined && (!Number.isSafeInteger(window.offset) || (window.offset as number) < 0))
           || (window.limit !== undefined && (!Number.isSafeInteger(window.limit) || (window.limit as number) < 1))
           || (window.workspaceRoot !== undefined && (typeof window.workspaceRoot !== "string"
-            || window.workspaceRoot.length > 2_048 || !isAbsolute(window.workspaceRoot)))) {
+            || window.workspaceRoot.length > 2_048 || !isAbsolute(window.workspaceRoot)))
+          || (window.sessionId !== undefined && (typeof window.sessionId !== "string"
+            || window.sessionId.length === 0 || window.sessionId.length > 256))) {
           return { ok: false, error: "read-failed", message: "Invalid preview window" };
         }
         offset = window.offset as number | undefined ?? 0;
         limit = Math.min(window.limit as number | undefined ?? PREVIEW_LINE_LIMIT, PREVIEW_LINE_LIMIT);
         workspaceRoot = window.workspaceRoot as string | undefined;
+        sessionId = window.sessionId as string | undefined;
         hasLineWindow = window.offset !== undefined || window.limit !== undefined;
       }
 
@@ -152,6 +177,27 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
       }
       const resolved = verdict.resolved;
+      let request: TextPreviewRequest | undefined;
+      let ownerKey: string | undefined;
+      if (!hasLineWindow && sessionId !== undefined) {
+        const frame = e.senderFrame;
+        if (!frame || !Number.isSafeInteger(e.sender.id) || !Number.isSafeInteger(frame.processId)
+          || !Number.isSafeInteger(frame.routingId)) {
+          return { ok: false, error: "read-failed", message: "Preview sender identity is unavailable." };
+        }
+        ownerKey = JSON.stringify([e.sender.id, frame.processId, frame.routingId, resolved]);
+        const previous = textRequests.get(ownerKey);
+        if (!previous && textRequests.size >= OBSERVATION_LIMITS.maxViews) {
+          return { ok: false, error: "read-failed", message: "Preview request limit exceeded." };
+        }
+        const controller = new AbortController();
+        const abort = (): void => controller.abort(new TableDocumentError("superseded", "Preview read was superseded."));
+        const stop = observeDocumentOwner(e.sender, frame, abort);
+        controller.signal.addEventListener("abort", stop, { once: true });
+        request = { controller, stop };
+        textRequests.set(ownerKey, request);
+        previous?.controller.abort(new TableDocumentError("superseded", "Preview read was superseded."));
+      }
 
       try {
         // Stat first — refuse to buffer a multi-GB file before opening it.
@@ -168,18 +214,23 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             message: `file ${stat.size} bytes exceeds ${MAX_TEXT_FILE_BYTES}`,
           };
         }
-        const input = hasLineWindow ? undefined : await readPreviewDocumentInput(resolved, undefined, MAX_TEXT_FILE_BYTES);
+        request?.controller.signal.throwIfAborted();
+        const input = hasLineWindow ? undefined : await readPreviewDocumentInput(resolved, request?.controller.signal, MAX_TEXT_FILE_BYTES);
+        request?.controller.signal.throwIfAborted();
         const imageFormat = input ? sniffComposerImageFormat(input) : null;
         if (!imageFormat && await isBinaryFile(resolved)) {
           return { ok: false, error: "binary-file", path: resolved, bytes: stat.size, message: "binary file" };
         }
-        const window = imageFormat ? undefined : await readTextFileWindow(resolved, offset, limit);
+        const textDocument = !imageFormat && input && sessionId !== undefined ? parseObservedTextDocument(input) : undefined;
+        const window = imageFormat ? undefined : textDocument
+          ? { content: textDocument.content, lines: textDocument.lines, truncated: textDocument.truncated }
+          : await readTextFileWindow(resolved, offset, limit);
         const liveScope = currentReadScope();
         const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed);
         if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
           return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
         }
-        if (!validateHostRendererSender(e)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+        if (!validateAppWindowMainFrameSender(e, deps)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
         // Audit the preview read the same way a `read_file` tool call is audited
         // — a file left the sandbox boundary for display. The path is redacted
         // (username stripped) via the shared DLP filter, consistent with the
@@ -194,12 +245,18 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             bytes: input?.length ?? stat.size,
           }),
         });
+        if (request && (request.controller.signal.aborted || textRequests.get(ownerKey!) !== request)) {
+          return { ok: false, error: "read-failed", message: "Preview read was superseded." };
+        }
+        const binding = textDocument && input ? observation.registerView(e, sessionId, resolved, input, textDocument) : undefined;
+        if (!hasLineWindow) recordPreviewFileAccess(e, deps, resolved, sessionId);
         return {
           ok: true,
           ...(imageFormat && input ? { image: { dataUrl: `data:${imageFormat.mimeType};base64,${input.toString("base64")}`, mimeType: imageFormat.mimeType } }
             : { content: window!.content, truncated: window!.truncated, lineCount: window!.lines.length }),
           path: resolved,
           bytes: input?.length ?? stat.size,
+          ...(binding ? { observation: binding, document: textDocument } : {}),
         };
       } catch (err) {
         if (err instanceof TableDocumentError) return { ok: false, error: err.code === "too-large" ? "too-large" : err.code === "not-a-file" ? "not-a-file" : "read-failed", path: resolved, message: err.message };
@@ -209,16 +266,25 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           path: resolved,
           message: errorMessage(err),
         };
+      } finally {
+        request?.stop();
+        if (request && textRequests.get(ownerKey!) === request) textRequests.delete(ownerKey!);
       }
     },
   );
   ipcMain.handle(
     CHANNELS.preview.readDocument,
-    async (e, rawPath: unknown, sheetIndex: unknown): Promise<PreviewReadDocumentResult> => {
-      if (!validateHostRendererSender(e)) {
+    async (e, rawPath: unknown, sheetIndex: unknown, sessionId?: unknown): Promise<PreviewReadDocumentResult> => {
+      if (!validateAppWindowMainFrameSender(e, deps)) {
         auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
+      const frame = e.senderFrame;
+      if (!frame || !Number.isSafeInteger(e.sender?.id)
+        || !Number.isSafeInteger(frame.processId) || !Number.isSafeInteger(frame.routingId)) {
+        return { ok: false, error: "read-failed", message: "Document sender identity is unavailable." };
+      }
+      const ownerKey = `${e.sender.id}:${frame.processId}:${frame.routingId}`;
       if (typeof rawPath !== "string" || rawPath.length === 0) {
         return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
       }
@@ -238,12 +304,6 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       }
 
       try {
-        const frame = e.senderFrame;
-        if (!frame || !Number.isSafeInteger(e.sender?.id)
-          || !Number.isSafeInteger(frame.processId) || !Number.isSafeInteger(frame.routingId)) {
-          throw new TableDocumentError("read-failed", "Document sender identity is unavailable.");
-        }
-        const ownerKey = `${e.sender.id}:${frame.processId}:${frame.routingId}`;
         const controller = new AbortController();
         const abort = (): void => controller.abort(new TableDocumentError("superseded", DOCUMENT_PARSE_MESSAGES.superseded));
         const stopObserving = observeDocumentOwner(e.sender, frame, abort);
@@ -255,9 +315,16 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           try {
             if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
             slot.signal.throwIfAborted();
+            if (!validateAppWindowMainFrameSender(e, deps)) {
+              return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+            }
             const bytes = await readPreviewDocumentInput(resolved, slot.signal);
             inputBytes = bytes.length;
             const document = await slot.parse(bytes, format, sheetIndex);
+            if (!validateAppWindowMainFrameSender(e, deps)) {
+              auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+              return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+            }
             auditLogger.log({
               timestamp: new Date().toISOString(),
               sessionId: "preview-read",
@@ -269,7 +336,14 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
                 sheetIndex,
               }),
             });
-            return { ok: true, path: resolved, bytes: bytes.length, document };
+            const scope = currentReadScope();
+            const currentVerdict = assertReadableFilePath(resolved, scope.cwd, scope.extraAllowed);
+            if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
+              return { ok: false, error: "path-not-allowed", message: "Preview read scope changed" };
+            }
+            const binding = "sheet" in document ? observation.registerView(e, sessionId, resolved, bytes, document) : undefined;
+            recordPreviewFileAccess(e, deps, resolved, sessionId);
+            return { ok: true, path: resolved, bytes: bytes.length, document, ...(binding ? { observation: binding } : {}) };
           } catch (err) {
             slot.signal.throwIfAborted();
             if (err instanceof TableDocumentError) {

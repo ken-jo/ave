@@ -3,27 +3,25 @@
  * `React.lazy` (see `table-document-preview.tsx`) so react-data-grid lives in
  * its own renderer chunk instead of the startup bundle.
  *
- * Read-only: no editors, no paste/fill handlers. Every cell is rendered as a
+ * No paste/fill handlers. Every display cell is rendered as a
  * React text node (react-data-grid's default `renderValue`), so a cell that
  * looks like markup or a formula is shown verbatim.
  */
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DataGrid, type Column, type DataGridHandle } from "react-data-grid";
 import type { PreviewTableSheet } from "../../../shared/preview-document.js";
+import { cn } from "../../../lib/utils.js";
+import { columnLetters } from "./table-coordinates.js";
+
+export interface ObservedTableCell {
+  row: number;
+  column: number;
+  value: string;
+  advisory: boolean;
+  seq: number;
+}
 
 type GridRow = readonly string[];
-
-/** 0-based column index → spreadsheet letters (0 → A, 25 → Z, 26 → AA). */
-export function columnLetters(index: number): string {
-  let n = index + 1;
-  let out = "";
-  while (n > 0) {
-    const rem = (n - 1) % 26;
-    out = String.fromCharCode(65 + rem) + out;
-    n = Math.floor((n - 1) / 26);
-  }
-  return out;
-}
 
 const ROW_NUMBER_KEY = "__row";
 const ROW_HEIGHT = 24;
@@ -69,7 +67,15 @@ export function horizontalScrollbarBlockPx(element: HTMLElement): number {
   return Math.max(0, Math.round(element.offsetHeight - element.clientHeight - borders));
 }
 
-export function TableDocumentGrid({ sheet, label }: { sheet: PreviewTableSheet; label: string }) {
+/** Render observed changes as text; the grid never accepts document edits. */
+export function TableDocumentGrid({ sheet, label, changes = [], onRendered }: {
+  sheet: PreviewTableSheet;
+  label: string;
+  changes?: readonly ObservedTableCell[];
+  onRendered?: () => void;
+}) {
+  const changesByCell = useMemo(() => new Map(changes.map((cell) => [`${cell.row}:${cell.column}`, cell])), [changes]);
+  const currentSeq = changes.reduce((latest, cell) => Math.max(latest, cell.seq), -1);
   const columns = useMemo<readonly Column<GridRow>[]>(() => {
     const width = sheet.rows[0]?.length ?? 0;
     const rowNumberWidth = Math.max(36, String(sheet.firstRow + sheet.rows.length).length * 8 + 16);
@@ -90,10 +96,22 @@ export function TableDocumentGrid({ sheet, label }: { sheet: PreviewTableSheet; 
         resizable: true,
         minWidth: 48,
         width: 120,
-        renderCell: ({ row }) => row[c],
+        renderCell: ({ row, rowIdx }) => {
+          const rowNumber = sheet.firstRow + rowIdx;
+          const columnNumber = sheet.firstColumn + c;
+          const change = changesByCell.get(`${rowNumber}:${columnNumber}`);
+          return change ? <span key={change.seq}
+            className={cn("relative block min-h-full bg-agent/(--opacity-subtle) px-0.5 text-foreground",
+              change.seq === currentSeq && "ave-observed-current bg-agent/(--opacity-soft)")}
+            data-testid="document-cell-change" data-row={rowNumber} data-column={columnNumber}
+            data-advisory={change.advisory ? "true" : "false"} data-current={change.seq === currentSeq ? "true" : "false"}>
+            <span data-testid="document-cell-value">{change.value}</span>
+            {change.seq === currentSeq ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-[9px] leading-3 text-background">Ave</span> : null}
+          </span> : row[c];
+        },
       })),
     ];
-  }, [sheet]);
+  }, [sheet, changesByCell, currentSeq]);
 
   // A classic horizontal scrollbar appears or goes away as the grid's width or
   // its column widths change; either changes the grid's content-box height, so
@@ -110,6 +128,8 @@ export function TableDocumentGrid({ sheet, label }: { sheet: PreviewTableSheet; 
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+
+  useLayoutEffect(() => { onRendered?.(); }, [sheet, changes, onRendered]);
 
   return (
     <DataGrid<GridRow>

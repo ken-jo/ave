@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 import type {
   SubscriptionRuntimeId,
   SubscriptionRuntimeStatus,
@@ -210,7 +211,7 @@ function makeStatefulSelectionDeps(initialLlm: TestLlm) {
   return { deps, currentLlm: () => llm, applyLlmPatch };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   handlers.clear();
   vi.clearAllMocks();
   localeMock.normalizeLocale.mockImplementation((value: unknown) => typeof value === "string" ? value : "en");
@@ -230,6 +231,8 @@ beforeEach(() => {
     models: [{ id: "gpt-5", displayName: "GPT-5", isDefault: true }],
   });
   vi.resetModules();
+  const { configureHostResources } = await import("../../../main/host-resources.js");
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
 });
 
 describe("common subscription runtime IPC", () => {

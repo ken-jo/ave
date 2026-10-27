@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import type { IpcDeps } from "../../types.js";
 import {
   defaultWorkspaceProjectPayload,

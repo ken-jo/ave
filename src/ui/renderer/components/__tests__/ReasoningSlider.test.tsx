@@ -80,6 +80,22 @@ describe("ReasoningSlider depth budget", () => {
     },
   );
 
+  it("offers maximum intent independently of output and removes it for a different model", async () => {
+    const initial = settings(8_000, 2_000);
+    initial.llm.vendors[DEFAULT_LLM_VENDOR].model = "gpt-6.1-sol";
+    getSettings.mockResolvedValue(initial);
+    const { result } = renderHook(() => useReasoningLevel({ enabled: true, onToggle: () => {} }));
+    await waitFor(() => expect(result.current.levelLabels).toHaveLength(6));
+    await act(async () => result.current.apply(5));
+    expect(result.current.level).toBe(5);
+    expect(updateSettings).toHaveBeenLastCalledWith({ llm: { vendors: { [DEFAULT_LLM_VENDOR]: { thinkingBudgetTokens: 64_000 } } } });
+    const changed = settings(64_000, 2_000);
+    changed.llm.vendors[DEFAULT_LLM_VENDOR].model = "o3-mini";
+    await act(async () => onSettingsUpdated.mock.calls[0]![0](changed));
+    expect(result.current.levelLabels).toHaveLength(5);
+    expect(result.current.level).toBe(4);
+  });
+
   it("uses a changed output limit before persisting a choice", async () => {
     getSettings.mockResolvedValue(settings(14_000));
     const { result } = renderHook(() => useReasoningLevel({ enabled: true, onToggle: () => {} }));

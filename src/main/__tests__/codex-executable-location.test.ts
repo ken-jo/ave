@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { EventEmitter } from "node:events";

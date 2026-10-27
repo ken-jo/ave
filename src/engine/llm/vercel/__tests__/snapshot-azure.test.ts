@@ -58,7 +58,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
   });
 
   it.each([
-    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "high", reasoningSummary: "detailed", forceReasoning: true } } },
+    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "medium", reasoningSummary: "detailed", forceReasoning: true } } },
     // Deployment aliases cannot establish accepted effort levels.
     { catalogModel: undefined, expected: undefined },
   ])("passes Azure reasoning options only from a named catalog entry ($catalogModel)", async ({ catalogModel, expected }) => {

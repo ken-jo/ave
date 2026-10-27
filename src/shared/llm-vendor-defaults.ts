@@ -1,4 +1,5 @@
 /** Browser-safe vendor and default configuration shared by settings and provider selection. */
+import { REASONING_EFFORT_RUNGS } from "./reasoning-effort.js";
 import { customProviderWire, type CustomProviderWire } from "./custom-provider.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "./model-host-policy.js";
 import { catalogChatModelIds, vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
@@ -397,15 +398,9 @@ export function isMarketplaceEligibleLLMVendor(
 /** Share the fresh-install default and invalid-value narrowing default; optional providers stay lazy. */
 export const DEFAULT_LLM_VENDOR: LLMVendor = "openai";
 const DEFAULT_THINKING_BUDGET_TOKENS = 8_000;
-const THINKING_BUDGET_PRESETS = [
-  { key: "low", budget: 4_000 },
-  { key: "medium", budget: 8_000 },
-  { key: "high", budget: 16_000 },
-  { key: "xhigh", budget: 32_000 },
-] as const;
 
 interface LlmThinkingBudgetRung {
-  readonly key: (typeof THINKING_BUDGET_PRESETS)[number]["key"];
+  readonly key: (typeof REASONING_EFFORT_RUNGS)[number]["key"];
   readonly budget: number;
 }
 
@@ -433,21 +428,23 @@ export function requestedLlmOutputTokenLimit(
 /** User budget cap: the highest preset strictly below output, or output minus one. */
 export function getLlmThinkingBudgetLimit(outputTokenLimit?: number): number {
   const output = normalizeLlmOutputTokenLimit(outputTokenLimit);
-  return getLlmThinkingBudgetRungs(output).at(-1)?.budget ?? Math.max(0, output - 1);
+  return getLlmThinkingBudgetRungs(output, true).at(-1)?.budget ?? Math.max(0, output - 1);
 }
 
 /** Normalize user input without changing raw internal generation parameters. */
 export function normalizeLlmThinkingBudgetTokens(value: unknown, outputTokenLimit?: number): number {
-  const budget = isNonNegativeSafeInteger(value)
-    ? value
-    : DEFAULT_THINKING_BUDGET_TOKENS;
-  return Math.min(budget, getLlmThinkingBudgetLimit(outputTokenLimit));
+  return Math.min(requestedLlmThinkingBudgetTokens(value), getLlmThinkingBudgetLimit(outputTokenLimit));
+}
+
+/** Preserve persisted intent; only numeric request controls are bounded by output. */
+export function requestedLlmThinkingBudgetTokens(value: unknown): number {
+  return isNonNegativeSafeInteger(value) ? value : DEFAULT_THINKING_BUDGET_TOKENS;
 }
 
 /** Presets stay below the output ceiling; valid custom budgets are not snapped to them. */
-export function getLlmThinkingBudgetRungs(outputTokenLimit?: number): readonly LlmThinkingBudgetRung[] {
+export function getLlmThinkingBudgetRungs(outputTokenLimit?: number, acceptsMax = false): readonly LlmThinkingBudgetRung[] {
   const output = normalizeLlmOutputTokenLimit(outputTokenLimit);
-  return THINKING_BUDGET_PRESETS.filter((preset) => preset.budget < output);
+  return REASONING_EFFORT_RUNGS.filter((preset) => preset.budget < output && (preset.key !== "max" || acceptsMax));
 }
 
 /** Known ids may still lack a settings block because provider configuration is materialized lazily. */
@@ -717,7 +714,7 @@ export function getLlmVendorSettings(
       typeof stored?.enableThinking === "boolean"
         ? stored.enableThinking
         : defaults.enableThinking,
-    thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(stored?.thinkingBudgetTokens, outputTokenLimit),
+    thinkingBudgetTokens: requestedLlmThinkingBudgetTokens(stored?.thinkingBudgetTokens),
   };
   if (vendor === "openai-compatible") block.wire = customProviderWire(stored?.wire);
   else delete block.wire;

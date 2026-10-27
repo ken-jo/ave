@@ -1,8 +1,13 @@
+import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 // Workspace root changes must reach child loops through the single published lifecycle authority.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -28,6 +33,8 @@ import { readPermissionSettings } from "../../../permissions/permission-settings
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../../permissions/sensitive-paths.js";
 import { makeMockWebContents } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 
 const workspaceDeps = {
   auditLogger: { log: vi.fn() },
@@ -87,13 +94,18 @@ async function firstApprovalPayload<T>(wc: ReturnType<typeof makeMockWebContents
   throw new Error("approval request was not sent");
 }
 
+let homeRoot: string;
 let home: string;
 let grantRoot: string;
 let previousHome: string | undefined;
 
 beforeAll(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   previousHome = process.env.AVE_HOME;
-  home = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-home-"));
+  homeRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-home-"));
+  setFixtureOwner(homeRoot);
+  home = join(homeRoot, ".ave");
+  expect(ensureAveHomePrivate(home)).not.toMatchObject({ enforcement: "none" });
   process.env.AVE_HOME = home;
   grantRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-grant-"));
   writeFileSync(join(grantRoot, "notes.md"), "content\n");
@@ -103,7 +115,7 @@ beforeAll(() => {
 afterAll(async () => {
   if (previousHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousHome;
-  await cleanupTmpDir(home);
+  await cleanupTmpDir(homeRoot);
   await cleanupTmpDir(grantRoot);
 });
 

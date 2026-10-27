@@ -7,6 +7,7 @@ import {
   type ResolvedReasoningSupport,
 } from "../../shared/context-budget.js";
 import { isOpenAICompatibleVendor, isSelfHostedVllmVendor, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { REASONING_EFFORT_ORDER, reasoningEffortForBudget, assertReasoningEffort, type ReasoningEffort } from "../../shared/reasoning-effort.js";
 import { claudeRequestShape } from "../../shared/model-host-policy.js";
 import { allowsImplicitModelLimits } from "../../shared/model-catalog/resolve.js";
 
@@ -30,51 +31,24 @@ export function usesOpenAIResponsesWire(
   return nativeSupport?.supported === true;
 }
 
-export function mapReasoningEffort(
-  budget: number,
-): "none" | "low" | "medium" | "high" {
-  if (budget <= 500) return "none";
-  if (budget <= 3000) return "low";
-  if (budget > 8000) return "high";
-  return "medium";
-}
-
-export function mapBudgetToEffort(
-  budget: number,
-): "low" | "medium" | "high" | "max" {
-  if (budget <= 3000) return "low";
-  if (budget <= 6000) return "medium";
-  if (budget <= 16_000) return "high";
-  return "max";
-}
-
-// Order qualitative levels by effort; default is not an effort level.
-const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-type EffortLevel = (typeof EFFORT_ORDER)[number];
-
 // Choose the nearest accepted level below the request, or the lowest accepted level.
-function nearestAcceptedEffort(requested: EffortLevel, accepted: readonly string[]): EffortLevel | undefined {
-  const levels = EFFORT_ORDER.filter((level) => accepted.includes(level));
+function nearestAcceptedEffort(requested: ReasoningEffort, accepted: readonly string[]): ReasoningEffort | undefined {
+  const levels = REASONING_EFFORT_ORDER.filter((level) => accepted.includes(level));
   if (levels.length === 0) return undefined;
-  const at = EFFORT_ORDER.indexOf(requested);
-  const below = levels.filter((level) => EFFORT_ORDER.indexOf(level) <= at);
+  const at = REASONING_EFFORT_ORDER.indexOf(requested);
+  const below = levels.filter((level) => REASONING_EFFORT_ORDER.indexOf(level) <= at);
   return below.at(-1) ?? levels[0];
 }
 
 type ReasoningPlanSource = "model-catalog" | "endpoint-report" | "request-shape" | "host-fallback";
 
-// Endpoint-only effort uses low instead of none because reasoning is enabled and may be mandatory.
-function reportedEffort(requested: ReturnType<typeof mapReasoningEffort>): "low" | "medium" | "high" {
-  return requested === "none" ? "low" : requested;
-}
-
 export interface ReasoningPlan {
   // Control kinds distinguish API effort, adaptive effort, numeric budgets, and endpoint-reported parameters.
   readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "endpoint-reasoning" | "none";
   readonly control?: ReportedReasoningControl;
-  readonly requestedEffort?: EffortLevel;
+  readonly requestedEffort?: ReasoningEffort;
   // Sent effort may differ from the request when the model rejects the requested level.
-  readonly effort?: EffortLevel;
+  readonly effort?: ReasoningEffort;
   readonly budgetTokens?: number;
   // Catalog or endpoint knowledge selects controls; fallback never invents one.
   readonly source: ReasoningPlanSource;
@@ -90,14 +64,15 @@ export function planReasoning(params: {
   model: string;
   enableThinking: boolean;
   budgetTokens: number;
-  // A named effort chosen by the user (a speed menu) wins over the one a budget maps to.
-  requestedEffort?: ReturnType<typeof mapReasoningEffort>;
+  // Preserve the selected rung before numeric request budgets are bounded.
+  requestedEffort?: ReasoningEffort;
   baseUrl?: string;
   catalogModel?: string;
   // Route reasoning support includes endpoint reports; without it, consult only the catalog.
   reasoning?: ResolvedReasoningSupport;
   request: { hasTools: boolean };
 }): ReasoningPlan | undefined {
+  if (params.requestedEffort !== undefined) assertReasoningEffort(params.requestedEffort);
   if (!params.enableThinking) return undefined;
   const reasoning = routeReasoningSupport(params);
   return planReasoningLevel({ ...params, reasoning });
@@ -118,7 +93,7 @@ function routeReasoningSupport(params: {
 
 function planReasoningLevel(params: {
   vendor: LLMVendor; model: string; budgetTokens: number; baseUrl?: string; catalogModel?: string;
-  requestedEffort?: ReturnType<typeof mapReasoningEffort>;
+  requestedEffort?: ReasoningEffort;
   reasoning?: ResolvedReasoningSupport;
 }): ReasoningPlan | undefined {
   const entry = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model;
@@ -128,12 +103,12 @@ function planReasoningLevel(params: {
     return { kind: "none", source: "model-catalog" };
   }
   if (OPENAI_FAMILY.has(params.vendor)) {
-    const requestedEffort = params.requestedEffort ?? mapReasoningEffort(params.budgetTokens);
+    const requestedEffort = params.requestedEffort ?? reasoningEffortForBudget(params.budgetTokens);
     if (support?.source === "endpoint-report") {
       // The report must name the parameter used by the selected request protocol.
       const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model, support, params.baseUrl) ? "reasoning" : "reasoning_effort";
       return support.control === wireParameter
-        ? { kind: "openai-effort", requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" }
+        ? { kind: "openai-effort", requestedEffort, effort: accepted?.length ? nearestAcceptedEffort(requestedEffort, accepted) : requestedEffort, source: "endpoint-report" }
         : { kind: "none", requestedEffort, source: "endpoint-report" };
     }
     const efforts = support?.source === "model-catalog" && support.supported ? support.efforts : undefined;
@@ -146,10 +121,10 @@ function planReasoningLevel(params: {
     // Self-hosted routes own switch and budget; hosted compatible routes use reported parameters only.
     if (support?.source !== "endpoint-report") return undefined;
     if (support.control === undefined) return { kind: "none", source: "endpoint-report" };
-    const requestedEffort = mapReasoningEffort(params.budgetTokens);
+    const requestedEffort = params.requestedEffort ?? reasoningEffortForBudget(params.budgetTokens);
     return support.control === "include_reasoning"
       ? { kind: "endpoint-reasoning", control: support.control, source: "endpoint-report" }
-      : { kind: "endpoint-reasoning", control: support.control, requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" };
+      : { kind: "endpoint-reasoning", control: support.control, requestedEffort, effort: accepted?.length ? nearestAcceptedEffort(requestedEffort, accepted) : requestedEffort, source: "endpoint-report" };
   }
   if (params.vendor === "claude") {
     const source = "model-catalog";
@@ -158,8 +133,8 @@ function planReasoningLevel(params: {
       return { kind: "anthropic-numeric", budgetTokens: params.budgetTokens, source };
     }
     if (!shape.adaptiveThinking) return { kind: "none", source: "host-fallback" };
-    const requestedEffort = mapBudgetToEffort(params.budgetTokens);
-    const effort = accepted ? nearestAcceptedEffort(requestedEffort, accepted) ?? requestedEffort : requestedEffort;
+    const requestedEffort = params.requestedEffort ?? reasoningEffortForBudget(params.budgetTokens);
+    const effort = accepted ? nearestAcceptedEffort(requestedEffort, accepted) : undefined;
     return { kind: "anthropic-adaptive", requestedEffort, effort, source };
   }
   return undefined;

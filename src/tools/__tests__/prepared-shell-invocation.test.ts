@@ -1,3 +1,6 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +10,7 @@ import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execut
 import * as filesystem from "node:fs";
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, mkdtempSync: vi.fn(actual.mkdtempSync) };
+  return { ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(actual), mkdtempSync: vi.fn(actual.mkdtempSync) };
 });
 import * as resolver from "../../lib/shell-resolver.js";
 import * as homeOwner from "../../permissions/sandbox-process-home.js";

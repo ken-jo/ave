@@ -60,6 +60,23 @@ afterEach(() => {
 });
 
 describe("patched @anthropic-ai/sandbox-runtime", () => {
+  it("retains transport failures as a separate response and violation path", () => {
+    const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+    expect(manager).toContain("if (plan.failure !== undefined) throw plan.failure;");
+    expect(manager).toContain("fail network-outbound");
+    expect(manager).toContain("resolution.failure ?? new ProxyTransportError('dns'");
+    const failure = readInstalled("dist/sandbox/proxy-failure.js");
+    expect(failure).toContain("kind === 'timeout' ? 504 : 502");
+    expect(failure).toContain("X-Proxy-Error: transport-");
+    expect(failure).toContain("X-Proxy-Reason:");
+    expect(readInstalled("dist/sandbox/proxy-failure.d.ts")).toContain("ProxyFailureKind");
+    for (const proxy of ["http-proxy", "socks-proxy"]) {
+      expect(readInstalled(`dist/sandbox/${proxy}.js`)).toContain("options.onTransportFailure?.");
+      expect(readInstalled(`dist/sandbox/${proxy}.d.ts`)).toContain("onTransportFailure?");
+    }
+    expect(readInstalled("dist/sandbox/parent-proxy.js").match(/code: 'ETIMEDOUT'/g)).toHaveLength(3);
+  });
+
   it("keeps non-device writes caller-owned and denies shell Unix sockets despite worker grants", () => {
     const runtime = readInstalled("dist/sandbox/sandbox-utils.js");
     const writes = functionBody(runtime, /\nexport function getDefaultWritePaths\(/u);
@@ -1163,7 +1180,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         ? [{ address: "198.51.100.7", family: 4 }, { address: "198.51.100.8", family: 4 }, { address: "2001:db8::7", family: 6 }]
         : testResolver(name));
       const response = await connectThrough(setup.front, setup.proxy, setup.name, "multi.example.invalid:443");
-      expect(response).toBe(status === 407 ? "HTTP/1.1 403 upstream proxy requires authentication"
+      expect(response).toBe(status === 502 ? "HTTP/1.1 502 Bad Gateway" : status === 504 ? "HTTP/1.1 504 Gateway Timeout"
+        : status === 407 ? "HTTP/1.1 403 upstream proxy requires authentication"
         : `HTTP/1.1 403 upstream proxy refused the connection (HTTP ${status})`);
       expect(refusing.requests.map(r => r.line)).toEqual(["CONNECT 198.51.100.7:443 HTTP/1.1"]);
       const plain = await plainHttpThrough(setup.front, setup.proxy, setup.name, "http://198.51.100.7/");
@@ -1367,7 +1385,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
           .toBe("HTTP/1.1 403 upstream proxy refused the connection (HTTP 403)");
         routes = [{ kind: "http", host: "127.0.0.1", port: gateway.port }, { kind: "http", host: "127.0.0.1", port: next.port }];
         expect(await connectThrough(setup.front, setup.proxy, setup.name, "unreachable.example.invalid:443"))
-          .toBe("HTTP/1.1 403 upstream proxy refused the connection (HTTP 502)");
+          .toBe("HTTP/1.1 502 Bad Gateway");
         // `PROXY p; DIRECT`: the proxy's refusal is not bypassed by going direct.
         routes = [{ kind: "http", host: "127.0.0.1", port: refusing.port }, { kind: "direct" }];
         expect(await connectThrough(setup.front, setup.proxy, setup.name, "blocked2.example.invalid:443"))
@@ -1631,6 +1649,19 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   });
 
+  it.for(["ETIMEDOUT", "ESOCKETTIMEDOUT"])("classifies a %s route lookup as timeout without dialing", async (code, test) => {
+    const setup = await withRouter(test, async () => { throw Object.assign(new Error("route lookup timed out"), { code }); });
+    if (setup === undefined) return;
+    try {
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 504 Gateway Timeout");
+      const lines = setup.SandboxManager.getSandboxViolationStore().getViolations().map((row) => row.line);
+      expect(lines).toContain("fail network-outbound x.example.invalid:443 (timeout: upstream proxy lookup timed out)");
+      expect(resolvedAsks(setup.asked)).toEqual([]);
+    } finally {
+      await setup.SandboxManager.reset();
+    }
+  });
+
   it("refuses when the router throws, answers a malformed route or no route (with its reason); never asks it for loopback", async (test) => {
     let answer: () => Promise<Awaited<ReturnType<NonNullable<Router>>>> = async () => { throw new Error("pac failed"); };
     let calls = 0;
@@ -1640,7 +1671,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     });
     if (setup === undefined) return;
     try {
-      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 upstream proxy lookup failed");
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 502 Bad Gateway");
+      expect(JSON.stringify(setup.SandboxManager.getSandboxViolationStore().getViolations())).toContain("fail network-outbound x.example.invalid:443 (routing: upstream proxy lookup failed)");
       answer = async () => ({ routes: [{ kind: "socks5" } as never] });
       expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 upstream proxy lookup answered a malformed route");
       answer = async () => ({ routes: [], reason: "the system proxy offers only SOCKS" });

@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
-import { mapReasoningEffort } from "../../reasoning-plan.js";
 import { usesOpenAIResponsesWire } from "../../reasoning-plan.js";
 import { resolveReasoningSupport } from "../../../../shared/context-budget.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../../output-token-limit.js";
@@ -9,17 +8,6 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { unusedNetworkFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
 
 describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
-  it("maps 4 budget bands: none / low / medium / high", () => {
-    expect(mapReasoningEffort(500)).toBe("none");
-    expect(mapReasoningEffort(100)).toBe("none");
-    expect(mapReasoningEffort(2000)).toBe("low");
-    expect(mapReasoningEffort(3000)).toBe("low");
-    expect(mapReasoningEffort(5000)).toBe("medium");
-    expect(mapReasoningEffort(7999)).toBe("medium");
-    expect(mapReasoningEffort(8000)).toBe("medium");
-    expect(mapReasoningEffort(8001)).toBe("high");
-    expect(mapReasoningEffort(32_000)).toBe("high");
-  });
 
   it("selects the response protocol from catalog reasoning or a deployment route", () => {
     const wireFor = (vendor: string, model: string) =>
@@ -90,14 +78,14 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
     return callArg.providerOptions?.openai;
   };
 
-  it("sends the lowest level a listed model accepts when it cannot take 'none'", async () => {
+  it("uses the lowest user rung for a small custom budget", async () => {
     const openai = await captureProviderOptions("gpt-5-mini", 100);
-    expect(openai?.reasoningEffort).toBe("minimal");
+    expect(openai?.reasoningEffort).toBe("low");
   });
 
-  it("keeps 'none' for a named entry that accepts it", async () => {
+  it("keeps thinking enabled for a named entry and small custom budget", async () => {
     const openai = await captureProviderOptions("gpt-5.2", 100, "openai/gpt-5.2");
-    expect(openai?.reasoningEffort).toBe("none");
+    expect(openai?.reasoningEffort).toBe("low");
   });
 
   it("sends no effort when nobody states the levels the model accepts", async () => {
@@ -141,7 +129,7 @@ describe("provider protocol for a reasoning model on a tool turn", () => {
         providerOptions?: { openai?: { reasoningEffort?: string } };
       };
       expect(callArg.model.__mock).toBe("responses");
-      expect(callArg.providerOptions?.openai?.reasoningEffort).toBe("high");
+      expect(callArg.providerOptions?.openai?.reasoningEffort).toBe("medium");
     } finally {
       vi.doUnmock("ai");
       vi.doUnmock("@ai-sdk/openai");
@@ -623,7 +611,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(callArg.providerOptions).toEqual({
-      openai: { reasoningEffort: "high", reasoningSummary: "detailed", forceReasoning: true },
+      openai: { reasoningEffort: "medium", reasoningSummary: "detailed", forceReasoning: true },
     });
 
     vi.doUnmock("ai");
@@ -1241,7 +1229,7 @@ describe("custom endpoint request protocol", () => {
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(callArg.model).toMatchObject({ __mock: "chat" });
-    expect(callArg.providerOptions).toMatchObject({ openai: { reasoningEffort: "high", reasoningSummary: "detailed" } });
+    expect(callArg.providerOptions).toMatchObject({ openai: { reasoningEffort: "medium", reasoningSummary: "detailed" } });
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/openai");

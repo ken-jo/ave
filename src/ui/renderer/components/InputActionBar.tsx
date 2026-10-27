@@ -694,6 +694,7 @@ const REASONING_FILL: Record<Exclude<ReasoningLevel, 0>, string> = {
   2: "var(--reasoning-fill-2)",
   3: "var(--reasoning-fill-3)",
   4: "var(--reasoning-fill-4)",
+  5: "var(--reasoning-fill-5)",
 };
 
 function ReasoningGauge({ level }: { level: ReasoningLevel }): React.JSX.Element {

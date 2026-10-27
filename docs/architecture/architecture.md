@@ -72,8 +72,175 @@ The [page preview contract](page-document-preview.md) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
 The [agent document tools](agent-document-tools.md) reuse that parser with bounded
 model-context selections and policy-checked, session-bound panel requests.
-The [XLSX editing skill](xlsx-skill-editing.md) uses only the sandbox shell;
-the existing viewer exposes its in-file recalculation request.
+The [XLSX editing contract](xlsx-skill-editing.md) keeps editing in the agent's
+ordinary approved sandbox shell. The document panel is a read-only live view;
+the host observes and renders, with no document publication API.
+
+### Agent activity observation
+
+One main-process observation daemon owns bounded, session-bound adapter
+lifetimes. Its source interface is deliberately separate from its document
+rendering engine. Only the document adapter ships here; browser and terminal
+sources may implement the same interface later. User document, browser and
+terminal activity is outside the observation contract. Events and snapshots
+stay in local memory and private process directories: they are not transcript
+content, telemetry, remote-surface events or provider input.
+
+Every event has `source: "document" | "browser" | "terminal"`,
+`actor: "agent"`, host-derived `sessionId`, `target: { id, path }`, monotonically
+increasing target-local `seq`, `kind`, `before`, `after`, and `ts` (epoch
+milliseconds). Document kinds are `element`, `snapshot`, and `status`.
+An element names a cell by sheet name and absolute row/column, or a text line
+by one-based line number, and carries bounded display strings in `before`/`after`.
+Journal cells are explicitly advisory until reconciliation; native line diffs
+come from a verified save. A snapshot replaces the bounded rendered table and
+its recalculation signal, or the bounded text document. A status carries a
+stable localized code without document contents. Element addresses leave room
+for paragraph and shape adapters without implementing them. The daemon, not a
+journal or renderer, supplies actor, session, target identity, sequence and
+timestamp.
+
+The adapter contract starts an exact target, accepts a rendered snapshot and
+agent mutation evidence, reconciles a settled save, and disposes all watches,
+timers and pending work. A replaceable `DocumentObservationEngine` accepts
+already admitted bytes, a format and selection index, and returns a bounded
+table or text document under cancellation. Table decoding delegates to the
+existing isolated parser; text decoding retains the existing UTF-8 preview's
+2,000,000-byte and 5,000-line ceilings and rejects binary content. There is no
+converter download, warm conversion service or new document serializer. Engine
+absence produces the explicit `engine-unavailable` status and leaves the existing viewer usable;
+parse, integrity and contract errors remain errors rather than selecting that
+fallback. Future engines must retain bounded input/output, verification,
+confinement and per-session lifecycle ownership.
+
+Full default text/code reads can bind observation through the same private
+preview read contract and rendered acknowledgement as tables. Selected line
+windows, inline snippets and images retain ordinary viewing without observation.
+The initial content and digest come from the same admitted bytes. Page documents
+retain their existing readers without synthetic live events; adding a shared
+viewer header does not add a page observation engine or content capture.
+Observed text reads retain only the newest request owner for each actual frame
+and canonical path. A late replaced read cannot register or release the newer
+view. There are at most 16 current request-owner keys; cancellation still waits
+for a filesystem operation already in progress to return.
+
+Scope comes from successful agent `open_document` acknowledgements, bound to
+their existing live session/window/main-frame receipt, and exact native
+mutation targets known in the current agent turn. Successful native mutations
+retain at most 16 exact target identities until that turn ends, even when a
+view has not opened yet. No contents are captured for that admission metadata;
+watching starts only once a same-session view supplies a rendered baseline.
+Turn completion removes this temporary scope, while agent-opened panels retain
+their own view lifetime. An ordinary user preview is
+only a rendered baseline: it creates no filesystem watch. If an authorized
+agent later changes that exact file, it can become an observed target. There
+is no workspace enumeration or recursive watch. Target admission requires a
+host model-turn context and a successfully authorized tool invocation;
+renderer metadata and UI/plugin tool origins cannot create that context.
+Watching a parent directory only filters the exact basename so replacement
+renames remain observable; it never reads sibling contents.
+
+For an agent table open, the existing tab-selection receipt and a host-accepted
+initial rendered-grid acknowledgement must both arrive before `open_document`
+completes. Either may arrive first; a still-live matching rendered baseline can
+satisfy readiness immediately. The original document-open deadline, frame,
+session and cancellation guards remain in force. This prevents an immediate
+following edit from outrunning baseline admission. Pending agent-open marks
+without a parsed view expire within the existing reader startup, parse and busy
+retry budgets. Files without a rendered baseline are never watched or read by
+the observer merely because a tool named them.
+
+Filesystem notifications are wakeups, not writer identity. Native mutations
+provide their exact intended post-image; the skill provides a tool-bound
+journal completion digest. A displayed agent delta requires a matching
+pre-image digest rooted in the last acknowledged rendered snapshot and a
+matching stable post-image. Consecutive admitted mutations may extend an
+unbroken before/after digest chain while a prior snapshot awaits rendering;
+they do not advance the rendered comparison baseline. Any gap in that chain
+requires reload. Mere temporal overlap with an agent tool is insufficient.
+Unattributed or conflicting saves must not be recorded as agent changes.
+The adapter debounces notifications for 80 ms, requires two equal descriptor
+size/mtime observations 40 ms apart, retries a transient rename for at most
+eight settle attempts, and computes the cell or line diff against the last
+acknowledged rendered snapshot. A prior user save therefore cannot be folded
+into an attributed agent delta.
+
+An agent shell's existing isolated sandbox HOME is its action directory.
+`AVE_DOCUMENT_JOURNAL` names only the host-selected
+`<HOME>/document-observation/journal.jsonl`; host registration binds this
+directory to one admitted tool call, turn and session. The skill appends UTF-8
+JSON Lines with version `1`: `begin` has `editId`, canonical `target`, and
+`beforeHash`; `cell` has `editId`, `sheet`, A1 `cell`, `before`, and `after`;
+`commit` has `editId` and `afterHash`. Hashes are lowercase SHA-256 hex.
+The journal is capped at 2 MiB per invocation, 16 KiB per line, 500 cell
+records per edit, and 2,000 display characters per value. The reader reads at
+most 64 KiB per poll, retains an incomplete final line until its newline,
+and refuses truncation, replacement, links, malformed records and paths
+outside the registered action directory. A journal target can match only a
+host-known target or an already rendered exact file in that same session;
+it creates no general file-read authority.
+
+Journal cells are provisional display data. They never supply document bytes
+to the host or authorize a write. A verified save discards the provisional
+overlay and renders the actual parsed file, including when journal cell text
+disagrees. Failed, cancelled or unverifiable edits clear overlays and require
+a reload rather than keeping a draft as file truth. The skill retains its
+existing size ceiling, refusal rules, backup and atomic replacement; the host
+has no edit IPC, staging publisher, workbook transaction or write token.
+
+Each daemon has at most 16 active document views, 256 queued events and
+1 MiB of queued element data per view. It sends batches of at most 32 events
+with at most 64 unacknowledged events. Repeated pending elements coalesce by
+address; overload produces a resynchronization status and a fresh verified
+snapshot, never an unbounded replay. Snapshot payloads retain the existing
+4 MiB preview cap. Renderer acknowledgements advance the rendered baseline
+only for the matching snapshot sequence; a delivered snapshot is not assumed
+rendered. Releasing a view, changing its session, navigating or destroying
+its frame, closing or hiding the panel, ending a journal invocation or
+shutting down disposes the corresponding capabilities and bounded buffers. A
+closed or hidden panel may stay mounted for a retained side chat or browser
+tab; its document views keep their sheet, scroll and page position but hold no
+subscription, and showing the panel again reads a fresh baseline. No
+observation survives a host restart.
+
+Private observation push and acknowledgement IPC require the same registered
+app-window main-frame identity as preview reads: a live registered window,
+its actual main frame and default session, rechecked at delivery. Webviews,
+plugin partitions, subframes and unregistered contents are refused regardless
+of URL. Acknowledgements name only a host-issued read-only target identity
+and sequence; no request accepts a document path, script or write payload.
+The panel offers no edit affordance or save action. Agent editing retains
+the ordinary tool approval path; observation grants no permission and prompts
+for no user modification confirmation.
+
+File/code, table and page viewers share one compact header: format icon, bold
+basename, muted monospaced parent path and right-aligned icon-only actions.
+The displayed path is workspace-relative when available, otherwise compacted;
+it truncates with ellipsis while its title exposes the complete path. Open in
+the default application, copy and applicable reload actions have localized
+accessible labels. There is no separate path box, file-kind badge or source row.
+
+A single live-strip slot beneath that header appears only for authenticated
+agent observation activity or its error/resynchronization state. It reports
+editing or edited, the latest cell/line change summary and recency. The current
+element has an outline and a small Ave tag; earlier changes retain a faint tint.
+These marks use one theme color with light and dark variants. A compact footer
+owns format, selected sheet/page or line count, recalculation status and
+truncation notices. Idle user-only previews have no live strip. Localized
+observation errors occupy that same slot rather than creating additional status rows.
+
+The default-application icon reuses the existing attachment opener. Successful
+preview reads supply bounded, frame-bound read receipts instead of adding paths
+to the attachment allowlist. Opening requires the registered main-frame identity,
+the same caller's canonical read target and current read scope, with session,
+navigation, sensitive-path and dangerous-extension checks. This is a user action:
+it emits no agent observation and grants no document write authority.
+Preview-derived receipts admit only explicit passive formats and inert source
+types; reading a script, shortcut or active web file cannot authorize execution
+through its default application. Picker/drop authorizations retain their own
+existing contract.
+
+### Host runtime and subprocesses
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and
@@ -2153,7 +2320,10 @@ answers an egress ask; an answer from any other surface leaves it pending. Sessi
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
-row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
+row. DNS, route-lookup, and connection failures return 502; timeouts return
+504. They keep the connection closed and write an attributed `egress-failure`
+row with the failure kind and response status, without a denial decision.
+Policy refusals remain 403. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
 or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
 at This session (a terminal: This tab). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again
@@ -2387,28 +2557,103 @@ with its own owner rule:
   `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
   Any remaining legacy ACE requires owner-approved inspection and repair of the
   exact explicit ACE or its inheritance source, with active holders accounted for.
-- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
-  When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
-  directory does not exist yet,
-  `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
-  create it with the user as owner and an owner-only protected DACL, so no
-  grant for the token's default owner is left behind. Before it changes an
-  existing directory's DACL, the step refuses a link or junction and an owner
-  this rule does not accept, and nothing inside a refused directory is
-  touched; the permission command then acts on a link itself (`icacls /L`),
-  never on its target. An existing `AVE_HOME` the app did not create may be
-  owned by `S-1-5-32-544` only when the current token's default owner is
-  `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,
-  the user's own full-control grant, inherited by files and folders and not
-  itself inherited; no system principal is granted. The app protects such a
-  root, but it does not take ownership of it. `isOwnerOnlyDacl` in
-  `src/shared/ave-home.ts` applies this rule. It takes an elevated
-  Administrators token as its sign that the default owner is `S-1-5-32-544`.
-  On a non-elevated boot, only an existing non-reparse `subscription-runtimes`
-  root owned by `S-1-5-32-544` is claimed for the token user before DACL protection,
-  with the owner rechecked on the same non-following handle; other foreign owners
-  remain refused. A failed claim refuses privacy as `owner-claim-failed`, naming
-  the path and advising one elevated run or an owner repair.
+- **Private storage boundaries are protected at creation.**
+  On Windows, boot creates `AVE_HOME` and the `secrets`,
+  `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
+  `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
+  `OBJ_DONT_REPARSE` relative to a pinned directory handle.
+  The boundary list is checked against the sensitive-path table. Permission
+  settings, user policy and legacy root secrets migrate into `config` by
+  copying into a fresh staged file, publishing it inside the protected directory,
+  then flushing a staged `config/.ave-config-migrated` and atomically renaming it
+  before deleting any copied root file. Both path owners use the root until commit.
+  The holder of the shared host-instance lock migrates, whether desktop or
+  headless. Execution-mode and child processes without that lock only resolve
+  the current on-disk layout.
+  A refused home stays root-only, without migration.
+  No process caches the configuration location. Every read and write inspects
+  `config/` and its marker without following links. Windows read certificates key
+  the home root's RootSafe and protected `config` OwnerOnly checks on each object's
+  volume serial, file ID and ChangeTime. These predicates inspect no ancestor
+  DACL. Every path ancestor is keyed by volume serial and file ID, without its
+  ChangeTime: unrelated child-entry writes must not invalidate verification.
+  Every read checks directory-entry reparse state and directory shape along the
+  path. Cold native verification returns identities from its actual handles,
+  which must equal observations before and after verification. An ancestor swap
+  refuses the read; a DACL timestamp change requires full verification. Stable
+  reads spawn no process. POSIX directory verification retains device/inode checks.
+  Configuration ownership comes only from the live shared host-instance lock;
+  other processes start read-only and receive `AveHomeConfigurationNotOwnerError`
+  with "Ave is running; close it or use the app" on mutation. Existing host routes retain
+  their permission gates. Execution-mode secret provisioning is refused and
+  non-owner boot skips secret migrations. There is no configuration file lock,
+  process-start identity or stale-record recovery. Owner mutations share an
+  in-process FIFO queue, verify boundaries and resolve their destination inside
+  that queue. Within this scope, synchronous atomic staging creates and renames
+  check the previous certificate immediately before their syscall and re-key only
+  the affected directory's ChangeTime immediately afterward, without yielding.
+  A changed identity, ancestor or other boundary refuses re-keying. Async callback
+  completion never re-keys a certificate. Foreign changes after the immediate
+  observation still force verification. A concurrent same-account DACL change
+  inside the syscall-to-observation window remains a residual race: that account
+  already controls these protected objects; other accounts lack WRITE_DAC.
+  Synchronous owner migration completes before services start.
+  `AVE_HOME` is used exactly as supplied, even when its basename is `config`.
+  Readers reject reparse entries, compare file identity before/open/after,
+  require a regular file of at most 4 MiB and check stable timestamps and bytes.
+  A vanished file triggers one fresh resolution; persistent absence after an
+  observed file or commit raises `AveHomeConfigurationUntrustedError`.
+  Defaults require both candidate files and the migration marker to be absent.
+  Before a new commit, absent source documents become explicit default documents;
+  missing documents in an already committed home are never silently recreated.
+  Before commit, every retry atomically replaces published copies from validated
+  root sources. A linked, unreadable or invalid root source prevents commit and
+  retains all roots with a diagnostic. A malformed regular marker can be removed
+  for retry only inside a verified protected directory.
+  Before committing the marker, migration atomically records each copied source's
+  SHA-256 in `config/.ave-config-sources.json`. Protected-boot cleanup deletes a
+  regular root copy only if its bytes still match that recorded hash. A changed
+  or newly appearing root file moves to `<name>.post-migration-<UTC timestamp>`;
+  a diagnostic and a system boot notice name the preserved copy. Cleanup never
+  merges root data into committed configuration. Per-entry no-follow cleanup
+  preserves links and reports failures for retry. Interactive boot trust failures show a
+  localized native error with the cause, path and recovery instructions before exit.
+  Feature storage asserts that boundaries already
+  exist and never creates them on Windows.
+  Boot reads each boundary's own descriptor on a pinned no-reparse handle.
+  The owner must be the user, or `S-1-5-32-544` under an elevated token;
+  its protected DACL must hold exactly one explicit user FullControl ACE
+  with object and container inheritance. A conforming boundary is never
+  rewritten, and its children are never inspected. Traverse bypass does
+  not grant access through a child's own protected DACL, so a foreign
+  read grant on the root cannot open a boundary.
+  The root retains its protected user FullControl rule. Foreign root
+  grants contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
+  (`0x1200a9`, including SYNCHRONIZE) emit diagnostics without disabling
+  confinement. Any write, delete, WRITE_DAC, WRITE_OWNER or other wider
+  right refuses confinement before boundary repair.
+  A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
+  replaced with a freshly protected directory, and copied without carrying
+  its ACLs or read-only attributes. Links and junctions are skipped and logged.
+  Copy destinations are created exclusively. A fresh repair directory receives
+  a flushed marker before any copied content. On retry, the marker is checked
+  through the pinned handle; the partial live directory is renamed aside and
+  copying restarts in a fresh protected directory. Unmarked partial directories
+  are retained with a diagnostic. The pending aside remains authoritative.
+  Once copying and verification finish, the aside is renamed to
+  `<name>.unprotected-complete` before deletion. A completed aside beside a
+  protected live directory needs deletion only; an aside without a live
+  directory is renamed back and repaired again. The deleter opens entries
+  relative to pinned handles and removes reparse entries themselves, including
+  read-only entries when extended deletion is supported. Cleanup never changes
+  attributes; an undeletable aside is retained with its path in a warning while
+  the protected live directory remains usable. Other failed repair steps refuse
+  confinement and name the boundary and step.
+  Each successful repair emits one localized system notification recommending
+  sign-out and sign-in because credentials may have been readable. Headless
+  hosts log the notice without desktop delivery. A flushed pending-notice marker
+  precedes aside deletion and survives restart until the notification service
+  accepts desktop delivery; failed or headless delivery keeps the marker.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.

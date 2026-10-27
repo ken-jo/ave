@@ -9,7 +9,8 @@ import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketpla
 // Target the last-focused window for point sends; primary closure never re-roles existing secondary windows.
 export type MainWindowRole = "primary" | "secondary";
 
-const mainWindows: BrowserWindow[] = [];
+// Capture native identities while the window is live; closed handlers cannot read them.
+const mainWindows = new Map<BrowserWindow, { id: number; surface: WebContents }>();
 let focusedMainWindowId: number | null = null;
 let primaryMainWindowId: number | null = null;
 // Main window ids, least to most recently focused (opening counts as focus).
@@ -22,12 +23,12 @@ function recordFocus(id: number): void {
   focusedMainWindowId = id;
   updateApprovalSurface({
     kind: "attach-unattributed",
-    surface: mainWindows.find((win) => win.id === id)?.webContents ?? null,
+    surface: [...mainWindows.values()].find((entry) => entry.id === id)?.surface ?? null,
   });
 }
 
 function liveMainWindows(): BrowserWindow[] {
-  return mainWindows.filter((win) => !win.isDestroyed());
+  return [...mainWindows.keys()].filter((win) => !win.isDestroyed());
 }
 
 export function getMainWindows(): BrowserWindow[] {
@@ -49,34 +50,39 @@ export function nextMainWindowRole(): MainWindowRole {
 }
 
 export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): void {
-  if (mainWindows.includes(win)) throw new Error("main-window-already-registered");
+  if (mainWindows.has(win)) throw new Error("main-window-already-registered");
+  const id = win.id;
+  const surface = win.webContents;
   if (role === "primary") {
     if (getPrimaryMainWindow() !== null) throw new Error("main-window-primary-already-claimed");
-    primaryMainWindowId = win.id;
+    primaryMainWindowId = id;
   }
-  mainWindows.push(win);
-  recordFocus(win.id);
+  mainWindows.set(win, { id, surface });
+  recordFocus(id);
 }
 
 export function unregisterMainWindow(win: BrowserWindow): void {
+  const entry = mainWindows.get(win);
+  if (!entry) return;
+  const { id, surface } = entry;
   // Revoking the owner never approves or settles an outstanding card. Without
   // a turn abort, it remains pending until the normal five-minute deny timeout.
-  updateApprovalSurface({ kind: "release-owner", surface: win.webContents });
-  const index = mainWindows.indexOf(win);
-  if (index >= 0) mainWindows.splice(index, 1);
-  const historyIndex = focusHistory.indexOf(win.id);
+  updateApprovalSurface({ kind: "release-owner", surface });
+  mainWindows.delete(win);
+  const historyIndex = focusHistory.indexOf(id);
   if (historyIndex >= 0) focusHistory.splice(historyIndex, 1);
-  if (focusedMainWindowId === win.id) {
+  if (focusedMainWindowId === id) {
     // Back to the window the user was in before this one.
     const liveIds = new Set(liveMainWindows().map((live) => live.id));
     focusedMainWindowId = [...focusHistory].reverse().find((id) => liveIds.has(id)) ?? null;
   }
-  if (primaryMainWindowId === win.id) primaryMainWindowId = null;
+  if (primaryMainWindowId === id) primaryMainWindowId = null;
   updateApprovalSurface({ kind: "attach-unattributed", surface: getMainWindow()?.webContents ?? null });
 }
 
 export function markMainWindowFocused(win: BrowserWindow): void {
-  if (mainWindows.includes(win)) recordFocus(win.id);
+  const entry = mainWindows.get(win);
+  if (entry && !win.isDestroyed()) recordFocus(entry.id);
 }
 
 // The live main window whose renderer is `contents`, or null.
@@ -129,9 +135,9 @@ export function sideChatOwnerWindow(): BrowserWindow | null {
 
 // @internal test-only reset for isolated module-state tests.
 export function resetMainWindowsForTests(): void {
-  for (const window of mainWindows) updateApprovalSurface({ kind: "release-owner", surface: window.webContents });
+  for (const { surface } of mainWindows.values()) updateApprovalSurface({ kind: "release-owner", surface });
   updateApprovalSurface({ kind: "attach-unattributed", surface: null });
-  mainWindows.length = 0;
+  mainWindows.clear();
   focusHistory.length = 0;
   focusedMainWindowId = null;
   primaryMainWindowId = null;

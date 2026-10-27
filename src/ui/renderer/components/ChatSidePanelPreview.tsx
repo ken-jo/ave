@@ -29,13 +29,13 @@ import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
-import { resolveIpcErrorKey } from "../format-ipc-error.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { PreviewContent, resolveFilePreviewRoute } from "../preview/preview-renderers.js";
 import { TableDocumentPreview } from "../preview/table-document-preview.js";
 import { PageDocumentPreview } from "../preview/PageDocumentPreview.js";
+import { TextDocumentPreview } from "../preview/TextDocumentPreview.js";
 import { FileEditDiff } from "./FileEditDiff.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { McpAppView } from "./McpAppView.js";
@@ -145,14 +145,14 @@ export function previewFillsPanel(target: ChatPreviewTarget): boolean {
  * the grid alone scrolls, so the host has nothing left to scroll. Any other
  * target renders exactly as before, as a block the host scrolls.
  */
-export function PreviewDetail({ api, sessionId, target }: { api: AveApi; sessionId?: string; target: ChatPreviewTarget }) {
+export function PreviewDetail({ api, sessionId, target, visible }: { api: AveApi; sessionId?: string; target: ChatPreviewTarget; visible: boolean }) {
   return (
     <div
       className={previewFillsPanel(target) ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}
       data-testid="chat-side-panel-preview-detail"
     >
-      <DetailHeader target={target} />
-      <PreviewBody api={api} sessionId={sessionId} target={target} />
+      {target.kind !== "file" ? <DetailHeader target={target} /> : null}
+      <PreviewBody api={api} sessionId={sessionId} target={target} observe={visible} />
     </div>
   );
 }
@@ -173,162 +173,31 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
-type PreviewReadError = NonNullable<Awaited<ReturnType<typeof window.ave.preview.readFile>>["error"]>;
-
 /**
- * Map a preview-read error code to its user message key.
- *
- * The Layer-0 directory denials are NOT re-mapped here — they resolve through
- * `resolveIpcErrorKey`, the shared table that is now their single authority, so
- * this surface and every other one cannot drift apart on them. The remaining
- * cases are preview-specific phrasings that deliberately differ from the shared
- * table's wording (e.g. `read-failed` reads as "not found" here).
+ * `observe` is the panel's visibility. A hidden panel keeps every body mounted
+ * (sheet, scroll and page position survive) while observing views release
+ * their subscription; showing it again takes a fresh baseline.
  */
-function fileErrorKey(code: PreviewReadError): string {
-  switch (code) {
-    case "path-not-allowed":
-    case "sensitive-path":
-      return resolveIpcErrorKey(code) ?? "chatPreviewRail.fileErrorGeneric";
-    case "binary-file":
-      return "chatPreviewRail.fileErrorBinary";
-    case "too-large":
-      return "chatPreviewRail.fileErrorTooLarge";
-    case "not-a-file":
-      return "chatPreviewRail.fileErrorGlob";
-    case "read-failed":
-      return "chatPreviewRail.fileErrorNotFound";
-    default:
-      return "chatPreviewRail.fileErrorGeneric";
-  }
-}
-
-/**
- * File preview body. Renders the file's CONTENT through the progressive
- * renderer registry (markdown/mermaid/text), loading it via the traversal-
- * guarded `window.ave.preview.readFile` IPC when the target has no inline
- * text (diagnosis ①). Search-hit targets that already carry `inlineText`
- * render it directly without an IPC round-trip.
- */
-function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind: "file" }> }) {
-  const { t } = useTranslation();
-  const { startLine, endLine } = target;
-  const hasSelectedRange = startLine !== undefined && endLine !== undefined;
-  const relativeLabel = target.workspaceRoot ? toRelativePath(target.workspaceRoot, target.path) : target.path;
-  const pathLabel = target.workspaceRoot && /^(?:\/|[a-zA-Z]:[/\\])/.test(relativeLabel) ? fileBasename(relativeLabel) : relativeLabel;
-  const inlineText = hasSelectedRange ? undefined : target.inlineText;
-  const [state, setState] = useState<
-    | { phase: "idle" }
-    | { phase: "loading" }
-    | { phase: "ok"; content: string; path: string; truncated: boolean; lineCount?: number; image?: { dataUrl: string; mimeType: string } }
-    | { phase: "error"; code: PreviewReadError }
-  >({ phase: "idle" });
-  // Document viewers own their bounded IPC read; inline targets stay text.
-  const route = hasSelectedRange || inlineText ? "text" : resolveFilePreviewRoute(target.path).kind;
-
-  useEffect(() => {
-    // Inline text (e.g. an indexer search-hit snippet) needs no IPC read.
-    if (inlineText || route !== "text") {
-      setState({ phase: "idle" });
-      return;
-    }
-    let cancelled = false;
-    setState({ phase: "loading" });
-    const read = hasSelectedRange
-      ? window.ave.preview.readFile(target.path, { offset: startLine - 1, limit: endLine - startLine + 1, ...(target.workspaceRoot ? { workspaceRoot: target.workspaceRoot } : {}) })
-      : target.workspaceRoot ? window.ave.preview.readFile(target.path, { workspaceRoot: target.workspaceRoot })
-        : window.ave.preview.readFile(target.path);
-    void read
-      .then((result) => {
-        if (cancelled) return;
-        if (result.ok) {
-          setState({
-            phase: "ok",
-            content: result.content ?? "",
-            path: result.path ?? target.path,
-            truncated: Boolean(result.truncated),
-            lineCount: result.lineCount,
-            image: hasSelectedRange ? undefined : result.image,
-          });
-        } else {
-          setState({ phase: "error", code: result.error ?? "read-failed" });
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setState({ phase: "error", code: "read-failed" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [target.path, target.workspaceRoot, inlineText, route, startLine, endLine, hasSelectedRange]);
-
-  const copyValue = inlineText
-    ?? (state.phase === "ok" ? state.content : target.path);
-
-  return (
-    <div
-      className={route === "table" ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}
-      data-testid="chat-side-panel-file-preview"
-    >
-      <div title={target.sourceTurnId} className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
-        {hasSelectedRange ? `${pathLabel}:${startLine}-${endLine}` : pathLabel}
-      </div>
-      {inlineText ? (
-        <PreviewContent descriptor={{ text: inlineText, path: target.path }} />
-      ) : route === "table" ? (
-        <TableDocumentPreview key={target.path} path={target.path} />
-      ) : route === "page" ? (
-        <PageDocumentPreview key={target.path} path={target.path} />
-      ) : state.phase === "loading" ? (
-        <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-file-loading">
-          {t("chatPreviewRail.filePreviewLoading")}
-        </div>
-      ) : state.phase === "ok" ? (
-        <div className="space-y-2">
-          {state.truncated ? (
-            <Badge variant="outline" className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-file-truncated">
-              {t("chatPreviewRail.filePreviewTruncated")}
-            </Badge>
-          ) : null}
-          {state.image ? (
-            <img src={state.image.dataUrl} alt={target.title} referrerPolicy="no-referrer" className="max-h-(--preview-block-max-height) max-w-full rounded-md object-contain" data-testid="file-preview-image" />
-          ) : hasSelectedRange ? (
-            <pre className="max-h-(--preview-block-max-height) overflow-auto rounded-md border bg-background p-3 font-mono text-xs" data-testid="file-preview-selected-range">
-              {state.content.split(/\r\n|\r|\n/).slice(0, Math.min(state.lineCount ?? Infinity, endLine - startLine + 1)).map((line, index) => (
-                <span key={index} data-testid={`file-preview-line-${startLine + index}`} data-selected="true" className="flex bg-accent/(--opacity-subtle)">
-                  <span aria-hidden="true" className="mr-3 min-w-8 shrink-0 select-none text-right text-muted-foreground">{startLine + index}</span>
-                  <span className="whitespace-pre">{line || "\u200b"}</span>
-                </span>
-              ))}
-            </pre>
-          ) : <PreviewContent descriptor={{ text: state.content, path: state.path }} />}
-        </div>
-      ) : state.phase === "error" ? (
-        <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
-          {t(fileErrorKey(state.code))}
-        </div>
-      ) : null}
-      <div className="flex flex-wrap gap-2">
-        {target.canOpenExternal ? (
-          <Button type="button" size="sm" variant="outline" onClick={() => void window.ave.attach.openExternal(target.path)}>
-            <ExternalLink className="h-3.5 w-3.5" />
-            <span>{t("chatPreviewRail.openFile")}</span>
-          </Button>
-        ) : null}
-        <CopyButton value={copyValue} />
-      </div>
-    </div>
-  );
+function FilePreviewBody({ target, sessionId, observe }: { target: Extract<ChatPreviewTarget, { kind: "file" }>; sessionId?: string; observe: boolean }) {
+  const route = target.startLine !== undefined || target.inlineText !== undefined ? "text" : resolveFilePreviewRoute(target.path).kind;
+  if (route === "table") return <TableDocumentPreview key={target.path} path={target.path} sessionId={sessionId}
+    workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} observe={observe} />;
+  if (route === "page") return <PageDocumentPreview key={target.path} path={target.path} sessionId={sessionId}
+    workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} />;
+  return <TextDocumentPreview target={target} sessionId={sessionId} observe={observe} />;
 }
 
 export function PreviewBody({
   api,
   sessionId,
   target,
+  observe,
 }: {
   api: AveApi;
   sessionId?: string;
   target: ChatPreviewTarget;
+  /** Whether the hosting panel is shown; see {@link FilePreviewBody}. */
+  observe: boolean;
 }) {
   const { t } = useTranslation();
   const [loadedStub, setLoadedStub] = useState<string | null>(null);
@@ -404,7 +273,7 @@ export function PreviewBody({
   }
 
   if (target.kind === "file") {
-    return <FilePreviewBody key={`${target.id}:${target.workspaceRoot}:${target.startLine}:${target.endLine}`} target={target} />;
+    return <FilePreviewBody key={`${target.id}:${target.workspaceRoot}:${target.startLine}:${target.endLine}`} target={target} sessionId={sessionId} observe={observe} />;
   }
 
   if (target.kind === "url") {

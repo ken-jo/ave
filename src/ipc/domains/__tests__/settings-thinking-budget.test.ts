@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +11,7 @@ import { unavailableSecretEncryption } from "../../../__tests__/support/host-run
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
+import { apiRoundLlmSettings } from "../../../engine/turn/round-llm-settings.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -23,8 +28,17 @@ afterEach(async () => {
 });
 
 describe("thinking budget settings IPC", () => {
-  it.each([[32_000, 16_000], [16_000, 8_000], [32_001, 32_000], [2_000, 1_999]])(
-    "normalizes an oversized update with output %i before persistence and broadcast", async (outputTokenLimit, expected) => {
+  // Stored budgets retain intent. Numeric requests use the highest preset below output,
+  // or output minus one when no preset fits; effort still comes from the original budget.
+  it.each([
+    [32_000, 32_000, 16_000, "xhigh"],
+    [32_000, 16_000, 8_000, "xhigh"],
+    [32_000, 32_001, 32_000, "xhigh"],
+    [32_000, 2_000, 1_999, "xhigh"],
+    [64_000, 2_000, 1_999, "max"],
+    [14_000, 2_000, 1_999, "high"],
+  ] as const)(
+    "preserves budget %i with output %i through persistence and broadcast, bounding only the request", async (thinkingBudgetTokens, outputTokenLimit, requestBudget, effort) => {
       userDataPath = mkdtempSync(join(tmpdir(), "thinking-settings-ipc-"));
       const settingsService = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
       const send = vi.fn();
@@ -38,16 +52,30 @@ describe("thinking budget settings IPC", () => {
       } as never);
 
       await invoke(CHANNELS.settings.update, {
-        llm: { vendors: { openai: { outputTokenLimit, thinkingBudgetTokens: 32_000 } } },
+        llm: { vendors: { openai: { outputTokenLimit, thinkingBudgetTokens } } },
       });
-      expect(settingsService.get("llm").vendors.openai).toMatchObject({ outputTokenLimit, thinkingBudgetTokens: expected });
+      const expectedBlock = {
+        model: "", enableThinking: true, outputTokenLimit, outputTokenLimitSetByUser: true, thinkingBudgetTokens,
+      };
+      const stored = settingsService.get("llm").vendors.openai!;
+      expect(stored).toEqual(expectedBlock);
+      expect(send).toHaveBeenCalledTimes(1);
       expect(send).toHaveBeenCalledWith(SETTINGS.updated, expect.objectContaining({
         llm: expect.objectContaining({ vendors: expect.objectContaining({
-          openai: expect.objectContaining({ outputTokenLimit, thinkingBudgetTokens: expected }),
+          openai: expectedBlock,
         }) }),
       }));
       const reloaded = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
-      expect(reloaded.get("llm").vendors.openai).toEqual(settingsService.get("llm").vendors.openai);
+      expect(reloaded.get("llm").vendors.openai).toEqual(expectedBlock);
+
+      const round = apiRoundLlmSettings(stored, {
+        requested: outputTokenLimit, requestedSource: "user", effective: outputTokenLimit, effectiveSource: "user",
+      }, "none");
+      expect(round).toMatchObject({
+        outputTokenLimit, requestedThinkingBudgetTokens: thinkingBudgetTokens,
+        thinkingBudgetTokens: requestBudget, reasoningEffort: effort,
+      });
+      expect(settingsService.get("llm").vendors.openai).toEqual(expectedBlock);
     },
   );
 });

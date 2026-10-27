@@ -1173,7 +1173,7 @@ describe("LlmTab provider cards", () => {
 
   it.each([[32_000, 16_000], [16_000, 8_000], [32_001, 32_000]])(
     "offers only presets below output %i", async (outputTokenLimit, expected) => {
-      const { hooks } = await renderTab(makeApi(), { enableThinking: true, thinkingBudget: 4_000, outputTokenLimit });
+      const { hooks } = await renderTab(makeApi(), { vendor: "openai-compatible", model: "fixture-model", enableThinking: true, thinkingBudget: 4_000, outputTokenLimit });
       const slider = within(screen.getByTestId("llm-tab:section-thinking")).getByRole("slider");
       const maximumIndex = outputTokenLimit === 32_000 ? "2" : outputTokenLimit === 16_000 ? "1" : "3";
       expect(slider).toHaveAttribute("aria-valuemax", maximumIndex);
@@ -1185,7 +1185,7 @@ describe("LlmTab provider cards", () => {
   );
 
   it("displays a custom saved budget without snapping it until the user selects a preset", async () => {
-    const { hooks } = await renderTab(makeApi(), { enableThinking: true, thinkingBudget: 14_000, outputTokenLimit: 32_000 });
+    const { hooks } = await renderTab(makeApi(), { vendor: "openai-compatible", model: "fixture-model", enableThinking: true, thinkingBudget: 14_000, outputTokenLimit: 32_000 });
     const section = screen.getByTestId("llm-tab:section-thinking");
     expect(section).toHaveTextContent("14,000");
     expect(hooks.setThinkingBudget).not.toHaveBeenCalled();
@@ -1198,11 +1198,21 @@ describe("LlmTab provider cards", () => {
   });
 
   it("shows the existing custom budget without a preset slider when the output ceiling is too small", async () => {
-    const { hooks } = await renderTab(makeApi(), { enableThinking: true, thinkingBudget: 1_999, outputTokenLimit: 2_000 });
+    const { hooks } = await renderTab(makeApi(), { vendor: "openai-compatible", model: "fixture-model", enableThinking: true, thinkingBudget: 1_999, outputTokenLimit: 2_000 });
     const section = screen.getByTestId("llm-tab:section-thinking");
     expect(section).toHaveTextContent("1,999");
     expect(within(section).queryByRole("slider")).toBeNull();
     expect(hooks.setThinkingBudget).not.toHaveBeenCalled();
+  });
+
+  it.each([["gpt-6.1-sol", true], ["o3-mini", false]] as const)("shows a maximum rung only for a model accepting it: %s", async (model, acceptsMax) => {
+    const { hooks } = await renderTab(makeApi(), { vendor: "openai", model, enableThinking: true, thinkingBudget: 8_000, outputTokenLimit: 2_000 });
+    const section = screen.getByTestId("llm-tab:section-thinking");
+    const presets = within(section).getAllByRole("button").filter((button) => button.hasAttribute("aria-pressed"));
+    expect(presets).toHaveLength(acceptsMax ? 5 : 4);
+    expect(presets.some((button) => button.textContent === "최대")).toBe(acceptsMax);
+    fireEvent.click(presets.at(-1)!);
+    expect(hooks.setThinkingBudget).toHaveBeenLastCalledWith(acceptsMax ? 64_000 : 32_000);
   });
 
   it("puts Save inside the card being edited, not on the page", async () => {
