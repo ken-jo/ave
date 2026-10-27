@@ -1,5 +1,7 @@
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { posix, sep } from "node:path";
+import { modelShellPath } from "../../shared/shell-native-path.js";
+import { physicalParentReading } from "../../shared/shell-filesystem-path.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
 import { analyzeShell, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord } from "../../shared/shell-analysis.js";
@@ -107,33 +109,62 @@ function normalizeVisiblePath(text: string, home: string): string {
   return text.replace(/["']/g, "").replace(/^~(?=\/|$)/, home).replace(/\$\{HOME\}|\$HOME\b/g, home)
     .replace(/\{([^{}]+)\}/g, (_match, choices: string) => choices.includes(",") || choices.includes("..") ? "*" : choices);
 }
-export function sensitivePathInArgumentText(text: string, cwd: string | undefined, context = new ShellFloorContext()): string | null {
-  context.visits.staticChars += text.length;
-  if (!/[\/\\~.@=$*?[\]{}]/.test(text)
-    && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text.replace(/["']/g, "")))) return null;
-  const homes = /(?:^|[^\\])~(?=\/|$)|\$\{HOME\}|\$HOME\b/.test(text)
-    ? [homedir(), ...expandShellTildePaths("~")] : [""];
-  for (const home of homes) for (const candidate of pathCandidates(normalizeVisiblePath(text, home))) {
-    const absolute = isAbsolute(candidate) ? candidate : resolve(cwd ?? "/", candidate);
-    if (!/[*?[\]]/.test(absolute)) {
-      const hit = context.matchPath(caseFoldForMatch(context.canonicalize(absolute, true))); if (hit) return hit;
-      continue;
+// Lexical floor views of an operand; they never establish its filesystem identity.
+function lexicalFloorPaths(native: string, normalizedPath: string, floorPaths: readonly string[]): string[] {
+  const paths = [normalizedPath, ...floorPaths];
+  // A POSIX backslash is a name byte, but a Windows-reading tool treats it as a separator.
+  if (sep === "/" && native.includes("\\")) paths.push(posix.normalize(native.replaceAll("\\", "/")));
+  return paths;
+}
+function nativePathProbe(candidate: string, cwd: string | undefined, context: ShellFloorContext): { hit: string | null; sessionRead: boolean } {
+  const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() });
+  let sessionRead = false;
+  const native = modeled.nativePath;
+  if (native !== undefined) {
+    // Canonicalize before folding "..": a link's parent is its target's parent.
+    const canonical = caseFoldForMatch(context.canonicalize(native, true));
+    const hit = context.matchPath(canonical);
+    if (hit) return { hit, sessionRead: false };
+    sessionRead = context.isSessionReadPath(canonical);
+    if (sep === "\\" && /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(native)) {
+      let physical: string | undefined;
+      try { physical = physicalParentReading(native); } catch { context.unresolvedPath = true; }
+      const physicalHit = physical === undefined ? null : context.matchPath(caseFoldForMatch(context.canonicalize(physical, true)));
+      if (physicalHit) return { hit: physicalHit, sessionRead: false };
     }
-    const segments = foldCanonicalPathSeparators(absolute).split("/");
-    let anchoredSegments = segments;
-    const first = segments.findIndex((segment) => /[*?[\]]/.test(segment));
-    if (first > 0) {
-      let literalPrefix = segments.slice(0, first).join("/");
-      if (process.platform === "win32" && /^[A-Za-z]:$/.test(literalPrefix)) literalPrefix += "/";
-      const prefix = context.canonicalize(literalPrefix || "/", true);
+  } else context.unresolvedPath = true;
+  // Canonical containment and all its exclusions precede any extra floor view.
+  if (!sessionRead) for (const path of lexicalFloorPaths(native ?? modeled.normalizedPath, modeled.normalizedPath, modeled.floorPaths)) {
+    const hit = context.matchPath(caseFoldForMatch(path));
+    if (hit) return { hit, sessionRead };
+  }
+  return { hit: null, sessionRead };
+}
+// Literal prefixes anchor on their canonical identity; a win32 ".." prefix also anchors on its link-following reading.
+function globPathFloor(segments: readonly string[], sessionRead: boolean, context: ShellFloorContext): string | null {
+  const anchored: (readonly string[])[] = [];
+  const firstGlob = segments.findIndex((segment) => /[*?[\]]/.test(segment));
+  if (firstGlob > 0) {
+    let literalPrefix = segments.slice(0, firstGlob).join("/");
+    if (/^[A-Za-z]:$/.test(literalPrefix)) literalPrefix += "/";
+    const prefixes = [literalPrefix || "/"];
+    if (sep === "\\" && segments.slice(0, firstGlob).includes("..")) {
+      try { prefixes.push(physicalParentReading(literalPrefix)); } catch { context.unresolvedPath = true; }
+    }
+    for (const literal of prefixes) {
+      const prefix = context.canonicalize(literal, true);
       const hit = context.matchPath(caseFoldForMatch(prefix)); if (hit) return hit;
-      anchoredSegments = [...prefix.replace(/\/$/, "").split("/"), ...segments.slice(first)];
+      anchored.push([...prefix.replace(/\/$/, "").split("/"), ...segments.slice(firstGlob)]);
     }
-    // Sensitive entries have fixed, short segment lists. Compare those lists
-    // directly with each source segment instead of rebuilding every path
-    // suffix for every possible match.
-    for (const entry of SENSITIVE_PATH_ENTRIES) {
-      const sourceSegments = entry.anchor === "ave-home" ? anchoredSegments : segments;
+  }
+  const views = [segments, ...anchored];
+  // Sensitive entries have fixed, short segment lists. Compare those lists
+  // directly with each source segment instead of rebuilding every path
+  // suffix for every possible match.
+  for (const entry of SENSITIVE_PATH_ENTRIES) {
+    if (sessionRead && entry.access === "read-only") continue;
+    // A common basename alone cannot identify the application store: it anchors on canonical prefixes only.
+    for (const sourceSegments of entry.anchor === "ave-home" && anchored.length > 0 ? anchored : views) {
       for (let start = 0; start + entry.segments.length <= sourceSegments.length; start += 1) {
         const prefix = sourceSegments.slice(0, start);
         const namespaceMatches = entry.anchor === "ave-home" && prefix.length > 0
@@ -149,16 +180,44 @@ export function sensitivePathInArgumentText(text: string, cwd: string | undefine
         }
         if (!matches) continue;
         if (entry.anchor === "ave-home") {
-          // Match the same namespace as the host-path projection, including a
-          // relocated home. A common basename alone cannot identify this store.
+          // Match the same namespace as the host-path projection, including a relocated home.
           return namespaceMatches ? `**/.ave/${entry.segments.join("/")}${entry.kind === "dir" ? "/**" : ""}`
             : `ave-home:${entry.segments.join("/")}`;
         }
         return `**/${entry.segments.join("/")}${entry.kind === "dir" ? "/**" : ""}`;
       }
     }
-    for (const segment of segments) for (const name of SENSITIVE_PATTERN_NAMES) {
-      if (segmentCouldMatch(segment, name)) return `**/${name}**`;
+  }
+  for (const view of views) for (const segment of view) for (const name of SENSITIVE_PATTERN_NAMES) {
+    if (segmentCouldMatch(segment, name)) return `**/${name}**`;
+  }
+  return null;
+}
+export function sensitivePathInArgumentText(text: string, cwd: string | undefined, context = new ShellFloorContext()): string | null {
+  context.visits.staticChars += text.length;
+  if (!/[\/\\~.@=$*?[\]{}]/.test(text)
+    && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text.replace(/["']/g, "")))) return null;
+  const homes = /(?:^|[^\\])~(?=\/|$)|\$\{HOME\}|\$HOME\b/.test(text)
+    ? [homedir(), ...expandShellTildePaths("~")] : [""];
+  for (const home of homes) for (const candidate of pathCandidates(normalizeVisiblePath(text, home))) {
+    const globSource = candidate.replace(/^[\\/]{1,2}\?[\\/](?:UNC[\\/])?/i, prefix => /UNC/i.test(prefix) ? "//" : "");
+    if (!/[*?[\]]/.test(globSource)) {
+      const { hit } = nativePathProbe(candidate, cwd, context); if (hit) return hit;
+      continue;
+    }
+    const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() });
+    if (modeled.nativePath === undefined) context.unresolvedPath = true;
+    // Anchor on the unfolded absolute operand so a link prefix resolves before its "..".
+    const absolute = modeled.nativePath ?? modeled.normalizedPath;
+    const originalSegments = foldCanonicalPathSeparators(globSource).split("/"), first = originalSegments.findIndex((segment) => /[*?[\]]/.test(segment));
+    if (first > 0) {
+      let literal = originalSegments.slice(0, first).join("/");
+      if (/^[A-Za-z]:$/.test(literal)) literal += "/";
+      const { hit } = nativePathProbe(literal || "/", cwd, context); if (hit) return hit;
+    }
+    const sessionRead = modeled.nativePath !== undefined && context.isSessionReadPath(caseFoldForMatch(context.canonicalize(modeled.nativePath, true)));
+    for (const path of new Set([absolute, ...lexicalFloorPaths(absolute, modeled.normalizedPath, modeled.floorPaths)])) {
+      const hit = globPathFloor(foldCanonicalPathSeparators(path).split("/"), sessionRead, context); if (hit) return hit;
     }
   }
   return null;
@@ -169,8 +228,7 @@ export function sensitivePathInLiteralArgumentText(text: string, cwd: string | u
   if (!/[\/\\.@=]/.test(text) && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text))) return null;
   for (const candidate of pathCandidates(text)) {
     if (/(?:^|[=:])(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(candidate)) return "visible UNC path";
-    const absolute = isAbsolute(candidate) ? candidate : resolve(cwd ?? "/", candidate);
-    const hit = context.matchPath(caseFoldForMatch(context.canonicalize(absolute, true)));
+    const { hit } = nativePathProbe(candidate, cwd, context);
     if (hit) return hit;
   }
   return null;
@@ -404,7 +462,10 @@ function inspectCommand(command: ShellCommand, cwd: string | undefined, context:
   for (let index = 0; index < command.words.length; index += 1) if (!payload?.has(index) && argv[index] === undefined) {
     inspectWord(command.words[index]!, cwd, context, pass, true, argv[index]);
   }
+  const unresolvedPath = context.unresolvedPath;
   const native = inspectLiteralShellArgvFacts(argv, cwd, context, payload, evaluation); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
+  // Literal output data can add a visible floor without requiring filesystem identity.
+  if (proof.kind === "static-complete" && proof.dataOnly) context.unresolvedPath = unresolvedPath;
   pass.network = native.network; pass.readsPath ||= native.readsPath;
   if (pass.network && pass.readsPath) pass.exfiltration ??= "network command reads a file";
   return pass;
@@ -457,13 +518,21 @@ export function inspectShellCommand(input: ShellCommandInput, cwd?: string, supp
     const parsed = parsedWithContext(input, context);
     return shellFact(parsed, `static-floor\0${cwd ?? ""}`, () => {
       if (!parsed.analysis.ok) {
-        if (shellFloorParserBudgetExceeded(parsed.analysis.reason)) return shellFloorBudgetSignals();
-        const sensitive = sensitivePathInArgumentText(parsed.command, cwd, context), exfiltration = UNPARSED_UPLOAD.test(parsed.command) ? "curl/wget body from a file (unparsed)" : null;
-        return { outcome: sensitive || exfiltration ? "visible-floor" : "unproven", sensitive, exfiltration, ordinaryAsk: parsed.analysis.reason };
+        const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
+        let sensitive: string | null = null;
+        for (const match of parsed.command.matchAll(/"[^"\n]*"|'[^'\n]*'|[^\s;|&()<>]+/g)) {
+          sensitive ??= sensitivePathInArgumentText(match[0], cwd, context);
+        }
+        const exfiltration = UNPARSED_UPLOAD.test(parsed.command) ? "curl/wget body from a file (unparsed)" : null;
+        return { ...(limited ? shellFloorBudgetSignals() : {}), outcome: sensitive || exfiltration ? "visible-floor" : "unproven", sensitive, exfiltration, ordinaryAsk: limited ? SHELL_FLOOR_BUDGET_REASON : parsed.analysis.reason };
       }
       const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
       const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
       const pass = inspectStatement(statement, cwd, context, single);
+      if (context.unresolvedPath) {
+        pass.unproven ??= "Shell path namespace is unresolved";
+        pass.exactLiteralEvaluation = undefined;
+      }
       const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
       if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
       if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= DYNAMIC_REASON;

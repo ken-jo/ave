@@ -3,7 +3,7 @@ import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.j
 
 export type StaticArgvProof =
   | { kind: "unproven" }
-  | { kind: "static-complete"; changesState: boolean }
+  | { kind: "static-complete"; changesState: boolean; dataOnly?: true }
   | { kind: "literal-evaluation"; payloadIndexes: readonly number[]; changesState: false };
 
 export interface StaticArgvWork { staticTokens: number; staticChars: number }
@@ -146,6 +146,9 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
   while (at < argv.length) {
     const original = read(at)!;
     const name = program(original);
+    // Bash builtins match only their exact raw head; a case variant is a PATH lookup.
+    if (resolution === "bash-command" && name !== undefined && name !== original
+      && (BASH_BUILTINS.has(name) || name === "command" || name === "exec" || name === "builtin")) return UNPROVEN;
     const psName = canonicalPowerShellName(original);
     if (resolution === "powershell-command") {
       const qualified = original.includes("\\");
@@ -199,7 +202,7 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
         while (index < text.length && "#0- +'.0123456789".includes(text[index]!)) index += 1;
         if (index >= text.length || !"sqbdiouxXeEfFgGc".includes(text[index]!)) return UNPROVEN;
       }
-      return complete();
+      return { kind: "static-complete", changesState: false, dataOnly: true };
     }
     if (name === "echo") {
       let cursor = at + 1;
@@ -207,7 +210,7 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
         if (!/^-[nEe]+$/.test(read(cursor)!)) return UNPROVEN;
         cursor += 1;
       }
-      return complete();
+      return { kind: "static-complete", changesState: false, dataOnly: true };
     }
     if (name === "cd" && read(at + 1) === "-") return UNPROVEN;
     if ((name === "cd" || name === ":") && resolution !== "bash-command") return UNPROVEN;

@@ -1,16 +1,41 @@
-import { describe, expect, it } from "vitest";
-import { windowsPolicyTrustFailure, type WindowsPolicyDescriptor } from "../windows-admin-policy.js";
+vi.mock("../windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { readWindowsAdminPolicy, windowsPolicyTrustFailure, type WindowsPolicyDescriptor } from "../windows-admin-policy.js";
 
 const ADMINISTRATORS = "S-1-5-32-544";
 const SYSTEM = "S-1-5-18";
 const USER = "S-1-5-21-100-200-300-1001";
 const INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+const HOST = process.platform;
+afterEach(() => setProcessPlatform(HOST));
 
 function descriptor(ownerSid = ADMINISTRATORS, sid = ADMINISTRATORS, mask = 0x1f01ff): WindowsPolicyDescriptor {
   return { ownerSid, nullDacl: false, rules: [{ sid, mask, allow: true, inheritOnly: false }] };
 }
 
 describe("Windows policy descriptor trust", () => {
+  it("retains the snapshot failure as its cause without exposing it in the public message", async () => {
+    setProcessPlatform("win32");
+    const directory = mkdtempSync(join(tmpdir(), "policy-read-error-"));
+    // A file parent fails the simulated snapshot; the native one fails before its helper starts.
+    const path = join(directory, "parent", "policy.json");
+    writeFileSync(join(directory, "parent"), '{"duplicate":1,"duplicate":2}');
+    try {
+      const error: unknown = await readWindowsAdminPolicy(path).then(() => undefined, (reason: unknown) => reason);
+      expect(error).toMatchObject({
+        message: expect.stringContaining("Policy snapshot could not be read"),
+        cause: expect.objectContaining(HOST === "win32" ? { message: "host-resources-unavailable" } : { code: "ENOTDIR" }),
+      });
+      expect((error as Error).message).not.toContain(((error as Error).cause as Error).message);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("requires an administrative file owner while allowing trusted system writers", () => {
     expect(windowsPolicyTrustFailure(descriptor(), descriptor())).toBeNull();
     expect(windowsPolicyTrustFailure(descriptor(SYSTEM, INSTALLER), descriptor(INSTALLER))).toBeNull();

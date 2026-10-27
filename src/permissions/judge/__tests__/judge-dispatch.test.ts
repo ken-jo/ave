@@ -260,8 +260,8 @@ describe("judge approval-path placement", () => {
     subject.manager.setRules([{ pattern: "bash", action: "allow" }]);
     const filePath = join(subject.root, ".ave", "settings.json");
     for (const command of [
-      `printf '{}' > ${filePath}`,
-      `cp /dev/null ${filePath}`,
+      `printf '{}' > '${filePath.replace(/\\/g, "/")}'`,
+      `cp /dev/null '${filePath.replace(/\\/g, "/")}'`,
     ]) {
       const result = await checkAndDispatch(subject, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: subject.root } });
       expect(result).toMatchObject({ decision: "ask", forceModal: true });

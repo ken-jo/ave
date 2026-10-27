@@ -21,6 +21,13 @@ export function compileSensitivePathGlob(pattern: string, insensitive: boolean):
     else if (char === "?") states.push({ kind: "one" });
     else states.push({ kind: "literal", value: folded(char) });
   }
+  const suffix: string[] = [];
+  for (let index = states.length - 1; index >= 0; index -= 1) {
+    const state = states[index]!;
+    if (state.kind !== "literal") break;
+    suffix.push(state.value);
+  }
+  suffix.reverse();
   const epsilon = (active: Uint8Array): void => {
     for (let index = 0; index < states.length; index += 1) {
       if (!active[index]) continue;
@@ -30,6 +37,12 @@ export function compileSensitivePathGlob(pattern: string, insensitive: boolean):
     }
   };
   return (path) => {
+    // A missing literal suffix cannot match, regardless of earlier wildcard spans.
+    if (path.length < suffix.length) return false;
+    for (let index = 0; index < suffix.length; index += 1) {
+      const char = path[path.length - suffix.length + index]!;
+      if (folded(char === "\\" ? "/" : char) !== suffix[index]) return false;
+    }
     let active = new Uint8Array(states.length + 1);
     active[0] = 1;
     epsilon(active);

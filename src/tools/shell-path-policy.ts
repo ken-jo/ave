@@ -9,7 +9,9 @@ import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath
 import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
+import { RECURSIVE_TRAVERSAL_COMMANDS, recursiveTraversalFlag } from "../shared/shell-recursive-traversal.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { modelShellPath } from "../shared/shell-native-path.js";
 import { expandShellTildePaths } from "../shared/home-tilde.js";
 import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
@@ -28,27 +30,6 @@ export interface ShellPathPolicyViolation {
   path?: string;
 }
 
-const RECURSIVE_TRAVERSAL_COMMANDS = new Set([
-  "fd",
-  "fdfind",
-  "find",
-  "rg",
-  "tar",
-  "tree",
-  "unzip",
-  "zip",
-]);
-
-const RECURSIVE_FLAG_COMMANDS = new Map<string, readonly string[]>([
-  ["cp", ["-r", "-R", "--recursive", "-a", "--archive"]],
-  ["du", ["-a", "--all"]],
-  ["egrep", ["-r", "-R", "--recursive", "--dereference-recursive"]],
-  ["fgrep", ["-r", "-R", "--recursive", "--dereference-recursive"]],
-  ["grep", ["-r", "-R", "--recursive", "--dereference-recursive"]],
-  ["ls", ["-R"]],
-  ["mv", ["-r", "-R", "--recursive"]],
-]);
-
 // Exempt only public child standard streams; arbitrary descriptor paths can expose other files.
 const SHELL_DEVICE_PATHS: ReadonlySet<string> = new Set([
   "/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr",
@@ -65,7 +46,11 @@ function windowsShellPathViolation(path: string, label: string, effect: PathEffe
     if (part === "." || part === ".." || (index === 0 && /^[a-z]:$/i.test(part))) return part;
     return part.split(":", 1)[0]!.replace(/[. ]+$/, "");
   }).join("/");
-  const sensitive = isSensitivePath(caseFoldForMatch(normalized), effect);
+  const modeled = modelShellPath(normalized, { dialect: "bash" });
+  const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalizePathForMatch(modeled.nativePath));
+  let sensitive = canonical === undefined ? null : isSensitivePath(canonical, effect);
+  const sessionRead = effect === "read" && canonical !== undefined && isConfiguredSessionReadPath(canonical);
+  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isSensitivePath(caseFoldForMatch(candidate), effect);
   if (sensitive) return {
     kind: "sensitive-path",
     reason: `Sensitive path: command operand ${label} matches ${sensitive}`,
@@ -1134,7 +1119,7 @@ function projectCommandPolicyView(
           break;
         }
         wrapperCwds.push({ value, word: transition.path, cwd });
-        try { cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd); }
+        try { cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd, { dialect: "bash" }); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
           unsupported = { reason: "cannot resolve projected wrapper working directory", word: transition.path };
@@ -1234,17 +1219,6 @@ function buildRecursiveBlockMessage(
   return `${head} ${t(guidanceKey, { alt: t(capability.messageKey) })}`;
 }
 
-function hasShellFlag(token: string, flag: string): boolean {
-  if (token === flag) return true;
-  if (flag.length === 2 && /^-[A-Za-z]+$/.test(token)) {
-    return token.slice(1).includes(flag[1]);
-  }
-  if (flag.startsWith("--")) {
-    return token === flag || token.startsWith(flag + "=");
-  }
-  return false;
-}
-
 export type { ShellExecutionFacts } from "../shared/shell-execution.js";
 class PathPolicyError extends Error {
   constructor(readonly violation: ShellPathPolicyViolation) { super(violation.reason); }
@@ -1288,9 +1262,12 @@ export function findShellPathPolicyViolation(
     if (process.platform === "win32" && /^[A-Za-z]:(?![\\/])/.test(path)) decline("drive-relative command operand is unresolved");
     if (!isAbsolute(path) && cwd === null) decline("working directory is unresolved");
     let absolute: string;
-    try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot); }
+    try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" }); }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error)) throw error;
+      if (error.code === "EUNRESOLVEDSHELLPATH") throw new PathPolicyError({
+        kind: "dynamic-path", reason: `Shell path policy: filesystem namespace is unresolved: ${label}`, candidate: label,
+      });
       throw new PathPolicyError({ kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label });
     }
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);
@@ -1345,8 +1322,7 @@ export function findShellPathPolicyViolation(
         if (RECURSIVE_TRAVERSAL_COMMANDS.has(verb) && !(verb === "tar" && parseTarListing(knownArgv) && !projectedEnvironment.TAR_OPTIONS)) {
           throw new PathPolicyError({kind:"recursive-traversal",reason:buildRecursiveBlockMessage(head,verb),candidate:head});
         }
-        const flags=RECURSIVE_FLAG_COMMANDS.get(verb);
-        const selected=knownArgv[1] === "--" ? undefined : knownArgv.slice(1).find((argument)=>flags?.some((flag)=>hasShellFlag(argument,flag)));
+        const selected=recursiveTraversalFlag(verb, knownArgv);
         if(selected) throw new PathPolicyError({kind:"recursive-traversal",reason:buildRecursiveBlockMessage(head,verb,selected),candidate:selected});
       }
       const projectedSlots = offset === 0 && event.testExpression ? {

@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, parse, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath, resolveShellFilesystemPath } from "../shell-filesystem-path.js";
 
@@ -20,6 +20,25 @@ describe("physical filesystem path contracts", () => {
     expect(result).toEqual({
       path: join(root, "missing", "metadata"),
       firstMissingPath: join(root, "missing"),
+      unresolvedParentTraversal: false,
+      routingSymlinkPaths: [],
+    });
+  });
+
+  it.runIf(process.platform === "win32").each(["/", "\\"])("anchors rooted shell operands to the supplied cwd with %s separators", separator => {
+    const operand = separator + [root.slice(parse(root).root.length), "future", "ordinary.txt"]
+      .join(sep).replaceAll(sep, separator);
+    expect(resolveShellFilesystemPath(operand, root)).toBe(join(root, "future", "ordinary.txt"));
+  });
+
+  it.runIf(process.platform === "win32").each(["/", "\\"])("anchors rooted physical operands and routing inspection to the supplied cwd with %s separators", separator => {
+    const operand = separator + [root.slice(parse(root).root.length), "future", "ordinary.txt"]
+      .join(sep).replaceAll(sep, separator);
+    const expected = join(root, "future", "ordinary.txt");
+    expect(resolvePhysicalFilesystemPath(operand, root, 64)).toBe(expected);
+    expect(inspectPhysicalFilesystemPath(operand, root, 64)).toEqual({
+      path: expected,
+      firstMissingPath: join(root, "future"),
       unresolvedParentTraversal: false,
       routingSymlinkPaths: [],
     });
@@ -75,6 +94,15 @@ describe.skipIf(process.platform !== "win32")("junction path readings", () => {
   it.each(["link/../../ordinary.txt", "link/../ordinary.txt"])("codes ambiguous junction parents: %s", operand => {
     const root = fixture();
     expect(() => resolveShellFilesystemPath(operand, root)).toThrow(expect.objectContaining({ code: "EAMBIGUOUSLINKPARENT" }));
+  });
+
+  it.each(["/", "\\"])("refuses rooted junction parents with %s separators", separator => {
+    const root = fixture();
+    const operand = separator + [root.slice(parse(root).root.length), "link", "..", "ordinary.txt"]
+      .join(sep).replaceAll(sep, separator);
+    expect(() => resolveShellFilesystemPath(operand, root))
+      .toThrow(expect.objectContaining({ code: "EAMBIGUOUSLINKPARENT" }));
+    expect(inspectPhysicalFilesystemPath(operand, root, 64).routingSymlinkPaths).toEqual([join(root, "link")]);
   });
 
   it("refuses an outward junction parent with a coded error", () => {

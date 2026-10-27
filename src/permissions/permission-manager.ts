@@ -23,7 +23,7 @@ import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation 
 import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
-import { inspectPowerShellCommand, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, mayTraversePowerShellRecursively, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
@@ -73,6 +73,7 @@ import {
 } from "./sensitive-paths.js";
 import { isPathAllowedForEffect, type PathEffect } from "./allowed-directories.js";
 import { errorMessage } from "../shared/error-message.js";
+import { mayTraverseRecursively } from "../shared/shell-recursive-traversal.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "./persisted-policy-version.js";
@@ -1493,6 +1494,12 @@ export class PermissionManager {
     const plainShell = ruleSubject !== undefined && !shellExecution.runsSandboxed;
     // Actual confinement, not a remembered approval, opens the automatic shell lane.
     if (ruleSubject && shellExecution.runsSandboxed) {
+      // The MXC link-traversal itest decides whether container reads through links are confined.
+      if (context.hostShellExecutionPlan?.substrate === "mxc" && (ruleSubject.dialect === "powershell"
+        ? mayTraversePowerShellRecursively(parsedPowerShellSubject!)
+        : shellShape === undefined || !shellShape.ok || shellShape.commands.some((command) => mayTraverseRecursively(command.argv)))) {
+        return { decision: "ask", reason: t("be_permissionManager.mxcRecursiveTraversalReason"), layer: 2, forceModal: true };
+      }
       return { decision: "allow", reason: t("be_permissionManager.shellSandboxedReason"), layer: 3 };
     }
 

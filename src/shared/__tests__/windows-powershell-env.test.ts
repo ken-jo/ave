@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,22 +17,23 @@ describe("internal Windows PowerShell environment", () => {
     }
   });
 
-  it.skipIf(process.platform !== "win32")("autoloads the native security module despite an inherited incompatible module", (context) => {
-    const probe = spawnSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command", "$PSHOME"], {
-      encoding: "utf8", windowsHide: true, timeout: 15_000,
-    });
-    if (probe.error && "code" in probe.error && probe.error.code === "ENOENT") context.skip("pwsh is not installed");
-    expect(probe.error).toBeUndefined();
-    expect(probe.status, probe.stderr).toBe(0);
-    const moduleSource = join(probe.stdout.trim(), "Modules", "Microsoft.PowerShell.Security");
-    if (!existsSync(join(moduleSource, "Microsoft.PowerShell.Security.psd1"))) {
-      context.skip("the running pwsh installation has no Microsoft.PowerShell.Security module");
-    }
+  it.skipIf(process.platform !== "win32")("autoloads the native security module despite an inherited incompatible module", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-module-path-"));
     try {
-      cpSync(moduleSource, join(root, "Microsoft.PowerShell.Security"), { recursive: true });
-      const inherited = Object.entries(process.env).find(([key]) => key.toLowerCase() === "psmodulepath")?.[1];
-      const polluted = { ...process.env, PSModulePath: [root, inherited].filter(Boolean).join(";") };
+      const moduleDirectory = join(root, "Microsoft.PowerShell.Security");
+      mkdirSync(moduleDirectory);
+      writeFileSync(join(moduleDirectory, "Microsoft.PowerShell.Security.psd1"), [
+        "@{",
+        "ModuleVersion = '1.0.0'",
+        "RootModule = 'incompatible.psm1'",
+        "FunctionsToExport = @('Get-Acl')",
+        "}",
+      ].join("\n"));
+      writeFileSync(join(moduleDirectory, "incompatible.psm1"), "throw 'Incompatible security module fixture'\n");
+      // Child environment keys are case-insensitive; an inherited uppercase key can otherwise win over this fixture.
+      const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
+      const polluted = { ...environment, PSModulePath: root };
+      expect(Object.keys(polluted).filter((key) => key.toLowerCase() === "psmodulepath")).toEqual(["PSModulePath"]);
       const executable = win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
       // Read only: querying this fixture directory forces the security module to autoload.
       const args = ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; Get-Acl -LiteralPath $env:TEMP | Out-Null; 'native-module-ok'"];
