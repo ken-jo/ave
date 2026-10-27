@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { VerifiedDocumentEngineInstallation } from "../main/document-engine-installation.js";
 import { createPrivateTempDirectory, assertCodexLocations } from "../main/codex-executable-location.js";
@@ -22,7 +22,7 @@ export interface ConvertedObservationDocument { pdf: Buffer; recalculated?: Buff
 const ENGINE_PROCESS_LIMITS = Object.freeze({
   sessions: 16, queuedJobs: 4, queuedBytes: 40 * 1024 * 1024,
   temporaryBytes: 256 * 1024 * 1024, temporaryEntries: 4096,
-  diagnosticBytes: 64 * 1024, pollMs: 100, treePollMs: 250, forwardReceiptMs: 2_000,
+  diagnosticBytes: 64 * 1024, pollMs: 100, treePollMs: 250,
 });
 
 interface ExportTarget { extension: "pdf" | "odt" | "xlsx" | "ods"; filter: string }
@@ -38,13 +38,11 @@ const EXPORTS: Readonly<Record<ConversionFormat, readonly ExportTarget[]>> = Obj
   hwpx: [{ extension: "pdf", filter: "writer_pdf_Export" }, { extension: "odt", filter: "writer8" }],
 });
 
-/** Host-authored readiness document: proves the forwarded conversion path before any admitted bytes are staged. */
-const READINESS_PROBE = `<?xml version="1.0" encoding="UTF-8"?>
+/** Host-authored text document used as the resident's frame holder and as its readiness probe; never admitted user bytes. */
+const HOST_TEXT_DOCUMENT = `<?xml version="1.0" encoding="UTF-8"?>
 <office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text"><office:body><office:text><text:p>Ave</text:p></office:text></office:body></office:document>
 `;
 
-/** Keeps the resident's frame list non-empty so a completed forwarded conversion does not terminate it. */
-const RESIDENT_FRAME_HOLDER = "private:factory/swriter";
 
 const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry">
@@ -109,6 +107,17 @@ interface EngineSession {
 }
 
 function failure(message: string): TableDocumentError { return new TableDocumentError("engine-failed", message); }
+
+/** A failed importer process is reported as an unavailable importer runtime, retaining the process diagnostic. */
+function importerUnavailable(signal: AbortSignal, message: string): (error: unknown) => never {
+  return (error) => {
+    signal.throwIfAborted();
+    if (!(error instanceof TableDocumentError) || error.code !== "engine-failed") throw error;
+    const unavailable = new TableDocumentError("engine-runtime-unavailable", message);
+    Object.defineProperty(unavailable, "cause", { value: error });
+    throw unavailable;
+  };
+}
 function aborted(signal: AbortSignal): void { signal.throwIfAborted(); }
 
 function childEnvironment(output: string): NodeJS.ProcessEnv {
@@ -299,28 +308,48 @@ export class LibreOfficeSessionPool {
    * conversion clients forward fixed command lines through that pipe, and the resident performs the work.
    */
   private async startResident(session: EngineSession, runtime: SessionRuntime, signal: AbortSignal): Promise<void> {
+    // A fresh holder per start: a previous instance's lock file must never stand in for this instance's frame.
+    const holderDirectory = join(runtime.output, "holder");
+    await rm(holderDirectory, { recursive: true, force: true });
+    await mkdir(holderDirectory, { mode: 0o700 });
+    const holder = join(holderDirectory, `${randomUUID()}.fodt`);
+    await writeFile(holder, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o600 });
     const resident = await this.spawn(session, runtime, session.installation.executable,
-      [...this.baseArguments(runtime), RESIDENT_FRAME_HOLDER], signal);
+      [...this.baseArguments(runtime), holder], signal);
     runtime.resident = resident;
-    await this.awaitInstancePipe(runtime, resident, signal);
+    await this.awaitInstanceReady(runtime, resident, holder, signal);
     await this.probeReadiness(session, runtime, signal);
     if (resident.ended) throw resident.failure ?? failure("Document engine exited before it was ready.");
   }
 
-  /** A client started before the pipe exists would become a second office on this profile instead of forwarding. */
-  private async awaitInstancePipe(runtime: SessionRuntime, resident: RunningProcess, signal: AbortSignal): Promise<void> {
+  /**
+   * The office terminates when a forwarded request completes while it has no frame, and its own command-line open is
+   * asynchronous. Forwarding therefore waits for the holder document's lock file, written while that document loads
+   * into its frame, and for the private single-instance pipe: a client started without the pipe would become a second
+   * office on this profile instead of forwarding.
+   */
+  private async awaitInstanceReady(runtime: SessionRuntime, resident: RunningProcess, holder: string, signal: AbortSignal): Promise<void> {
+    const lock = join(dirname(holder), `.~lock.${basename(holder)}#`);
     const expires = Date.now() + TOOL_TIMEOUT_POLICY.documentEngineStartupMs;
     for (;;) {
       aborted(signal);
-      if (resident.ended) throw resident.failure ?? failure("Document engine exited before its private pipe was ready.");
-      for (const name of await readdir(runtime.ipc)) {
-        if (!name.startsWith("OSL_PIPE_")) continue;
-        const entry = await lstat(join(runtime.ipc, name));
-        if (entry.isSocket()) return;
-      }
+      if (resident.ended) throw resident.failure ?? failure("Document engine exited before it was ready.");
+      const pipe = await this.hasInstancePipe(runtime.ipc);
+      const framed = await lstat(lock).then(entry => entry.isFile(), (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      if (pipe && framed) return;
       if (Date.now() >= expires) throw new TableDocumentError("parse-limit", "Document engine startup timed out.");
       await sleep(ENGINE_PROCESS_LIMITS.pollMs, signal);
     }
+  }
+
+  private async hasInstancePipe(ipc: string): Promise<boolean> {
+    for (const name of await readdir(ipc)) {
+      if (name.startsWith("OSL_PIPE_") && (await lstat(join(ipc, name))).isSocket()) return true;
+    }
+    return false;
   }
 
   private async probeReadiness(session: EngineSession, runtime: SessionRuntime, signal: AbortSignal): Promise<void> {
@@ -329,7 +358,7 @@ export class LibreOfficeSessionPool {
     const output = join(runtime.output, id);
     await mkdir(output, { mode: 0o700 });
     try {
-      await writeFile(source, READINESS_PROBE, { flag: "wx", mode: 0o400 });
+      await writeFile(source, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o400 });
       const pdf = await this.dispatch(session, runtime, source, output, { extension: "pdf", filter: "writer_pdf_Export" }, undefined, signal);
       if (!pdf.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw failure("Document engine readiness probe did not produce a PDF document.");
     } finally {
@@ -356,7 +385,7 @@ export class LibreOfficeSessionPool {
     const receipt = (text: string): boolean => text.split("\n").some(line => line.startsWith(`convert ${source}`)
       && line.endsWith(` -> ${destination} using filter : ${target.filter}`));
     if (receipt(client.output)) throw failure("Document engine conversion bypassed the session instance.");
-    const expires = Date.now() + ENGINE_PROCESS_LIMITS.forwardReceiptMs;
+    const expires = Date.now() + TOOL_TIMEOUT_POLICY.documentEngineReceiptMs;
     while (!receipt(resident.output)) {
       if (resident.ended) throw resident.failure ?? failure("Document engine resident exited during a conversion.");
       if (Date.now() >= expires) {
@@ -510,13 +539,8 @@ export class LibreOfficeSessionPool {
       UNO_JAVA_JFW_JREHOME: pathToFileURL(javaHome).href };
     // A profile's extension registry is never changed while its resident is using it.
     await this.stopRuntime(runtime);
-    const java = await this.run(session, runtime, join(javaHome, "bin", "java"), ["-version"], signal).catch((error: unknown) => {
-      signal.throwIfAborted();
-      if (!(error instanceof TableDocumentError) || error.code !== "engine-failed") throw error;
-      const unavailable = new TableDocumentError("engine-runtime-unavailable", "The isolated Java runtime could not start.");
-      Object.defineProperty(unavailable, "cause", { value: error });
-      throw unavailable;
-    });
+    const java = await this.run(session, runtime, join(javaHome, "bin", "java"), ["-version"], signal)
+      .catch(importerUnavailable(signal, "The isolated Java runtime could not start."));
     const version = /(?:openjdk|java)\s+(?:version\s+)?"?(\d+)/u.exec(java.output)?.[1];
     if (!version || Number(version) < 11) {
       throw new TableDocumentError("engine-runtime-unavailable", "The isolated Java runtime does not satisfy the required version.");
@@ -527,11 +551,14 @@ export class LibreOfficeSessionPool {
     }
     const importer = join(runtime.input, "importer.oxt");
     await writeFile(importer, extension, { flag: "wx", mode: 0o400 });
+    // Registration failure belongs to the optional importer runtime; other formats in this session stay usable.
     await this.run(session, runtime, session.installation.unopkg,
       [`-env:UserInstallation=${pathToFileURL(runtime.profile).href}`, `-env:OSL_SOCKET_PATH=${runtime.ipc}`,
-        "add", "--force", importer], signal);
+        "add", "--force", importer], signal)
+      .catch(importerUnavailable(signal, "Document importer registration failed in the private profile."));
     const registered = await this.run(session, runtime, session.installation.unopkg,
-      [`-env:UserInstallation=${pathToFileURL(runtime.profile).href}`, `-env:OSL_SOCKET_PATH=${runtime.ipc}`, "list"], signal);
+      [`-env:UserInstallation=${pathToFileURL(runtime.profile).href}`, `-env:OSL_SOCKET_PATH=${runtime.ipc}`, "list"], signal)
+      .catch(importerUnavailable(signal, "Document importer registration failed in the private profile."));
     if (!registered.output.includes("H2Orestart")) throw new TableDocumentError("engine-runtime-unavailable", "Document importer did not register in the private profile.");
     await this.startResident(session, runtime, signal);
     runtime.importerReady = true;
