@@ -649,6 +649,7 @@ jobs:
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
           src/permissions/__tests__/policy-home.test.ts
+          src/shared/__tests__/windows-configuration-handles.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/executor.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts

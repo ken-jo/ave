@@ -18,7 +18,6 @@ vi.mock("../ave-home.js", async original => ({
 
 const HOST = process.platform;
 const nativeOs = getBuiltinModule("node:os");
-const HOST_TYPE = nativeOs.type();
 const MESSAGE = "Native Windows access requires a Windows host";
 
 afterEach(() => {
@@ -30,7 +29,7 @@ afterEach(() => {
 });
 
 describe("native host capture", () => {
-  it.runIf(HOST_TYPE !== "Windows_NT")("refuses a forced win32 platform on the real foreign host", async () => {
+  it.runIf(process.platform !== "win32")("refuses a forced win32 platform on the real foreign host", async () => {
     vi.resetModules();
     setProcessPlatform("win32");
     const native = await import("../windows-native-host.js");
