@@ -100,7 +100,7 @@ const MANIFEST = {
   id: PLUGIN_ID,
   name: "Sample Assistant",
   version: "0.10.14",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   entry: "plugin.mjs",
   description: "reports what crossed the boundary",
   tools: [
@@ -167,7 +167,7 @@ function plainSessionFactory(spec: {
     const session = await openPluginProtocolSession({
       pluginId: spec.manifest.id,
       manifest: spec.manifest,
-      hostProtocolVersion: "3",
+      hostProtocolVersion: "4",
       link: spawnPlainChild(spec.childEntryPath),
       context,
       entryPath: spec.entryPath,

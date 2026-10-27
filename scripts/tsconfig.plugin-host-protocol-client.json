@@ -8,5 +8,5 @@
     "lib": ["es2022"],
     "types": []
   },
-  "files": ["../schemas/plugin-host-protocol/3/protocol-client.ts"]
+  "files": ["../schemas/plugin-host-protocol/4/protocol-client.ts"]
 }

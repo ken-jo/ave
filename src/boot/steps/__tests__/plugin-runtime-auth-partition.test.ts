@@ -172,30 +172,31 @@ beforeEach(() => {
 afterEach(() => tmpDirs.cleanup());
 
 describe("HostApi openAuthWindow capability gate", () => {
-  // The plugin contract carries no flow state (protocol v3), so plugins get the exact-path check; the plugin verifies state itself.
-  it("holds the plugin redirect catcher to its exact callback path", async () => {
+  it.each([["code", "plugin-code"], ["error", "access_denied"]] as const)("validates host state before delivering a %s callback", async (parameter, value) => {
     const createHostApi = await initAndGetFactory();
     const api = createHostApi(
       "plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"] },
       pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-auth-")))), ACTIVE_INCARNATION, "plugin-a",
     );
     const result = await api.authRedirect.open();
+    expect(result.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const callback = new URL(result.redirectUri);
     callback.hostname = "127.0.0.1";
     let completed = false;
     const waiting = api.authRedirect.wait({ handle: result.handle });
     void waiting.then(() => { completed = true; }, () => undefined);
     try {
-      for (const path of ["/unrelated?x=1", "/other/?code=forged&state=plugin-flow-state"]) {
+      for (const path of ["/unrelated?x=1", `/other/?code=forged&state=${result.state}`, "/?code=forged&state=plugin-flow-state", "/?code=forged"]) {
         expect((await fetch(new URL(path, callback), { redirect: "manual" })).status).toBe(404);
         expect(completed).toBe(false);
       }
-      callback.search = "code=plugin-code&state=plugin-flow-state";
+      const expected = { [parameter]: value, state: result.state };
+      callback.search = new URLSearchParams(expected).toString();
       expect((await fetch(callback, { redirect: "manual" })).status).toBe(303);
-      await expect(waiting).resolves.toEqual({ code: "plugin-code", state: "plugin-flow-state" });
-      callback.search = "code=replay&state=plugin-flow-state";
+      await expect(waiting).resolves.toEqual(expected);
+      callback.search = new URLSearchParams({ code: "replay", state: result.state }).toString();
       expect((await fetch(callback, { redirect: "manual" })).status).toBe(404);
-      await expect(api.authRedirect.wait({ handle: result.handle })).resolves.toEqual({ code: "plugin-code", state: "plugin-flow-state" });
+      await expect(api.authRedirect.wait({ handle: result.handle })).resolves.toEqual(expected);
     } finally { await api.authRedirect.close({ handle: result.handle }); }
   });
 

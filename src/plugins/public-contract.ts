@@ -290,7 +290,7 @@ export type OpenAuthWindowFinalUrlResult = {
   finalUrl: string;
 };
 
-/** The query parameters of a caught OAuth redirect. Nothing else crosses. */
+/** Query parameters of an exact-path, host-state-validated OAuth callback, including provider errors. */
 export type AuthRedirectParams = Readonly<Record<string, string>>;
 
 export type AuthRedirectOpenResult = {
@@ -302,6 +302,8 @@ export type AuthRedirectOpenResult = {
    * `127.0.0.1` would be a different — unregistered — URI.
    */
   redirectUri: string;
+  /** Fresh host-generated single-use state. Send unchanged with PKCE S256 in the authorization request. */
+  state: string;
 };
 
 export interface DependencySpec {
@@ -1651,6 +1653,9 @@ export interface PluginHostApi {
    * reported as unknown rather than as forbidden, so a plugin cannot use these
    * members to detect that another plugin has a sign-in in flight.
    *
+   * SECURITY. Use the returned state unchanged together with PKCE S256; state
+   * does not replace PKCE. See RFC 9700 sections 2.1.1 and 4.8.
+   *
    * SHAPE. Three members rather than one because the caller needs the redirect
    * URI BEFORE the browser opens and the parameters AFTER it returns, and
    * because a flow that fails in between still has to release the port. This is
@@ -1658,11 +1663,13 @@ export interface PluginHostApi {
    * not a coincidence — it is the same flow.
    */
   authRedirect: {
-    /** Bind the listener. Rejects when this plugin already has one open. */
+    /** Bind the listener and mint state. Rejects when this plugin already has one open. */
     open(): Promise<AuthRedirectOpenResult>;
     /**
-     * Resolve with the redirect's query parameters, or reject on timeout or
-     * close. Resolves immediately when the redirect has already arrived.
+     * Resolve only with an exact-path callback carrying the host-issued state.
+     * A provider refusal is returned in `error` / `error_description`; check it
+     * before exchanging a code. Invalid state does not consume the waiter.
+     * Rejects on timeout or close; caches the first validated callback.
      */
     wait(options: { handle: string; timeoutMs?: number }): Promise<AuthRedirectParams>;
     /** Release the listener. Idempotent. */

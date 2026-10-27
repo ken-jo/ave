@@ -24,7 +24,7 @@ const MANIFEST: PluginManifest = {
   name: "Context Probe",
   version: "1.0.0",
   entry: "plugin.mjs",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   description: "a plugin whose tool raises an alert",
   tools: [
     { name: "raise", description: "raise", inputSchema: { type: "object", properties: {} } },
@@ -170,7 +170,7 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
   const session = await openPluginProtocolSession({
     pluginId: PLUGIN_ID,
     manifest: MANIFEST,
-    hostProtocolVersion: "3",
+    hostProtocolVersion: "4",
     link: isolatedLink(),
     context,
     entryPath,

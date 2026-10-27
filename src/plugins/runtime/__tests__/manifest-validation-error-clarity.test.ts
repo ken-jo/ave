@@ -198,7 +198,7 @@ describe("manifest-validation names the process-entry field to fix", () => {
       description: "x",
       version: "1.0.0",
       tools: [{ name: "process_kit_ping", inputSchema: { type: "object", properties: {} } }],
-      requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+      requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
       ...fields,
     })));
     return parsePluginJson(path, makeValidator());
@@ -231,7 +231,7 @@ describe("manifest-validation names the process-entry field to fix", () => {
   });
 
   it("refuses a process entry below the version floor", async () => {
-    await expect(parse({ process: PROCESS, requires: { minAppVersion: "0.12.9", hostProtocol: "3" } })).rejects.toThrow(
+    await expect(parse({ process: PROCESS, requires: { minAppVersion: "0.12.9", hostProtocol: "4" } })).rejects.toThrow(
       /at 'extensions\["ai\.agent-connector\.ave"\]\.requires\.minAppVersion'.*0\.13\.0 or newer/u,
     );
   });

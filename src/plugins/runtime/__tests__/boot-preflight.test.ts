@@ -52,7 +52,7 @@ describe("PluginRuntime boot preflight", () => {
         entry: "entry.mjs",
         ...(index === 2 ? { capabilities: ["rejected-capability"] } : {}),
         requires: {
-          hostProtocol: "3",
+          hostProtocol: "4",
           ...(index === 3 ? { capabilities: ["rejected-capability"] } : {}),
         },
         tools: index === 2
@@ -228,7 +228,7 @@ describe("PluginRuntime boot preflight", () => {
       version: "1.0.0",
       description: "out-of-process fixture",
       entry: "entry.mjs",
-      requires: { hostProtocol: "3" },
+      requires: { hostProtocol: "4" },
       tools: [],
     });
     await writeTestPluginRegistry({ registryPath }, [

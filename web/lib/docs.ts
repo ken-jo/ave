@@ -258,7 +258,7 @@ const ko: Record<DocSlug, DocPage> = {
             ["entry", "JavaScript 모듈입니다."],
             ["process", "어떤 언어로든 만든 프로그램이 표준 입출력의 JSON-RPC로 호스트와 대화합니다. OS 샌드박스가 켜져 있어야 실행되고, Windows에서는 지원하지 않습니다."],
           ] },
-          { p: "플러그인은 호스트 프로토콜 3을 요구한다고 선언합니다. 설치된 플러그인은 ~/.ave/plugins/<id>/ 에 있고, 켜진 목록은 registry.json 이 정합니다." },
+          { p: "현재 출시된 앱용 플러그인은 호스트 프로토콜 3과 최소 앱 버전 0.14.0을 선언합니다. 프로토콜 4는 아직 출시 전입니다. 출시 후에는 루프백 OAuth에 호스트가 발급한 state를 그대로 보내고 PKCE S256을 함께 사용해야 합니다. 새 프로토콜의 출시 전까지 배포 패키지는 프로토콜 3을 유지하세요. 설치된 플러그인은 ~/.ave/plugins/<id>/ 에 있고, 켜진 목록은 registry.json 이 정합니다." },
         ],
       },
       {
@@ -714,7 +714,7 @@ const en: Record<DocSlug, DocPage> = {
             ["entry", "A JavaScript module."],
             ["process", "A program in any language that talks to the host over JSON-RPC on standard input and output. It runs only with the OS sandbox on and is not supported on Windows."],
           ] },
-          { p: "Plugins declare that they need host protocol 3. Installed plugins live in ~/.ave/plugins/<id>/, and registry.json decides which are active." },
+          { p: "Plugins for released hosts currently declare host protocol 3 and minimum app version 0.14.0. Protocol 4 is upcoming and unreleased: after it ships, loopback OAuth must send the host-issued state unchanged together with PKCE S256. Keep published packages on protocol 3 until that release. Installed plugins live in ~/.ave/plugins/<id>/, and registry.json decides which are active." },
         ],
       },
       {
