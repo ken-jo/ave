@@ -146,6 +146,9 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
   while (at < argv.length) {
     const original = read(at)!;
     const name = program(original);
+    // Bash builtins match only their exact raw head; a case variant is a PATH lookup.
+    if (resolution === "bash-command" && name !== undefined && name !== original
+      && (BASH_BUILTINS.has(name) || name === "command" || name === "exec" || name === "builtin")) return UNPROVEN;
     const psName = canonicalPowerShellName(original);
     if (resolution === "powershell-command") {
       const qualified = original.includes("\\");

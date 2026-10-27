@@ -1,5 +1,5 @@
 import "../../__tests__/support/trusted-powershell.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +8,9 @@ import { readPermissionsFile, updatePermissionsFile } from "../permissions-store
 import { projectRulesLocation, readProjectRulesFile } from "../rules/project-rule-files.js";
 import { evaluatePowerShellSubject, evaluateShellSubject } from "../rules/rule-scopes.js";
 import { SHELL_RULE_CANONICAL_VERSION, isCurrentShellRule, withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+
+// These cases model a pinned-startup host; win32 is never pinned (permission-policy-design.md, Windows startup proof).
+vi.mock("../../shared/powershell-startup-policy.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => true }));
 
 type Dialect = "bash" | "powershell";
 const roots: string[] = [];

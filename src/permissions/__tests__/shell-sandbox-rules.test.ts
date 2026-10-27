@@ -17,6 +17,8 @@ import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { DeferredQueue } from "../reviewer/deferred-queue.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
+import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 
 let dir: string;
 let manager: PermissionManager;
@@ -113,13 +115,28 @@ describe("shell confinement and escape rules", () => {
     expect(check(command, true)).toMatchObject({ decision: "ask", forceModal: true });
   });
 
-  it("leaves recursive link traversal to confinement when no sensitive path is visible", () => {
+  it.each([
+    { route: "an ASRT plan confining the filesystem", expected: "allow" as const,
+      plan: () => buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { kind: "asrt", confidence: "verified", platform: "linux", reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } } }) },
+    // The MXC itest decides whether container reads through links are confined; until then this asks.
+    { route: "the MXC container route", expected: "ask" as const,
+      plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" }) },
+    { route: "the approved-host route", expected: "ask" as const,
+      plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: windowsProxyOnlyCapability() }) },
+  ])("decides recursive link traversal without a visible sensitive path from $route", ({ plan, expected }) => {
     const clean = join(dir, "clean");
     mkdirSync(clean);
     mkdirSync(join(process.env.HOME!, ".ssh"));
     writeFileSync(join(process.env.HOME!, ".ssh", "id_rsa"), "fixture");
     symlinkSync(join(process.env.HOME!, ".ssh"), join(clean, "linked"), "junction");
-    expect(check(`grep --dereference-recursive term '${clean.replace(/\\/g, "/")}'`, true)).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/sensitive|민감/) });
+    const hostShellExecutionPlan = plan();
+    const result = manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command: `grep --dereference-recursive term '${clean.replace(/\\/g, "/")}'`, cwd: dir },
+      hostShellExecutionPlan,
+      shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed },
+    });
+    expect(result.decision).toBe(expected);
+    if (expected === "allow") expect(result.layer).toBe(3);
   });
 
   it("keeps a runtime-selected runner prefix unproven inside confinement", () => {

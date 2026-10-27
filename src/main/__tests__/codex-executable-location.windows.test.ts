@@ -265,6 +265,14 @@ function setOwner(path: string, sid: string): void {
     { windowsHide: true, stdio: "pipe" });
 }
 
+// icacls /setowner to another account needs SeRestorePrivilege in the token; it only enables, never grants, it.
+function holdsRestorePrivilege(): boolean {
+  const output = execFileSync(join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/priv", "/fo", "csv", "/nh"],
+    { windowsHide: true, encoding: "utf8" });
+  return output.split(/\r?\n/).some((line) => line.startsWith('"SeRestorePrivilege",'));
+}
+const RESTORE_PRIVILEGE_SKIP = "SeRestorePrivilege is not held, so the foreign-owner fixture cannot be created";
+
 interface ClaimReply { result: { currentSid: string; claims: { path: string; previousOwner: string; outcome: string }[] } }
 
 it.runIf(process.platform === "win32")("replaces inherited foreign access when claiming a private runtime directory", async (context) => {
@@ -338,7 +346,8 @@ it.runIf(process.platform === "win32")("keeps a directory the account already ow
   expect(reply.result.claims).toEqual([{ path: directory, previousOwner: reply.result.currentSid, outcome: "kept" }]);
 }, 45_000);
 
-it.runIf(process.platform === "win32")("refuses a directory another account owns and changes nothing in its batch", async () => {
+it.runIf(process.platform === "win32")("refuses a directory another account owns and changes nothing in its batch", async (context) => {
+  if (!holdsRestorePrivilege()) context.skip(RESTORE_PRIVILEGE_SKIP);
   const fixture = realHostFixture();
   await fixture.prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-foreign-")));
@@ -355,7 +364,8 @@ it.runIf(process.platform === "win32")("refuses a directory another account owns
   expect(await fixture.owners(320, [administrators, foreign])).toEqual(["S-1-5-32-544", "S-1-5-18"]);
 }, 45_000);
 
-it.runIf(process.platform === "win32")("claims a junction itself and leaves its target alone", async () => {
+it.runIf(process.platform === "win32")("claims a junction itself and leaves its target alone", async (context) => {
+  if (!holdsRestorePrivilege()) context.skip(RESTORE_PRIVILEGE_SKIP);
   const fixture = realHostFixture();
   await fixture.prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-junction-")));

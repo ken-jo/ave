@@ -442,6 +442,12 @@ export function isIssuedShellAllowRuleDecision(
 // lookalike is not in this map and lets nothing run headless.
 const issuedPlainShellExactRuleDecisions = new WeakMap<PermissionCheckResult, PermissionManager>();
 
+// Confinement is a property of this invocation's plan. MXC stays unconfined for
+// policy until its host itest measures recursive link reads into denied paths.
+function shellRunsConfined(context: PermissionCheckContext): boolean {
+  return context.shellExecution?.runsSandboxed === true && context.hostShellExecutionPlan?.substrate !== "mxc";
+}
+
 export function isIssuedPlainShellExactRuleDecision(result: PermissionCheckResult | undefined, issuer: PermissionManager | undefined): boolean {
   return result !== undefined && issuer !== undefined && issuedPlainShellExactRuleDecisions.get(result) === issuer;
 }
@@ -1214,7 +1220,7 @@ export class PermissionManager {
     const result = this.evaluatePermission(toolName, source, category, overlayTriggerOrigin, context);
     // An unattended host cannot answer an unsandboxed shell ask, including a visible floor or an unreadable restriction.
     if (result.decision === "ask" && context.headless === true && context.ruleSubject?.kind === "shell"
-      && (!context.shellExecution?.runsSandboxed || result.forceModal === true)) {
+      && (!shellRunsConfined(context) || result.forceModal === true)) {
       return { ...result, decision: "deny", forceModal: undefined };
     }
     return result;
@@ -1249,7 +1255,7 @@ export class PermissionManager {
     }
     // Length checks precede command analysis and project I/O in either execution lane.
     const shellInput = context.ruleSubject?.kind === "shell" ? context.ruleSubject.command : undefined;
-    const unsandboxedShell = !context.shellExecution?.runsSandboxed;
+    const unsandboxedShell = !shellRunsConfined(context);
     const closeShellAnalysis = (): PermissionCheckResult => {
       const deny = this.rules.find((rule) => rule.action === "deny" && (!rule.source || rule.source === source)
         && !isRuleSpecifier(rule.pattern) && globMatch(toolName, rule.pattern));
@@ -1327,7 +1333,7 @@ export class PermissionManager {
     if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
-    const shellExecution = context.shellExecution ?? { runsSandboxed: false };
+    const shellExecution = { runsSandboxed: shellRunsConfined(context) };
     const powerShellSignals = ruleSubject?.dialect === "powershell"
       ? inspectPowerShellCommand(parsedPowerShellSubject!, ruleSubject.cwd)
       : undefined;
