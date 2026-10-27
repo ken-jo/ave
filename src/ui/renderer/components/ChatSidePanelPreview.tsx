@@ -145,14 +145,14 @@ export function previewFillsPanel(target: ChatPreviewTarget): boolean {
  * the grid alone scrolls, so the host has nothing left to scroll. Any other
  * target renders exactly as before, as a block the host scrolls.
  */
-export function PreviewDetail({ api, sessionId, target }: { api: AveApi; sessionId?: string; target: ChatPreviewTarget }) {
+export function PreviewDetail({ api, sessionId, target, visible }: { api: AveApi; sessionId?: string; target: ChatPreviewTarget; visible: boolean }) {
   return (
     <div
       className={previewFillsPanel(target) ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}
       data-testid="chat-side-panel-preview-detail"
     >
       {target.kind !== "file" ? <DetailHeader target={target} /> : null}
-      <PreviewBody api={api} sessionId={sessionId} target={target} />
+      {target.kind !== "file" || visible ? <PreviewBody api={api} sessionId={sessionId} target={target} /> : null}
     </div>
   );
 }
