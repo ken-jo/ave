@@ -1,5 +1,6 @@
 import { closeSync, fstatSync, lstatSync, openSync, type BigIntStats } from "node:fs";
 import type { WindowsPathFacts } from "./windows-path-facts.js";
+import { assertWindowsNativeHost } from "./windows-native-host.js";
 
 type ConfigurationFacts = Pick<WindowsPathFacts, "volumeSerialNumber" | "fileIndex" | "changeTime" | "directory" | "fileSystemName">;
 export interface WindowsConfigurationHandleEntry {
@@ -38,6 +39,7 @@ export function openWindowsConfigurationHandles(entries: readonly WindowsConfigu
   handles: WindowsConfigurationHandles | undefined;
   fileOpened: boolean;
 } {
+  assertWindowsNativeHost();
   const descriptors: number[] = [];
   let fileOpened = false;
   const close = (): void => { for (const descriptor of descriptors.splice(0)) closeSync(descriptor); };

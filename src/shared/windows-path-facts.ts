@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { assertWindowsNativeHost } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 /** Match native ledger output to requests; this spelling key is never object identity. */
@@ -109,6 +110,7 @@ function isDescriptor(value: unknown): value is WindowsDacl {
 
 function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   if (paths.length === 0) return [];
+  assertWindowsNativeHost();
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
   const output = execFileSync(resolveWindowsPathKindHelper(), [mode, ...flags, ...paths], {
     encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 8 * 1024 * 1024,

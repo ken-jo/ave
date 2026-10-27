@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { assertWindowsNativeHost } from "./windows-native-host.js";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -185,6 +186,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
         } catch {
           @{ reason=$_.Exception.InnerException.Message } | ConvertTo-Json -Compress
         }`;
+      assertWindowsNativeHost();
       const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
         "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),
       ], { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
@@ -433,6 +435,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
       ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
     } finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }`;
   const bootstrap = "$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))";
+  assertWindowsNativeHost();
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
   // A one-shot process cannot separate cold startup from its directory operation.
@@ -465,6 +468,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent();
     $elevated=([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
     [HomeDirectoryDacl]::AcknowledgeRepair($request.home,$request.name,$identity.User,$elevated);`;
+  assertWindowsNativeHost();
   execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
     Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")], {
     input: script, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
