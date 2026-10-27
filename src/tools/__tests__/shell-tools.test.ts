@@ -31,7 +31,9 @@ import {
   PowerShellToolInputSchema,
   resolvePowerShellExecutable,
   validatePowerShellAst,
+  validatePowerShellAstStructure,
   validatePowerShellCommand,
+  awaitedHostScriptCommand,
   type PowerShellAstSummary,
   findPowerShellAstPathViolation,
   _spawnPowerShellForTest,
@@ -754,6 +756,100 @@ describe("powershell tool", () => {
       expect(validatePowerShellAst(ast([{ name: "dir", arguments: [psLiteral("dir"), psParameter("r"), psLiteral(".")] }]))).toContain(
         "recursive shell filesystem traversal",
       );
+    });
+
+    const listing = (...parameters: PowerShellArgument[]) =>
+      validatePowerShellAst(ast([{ name: "Get-ChildItem", arguments: [psLiteral("Get-ChildItem"), psLiteral("."), ...parameters] }]));
+
+    it.each([
+      ["-r", [psParameter("r")]],
+      ["-Re", [psParameter("Re")]],
+      ["-Rec", [psParameter("Rec")]],
+      ["-Recu", [psParameter("Recu")]],
+      ["-Recur", [psParameter("Recur")]],
+      ["-Recurs", [psParameter("Recurs")]],
+      ["-RECURSE", [psParameter("RECURSE")]],
+      ["-Recur:$true", [psParameter("Recur", psLiteral("true", "$true"))]],
+      ["-s alias", [psParameter("s")]],
+      ["-Depth 0", [psParameter("Depth"), psLiteral("0")]],
+      ["-Depth:0", [psParameter("Depth", psLiteral("0"))]],
+      ["-Depth:$false", [psParameter("Depth", psLiteral("false", "$false"))]],
+      ["-Dep 2", [psParameter("Dep"), psLiteral("2")]],
+      ["-Dept 1", [psParameter("Dept"), psLiteral("1")]],
+      ["-d 1", [psParameter("d"), psLiteral("1")]],
+    ] as const)("blocks recursion spelled %s", (_, parameters) => {
+      expect(listing(...parameters)).toContain("recursive shell filesystem traversal");
+    });
+
+    it.each([
+      ["-Recurse:$false", [psParameter("Recurse", psLiteral("false", "$false"))]],
+      ["-Rec:$false", [psParameter("Rec", psLiteral("false", "$false"))]],
+      ["-s:$false", [psParameter("s", psLiteral("false", "$false"))]],
+      ["-Directory", [psParameter("Directory")]],
+      ["-File", [psParameter("File")]],
+      ["-Force", [psParameter("Force")]],
+      ["-Recursive", [psParameter("Recursive")]],
+      ["-Depths", [psParameter("Depths")]],
+    ] as const)("allows non-recursive %s", (_, parameters) => {
+      expect(listing(...parameters)).toBeNull();
+    });
+
+    it("scopes the -s Recurse alias to Get-ChildItem", () => {
+      expect(validatePowerShellAst(ast([{ name: "Get-Content", arguments: [psLiteral("Get-Content"), psLiteral("./x"), psParameter("s")] }]))).toBeNull();
+    });
+
+    const removal = (...parameters: PowerShellArgument[]) =>
+      validatePowerShellAstStructure(ast([{ name: "Remove-Item", arguments: [psLiteral("Remove-Item"), psLiteral("./x"), ...parameters] }]));
+
+    it.each([
+      ["-Rec -Forc", [psParameter("Rec"), psParameter("Forc")]],
+      ["-Recur -For", [psParameter("Recur"), psParameter("For")]],
+      ["-Recurs:$true -Fo", [psParameter("Recurs", psLiteral("true", "$true")), psParameter("Fo")]],
+      ["-Depth 1 -Force", [psParameter("Depth"), psLiteral("1"), psParameter("Force")]],
+    ] as const)("blocks recursive forced deletion spelled %s", (_, parameters) => {
+      expect(removal(...parameters)).toBe("recursive forced deletion is not allowed");
+    });
+
+    it.each([
+      ["-Recu -Force:$false", [psParameter("Recu"), psParameter("Force", psLiteral("false", "$false"))]],
+      ["-Recu:$false -Forc", [psParameter("Recu", psLiteral("false", "$false")), psParameter("Forc")]],
+      ["-Recurse -f (ambiguous with -Filter)", [psParameter("Recurse"), psParameter("f")]],
+      ["-Force alone", [psParameter("Force")]],
+    ] as const)("does not report forced recursive deletion for %s", (_, parameters) => {
+      expect(removal(...parameters)).toBeNull();
+    });
+
+    describe("awaited host script command", () => {
+      const at = (source: string, text: string, from = 0): PowerShellValueArgument => {
+        const start = source.indexOf(text, from);
+        return { kind: "literal", text, value: text.slice(1, -1), start, end: start + text.length };
+      };
+
+      it("sets UTF-8 output, inserts the flag after the runtime extent with single spaces, and awaits the child", () => {
+        const source = "$env:ELECTRON_RUN_AS_NODE='1'; & 'C:\\rt\\electron.exe' 'C:\\s\\édit.cjs'\n";
+        const runtime = at(source, "'C:\\rt\\electron.exe'");
+        expect(awaitedHostScriptCommand(source, { name: runtime.text, text: source.slice(31).trim(),
+          arguments: [runtime, at(source, "'C:\\s\\édit.cjs'")] })).toBe(
+          "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);" +
+          "$env:ELECTRON_RUN_AS_NODE='1'; & 'C:\\rt\\electron.exe' --preserve-symlinks-main 'C:\\s\\édit.cjs'" +
+          " | Microsoft.PowerShell.Core\\Out-Default; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE",
+        );
+      });
+
+      it("uses the runtime element's extent, not an earlier textual match", () => {
+        const source = "$env:ELECTRON_RUN_AS_NODE='1'; & 'rt' 'rt'";
+        const first = at(source, "'rt'");
+        expect(awaitedHostScriptCommand(source, { name: "rt", text: "& 'rt' 'rt'",
+          arguments: [first, at(source, "'rt'", first.end)] })).toContain("& 'rt' --preserve-symlinks-main 'rt' |");
+      });
+
+      it("fails closed without a matching parser extent", () => {
+        const source = "$env:ELECTRON_RUN_AS_NODE='1'; & 'rt' 'script'";
+        const runtime = at(source, "'rt'");
+        expect(awaitedHostScriptCommand(source, { name: "rt", text: "& 'rt' 'script'", arguments: [psLiteral("rt", "'rt'")] })).toBeNull();
+        expect(awaitedHostScriptCommand(source, { name: "rt", text: "& 'rt' 'script'",
+          arguments: [{ ...runtime, start: runtime.start! + 1, end: runtime.end! + 1 }] })).toBeNull();
+      });
     });
 
     it("blocks process-detach aliases from the AST summary", () => {

@@ -133,3 +133,17 @@ The existing helper resource resolver, architecture build, installer packaging
 and Windows CI build also cover this mode. Run
 `src/permissions/__tests__/windows-deny-acl.test.ts` after building the helper;
 the tests change DACLs only under per-test containers, with a synthetic SID.
+# Policy pipe delivery
+
+`--mxc-policy <pipe> <timeout-ms>` receives a little-endian byte length and
+UTF-8 policy on private stdin, creates a first-instance, local-only pipe with
+a protected current-user-only descriptor, and writes `ready` on stdout.
+Four instances fill the fixed instance limit before readiness, so back-to-back
+opens can connect while another instance waits for binding or disconnects.
+The caller then sends the launched client's little-endian PID and keeps stdin
+open for ownership. The helper retains a process handle and checks each
+connection's kernel-reported PID before serving the policy. Rejected clients
+receive no bytes and consume no reads. An atomic budget of two accepted
+connections accommodates an existence check followed by the policy read.
+Owner EOF, deadline or release closes the server. Rebuild the existing helper
+after changing its source.

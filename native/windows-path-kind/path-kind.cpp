@@ -12,6 +12,7 @@
 // Windows error on stderr; 2 the argument is not `X:`; 3 the mapping could
 // not be written. Only 1 is an answer about the drive: the caller treats any
 // other failure as a broken helper, never as a classification.
+#define _WIN32_WINNT 0x0A00
 #include <windows.h>
 
 #include <cstdio>
@@ -23,6 +24,7 @@
 #include "dacl.h"
 #include "deny-acl.h"
 #include "path-facts.h"
+#include "mxc-policy.h"
 
 namespace {
 
@@ -48,6 +50,7 @@ bool write_utf8(const std::wstring& text) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"--mxc-policy") return mxc_policy::run(argc, argv);
   if (argc >= 2 && (std::wstring(argv[1]) == L"--pin" || std::wstring(argv[1]) == L"--dacl")) return print_path_facts(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]) == L"--deny-acls") return print_deny_acls(argc, argv);
   if (argc != 2 || !is_drive(argv[1])) {

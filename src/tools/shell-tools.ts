@@ -2884,8 +2884,6 @@ const FILESYSTEM_COMMANDS = new Set([
   "set-itemproperty",
   "test-path",
 ]);
-const RECURSE_FLAGS = new Set(["-recurse", "-r", "-rec"]);
-const FORCE_FLAGS = new Set(["-force", "-fo"]);
 
 const canonicalPowerShellTools = new WeakSet<object>();
 
@@ -3076,25 +3074,28 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           : {}),
         allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
       });
+      const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
+      const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
+      if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
       if (hostShellPlan.substrate === "mxc") {
         return await spawnPowerShellInMxc(
-          input.command,
+          command,
           resolvedCwd,
           writePaths,
           input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
           toolOutputProgressFromMetadata(ctx.metadata),
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-          undefined, powerShellHostScriptReadPaths(commandAst, input.command),
+          undefined, runtimeReads,
         );
       }
       return await spawnPowerShellWithSandbox(
-        input.command,
+        command,
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
         toolOutputProgressFromMetadata(ctx.metadata),
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        powerShellHostScriptReadPaths(commandAst, input.command),
+        runtimeReads,
       );
     }
 
@@ -3149,8 +3150,8 @@ export function validatePowerShellAstStructure(ast: PowerShellAstSummary): strin
     if (parameters.some((parameter) => ENCODED_COMMAND_FLAGS.has("-" + parameter.name.toLowerCase()))) {
       return "encoded commands are not allowed";
     }
-    if (REMOVE_ITEM_COMMANDS.has(name) && parameters.some((parameter) => isPowerShellSwitchEnabled(parameter, RECURSE_FLAGS))
-      && parameters.some((parameter) => isPowerShellSwitchEnabled(parameter, FORCE_FLAGS))) {
+    if (REMOVE_ITEM_COMMANDS.has(name) && parameters.some((parameter) => isPowerShellRecursion(name, parameter))
+      && parameters.some(isPowerShellForce)) {
       return "recursive forced deletion is not allowed";
     }
   }
@@ -3165,7 +3166,7 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
     const name = canonicalPowerShellCommandName(command.name?.trim().toLowerCase() ?? "");
     if (!FILESYSTEM_COMMANDS.has(name)) continue;
     const parameters = command.arguments.filter((argument) => argument.kind === "parameter");
-    if (parameters.some((parameter) => isPowerShellSwitchEnabled(parameter, RECURSE_FLAGS))) {
+    if (parameters.some((parameter) => isPowerShellRecursion(name, parameter))) {
       return "recursive shell filesystem traversal is not allowed";
     }
     const dynamic = command.arguments.slice(1).find((argument) => argument.kind === "dynamic"
@@ -3179,8 +3180,28 @@ function canonicalPowerShellCommandName(name: string): string {
   return POWERSHELL_ALIASES.get(name) ?? name;
 }
 
-function isPowerShellSwitchEnabled(parameter: Extract<PowerShellArgument, { kind: "parameter" }>, switches: ReadonlySet<string>): boolean {
-  if (!switches.has("-" + parameter.name.toLowerCase())) return false;
+type PowerShellParameter = Extract<PowerShellArgument, { kind: "parameter" }>;
+
+// PowerShell binds any unambiguous name prefix; an ambiguous one fails to bind, so matching it only over-blocks.
+function isPowerShellParameterPrefix(parameter: PowerShellParameter, name: string, minimum = 1): boolean {
+  const spelled = parameter.name.toLowerCase();
+  return spelled.length >= minimum && name.startsWith(spelled);
+}
+
+// -Depth implies -Recurse whatever its value; Get-ChildItem also aliases Recurse as -s.
+function isPowerShellRecursion(command: string, parameter: PowerShellParameter): boolean {
+  if (isPowerShellParameterPrefix(parameter, "depth")) return true;
+  const recurse = isPowerShellParameterPrefix(parameter, "recurse")
+    || (command === "get-childitem" && parameter.name.toLowerCase() === "s");
+  return recurse && isPowerShellSwitchEnabled(parameter);
+}
+
+// -f is ambiguous with -Filter on Remove-Item.
+function isPowerShellForce(parameter: PowerShellParameter): boolean {
+  return isPowerShellParameterPrefix(parameter, "force", 2) && isPowerShellSwitchEnabled(parameter);
+}
+
+function isPowerShellSwitchEnabled(parameter: PowerShellParameter): boolean {
   return parameter.argument === undefined || parameter.argument.kind !== "literal" || parameter.argument.value.toLowerCase() !== "false";
 }
 
@@ -3242,6 +3263,18 @@ export function findPowerShellAstPathViolation(
     }
   }
   return null;
+}
+
+// The Windows runtime is a GUI-subsystem image: `&` returns before it exits unless its output is piped,
+// and the sandbox then tears it down. Node's main-script realpath lstat()s the drive root, which MXC
+// denies; the verified script is never a link, so preserving the main path is equivalent.
+// The console decodes child output with the OEM code page unless told it is UTF-8.
+export function awaitedHostScriptCommand(source: string, invocation: PowerShellAstSummary["commands"][number]): string | null {
+  const { start, end, text } = invocation.arguments[0]!;
+  if (start === undefined || end === undefined || source.slice(start, end) !== text) return null;
+  // A runtime that never starts leaves $LASTEXITCODE unset; that must not read as success.
+  return `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);${source.slice(0, end)} --preserve-symlinks-main` +
+    `${source.slice(end).trimEnd()} | Microsoft.PowerShell.Core\\Out-Default; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE`;
 }
 
 function powerShellHostScriptReadPaths(ast: PowerShellAstSummary, source?: string): readonly string[] {
@@ -3696,6 +3729,7 @@ async function spawnPowerShellInMxc(
       return;
     }
     trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
+    launch.bindChild(child);
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", parserResponse === undefined ? outputCollector.collect : parserResponse.collect);

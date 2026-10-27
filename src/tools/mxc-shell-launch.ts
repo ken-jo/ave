@@ -1,6 +1,7 @@
 // Prepare invocation-scoped container launch resources; release the proxy only after the launcher and its job have exited.
 // This prevents surviving processes from reaching a port reused by another invocation.
 import { win32 as winPath } from "node:path";
+import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
@@ -11,7 +12,7 @@ import {
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import {
   buildMxcShellRequest,
-  mxcRequestArgs,
+  openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
   type ShellFilesystemPolicy,
@@ -21,6 +22,8 @@ export interface MxcShellLaunch {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
+  /** Bind policy delivery immediately after spawning the launcher. */
+  bindChild(child: ChildProcess): void;
   /** Close the listener. Call once `wxc-exec.exe` has exited. Idempotent. */
   release(): Promise<void>;
 }
@@ -67,14 +70,20 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
       timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
     });
     const opened = listener;
+    const transport = await openMxcRequestTransport(request, wxcExec);
     return {
-      argv: [wxcExec, ...mxcRequestArgs(request)],
+      argv: [wxcExec, ...transport.args],
       proxyPort: opened.port,
+      bindChild: transport.bindChild,
       release: async () => {
         try {
-          await opened.close();
+          await transport.release();
         } finally {
-          await relay.close();
+          try {
+            await opened.close();
+          } finally {
+            await relay.close();
+          }
         }
       },
     };

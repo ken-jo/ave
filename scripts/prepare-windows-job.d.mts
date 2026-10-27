@@ -18,7 +18,7 @@ export function hasCppBuildTools(options?: {
   runSync?: (command: string, args: string[], options: object) => { status: number | null; stdout?: unknown };
 }): boolean;
 export function missingBuildToolsMessage(launcher: string): string;
-/** Build the launcher when it is missing or stale; throws when it cannot build. */
+/** Build each native helper when missing or stale; return the original job launcher state. */
 export function prepareWindowsJob(options?: {
   root?: string;
   platform?: NodeJS.Platform;
