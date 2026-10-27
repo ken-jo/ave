@@ -36,7 +36,7 @@ import { readPreviewDocumentInput } from "../../tools/preview-document-input.js"
 import { installDocumentObservation } from "../../main/document-observation.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
 import { recordPreviewFileAccess } from "../../main/preview-file-access.js";
-import { OBSERVATION_LIMITS, type DocumentObservationBinding, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
+import { OBSERVATION_LIMITS, type ObservationBinding, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
 import { previewPageFormatOf } from "../../shared/preview-page-document.js";
@@ -61,7 +61,7 @@ export interface PreviewReadFileResult {
   /** Text was truncated by the line window. */
   truncated?: boolean;
   lineCount?: number;
-  observation?: DocumentObservationBinding;
+  observation?: ObservationBinding;
   document?: PreviewObservedTextDocument;
   /** Signature-verified passive image bytes; line-window requests remain text-only. */
   image?: { dataUrl: string; mimeType: string };
@@ -130,6 +130,13 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       return { ok: false, error: "unauthorized" };
     }
     return observation.acknowledge(e, request);
+  });
+  ipcMain.handle(CHANNELS.preview.observationPreview, (e, request: unknown) => {
+    if (!validateAppWindowMainFrameSender(e, deps)) {
+      auditUnauthorized(auditLogger, CHANNELS.preview.observationPreview, e);
+      return { ok: false, error: "unauthorized" };
+    }
+    return observation.browserPreview(e, request);
   });
 
   ipcMain.handle(

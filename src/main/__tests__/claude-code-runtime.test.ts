@@ -2,6 +2,7 @@ import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-nam
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
+import * as authenticity from "../claude-code-authenticity.js";
 import { NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TEST, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -27,9 +28,12 @@ import { CodexExecutableLocationError } from "../codex-executable-location.js";
 import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
-import { claudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
+import { CLAUDE_CODE_CLI_MINIMUM_VERSION, claudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+// Release metadata is fetched only by real Linux publisher verification; these fixtures never reach it.
+const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
@@ -130,7 +134,7 @@ function spawnHarness(
       probes.push([...args]);
       setImmediate(() => {
         const output = args.includes("--version")
-          ? `${qualification.version ?? "2.1.0"} (Claude Code)\n`
+          ? `${qualification.version ?? "2.1.311"} (Claude Code)\n`
           : qualification.authHelp ?? QUALIFYING_AUTH_HELP;
         child.stdout.write(output);
         child.close();
@@ -154,7 +158,7 @@ async function conversation(tools: readonly ToolSchema[] = [], resolveExecutable
   const runtime = new ClaudeCodeConversationRuntime({ ...directories, bridge, ...harness,
     resolveRuntime: async () => ({
       executable: await (resolveExecutable ?? (async (path: string) => path))("/approved/claude"),
-      args: [], identity: "approved", verify: async () => {
+      identity: "approved", verify: async () => {
         if (resolveExecutable && await resolveExecutable("/approved/claude") !== "/approved/claude") {
           throw new Error("Executable changed");
         }
@@ -186,7 +190,7 @@ describe("CLI conversation boundary", () => {
     const validate = vi.spyOn(subscriptionClient, "validateClaudeCodeRuntimeDirectories").mockResolvedValue();
     const runtime = new ClaudeCodeConversationRuntime({ ...directories, ...harness, bridge: new SubscriptionToolBridge([]),
       resolveRuntime: async () => ({
-        executable: "/approved/runtime", args: [], identity: "approved", routeKind: "native",
+        executable: "/approved/runtime", identity: "approved",
         verify: async () => { throw new CodexExecutableLocationError("Rejected fixture location"); },
         discard: async () => undefined,
       }),
@@ -194,7 +198,7 @@ describe("CLI conversation boundary", () => {
     owners.push(runtime);
     await expect(collect(runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-unsafe-location" });
     expect(validate).toHaveBeenCalledTimes(2);
-    expect(validate.mock.calls.every(([, rule]) => rule === "native")).toBe(true);
+    expect(validate.mock.calls.every((call) => call.length === 1)).toBe(true);
     expect(harness.spawn).not.toHaveBeenCalled();
   });
 
@@ -396,7 +400,7 @@ function installedCli(root: string, install = true): { executable: string; candi
 async function pinForTest(executable: string): Promise<ClaudeCodeExecutable> {
   const hash = () => createHash("sha256").update(readFileSync(executable)).digest("hex");
   const identity = hash();
-  return { executable, args: [], identity, verify: async () => {
+  return { executable, identity, verify: async () => {
     if (hash() !== identity) throw new Error("Executable changed");
   }, discard: async () => undefined };
 }
@@ -412,7 +416,7 @@ async function clientHarness(
 ) {
   const directories = await paths(); const harness = spawnHarness(script, qualification);
   const cli = installedCli(directories.runtimeHome);
-  const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+  const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...harness,
     candidates: cli.candidates, resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
   owners.push(client); return { ...directories, ...harness, ...cli, client };
 }
@@ -459,7 +463,7 @@ describe("CLI account and verification boundary", () => {
       return spawn(command, args, options);
     });
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "connected" });
-    expect(await h.client.verify()).toMatchObject({ runtime: "ready", connection: "connected", version: "2.1.0" });
+    expect(await h.client.verify()).toMatchObject({ runtime: "ready", connection: "connected", version: "2.1.311" });
     expect(h.probes).toEqual([["--bare", "--version"], ["auth", "--help"]]);
     for (const [, args, options] of h.spawn.mock.calls) {
       expect(args).not.toContain("-p"); expect(args).not.toContain("--print");
@@ -493,7 +497,7 @@ describe("CLI account and verification boundary", () => {
       const cli = installedCli(directories.runtimeHome);
       const events: string[] = [];
       let preparingLogin = false;
-      const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+      const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...harness,
         candidates: cli.candidates, resolveExecutable: async (path) => path,
         _pinExecutableForTest: async (path) => {
           const artifact = await pinForTest(path);
@@ -559,7 +563,7 @@ describe("CLI account and verification boundary", () => {
   it("opens a complete trusted login URL once and ignores cancelled output", async () => {
     const directories = await paths(); const h = spawnHarness(undefined, {}); const openAuthorizationUrl = vi.fn();
     const cli = installedCli(directories.runtimeHome);
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...h, candidates: cli.candidates,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...h, candidates: cli.candidates,
       resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openAuthorizationUrl }); owners.push(client);
     await client.startBrowserLogin(); const child = await h.started;
     expect(h.calls[0]!.args).toEqual(["auth", "login"]);
@@ -579,7 +583,7 @@ describe("CLI account and verification boundary", () => {
     const h = spawnHarness(undefined, {});
     const openAuthorizationUrl = vi.fn();
     const cli = installedCli(directories.runtimeHome);
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...h, candidates: cli.candidates,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...h, candidates: cli.candidates,
       resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openAuthorizationUrl });
     owners.push(client);
     await client.startBrowserLogin();
@@ -594,36 +598,36 @@ describe("CLI account and verification boundary", () => {
 });
 
 describe("Claude Code CLI discovery", () => {
-  it.runIf(process.platform === "win32")("selects a native executable when both it and an earlier npm shim exist", async () => {
+  it.runIf(process.platform === "win32")("refuses an earlier package shim without selecting a later native executable", async () => {
     const directories = await paths();
     const npm = join(directories.runtimeHome, "npm");
     const native = join(directories.runtimeHome, "native");
     mkdirSync(npm); mkdirSync(native);
     const executable = join(native, "claude.exe");
-    writeCli(join(npm, "claude.cmd")); writeCli(executable);
+    writeCli(join(npm, "claude.cmd")); writeNativeExecutable(executable);
     const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...harness,
       candidates: () => claudeCodeExecutableCandidates({ platform: "win32", env: { PATH: `${npm};${native}` }, homeDir: directories.runtimeHome }),
-      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
+      resolveExecutable: async (path) => path });
     owners.push(client);
-    await expect(client.getStatus()).resolves.toMatchObject({ runtime: "unverified" });
-    expect(harness.spawn.mock.calls.every(([path]) => path === executable)).toBe(true);
-    expect(harness.spawn).toHaveBeenCalled();
+    await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-native-required" });
+    expect(harness.spawn).not.toHaveBeenCalled();
+    expect(readdirSync(directories.runtimeTempDir)).toEqual([]);
   });
 
-  it("prefers native installations over npm shims across PATH and install directories", () => {
+  it("preserves directory precedence when enumerating native and package launchers", () => {
     const candidates = claudeCodeExecutableCandidates({ platform: "win32",
       env: { PATH: "C:\\npm;C:\\native", USERPROFILE: "C:\\Users\\example", APPDATA: "C:\\Users\\example\\AppData\\Roaming" },
       homeDir: "C:\\Users\\example" });
-    expect(candidates.indexOf("C:\\native\\claude.exe")).toBeLessThan(candidates.indexOf("C:\\npm\\claude.cmd"));
-    expect(candidates.indexOf("C:\\Users\\example\\.local\\bin\\claude.exe")).toBeLessThan(candidates.indexOf("C:\\npm\\claude.cmd"));
+    expect(candidates.indexOf("C:\\npm\\claude.cmd")).toBeLessThan(candidates.indexOf("C:\\native\\claude.exe"));
+    expect(candidates.indexOf("C:\\npm\\claude.cmd")).toBeLessThan(candidates.indexOf("C:\\Users\\example\\.local\\bin\\claude.exe"));
   });
 
   async function discoveryHarness(qualification: Qualification = {}, install = true) {
     const directories = await paths();
     const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, qualification);
     const cli = installedCli(directories.runtimeHome, install);
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...harness,
       candidates: cli.candidates, resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
     owners.push(client);
     return { ...directories, ...harness, ...cli, client };
@@ -641,7 +645,7 @@ describe("Claude Code CLI discovery", () => {
     ]);
     expect(claudeCodeExecutableCandidates({
       platform: "win32", env: { Path: "C:\\Tools;relative", USERPROFILE: "C:\\Users\\example" }, homeDir: "C:\\ignored",
-    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Users\\example\\.local\\bin\\claude.exe", "C:\\Tools\\claude.cmd"]);
+    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Tools\\claude.cmd", "C:\\Users\\example\\.local\\bin\\claude.exe"]);
   });
 
   it("checks the runtime version identity and advertised auth commands", () => {
@@ -661,7 +665,7 @@ describe("Claude Code CLI discovery", () => {
     const h = await discoveryHarness({}, false);
     expect(await h.client.getStatus()).toMatchObject({ runtime: "not-configured" });
     writeCli(h.executable);
-    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "signed-out", version: "2.1.0" });
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "signed-out", version: "2.1.311" });
   });
 
   it("probes a found CLI once and again only when the file changes", async () => {
@@ -691,7 +695,7 @@ describe("Claude Code CLI discovery", () => {
     // The error response still describes the card: the CLI is there but unusable.
     expect(h.client.getCachedStatus()).toMatchObject({
       runtime: "unavailable",
-      version: foreignVersion ? null : "2.1.0",
+      version: foreignVersion ? null : "2.1.311",
     });
     const probed = h.probes.length;
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
@@ -706,13 +710,28 @@ describe("Claude Code CLI discovery", () => {
     h.spawn.mockImplementation((_command, args) => {
       const child = new FakeChild(); children.push(child); h.probes.push([...args]);
       setImmediate(() => {
-        if (args.includes("--version")) child.stdout.write("1.0.3 (Claude Code)\n");
+        if (args.includes("--version")) child.stdout.write("2.1.311 (Claude Code)\n");
         child.close(args[0] === "auth" ? 1 : 0);
       });
       return child as unknown as ChildProcess;
     });
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
-    expect(h.client.getCachedStatus()).toMatchObject({ runtime: "unavailable", version: "1.0.3" });
+    expect(h.client.getCachedStatus()).toMatchObject({ runtime: "unavailable", version: "2.1.311" });
+  });
+
+  it.each(["2.1.88", "2.0.76", "2.1.89-beta.1"])("refuses an authenticated release %s below the supported minimum before any other probe and remembers it", async (version) => {
+    const h = await discoveryHarness({ version });
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-version-unsupported" });
+    expect(h.client.getCachedStatus()).toMatchObject({ runtime: "unavailable", version });
+    expect(h.probes).toEqual([["--bare", "--version"]]);
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-version-unsupported" });
+    expect(h.probes).toHaveLength(1);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("admits the supported minimum release itself", async () => {
+    const h = await discoveryHarness({ version: CLAUDE_CODE_CLI_MINIMUM_VERSION });
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", version: CLAUDE_CODE_CLI_MINIMUM_VERSION });
   });
 
   // POSIX execute bits decide "runnable" here; Windows admits only a native `.exe`.
@@ -723,11 +742,11 @@ describe("Claude Code CLI discovery", () => {
     const broken = join(directories.runtimeHome, "stale", "claude");
     mkdirSync(join(directories.runtimeHome, "stale"), { recursive: true });
     writeFileSync(broken, "not runnable");
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...harness,
       candidates: () => [broken, cli.executable],
       resolveExecutable: (path) => resolveClaudeCodeSubscriptionExecutable(path), _pinExecutableForTest: pinForTest });
     owners.push(client);
-    expect(await client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.0" });
+    expect(await client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.311" });
     expect(harness.spawn).toHaveBeenCalledWith(cli.executable, expect.anything(), expect.anything());
     expect(harness.spawn).not.toHaveBeenCalledWith(expect.stringContaining("stale"), expect.anything(), expect.anything());
   });
@@ -741,7 +760,7 @@ describe("Claude Code CLI discovery", () => {
     });
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
-    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.0" });
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.311" });
   });
 
   it("requires fresh admission when the qualified source changes", async () => {
@@ -799,11 +818,12 @@ describe("Claude Code CLI discovery", () => {
   });
 
   it("checks the real private artifact and source before the next session turn", async () => {
+    vi.spyOn(authenticity, "authenticateClaudeCodeExecutable").mockResolvedValue();
     const directories = await paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
     const source = writeNativeExecutable(join(directories.runtimeHome, "installed", "claude"));
     const executable = await pinClaudeCodeExecutable(source, directories.runtimeHome,
-      { platform: process.platform, env: {}, homeDir: directories.runtimeHome });
+      { platform: process.platform, env: {}, homeDir: directories.runtimeHome }, RELEASE_FETCH);
     owners.push({ stop: executable.discard });
     const h = spawnHarness((child) => { child.send(init()); child.send(result()); child.close(); });
     const runtime = new ClaudeCodeConversationRuntime({ ...directories, ...h, bridge: new SubscriptionToolBridge([]),
@@ -828,6 +848,7 @@ describe("Claude Code CLI discovery", () => {
   );
 
   it("discards private copies after retryable qualification failures", NATIVE_PROBE_HEAVY_TEST, async () => {
+    vi.spyOn(authenticity, "authenticateClaudeCodeExecutable").mockResolvedValue();
     const directories = await paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
     const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", process.platform === "win32" ? "claude.exe" : "claude"));
@@ -836,7 +857,7 @@ describe("Claude Code CLI discovery", () => {
       setImmediate(() => child.emit("error", new Error("spawn EACCES")));
       return child as unknown as ChildProcess;
     });
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, spawn, env: {}, candidates: () => [executable] });
+    const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, spawn, env: {}, candidates: () => [executable] });
     owners.push(client);
     for (let retry = 0; retry < 3; retry++) {
       await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
@@ -865,10 +886,10 @@ describe("Claude service integration", () => {
       async readJson(_name, fallback) { return fallback; }, async writeJson() {},
       createFile: refuseNamespaceFileCreation,
     };
-    const status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
+    const status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.311");
     const verify = vi.fn(async () => status);
     const client = {
-      getStatus: vi.fn(async () => status), verify, verifiedRuntime: async () => ({ executable: "/approved/claude", args: [], identity: "approved", verify: async () => undefined }),
+      getStatus: vi.fn(async () => status), verify, verifiedRuntime: async () => ({ executable: "/approved/claude", identity: "approved", verify: async () => undefined }),
       getRuntimePaths: () => directories, stop: vi.fn(async () => undefined),
     } as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {

@@ -5,7 +5,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { cn } from "../../../lib/utils.js";
 import { PAGE_PREVIEW_LIMITS, type PreviewPageDocument, type PreviewDocumentElement } from "../../../shared/preview-page-document.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewDocumentError } from "../../../shared/preview-document.js";
-import type { DocumentObservationBinding, DocumentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
+import type { ObservationBinding, AgentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import { tableErrorKey } from "./table-document-preview.js";
 import { PreviewDocumentHeader, PreviewDocumentFooter, PreviewDocumentLiveStrip, previewFormatLabel } from "./preview-document-chrome.js";
 import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
@@ -13,7 +13,7 @@ import { previewSupportsExternalOpen } from "../../../shared/preview-external-op
 type PageElementAddress = PreviewDocumentElement["element"];
 interface PageChange { element: PageElementAddress; before: string; after: string; ts: number; seq: number }
 type LoadState = { phase: "loading" } | { phase: "ok"; path: string; document: PreviewPageDocument;
-  observation?: DocumentObservationBinding; seq: number; snapshotSeq: number; renderGeneration: number; changes: PageChange[];
+  observation?: ObservationBinding; seq: number; snapshotSeq: number; renderGeneration: number; changes: PageChange[];
   status?: DocumentObservationStatus; latest?: PageChange }
   | { phase: "error"; code: PreviewDocumentError };
 
@@ -56,7 +56,7 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let binding: DocumentObservationBinding | undefined;
+    let binding: ObservationBinding | undefined;
     let lastSeq = 0;
     const releasedTargets = new Set<string>();
     let observedPath = path;
@@ -71,15 +71,15 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
       setRenderedImage(null);
       setState({ phase: "loading" });
     }
-    const release = (value: DocumentObservationBinding): void => {
+    const release = (value: ObservationBinding): void => {
       if (releasedTargets.has(value.targetId)) return;
       releasedTargets.add(value.targetId);
-      void api.acknowledgeDocumentObservation({ action: "release", targetId: value.targetId,
+      void api.acknowledgeObservation({ action: "release", targetId: value.targetId,
         sessionId: value.sessionId, seq: lastSeq }).then((result) => {
         if (!result.ok && result.error !== "unauthorized") console.error("Document observation release was refused.");
       }).catch(() => { console.error("Document observation release failed."); });
     };
-    const stop = api.onDocumentObservation((events: DocumentObservationEvent[]) => {
+    const stop = api.onAgentObservation((events: AgentObservationEvent[]) => {
       if (cancelled || observationReleased || !binding || binding.sessionId !== sessionId || releasedTargets.has(binding.targetId)) return;
       for (const event of events) {
         if (event.source !== "document" || event.actor !== "agent" || event.sessionId !== binding.sessionId
@@ -154,7 +154,7 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
     if (lastAcknowledgement.current === key) return;
     lastAcknowledgement.current = key;
     const current = generation.current;
-    void window.ave.preview.acknowledgeDocumentObservation({ action: "rendered", targetId: observation.targetId,
+    void window.ave.preview.acknowledgeObservation({ action: "rendered", targetId: observation.targetId,
       sessionId: observation.sessionId, seq }).then((result) => {
       if (!result.ok && current === generation.current) {
         releaseObservation.current?.();

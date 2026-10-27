@@ -127,6 +127,17 @@ export class ObservationDaemon {
     this.targets.delete(targetId);
   }
 
+  /** A lifetime invalidation clears rendered state even when normal delivery is backpressured. */
+  endTarget(targetId: string): void {
+    const target = this.targets.get(targetId);
+    if (!target) return;
+    this.discardPending(targetId);
+    const event: ObservationEventEnvelope = { source: target.source, actor: "agent", sessionId: target.sessionId,
+      target: target.target, seq: ++target.nextSeq, ts: Date.now(), kind: "status", before: null, after: { code: "session-cleared" } };
+    try { target.onEvents([event]); }
+    finally { this.release(targetId); }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

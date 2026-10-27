@@ -3,6 +3,8 @@
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
+import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
+import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
@@ -221,11 +223,19 @@ async function centerOf(cdp: CdpSession, backendNodeId: number): Promise<{ x: nu
   return visibleCenter(cdp, backendNodeId);
 }
 
-export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<void> {
+export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs,
+  onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void): Promise<void> {
   return withGuardedAction(target, async (target) => {
     throwIfAborted(target.signal);
     const backendNodeId = await resolveRef(target, ref, refs);
     target.expectNode(backendNodeId);
+    if (onObservationTarget) {
+      const attributes = await attributesOf(target.cdp, backendNodeId);
+      const href = attributes.href;
+      const candidate = href && URL.canParse(href, target.url()) ? new URL(href, target.url()).href : undefined;
+      const download = candidate === undefined ? undefined : validateExternalUrl(candidate);
+      onObservationTarget(observationElement(ref, refs, attributes, false), download?.ok ? download.url : undefined);
+    }
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
     await target.injectInput(() => withPageFocus(target, () => pressAt(target, x, y, target.finishWithInput)));
@@ -299,21 +309,37 @@ async function attributesOf(cdp: CdpSession, backendNodeId: number): Promise<Rec
   return nodeAttributes(result.node);
 }
 
+function observationElement(ref: string, refs: BrowserRefTable, attributes: Readonly<Record<string, string>>,
+  typing: boolean): BrowserObservationElement {
+  const entry = refs.get(ref);
+  if (!entry) throw new Error("Missing browser observation target");
+  const credential = /pass(?:word|code)?|pwd|secret|token|api[-_ ]?key|credential|one[-_ ]?time|otp|security[-_ ]?code|비밀번호|암호|토큰|인증.?코드/i;
+  const fieldIdentity = [attributes.type, attributes.autocomplete, attributes.name, attributes.id,
+    attributes["aria-label"], attributes.placeholder, entry.role, entry.name].filter(Boolean).join(" ");
+  const redacted = typing || ["textbox", "searchbox", "combobox", "spinbutton"].includes(entry.role)
+    || sensitiveFieldReason(attributes) !== null || credential.test(fieldIdentity);
+  return { ref, role: entry.role.slice(0, OBSERVATION_LIMITS.browserTextChars),
+    name: redacted ? "" : entry.name.slice(0, OBSERVATION_LIMITS.browserTextChars), redacted };
+}
+
 export async function type(
   target: ActionTarget,
   ref: string,
   value: string,
   options: { submit?: boolean },
   refs: BrowserRefTable = browserRefs,
+  onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void,
 ): Promise<void> {
   return withGuardedAction(target, async (target) => {
     throwIfAborted(target.signal);
     const backendNodeId = await resolveRef(target, ref, refs);
     target.expectNode(backendNodeId);
-    const sensitive = sensitiveFieldReason(await attributesOf(target.cdp, backendNodeId));
+    const attributes = await attributesOf(target.cdp, backendNodeId);
+    const sensitive = sensitiveFieldReason(attributes);
     if (sensitive) {
       throw new BrowserActionError("sensitive-field", `refused: ${ref} is ${sensitive}; the user types those themselves`);
     }
+    onObservationTarget?.(observationElement(ref, refs, attributes, true));
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
     await target.injectInput(() => withPageFocus(target, async () => {
@@ -715,6 +741,96 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
   }
 }
 
+// What waiting for an action's navigation needs of a guest. Production passes Electron `WebContents`.
+export interface NavigationGuest extends LoadingGuest {
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
+}
+
+// A navigation an input action may have started in a tab's main frame, watched from before the input goes out until it commits or fails.
+export interface ActionNavigation {
+  // Whether the main frame was asked to navigate in this tab after the watch began.
+  readonly requested: boolean;
+  // Resolve once a requested navigation commits or ends without a new document; refuse a failed one, a closed tab, or one still pending at `maxMs`.
+  // Resolves at once when nothing was requested.
+  outcome(signal: AbortSignal, maxMs: number): Promise<void>;
+  stop(): void;
+}
+
+type NavigationEnd = { kind: "committed" | "stopped" } | { kind: "failed"; error: BrowserActionError };
+
+// Watch the main frame for a navigation the action is about to start. A link activation reaches the page after its input is acknowledged, so the
+// browser learns of the navigation only after the action returns: the request (CDP Page.frameRequestedNavigation, renderer side) is the signal, and
+// commit (did-navigate / did-navigate-in-page) or its end (did-fail-load / did-stop-loading / tab gone) settles it. Electron 45 emits no
+// did-fail-load for a cancelled (ERR_ABORTED) navigation (electron_api_web_contents.cc DidFinishNavigation); did-stop-loading ends that one.
+export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSession): Promise<ActionNavigation> {
+  const mainFrameId = (await frameTree(cdp)).frame.id;
+  let requested = false;
+  let ended: NavigationEnd | undefined;
+  let notify: (() => void) | undefined;
+  const end = (outcome: NavigationEnd) => {
+    if (!requested || ended) return;
+    ended = outcome;
+    notify?.();
+  };
+  const stopCdp = cdp.onEvent((method, params) => {
+    if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") requested = true;
+    if (method === "Page.frameStartedNavigating" && params.frameId === mainFrameId) requested = true;
+  });
+  const listeners: Array<[string, (...args: unknown[]) => void]> = [
+    ["did-start-navigation", ((details: { isMainFrame?: boolean }) => { if (details.isMainFrame) requested = true; }) as never],
+    ["did-navigate", (() => { requested = true; end({ kind: "committed" }); }) as never],
+    ["did-navigate-in-page", ((_event: unknown, _url: string, isMainFrame: boolean) => {
+      if (isMainFrame) { requested = true; end({ kind: "committed" }); }
+    }) as never],
+    ["did-fail-load", ((_event: unknown, _errorCode: number, errorDescription: string, validatedURL: string, isMainFrame: boolean) => {
+      if (!isMainFrame) return;
+      end({
+        kind: "failed",
+        error: new BrowserActionError("load-failed", `the action started loading ${validatedURL.slice(0, 200)}, which failed: ${String(errorDescription).slice(0, 200)}`, true),
+      });
+    }) as never],
+    ["did-stop-loading", (() => end({ kind: "stopped" })) as never],
+    ["destroyed", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) })) as never],
+    ["render-process-gone", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab's page crashed while loading", true) })) as never],
+  ];
+  for (const [event, listener] of listeners) guest.on(event, listener);
+  const stop = () => {
+    stopCdp();
+    for (const [event, listener] of listeners) guest.removeListener(event, listener);
+  };
+  return {
+    get requested() { return requested; },
+    stop,
+    outcome: async (signal, maxMs) => {
+      throwIfAborted(signal);
+      if (!requested) return;
+      if (!ended) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, maxMs);
+          function done() {
+            clearTimeout(timer);
+            notify = undefined;
+            signal.removeEventListener("abort", done);
+            resolve();
+          }
+          notify = done;
+          signal.addEventListener("abort", done, { once: true });
+        });
+      }
+      throwIfAborted(signal);
+      if (!ended) {
+        throw new BrowserActionError("navigation-incomplete",
+          `the action started a navigation from ${guest.getURL().slice(0, 200)} that did not finish within ${Math.round(maxMs / 1000)}s; take a new browser_snapshot to see the page`, true);
+      }
+      if (ended.kind === "failed") throw ended.error;
+    },
+  };
+}
+
+// The navigation each tab's last input action started, kept from the action until its settle.
+const actionNavigations = new WeakMap<object, ActionNavigation>();
+
 // What the adapter needs of the tab registry.
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
@@ -845,17 +961,16 @@ async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTa
   }
 }
 
-// CDP mouse coordinates are guest-relative but touch coordinates are window-relative; translate only at the native boundary.
-// Measure the offset from native pointer echoes and the host content origin, never renderer-reported geometry.
-function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContentOrigin) {
-  let offset: { x: number; y: number } | null = null;
+// Pointer echoes prove the native page recipient before contact; both pointer and touch dispatch use viewport coordinates.
+function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostContentOrigin) {
+  let positionKnown = false;
   type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
   return {
-    // Before a pointer move is sent: listen for its native echo. `settle`, after the send, learns the page's offset in its window from it.
+    // The exact page point and its native screen echo must be observed before a contact starts.
     watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void>; stop(): void } | null {
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
-      // Each pointer move measures afresh: an echo that never comes must leave no earlier offset behind for the press that follows.
-      offset = null;
+      // An echo that never comes must leave no earlier receipt behind for the press that follows.
+      positionKnown = false;
       const point = { x: params.x, y: params.y };
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
       let timer: ReturnType<typeof setTimeout>;
@@ -880,21 +995,20 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
             const seen = await echo;
             const host = hostContentOrigin(guest);
             if (!seen || !host) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
-            offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
+            positionKnown = true;
           } finally { stop(); }
         },
       };
     },
-    // A touch event's page points as window points; a clear refusal when never measured.
-    placed(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    // A host offset must not be added to a point that already belongs to the guest viewport.
+    checked(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
       if (method !== "Input.dispatchTouchEvent") return params;
       const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
       if (points.length === 0) return params;
-      if (!offset) {
+      if (!positionKnown) {
         throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
       }
-      const by = offset;
-      return { ...params, touchPoints: points.map((point) => ({ ...point, x: point.x + by.x, y: point.y + by.y })) };
+      return params;
     },
   };
 }
@@ -925,7 +1039,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   assertCurrent(false);
   const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
   assertCurrent(false);
-  const touch = createTouchPlacement(guest, hostContentOrigin);
+  const touch = createTouchPositionGuard(guest, hostContentOrigin);
   // A touch start went out and its sequence is not ended yet.
   let touchOpen = false;
   let touchEnded = false;
@@ -953,7 +1067,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         || nativeDrag.enabled || !nativeDrag.disabled || !nativeDrag.cancelled || nativeDrag.error || nativeDrag.delivery().elsewhere !== 0)) {
         throw new BrowserActionError("drag-unavailable", "the native source drag has not been safely released; no drop was sent");
       }
-      params = touch.placed(method, params);
+      params = touch.checked(method, params);
       const echo = touch.watch(method, params);
       const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
       const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
@@ -1211,6 +1325,26 @@ export function createBrowserPageActions(
   originOf: (url: string) => string | null,
   hostContentOrigin: HostContentOrigin,
 ): BrowserPageActions<WebContents> {
+  // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
+  // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
+  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => {
+    const guest = live.tab.guest;
+    if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+    const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    actionNavigations.get(guest)?.stop();
+    actionNavigations.delete(guest);
+    const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
+    try {
+      await act();
+      try { await session.send("Page.enable"); } catch (err) {
+        throw new BrowserActionError("tab-gone", `the action was sent, but the tab stopped answering: ${(err as Error).message.slice(0, 200)}`, true);
+      }
+    } catch (err) {
+      navigation.stop();
+      throw err;
+    }
+    actionNavigations.set(guest, navigation);
+  };
   return {
     prepare: async (live) => {
       const guest = live.tab.guest;
@@ -1222,21 +1356,22 @@ export function createBrowserPageActions(
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       snapshot(await targetFor(live, attribution, hostContentOrigin), options),
     screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
-    hover: async (live, ref) => hover(await targetFor(live, attribution, hostContentOrigin, true), ref),
-    drag: async (live, sourceRef, targetRef) => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef),
-    select: async (live, ref, value) => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value),
-    scroll: async (live, ref, direction, pixels) => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels),
+    hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
+    drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
+    select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),
+    scroll: async (live, ref, direction, pixels) => tracked(live, async () => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels)),
     upload: async (live, ref, options) => {
       if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
       return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
     },
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       waitFor(await targetFor(live, attribution, hostContentOrigin), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref),
+    click: async (live: LiveTab, ref: string) =>
+      tracked(live, async () => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget)),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options),
+      tracked(live, async () => type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget)),
     pressKey: async (live: LiveTab, key: string, ref?: string) =>
-      pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref),
+      tracked(live, async () => pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref)),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
@@ -1247,7 +1382,11 @@ export function createBrowserPageActions(
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-      return settle(guest, live.signal);
+      const navigation = actionNavigations.get(guest);
+      actionNavigations.delete(guest);
+      const started = Date.now();
+      try { await navigation?.outcome(live.signal, SETTLE_MAX_MS); } finally { navigation?.stop(); }
+      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started)));
     },
   };
 }

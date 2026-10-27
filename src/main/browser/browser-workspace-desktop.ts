@@ -4,6 +4,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabControlState } from "../../shared/browser-surface.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 import { getMainWindows } from "../app-state.js";
+import { observeAgentBrowserDownload } from "../browser-observation.js";
 import { trackBrowserGuest } from "./browser-guest-tracking.js";
 import { browserTabRegistry } from "./browser-tab-registry.js";
 import { createBrowserWorkspaceService, type BrowserWorkspaceService } from "./browser-workspace.js";
@@ -99,7 +100,10 @@ export function observeBrowserWorkspaceGuest(contents: WebContents, owner: Brows
 // Called only after the existing native Save/rate policy admits the download.
 export function observeBrowserWorkspaceDownload(contents: WebContents, item: DownloadItem): void {
   const windowId = browserWorkspaceGuestWindowId(contents);
-  if (windowId !== null) getBrowserWorkspaceService().observeDownload(windowId, item);
+  if (windowId !== null) {
+    getBrowserWorkspaceService().observeDownload(windowId, item);
+    observeAgentBrowserDownload(contents, item);
+  }
 }
 
 function focusPopup(window: BrowserWindow): Promise<boolean> {

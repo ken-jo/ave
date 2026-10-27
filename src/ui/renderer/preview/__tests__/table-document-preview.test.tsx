@@ -156,8 +156,8 @@ function pageResult(path: string, index: number, totalPages = 2): PreviewReadDoc
 
 let readFile: ReturnType<typeof vi.fn>;
 let readDocument: ReturnType<typeof vi.fn>;
-let acknowledgeDocumentObservation: ReturnType<typeof vi.fn>;
-let onDocumentObservation: ReturnType<typeof vi.fn>;
+let acknowledgeObservation: ReturnType<typeof vi.fn>;
+let onAgentObservation: ReturnType<typeof vi.fn>;
 let observationHandlers: Set<(events: DocumentObservationEvent[]) => void>;
 let previousAve: unknown;
 
@@ -167,14 +167,14 @@ beforeEach(() => {
   previousAve = (window as unknown as { ave?: unknown }).ave;
   readFile = vi.fn(async () => ({ ok: true, content: "# hi", path: "/w/notes.md", truncated: false }));
   readDocument = vi.fn(async (_path: string, sheetIndex: number) => workbookResult(sheetIndex));
-  acknowledgeDocumentObservation = vi.fn(async () => ({ ok: true }));
+  acknowledgeObservation = vi.fn(async () => ({ ok: true }));
   observationHandlers = new Set();
-  onDocumentObservation = vi.fn((handler: (events: DocumentObservationEvent[]) => void) => {
+  onAgentObservation = vi.fn((handler: (events: DocumentObservationEvent[]) => void) => {
     observationHandlers.add(handler);
     return () => observationHandlers.delete(handler);
   });
   (window as unknown as { ave: unknown }).ave = {
-    preview: { readFile, readDocument, onDocumentObservation, acknowledgeDocumentObservation },
+    preview: { readFile, readDocument, onAgentObservation, acknowledgeObservation },
     attach: { openExternal: vi.fn(async () => ({ ok: true })) },
   };
 });
@@ -485,13 +485,13 @@ describe("agent document live view", () => {
     expect(screen.queryByTestId("xlsx-edit-controls")).toBeNull();
     expect(screen.queryByRole("button", { name: /^(Save|저장)$/ })).toBeNull();
     expect(readDocument).toHaveBeenCalledWith("/w/book.xlsx", 0, OBSERVATION_SESSION);
-    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
   });
 
   it("acknowledges after the displayed cells commit", async () => {
     const displayedAtAck: string[] = [];
-    acknowledgeDocumentObservation.mockImplementation(async () => {
+    acknowledgeObservation.mockImplementation(async () => {
       displayedAtAck.push(screen.getByTestId("chat-side-panel-table-grid").textContent ?? "");
       return { ok: true };
     });
@@ -522,7 +522,7 @@ describe("agent document live view", () => {
     expect(screen.getAllByTestId("document-cell-value").map((cell) => cell.textContent)).toEqual(["South", "84"]);
     expect(readDocument).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("chat-side-panel-table-recalculation")).toBeNull();
-    expect(acknowledgeDocumentObservation).toHaveBeenLastCalledWith({ action: "rendered",
+    expect(acknowledgeObservation).toHaveBeenLastCalledWith({ action: "rendered",
       targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 2 });
     const result = observedWorkbook();
     if (!("sheet" in result.document)) throw new Error("Expected table fixture");
@@ -536,7 +536,7 @@ describe("agent document live view", () => {
     expect(grid.textContent).not.toContain("South");
     expect(screen.getAllByTestId("document-cell-change").every((cell) => cell.dataset.advisory === "false")).toBe(true);
     expect(screen.getByTestId("chat-side-panel-table-recalculation").textContent).toBe("재계산 필요");
-    expect(acknowledgeDocumentObservation).toHaveBeenLastCalledWith({ action: "rendered",
+    expect(acknowledgeObservation).toHaveBeenLastCalledWith({ action: "rendered",
       targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 3 });
   });
 
@@ -607,7 +607,7 @@ describe("agent document live view", () => {
     const view = await openObservedWorkbook();
     view.rerender(<PreviewBody observe api={{} as never} sessionId="other-session" target={fileTarget("/w/book.xlsx")} />);
     await waitFor(() => expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 0, "other-session"));
-    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release",
       targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
     await emitObservations(observedCell(1, 1, "84"));
     expect(screen.getByTestId("chat-side-panel-table-grid").textContent).toContain("120");
@@ -621,7 +621,7 @@ describe("agent document live view", () => {
     const view = render(<PreviewBody observe api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
     view.unmount();
     await act(async () => { finish(observedWorkbook()); });
-    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release",
       targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
     expect(observationHandlers.size).toBe(0);
   });
@@ -664,11 +664,11 @@ describe("hidden panel keeps previews mounted", () => {
     await screen.findByTestId("chat-side-panel-table-grid");
     fireEvent.click(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!);
     await screen.findByText("<b>not markup</b>");
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[1], sessionId: OBSERVATION_SESSION, seq: 0 }));
     const grid = screen.getByTestId("chat-side-panel-table-grid");
     view.rerender(workbookBody(false));
-    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release",
       targetId: targets[1], sessionId: OBSERVATION_SESSION, seq: 0 });
     expect(observationHandlers.size).toBe(0);
     expect(grid.isConnected).toBe(true);
@@ -684,7 +684,7 @@ describe("hidden panel keeps previews mounted", () => {
     expect(screen.queryByTestId("chat-side-panel-table-loading")).toBeNull();
     expect(grid.isConnected).toBe(true);
     expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 1, OBSERVATION_SESSION);
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
     expect(readDocument).toHaveBeenCalledTimes(3);
     expect(observationHandlers.size).toBe(1);
@@ -703,7 +703,7 @@ describe("hidden panel keeps previews mounted", () => {
     await screen.findByText("North");
     expect(screen.getByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeTruthy();
     expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[0]!.getAttribute("aria-selected")).toBe("true");
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
     expect(observationHandlers.size).toBe(1);
     // Choosing a sheet again clears the notice.

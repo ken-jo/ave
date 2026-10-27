@@ -332,11 +332,11 @@ describe("subscription runtime composer readiness", () => {
   );
 
   it.each([
-    ["codex", "gpt-5.4", "ChatGPT · gpt-5.4"],
-    ["kimi-code", "", "Kimi"],
+    ["codex", "gpt-5.4", "ChatGPT · gpt-5.4", "API 키가 아닌 본인의 ChatGPT 구독으로 청구됩니다."],
+    ["kimi-code", "", "Kimi", "API 키가 아닌 본인의 Kimi 구독으로 청구됩니다."],
   ] as const)(
     "shows the selected %s subscription runtime rather than the stale API provider in the status row",
-    async (provider, model, expectedLabel) => {
+    async (provider, model, expectedLabel, expectedBilling) => {
       const { container, api } = await renderApp({
         hasApiKey: true,
         subscriptionRuntimeStatus: subscriptionChatReady(provider),
@@ -354,7 +354,10 @@ describe("subscription runtime composer readiness", () => {
       await waitFor(() => expect(api.subscriptionRuntimeStatus).toHaveBeenCalledWith(provider));
       await waitFor(() => {
         const modelCell = container.querySelector('[data-testid="iab-status-model"]');
-        expect(modelCell?.getAttribute("title")).toBe(expectedLabel);
+        expect(modelCell).toHaveAttribute("aria-label", expectedLabel);
+        expect(modelCell).toHaveAccessibleDescription(expectedBilling);
+        expect(modelCell?.getAttribute("title")).toBe(`${expectedLabel} · ${expectedBilling}`);
+        expect(modelCell?.querySelector('[data-testid="iab-model-billing"]')).toHaveTextContent(expectedBilling);
         expect(container.querySelector('[data-testid="sidebar-settings"]')).toBeTruthy();
         expect(container.querySelector('[data-testid="sidebar-settings-alert"]')).toBeNull();
       });

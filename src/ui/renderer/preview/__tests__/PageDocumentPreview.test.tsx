@@ -1,8 +1,8 @@
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DocumentObservationEvent } from "../../../../shared/agent-observation.js";
-import { emitDocumentObservations } from "../../../../__tests__/support/document-observation-events.js";
+import type { AgentObservationEvent, DocumentObservationEvent } from "../../../../shared/agent-observation.js";
+import { emitObservations } from "../../../../__tests__/support/document-observation-events.js";
 import type { PreviewPageDocument } from "../../../../shared/preview-page-document.js";
 import { PageDocumentPreview } from "../PageDocumentPreview.js";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
@@ -16,7 +16,7 @@ const OUTLINE: PreviewPageDocument = { format: "docx", totalPages: 1, pagesTrunc
   page: { index: 0, paragraphs: ["Old paragraph"], textTruncated: false, png: null, width: 0, height: 0 } };
 let previousAve: typeof window.ave;
 let previousLocale: ReturnType<typeof getLocale>;
-let handlers: Set<(events: DocumentObservationEvent[]) => void>;
+let handlers: Set<(events: AgentObservationEvent[]) => void>;
 let acknowledge: ReturnType<typeof vi.fn>;
 let read: ReturnType<typeof vi.fn>;
 
@@ -29,8 +29,8 @@ beforeEach(() => {
   read = vi.fn(async () => ({ ok: true, path: PATH, bytes: 42, document: OUTLINE,
     observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }));
   window.ave = { attach: { openExternal: vi.fn(async () => ({ ok: true })) }, preview: {
-    readDocument: read, acknowledgeDocumentObservation: acknowledge,
-    onDocumentObservation: (handler: (events: DocumentObservationEvent[]) => void) => {
+    readDocument: read, acknowledgeObservation: acknowledge,
+    onAgentObservation: (handler: (events: AgentObservationEvent[]) => void) => {
       handlers.add(handler); return () => { handlers.delete(handler); };
     },
   } } as never;
@@ -76,7 +76,7 @@ describe("read-only page observation rendering", () => {
     await screen.findByText("Old paragraph");
     const after = { ...OUTLINE, elements: OUTLINE.elements!.map((entry) => ({ ...entry, text: "New paragraph" })),
       page: { ...OUTLINE.page, paragraphs: ["New paragraph"] } };
-    await emitDocumentObservations(handlers, elementEvent(), snapshot(after, 2));
+    await emitObservations(handlers, elementEvent(), snapshot(after, 2));
     expect(screen.getByTestId("document-observation-summary")).toHaveTextContent("Paragraph 1, run 1: Old paragraph → New paragraph");
     expect(screen.getByText("New paragraph").getAttribute("data-observation-current")).toBe("true");
     expect(acknowledge).toHaveBeenLastCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 2 });
@@ -89,7 +89,7 @@ describe("read-only page observation rendering", () => {
     render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     fireEvent.load(await screen.findByTestId("chat-side-panel-pdf-page"));
     expect(acknowledge).toHaveBeenLastCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 0 });
-    await emitDocumentObservations(handlers, snapshot({ ...rendered, page: { ...rendered.page, png: "second" } }, 1));
+    await emitObservations(handlers, snapshot({ ...rendered, page: { ...rendered.page, png: "second" } }, 1));
     expect(acknowledge).toHaveBeenCalledTimes(1);
     fireEvent.load(screen.getByTestId("chat-side-panel-pdf-page"));
     expect(acknowledge).toHaveBeenLastCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 1 });
@@ -98,12 +98,12 @@ describe("read-only page observation rendering", () => {
   it("rejects unrelated and stale events and releases the exact binding on unmount", async () => {
     const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
-    await emitDocumentObservations(handlers, { ...elementEvent(), sessionId: "other-session" },
+    await emitObservations(handlers, { ...elementEvent(), sessionId: "other-session" },
       { ...elementEvent(), target: { id: TARGET, path: "/workspace/other.docx" } },
       { ...elementEvent(), actor: "user" } as never);
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
-    await emitDocumentObservations(handlers, elementEvent(2));
-    await emitDocumentObservations(handlers, { ...elementEvent(1), after: "Stale text" });
+    await emitObservations(handlers, elementEvent(2));
+    await emitObservations(handlers, { ...elementEvent(1), after: "Stale text" });
     expect(screen.getByTestId("document-observation-summary").textContent).not.toContain("Stale text");
     view.unmount();
     expect(handlers.size).toBe(0);
@@ -137,7 +137,7 @@ describe("read-only page observation rendering", () => {
   it("clears source markers on revocation and shows conversion failures as localized errors", async () => {
     const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
-    await emitDocumentObservations(handlers, elementEvent(), { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH },
+    await emitObservations(handlers, elementEvent(), { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH },
       seq: 2, ts: 1_700_000_000_000, kind: "status", before: null, after: { code: "reload-required" } });
     expect(view.container.querySelector("[data-observation-current]")).toBeNull();
     view.unmount();
@@ -158,7 +158,7 @@ describe("read-only page observation rendering", () => {
     await screen.findByText("Title");
     const event = elementEvent();
     if (event.kind !== "element") throw new Error("Invalid element fixture");
-    await emitDocumentObservations(handlers, { ...event, element: { kind: "shape", slide: 0, shapeId: "body" }, before: "Body", after: "Updated body" });
+    await emitObservations(handlers, { ...event, element: { kind: "shape", slide: 0, shapeId: "body" }, before: "Body", after: "Updated body" });
     expect(screen.getByText("Body").getAttribute("data-observation-current")).toBe("true");
     expect(screen.getByText("Title").getAttribute("data-observation-current")).toBeNull();
     expect(screen.getByTestId("document-observation-summary")).toHaveTextContent("Slide 1, shape body");
