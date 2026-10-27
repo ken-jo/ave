@@ -12,7 +12,9 @@ import { DOCUMENT_ENGINE_IMPORT_EXTENSION, documentEngineReleaseFor, documentEng
 import { verifyDocumentEnginePlatformSignature, verifyDocumentEngineReleaseSignature } from "./document-engine-signature.js";
 import { documentEnginePayloadPaths, documentEngineTreeDigest, extractDocumentEnginePayload,
   readDocumentEngineTree, reconstructDocumentEngineTree, assertDocumentEnginePathIdentities,
-  captureDocumentEnginePathIdentity, type DocumentEnginePathIdentity } from "./document-engine-payload.js";
+  assertDocumentEngineArchiveUnchanged, captureDocumentEnginePathIdentity, readDocumentEngineIdentityDigest,
+  type DocumentEnginePathIdentity, type DocumentEnginePayloadPaths } from "./document-engine-payload.js";
+import { offlineProcessConfinementImplemented } from "../permissions/offline-confinement-platforms.js";
 
 export class DocumentEngineInstallError extends Error {
   constructor(readonly code: DocumentEngineInstallationError, message: string, options?: ErrorOptions) {
@@ -32,23 +34,37 @@ export interface VerifiedDocumentEngineInstallation {
   verifyBeforeSpawn(signal: AbortSignal): Promise<void>;
 }
 
-interface InstallationReceipt { schema: 1; version: string; platform: string; arch: string; slot: string }
+/**
+ * Schema 2 records what the one full verification at install time proved: the installed tree's content digest
+ * (equal to the authenticated archive's tree) and its metadata identity digest taken around that hash.
+ */
+interface InstallationReceipt {
+  schema: 2; version: string; platform: string; arch: string; slot: string; treeDigest: string; identityDigest: string;
+}
+interface PayloadDigests { treeDigest: string; identityDigest: string }
+interface Admission { readonly promise: Promise<VerifiedDocumentEngineInstallation>; settled: boolean }
 interface DownloadPin { url: string; bytes: number; sha256?: string }
 
 const namespace = openFeatureNamespace("document-engine");
-const installations = new Map<string, Promise<VerifiedDocumentEngineInstallation>>();
+/** Per-slot runtime admission; a failed admission stays failed until install or uninstall changes the lifecycle. */
+const installations = new Map<string, Admission>();
 let networkFetch: typeof fetch | undefined;
 let installing = false;
 let uninstalling = false;
 let lifecycleGeneration = 0;
 let transientState: { root: string; state: DocumentEngineInstallationState } | undefined;
 
+/** A release is offered only where its engine can also execute under offline confinement. */
+function supportedRelease(): DocumentEngineRelease | undefined {
+  return offlineProcessConfinementImplemented() ? documentEngineReleaseFor() ?? undefined : undefined;
+}
+
 /** The host supplies its proxy-aware, credential-free single-hop transport. */
 export function initializeDocumentEngineInstallationNetwork(fetchImpl: typeof fetch): void {
   networkFetch = fetchImpl;
 }
 
-function releaseState(phase: DocumentEngineInstallationState["phase"], release = documentEngineReleaseFor()): DocumentEngineInstallationState {
+function releaseState(phase: DocumentEngineInstallationState["phase"], release = supportedRelease()): DocumentEngineInstallationState {
   return { phase, version: release?.version ?? "26.8.1", downloadBytes: (release?.bytes ?? 0) + DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes,
     downloadedBytes: phase === "ready" ? (release?.bytes ?? 0) + DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes : 0,
     installedBytes: release?.installedBytes ?? 0 };
@@ -87,10 +103,12 @@ async function readReceipt(): Promise<InstallationReceipt | null> {
     const raw: unknown = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid receipt");
     const receipt = raw as Record<string, unknown>;
-    const release = documentEngineReleaseFor();
-    if (!release || Object.keys(receipt).length !== 5 || receipt.schema !== 1 || receipt.version !== release.version
+    const release = supportedRelease();
+    const digest = (value: unknown): boolean => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+    if (!release || Object.keys(receipt).length !== 7 || receipt.schema !== 2 || receipt.version !== release.version
       || receipt.platform !== release.platform || receipt.arch !== release.arch
-      || typeof receipt.slot !== "string" || !/^slot-[a-f0-9-]{36}$/.test(receipt.slot)) throw new Error("Invalid receipt identity");
+      || typeof receipt.slot !== "string" || !/^slot-[a-f0-9-]{36}$/.test(receipt.slot)
+      || !digest(receipt.treeDigest) || !digest(receipt.identityDigest)) throw new Error("Invalid receipt identity");
     return receipt as unknown as InstallationReceipt;
   } catch (error) { throw new DocumentEngineInstallError("integrity-failed", "Document engine receipt is invalid", { cause: error }); }
   finally { await handle.close(); }
@@ -123,9 +141,7 @@ async function readSignature(path: string): Promise<string> {
   } finally { await handle.close(); }
 }
 
-async function verifyArchive(slot: string, release: DocumentEngineRelease, signal: AbortSignal): Promise<void> {
-  const archive = join(slot, release.filename);
-  await verifyFile(archive, release.bytes, release.sha256, signal);
+async function verifyArchiveSignatures(archive: string, release: DocumentEngineRelease, signal: AbortSignal): Promise<void> {
   try { await verifyDocumentEngineReleaseSignature(archive, await readSignature(`${archive}.asc`), signal); }
   catch (error) {
     signal.throwIfAborted();
@@ -137,119 +153,211 @@ async function verifyArchive(slot: string, release: DocumentEngineRelease, signa
   }
 }
 
+/** Hash the pinned archive through a held descriptor, verify its release signature, then let `consume` read it. */
 async function withVerifiedArchive<T>(slot: string, release: DocumentEngineRelease, signal: AbortSignal,
   consume: (path: string) => Promise<T>): Promise<T> {
   const path = join(slot, release.filename);
   const held = await openExecutableFile(path);
   try {
     const opened = await held.stat({ bigint: true });
-    const identity = captureDocumentEnginePathIdentity(path);
+    const identity = captureDocumentEnginePathIdentity(path, "archive");
     if (identity.stat.dev !== opened.dev || identity.stat.ino !== opened.ino) {
       throw new DocumentEngineInstallError("integrity-failed", "Document engine archive changed during admission");
     }
-    await verifyArchive(slot, release, signal);
+    signal.throwIfAborted();
+    if (opened.nlink !== 1n || opened.size !== BigInt(release.bytes) || await hashExecutableFile(held) !== release.sha256) {
+      throw new DocumentEngineInstallError("integrity-failed", "Document engine artifact hash does not match its release pin");
+    }
+    signal.throwIfAborted();
+    await verifyArchiveSignatures(path, release, signal);
     assertDocumentEnginePathIdentities([identity]);
     const result = await consume(path);
-    assertDocumentEnginePathIdentities([identity]);
+    try { await assertDocumentEngineArchiveUnchanged(held, identity, release.sha256); }
+    catch (error) { throw new DocumentEngineInstallError("integrity-failed", "Document engine archive changed while it was read", { cause: error }); }
     return result;
   } finally { await held.close(); }
 }
 
-async function createVerifiedInstallation(receipt: InstallationReceipt, signal: AbortSignal): Promise<VerifiedDocumentEngineInstallation> {
+async function verifyPlatformSignature(paths: DocumentEnginePayloadPaths, release: DocumentEngineRelease,
+  assess: boolean, signal: AbortSignal): Promise<void> {
+  try { await verifyDocumentEnginePlatformSignature(paths.executable, release.platform, signal, { assess }); }
+  catch (error) {
+    signal.throwIfAborted();
+    throw new DocumentEngineInstallError("signature-failed", "Document engine executable signer is invalid", { cause: error });
+  }
+}
+
+async function assertPayloadLocations(slot: string, paths: DocumentEnginePayloadPaths, release: DocumentEngineRelease): Promise<void> {
+  await assertCodexLocations([{ path: slot, kind: "private-directory", routeKind: "native" },
+    { path: join(slot, "payload"), kind: "private-directory", routeKind: "native" },
+    { path: paths.root, kind: "directory", routeKind: "native" },
+    { path: paths.executable, kind: "executable", routeKind: release.platform === "linux" ? "guarded-script" : "native" },
+    { path: paths.unopkg, kind: "executable", routeKind: release.platform === "linux" ? "guarded-script" : "native" }]);
+}
+
+async function assertIdentityDigest(paths: DocumentEnginePayloadPaths, expected: string, signal: AbortSignal): Promise<void> {
+  if (await readDocumentEngineIdentityDigest(paths.root, signal) !== expected) {
+    throw new DocumentEngineInstallError("integrity-failed", "Document engine payload changed after verification");
+  }
+}
+
+/**
+ * The one full verification, at install time: every payload byte is hashed and compared with the authenticated
+ * archive's tree, the executable signer is assessed, and the metadata identity digest taken before the hash must
+ * still hold afterwards, binding the recorded identity to the hashed bytes.
+ */
+async function verifyInstalledPayload(slot: string, release: DocumentEngineRelease, expectedTreeDigest: string,
+  signal: AbortSignal): Promise<PayloadDigests> {
+  const paths = documentEnginePayloadPaths(join(slot, "payload"), release);
+  await assertPayloadLocations(slot, paths, release);
+  const identityDigest = await readDocumentEngineIdentityDigest(paths.root, signal);
+  const treeDigest = documentEngineTreeDigest(await readDocumentEngineTree(paths.root, signal));
+  if (treeDigest !== expectedTreeDigest) {
+    throw new DocumentEngineInstallError("integrity-failed", "Document engine payload differs from its authenticated archive");
+  }
+  await verifyFile(join(slot, DOCUMENT_ENGINE_IMPORT_EXTENSION.filename), DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes,
+    DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256, signal);
+  await verifyPlatformSignature(paths, release, true, signal);
+  await assertIdentityDigest(paths, identityDigest, signal);
+  return { treeDigest, identityDigest };
+}
+
+/**
+ * Runtime admission, once per process and slot: the payload's metadata identity must equal the one recorded when
+ * its bytes were hashed. macOS additionally relies on the TDF code-signing seal (`codesign --deep --strict` plus the
+ * pinned team), which covers every sealed byte without Ave rereading the archive. Platforms without a payload seal
+ * reconstruct the authenticated tree from the archive again, so the receipt is never a self-attesting trust root.
+ */
+async function admitInstalledPayload(slot: string, release: DocumentEngineRelease, receipt: InstallationReceipt,
+  signal: AbortSignal): Promise<void> {
+  const paths = documentEnginePayloadPaths(join(slot, "payload"), release);
+  await assertPayloadLocations(slot, paths, release);
+  await verifyFile(join(slot, DOCUMENT_ENGINE_IMPORT_EXTENSION.filename), DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes,
+    DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256, signal);
+  await assertIdentityDigest(paths, receipt.identityDigest, signal);
+  if (release.platform === "darwin") await verifyPlatformSignature(paths, release, false, signal);
+  else {
+    const expected = documentEngineTreeDigest(await withVerifiedArchive(slot, release, signal,
+      (archive) => reconstructDocumentEngineTree(archive, release, signal)));
+    if (expected !== receipt.treeDigest || documentEngineTreeDigest(await readDocumentEngineTree(paths.root, signal)) !== receipt.treeDigest) {
+      throw new DocumentEngineInstallError("integrity-failed", "Document engine payload differs from its authenticated archive");
+    }
+  }
+  await assertIdentityDigest(paths, receipt.identityDigest, signal);
+}
+
+function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineRelease): {
+  installation: VerifiedDocumentEngineInstallation; markAdmitted(): void;
+} {
   const generation = lifecycleGeneration;
   const namespaceRoot = namespace.dir;
-  let verifiedIdentities: readonly DocumentEnginePathIdentity[] | undefined;
+  const slot = join(namespace.dir, receipt.slot);
+  const paths = documentEnginePayloadPaths(join(slot, "payload"), release);
+  const extensionPath = join(slot, DOCUMENT_ENGINE_IMPORT_EXTENSION.filename);
+  let anchors: readonly DocumentEnginePathIdentity[] | undefined;
+  // Synchronous and constant-size: the whole tree is compared asynchronously in verifyBeforeSpawn.
   const assertCurrent = (): void => {
     if (generation !== lifecycleGeneration || namespace.dir !== namespaceRoot || uninstalling) {
       throw new DocumentEngineInstallError("integrity-failed", "Document engine installation is no longer current");
     }
-    if (verifiedIdentities) {
-      try { assertDocumentEnginePathIdentities(verifiedIdentities); }
-      catch (error) { throw new DocumentEngineInstallError("integrity-failed", "Document engine payload changed after verification", { cause: error }); }
-    }
+    if (!anchors) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation was not admitted");
+    try { assertDocumentEnginePathIdentities(anchors); }
+    catch (error) { throw new DocumentEngineInstallError("integrity-failed", "Document engine payload changed after verification", { cause: error }); }
   };
-  const release = documentEngineReleaseFor();
-  if (!release) throw new DocumentEngineInstallError("unsupported-platform", "Document engine platform is unsupported");
-  const slot = join(namespace.dir, receipt.slot);
-  const payload = join(slot, "payload");
-  const paths = documentEnginePayloadPaths(payload, release);
-  const extensionPath = join(slot, DOCUMENT_ENGINE_IMPORT_EXTENSION.filename);
-  await assertCodexLocations([{ path: slot, kind: "private-directory", routeKind: "native" },
-    { path: payload, kind: "private-directory", routeKind: "native" }]);
-  const expected = await withVerifiedArchive(slot, release, signal, (archive) => reconstructDocumentEngineTree(archive, release, signal));
-  const expectedDigest = documentEngineTreeDigest(expected);
   const installation: VerifiedDocumentEngineInstallation = Object.freeze({ ...paths, version: release.version, assertCurrent,
     extensionPath, extensionSha256: DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256,
-    async verifyBeforeSpawn(currentSignal: AbortSignal): Promise<void> {
+    async verifyBeforeSpawn(signal: AbortSignal): Promise<void> {
       try {
         assertCurrent();
-        currentSignal.throwIfAborted();
-        if (verifiedIdentities) return;
-        const identities: DocumentEnginePathIdentity[] = [Object.freeze({ ...captureDocumentEnginePathIdentity(namespaceRoot), ancestor: true }),
-          ...[slot, payload, join(slot, release.filename), `${join(slot, release.filename)}.asc`, extensionPath].map(captureDocumentEnginePathIdentity)];
-        await verifyArchive(slot, release, currentSignal);
-        await verifyFile(extensionPath, DOCUMENT_ENGINE_IMPORT_EXTENSION.bytes, DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256, currentSignal);
-        await assertCodexLocations([{ path: slot, kind: "private-directory", routeKind: "native" },
-          { path: paths.root, kind: "directory", routeKind: "native" },
-          { path: paths.executable, kind: "executable", routeKind: release.platform === "linux" ? "guarded-script" : "native" },
-          { path: paths.unopkg, kind: "executable", routeKind: release.platform === "linux" ? "guarded-script" : "native" }]);
-        if (documentEngineTreeDigest(await readDocumentEngineTree(paths.root, currentSignal, (identity) => identities.push(identity))) !== expectedDigest) {
-          throw new DocumentEngineInstallError("integrity-failed", "Document engine payload differs from its authenticated archive");
-        }
-        try { await verifyDocumentEnginePlatformSignature(paths.executable, release.platform, currentSignal); }
-        catch (error) {
-          currentSignal.throwIfAborted();
-          throw new DocumentEngineInstallError("signature-failed", "Document engine executable signer is invalid", { cause: error });
-        }
-        assertDocumentEnginePathIdentities(identities);
-        verifiedIdentities ??= Object.freeze(identities);
+        signal.throwIfAborted();
+        await assertIdentityDigest(paths, receipt.identityDigest, signal);
         assertCurrent();
       } catch (error) {
-        currentSignal.throwIfAborted();
+        signal.throwIfAborted();
         if (error instanceof DocumentEngineInstallError) throw error;
         throw new DocumentEngineInstallError("integrity-failed", "Document engine payload verification failed", { cause: error });
       }
     },
   });
-  await installation.verifyBeforeSpawn(signal);
-  return installation;
+  return {
+    installation,
+    markAdmitted() {
+      anchors = Object.freeze([Object.freeze({ ...captureDocumentEnginePathIdentity(namespaceRoot), ancestor: true as const }),
+        ...[slot, join(slot, "payload"), paths.root, paths.executable, paths.unopkg, extensionPath].map((path) => captureDocumentEnginePathIdentity(path))]);
+    },
+  };
 }
 
-export async function getVerifiedDocumentEngineInstallation(signal: AbortSignal): Promise<VerifiedDocumentEngineInstallation | null> {
-  signal.throwIfAborted();
-  if (installing || uninstalling) throw new DocumentEngineInstallError("install-failed", "Document engine installation is changing");
-  const generation = lifecycleGeneration;
-  const receipt = await readReceipt();
-  if (!receipt) return null;
+function admissionFor(receipt: InstallationReceipt, release: DocumentEngineRelease): Admission {
   const key = join(namespace.dir, receipt.slot);
-  let pending = installations.get(key);
-  if (!pending) {
-    pending = createVerifiedInstallation(receipt, signal).catch((error: unknown) => {
-      signal.throwIfAborted();
+  const existing = installations.get(key);
+  if (existing) return existing;
+  const bound = bindInstallation(receipt, release);
+  const signal = new AbortController().signal;
+  const admission: Admission = {
+    settled: false,
+    promise: admitInstalledPayload(key, release, receipt, signal).then(() => {
+      bound.markAdmitted();
+      bound.installation.assertCurrent();
+      return bound.installation;
+    }, (error: unknown) => {
       if (error instanceof DocumentEngineInstallError) throw error;
       throw new DocumentEngineInstallError("integrity-failed", "Document engine installation could not be verified", { cause: error });
-    });
-    installations.set(key, pending);
-    pending.catch(() => { if (installations.get(key) === pending) installations.delete(key); });
+    }),
+  };
+  admission.promise.then(() => { admission.settled = true; }, () => { admission.settled = true; });
+  installations.set(key, admission);
+  return admission;
+}
+
+function awaitAdmission<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+/**
+ * An installation being installed or removed is absent to its consumers, which therefore keep the admitted reader;
+ * only a present installation that fails verification is an error.
+ */
+export async function getVerifiedDocumentEngineInstallation(signal: AbortSignal): Promise<VerifiedDocumentEngineInstallation | null> {
+  signal.throwIfAborted();
+  if (installing || uninstalling) return null;
+  const release = supportedRelease();
+  if (!release) return null;
+  const generation = lifecycleGeneration;
+  const receipt = await readReceipt();
+  if (!receipt || installing || uninstalling || generation !== lifecycleGeneration) return null;
+  let installation: VerifiedDocumentEngineInstallation;
+  try { installation = await awaitAdmission(admissionFor(receipt, release).promise, signal); }
+  catch (error) {
+    signal.throwIfAborted();
+    // A lifecycle change invalidates the admission it raced; the installation is then absent, not corrupt.
+    if (generation !== lifecycleGeneration || installing || uninstalling) return null;
+    throw error;
   }
-  const installation = await pending;
-  if (generation !== lifecycleGeneration || installing || uninstalling) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation changed during admission");
+  if (generation !== lifecycleGeneration || installing || uninstalling) return null;
   installation.assertCurrent();
   return installation;
 }
 
+/** Never blocks on runtime admission: while it runs the installation reports `verifying-installation`. */
 export async function getDocumentEngineInstallationState(): Promise<DocumentEngineInstallationState> {
   if (transientState?.root === namespace.dir && transientState.state.phase !== "ready" && transientState.state.phase !== "absent") {
     return { ...transientState.state };
   }
-  if (!documentEngineReleaseFor()) return releaseState("unsupported");
+  const release = supportedRelease();
+  if (!release) return releaseState("unsupported");
+  if (uninstalling) return releaseState("absent");
   const receipt = await readReceipt();
-  if (receipt) {
-    const installation = await getVerifiedDocumentEngineInstallation(new AbortController().signal);
-    if (!installation) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation disappeared during verification");
-    installation.assertCurrent();
-  }
-  return releaseState(receipt ? "ready" : "absent");
+  if (!receipt) return releaseState("absent");
+  const admission = admissionFor(receipt, release);
+  if (!admission.settled) return releaseState("verifying-installation", release);
+  (await admission.promise).assertCurrent();
+  return releaseState("ready", release);
 }
 
 function assertDownloadOrigin(url: URL, extension: boolean): void {
@@ -361,7 +469,7 @@ async function downloadSignature(ns: FeatureNamespaceHandle, name: string, relea
 
 export async function installDocumentEngine(onProgress: (state: DocumentEngineInstallationState) => void, signal: AbortSignal): Promise<void> {
   if (installing || uninstalling) throw new DocumentEngineInstallError("install-failed", "Document engine installation is already running");
-  const release = documentEngineReleaseFor();
+  const release = supportedRelease();
   if (!release) throw new DocumentEngineInstallError("unsupported-platform", "Document engine platform is unsupported");
   signal.throwIfAborted();
   installing = true;
@@ -388,17 +496,24 @@ export async function installDocumentEngine(onProgress: (state: DocumentEngineIn
     await downloadSignature(namespace, `${slotName}/${release.filename}.asc`, release, controller.signal);
     await downloadArtifact(namespace, `${slotName}/${DOCUMENT_ENGINE_IMPORT_EXTENSION.filename}`, DOCUMENT_ENGINE_IMPORT_EXTENSION, true, onBytes, controller.signal);
     state.phase = "verifying"; publish();
-    await verifyArchive(ownedSlot, release, controller.signal);
-    state.phase = "installing"; publish();
     const payload = await namespace.childDir(`${slotName}/payload`);
-    await withVerifiedArchive(ownedSlot, release, controller.signal,
-      (archive) => extractDocumentEnginePayload(archive, payload, release, controller.signal));
-    const receipt: InstallationReceipt = { schema: 1, version: release.version, platform: release.platform, arch: release.arch, slot: slotName };
-    const installation = await createVerifiedInstallation(receipt, controller.signal);
+    const slot = ownedSlot;
+    const extracted = await withVerifiedArchive(slot, release, controller.signal, (archive) => {
+      state.phase = "installing"; publish();
+      return extractDocumentEnginePayload(archive, payload, release, controller.signal);
+    });
+    const expected = extracted.sourceTree ?? await withVerifiedArchive(slot, release, controller.signal,
+      (archive) => reconstructDocumentEngineTree(archive, release, controller.signal));
+    const digests = await verifyInstalledPayload(slot, release, documentEngineTreeDigest(expected), controller.signal);
+    const receipt: InstallationReceipt = { schema: 2, version: release.version, platform: release.platform, arch: release.arch,
+      slot: slotName, ...digests };
+    const bound = bindInstallation(receipt, release);
+    bound.markAdmitted();
     controller.signal.throwIfAborted();
     await namespace.writeJson("installation.json", receipt);
     published = true;
-    installations.set(join(namespace.dir, slotName), Promise.resolve(installation));
+    const admission: Admission = { promise: Promise.resolve(bound.installation), settled: true };
+    installations.set(join(namespace.dir, slotName), admission);
     state.phase = "ready"; publish();
   } catch (error) {
     const failure = signal.aborted ? new DocumentEngineInstallError("cancelled", "Document engine installation cancelled", { cause: error })

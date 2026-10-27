@@ -28,6 +28,7 @@ export const en = {
   "documentEngine.downloading": "Downloading document engine",
   "documentEngine.verifying": "Verifying download and signature",
   "documentEngine.installing": "Installing document engine",
+  "documentEngine.verifyingInstallation": "Verifying the installed engine before first use",
   "documentEngine.cancelling": "Cancelling and removing temporary files",
   "documentEngine.ready": "Document engine installed. Reload an open document to use it.",
   "documentEngine.downloadFailed": "The download failed. Check your connection and retry.",

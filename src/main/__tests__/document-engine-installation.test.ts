@@ -8,10 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const fixtures = vi.hoisted(() => {
   const payload = new TextEncoder().encode("pinned archive");
   const extension = new TextEncoder().encode("pinned extension");
-  return { payload, extension, signature: "signature", fetch: vi.fn(), verifyRelease: vi.fn(), verifyPlatform: vi.fn(), tamperExtraction: false };
+  return { payload, extension, signature: "signature", fetch: vi.fn(), verifyRelease: vi.fn(), verifyPlatform: vi.fn(), tamperExtraction: false,
+    confined: true, read: vi.fn(), convert: vi.fn() };
 });
 
 vi.mock("../../core/network-guard.js", () => ({ fetchPublicHttpResponse: fixtures.fetch }));
+vi.mock("../../observation/table-engine.js", () => ({ createTableObservationEngine: () => ({ id: "bounded-reader", parse: fixtures.read }) }));
+vi.mock("../../observation/libreoffice-process.js", () => ({ LibreOfficeSessionPool: class {
+  convert = fixtures.convert; prepare = fixtures.convert; releaseSession = vi.fn(); dispose = vi.fn();
+} }));
+vi.mock("../../permissions/offline-confinement-platforms.js", () => ({ offlineProcessConfinementImplemented: () => fixtures.confined }));
 vi.mock("../codex-executable-location.js", async (original) => ({ ...await original<typeof import("../codex-executable-location.js")>(), assertCodexLocations: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../document-engine-release-pins.js", async () => {
   const { createHash } = await import("node:crypto");
@@ -29,16 +35,17 @@ vi.mock("../document-engine-payload.js", async (original) => {
   const actual = await original<typeof import("../document-engine-payload.js")>();
   const { createHash } = await import("node:crypto");
   const paths = (destination: string) => ({ root: join(destination, "engine"), executable: join(destination, "engine", "soffice"), unopkg: join(destination, "engine", "unopkg") });
+  const authenticatedTree = () => [
+    { path: "", kind: "directory", size: 0 },
+    ...[["soffice", "engine"], ["unopkg", "package manager"]].map(([path, bytes]) => ({ path, kind: "file", size: bytes!.length,
+      sha256: createHash("sha256").update(bytes!).digest("hex"), ...(process.platform !== "win32" ? { executable: false } : {}) })),
+  ];
   return { ...actual, documentEnginePayloadPaths: paths,
     extractDocumentEnginePayload: vi.fn(async (_archive: string, destination: string) => {
       const result = paths(destination); await mkdir(result.root);
       await writeFile(result.executable, fixtures.tamperExtraction ? "mutated engine" : "engine"); await writeFile(result.unopkg, "package manager");
-      return result;
-    }), reconstructDocumentEngineTree: vi.fn(async () => [
-      { path: "", kind: "directory", size: 0 },
-      ...[["soffice", "engine"], ["unopkg", "package manager"]].map(([path, bytes]) => ({ path, kind: "file", size: bytes!.length,
-        sha256: createHash("sha256").update(bytes!).digest("hex"), ...(process.platform !== "win32" ? { executable: false } : {}) })),
-    ]) };
+      return { paths: result, sourceTree: authenticatedTree() };
+    }), reconstructDocumentEngineTree: vi.fn(async () => authenticatedTree()) };
 });
 
 let home: string;
@@ -51,6 +58,7 @@ beforeEach(async () => {
   fixtures.verifyRelease.mockResolvedValue(undefined);
   fixtures.verifyPlatform.mockResolvedValue(undefined);
   fixtures.tamperExtraction = false;
+  fixtures.confined = true;
   previousHome = process.env.AVE_HOME;
   home = await mkdtemp(join(tmpdir(), "ave-document-install-"));
   process.env.AVE_HOME = home;
@@ -82,7 +90,9 @@ describe("optional document engine installation", () => {
     const installation = await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal);
     expect(installation).not.toBeNull();
     expect(states).toContain("verifying"); expect(states).toContain("installing"); expect(states.at(-1)).toBe("ready");
-    expect(fixtures.verifyRelease).toHaveBeenCalled(); expect(fixtures.verifyPlatform).toHaveBeenCalled();
+    expect(fixtures.verifyRelease).toHaveBeenCalledOnce();
+    expect(fixtures.verifyPlatform).toHaveBeenCalledOnce();
+    expect(fixtures.verifyPlatform.mock.calls[0]![3]).toEqual({ assess: true });
     const options = fixtures.fetch.mock.calls[0]![1];
     expect(options).toMatchObject({ credentials: "omit", maxRedirects: 0 });
     await expect(options.authorizeTarget(new URL("http://download.documentfoundation.org/file"))).rejects.toMatchObject({ code: "download-failed" });
@@ -124,13 +134,49 @@ describe("optional document engine installation", () => {
     await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
   });
 
-  it("reuses cryptographic verification only while every captured identity remains unchanged", async () => {
+  it("verifies bytes once at install and admits a new process from the recorded identity plus the platform seal", async () => {
     await installer.installDocumentEngine(() => {}, new AbortController().signal);
+    const receipt = JSON.parse(await readFile(join(home, "document-engine", "installation.json"), "utf8"));
+    expect(receipt).toMatchObject({ schema: 2, treeDigest: expect.stringMatching(/^[a-f0-9]{64}$/), identityDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    vi.resetModules(); vi.clearAllMocks();
+    installer = await import("../document-engine-installation.js");
+    expect(await installer.getDocumentEngineInstallationState()).toMatchObject({ phase: "verifying-installation" });
+    await vi.waitFor(async () => expect(await installer.getDocumentEngineInstallationState()).toMatchObject({ phase: "ready" }));
     const installation = await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal);
-    const count = fixtures.verifyRelease.mock.calls.length;
+    if (process.platform === "darwin") {
+      // Sealed platform: no archive reread, no tree rehash; the code-signing seal without the Gatekeeper assessment.
+      expect(fixtures.verifyRelease).not.toHaveBeenCalled();
+      expect(fixtures.verifyPlatform).toHaveBeenCalledOnce();
+      expect(fixtures.verifyPlatform.mock.calls[0]![3]).toEqual({ assess: false });
+    } else {
+      // No payload seal: the authenticated tree is reconstructed from the verified archive, never trusted from the receipt.
+      expect(fixtures.verifyRelease).toHaveBeenCalledOnce();
+    }
+    const calls = fixtures.verifyRelease.mock.calls.length + fixtures.verifyPlatform.mock.calls.length;
     await installation!.verifyBeforeSpawn(new AbortController().signal);
     await installation!.verifyBeforeSpawn(new AbortController().signal);
-    expect(fixtures.verifyRelease).toHaveBeenCalledTimes(count);
+    expect(fixtures.verifyRelease.mock.calls.length + fixtures.verifyPlatform.mock.calls.length).toBe(calls);
+  });
+
+  it("keeps a failed runtime admission failed instead of re-verifying on every status read", async () => {
+    await installer.installDocumentEngine(() => {}, new AbortController().signal);
+    const path = join(home, "document-engine", "installation.json");
+    await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, "utf8")), identityDigest: "0".repeat(64) }));
+    vi.resetModules(); vi.clearAllMocks();
+    installer = await import("../document-engine-installation.js");
+    await expect(installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).rejects.toMatchObject({ code: "integrity-failed" });
+    await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
+    await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(fixtures.verifyPlatform.mock.calls.length + fixtures.verifyRelease.mock.calls.length).toBe(0);
+  });
+
+  it("reports unsupported and refuses before any download where the engine cannot be confined", async () => {
+    fixtures.confined = false;
+    expect(await installer.getDocumentEngineInstallationState()).toMatchObject({ phase: "unsupported" });
+    await expect(installer.installDocumentEngine(() => {}, new AbortController().signal)).rejects.toMatchObject({ code: "unsupported-platform" });
+    expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
+    expect(fixtures.fetch).not.toHaveBeenCalled();
+    expect(await readdir(home)).toEqual([]);
   });
 
   it("compares a new installation against independently reconstructed authenticated bytes", async () => {
@@ -153,7 +199,8 @@ describe("optional document engine installation", () => {
     const drain = new Promise<void>((resolve) => { finishDrain = resolve; });
     const removal = installer.uninstallDocumentEngine(() => drain);
     expect(() => installation!.assertCurrent()).toThrow("no longer current");
-    await expect(installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).rejects.toMatchObject({ code: "install-failed" });
+    // Removal in progress reads as absence, so consumers keep the admitted reader.
+    expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
     finishDrain!(); await removal;
   });
 
@@ -184,7 +231,8 @@ describe("optional document engine installation", () => {
     const first = installer.installDocumentEngine(() => {}, controller.signal);
     await startedPromise;
     await expect(installer.installDocumentEngine(() => {}, new AbortController().signal)).rejects.toMatchObject({ code: "install-failed" });
-    await expect(installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).rejects.toMatchObject({ code: "install-failed" });
+    // An installation in progress has no receipt and is absent to consumers until it is published.
+    expect(await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).toBeNull();
     controller.abort(new Error("cancel"));
     await expect(first).rejects.toMatchObject({ code: "cancelled" });
     expect(await readdir(join(home, "document-engine"))).toEqual([]);
@@ -196,5 +244,28 @@ describe("optional document engine installation", () => {
     expect(createHash("sha256").update(await readFile(installation!.extensionPath)).digest("hex")).toBe(installation!.extensionSha256);
     await writeFile(installation!.extensionPath, fixtures.payload);
     await expect(installation!.verifyBeforeSpawn(new AbortController().signal)).rejects.toMatchObject({ code: "integrity-failed" });
+  });
+
+  it("keeps the existing reader for a document parsed while the engine is being installed", async () => {
+    let started: (() => void) | undefined;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const controller = new AbortController();
+    fixtures.fetch.mockImplementationOnce(async () => new Response(new ReadableStream({ start(stream) { stream.enqueue(fixtures.payload.subarray(0, 2)); started!(); } })));
+    const installing = installer.installDocumentEngine(() => {}, controller.signal);
+    await startedPromise;
+    const { createDocumentObservationEngine } = await import("../../observation/libreoffice-engine.js");
+    const engine = createDocumentObservationEngine({ platform: "linux" });
+    const readerResult = { format: "xlsx", sheet: { index: 0 } };
+    fixtures.read.mockResolvedValue(readerResult);
+    try {
+      await expect(engine.parse(Buffer.from("workbook"), "xlsx", 0, new AbortController().signal, { sessionId: "session-one" }))
+        .resolves.toBe(readerResult);
+      expect(fixtures.read).toHaveBeenCalledOnce();
+      expect(fixtures.convert).not.toHaveBeenCalled();
+    } finally {
+      controller.abort(new Error("cancel"));
+      await expect(installing).rejects.toMatchObject({ code: "cancelled" });
+      await engine.dispose?.();
+    }
   });
 });

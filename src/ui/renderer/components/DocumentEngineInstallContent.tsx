@@ -9,7 +9,7 @@ import { getApi } from "../api-client.js";
 
 const INSTALLATION_POLL_MS = 500;
 const ACTIVE_INSTALL_PHASES: readonly DocumentEngineInstallationState["phase"][] = Object.freeze([
-  "downloading", "verifying", "installing", "cancelling",
+  "downloading", "verifying", "installing", "cancelling", "verifying-installation",
 ]);
 
 function installationErrorKey(error: DocumentEngineApiError): string {
@@ -102,7 +102,10 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
   const mebibytes = (bytes: number): string => (bytes / (1024 * 1024)).toLocaleString(undefined, { maximumFractionDigits: 0 });
   const phaseKey = state?.phase === "downloading" ? "documentEngine.downloading"
     : state?.phase === "verifying" ? "documentEngine.verifying"
-      : state?.phase === "cancelling" ? "documentEngine.cancelling" : "documentEngine.installing";
+      : state?.phase === "verifying-installation" ? "documentEngine.verifyingInstallation"
+        : state?.phase === "cancelling" ? "documentEngine.cancelling" : "documentEngine.installing";
+  // Runtime admission of an installed engine is not an install operation and cannot be cancelled.
+  const cancellable = working && state?.phase !== "verifying-installation";
 
   return <section className="space-y-3 rounded-lg border border-border bg-background p-4" data-testid="document-engine-install">
     <div className="flex items-start gap-3">
@@ -141,8 +144,9 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
     <div className="flex flex-wrap gap-2">
       {statusReadFailed ? <Button type="button" size="sm" variant="outline" disabled={acting} onClick={() => void refresh()}>
         {t("documentEngine.checkAgain")}</Button>
-        : working ? <Button type="button" size="sm" variant="outline" disabled={acting || state?.phase === "cancelling"}
+        : cancellable ? <Button type="button" size="sm" variant="outline" disabled={acting || state?.phase === "cancelling"}
         onClick={() => void handleAction("cancel")}>{t("documentEngine.cancel")}</Button>
+        : working ? null
         : ready ? <Button type="button" size="sm" variant="outline" disabled={acting} onClick={() => void handleAction("uninstall")}>
           <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />{t("documentEngine.uninstall")}</Button>
           : <Button type="button" size="sm" disabled={acting || (!state && !error) || !supported} onClick={() => void handleAction("install")}>

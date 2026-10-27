@@ -30,6 +30,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "documentEngine.downloading": "문서 엔진 다운로드 중",
   "documentEngine.verifying": "다운로드 및 서명 검증 중",
   "documentEngine.installing": "문서 엔진 설치 중",
+  "documentEngine.verifyingInstallation": "처음 사용하기 전에 설치된 엔진을 검증하는 중",
   "documentEngine.cancelling": "취소 및 임시 파일 정리 중",
   "documentEngine.ready": "문서 엔진이 설치되었습니다. 열린 문서를 새로고침하면 적용됩니다.",
   "documentEngine.downloadFailed": "다운로드하지 못했습니다. 네트워크 연결을 확인하고 다시 시도하세요.",

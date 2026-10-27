@@ -135,13 +135,18 @@ export function _verifyDocumentEngineReleaseSignatureForTest(path: string, armor
   return verifyRsaReleaseSignature(path, armored, signal, key);
 }
 
-export async function verifyDocumentEnginePlatformSignature(path: string, platform: NodeJS.Platform, signal: AbortSignal): Promise<void> {
+/**
+ * macOS: the TDF code-signing seal and pinned team. `assess` adds the Gatekeeper/notarization assessment, which the
+ * one full install-time verification runs; runtime admission relies on the seal alone.
+ */
+export async function verifyDocumentEnginePlatformSignature(path: string, platform: NodeJS.Platform, signal: AbortSignal,
+  { assess = true }: { assess?: boolean } = {}): Promise<void> {
   if (platform === "darwin") {
     await runDocumentEngineSystemCommand("/usr/bin/codesign", ["--verify", "--deep", "--strict", path], signal);
     const identity = await runDocumentEngineSystemCommand("/usr/bin/codesign", ["--display", "--verbose=4", path], signal);
     if (!/^TeamIdentifier=7P5S3ZLCN7$/m.test(identity) || !/^Identifier=org\.libreoffice\.script$/m.test(identity)
       || !/^Authority=Developer ID Application: The Document Foundation \(7P5S3ZLCN7\)$/m.test(identity)) return invalidSignature();
-    await runDocumentEngineSystemCommand("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=4", path], signal);
+    if (assess) await runDocumentEngineSystemCommand("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=4", path], signal);
     return;
   }
   if (platform !== "win32") return;

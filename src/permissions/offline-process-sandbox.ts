@@ -12,6 +12,7 @@ import {
 import { detectSandboxCapability } from "./sandbox-capability.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
+import { offlineProcessConfinementImplemented } from "./offline-confinement-platforms.js";
 import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 
 interface OfflineProcessInput {
@@ -63,9 +64,8 @@ function literalLists(entries: readonly FilesystemPathEntry[] | undefined): { pa
 export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<OfflineProcessWrap> {
   input.signal.throwIfAborted();
   const capability = detectSandboxCapability();
-  if (!isOfflineProcessConfinementActive() || capability.confidence !== "verified"
-    || capability.confines?.filesystem !== true || capability.confines.process !== true
-    || capability.confines.network !== true || (process.platform !== "darwin" && process.platform !== "linux")) {
+  if (!offlineProcessConfinementImplemented() || !isOfflineProcessConfinementActive() || capability.confidence !== "verified"
+    || capability.confines?.filesystem !== true || capability.confines.process !== true || capability.confines.network !== true) {
     throw new TableDocumentError("engine-confinement-unavailable", "Offline document engine confinement is unavailable.");
   }
   const output = await canonicalDirectory(input.outputDirectory);

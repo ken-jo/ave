@@ -1,5 +1,6 @@
+/** `verifying-installation`: an installed engine's runtime admission is running; it is not cancellable. */
 type DocumentEngineInstallationPhase = "absent" | "downloading" | "verifying" | "installing"
-  | "ready" | "cancelling" | "error" | "unsupported";
+  | "verifying-installation" | "ready" | "cancelling" | "error" | "unsupported";
 
 export type DocumentEngineInstallationError = "download-failed" | "integrity-failed" | "signature-failed"
   | "install-failed" | "unsupported-platform" | "cancelled";

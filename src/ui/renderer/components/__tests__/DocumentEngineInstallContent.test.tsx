@@ -65,6 +65,18 @@ describe("optional document engine installation", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("publisher signature could not be verified");
   });
 
+  it("shows first-use verification of an installed engine without offering a cancel or install action", async () => {
+    const { api, status, setState } = installation({ ...ABSENT, phase: "verifying-installation" });
+    render(<DocumentEngineInstallContent api={api} />);
+    expect(await screen.findByText("Verifying the installed engine before first use")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel download" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download and install" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Uninstall engine" })).toBeNull();
+    setState({ ...ABSENT, phase: "ready" });
+    await screen.findByRole("button", { name: "Uninstall engine" }, { timeout: 2_000 });
+    expect(status.mock.calls.length).toBeGreaterThan(1);
+  });
+
   it("releases polling and ignores a late state response after unmount", async () => {
     const { api, status } = installation({ ...ABSENT, phase: "downloading" });
     const view = render(<DocumentEngineInstallContent api={api} />);
