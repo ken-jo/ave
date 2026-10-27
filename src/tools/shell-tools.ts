@@ -3954,21 +3954,26 @@ async function spawnPowerShellInMxc(
         return;
       }
       settled = true;
-      const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      const metadata = { ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true };
+      let completed: SpawnResult = { output: "", isError: true, metadata };
       // Read the proxy's refusals under this call's token before releasing it.
-      const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
-        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )));
+      // A collector failure still releases the container resources below.
+      const finalized = await runReleaseSteps([async () => {
+        const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+        const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
+          lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+        )));
+        completed = {
+          output: lifetime.timedOut
+            ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
+            : output,
+          isError: lifetime.aborted || lifetime.timedOut || code !== 0,
+          metadata: { ...artifactMetadata, ...metadata },
+        };
+      }]);
       const released = await cleanupAfterTermination();
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
-      resolveResult(withReleaseFailures({
-        output: lifetime.timedOut
-          ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.
-${output}`
-          : output,
-        isError: lifetime.aborted || lifetime.timedOut || code !== 0,
-        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true },
-      }, released));
+      resolveResult(withReleaseFailures(completed, [...finalized, ...released]));
     };
     const fault = finalizationFault("tool:powershell:mxc", resolveResult, "PowerShell ");
 

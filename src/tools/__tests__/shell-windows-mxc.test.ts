@@ -435,6 +435,21 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(existsSync(container.home())).toBe(false);
   });
 
+  it("settles with the error and still releases the launch, HOME and egress when output finalization throws", async () => {
+    bootMxcShells();
+    const container = failCommandContainerRelease({});
+    const progress = { write: () => {}, end: () => { throw new Error("progress sink closed"); } };
+    const result = await new PowerShellTool().execute(
+      { command: "Write-Output hi", timeoutSeconds: 7 },
+      { ...context("ps-mxc-collector-throws"), metadata: { toolUseId: "ps-mxc-collector-throws", toolOutputProgress: progress } },
+    );
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+    expect(result.output).toContain("progress sink closed");
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    expect(egressInvocationOwner(container.token())).toBeUndefined();
+    expect(existsSync(container.home())).toBe(false);
+  });
+
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {
     bootMxcShells();
     const result = await new BashTool().execute({ command: "echo hi", timeoutSeconds: 7 }, context("bash-mxc"));
