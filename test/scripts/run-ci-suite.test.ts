@@ -652,6 +652,7 @@ describe("the must-run set", () => {
   const NOT_TREE_SCANNERS: Record<string, string> = {
     "src/marketplace/git/__tests__/repo.test.ts": "runs ls-tree on the temporary bare repository it creates",
     "src/permissions/__tests__/risk-classifier.test.ts": "`git grep` is a shell command it classifies, never runs",
+    "src/shared/__tests__/shell-recursive-traversal.test.ts": "`git grep` is an argv it classifies as walking, never runs",
   };
 
   it.each([

