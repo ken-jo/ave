@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
@@ -15,7 +16,10 @@ import { wireJudgeAgent } from "../judge-wiring.js";
 import { wireReviewerAgent } from "../reviewer-wiring.js";
 
 let directory: string;
-beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "judge-wiring-")); });
+beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  directory = mkdtempSync(join(tmpdir(), "judge-wiring-"));
+});
 afterEach(async () => { await cleanupTmpDir(directory); });
 
 function reviewer(permissionManager: PermissionManager) {

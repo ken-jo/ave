@@ -6,7 +6,6 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readSync,
   type BigIntStats,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
@@ -14,13 +13,13 @@ import { basename, dirname, resolve } from "node:path";
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
 import { fileIdentityKey, sameFileIdentity } from "../lib/file-identity.js";
 import { createLogger } from "../lib/logger.js";
-import { FileLockReleaseError, withFileLock } from "../lib/with-file-lock.js";
+import { FileLockReleaseError, withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord, hasOnlyKeys } from "../shared/is-record.js";
+import { readAveHomeConfigurationFile, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 
 const DOCUMENT_VERSION = 1;
 const MAX_SECRET_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_SECRET_KEY_LENGTH = 1_024;
-const MAX_STABLE_READ_ATTEMPTS = 3;
 const log = createLogger("secret-document-store");
 
 export type SecretPolicy = "packaged" | "development";
@@ -69,16 +68,6 @@ export interface SecretStoreReconciliationWarning {
   error: unknown;
 }
 
-function pathEntryExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch (error) {
-    if (isMissingPathError(error)) return false;
-    throw error;
-  }
-}
-
 function isSameRegularFile(left: BigIntStats, right: BigIntStats): boolean {
   return left.isFile()
     && right.isFile()
@@ -91,69 +80,8 @@ function openSecretFileNoFollow(path: string): number {
   return openSync(path, constants.O_RDONLY | noFollow);
 }
 
-/** Read absolute offsets without moving the descriptor; short reads indicate instability. */
-function readWholeDescriptor(fd: number, size: number): Buffer {
-  const buffer = Buffer.allocUnsafe(size);
-  let filled = 0;
-  while (filled < size) {
-    const chunk = readSync(fd, buffer, filled, size - filled, filled);
-    if (chunk === 0) return buffer.subarray(0, filled);
-    filled += chunk;
-  }
-  return buffer;
-}
-
-/** Compare byte digests only with the same window; never log or expose them. */
-function contentDigest(bytes: Buffer): Buffer {
-  return createHash("sha256").update(bytes).digest();
-}
-
 function documentFingerprint(content: string): string {
   return createHash("sha256").update(content).digest("hex");
-}
-
-function readStableSecretFile(path: string): string {
-  for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
-    let fd: number | undefined;
-    try {
-      const before = lstatSync(path, { bigint: true });
-      if (!before.isFile() || before.isSymbolicLink()) {
-        throw new SecretDocumentValidationError("Secret document must be a regular file");
-      }
-      if (before.size > BigInt(MAX_SECRET_DOCUMENT_BYTES)) {
-        throw new SecretDocumentValidationError("Secret document exceeds the size limit");
-      }
-      fd = openSecretFileNoFollow(path);
-      const opened = fstatSync(fd, { bigint: true });
-      if (!isSameRegularFile(before, opened)) continue;
-      const size = Number(opened.size);
-      const bytes = readWholeDescriptor(fd, size);
-      // Reread and compare content digests because equal-size in-place mutation defeats metadata identity.
-      const readDigest = contentDigest(bytes);
-      const verifyDigest = contentDigest(readWholeDescriptor(fd, size));
-      const afterHandle = fstatSync(fd, { bigint: true });
-      const afterPath = lstatSync(path, { bigint: true });
-      if (!readDigest.equals(verifyDigest)
-        || !isSameRegularFile(opened, afterHandle)
-        || !isSameRegularFile(opened, afterPath)
-        || bytes.byteLength !== size) {
-        continue;
-      }
-      try {
-        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      } catch (error) {
-        throw new SecretDocumentValidationError("Secret document is not valid UTF-8", error);
-      }
-    } catch (error) {
-      if (error instanceof SecretDocumentValidationError) throw error;
-      if (attempt + 1 >= MAX_STABLE_READ_ATTEMPTS) {
-        throw new SecretDocumentValidationError("Secret document could not be read safely", error);
-      }
-    } finally {
-      if (fd !== undefined) closeSync(fd);
-    }
-  }
-  throw new SecretDocumentValidationError("Secret document changed during read");
 }
 
 function repairSecretFileMode(path: string, mode: number): boolean {
@@ -184,11 +112,16 @@ function repairSecretFileMode(path: string, mode: number): boolean {
 }
 
 const DEFAULT_RUNTIME: SecretStoreRuntime = {
-  read: readStableSecretFile,
-  exists: pathEntryExists,
+  read: (path) => {
+    const bytes = readAveHomeConfigurationFile(path);
+    if (bytes === undefined) throw new SecretDocumentValidationError("Secret document does not exist");
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch (error) { throw new SecretDocumentValidationError("Secret document is not valid UTF-8", error); }
+  },
+  exists: (path) => readAveHomeConfigurationFile(path) !== undefined,
   repairMode: repairSecretFileMode,
   writeAtomic: writeUtf8FileAtomicSync,
-  lock: withFileLock,
+  lock: withInProcessFileQueue,
   warn: (event) => {
     log.warn(
       { err: event.error, path: event.path, reason: event.reason },
@@ -320,6 +253,13 @@ function validateLegacyDocument(value: unknown): Record<string, string> {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
+export function validateSecretDocument(raw: string): void {
+  if (Buffer.byteLength(raw, "utf8") > MAX_SECRET_DOCUMENT_BYTES) {
+    throw new SecretDocumentValidationError("Secret document exceeds the size limit");
+  }
+  parseStoredState(raw, true);
+}
+
 function parseStoredState(raw: string, allowLegacy: boolean): StoredState {
   let parsed: unknown;
   try {
@@ -387,8 +327,9 @@ export interface SecretDocumentStoreOptions {
 }
 
 export class SecretDocumentStore {
-  readonly path: string;
-  readonly lockAnchorPath: string;
+  private readonly originalPath: string;
+  get path(): string { return resolveConfigurationFile(this.originalPath); }
+  get lockAnchorPath(): string { return resolve(dirname(this.path), `${basename(this.path)}.lock-anchor`); }
   private readonly policy: SecretPolicy;
   private readonly encryption: SecretEncryption;
   private readonly externalKey: boolean;
@@ -398,8 +339,7 @@ export class SecretDocumentStore {
   private cachedIdentity?: { stamp: string; identity: SecretDocumentIdentity | null };
 
   constructor(options: SecretDocumentStoreOptions) {
-    this.path = resolve(options.path);
-    this.lockAnchorPath = resolve(dirname(this.path), `${basename(this.path)}.lock-anchor`);
+    this.originalPath = resolve(options.path);
     this.encryption = options.encryption;
     this.externalKey = this.encryption.getSelectedStorageBackend() === "external_key";
     this.policy = this.externalKey ? "packaged" : options.policy;
@@ -413,6 +353,7 @@ export class SecretDocumentStore {
       return this.readIdentity();
     }
     const stamp = this.statStamp();
+    if (stamp === "missing") return this.readIdentity();
     if (this.cachedIdentity?.stamp === stamp) return this.cachedIdentity.identity;
     const identity = this.readIdentity();
     // Do not reuse samples across metadata changes observed by the stable reader.
@@ -435,6 +376,13 @@ export class SecretDocumentStore {
   }
 
   private readIdentity(): SecretDocumentIdentity | null {
+    if (this.runtime.read === DEFAULT_RUNTIME.read && this.runtime.exists === DEFAULT_RUNTIME.exists) {
+      const bytes = readAveHomeConfigurationFile(this.path);
+      if (bytes === undefined) return null;
+      const raw = new TextDecoder("utf8", { fatal: true }).decode(bytes);
+      const state = parseStoredState(raw, false);
+      return { fingerprint: documentFingerprint(raw), mutation: state.document.mutation ?? null };
+    }
     if (!this.runtime.exists(this.path)) return null;
     const raw = this.runtime.read(this.path);
     const state = parseStoredState(raw, false);
@@ -558,6 +506,11 @@ export class SecretDocumentStore {
   }
 
   private readState(allowLegacy: boolean): StoredState {
+    if (this.runtime.read === DEFAULT_RUNTIME.read && this.runtime.exists === DEFAULT_RUNTIME.exists) {
+      const bytes = readAveHomeConfigurationFile(this.path);
+      if (bytes === undefined) return { kind: "absent", document: emptyDocument(), raw: null };
+      return parseStoredState(new TextDecoder("utf8", { fatal: true }).decode(bytes), allowLegacy);
+    }
     if (!this.runtime.exists(this.path)) {
       return { kind: "absent", document: emptyDocument(), raw: null };
     }
@@ -673,7 +626,7 @@ export class SecretDocumentStore {
     ) => T,
     options: { repairModeBeforeRead?: boolean; rewriteLegacy?: boolean; forceWrite?: boolean; forceChangedKeys?: readonly string[] } = {},
   ): Promise<T> {
-    return enqueueMutation(this.path, async () => {
+    return enqueueMutation(this.originalPath, () => withAveHomeConfigurationWrite(this.originalPath, async () => {
       let completed: MutationResult<T>;
       try {
         completed = await this.runtime.lock(this.lockAnchorPath, async () => {
@@ -746,6 +699,6 @@ export class SecretDocumentStore {
         completed = result;
       }
       return completed.value;
-    });
+    }));
   }
 }

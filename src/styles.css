@@ -61,6 +61,7 @@
   --color-info-foreground: hsl(var(--info-foreground));
   --color-emphasis: hsl(var(--emphasis));
   --color-emphasis-foreground: hsl(var(--emphasis-foreground));
+  --color-agent: hsl(var(--agent));
   --color-action-view: hsl(var(--action-view));
   --color-action-branch: hsl(var(--action-branch));
   --color-action-compact: hsl(var(--action-compact));
@@ -157,6 +158,7 @@
 ─────────────────────────────────────────────────────────────────────────────── */
 @layer base {
   :root {
+    --agent: var(--action-view);
     --action-view:    262 83% 58%;   /* violet-500 */
     --action-branch:  25  95% 53%;   /* orange-500 */
     --action-compact: 217 91% 60%;   /* blue-400 */
@@ -647,6 +649,7 @@
     --reasoning-fill-2: hsl(var(--p-yellow-200));
     --reasoning-fill-3: hsl(var(--p-yellow-400));
     --reasoning-fill-4: hsl(var(--p-yellow-600));
+    --reasoning-fill-5: hsl(var(--p-yellow-700));
 
     /* Brand gradient — violet → blue. The single source for the onboarding
      * brand avatar and primary CTA fills. --gradient-brand-soft is the faint
@@ -1563,4 +1566,8 @@
     --file-reference-bg: color-mix(in srgb, #7aa7ff 14%, hsl(var(--surface)));
     --file-change-selection-bg: color-mix(in srgb, #7aa7ff 16%, hsl(var(--surface)));
   }
+}
+
+.ave-observed-current {
+  box-shadow: inset 0 0 0 2px hsl(var(--agent));
 }

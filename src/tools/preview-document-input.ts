@@ -9,6 +9,10 @@ export async function readPreviewDocumentInput(
   signal?: AbortSignal,
   maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
 ): Promise<Buffer> {
+  return (await readOpenedDocument(path, signal, maxBytes)).data;
+}
+
+async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number) {
   signal?.throwIfAborted();
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
     throw new TableDocumentError("too-large", "Invalid preview byte limit.");
@@ -48,7 +52,7 @@ export async function readPreviewDocumentInput(
     if (received !== initial.size || final.size !== initial.size || final.mtimeMs !== initial.mtimeMs) {
       throw new TableDocumentError("read-failed", "Document changed while being read.");
     }
-    return buffer.subarray(0, received);
+    return { data: buffer.subarray(0, received), identity: opened };
   } finally {
     await handle.close();
   }

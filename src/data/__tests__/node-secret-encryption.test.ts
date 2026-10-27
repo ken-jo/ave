@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { randomBytes } from "node:crypto";
 import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,6 +111,16 @@ describe("protected external key encryption", () => {
     writeFileSync(keyFile, randomBytes(32));
     expect(encryption.decryptString(ciphertext)).toBe("secret");
     expect(() => createNodeSecretEncryption(keyFile).decryptString(ciphertext)).toThrow(/authentication failed/);
+  });
+
+  posixOnly("rejects ref-shaped hexadecimal lines as external encryption keys", () => {
+    for (const width of [40, 64]) {
+      for (const ending of ["", "\n", "\r\n"]) {
+        const path = join(root, `hex-${width}-${ending.length}`);
+        writeFileSync(path, "a".repeat(width) + ending, { mode: 0o600 });
+        expect(() => createNodeSecretEncryption(path)).toThrow(/exactly 32 raw bytes/);
+      }
+    }
   });
 });
 

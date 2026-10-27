@@ -1,14 +1,12 @@
 /** Patches existing ordinary workbook cells while retaining untouched package bytes. */
-import { createHash, randomBytes } from "node:crypto";
-import * as fs from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
 import JSZip from "jszip";
 import { XMLValidator } from "fast-xml-parser";
 import { verifyZipInflateLimits } from "../tools/zip-inflate-guard.js";
-import { replaceStagedFile } from "../lib/atomic-file.js";
+import { publishWorkbookEdit, readWorkbookSnapshot, type WorkbookEditIo, type WorkbookEditResult } from "./xlsx-file-transaction.js";
+import { XLSX_EDIT_LIMITS, type XlsxCellValue } from "../shared/xlsx-edit.js";
+import { openWorkbookEditJournal, WorkbookJournalCompletionError, type WorkbookEditJournal } from "./xlsx-edit-journal.js";
+export type { WorkbookEditIo, WorkbookEditResult } from "./xlsx-file-transaction.js";
 
-const BACKUP_BYTES = 8 * 1024 * 1024;
-const MAX_BYTES = 20 * 1024 * 1024;
 const MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -33,10 +31,6 @@ interface XmlElement {
 }
 interface Replacement { start: number; end: number; text: string }
 interface WorkbookEdit { cell: string; value?: unknown; formula?: unknown }
-export interface WorkbookEditIo {
-  write?: (descriptor: number, bytes: Buffer, offset: number, length: number) => number;
-}
-export interface WorkbookEditResult { editedCells: number; needsRecalculation: true; backup: string | null }
 
 function requireCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -159,8 +153,6 @@ function openingWith(raw: string, node: XmlElement, attributes: Record<string, s
   return head;
 }
 function cellXml(raw: string, cell: XmlElement, edit: WorkbookEdit): string {
-  requireCondition(Object.keys(cell.attrs).every((name) => ["r", "s", "t"].includes(name)), "Cell metadata cannot be safely replaced.");
-  requireCondition(cell.children.every((child) => ["f", "v", "is"].some((name) => child.name === `${MAIN_NS}|${name}`)), "Cell extensions cannot be safely replaced.");
   const tag = qualified(cell, "c");
   const prefix = tag.slice(0, -1);
   let attrs = ` r=${quoteAttribute(cell.attrs.r!)}`;
@@ -180,7 +172,7 @@ function cellXml(raw: string, cell: XmlElement, edit: WorkbookEdit): string {
       requireCondition(Number.isFinite(value), "Invalid numeric value.");
       content = `<${prefix}v>${value}</${prefix}v>`;
     } else {
-      requireCondition(typeof value === "string" && [...value].length <= 32767, "Invalid cell value.");
+      requireCondition(typeof value === "string" && value.length <= XLSX_EDIT_LIMITS.maxValueChars, "Invalid cell value.");
       attrs += ' t="inlineStr"';
       const escaped = value.replace(/_x[0-9a-fA-F]{4}_/g, (match) => `_x005F_${match.slice(1)}`);
       content = `<${prefix}is><${prefix}t xml:space="preserve">${xmlText(escaped)}</${prefix}t></${prefix}is>`;
@@ -225,11 +217,9 @@ function requiredPart(parts: Map<string, Buffer>, name: string): Buffer {
   const bytes = parts.get(name); requireCondition(bytes, `Missing package part: ${name}`); return bytes;
 }
 
-async function editPackage(data: Buffer, request: unknown): Promise<{ output: Buffer; editedCells: number }> {
-  requireCondition(isRecord(request) && hasKeys(request, ["sheet", "edits"]), "Expected sheet and edits only.");
-  const { sheet: sheetIndex, edits } = request;
+function workbookPackage(data: Buffer, sheetIndex: unknown) {
+  requireCondition(Buffer.isBuffer(data) && data.length <= XLSX_EDIT_LIMITS.maxFileBytes, "Workbook exceeds 20 MiB.");
   requireCondition(typeof sheetIndex === "number" && Number.isInteger(sheetIndex) && sheetIndex >= 0, "Invalid sheet index.");
-  requireCondition(Array.isArray(edits) && edits.length > 0 && edits.length <= 500, "Expected 1 to 500 edits.");
   const compressions = new Map<string, "STORE" | "DEFLATE">();
   const parts = readPackage(data, compressions);
   const types = xmlTree(requiredPart(parts, "[Content_Types].xml"));
@@ -267,22 +257,130 @@ async function editPackage(data: Buffer, request: unknown): Promise<{ output: Bu
   for (const row of children(rows[0]!, "row")) for (const cell of children(row, "c")) {
     requireCondition(!cells.has(cell.attrs.r), "Duplicate cell address."); cells.set(cell.attrs.r, cell);
   }
+  const calc = children(workbook.root, "calcPr");
+  requireCondition(calc.length <= 1, "Ambiguous calculation properties.");
+  const chainRels = relationships.filter((node) => node.attrs.Type === `${REL_NS}/calcChain`);
+  const chainPaths = new Set<string>();
+  for (const rel of chainRels) {
+    const target = rel.attrs.Target ?? "";
+    const path = target.startsWith("/") ? target.replace(/^\/+/, "") : `xl/${target}`;
+    requireCondition(path === "xl/calcChain.xml" && (rel.attrs.TargetMode ?? "Internal") === "Internal", "Unsupported calculation chain.");
+    chainPaths.add(path);
+  }
+  requireCondition(!parts.has("xl/calcChain.xml") || chainPaths.has("xl/calcChain.xml"), "Unlinked calculation chain.");
+  return { parts, compressions, types, overrides, workbook, rels, relationships, sheetPath, sheet, cells, calc, chainRels, chainPaths,
+    sheetName: selected.attrs.name ?? "" };
+}
+function editableCell(sheet: ReturnType<typeof xmlTree>, cells: Map<string | undefined, XmlElement>, address: unknown): XmlElement {
+  requireCondition(typeof address === "string" && /^[A-Z]{1,3}[1-9][0-9]{0,6}$/.test(address) && cells.has(address), "Edit requires an existing cell address.");
+  for (const merged of children(sheet.root, "mergeCells")) for (const region of children(merged, "mergeCell")) requireCondition(!addressInRange(address, region.attrs.ref ?? ""), "Merged cells cannot be safely edited.");
+  const cell = cells.get(address)!;
+  requireCondition(Object.keys(cell.attrs).every((name) => ["r", "s", "t"].includes(name)), "Cell metadata cannot be safely replaced.");
+  requireCondition(cell.children.every((child) => ["f", "v", "is"].some((name) => child.name === `${MAIN_NS}|${name}`)), "Cell extensions cannot be safely replaced.");
+  return cell;
+}
+
+function elementText(text: string, node: XmlElement): string {
+  requireCondition(node.children.length === 0, "Unsupported scalar structure.");
+  let output = "";
+  let offset = node.headEnd;
+  const content = text.slice(node.headEnd, node.closeStart);
+  for (const match of content.matchAll(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>/g)) {
+    const start = node.headEnd + match.index!;
+    output += decodeEntities(text.slice(offset, start).replace(/\r\n?/g, "\n"));
+    if (match[0].startsWith("<![CDATA[")) output += match[0].slice(9, -3).replace(/\r\n?/g, "\n");
+    offset = start + match[0].length;
+  }
+  return output + decodeEntities(text.slice(offset, node.closeStart).replace(/\r\n?/g, "\n"));
+}
+function stringValue(text: string, node: XmlElement): string {
+  // Pronunciation runs and their properties decorate the text; they are not its displayed value.
+  requireCondition(node.children.every((child) => ["t", "r", "rPh", "phoneticPr"].some((local) => child.name === `${MAIN_NS}|${local}`)), "Unsupported string structure.");
+  const plain = children(node, "t");
+  const runs = children(node, "r");
+  requireCondition(plain.length <= 1 && !(plain.length && runs.length), "Ambiguous string structure.");
+  const fragments = plain.map((item) => decodeStringEscapes(elementText(text, item)));
+  for (const run of runs) {
+    requireCondition(run.children.every((child) => ["rPr", "t"].some((local) => child.name === `${MAIN_NS}|${local}`))
+      && children(run, "rPr").length <= 1 && children(run, "t").length === 1, "Unsupported rich text structure.");
+    fragments.push(decodeStringEscapes(elementText(text, children(run, "t")[0]!)));
+  }
+  const value = fragments.join("");
+  requireCondition(value.length <= XLSX_EDIT_LIMITS.maxValueChars, "Cell text exceeds the edit limit.");
+  return value;
+}
+function decodeStringEscapes(value: string): string {
+  return value.replace(/_x([0-9a-fA-F]{4})_/g, (_match, code: string) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function cellScalar(context: ReturnType<typeof workbookPackage>, cell: XmlElement): XlsxCellValue {
+  const formulas = children(cell, "f");
+  const values = children(cell, "v");
+  const inline = children(cell, "is");
+  requireCondition(formulas.length <= 1 && values.length <= 1 && inline.length <= 1 && !(inline.length && (values.length || formulas.length)), "Ambiguous cell scalar.");
+  const formula = formulas.length === 1;
+  const type = cell.attrs.t ?? "n";
+  let value: XlsxCellValue;
+  if (type === "inlineStr") {
+    requireCondition(inline.length === 1 && !formula, "Invalid inline string cell.");
+    value = stringValue(context.sheet.text, inline[0]!);
+  } else {
+    requireCondition(inline.length === 0 && ["n", "b", "s", "str", "e", "d"].includes(type), "Unsupported cell scalar type.");
+    if (!values.length) value = null;
+    else {
+      const raw = elementText(context.sheet.text, values[0]!);
+      if (type === "n") {
+        requireCondition(/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw.trim()) && Number.isFinite(Number(raw)), "Invalid numeric scalar.");
+        value = Number(raw);
+      } else if (type === "b") {
+        requireCondition(raw === "0" || raw === "1", "Invalid boolean scalar.");
+        value = raw === "1";
+      } else if (type === "str" || type === "e" || type === "d") {
+        value = decodeStringEscapes(raw);
+      } else {
+        requireCondition(/^(?:0|[1-9][0-9]*)$/.test(raw) && Number.isSafeInteger(Number(raw)), "Invalid shared string index.");
+        const relationships = context.relationships.filter((item) => item.attrs.Type === `${REL_NS}/sharedStrings`);
+        requireCondition(relationships.length === 1 && (relationships[0]!.attrs.TargetMode ?? "Internal") === "Internal", "Invalid shared string relationship.");
+        const target = relationships[0]!.attrs.Target ?? "";
+        const path = target.startsWith("/") ? target.replace(/^\/+/, "") : `xl/${target}`;
+        requireCondition(/^xl\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.xml$/.test(path), "Unsupported shared string path.");
+        const strings = xmlTree(requiredPart(context.parts, path));
+        requireCondition(strings.root.name === `${MAIN_NS}|sst`, "Unsupported shared strings namespace.");
+        const item = children(strings.root, "si")[Number(raw)];
+        requireCondition(item, "Shared string does not exist.");
+        value = stringValue(strings.text, item);
+      }
+    }
+  }
+  requireCondition(typeof value !== "string" || value.length <= XLSX_EDIT_LIMITS.maxValueChars, "Cell text exceeds the edit limit.");
+  return value;
+}
+
+function displayValue(value: XlsxCellValue): string {
+  return value === null ? "" : typeof value === "boolean" ? value ? "TRUE" : "FALSE" : String(value);
+}
+
+async function editPackage(data: Buffer, request: unknown, journal: WorkbookEditJournal | null): Promise<{ output: Buffer; editedCells: number }> {
+  requireCondition(isRecord(request) && hasKeys(request, ["sheet", "edits"]), "Expected sheet and edits only.");
+  const { sheet: sheetIndex, edits } = request;
+  requireCondition(Array.isArray(edits) && edits.length > 0 && edits.length <= 500, "Expected 1 to 500 edits.");
+  const context = workbookPackage(data, sheetIndex);
+  const { parts, compressions, types, overrides, workbook, rels, sheetPath, sheet, cells, calc, chainRels, chainPaths, sheetName } = context;
   const replacements: Replacement[] = [];
   const seen = new Set<string>();
   for (const edit of edits) {
     requireCondition(isRecord(edit) && (hasKeys(edit, ["cell", "value"]) || hasKeys(edit, ["cell", "formula"])), "Expected cell and exactly one value or formula.");
     const address = edit.cell;
-    requireCondition(typeof address === "string" && /^[A-Z]{1,3}[1-9][0-9]{0,6}$/.test(address) && cells.has(address) && !seen.has(address), "Edit requires a unique existing cell address.");
+    const cell = editableCell(sheet, cells, address);
+    requireCondition(typeof address === "string" && !seen.has(address), "Edit requires a unique existing cell address.");
     seen.add(address);
-    for (const merged of children(sheet.root, "mergeCells")) for (const region of children(merged, "mergeCell")) requireCondition(!addressInRange(address, region.attrs.ref ?? ""), "Merged cells cannot be safely edited.");
-    const cell = cells.get(address)!;
     replacements.push({ start: cell.start, end: cell.end, text: cellXml(sheet.text, cell, edit as unknown as WorkbookEdit) });
+    if (journal) journal.cell(sheetName, address, displayValue(cellScalar(context, cell)),
+      Object.hasOwn(edit, "formula") ? "" : displayValue(edit.value as XlsxCellValue));
   }
   parts.set(sheetPath, patch(sheet.text, replacements));
   const retained = new Set<string | undefined>([...walk(xmlTree(parts.get(sheetPath)!).root)].filter((node) => node.name === `${MAIN_NS}|c`).map((node) => node.attrs.r));
   requireCondition(cells.size === retained.size && [...cells.keys()].every((address) => retained.has(address)), "Edited cell namespace or identity changed.");
-  const calc = children(workbook.root, "calcPr");
-  requireCondition(calc.length <= 1, "Ambiguous calculation properties.");
   const attributes = { fullCalcOnLoad: "1", forceFullCalc: "1", calcCompleted: "0", calcMode: "auto" };
   if (calc.length) {
     const node = calc[0]!;
@@ -293,15 +391,6 @@ async function editPackage(data: Buffer, request: unknown): Promise<{ output: Bu
     parts.set("xl/workbook.xml", patch(workbook.text, [{ start: position, end: position,
       text: `<${qualified(workbook.root, "calcPr")} ${Object.entries(attributes).map(([key, value]) => `${key}=${quoteAttribute(value)}`).join(" ")}/>` }]));
   }
-  const chainRels = relationships.filter((node) => node.attrs.Type === `${REL_NS}/calcChain`);
-  const chainPaths = new Set<string>();
-  for (const rel of chainRels) {
-    const target = rel.attrs.Target ?? "";
-    const path = target.startsWith("/") ? target.replace(/^\/+/, "") : `xl/${target}`;
-    requireCondition(path === "xl/calcChain.xml" && (rel.attrs.TargetMode ?? "Internal") === "Internal", "Unsupported calculation chain.");
-    chainPaths.add(path);
-  }
-  requireCondition(!parts.has("xl/calcChain.xml") || chainPaths.has("xl/calcChain.xml"), "Unlinked calculation chain.");
   if (chainRels.length) {
     parts.set("xl/_rels/workbook.xml.rels", patch(rels.text, chainRels.map((node) => ({ start: node.start, end: node.end, text: "" }))));
     parts.set("[Content_Types].xml", patch(types.text, overrides.filter((node) => chainPaths.has((node.attrs.PartName ?? "").replace(/^\/+/, ""))).map((node) => ({ start: node.start, end: node.end, text: "" }))));
@@ -315,66 +404,21 @@ async function editPackage(data: Buffer, request: unknown): Promise<{ output: Bu
       unixPermissions: entry.unixPermissions, dosPermissions: entry.dosPermissions, createFolders: false, compression: compressions.get(name) });
   }
   const output = await archive.generateAsync({ type: "nodebuffer", compression: "STORE", platform: "UNIX" });
-  requireCondition(output.length <= MAX_BYTES, "Edited workbook exceeds the file limit.");
+  requireCondition(output.length <= XLSX_EDIT_LIMITS.maxFileBytes, "Edited workbook exceeds the file limit.");
   const checked = readPackage(output);
   requireCondition(checked.size === parts.size && [...parts].every(([name, bytes]) => checked.get(name)?.equals(bytes)), "Output package validation failed.");
   return { output, editedCells: edits.length };
 }
 
-function sameIdentity(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
-  return (["dev", "ino", "size", "mtimeNs", "mode", "nlink"] as const).every((key) => left[key] === right[key]);
-}
-function temporaryFile(path: string): { path: string; descriptor: number } {
-  const temporary = join(dirname(path), `.ave-xlsx-${randomBytes(12).toString("hex")}.tmp`);
-  return { path: temporary, descriptor: fs.openSync(temporary, "wx", 0o600) };
-}
-function writeAndSync(descriptor: number, bytes: Buffer, io: WorkbookEditIo): void {
-  let offset = 0;
-  while (offset < bytes.length) {
-    const length = Math.min(64 * 1024, bytes.length - offset);
-    const written = (io.write ?? fs.writeSync)(descriptor, bytes, offset, length);
-    requireCondition(Number.isInteger(written) && written > 0 && written <= length, "Incomplete file write.");
-    offset += written;
-  }
-  fs.fsyncSync(descriptor);
-}
-function sha256(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
-
-/** Stages recovery bytes for larger files and checks source changes before replacement. */
+/** The sandbox-shell editor alone owns document publication. */
 export async function editWorkbookFile(path: string, request: unknown, io: WorkbookEditIo = {}): Promise<WorkbookEditResult> {
-  path = resolve(path);
-  requireCondition(extname(path).toLowerCase() === ".xlsx", "Only .xlsx files can be edited.");
-  const before = fs.lstatSync(path, { bigint: true });
-  requireCondition(before.isFile() && before.nlink === 1n, "Workbook must be a singly linked regular file.");
-  requireCondition(before.size <= BigInt(MAX_BYTES), "Workbook exceeds 20 MiB.");
-  const descriptor = fs.openSync(path, "r");
-  let data: Buffer;
+  const snapshot = readWorkbookSnapshot(path);
+  const journal = openWorkbookEditJournal(path, snapshot.data);
   try {
-    requireCondition(sameIdentity(before, fs.fstatSync(descriptor, { bigint: true })), "Workbook changed before reading.");
-    data = Buffer.alloc(Number(before.size) + 1);
-    let offset = 0;
-    while (offset < data.length) { const count = fs.readSync(descriptor, data, offset, data.length - offset, null); if (!count) break; offset += count; }
-    requireCondition(offset === Number(before.size), "Workbook changed while reading.");
-    data = data.subarray(0, offset);
-  } finally { fs.closeSync(descriptor); }
-  const { output, editedCells } = await editPackage(data, request);
-  let backup: string | null = null;
-  if (data.length > BACKUP_BYTES) {
-    backup = `${path}.ave-bak`;
-    const staged = temporaryFile(path);
-    try {
-      try { writeAndSync(staged.descriptor, data, io); } finally { fs.closeSync(staged.descriptor); }
-      const saved = fs.readFileSync(staged.path);
-      requireCondition(saved.length === data.length && sha256(saved) === sha256(data), "Backup verification failed.");
-      fs.linkSync(staged.path, backup);
-    } finally { fs.unlinkSync(staged.path); }
-  }
-  const staged = temporaryFile(path);
-  try {
-    try { writeAndSync(staged.descriptor, output, io); } finally { fs.closeSync(staged.descriptor); }
-    requireCondition(sameIdentity(before, fs.lstatSync(path, { bigint: true })) && fs.readFileSync(path).equals(data), "Workbook changed before replacement.");
-    fs.chmodSync(staged.path, Number(before.mode & 0o7777n));
-    replaceStagedFile(staged.path, path);
-  } finally { if (fs.existsSync(staged.path)) fs.unlinkSync(staged.path); }
-  return { editedCells, needsRecalculation: true, backup };
+    const { output, editedCells } = await editPackage(snapshot.data, request, journal);
+    const result = publishWorkbookEdit(path, snapshot, output, editedCells, io);
+    try { journal?.commit(output); }
+    catch { throw new WorkbookJournalCompletionError(); }
+    return result;
+  } finally { journal?.close(); }
 }

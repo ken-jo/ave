@@ -1,3 +1,6 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+
 // Stubbed wiring verifies wrap-before-spawn, shared socket registration, exact worker grants, live wrap markers and idempotent cleanup; native enforcement is covered in worker-spawn-uds.smoke.test.ts.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
@@ -29,7 +32,7 @@ vi.mock("node:fs/promises", () => ({
 }));
 vi.mock("node:fs", async (importOriginal) => ({
   // The real module underneath: the sandbox module's logger reaches for more of it than the cases below steer.
-  ...await importOriginal<typeof import("node:fs")>(),
+  ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await importOriginal<typeof import("node:fs")>()),
   unlinkSync: (path: unknown) => unlinkSyncMock(path),
   rmdirSync: (path: unknown) => rmdirSyncMock(path),
   chmodSync: (path: unknown, mode: unknown) => chmodSyncMock(path, mode),

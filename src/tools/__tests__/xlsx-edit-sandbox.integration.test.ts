@@ -16,6 +16,8 @@ import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { parseTableDocument } from "../table-document-reader.js";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn, setAgentObservationSink } from "../agent-observation-context.js";
+import type { DocumentEditJournalRecord } from "../../shared/document-edit-journal.js";
 
 const quotePowerShell = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
@@ -61,12 +63,46 @@ describe("native governed XLSX command", () => {
         hostShellExecutionPlan: getHostShellExecutionPlan() };
       expect(context.hostShellExecutionPlan.mode).toBe("asrt");
       const timeoutSeconds = TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000;
-      const result = await tool.execute({ command: commandFor(path), timeoutSeconds }, context);
+      const records: DocumentEditJournalRecord[] = [];
+      const leases: Array<{ finish(): Promise<void> }> = [];
+      setAgentObservationSink({
+        openJournal: (_identity, homePath) => {
+          let finished: Promise<void> | undefined;
+          const lease = {
+            poll: () => {},
+            finish: () => {
+              if (!finished) {
+                const lines = readFileSync(join(homePath, "document-observation", "journal.jsonl"), "utf8");
+                records.push(...lines.trim().split("\n").map((line) => JSON.parse(line) as DocumentEditJournalRecord));
+                finished = Promise.resolve();
+              }
+              return finished;
+            },
+            dispose: () => {},
+          };
+          leases.push(lease);
+          return lease;
+        },
+        beforeMutation: async () => async () => {},
+        finishInvocation: async () => { for (const lease of leases) await lease.finish(); },
+        revokeInvocation: () => {},
+        finishTurn: () => {},
+      });
+      const result = await runWithAgentObservationTurn({ sessionId: "sandbox-workbook-session", turnId: "sandbox-workbook-turn" }, () =>
+        runWithAgentObservationInvocation({ sessionId: "sandbox-workbook-session", toolUseId: "sandbox-workbook-edit" }, () =>
+          tool.execute({ command: commandFor(path), timeoutSeconds }, context),
+        ),
+      );
+      setAgentObservationSink(undefined);
       expect(result.isError, result.output).toBe(false);
       expect(result.metadata?.sandboxed, result.output).toBe(true);
       const document = await parseTableDocument(readFileSync(path), "xlsx", 0);
       expect(document.sheet.rows).toEqual([["Budget", "84"]]);
       expect(document.needsRecalculation).toBe(true);
+      expect(records.map((record) => record.kind)).toEqual(["begin", "cell", "commit"]);
+      expect(records[0]).toMatchObject({ v: 1, kind: "begin", target: path });
+      expect(records[1]).toMatchObject({ v: 1, kind: "cell", sheet: "Sheet", cell: "B1", before: "12", after: "84" });
+      expect(records[2]).toMatchObject({ v: 1, kind: "commit" });
       const outside = join(directory, "..", "outside.xlsx");
       const denied = await tool.execute({ command: commandFor(outside), timeoutSeconds }, context);
       expect(denied.isError).toBe(true);
@@ -107,6 +143,7 @@ describe("native governed XLSX command", () => {
       expect(nativeWrite.output).toMatch(/(?:^|\n)utf8:é한글\u{1f600}(?:\n|$)/u);
       expect(readFileSync(probe, "utf8")).toBe(source);
     } finally {
+      setAgentObservationSink(undefined);
       await resetAsrtSandbox();
       vi.restoreAllMocks();
       __resetActiveSandboxCapabilityForTest();

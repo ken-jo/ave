@@ -5,8 +5,12 @@ import {
   getLlmVendorSettings,
   DEFAULT_LLM_VENDOR,
   narrowLlmVendor,
+  type LLMVendorSettings,
+  type LLMVendor,
 } from "../../../shared/llm-vendor-defaults.js";
 import { getReasoningDepths, budgetToDepthIndex, reasoningBudgetLabel } from "../constants.js";
+import { resolveContextWindowForRoute, type ResolvedReasoningSupport } from "../../../shared/context-budget.js";
+import type { LlmModelListCache } from "../../../shared/llm-model-list.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 
 export interface ReasoningLevelOptions {
@@ -15,7 +19,7 @@ export interface ReasoningLevelOptions {
   onToggle: (next: boolean) => void | Promise<void>;
 }
 
-export type ReasoningLevel = 0 | 1 | 2 | 3 | 4;
+export type ReasoningLevel = 0 | 1 | 2 | 3 | 4 | 5;
 
 /**
  * The reasoning level as ONE value the composer's controls all read.
@@ -34,13 +38,18 @@ export function useReasoningLevel({ enabled, onToggle }: ReasoningLevelOptions):
   apply: (next: number) => void;
 } {
   const { t } = useTranslation();
-  const [block, setBlock] = useState(() => getLlmVendorSettings(undefined, DEFAULT_LLM_VENDOR));
-  const depths = useMemo(() => getReasoningDepths(block.outputTokenLimit), [block.outputTokenLimit]);
+  const [block, setBlock] = useState<LLMVendorSettings & { vendor: LLMVendor; reasoning?: ResolvedReasoningSupport }>(() => ({ ...getLlmVendorSettings(undefined, DEFAULT_LLM_VENDOR), vendor: DEFAULT_LLM_VENDOR }));
+  const depths = useMemo(() => getReasoningDepths(block.outputTokenLimit, block), [block]);
 
   useEffect(() => {
     let cancelled = false;
-    const seed = (llm: { provider: unknown; vendors: Parameters<typeof getLlmVendorSettings>[0] }) => {
-      if (!cancelled) setBlock(getLlmVendorSettings(llm.vendors, narrowLlmVendor(llm.provider)));
+    const seed = (llm: { provider: unknown; vendors: NonNullable<Parameters<typeof getLlmVendorSettings>[0]>; modelListCache?: LlmModelListCache }) => {
+      if (!cancelled) {
+        const vendor = narrowLlmVendor(llm.provider);
+        const route = resolveContextWindowForRoute({ ...llm, provider: vendor });
+        setBlock({ ...getLlmVendorSettings(llm.vendors, vendor), vendor,
+          model: route.model, baseUrl: route.baseUrl, catalogModel: route.catalogModel, reasoning: route.reasoning });
+      }
     };
     let unsubscribe = () => {};
     try {
@@ -59,7 +68,8 @@ export function useReasoningLevel({ enabled, onToggle }: ReasoningLevelOptions):
       const s = await api.getSettings();
       const provider = narrowLlmVendor(s.llm.provider);
       const currentBlock = getLlmVendorSettings(s.llm.vendors, provider);
-      const currentDepths = getReasoningDepths(currentBlock.outputTokenLimit);
+      const route = resolveContextWindowForRoute({ ...s.llm, provider });
+      const currentDepths = getReasoningDepths(currentBlock.outputTokenLimit, { ...route, vendor: provider });
       // A concurrent output-limit change can shorten the available ladder.
       const next = currentDepths[Math.min(index, currentDepths.length - 1)];
       if (!next) return;

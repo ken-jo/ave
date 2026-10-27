@@ -21,6 +21,7 @@ async function sentBody(
   params: {
     outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean; baseUrl?: string; catalogModel?: string;
     modelCapabilities?: StreamTurnParams["modelCapabilities"];
+    reasoningEffort?: StreamTurnParams["reasoningEffort"];
   },
 ): Promise<Record<string, unknown>> {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
@@ -32,6 +33,7 @@ async function sentBody(
     systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }],
     enableThinking: params.enableThinking ?? true,
+    reasoningEffort: params.reasoningEffort,
     ...(params.thinkingBudgetTokens === undefined ? {} : { thinkingBudgetTokens: params.thinkingBudgetTokens }),
     ...(params.outputTokenLimit === undefined ? {} : { outputTokenLimit: params.outputTokenLimit }),
     ...(params.tools ? { tools: [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }] } : {}),
@@ -48,6 +50,60 @@ describe("request fields the catalog decides", () => {
     installModelCatalog(bundled);
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+
+  it.each([
+    [4_000, "low"], [8_000, "medium"], [16_000, "high"], [32_000, "xhigh"], [64_000, "max"],
+  ] as const)("preserves rung %s on effort wires", async (thinkingBudgetTokens, expected) => {
+    const native = await sentBody("openai", "gpt-6.1-sol", { thinkingBudgetTokens });
+    expect(native.reasoning).toMatchObject({ effort: expected });
+    expect(native.reasoning_effort).toBeUndefined();
+    const chat = await sentBody("openai", "served-model", {
+      baseUrl: "https://gateway.invalid/v1", catalogModel: "openai/gpt-6.1-sol", thinkingBudgetTokens,
+    });
+    expect(chat.reasoning_effort).toBe(expected);
+    expect(chat.reasoning).toBeUndefined();
+    for (const control of ["reasoning", "reasoning_effort"] as const) {
+      const body = await sentBody("openrouter", "unlisted-reasoner", {
+        baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens,
+        modelCapabilities: { reasoning: { supported: true, source: "endpoint-report", control } },
+      });
+      expect(control === "reasoning" ? (body.reasoning as { effort: string }).effort : body.reasoning_effort).toBe(expected);
+    }
+    const adaptive = await sentBody("claude", "claude-opus-5-5", { thinkingBudgetTokens });
+    expect(adaptive.thinking).toMatchObject({ type: "adaptive" });
+    expect(adaptive.output_config).toMatchObject({ effort: expected });
+    expect(adaptive.thinking).not.toHaveProperty("budget_tokens");
+    const numeric = await sentBody("claude", "claude-haiku-4-5", { thinkingBudgetTokens, reasoningEffort: expected, outputTokenLimit: 100_000 });
+    expect(numeric.thinking).toMatchObject({ type: "enabled", budget_tokens: Math.min(thinkingBudgetTokens, 63_999) });
+    expect(numeric.output_config).toBeUndefined();
+    const local = await sentBody("openai-compatible", "served-model", { baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens, reasoningEffort: expected, outputTokenLimit: 100_000 });
+    expect(local.thinking_token_budget).toBe(thinkingBudgetTokens);
+    expect(local.thinking_budget_tokens).toBe(thinkingBudgetTokens);
+    expect(local.reasoning_effort).toBeUndefined();
+  });
+
+  it("carries intent through a round with a smaller output ceiling", async () => {
+    const block = getLlmVendorSettings({ openai: { model: "gpt-6.1-sol", enableThinking: true, thinkingBudgetTokens: 64_000 } }, "openai");
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors: { openai: block } });
+    const round = apiRoundLlmSettings(block, { ...route.output, effective: 2_000 }, "none", route);
+    expect(round.thinkingBudgetTokens).toBe(1_999);
+    expect(round.reasoningEffort).toBe("max");
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      model: block.model, systemPrompt: "Report the result.", messages: [{ role: "user", content: "Continue." }],
+      toolSchemas: [], llmSettings: round,
+    });
+    expect(JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)).reasoning.effort).toBe("max");
+  });
+
+  it("snaps a missing upper rung downward on the wire", async () => {
+    const body = await sentBody("openai", "o3-mini", { thinkingBudgetTokens: 32_000 });
+    expect(body.reasoning).toMatchObject({ effort: "high" });
+    expect(planReasoning({ vendor: "openai", model: "o3-mini", enableThinking: true, budgetTokens: 32_000,
+      request: { hasTools: false } })).toMatchObject({ requestedEffort: "xhigh", effort: "high" });
   });
 
   it("clamps a requested output above the model's ceiling to the ceiling", async () => {
@@ -176,14 +232,14 @@ describe("request fields the catalog decides", () => {
       .toEqual({ kind: "none", requestedEffort: "high", source: "host-fallback" });
   });
 
-  it("sends the lowest level GPT-5 accepts for a budget that maps below it", async () => {
+  it("uses the lowest user rung for a small custom budget", async () => {
     const body = await sentBody("openai", "gpt-5", { thinkingBudgetTokens: 100 });
-    expect(body.reasoning).toMatchObject({ effort: "minimal" });
+    expect(body.reasoning).toMatchObject({ effort: "low" });
   });
 
-  it("sends 'none' to a model whose catalog entry accepts it", async () => {
+  it("keeps thinking enabled for a small custom budget", async () => {
     const body = await sentBody("openai", "gpt-5.1", { thinkingBudgetTokens: 100 });
-    expect(body.reasoning).toMatchObject({ effort: "none" });
+    expect(body.reasoning).toMatchObject({ effort: "low" });
   });
 
   it("sends no effort to a model the catalog does not know", async () => {
@@ -325,7 +381,7 @@ describe("reasoning an endpoint's /models report states (design §5.1)", () => {
 
   it("sends `reasoning_effort` when that is the parameter the report names", async () => {
     const body = await sentBody("deepseek", "unlisted-reasoner", { baseUrl: "https://api.deepseek.com/v1", thinkingBudgetTokens: 4_000, modelCapabilities: reported("reasoning_effort") });
-    expect(body.reasoning_effort).toBe("medium");
+    expect(body.reasoning_effort).toBe("low");
     expect(body).not.toHaveProperty("reasoning");
   });
 

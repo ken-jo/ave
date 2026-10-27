@@ -1,8 +1,14 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensureAveHomePrivate } from "../../shared/ave-home.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 
 // The exclusive broker route is process state owned by the workload runtime; the resolver only asks it two questions, so those are all the fixture answers.
 const broker = vi.hoisted(() => ({
@@ -43,10 +49,13 @@ beforeEach(() => {
   oldHome = process.env.AVE_HOME;
   oldCwd = process.cwd();
   root = mkdtempSync(join(tmpdir(), "ave-project-auth-"));
+  setFixtureOwner(root);
+  const home = join(root, ".ave");
+  expect(ensureAveHomePrivate(home)).not.toMatchObject({ enforcement: "none" });
   workspace = join(root, "workspace");
   mkdirSync(workspace, { recursive: true });
   workspace = realpathSync(workspace);
-  process.env.AVE_HOME = root;
+  process.env.AVE_HOME = home;
   process.chdir(workspace);
 });
 

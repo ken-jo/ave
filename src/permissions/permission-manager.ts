@@ -1,3 +1,4 @@
+import { verifiedShellParsed } from "./verified-shell-command.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -208,6 +209,8 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  // Host-only bound native execution; JSON and terminal callers cannot issue it.
+  verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-issued per-invocation substrate, sealed before permission evaluation.
   hostShellExecutionPlan?: HostShellExecutionPlan;
   // Background/routine turns are not direct user gestures. Mutating tools must still ask even when an allow rule or auto mode would otherwise permit them.
@@ -648,7 +651,7 @@ export class PermissionManager {
     return this.interactiveAutoApprove;
   }
 
-  // Re-fence read-tier path operands to the allowed directories. Boot reads `permissions.blockReadsOutsideWorkingDirectories` from `~/.ave/settings.json` and pushes it here, the same way the reviewer's interactive policy arrives, so the enforcement path never re-reads the file per tool call. It ships OFF: a read reaches any path Layer 0 permits.
+  // Re-fence read-tier path operands to the allowed directories. Boot reads `permissions.blockReadsOutsideWorkingDirectories` from `~/.ave/config/settings.json` and pushes it here, the same way the reviewer's interactive policy arrives, so the enforcement path never re-reads the file per tool call. It ships OFF: a read reaches any path Layer 0 permits.
   setBlockReadsOutsideWorkingDirectories(value: boolean): void {
     if (this.blockReadsOutsideWorkingDirectories !== value) this.policyGeneration += 1;
     this.blockReadsOutsideWorkingDirectories = value;
@@ -1257,18 +1260,22 @@ export class PermissionManager {
         : { decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6 };
     };
     if (shellInput !== undefined && unsandboxedShell && shellInput.length > MAX_LITERAL_COMMAND_LENGTH) return closeShellAnalysis();
+    const boundParsed = shellInput !== undefined && context.ruleSubject?.kind === "shell" && context.ruleSubject.cwd !== undefined
+      ? verifiedShellParsed(context.verifiedShellCommand, { command: shellInput, dialect: context.ruleSubject.dialect, cwd: context.ruleSubject.cwd }) : undefined;
+    const boundBash = boundParsed !== undefined && "analysis" in boundParsed ? boundParsed : undefined;
+    const boundPowerShell = boundParsed !== undefined && "syntax" in boundParsed ? boundParsed : undefined;
     let floorInput: ShellFloorInput | null | undefined;
     if (shellInput !== undefined && !unsandboxedShell) {
-      floorInput = prepareShellFloorInput(shellInput, context.ruleSubject!.kind === "shell" ? context.ruleSubject!.dialect : "");
+      floorInput = boundBash !== undefined ? { command: shellInput, parsed: boundBash, literalDataBytes: 0 } : prepareShellFloorInput(shellInput, context.ruleSubject!.kind === "shell" ? context.ruleSubject!.dialect : "");
       if (floorInput === null || shellFloorInputExceeded(floorInput.parsed ?? floorInput.command)) return closeShellAnalysis();
     }
     // The request owns one lexical representation; token refusal precedes project I/O.
     const shellDialect = context.ruleSubject?.kind === "shell" ? context.ruleSubject.dialect : undefined;
     const parsedSubject = shellInput !== undefined && shellDialect === "bash"
-      ? parseShellFloorCommand(floorInput?.parsed ?? shellInput) : undefined;
+      ? boundBash ?? parseShellFloorCommand(floorInput?.parsed ?? shellInput) : undefined;
     if (parsedSubject !== undefined && !parsedSubject.analysis.ok && shellFloorParserBudgetExceeded(parsedSubject.analysis.reason)) return closeShellAnalysis();
     const parsedPowerShellSubject = shellInput !== undefined && shellDialect === "powershell"
-      ? parsePowerShellCommand(shellInput) : undefined;
+      ? boundPowerShell ?? parsePowerShellCommand(shellInput) : undefined;
     if (parsedPowerShellSubject?.analysisLimited) return closeShellAnalysis();
     const trust = this.resolveTrust(toolName, source);
     // Strict patterns, owned by `shared/staged-origins.ts` — the same table the send gate, the stream derivation, and the model-facing guidance read. Loose `startsWith` would accept malformed values like "overlay:Bad/Path" or "app:" that no upstream gate emits but a future hand-injected codepath might; fail-closed on malformed input. THIS is the one enforcement site — grep `isStagedTurnSource` to find it.

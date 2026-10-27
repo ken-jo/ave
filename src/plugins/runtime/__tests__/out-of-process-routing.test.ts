@@ -1,3 +1,7 @@
+vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 /** Every instantiation path uses the same routing decision and records its resolved launch without importing plugin code in main. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

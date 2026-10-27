@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import {

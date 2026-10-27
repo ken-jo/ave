@@ -1,3 +1,11 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -12,6 +20,7 @@ import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl
 import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { createServiceClient } from "../../boot/steps/service-endpoint.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as pathFacts from "../../shared/windows-path-facts.js";
@@ -42,12 +51,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
 
   async function writeUserPolicy(contents: string): Promise<void> {
     await writeFile(admin, contents);
-    const [file] = readWindowsDirectoryDacls([admin]);
-    expect(file.error).toBeUndefined();
-    if (file.ownerSid !== token.currentUserSid) {
-      execFileSync(win32SystemBinary("icacls"), [admin, "/setowner", `*${token.currentUserSid}`, "/q"], { windowsHide: true });
-    }
-    expect(readWindowsDirectoryDacls([admin])[0].ownerSid).toBe(token.currentUserSid);
+    setFixtureOwner(admin);
   }
 
   it("keeps production policy readers free of injectable reader parameters", () => {

@@ -7,6 +7,8 @@ import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
 import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-ledger.js";
 import { runWithToolExecutionCwd } from "./execution-context.js";
+import { runWithAgentObservationInvocation } from "./agent-observation-context.js";
+import { preparedShellCommand } from "./prepared-shell-invocation.js";
 import { isCanonicalWebFetchTool } from "./web-fetch.js";
 import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
@@ -176,6 +178,7 @@ export interface ExecutionStageContext {
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
+  verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
   invocationRuntimeAllowedDirectories: string[];
   supportsA2AParentDelivery: boolean | undefined;
@@ -226,6 +229,7 @@ export async function executeAuthorizedToolInvocation(
     executionRouteGrant,
     finalizeExecutionRouteGrant,
     preparedShellInvocation,
+    verifiedShellCommand,
     hostShellRequiresExplicitApproval,
     invocationRuntimeAllowedDirectories,
     supportsA2AParentDelivery,
@@ -763,6 +767,7 @@ export async function executeAuthorizedToolInvocation(
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
+    ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
     metadata: {
       // Absent when the invocation has no conversation behind it. Tools that
@@ -949,7 +954,9 @@ export async function executeAuthorizedToolInvocation(
             () => {
               assertHandlerAdmission(signal);
               handlerAdmissionBlocked = false;
-              return tool.execute(finalInput, ctx);
+              return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },
+                () => tool.execute(finalInput, ctx),
+                preparedShellInvocation ? preparedShellCommand(preparedShellInvocation).homePath : undefined, signal);
             },
             () => {
               effectAuthorizationRequired ??= issueAuthorizationRequiredControl({

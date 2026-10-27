@@ -153,6 +153,8 @@
     "lsof",
     "mountvol",
     "mkfifo",
+    // Ephemeral certificates for the native HTTPS route fixture; not a shipped runtime dependency.
+    "openssl",
     "pgrep",
     "plutil",
     "powershell.exe",

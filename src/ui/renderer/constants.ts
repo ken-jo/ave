@@ -20,6 +20,9 @@ import {
   type OpenAICompatiblePresetVendor,
   type LLMVendor,
 } from "../../shared/llm-vendor-defaults.js";
+import { catalogModelFor, type ResolvedReasoningSupport } from "../../shared/context-budget.js";
+import { planReasoning } from "../../engine/llm/reasoning-plan.js";
+import { REASONING_EFFORT_RUNGS } from "../../shared/reasoning-effort.js";
 import { t } from "../../i18n/runtime.js";
 
 export const SOURCE_BADGE: Record<string, string> = {
@@ -120,11 +123,20 @@ const REASONING_DEPTH_LABELS = {
   medium: "constants.reasoningEffortMedium",
   high: "constants.reasoningEffortHigh",
   xhigh: "constants.reasoningEffortXHigh",
+  max: "constants.reasoningEffortMax",
 } as const;
 
-/** Settings and composer label the same output-dependent user budget ladder. */
-export function getReasoningDepths(outputTokenLimit?: number) {
-  return getLlmThinkingBudgetRungs(outputTokenLimit).map((rung) => ({
+/** Settings and composer share effort intent; only numeric choices depend on output. */
+export function getReasoningDepths(outputTokenLimit?: number, route?: {
+  vendor: LLMVendor; model: string; baseUrl?: string; catalogModel?: string; reasoning?: ResolvedReasoningSupport;
+}) {
+  const plan = route ? planReasoning({ ...route, enableThinking: true, budgetTokens: 8_000, request: { hasTools: false } }) : undefined;
+  const acceptsMax = route ? catalogModelFor(route.vendor, route.model, route.catalogModel, route.baseUrl)?.model.reasoning?.effort?.includes("max") === true : false;
+  const qualitative = plan?.kind === "openai-effort" || plan?.kind === "anthropic-adaptive"
+    || (plan?.kind === "endpoint-reasoning" && plan.control !== "include_reasoning");
+  const rungs = qualitative ? REASONING_EFFORT_RUNGS.filter((rung) => rung.key !== "max" || acceptsMax)
+    : getLlmThinkingBudgetRungs(outputTokenLimit, acceptsMax);
+  return rungs.map((rung) => ({
     ...rung,
     get label() { return t(REASONING_DEPTH_LABELS[rung.key]); },
   }));
@@ -137,6 +149,7 @@ export function reasoningBudgetLabel(budget: number, depths: readonly { label: s
 
 /** The rung a stored budget sits closest to. Any persisted value resolves. */
 export function budgetToDepthIndex(budget: number, depths: readonly { budget: number }[]): number {
+  if (!Number.isSafeInteger(budget) || budget < 0) throw new Error("Invalid reasoning budget");
   if (depths.length === 0) return -1;
   let closest = 0;
   let minDiff = Math.abs(depths[0]!.budget - budget);

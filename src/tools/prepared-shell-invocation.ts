@@ -4,6 +4,7 @@ import { getPolicyHome } from "../shared/policy-home.js";
 import { getBashCapabilities, resolveShell, shellEnvForChild, shellPathForHostPath, shellQuote, type ResolvedShellCommand } from "../lib/shell-resolver.js";
 import { createSandboxProcessHome, type SandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import { verifiedShellEnvironment, verifiedShellExecution, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import type { ShellExecutionFacts } from "../shared/shell-execution.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, captureSandboxEnvironmentBaseline, FORWARD_ENV_KEYS, overlaySandboxChildEnv } from "./safe-env.js";
 import { collectShellExecutableReadPaths } from "./shell-executable-read-paths.js";
@@ -16,6 +17,7 @@ export interface ShellInvocationIdentity {
   readonly resolvedCwd: string;
   readonly toolUseId?: string;
   readonly plan: HostShellExecutionPlan;
+  readonly verifiedShellCommand?: VerifiedShellCommand;
 }
 
 declare const preparedShellBrand: unique symbol;
@@ -25,6 +27,8 @@ interface PreparedState {
   readonly identity: Readonly<ShellInvocationIdentity>;
   readonly shell: Readonly<ResolvedShellCommand>;
   readonly argv: readonly string[];
+  readonly executionCommand: string;
+  readonly verifiedExecutable?: string;
   /** Foreground argv: the same command behind the host's fixed cwd probe. */
   readonly probedArgv: readonly string[];
   readonly cwdProbe?: ShellCwdProbe;
@@ -40,6 +44,10 @@ const issued = new WeakMap<PreparedShellInvocation, PreparedState>();
 
 export function prepareShellInvocation(identity: ShellInvocationIdentity, signal?: AbortSignal): PreparedShellInvocation {
   signal?.throwIfAborted();
+  const verifiedIdentity = { command: identity.command, dialect: "bash" as const, cwd: identity.resolvedCwd };
+  const verified = verifiedShellExecution(identity.verifiedShellCommand, verifiedIdentity);
+  if (identity.verifiedShellCommand !== undefined && verified === undefined) throw new Error("Verified shell command does not match this invocation");
+  const executionCommand = verified?.command ?? identity.command;
   const selected = resolveShell("bash");
   const shell = Object.freeze({ ...selected });
   const wrapperBaseline = captureSandboxEnvironmentBaseline();
@@ -55,15 +63,16 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
     }
     // Bash initializes PWD from its actual cwd. Pin the same initial value for analysis and the final inner shell, independently of the parent's alias.
     safe.PWD = shellPathForHostPath(shell, identity.resolvedCwd);
-    const environment = Object.freeze(safe);
+    const environment = Object.freeze(identity.verifiedShellCommand === undefined ? safe
+      : verifiedShellEnvironment(identity.verifiedShellCommand, verifiedIdentity, safe));
     const capabilities = getBashCapabilities(selected, environment, identity.resolvedCwd);
-    const argv = Object.freeze([...shell.shellArgs(identity.command)]);
-    const cwdProbe = createShellCwdProbe(identity.command);
+    const argv = Object.freeze([...shell.shellArgs(executionCommand)]);
+    const cwdProbe = createShellCwdProbe(executionCommand);
     const probedArgv = cwdProbe === undefined ? argv : Object.freeze([...shell.shellArgs(cwdProbe.script)]);
     signal?.throwIfAborted();
     const handle = Object.freeze({}) as PreparedShellInvocation;
     issued.set(handle, {
-      identity: Object.freeze({ ...identity }), shell, argv, probedArgv, cwdProbe, environment, wrapperBaseline,
+      identity: Object.freeze({ ...identity }), shell, argv, executionCommand, verifiedExecutable: verified?.executable, probedArgv, cwdProbe, environment, wrapperBaseline,
       facts: Object.freeze({ dialect: "bash", environment, ...capabilities }),
       home, hostHome, phase: "prepared",
     });
@@ -86,7 +95,8 @@ export function matchesPreparedShellInvocation(handle: PreparedShellInvocation, 
   const original = state.identity;
   return original.plan === identity.plan && original.command === identity.command
     && original.requestedCwd === identity.requestedCwd && original.executionCwd === identity.executionCwd
-    && original.resolvedCwd === identity.resolvedCwd && original.toolUseId === identity.toolUseId;
+    && original.resolvedCwd === identity.resolvedCwd && original.toolUseId === identity.toolUseId
+    && original.verifiedShellCommand === identity.verifiedShellCommand;
 }
 
 /** The provider tool-use id the invocation was prepared for, when it had one. */
@@ -97,9 +107,10 @@ export function preparedShellFacts(handle: PreparedShellInvocation): Readonly<Sh
 export function bindPreparedShellExecutableReadPaths(handle: PreparedShellInvocation): void {
   const state = stateOf(handle);
   if (state.phase !== "prepared") throw new Error("Shell executable reads must be bound before claim");
-  state.executableReadPaths ??= Object.freeze([...collectShellExecutableReadPaths(
-    state.identity.command, state.identity.resolvedCwd, state.facts,
-  )]);
+  state.executableReadPaths ??= Object.freeze([...new Set([
+    ...collectShellExecutableReadPaths(state.executionCommand, state.identity.resolvedCwd, state.facts),
+    ...(state.verifiedExecutable === undefined ? [] : [state.verifiedExecutable]),
+  ])]);
 }
 
 export function preparedShellExecutableReadPaths(handle: PreparedShellInvocation): readonly string[] {
@@ -121,7 +132,7 @@ export function preparedShellCwdProbe(handle: PreparedShellInvocation, prelude?:
 }> {
   const state = stateOf(handle);
   const argv = prelude === undefined ? state.probedArgv
-    : Object.freeze(state.shell.shellArgs(prelude + (state.cwdProbe?.script ?? state.identity.command)));
+    : Object.freeze(state.shell.shellArgs(prelude + (state.cwdProbe?.script ?? state.executionCommand)));
   return Object.freeze({ argv, probe: state.cwdProbe });
 }
 
@@ -140,7 +151,9 @@ export function preparedSandboxBootstrap(handle: PreparedShellInvocation, option
 
 export function preparedSandboxEnvironment(handle: PreparedShellInvocation, wrappedEnv: NodeJS.ProcessEnv): Record<string, string> {
   const state = stateOf(handle);
-  return overlaySandboxChildEnv(wrappedEnv, state.environment, state.wrapperBaseline);
+  const environment = overlaySandboxChildEnv(wrappedEnv, state.environment, state.wrapperBaseline);
+  return state.identity.verifiedShellCommand === undefined ? environment
+    : verifiedShellEnvironment(state.identity.verifiedShellCommand, { command: state.identity.command, dialect: "bash", cwd: state.identity.resolvedCwd }, environment);
 }
 
 /** Release only preparation-owned resources; a spawned child has a separate owner. */
@@ -156,6 +169,9 @@ export function disposePreparedShellInvocation(handle: PreparedShellInvocation |
 export function claimPreparedShellInvocation(handle: PreparedShellInvocation): () => void {
   const state = stateOf(handle);
   if (state.phase !== "prepared") throw new Error("Shell preparation has already been claimed");
+  if (state.identity.verifiedShellCommand !== undefined && verifiedShellExecution(state.identity.verifiedShellCommand, {
+    command: state.identity.command, dialect: "bash", cwd: state.identity.resolvedCwd,
+  }) === undefined) throw new Error("Verified shell command is no longer available for this invocation");
   state.phase = "claimed";
   return () => {
     if (state.phase !== "claimed") return;

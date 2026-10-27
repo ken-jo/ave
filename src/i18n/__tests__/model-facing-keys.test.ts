@@ -12,6 +12,7 @@ const SRC = fileURLToPath(new URL("../..", import.meta.url));
 /** Outside the renderer, the files that also build text only people read, and the interface
  * namespaces each may use there. Any other key in these files must still be model-facing. */
 const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["boot/steps/home-privacy-notice.ts", ["homePrivacy."]], // private storage repair notification
   ["ipc/domains/attach.ts", ["mainDialog."]], // file picker title
   ["ipc/domains/chat.ts", ["mainDialog."]], // delete / import / export dialogs
   ["ipc/domains/git-marketplace.ts", ["mainDialog."]], // marketplace folder picker
@@ -22,6 +23,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["lib/llm-status-message.ts", ["useChatState."]], // status line
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
   ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
+  ["main/configuration-boot-error.ts", ["homePrivacy."]],
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
   ["main/provider-settings-startup-error.ts", ["providerSettingsError."]], // startup settings error dialog
@@ -104,5 +106,6 @@ describe("model-facing catalog keys", () => {
     expect(isModelFacingKey("sandboxPolicy.scanNarrowed")).toBe(true);
     expect(isModelFacingKey("appearanceTab.pageTitle")).toBe(false);
     expect(isModelFacingKey("routinePanel.errorNaturalParseFailed")).toBe(false);
+    expect(isModelFacingKey("chatPreviewRail.documentObservationLive")).toBe(false);
   });
 });

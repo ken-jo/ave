@@ -23,7 +23,7 @@ import {
   getLlmVendorSettings,
   isLLMVendor,
   llmRouteModel,
-  normalizeLlmThinkingBudgetTokens,
+  requestedLlmThinkingBudgetTokens,
   type LLMVendor,
   type LLMVendorSettings,
   requestedLlmOutputTokenLimit,
@@ -183,16 +183,11 @@ export function useSettingsOrchestration(
   const hydratedVendorRef = useRef<string | null>(null);
   const hydratedWebProviderRef = useRef<string | null>(null);
   const vendorInfo = getVendorOption(vendor);
-  // The limit this vendor block requests (the user's, else the host default); the reasoning presets offered are the ones
-  // below it.
+  // Numeric request limits are applied separately from persisted effort intent.
   const outputTokenLimit = requestedLlmOutputTokenLimit(getLlmVendorSettings(
     settingsSnapshot?.llm.vendors, vendor || DEFAULT_LLM_VENDOR,
   )).value;
-  const effectiveThinkingBudget = normalizeLlmThinkingBudgetTokens(thinkingBudget, outputTokenLimit);
-
-  useEffect(() => {
-    setThinkingBudget((current) => normalizeLlmThinkingBudgetTokens(current, outputTokenLimit));
-  }, [outputTokenLimit]);
+  const effectiveThinkingBudget = requestedLlmThinkingBudgetTokens(thinkingBudget);
 
   const activeCredentialProviderId =
     vendor === "openai-compatible" && marketplaceProviderPresetId

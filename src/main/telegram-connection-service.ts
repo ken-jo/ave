@@ -2,6 +2,7 @@
 // errors can embed tokens in URLs.
 import { createHash } from "node:crypto";
 import { SecretEncryptionUnavailableError } from "../data/secret-document-store.js";
+import { AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 import {
   TELEGRAM_PAIRING_CODE_TTL_MS,
   isTelegramApprovalDurationPreset,
@@ -507,7 +508,8 @@ export function createTelegramConnectionService(
     try {
       const value = settingsService.getEncryptedSecret(SECRET_KEY);
       return isTelegramBotToken(value) ? value : null;
-    } catch {
+    } catch (error) {
+      if (error instanceof AveHomeConfigurationUntrustedError) throw error;
       return null;
     }
   };

@@ -3,6 +3,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -21,6 +22,12 @@ import {
   sandboxProcessHomesInUse,
   sandboxProcessProfileEnvironment,
 } from "../sandbox-process-home.js";
+import {
+  runWithAgentObservationInvocation,
+  runWithAgentObservationTurn,
+  setAgentObservationSink,
+  type AgentObservationSink,
+} from "../../tools/agent-observation-context.js";
 
 // The HOMEs are created under `<AVE_HOME>/sandbox/home` on macOS and Linux, so the real AVE_HOME is never the one these cases fill.
 let aveHomeDir: string;
@@ -33,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setAgentObservationSink(undefined);
   vi.useRealTimers();
   vi.unstubAllEnvs();
   rmSync(aveHomeDir, { recursive: true, force: true });
@@ -46,6 +54,9 @@ describe("createSandboxProcessHome", () => {
     try {
       expect(first.path).not.toBe(second.path);
       expect(first.env.HOME).toBe(first.path);
+      expect(first.env.AVE_DOCUMENT_JOURNAL).toBe(join(first.path, "document-observation", "journal.jsonl"));
+      expect(statSync(dirname(first.env.AVE_DOCUMENT_JOURNAL!)).isDirectory()).toBe(true);
+      expect(existsSync(first.env.AVE_DOCUMENT_JOURNAL!)).toBe(false);
       expect(statSync(first.path).isDirectory()).toBe(true);
       if (process.platform !== "win32") {
         expect(statSync(first.path).mode & 0o777).toBe(0o700);
@@ -73,6 +84,93 @@ describe("createSandboxProcessHome", () => {
 
     expect(existsSync(first.path)).toBe(false);
     expect(existsSync(second.path)).toBe(false);
+  });
+
+  it("keeps HOME preparation unobserved until an agent invocation is admitted", async () => {
+    const poll = vi.fn();
+    const finish = vi.fn(async () => {});
+    const sink: AgentObservationSink = {
+      openJournal: vi.fn(() => ({ poll, finish, dispose: () => {} })),
+      beforeMutation: async () => async () => {},
+      finishInvocation: async () => {},
+      revokeInvocation: () => {},
+      finishTurn: () => {},
+    };
+    setAgentObservationSink(sink);
+    const home = createSandboxProcessHome();
+    try {
+      expect(sink.openJournal).not.toHaveBeenCalled();
+      await runWithAgentObservationTurn({ sessionId: "home-session", turnId: "home-turn" }, () =>
+        runWithAgentObservationInvocation({ sessionId: "home-session", toolUseId: "home-tool" }, async () => {
+          expect(sink.openJournal).toHaveBeenCalledExactlyOnceWith({
+            sessionId: "home-session", turnId: "home-turn", toolUseId: "home-tool",
+          }, home.path);
+          home.cleanup();
+          expect(finish).toHaveBeenCalledTimes(1);
+          expect(poll).not.toHaveBeenCalled();
+          expect(existsSync(home.path)).toBe(false);
+        }, home.path),
+      );
+    } finally { home.cleanup(); }
+  });
+
+  it("drains an admitted HOME journal before removing the directory", async () => {
+    const order: string[] = [];
+    const sink: AgentObservationSink = {
+      openJournal: vi.fn((_identity: unknown, homePath: string) => ({
+        poll: () => { order.push("poll"); },
+        finish: async () => {
+          expect(readFileSync(join(homePath, "document-observation", "journal.jsonl"), "utf8"))
+            .toBe("bounded journal contents\n");
+          order.push("finish");
+        },
+        dispose: () => {},
+      })),
+      beforeMutation: async () => async () => {},
+      finishInvocation: async () => {},
+      revokeInvocation: () => {},
+      finishTurn: () => {},
+    };
+    setAgentObservationSink(sink);
+    await runWithAgentObservationTurn({ sessionId: "home-session", turnId: "home-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: "home-session", toolUseId: "home-tool" }, async () => {
+        const home = createSandboxProcessHome(process.platform, (path, options) => {
+          order.push("remove");
+          rmSync(path, options);
+        });
+        expect(sink.openJournal).toHaveBeenCalledExactlyOnceWith({
+          sessionId: "home-session", turnId: "home-turn", toolUseId: "home-tool",
+        }, home.path);
+        writeFileSync(home.env.AVE_DOCUMENT_JOURNAL!, "bounded journal contents\n");
+        home.cleanup();
+        home.cleanup();
+        expect(order).toEqual(["finish", "remove"]);
+      }),
+    );
+  });
+
+  it("removes a newly created HOME when observation admission fails", async () => {
+    const originalHomes = [...sandboxProcessHomesInUse()];
+    const createdHomes: string[] = [];
+    const failure = new Error("Observation journal limit exceeded.");
+    const sink: AgentObservationSink = {
+      openJournal: vi.fn((_identity, path) => { createdHomes.push(path); throw failure; }),
+      beforeMutation: async () => async () => {},
+      finishInvocation: async () => {},
+      revokeInvocation: () => {},
+      finishTurn: () => {},
+    };
+    setAgentObservationSink(sink);
+    await runWithAgentObservationTurn({ sessionId: "home-session", turnId: "home-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: "home-session", toolUseId: "home-tool" }, async () => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          expect(() => createSandboxProcessHome()).toThrow(failure);
+        }
+      }),
+    );
+    expect(createdHomes).toHaveLength(2);
+    for (const path of createdHomes) expect(existsSync(path)).toBe(false);
+    expect([...sandboxProcessHomesInUse()]).toEqual(originalHomes);
   });
 
   it.skipIf(process.platform === "win32")(

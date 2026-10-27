@@ -1,5 +1,6 @@
 // Every settings path that changes a provider address must refresh sandbox network configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { resolve } from "node:path";
 import {
   makeAppIpcInvoker,
 } from "./test-helpers.js";
@@ -26,9 +27,11 @@ vi.mock("../../../engine/conversation-loop.js", () => ({}), { virtual: true });
 const invoke = makeAppIpcInvoker(handlers);
 
 describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     handlers.clear();
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   });
 
   function makeSettingsDeps(initialBaseUrl: string | null, newBaseUrl: string | null) {
@@ -100,9 +103,11 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
 });
 
 describe("ASRT choke-point 2 — marketplace provider preset mutations (settings.ts)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     handlers.clear();
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   });
 
   const preset = {
@@ -170,9 +175,11 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
 });
 
 describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     handlers.clear();
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   });
 
   function makeChatDeps(baseUrl: string | undefined = undefined) {

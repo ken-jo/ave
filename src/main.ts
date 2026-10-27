@@ -30,6 +30,7 @@ import { defaultAveHome } from "./shared/ave-home.js";
 import { ensureCorporateCaInjected } from "./main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "./main/persisted-corp-ca.js";
 import { loadMainStartupDependencies } from "./main/startup-dependencies.js";
+import { showConfigurationBootError } from "./main/configuration-boot-error.js";
 import { updateSplashStatus, waitForMinimumBootstrapSplash } from "./main/bootstrap-splash.js";
 import { registerShutdownHook, runAppShutdownCleanup, runShutdownHooks } from "./main/app-shutdown.js";
 import {
@@ -656,6 +657,7 @@ if (!gotSingleInstanceLock) {
     void main().catch(async (error) => {
       log.error({ err: error }, "bootstrap failed");
       if (bootLaunch !== "headless" && execRequest === null) {
+        showConfigurationBootError(error);
         try {
           const { showProviderSettingsStartupError } = await import("./main/provider-settings-startup-error.js");
           await showProviderSettingsStartupError(error, app.getPath("userData"), app.getLocale());

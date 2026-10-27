@@ -2018,13 +2018,15 @@ interface WorkspaceFileMatch {
 export interface AvePreviewApi {
   onDocumentOpen: (handler: (request: import("../../shared/document-open.js").DocumentOpenRequest) => void) => () => void;
   acknowledgeDocumentOpen: (ack: import("../../shared/document-open.js").DocumentOpenAck) => Promise<{ ok: true } | { ok: false; error: string }>;
-  readFile: (path: string, window?: { offset?: number; limit?: number; workspaceRoot?: string }) => Promise<{
+  readFile: (path: string, window?: { offset?: number; limit?: number; workspaceRoot?: string; sessionId?: string }) => Promise<{
     ok: boolean;
     content?: string;
     path?: string;
     bytes?: number;
     truncated?: boolean;
     lineCount?: number;
+    observation?: import("../../shared/agent-observation.js").DocumentObservationBinding;
+    document?: import("../../shared/agent-observation.js").PreviewObservedTextDocument;
     image?: { dataUrl: string; mimeType: string };
     error?:
       | "unauthorized"
@@ -2040,7 +2042,9 @@ export interface AvePreviewApi {
    * Read under `readFile` authority and parse in an isolated child. The
    * zero-based index selects a sheet or page, according to the file format.
    */
-  readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
+  readDocument: (path: string, sheetIndex: number, sessionId?: string) => Promise<PreviewReadDocumentResult>;
+  onDocumentObservation: (handler: (events: import("../../shared/agent-observation.js").DocumentObservationEvent[]) => void) => () => void;
+  acknowledgeDocumentObservation: (ack: import("../../shared/agent-observation.js").DocumentObservationAck) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /**

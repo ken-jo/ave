@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SecretEncryptionUnavailableError } from "../../data/secret-document-store.js";
+import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import {
   isTelegramPairingCode,
@@ -691,6 +692,18 @@ describe("createTelegramConnectionService", () => {
       error: "telegram-bot-token-unreadable",
     });
     expect(h.bridge.start).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["connect", "resume"] as const)("surfaces a configuration boundary error before %s can replace a stored credential", async (action) => {
+    const h = await pairedHarness();
+    const failure = new AveHomeConfigurationUntrustedError(join(h.directory, "ave-secrets.json"), "Unverified boundary");
+    h.secrets.service.getEncryptedSecret.mockImplementationOnce(() => { throw failure; });
+    h.secrets.service.setSecret.mockClear();
+    h.bridge.start.mockClear();
+    await expect(action === "connect" ? h.service.connect(OTHER_BOT_TOKEN) : h.service.resume()).rejects.toBe(failure);
+    expect(h.secrets.service.setSecret).not.toHaveBeenCalled();
+    expect(h.secrets.values.get(SECRET_KEY)).toBe(BOT_TOKEN);
+    expect(h.bridge.start).not.toHaveBeenCalled();
   });
 
   it("reports an unreadable token instead of a live share nothing is behind", async () => {

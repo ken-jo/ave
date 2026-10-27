@@ -4,15 +4,18 @@ import { shell } from "electron";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { HOST_FRAME_URL } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 
-const { handlers } = vi.hoisted(() => ({
+const { handlers, defaultSession } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  defaultSession: {},
 }));
 
 vi.mock("electron", () => ({
+  session: { defaultSession },
   dialog: { showOpenDialog: vi.fn() },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
@@ -30,8 +33,17 @@ import { DROP_TOKEN_TTL_MS, registerAttachHandlers } from "../attach.js";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 
+const appEvents = new Map<number, ReturnType<typeof createHostEvent>>();
+function createHostEvent(senderId: number) {
+  const frame = { url: HOST_FRAME_URL, processId: senderId, routingId: 0, detached: false, isDestroyed: () => false };
+  const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, session: defaultSession,
+    getType: () => "window", isDestroyed: () => false });
+  return { senderFrame: frame, sender, frameId: 0, processId: senderId };
+}
 function hostEvent(senderId: number) {
-  return { senderFrame: { url: HOST_FRAME_URL }, sender: { id: senderId }, frameId: 0, processId: 0 };
+  const event = appEvents.get(senderId) ?? createHostEvent(senderId);
+  appEvents.set(senderId, event);
+  return event;
 }
 
 function call(channel: string, senderId: number, ...args: unknown[]): Promise<unknown> {
@@ -53,7 +65,9 @@ beforeAll(() => {
   writeFileSync(join(root, ".env"), "SECRET=1");
   writeFileSync(join(root, "run.exe"), "MZ");
   mkdirSync(join(root, "folder"));
-  registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => ({}) } as never);
+  registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+    getAppWindows: () => [...appEvents.values()].map(({ sender }) => ({ webContents: sender, isDestroyed: () => false })),
+  } as never);
 });
 
 afterEach(() => {
@@ -91,6 +105,7 @@ describe("composer drop token", () => {
       [notesPath, false],
     ]);
     expect(await call(CHANNELS.attach.readImage, 7, imagePath)).toMatchObject({ ok: true });
+    expect(await call(CHANNELS.attach.openExternal, 7, notesPath)).toEqual({ ok: true });
   });
 
   it("reads the extension from the file name, never from a dotted directory", async () => {

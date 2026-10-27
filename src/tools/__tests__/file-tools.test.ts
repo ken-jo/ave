@@ -1,3 +1,4 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -83,6 +84,8 @@ beforeEach(() => {
 afterEach(async () => {
   await cleanupTmpDir(workDir);
 });
+
+useConfigurationOwner();
 
 describe("view_image tool", () => {
   beforeAll(async () => { imageRuntime.directory = await buildImagePreparationEntry("file-image-runtime"); });

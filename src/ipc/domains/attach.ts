@@ -4,6 +4,8 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
+import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
+import { previewFileReadAuthorizes } from "../../main/preview-file-access.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { DENY_EXTENSIONS as DENY_LIST } from "../../shared/attachments-deny-list.js";
@@ -456,13 +458,13 @@ export function registerAttachHandlers(deps: IpcDeps): void {
   ipcMain.handle(
     CHANNELS.attach.openExternal,
     async (e, filePath: string): Promise<{ ok: boolean; error?: string }> => {
-      if (!validateHostRendererSender(e)) {
+      if (!validateAppWindowMainFrameSender(e, deps)) {
         auditUnauthorized(auditLogger, CHANNELS.attach.openExternal, e);
         return { ok: false, error: "unauthorized" };
       }
       try {
-        // Require prior path authorization and reapply dangerous-file checks before shell launch.
-        if (!ATTACH_PATH_ALLOWLIST.has(filePath)) {
+        // Picker authority and frame-bound preview receipts remain separate.
+        if (typeof filePath !== "string" || (!ATTACH_PATH_ALLOWLIST.has(filePath) && !previewFileReadAuthorizes(e, deps, filePath))) {
           return { ok: false, error: "path_not_authorized" };
         }
         if (DENY_EXTENSIONS.has(getExt(filePath))) {
@@ -470,6 +472,13 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         }
         const target = await resolveAuthorizedTarget(filePath);
         if (!target.ok) return { ok: false, error: target.error };
+        const stat = await fs.stat(target.real);
+        if (!stat.isFile()) return { ok: false, error: "not-a-file" };
+        const current = await resolveAuthorizedTarget(filePath);
+        if (!current.ok) return { ok: false, error: current.error };
+        if (!validateAppWindowMainFrameSender(e, deps)) return { ok: false, error: "unauthorized" };
+        if (current.real !== target.real || (!ATTACH_PATH_ALLOWLIST.has(filePath)
+          && !previewFileReadAuthorizes(e, deps, target.real))) return { ok: false, error: "path_not_authorized" };
         const result = await shell.openPath(target.real);
         if (result) return { ok: false, error: result };
         return { ok: true };

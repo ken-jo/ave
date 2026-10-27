@@ -73,9 +73,17 @@ The input, archive, startup, parse, heap, response and concurrency limits remain
 
 The `documents` settings subtree is user-only and floor-like: agent settings writes cannot change it, including nested writes. Each live host registers its actual settings file path with the existing write-sensitive matcher, including relocated profiles, and releases that registration when it closes. Constructing a standalone settings store does not alter runtime policy. The file and its immediate directory cannot be agent mutation targets; grandparents and sibling files retain their ordinary policy. Overlapping live hosts retain protection until the final registration is released. Settings schema, defaults, migration, localized labels and lock tests enforce the same key and values.
 
-Direct mode never creates or focuses a different window and never opens an OS application. A matching renderer acknowledgment is required before reporting `opened: true`; delivery alone is not success. That acknowledgment confirms panel selection, not successful parsing. The existing viewer presents subsequent loading or parse failures. Repeated requests select the existing target rather than duplicating it.
+Direct mode never creates or focuses a different window and never opens an OS application. A matching renderer acknowledgment is required before reporting `opened: true`; delivery alone is not success. For agent table opens, selection and a host-accepted rendered-grid baseline must both be ready, in either order, before the tool completes. A still-live matching rendered baseline can satisfy readiness immediately. This keeps an immediate following edit from outrunning the [observation baseline](architecture.md#agent-activity-observation). Page opens retain the selection receipt and present subsequent loading or parse failures in the existing viewer. Repeated requests select the existing target rather than duplicating it.
 
-Headless execution returns `ui-unavailable` with `isError: true` in either setting mode. A missing, destroyed or background-only target window also returns that error. The acknowledgment deadline belongs to `TOOL_TIMEOUT_POLICY.documentPanelAckMs`; missing, rejected or wrong-session acknowledgments cannot report an opened panel and ultimately return `ui-unavailable`. `read_document` works without a window. Both tools preserve their normal file-policy checks and do not create UI as a fallback.
+File/code, table and page previews share the [compact viewer presentation](architecture.md#agent-activity-observation).
+Full text/code files opened through the existing file viewer can become live
+agent targets when an approved native mutation supplies exact before/after
+evidence. This does not extend `read_document` or `open_document` to a new format.
+Selected line windows, inline snippets and images retain ordinary viewing, and
+page readers add no synthetic live events. A user open alone supplies neither
+agent attribution nor a filesystem watch.
+
+Headless execution returns `ui-unavailable` with `isError: true` in either setting mode. A missing, destroyed or background-only target window also returns that error. Selection and table readiness share the original `TOOL_TIMEOUT_POLICY.documentPanelAckMs` deadline; missing, rejected, expired or wrong-session acknowledgments cannot report an opened panel and ultimately return `ui-unavailable`. Navigation, cancellation or frame loss releases the pending readiness wait. `read_document` works without a window. Both tools preserve their normal file-policy checks and do not create UI as a fallback.
 
 ## Failures and verification
 
