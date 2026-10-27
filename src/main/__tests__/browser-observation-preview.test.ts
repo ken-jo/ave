@@ -6,7 +6,7 @@ import { ObservationDaemon } from "../../observation/daemon.js";
 import { ScreencastClosedError, type ScreencastCallbacks } from "../../observation/browser-screencast.js";
 import { OBSERVATION_LIMITS, type BrowserObservationEvent, type BrowserObservationPreviewMessage } from "../../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
-import { observeAgentBrowserCommand, endAgentBrowserObservationSessions } from "../../tools/agent-browser-observation.js";
+import { agentDrivesTab, observeAgentBrowserCommand, endAgentBrowserObservationSessions } from "../../tools/agent-browser-observation.js";
 import { runAdmittedAgentWork } from "../../__tests__/support/agent-observation-admission.js";
 import type { BrowserGuest, BrowserTabRecord } from "../browser/browser-tab-registry.js";
 
@@ -139,6 +139,32 @@ describe("agent browser live preview", () => {
     await vi.advanceTimersByTimeAsync(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
     expect(events()).toHaveLength(before);
     expect(started[0]!.stop).toHaveBeenCalledOnce();
+  });
+
+  it("admits the owner's direct parent and refuses a grandparent or sibling session", () => {
+    const child = makeTab("tab-7", 17, "browser-seven");
+    child.lease = null; child.controlMode = "human";
+    child.owner = { sessionId: "child-session", directParentSessionId: identity.sessionId };
+    expect(agentDrivesTab(child, identity.sessionId)).toBe(true);
+    expect(agentDrivesTab(child, "child-session")).toBe(true);
+    // The parent's own parent is not the owner's direct parent.
+    child.owner = { sessionId: "grandchild-session", directParentSessionId: "child-session" };
+    expect(agentDrivesTab(child, identity.sessionId)).toBe(false);
+    // A sibling shares the parent but neither owns nor leases the tab.
+    child.owner = { sessionId: "child-session", directParentSessionId: identity.sessionId };
+    expect(agentDrivesTab(child, "sibling-session")).toBe(false);
+    child.controlMode = "human-paused";
+    expect(agentDrivesTab(child, identity.sessionId)).toBe(false);
+  });
+
+  it("previews a child-owned tab for the parent session that drove it, and not one generation further down", async () => {
+    tab.owner = { sessionId: "child-session", directParentSessionId: identity.sessionId };
+    const observed = await agentClick();
+    expect(request("start", observed.target.id)).toEqual({ ok: true });
+    tab.owner = { sessionId: "grandchild-session", directParentSessionId: "child-session" };
+    await vi.advanceTimersByTimeAsync(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
+    expect(started[0]!.stop).toHaveBeenCalledOnce();
+    expect(request("start", observed.target.id)).toEqual({ ok: false, error: "not-agent-tab" });
   });
 
   it("refuses user tabs: unowned, another session's and user-paused tabs never preview", async () => {

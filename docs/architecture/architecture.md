@@ -169,9 +169,10 @@ A live preview shows the agent's tab where that tab is open in another panel:
 the second slot of the same web surface, beneath its activity strip. It is bound
 to the exact main-issued tab handle and observation target of the latest agent
 action for that renderer tab, and never falls back to another tab. Main admits
-only a tab that the acting session leases or owns (the same ownership rule that
-admits tab switch and close events), that is not paused by the user, and on
-which that session ran a command within the last 30 seconds. Recognized user
+only a tab that the acting session leases or owns, or whose owner's direct
+parent it is (the same ownership rule that admits tab switch and close events; a
+grandparent or sibling session is refused), that is not paused by the user, and
+on which that session ran a command within the last 30 seconds. Recognized user
 input, address-bar navigation and Stop pause an agent-owned tab; the agent's own
 cross-origin navigation does not. User takeover, user navigation, idleness,
 session end and window or frame loss stop it. It reuses the guest's existing in-
