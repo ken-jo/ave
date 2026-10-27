@@ -1,16 +1,30 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, relative, win32 } from "node:path";
+import { isAbsolute, join, relative, win32 } from "node:path";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../../shared/windows-owner-claim.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 
 let currentUserSid: string | undefined;
+const localAppDataRoots = new Set<string>();
+
+/** A unique per-test %LOCALAPPDATA% directory that setFixtureOwner accepts; the caller removes it in teardown. */
+export function createLocalAppDataFixtureRoot(): string {
+  const root = realpathSync(mkdtempSync(join(process.env.LOCALAPPDATA!, "ave-fixture-")));
+  localAppDataRoots.add(root);
+  return root;
+}
+
+function inside(root: string, path: string): boolean {
+  const within = relative(root, path);
+  return within !== ".." && !within.startsWith("..\\") && !isAbsolute(within);
+}
 
 export function setFixtureOwner(path: string): void {
   if (process.platform !== "win32") return;
-  const within = relative(tmpdir(), path);
-  if (!within || within === ".." || within.startsWith("..\\") || isAbsolute(within)) {
-    throw new Error("Fixture ownership changes require a path inside the test temporary directory");
+  const inTmp = relative(tmpdir(), path) !== "" && inside(tmpdir(), path);
+  if (!inTmp && ![...localAppDataRoots].some((root) => inside(root, path))) {
+    throw new Error("Fixture ownership changes require a path inside the test temporary directory or a registered %LOCALAPPDATA% fixture root");
   }
   const system = win32.join(process.env.SystemRoot!, "System32");
   currentUserSid ??= /\bS-1-(?:\d+-)*\d+\b/.exec(execFileSync(win32.join(system, "whoami.exe"),
