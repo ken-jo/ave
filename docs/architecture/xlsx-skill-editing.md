@@ -7,23 +7,15 @@ open tools retain their [existing contracts](agent-document-tools.md).
 
 ## Execution and delivery
 
-Directory skills ship under `resources/skills` and are read in place from the
-configured host resource root. User skills and installed packages take precedence.
-Flat templates keep their existing seeding behavior. Directory skill bodies and
-resource manifests pass the normal `skill_load` hash-bound approval and
-`skill_read` containment checks; script execution still requires the shell's own
-permission and OS sandbox admission. No workbook-writing authority comes from
-loading a skill. No extension-specific branch is involved.
+Directory skill instructions ship under `resources/skills`; user skills and installed packages retain their existing precedence. Loading a skill passes normal approval and resource-containment checks and grants no workbook-writing authority. The executable script is delivered separately, so a user-shadowed skill cannot issue trusted runtime roots.
 
-The script uses Python's standard `zipfile` and `xml.parsers.expat` libraries
-(PSF-2.0; no new third-party dependency or copied external skill text). It runs on
-macOS, Windows and Linux with Python 3.10+. The skill describes using a ready
-interpreter or the bundled `uv` runtime with writable project/temp caches when an
-interpreter must be provisioned. Provisioning can require sandbox-approved network
-access; offline systems need a ready interpreter. It does not install packages or
-retry outside the sandbox. The writer opens only its request, workbook, sibling
-backup and sibling temporary file; the OS sandbox remains the authority boundary.
-It cannot edit files outside admitted write roots.
+[`src/skills/xlsx-edit.ts`](../../src/skills/xlsx-edit.ts) and its CLI are bundled into the standalone CommonJS file `dist/skill-scripts/edit-xlsx.cjs`; packaged builds copy it to `<host resources>/skill-scripts`. The adjacent `manifest.json` records version 1 and each script's SHA-256. Build and test preparation generate these assets from installed dependencies, with no runtime package lookup or installation. The bundle uses `jszip` under its MIT option and `fast-xml-parser` under MIT, plus runtime builtins. The existing `xlsx` preview dependency remains Apache-2.0 CE and is not the editor's serializer.
+
+The host advertises `javascriptRuntime` and `bundledScriptsDirectory` in **Application paths (JSON)**. The runtime is `process.execPath` with `ELECTRON_RUN_AS_NODE=1`; the [skill](../../resources/skills/xlsx-edit/SKILL.md) gives the exact POSIX and Windows PowerShell commands. Neither PATH lookup nor another interpreter supplies this contract. Missing paths, an unverified bundle or unavailable confinement blocks this skill's edit; it never retries outside the sandbox.
+
+The host generation pins the canonical script directory's identity and the manifest hash. Replacing the directory or changing both a script and its manifest does not create new authority; activating rebuilt resources requires a new host generation. Runtime/script execution roles require the exact runtime mode and reject code-loading environment overrides. PowerShell uses the documented single mode-assignment prefix and one literal native command.
+
+The [shell policy](permission-policy-design.md#os-shell-sandbox-policy) grants read roles only to the exact host runtime and verified first script operand. Workbook/request operands and redirections retain ordinary path and permission checks. Runtime reads are bound to that invocation, cannot pierce protected read floors, and add no write roots. The host script directory remains write-denied even inside an admitted workspace. The writer opens its request, workbook, sibling backup and sibling temporary files within the shell's admitted write roots.
 
 ## Preservation and refusals
 
@@ -45,18 +37,11 @@ unknown target-cell attributes or children; ambiguous paths/members; invalid edi
 and malformed or over-budget input. It supports the transitional spreadsheet
 namespace. New cells, row/column/sheet operations, style edits and other workbook
 formats are outside its contract. A refused workbook is never rewritten using a
-more lossy serializer. The existing `xlsx` preview dependency is Apache-2.0 CE;
-the separately licensed Pro styling/image/chart/pivot authoring capabilities are
-not included or required by this editor.
+more lossy serializer.
 
 ## Recovery and commit
 
-The command builds and validates the complete output before touching the source.
-For source bytes strictly above 8 MiB, it exclusively creates `<path>.ave-bak`,
-flushes and syncs it, and verifies its exact bytes before replacement. An existing
-backup, including a link, refuses the edit and preserves that recovery copy. A
-backup failure leaves the workbook unchanged; a partial backup can remain for
-inspection and prevents automatic retry. Smaller files have no automatic backup.
+The command builds and validates the complete output before touching the source. For source bytes strictly above 8 MiB, it creates an exclusive temporary file in the workbook's directory, writes the recovery bytes, calls `fsync`, and verifies their length and SHA-256. Only then does an exclusive hard link publish `<path>.ave-bak`. An existing final path, including a partial backup or link, refuses that larger-file edit without overwriting the recovery copy or workbook. A failed temporary backup is removed; retry can succeed when no final backup was published. Smaller files have no automatic backup. A filesystem that cannot publish the hard link refuses the edit rather than weakening this rule.
 
 Output is flushed and synced to an exclusive temporary file in the workbook's
 directory, then atomically replaced after source identity and byte comparisons.
@@ -76,8 +61,12 @@ calculation chain is removed along with its relationship and content-type entry;
 an application rebuilds it on recalculation. Existing calculation settings such
 as iteration limits remain intact.
 
-The existing bounded container reader reads explicit calculation attributes from
-the admitted workbook part and sends the required boolean `needsRecalculation`
+The existing bounded container reader reads explicit calculation attributes only
+from a direct SpreadsheetML main-namespace `workbook/calcPr` element in the
+admitted workbook part. Default and prefixed namespaces, predefined/numeric
+attribute entities and XML attribute whitespace normalization are supported;
+foreign-namespace or nested extension elements do not set the signal, and custom
+entity declarations remain refused. It sends the required boolean `needsRecalculation`
 through the existing preview response. The protocol validates the field and
 requires false for other formats. Any true `fullCalcOnLoad`/`forceFullCalc` or
 explicit false `calcCompleted` shows the localized **재계산 필요 / Needs
@@ -92,3 +81,7 @@ old dependent caches and empty new-formula results. Already-open previews must b
 closed and reopened after shell edits; live file watching is outside this change.
 The ko/en keys live in the actual `chatPreviewRail` message fragment, with no raw
 parser diagnostics exposed in the renderer.
+
+## Native validation
+
+The editing integration must run ordinary shell path policy and the native wrapper on macOS, Linux and Windows without platform skips. Windows uses the confined PowerShell route; unavailable native confinement is a test failure. Simulated policy/launcher fixtures are separate evidence and cannot establish native execution. Windows host probe and native execution evidence must be recorded before claiming that platform verified; a passing build or fixture suite does not supply it.

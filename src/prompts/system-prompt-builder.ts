@@ -17,6 +17,7 @@ import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import { verifyAveScratchDir } from "../shared/ave-scratch.js";
+import { hostScriptRuntimePaths } from "../main/host-script-runtime.js";
 import type { ProjectIdentity } from "../shared/project-identity.js";
 import { escapeHtml } from "../shared/escape-html.js";
 import { formatLocalIsoWithOffset, hostTimeZone } from "../shared/format-time.js";
@@ -183,6 +184,7 @@ export class SystemPromptBuilder {
     const applicationPaths = JSON.stringify({
       applicationHome,
       primarySessionStore: sessionStorePath(applicationHome),
+      ...hostScriptRuntimePaths(),
       ...(scratch.ok ? { scratchDirectory: scratch.path } : {}),
     }).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
     return [

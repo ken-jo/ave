@@ -5,16 +5,14 @@ import { describe, expect, it } from "vitest";
 import { SkillStore } from "../skill-store.js";
 
 describe("packaged directory skills", () => {
-  it("discovers, loads and reads the shipped editing script without writing to the user home", async () => {
+  it("discovers shipped instructions without granting a user skill the host command identity", async () => {
     const userDir = mkdtempSync(join(tmpdir(), "ave-bundled-skills-"));
     try {
       const store = new SkillStore({ userDir, bundledDir: resolve("resources/skills") });
       expect(store.listCatalogSync().some((skill) => skill.name === "xlsx-edit")).toBe(true);
       const skill = await store.load("xlsx-edit");
-      expect(skill?.resources.map((resource) => resource.path)).toEqual(["scripts/edit-xlsx.py"]);
+      expect(skill?.resources.map((resource) => resource.path)).toEqual([]);
       expect((await store.list()).map((item) => item.name)).toEqual(["xlsx-edit"]);
-      const resource = await store.readUserResource(skill!, "scripts/edit-xlsx.py");
-      expect(resource.bytes).toBeGreaterThan(1000);
       await expect(store.readUserResource(skill!, "../../report-writing.md")).rejects.toThrow();
       mkdirSync(join(userDir, "xlsx-edit"));
       writeFileSync(join(userDir, "xlsx-edit", "SKILL.md"), "---\nname: xlsx-edit\ndescription: User editing workflow\n---\nCustom body");

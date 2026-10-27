@@ -71,6 +71,7 @@
       "src/tools/__tests__/file-tools.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
       "src/tools/__tests__/preview-document-process.test.ts",
+      "src/tools/__tests__/xlsx-edit-skill.test.ts",
       "test/scripts/ave-home-guard-bundle.test.ts",
       "test/scripts/main-bundle-budget.test.ts",
       "test/scripts/preview-document-bundle.test.ts",

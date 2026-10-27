@@ -1,6 +1,7 @@
 
 
 import { spawn } from "node:child_process";
+import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
@@ -1461,6 +1462,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, "Library", "LaunchAgents") + (process.platform === "win32" ? sep : ""),
   ]);
   const writePersistence = [
+    ...hostScriptWriteDenyPaths(),
     ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
     ...homeWritePersistence,
     // Deny cron persistence paths because later scheduler execution escapes the sandbox.

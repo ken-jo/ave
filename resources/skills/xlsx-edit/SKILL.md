@@ -1,7 +1,7 @@
 ---
 name: xlsx-edit
 description: Edit existing XLSX cell values or formulas while preserving workbook formatting and unrelated package parts.
-compatibility: Python 3.10 or later in the sandbox; no third-party packages required.
+compatibility: Host-provided JavaScript runtime and bundled script through the sandbox shell; no runtime installation required.
 ---
 
 # XLSX editing
@@ -12,10 +12,12 @@ addresses. CSV/TSV use ordinary text editing. Other workbook formats, new cells,
 formatting changes, row/column operations and direct panel editing are outside
 this skill.
 
-Run the bundled `scripts/edit-xlsx.py` through the sandbox shell. Resolve its
-absolute path from this skill's base directory returned by `skill_load`. Quote
-paths as individual shell arguments, including on Windows. Do not recreate the
-writer or use a whole-workbook serializer.
+Run the host's `edit-xlsx.cjs` through the sandbox shell. Read
+`javascriptRuntime` and `bundledScriptsDirectory` from the environment's
+**Application paths (JSON)** and substitute their absolute values in the commands
+below. The script lives in that host-owned directory, independently of this
+skill's base directory. Quote each path separately. Do not recreate the writer or
+use a whole-workbook serializer.
 
 Write a UTF-8 JSON request inside the project or temporary directory:
 
@@ -25,27 +27,40 @@ Write a UTF-8 JSON request inside the project or temporary directory:
 
 Each edit has `cell` and exactly one of `value` (string, finite number, boolean or
 null to clear) or `formula` (without leading `=`). At most 500 edits may target
-distinct existing cells. A string beginning with `=` stays text; use `formula`
-only when the user intends a formula. Review the proposed values against the
+distinct existing stored cell records; a blank-looking address with no stored
+cell is a new cell and cannot be targeted. A string beginning with `=` stays text;
+use `formula` only when the user intends a formula. Review the proposed values against the
 request before running:
 
 ```sh
-python3 "<skill-base>/scripts/edit-xlsx.py" "<project>/book.xlsx" "<project>/edits.json"
+ELECTRON_RUN_AS_NODE=1 '<javascriptRuntime>' '<bundledScriptsDirectory>/edit-xlsx.cjs' '<project>/book.xlsx' '<project>/edits.json'
 ```
 
-On Windows use the available `python` executable instead. A ready interpreter
-from the app's runtime can also be invoked by its absolute path. If none is
-available, use the bundled `uv` executable with `run --no-project --no-sync
---python 3.12`; place `UV_CACHE_DIR` and `UV_PYTHON_INSTALL_DIR` in a writable
-project or temporary directory, and set `UV_PYTHON_INSTALL_BIN=0`. Interpreter
-provisioning may need allowed network access; if it fails, report that prerequisite
-and leave the workbook untouched. Never request an unsandboxed retry.
+On Windows use PowerShell:
 
-The script admits files up to 20 MiB. Above 8 MiB it exclusively creates and
-verifies `<workbook>.ave-bak` before replacing the workbook. An existing backup
-blocks the edit; preserve it and ask the user to move it to another recovery
-name before retrying. Smaller files do not get automatic recovery copies. Shell
-edits are outside the host's checkpoint/rewind history.
+```powershell
+$env:ELECTRON_RUN_AS_NODE='1'; & '<javascriptRuntime>' '<bundledScriptsDirectory>\edit-xlsx.cjs' '<project>\book.xlsx' '<project>\edits.json'
+```
+
+Use the exact advertised paths and direct script operand. Escape a literal
+apostrophe in a path for the selected shell. The runtime and script are read-only;
+the workbook and request still need ordinary path admission. The host verifies
+the bundle and selects the confined route before execution. If the advertised
+paths are missing or the shell reports failed verification or unavailable native
+confinement, report that prerequisite and leave the workbook untouched. Never
+install another runtime, download packages or request an unsandboxed retry.
+
+The script admits files up to 20 MiB. Above 8 MiB it writes an exclusive
+same-directory temporary backup, calls `fsync`, verifies its length and SHA-256,
+then publishes `<workbook>.ave-bak` with an exclusive hard link. An existing final
+backup, including a partial file or link, blocks that larger-file edit without
+changing it or the workbook. Preserve that copy and ask the user to move it to
+another recovery name before retrying. Failed temporary backups are removed; retry is possible
+when no final backup was published. Smaller files do not get automatic recovery
+copies. Shell edits are outside the host's checkpoint/rewind history.
+
+Success writes JSON to stdout with `editedCells`, `needsRecalculation: true` and
+`backup` (an absolute path or null). A nonzero exit reports a refusal on stderr.
 
 The writer patches only target cells and calculation properties. It preserves
 cell styles and every unrelated uncompressed package part, including drawings,

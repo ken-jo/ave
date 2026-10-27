@@ -5,6 +5,7 @@ import type {
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { SHELL_TASK_OUTPUT_PREVIEW_CHARS } from "../shared/shell-tasks.js";
 import { createLogger } from "../lib/logger.js";
+import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
  * Host shell tool family: the `bash` and `powershell` execution tools, the
@@ -2990,6 +2991,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       ctx.cwd,
       ctx.extraAllowedDirectories,
       ctx.blockReadsOutsideWorkingDirectories === true,
+      input.command,
     );
     if (
       commandPathViolation &&
@@ -3058,6 +3060,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
           toolOutputProgressFromMetadata(ctx.metadata),
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+          powerShellHostScriptReadPaths(commandAst, input.command),
         );
       }
       return await spawnPowerShellWithSandbox(
@@ -3067,6 +3070,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
         toolOutputProgressFromMetadata(ctx.metadata),
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+        powerShellHostScriptReadPaths(commandAst, input.command),
       );
     }
 
@@ -3159,6 +3163,7 @@ function isPowerShellSwitchEnabled(parameter: Extract<PowerShellArgument, { kind
 export function findPowerShellAstPathViolation(
   ast: PowerShellAstSummary, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
+  source?: string,
 ): ShellPathPolicyViolation | null {
   const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
   if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
@@ -3182,6 +3187,11 @@ export function findPowerShellAstPathViolation(
   for (const redirect of ast.redirections) { const violation = inspect(redirect, "write"); if (violation) return violation; }
   for (const command of ast.commands) {
     const name = canonicalPowerShellCommandName(command.name!.toLowerCase());
+    const runtimeReads = powerShellHostScriptReadPaths(ast, source);
+    if (runtimeReads.length > 0) {
+      const violation = inspect(command.arguments[0]!, "read", true);
+      if (violation) return violation;
+    }
     if (["set-location", "cd", "sl", "push-location", "pushd", "pop-location", "popd", "set-alias", "new-alias", "import-module", "remove-module"].includes(name)) {
       return { kind: "dynamic-path", reason: "PowerShell location or command-identity changes require a separate invocation", candidate: command.arguments[0]?.text };
     }
@@ -3204,17 +3214,28 @@ export function findPowerShellAstPathViolation(
         positional += 1;
         if (["set-content", "add-content", "set-item", "set-itemproperty"].includes(name) && positional > 1) continue;
       }
-      const violation = inspect(argument, effect); if (violation) return violation;
+      const violation = inspect(argument, index === 1 && runtimeReads.length > 0 ? "read" : effect); if (violation) return violation;
     }
   }
   return null;
+}
+
+function powerShellHostScriptReadPaths(ast: PowerShellAstSummary, source?: string): readonly string[] {
+  if (ast.commands.length !== 1 || source === undefined) return [];
+  const command = ast.commands[0]!;
+  const text = source.trim();
+  if (!text.endsWith(command.text)) return [];
+  const prefix = text.slice(0, text.length - command.text.length).trim();
+  if (!/^\$env:ELECTRON_RUN_AS_NODE\s*=\s*(['"])1\1\s*;$/.test(prefix)) return [];
+  return hostScriptInvocationReadPaths(command.arguments.map((argument) => argument.kind === "literal" ? argument.value : undefined),
+    { ELECTRON_RUN_AS_NODE: "1" });
 }
 
 export async function findPowerShellCommandPathViolation(
   command: string, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
 ): Promise<ShellPathPolicyViolation | null> {
-  return findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories);
+  return findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
 }
 
 /**
@@ -3322,6 +3343,7 @@ async function spawnPowerShellWithSandbox(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   toolUseId?: string,
+  runtimeReadPaths: readonly string[] = [],
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
@@ -3356,7 +3378,7 @@ async function spawnPowerShellWithSandbox(
 
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home, sandboxHome.path);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths], home, sandboxHome.path);
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,
@@ -3543,6 +3565,7 @@ async function spawnPowerShellInMxc(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   toolUseId?: string,
+  runtimeReadPaths: readonly string[] = [],
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   const systemRoot = windowsSystemRoot();
@@ -3558,7 +3581,7 @@ async function spawnPowerShellInMxc(
   }
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], hostHome, sandboxHome.path);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths], hostHome, sandboxHome.path);
   const egress = openEgressInvocation(
     { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
     signal ? { abortSignal: signal } : {},

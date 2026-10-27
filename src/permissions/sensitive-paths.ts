@@ -39,6 +39,7 @@ import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
+import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
 export const MAX_WALK_UP = 64;
@@ -543,6 +544,15 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
   return (absPath) => {
     if (!absPath) return null;
     const candidates = policyMatchPaths(absPath);
+    if (effect === "write") {
+      for (const path of hostScriptWriteDenyPaths()) {
+        const bases = [canonicalizePathForMatch(path), pathResolve(path)].map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));
+        if (candidates.some((candidate) => bases.some((base) => {
+          const folded = caseFoldForMatch(candidate);
+          return folded === base || folded.startsWith(`${base}/`);
+        }))) return "host-script-resources";
+      }
+    }
     if (effect === "write" && candidates.some((candidate) => {
       const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
       return [...runtimeSettingsScopes.values()].some((targets) => targets.has(target));

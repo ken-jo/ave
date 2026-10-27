@@ -15,8 +15,9 @@ test("edited workbook shows a recalculation badge through the real viewer", asyn
   const request = join(directory, "edits.json");
   writeFileSync(path, offsetWorkbook("xlsx"));
   writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B10002", value: 43 }] }));
-  const edit = spawnSync(process.platform === "win32" ? "python" : "python3",
-    [join(process.cwd(), "resources/skills/xlsx-edit/scripts/edit-xlsx.py"), path, request], { encoding: "utf8" });
+  const edit = spawnSync(process.execPath,
+    [join(process.cwd(), "dist/skill-scripts/edit-xlsx.cjs"), path, request],
+    { encoding: "utf8", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
   expect(edit.status, edit.stderr).toBe(0);
   const now = Date.now() - 10_000;
   const ctx = await launchSeededElectron({

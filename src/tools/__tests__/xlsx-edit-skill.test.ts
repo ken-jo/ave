@@ -1,17 +1,26 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { build } from "esbuild";
+import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { readDocumentResponse } from "../preview-document-protocol.js";
 import { formatDocumentToolOutput } from "../document-tool-output.js";
 
-const SCRIPT = resolve("resources/skills/xlsx-edit/scripts/edit-xlsx.py");
-const PYTHON = process.platform === "win32" ? "python" : "python3";
+let commandDirectory: string;
+let script: string;
+beforeAll(async () => {
+  commandDirectory = mkdtempSync(join(tmpdir(), "ave-workbook-command-"));
+  script = join(commandDirectory, "edit-xlsx.cjs");
+  await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: script,
+    bundle: true, platform: "node", format: "cjs", target: "node22" });
+});
+afterAll(() => { rmSync(commandDirectory, { recursive: true, force: true }); });
 let directory: string;
 
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "ave-xlsx-edit-")); });
@@ -43,10 +52,16 @@ async function save(zip: JSZip, name = "book.xlsx"): Promise<string> {
 function run(path: string, edits: unknown, sheet = 0) {
   const request = join(directory, "edits.json");
   writeFileSync(request, JSON.stringify({ sheet, edits }));
-  return spawnSync(PYTHON, [SCRIPT, path, request], { encoding: "utf8" });
+  return spawnSync(process.execPath, [script, path, request], { encoding: "utf8" });
 }
 
 describe("XLSX skill command", () => {
+  it("runs the bundled command without package resolution", async () => {
+    const path = await save(await fixture());
+    expect(run(path, [{ cell: "B1", value: 21 }]).status).toBe(0);
+    expect(readFileSync(script, "utf8")).not.toMatch(/require\(["'](?:jszip|fast-xml-parser)["']\)/);
+  });
+
   it("round-trips literal values and preserves styles and every untouched part", async () => {
     const original = await fixture();
     const path = await save(original, "budget with spaces.xlsx");
@@ -146,6 +161,41 @@ describe("XLSX skill command", () => {
     expect(readFileSync(`${path}.ave-bak`)).toEqual(before);
   });
 
+  it("removes an incomplete backup after a write failure and permits retry", async () => {
+    const zip = await fixture();
+    zip.file("xl/media/generated.bin", randomBytes(8 * 1024 * 1024));
+    const path = await save(zip);
+    const before = readFileSync(path);
+    let written = 0;
+    const { writeSync } = await import("node:fs");
+    const request = { sheet: 0, edits: [{ cell: "B1", value: 44 }] };
+    await expect(editWorkbookFile(path, request, { write(descriptor, bytes, offset, length) {
+      if (written >= 1024) throw Object.assign(new Error("No space left"), { code: "ENOSPC" });
+      const count = writeSync(descriptor, bytes, offset, Math.min(length, 1024 - written));
+      written += count;
+      return count;
+    } })).rejects.toMatchObject({ code: "ENOSPC" });
+    expect(written).toBe(1024);
+    expect(existsSync(path + ".ave-bak")).toBe(false);
+    expect(readFileSync(path)).toEqual(before);
+    expect(readdirSync(directory).filter((name) => name.startsWith(".ave-xlsx-"))).toEqual([]);
+    await expect(editWorkbookFile(path, request)).resolves.toEqual({ editedCells: 1, needsRecalculation: true, backup: path + ".ave-bak" });
+    expect(readFileSync(path + ".ave-bak")).toEqual(before);
+  });
+
+  it("refuses an existing incomplete recovery copy without changing either file", async () => {
+    const zip = await fixture();
+    zip.file("xl/media/generated.bin", randomBytes(8 * 1024 * 1024));
+    const path = await save(zip);
+    const before = readFileSync(path);
+    const partial = before.subarray(0, 1024);
+    writeFileSync(path + ".ave-bak", partial);
+    await expect(editWorkbookFile(path, { sheet: 0, edits: [{ cell: "B1", value: 55 }] })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path + ".ave-bak")).toEqual(partial);
+    expect(readdirSync(directory).filter((name) => name.startsWith(".ave-xlsx-"))).toEqual([]);
+  });
+
   it.each([
     ["shared formula", '<f t="shared" si="0">B1*2</f>', "<f>B1*2</f>"],
     ["cell extension", '<v>12</v><extLst/>', "<v>12</v>"],
@@ -167,6 +217,34 @@ describe("XLSX skill command", () => {
     const before = readFileSync(path);
     expect(run(path, edits).status).toBe(1);
     expect(readFileSync(path)).toEqual(before);
+  });
+
+  it.each(["macro", "declaration", "entity", "expansion", "member-link"])("refuses unsafe %s packages without mutation", async (kind) => {
+    const zip = await fixture();
+    if (kind === "macro") zip.file("xl/vbaProject.bin", Buffer.from([1, 2, 3]));
+    if (kind === "member-link") zip.file("xl/media/link", "outside", { unixPermissions: 0o120777 });
+    if (kind === "expansion") zip.file("xl/media/expanded.bin", Buffer.alloc(2 * 1024 * 1024));
+    if (kind === "declaration" || kind === "entity") {
+      const xml = await zip.file("xl/worksheets/sheet1.xml")!.async("string");
+      zip.file("xl/worksheets/sheet1.xml", kind === "declaration"
+        ? xml.replace(/<worksheet/, '<!DOCTYPE worksheet [<!ENTITY injected "value">]><worksheet')
+        : xml.replace("Revenue", "&injected;"));
+    }
+    const path = join(directory, "unsafe.xlsx");
+    writeFileSync(path, await zip.generateAsync({ type: "nodebuffer", platform: "UNIX", compression: kind === "expansion" ? "DEFLATE" : "STORE" }));
+    const before = readFileSync(path);
+    expect(run(path, [{ cell: "B1", value: 10 }]).status).toBe(1);
+    expect(readFileSync(path)).toEqual(before);
+  });
+
+  it("retains compressed opaque members within the output budget", async () => {
+    const zip = await fixture();
+    zip.file("xl/media/compressed.bin", randomBytes(1024 * 1024));
+    const path = join(directory, "compressed.xlsx");
+    writeFileSync(path, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    expect(run(path, [{ cell: "B1", value: 99 }]).status).toBe(0);
+    const result = await JSZip.loadAsync(readFileSync(path));
+    expect(await result.file("xl/media/compressed.bin")!.async("nodebuffer")).toEqual(await zip.file("xl/media/compressed.bin")!.async("nodebuffer"));
   });
 
   it("refuses linked workbook paths", async () => {

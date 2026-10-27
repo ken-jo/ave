@@ -380,6 +380,11 @@
         ]
       },
       {
+        "from": "dist/skill-scripts",
+        "to": "skill-scripts",
+        "filter": ["*.cjs", "manifest.json"]
+      },
+      {
         "from": "resources/prompts",
         "to": "prompts",
         "filter": [
