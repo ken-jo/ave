@@ -6,6 +6,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
 import { SettingsSection } from "../components/PageShell.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
+import { DocumentEngineInstallContent } from "../components/DocumentEngineInstallContent.js";
 
 const OPEN_MODE_OPTIONS: readonly { value: DocumentOpenMode; label: string; hint: string }[] = [
   { value: "direct", label: "documentSettings.direct", hint: "documentSettings.directHint" },
@@ -59,6 +60,7 @@ export function DocumentSettingsContent() {
 
   return (
     <SettingsSection data-settings-section="chat-documents" title={t("documentSettings.title")} description={t("documentSettings.description")}>
+      <DocumentEngineInstallContent />
       <RadioGroup
         value={openMode}
         onValueChange={(value) => { if (isDocumentOpenMode(value)) void handleModeChange(value); }}

@@ -120,6 +120,7 @@ import {
 const SERVICE_KEYS: (string | symbol)[] = [
   "pythonRuntime",
   "pythonPath",
+  "singleHopNetworkFetch",
   "pluginRuntime",
   "pluginMarketplace",
   "settingsService",
@@ -343,6 +344,10 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:diagnostics:crash-list",
         "ave:diagnostics:export",
         "ave:dlp:stats",
+        "ave:document-engine:cancel",
+        "ave:document-engine:install",
+        "ave:document-engine:status",
+        "ave:document-engine:uninstall",
         "ave:feedback:submit",
         "ave:git:runtime:install",
         "ave:git:runtime:status",

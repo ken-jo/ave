@@ -1,10 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { builtMainExists, launchSeededElectron } from "./seeded-electron.js";
+import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPreview } from "./document-preview-flow.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../../src/shared/preview-document.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
-import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
 /**
  * The grid is the only vertical scroller between itself and the side panel:
@@ -80,11 +80,8 @@ test("table previews show bounded counts, late source rows and explicit parser r
     writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [dir] } }));
     await ctx.page.setViewportSize({ width: 1280, height: 860 });
     await ctx.page.addStyleTag({ content: CLASSIC_GRID_SCROLLBARS });
-    await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
-    await ctx.page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
-    await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
-    const file = (name: string) => ctx.page.getByTestId("chat-side-panel-file-tree-file").filter({ hasText: name });
-    await file("records.csv").click();
+    await openDocumentSessionFiles(ctx.page, dir);
+    await openDocumentSessionFile(ctx.page, "records.csv");
     const preview = ctx.page.getByTestId("chat-side-panel-table-preview");
     await expect(preview).toContainText("최소");
     await expect(ctx.page.getByTestId("chat-side-panel-table-truncated")).toContainText("검사하지 않았습니다");
@@ -95,22 +92,22 @@ test("table previews show bounded counts, late source rows and explicit parser r
     await ctx.page.screenshot({ path: boundedScreenshot });
     await test.info().attach("bounded-table.png", { contentType: "image/png", path: boundedScreenshot });
 
-    await file("offset.xlsx").click();
+    await openDocumentSessionFile(ctx.page, "offset.xlsx");
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("late value");
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("10001");
     // Two rows fit, so nothing scrolls at all.
     expect(await gridScrollState(ctx.page)).toEqual({ gridScrolls: false, outerScrollers: [] });
 
-    await file("cyclic.xls").click();
+    await openDocumentSessionFile(ctx.page, "cyclic.xls");
     await expect(ctx.page.getByTestId("chat-side-panel-table-loading")).toBeVisible();
-    await file("records.csv").click();
+    await openDocumentSessionFile(ctx.page, "records.csv");
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toBeVisible();
     await expect(preview).toContainText("최소");
 
-    await file("broken.csv").click();
+    await openDocumentSessionFile(ctx.page, "broken.csv");
     await expect(ctx.page.getByTestId("chat-side-panel-file-error")).toContainText("손상");
 
-    await file("cyclic.xls").click();
+    await openDocumentSessionFile(ctx.page, "cyclic.xls");
     await expect(ctx.page.getByTestId("chat-side-panel-file-error")).toContainText("시간이나 메모리");
     const refusalScreenshot = test.info().outputPath("parser-refusal.png");
     await ctx.page.screenshot({ path: refusalScreenshot });
@@ -119,7 +116,7 @@ test("table previews show bounded counts, late source rows and explicit parser r
     // A short wide sheet: its rows fit, so the horizontal bar gets room of its
     // own instead of pushing the last row into a vertical scroll.
     for (const name of ["wide.csv", "wide-one-row.csv"]) {
-      await file(name).click();
+      await openDocumentSessionFile(ctx.page, name);
       await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("r0c0");
       await expect.poll(() => gridHorizontalBarPx(ctx.page)).toBe(10);
       await expect.poll(() => gridScrollState(ctx.page)).toEqual({ gridScrolls: false, outerScrollers: [] });
@@ -138,7 +135,7 @@ test("table previews show bounded counts, late source rows and explicit parser r
     await openInContentTab("wide.csv");
     await expect.poll(() => gridScrollState(ctx.page)).toEqual({ gridScrolls: false, outerScrollers: [] });
   } finally {
-    await teardownSeededElectron(ctx);
+    await teardownDocumentPreview(ctx);
     rmSync(dir, { recursive: true, force: true });
   }
 });

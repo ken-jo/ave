@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { builtMainExists, launchSeededElectron } from "./seeded-electron.js";
+import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPreview } from "./document-preview-flow.js";
 import { pdfFixture, presentationFixture } from "../../../src/__tests__/support/page-document-fixtures.js";
-import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
 test("document pages render, navigate and refuse malformed files through the real host", async () => {
   expect(builtMainExists()).toBe(true);
@@ -29,11 +29,8 @@ test("document pages render, navigate and refuse malformed files through the rea
   try {
     writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
     await ctx.page.setViewportSize({ width: 1280, height: 860 });
-    await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
-    await ctx.page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
-    await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
-    const file = (name: string) => ctx.page.getByTestId("chat-side-panel-file-tree-file").filter({ hasText: name });
-    await file("slides.pptx").click();
+    await openDocumentSessionFiles(ctx.page, directory);
+    await openDocumentSessionFile(ctx.page, "slides.pptx");
     const preview = ctx.page.getByTestId("chat-side-panel-page-preview");
     await expect(preview).toContainText("First & safe");
     await expect(preview).toContainText("개요");
@@ -42,7 +39,7 @@ test("document pages render, navigate and refuse malformed files through the rea
     const outlineScreenshot = test.info().outputPath("document-outline.png");
     await ctx.page.screenshot({ path: outlineScreenshot });
     await test.info().attach("document-outline", { path: outlineScreenshot, contentType: "image/png" });
-    await file("pages.pdf").click();
+    await openDocumentSessionFile(ctx.page, "pages.pdf");
     await expect(ctx.page.getByTestId("chat-side-panel-pdf-page")).toBeVisible();
     await expect.poll(() => ctx.page.getByTestId("chat-side-panel-pdf-page").evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
     await expect(preview).toContainText("First PDF page");
@@ -52,10 +49,10 @@ test("document pages render, navigate and refuse malformed files through the rea
     const screenshot = test.info().outputPath("document-pages.png");
     await ctx.page.screenshot({ path: screenshot });
     await test.info().attach("document-pages", { path: screenshot, contentType: "image/png" });
-    await file("broken.pdf").click();
+    await openDocumentSessionFile(ctx.page, "broken.pdf");
     await expect(ctx.page.getByTestId("chat-side-panel-file-error")).toContainText("손상");
   } finally {
-    await teardownSeededElectron(ctx);
+    await teardownDocumentPreview(ctx);
     rmSync(directory, { recursive: true, force: true });
   }
 });
