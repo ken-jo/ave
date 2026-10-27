@@ -49,10 +49,10 @@ export class WorkbookEditJournal {
     requireCondition(home && isAbsolute(home) && isAbsolute(path), "Invalid edit journal directory.");
     const directory = dirname(path);
     requireCondition(resolve(path) === path && basename(path) === "journal.jsonl"
-      && directory === join(realpathSync(home), "document-observation"), "Invalid edit journal directory.");
+      && directory === join(realpathSync.native(home), "document-observation"), "Invalid edit journal directory.");
     const initialDirectory = lstatSync(directory, { bigint: true });
     requireCondition(initialDirectory.isDirectory() && !initialDirectory.isSymbolicLink()
-      && realpathSync(directory) === directory, "Invalid edit journal directory.");
+      && realpathSync.native(directory) === directory, "Invalid edit journal directory.");
     this.directoryIdentity = initialDirectory;
     const opened = openJournalFile(path);
     this.descriptor = opened.descriptor;
@@ -67,7 +67,7 @@ export class WorkbookEditJournal {
         requireCondition(readSync(this.descriptor, tail, 0, 1, size - 1) === 1 && tail[0] === 10,
           "Edit journal has an incomplete record.");
       }
-      this.append({ v: 1, kind: "begin", editId: this.editId, target: realpathSync(target), beforeHash: digest(before) });
+      this.append({ v: 1, kind: "begin", editId: this.editId, target: realpathSync.native(target), beforeHash: digest(before) });
     } catch (error) {
       closeSync(this.descriptor);
       this.closed = true;
@@ -82,7 +82,7 @@ export class WorkbookEditJournal {
       && sameFile(this.identity, fstatSync(this.descriptor, { bigint: true }))
       && directory.isDirectory() && !directory.isSymbolicLink()
       && directory.dev === this.directoryIdentity.dev && directory.ino === this.directoryIdentity.ino
-      && realpathSync(dirname(this.path)) === dirname(this.path), "Edit journal identity changed.");
+      && realpathSync.native(dirname(this.path)) === dirname(this.path), "Edit journal identity changed.");
   }
 
   private append(record: DocumentEditJournalRecord): void {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -65,12 +65,13 @@ describe("native governed XLSX command", () => {
           let finished: Promise<void> | undefined;
           const lease = {
             poll: () => {},
+            // Like the real reader: a HOME whose command made no edit (e.g. the AST parser's) has no journal.
             finish: () => {
-              if (!finished) {
-                const lines = readFileSync(join(homePath, "document-observation", "journal.jsonl"), "utf8");
-                records.push(...lines.trim().split("\n").map((line) => JSON.parse(line) as DocumentEditJournalRecord));
-                finished = Promise.resolve();
-              }
+              finished ??= (async () => {
+                const journal = join(homePath, "document-observation", "journal.jsonl");
+                if (!existsSync(journal)) return;
+                records.push(...readFileSync(journal, "utf8").trim().split("\n").map((line) => JSON.parse(line) as DocumentEditJournalRecord));
+              })();
               return finished;
             },
             dispose: () => {},
