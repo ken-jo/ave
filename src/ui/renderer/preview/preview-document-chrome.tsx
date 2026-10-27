@@ -17,8 +17,14 @@ function pathParts(path: string, workspaceRoot?: string): { name: string; parent
   return { name, parent };
 }
 
+function fileExtension(path: string): string {
+  const { name } = pathParts(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
 export function previewFormatLabel(path: string): string {
-  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+  const extension = fileExtension(path);
   const labels: Record<string, string> = {
     xlsx: "Excel", xls: "Excel", ods: "ODS", csv: "CSV", tsv: "TSV", pdf: "PDF", pptx: "PowerPoint",
     ts: "TypeScript", tsx: "TypeScript", js: "JavaScript", jsx: "JavaScript", md: "Markdown", json: "JSON",
@@ -28,7 +34,7 @@ export function previewFormatLabel(path: string): string {
 }
 
 function documentIcon(path: string) {
-  const extension = path.split(".").pop()?.toLowerCase();
+  const extension = fileExtension(path);
   if (["xlsx", "xls", "ods", "csv", "tsv"].includes(extension ?? "")) return Sheet;
   if (extension === "pptx") return Presentation;
   if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extension ?? "")) return FileImage;

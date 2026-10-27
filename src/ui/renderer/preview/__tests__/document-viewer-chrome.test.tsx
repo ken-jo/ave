@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewDetail } from "../../components/ChatSidePanelPreview.js";
-import { PreviewDocumentHeader, PreviewDocumentLiveStrip } from "../preview-document-chrome.js";
+import { PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } from "../preview-document-chrome.js";
 import type { DocumentObservationEvent, PreviewObservedTextDocument } from "../../../../shared/agent-observation.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import { en, ko } from "../../../../i18n/messages/generated/chatPreviewRail.js";
@@ -51,6 +51,15 @@ async function openText() {
 }
 
 describe("shared document viewer chrome", () => {
+  it.each([
+    "/work/project/README",
+    "/work/project.with-dot/README",
+    "C:\\work\\project.with-dot\\README",
+    "/work/project/.gitignore",
+  ])("labels an extensionless file without exposing its directory: %s", (path) => {
+    expect(previewFormatLabel(path)).toBe("Text");
+  });
+
   it("uses one compact header with relative path and icon-only accessible actions", async () => {
     await openText();
     const header = screen.getByTestId("document-preview-header");
