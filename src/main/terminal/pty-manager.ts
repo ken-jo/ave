@@ -951,7 +951,7 @@ export async function verifyAgentTerminalShell(ref: TerminalSessionRef, ownerWin
   }
   if (session.innerPty) {
     return sandboxedShellVerdict(
-      await readSandboxedShell(session.pty.pid, session.shellName, reportedCwd),
+      await readSandboxedShell(session.pty.pid, session.shellName, reportedCwd, options),
       reportedCwd,
       session.blocks.reportedShellPid(),
     );
@@ -991,6 +991,13 @@ export function sandboxedShellVerdict(
       reason: "shell-busy",
       message: `the terminal's shell has processes sharing its input (${named}): a command still finishing or a background job`,
     };
+  }
+  if (shell.holdersUnreadable !== null) {
+    return { ok: false, reason: "shell-busy", message: `the terminal's shell is not proven alone on its terminal: ${shell.holdersUnreadable}` };
+  }
+  if (shell.holders.length > 0) {
+    const named = shell.holders.map((holder) => `${JSON.stringify(holder.command)} pid ${holder.pid}`).join(", ");
+    return { ok: false, reason: "shell-busy", message: `the terminal's shell is not alone on its terminal: another process holds it open (${named})` };
   }
   if (!shell.cwdIsReported) {
     return {

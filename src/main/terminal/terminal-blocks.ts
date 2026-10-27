@@ -149,7 +149,7 @@ interface StringEscape {
 type EscapeState =
   | { state: "text" }
   | { state: "esc" }
-  | { state: "csi" }
+  | { state: "csi"; params: string }
   | { state: "charset" }
   | StringEscape;
 
@@ -196,14 +196,96 @@ export type TerminalPromptState =
 // it, so an empty echo just after typing proves nothing.
 export const USER_INPUT_QUIET_MS = 1500;
 
-// Recognize emulator replies separately from keystrokes; focus, device, status, cursor, and OSC/DCS answers do not edit the prompt.
-const TERMINAL_REPLY =
-  /^(?:\u001b\[[IO]|\u001b\[[?>=]?[0-9;]*[cnR]|\u001b\][0-9]+;[^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001bP[^\u001b]*\u001b\\)+$/u;
+// Bound on the CSI parameter text kept while parsing output, enough for any query this tracker answers for.
+const MAX_QUERY_PARAMS_CHARS = 32;
+// Bound on unanswered queries of one kind; the oldest is dropped beyond it.
+const MAX_OUTSTANDING_QUERIES = 16;
+
+type QueryKind = "da1" | "da2" | "status" | "cursor" | "cursor-private" | `mode:${string}` | `color:${string}`;
+
+// One reply the terminal emulator (xterm.js) sends on its own, as a strict pattern anchored at the start of the remaining input, and the query it answers.
+// No pattern admits a control character other than the reply's own introducer and terminator.
+const REPLY_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly kind: (match: RegExpExecArray) => QueryKind | "focus" }> = [
+  { pattern: /^\u001b\[\?[0-9]{1,5}(?:;[0-9]{1,5}){0,15}c/u, kind: () => "da1" },
+  { pattern: /^\u001b\[>[0-9]{1,5}(?:;[0-9]{1,5}){0,15}c/u, kind: () => "da2" },
+  { pattern: /^\u001b\[0n/u, kind: () => "status" },
+  { pattern: /^\u001b\[[0-9]{1,5};[0-9]{1,5}R/u, kind: () => "cursor" },
+  { pattern: /^\u001b\[\?[0-9]{1,5};[0-9]{1,5}R/u, kind: () => "cursor-private" },
+  { pattern: /^\u001b\[(\??)([0-9]{1,5});[0-4]\$y/u, kind: (match) => `mode:${match[1]}${match[2]}` },
+  { pattern: /^\u001b\]((?:1[0-2])|(?:4;[0-9]{1,3}));rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}(?:\u0007|\u001b\\)/iu,
+    kind: (match) => `color:${match[1]}` },
+  { pattern: /^\u001b\[[IO]/u, kind: () => "focus" },
+];
+
+// Which emulator replies the terminal's own programs have asked for. Input counts as the user's unless every byte of it is a reply to such a query: a
+// reply shape alone proves nothing, because the user can type or paste it (the line editor still runs any keys inside it).
+class EmulatorReplyLedger {
+  private readonly outstanding = new Map<QueryKind, number>();
+  private focusReports = false;
+
+  // A complete CSI from the program (parameter text, final byte).
+  noteQuery(params: string, final: string): void {
+    if (final === "c" && (params === "" || params === "0")) this.expect("da1");
+    else if (final === "c" && (params === ">" || params === ">0")) this.expect("da2");
+    else if (final === "n" && params === "5") this.expect("status");
+    else if (final === "n" && params === "6") this.expect("cursor");
+    else if (final === "n" && params === "?6") this.expect("cursor-private");
+    else if (final === "p" && /^\??[0-9]{1,5}\$$/u.test(params)) this.expect(`mode:${params.slice(0, -1)}`);
+    else if ((final === "h" || final === "l") && params.startsWith("?") && params.slice(1).split(";").includes("1004")) this.focusReports = final === "h";
+  }
+
+  // A complete OSC body from the program.
+  noteOscQuery(body: string): void {
+    const query = /^((?:1[0-2])|(?:4;[0-9]{1,3}));\?$/u.exec(body);
+    if (query) this.expect(`color:${query[1]}`);
+  }
+
+  // Whether `data` is wholly made of replies to outstanding queries (or focus reports while the program asked for them); consumes those queries only then.
+  isEmulatorReply(data: string): boolean {
+    const consumed = new Map<QueryKind, number>();
+    let rest = data;
+    while (rest.length > 0) {
+      let matched = false;
+      for (const { pattern, kind } of REPLY_PATTERNS) {
+        const match = pattern.exec(rest);
+        if (!match) continue;
+        const answered = kind(match);
+        if (answered === "focus") {
+          if (!this.focusReports) return false;
+        } else {
+          const used = (consumed.get(answered) ?? 0) + 1;
+          if (used > (this.outstanding.get(answered) ?? 0)) return false;
+          consumed.set(answered, used);
+        }
+        rest = rest.slice(match[0].length);
+        matched = true;
+        break;
+      }
+      if (!matched) return false;
+    }
+    for (const [kind, used] of consumed) {
+      const left = (this.outstanding.get(kind) ?? 0) - used;
+      if (left > 0) this.outstanding.set(kind, left);
+      else this.outstanding.delete(kind);
+    }
+    return true;
+  }
+
+  private expect(kind: QueryKind): void {
+    if (!this.outstanding.has(kind) && this.outstanding.size >= MAX_OUTSTANDING_QUERIES) {
+      const oldest = this.outstanding.keys().next().value;
+      if (oldest !== undefined) this.outstanding.delete(oldest);
+    }
+    this.outstanding.set(kind, Math.min(MAX_OUTSTANDING_QUERIES, (this.outstanding.get(kind) ?? 0) + 1));
+  }
+}
 
 // Turns one terminal's output (and, for the fallback, its typed input) into blocks. One tracker per PTY session.
 export class TerminalBlockTracker {
   // Where the escape-sequence parser stands between chunks.
   private esc: EscapeState = { state: "text" };
+  // Queries the terminal's programs sent, which the emulator may answer through the input path.
+  private readonly replies = new EmulatorReplyLedger();
   // Display text of the chunk being parsed (see {@link recordOutput}).
   private display = "";
   private phase: Phase = "idle";
@@ -416,7 +498,7 @@ export class TerminalBlockTracker {
         if (ch === "\u009b" || ch === "\u009c") {
           if (esc.state === "esc") this.display += "\u001b";
           this.display += ch;
-          this.esc = ch === "\u009b" ? { state: "csi" } : { state: "text" };
+          this.esc = ch === "\u009b" ? { state: "csi", params: "" } : { state: "text" };
           continue;
         }
       }
@@ -435,7 +517,7 @@ export class TerminalBlockTracker {
           if (ch === "P" || ch === "_" || ch === "^" || ch === "X") {
             this.esc = { state: "string", osc: false, introducer: `\u001b${ch}`, payload: "", overflow: false, hidden: false, sawEsc: false };
           } else if (ch === "[") {
-            this.esc = { state: "csi" };
+            this.esc = { state: "csi", params: "" };
           } else if (ch === "(" || ch === ")" || ch === "*" || ch === "+" || ch === "#" || ch === "%") {
             this.esc = { state: "charset" };
           } else {
@@ -445,7 +527,12 @@ export class TerminalBlockTracker {
         case "csi": {
           this.display += ch;
           const code = ch.charCodeAt(0);
-          if (code >= 0x40 && code <= 0x7e) this.esc = { state: "text" };
+          if (code >= 0x40 && code <= 0x7e) {
+            this.replies.noteQuery(esc.params, ch);
+            this.esc = { state: "text" };
+          } else if (esc.params.length < MAX_QUERY_PARAMS_CHARS) {
+            esc.params += ch;
+          }
           break;
         }
         case "charset":
@@ -511,9 +598,10 @@ export class TerminalBlockTracker {
     }
   }
 
-  // Track actual input timing but exclude emulator replies; markerless Enter input splits heuristic blocks.
+  // Every write counts as the user's input unless it is wholly the emulator's reply to queries the terminal's programs sent; markerless Enter input splits
+  // heuristic blocks.
   recordInput(data: string): void {
-    if (!TERMINAL_REPLY.test(data)) {
+    if (!this.replies.isEmulatorReply(data)) {
       this.currentEditLineReport = null;
       this.userInputs++;
       this.lastInputAt = this.now();
@@ -567,6 +655,7 @@ export class TerminalBlockTracker {
 
   // Apply one complete OSC. Returns the marker letter when it was an authenticated OSC 133 marker, else null (the sequence is ordinary output).
   private handleOsc(body: string, flush: () => void): string | null {
+    this.replies.noteOscQuery(body);
     if (!body.startsWith("133;")) return null;
     const fields = body.slice(4).split(";");
     if (fields[0] === "B") return this.handlePromptEnd(fields, flush);

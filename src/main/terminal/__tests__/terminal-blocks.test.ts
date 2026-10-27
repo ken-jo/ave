@@ -498,7 +498,8 @@ describe("authenticated editor-buffer reports", () => {
       expect(tracker.editLineReportGeneration()).toBe(1);
     }
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    tracker.recordOutput(prompt() + report("old"));
+    // A focus report the shell asked for is the emulator's, not an edit.
+    tracker.recordOutput("\u001b[?1004h" + prompt() + report("old"));
     tracker.recordInput("\u001b[I");
     expect(tracker.editLineReport()).toEqual({ generation: 1, line: "old" });
     tracker.recordOutput(prompt() + report("new"));
@@ -718,20 +719,48 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(tracker.promptState()).toBe("ready");
   });
 
-  it("does not count the terminal emulator's own replies (focus, device and cursor reports) as the user typing", () => {
+  it("does not count the emulator's replies to its programs' own queries (device, status, cursor, mode, colour, focus) as the user typing", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => 10_000 });
     tracker.recordOutput(prompt());
-    for (const reply of ["\u001b[I", "\u001b[O", "\u001b[?62;22c", "\u001b[>0;276;0c", "\u001b[0n", "\u001b[12;40R", "\u001b]11;rgb:0000/0000/0000\u0007", "\u001b[I\u001b[O"]) {
+    const exchanges: Array<[query: string, reply: string]> = [
+      ["\u001b[c", "\u001b[?1;2c"], ["\u001b[0c", "\u001b[?6c"], ["\u001b[>c", "\u001b[>0;276;0c"], ["\u001b[5n", "\u001b[0n"],
+      ["\u001b[6n", "\u001b[12;40R"], ["\u001b[?6n", "\u001b[?12;40R"], ["\u001b[?2004$p", "\u001b[?2004;1$y"],
+      ["\u001b]11;?\u0007", "\u001b]11;rgb:0000/0000/0000\u001b\\"], ["\u001b]4;1;?\u001b\\", "\u001b]4;1;rgb:cdcd/0000/0000\u0007"],
+      ["\u001b[?1004h", "\u001b[I"], ["", "\u001b[O\u001b[I"],
+      // Two queries answered in one write.
+      ["\u001b[c\u001b[6n", "\u001b[?1;2c\u001b[3;1R"],
+    ];
+    for (const [query, reply] of exchanges) {
+      tracker.recordOutput(query);
       tracker.recordInput(reply);
+      expect(tracker.userInputGeneration(), JSON.stringify(reply)).toBe(0);
       expect(tracker.promptState()).toBe("ready");
     }
-    // A key that is not a report still counts: an arrow, a letter, a reply followed by typing.
-    for (const key of ["\u001b[A", "x", "\u001b[Ix"]) {
-      const fresh = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => 10_000 });
-      fresh.recordOutput(prompt());
-      fresh.recordInput(key);
-      expect(fresh.promptState()).toBe("pending-input");
-    }
+  });
+
+  it.each([
+    // A reply shape with nothing asked for it, or asked for once and answered twice.
+    { name: "unsolicited device report", query: "", input: "\u001b[?1;2c" },
+    { name: "second answer to one query", query: "\u001b[5n", input: "\u001b[0n\u001b[0n" },
+    { name: "focus report while focus reporting is off", query: "\u001b[?1004h\u001b[?1004l", input: "\u001b[I" },
+    { name: "colour reply to a different colour query", query: "\u001b]10;?\u0007", input: "\u001b]11;rgb:0000/0000/0000\u0007" },
+    // Keys around or inside a reply: the line editor runs them.
+    { name: "OSC-shaped write carrying a command line", query: "\u001b]1;?\u0007",
+      input: "\u001b]1;x\rprintf 'RAN_%s\\n' HIDDEN\r\u0007" },
+    { name: "OSC-shaped write with no query", query: "", input: "\u001b]1;x\rprintf 'RAN_%s\\n' HIDDEN\r\u0007" },
+    { name: "colour reply carrying a newline", query: "\u001b]11;?\u0007", input: "\u001b]11;rgb:0000/0000/0000\n\u0007" },
+    { name: "solicited reply followed by a key", query: "\u001b[c", input: "\u001b[?1;2cx" },
+    { name: "DCS-shaped write", query: "", input: "\u001bP1$r0m\u001b\\" },
+    { name: "arrow key", query: "", input: "\u001b[A" },
+    { name: "a letter", query: "", input: "x" },
+  ])("counts $name as the user's input", ({ query, input }) => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => 10_000 });
+    tracker.recordOutput(prompt());
+    if (query) tracker.recordOutput(query);
+    tracker.recordInput(input);
+    expect(tracker.userInputGeneration()).toBe(1);
+    expect(tracker.typedSincePromptEnd()).toBe(true);
+    expect(tracker.promptState()).toBe("pending-input");
   });
 
   it("never hands the marker nonce out in a block's command or output", () => {

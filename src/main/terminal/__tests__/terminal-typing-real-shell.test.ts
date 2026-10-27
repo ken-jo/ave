@@ -370,6 +370,13 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       } finally { gate.close(); }
     }, 30_000);
 
+    it("counts an OSC-shaped write as the user's input, because the line editor runs the keys inside it", async () => {
+      const shell = await startShell(path!);
+      shell.press("\u001b]1;x\rprintf 'RAN_%s\\n' HIDDEN\r\u0007");
+      await until(() => shell.output().includes("RAN_HIDDEN"));
+      expect(shell.tracker.userInputGeneration()).toBeGreaterThan(0);
+    }, 30_000);
+
     it("refuses to press Enter while an orphaned background job still holds the terminal", async () => {
       const shell = await startShell(path!);
       const gate = createGate(shell.home, "release-orphan");

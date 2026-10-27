@@ -1,6 +1,6 @@
 // Measured sandbox chain: nested bwrap → bash/socat → apply-seccomp → script → interactive shell.
 import { describe, expect, it } from "vitest";
-import { findSandboxedShell, parseInnermostNsPid, parseProcStat, type ProcEntry } from "../shell-process.js";
+import { findSandboxedShell, parseInnermostNsPid, parseProcStat, sandboxTerminalHolders, type OpenFileIdentity, type ProcEntry } from "../shell-process.js";
 
 function entry(pid: number, ppid: number, command: string, extra: Partial<ProcEntry> = {}): ProcEntry {
   return { pid, ppid, command, pgrp: pid, session: pid, ttyNr: 0, tpgid: -1, ...extra };
@@ -121,5 +121,35 @@ describe("/proc parsing", () => {
     expect(parseInnermostNsPid("Name:\tzsh\nPid:\t547\nNSpid:\t547\t7\t2\nNSpgid:\t547\t7\t2\n")).toBe(2);
     expect(parseInnermostNsPid("Name:\tzsh\nNSpid:\t547\n")).toBe(547);
     expect(parseInnermostNsPid("Name:\tzsh\n")).toBeNull();
+  });
+});
+
+describe("sandboxTerminalHolders", () => {
+  const TERMINAL: OpenFileIdentity = { dev: 22n, rdev: 34816n, characterDevice: true };
+  const OTHER: OpenFileIdentity = { dev: 22n, rdev: 34817n, characterDevice: true };
+  const FILE: OpenFileIdentity = { dev: 22n, rdev: 34816n, characterDevice: false };
+  const EXEMPT = new Set([546, 547]);
+  // A detached process (setsid) reparented inside the sandbox, a peer outside it, and the exempt relay and shell holding the terminal.
+  const detached = entry(700, 540, "python3");
+  const outside = entry(800, 1, "gpg-agent");
+  const snapshot_ = snapshot(...MEASURED, detached, outside);
+
+  it("finds a sandbox process holding the shell's terminal open, only among the sandbox's own processes", async () => {
+    const read = async (pid: number) => pid === 700 || pid === 546 || pid === 547 || pid === 800 ? [OTHER, TERMINAL] : [FILE, OTHER];
+    const found = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, read);
+    expect(found).toEqual({ holders: [detached], unreadable: null });
+  });
+
+  it("does not count a regular file or another terminal with the same numbers", async () => {
+    const found = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async () => [FILE, OTHER]);
+    expect(found).toEqual({ holders: [], unreadable: null });
+  });
+
+  it("skips a process that exited while it was read, and refuses one whose open files cannot be read", async () => {
+    expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 700 ? "gone" : [])).toEqual({ holders: [], unreadable: null });
+    const denied = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 700 ? "denied" : []);
+    expect(denied.unreadable).toContain("pid 700");
+    // Outside the sandbox nothing is read, so an unreadable host process does not refuse.
+    expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 800 ? "denied" : [])).toEqual({ holders: [], unreadable: null });
   });
 });

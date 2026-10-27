@@ -221,7 +221,19 @@ its own, such as an orphaned background job whose parent exited. On macOS the
 last check before Enter also refuses any other process holding the terminal
 device open, such as one that left the session with `setsid`. The sandboxed
 Linux shell is checked through its sandbox process tree and terminal session.
+That tree check already refuses an orphan, because the sandbox's init must have
+exactly one child. As a second check, the last check before Enter refuses any
+other sandbox process (outside the shell and its pty relay) that holds the
+shell's terminal open, matched by device identity through `/proc/<pid>/fd`.
+An unreadable descriptor table also refuses.
 Otherwise `terminal_run` refuses with `shell-busy` and nothing is typed.
+Every write that reaches the terminal from its view counts as user input.
+The one exemption is a write made entirely of the emulator's replies to queries
+the terminal's own programs sent in their output: device attributes, status,
+cursor position, mode reports, colour queries, and focus reports while focus
+reporting is on. Each reply answers one outstanding query and must match that
+reply's exact form. A reply shape alone proves nothing, because the user can
+type or paste one, and the line editor runs any keys inside it.
 Second, once the user has typed into an Agent-lane terminal incarnation, a
 process they started may have left the terminal while keeping its egress
 credentials, or may later reopen the terminal by path; no process-table

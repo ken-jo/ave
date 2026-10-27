@@ -22,8 +22,8 @@ export type TerminalForegroundReading =
   | { readonly ok: false; readonly reason: string; readonly busy?: true };
 
 export interface TerminalForegroundOptions {
-  // macOS: also require that no other process holds the terminal's device open (lsof); slower, so callers ask for it only at the last check before Enter.
-  // An agent terminal on Linux is sandboxed and checked through its sandbox's process tree instead ({@link readSandboxedShell}).
+  // Also require that no other process holds the terminal's device open: lsof on macOS, the sandbox's open files on Linux
+  // ({@link readSandboxedShell}). Slower, so callers ask for it only at the last check before Enter.
   readonly exclusive?: boolean;
 }
 
@@ -246,6 +246,9 @@ interface SandboxedShell {
   readonly foreground: { readonly pgid: number; readonly command: string | null };
   // Shell children or other processes sharing its terminal session or foreground group.
   readonly children: readonly { readonly pid: number; readonly command: string }[];
+  // With `exclusive`: other processes in the sandbox that hold the shell's terminal open, or why that could not be read.
+  readonly holders: readonly { readonly pid: number; readonly command: string }[];
+  readonly holdersUnreadable: string | null;
   // The shell's working directory as the link names it (for messages; not compared).
   readonly cwd: string;
   // Whether the shell's working directory is the very directory the reported path names on the host: same device and inode. False when that path does not
@@ -273,8 +276,76 @@ async function directoryIdentity(path: string): Promise<FileIdentity | null> {
   }
 }
 
+// One open file's identity, as stat reports it through /proc/<pid>/fd.
+export interface OpenFileIdentity {
+  readonly dev: bigint;
+  readonly rdev: bigint;
+  readonly characterDevice: boolean;
+}
+
+// Every process in the sandbox (descendants of `ptyPid`) other than `exempt` that holds the terminal `terminal` open. A process that exits while it is read is
+// left out; one whose descriptors cannot be read makes the whole answer unreadable (refused, never assumed clean).
+export async function sandboxTerminalHolders(
+  snapshot: ReadonlyMap<number, ProcEntry>,
+  ptyPid: number,
+  exempt: ReadonlySet<number>,
+  terminal: OpenFileIdentity,
+  openFiles: (pid: number) => Promise<readonly OpenFileIdentity[] | "gone" | "denied">,
+): Promise<{ readonly holders: ProcEntry[]; readonly unreadable: string | null }> {
+  const inside = new Set<number>([ptyPid]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const entry of snapshot.values()) {
+      if (!inside.has(entry.pid) && inside.has(entry.ppid)) { inside.add(entry.pid); grew = true; }
+    }
+  }
+  const holders: ProcEntry[] = [];
+  for (const pid of inside) {
+    if (exempt.has(pid)) continue;
+    const files = await openFiles(pid);
+    if (files === "gone") continue;
+    if (files === "denied") return { holders, unreadable: `the open files of ${JSON.stringify(snapshot.get(pid)?.command ?? "unknown")} (pid ${pid}) could not be read` };
+    if (files.some((file) => file.characterDevice && file.dev === terminal.dev && file.rdev === terminal.rdev)) holders.push(snapshot.get(pid)!);
+  }
+  return { holders, unreadable: null };
+}
+
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
+async function openFileIdentity(path: string): Promise<OpenFileIdentity> {
+  const entry = await stat(path, { bigint: true });
+  return { dev: entry.dev, rdev: entry.rdev, characterDevice: entry.isCharacterDevice() };
+}
+
+async function procOpenFiles(pid: number): Promise<readonly OpenFileIdentity[] | "gone" | "denied"> {
+  let fds: string[];
+  try {
+    fds = await readdir(`/proc/${pid}/fd`);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "ESRCH") return "gone";
+    if (code === "EACCES" || code === "EPERM") return "denied";
+    throw error;
+  }
+  const files: OpenFileIdentity[] = [];
+  for (const fd of fds) {
+    try {
+      files.push(await openFileIdentity(`/proc/${pid}/fd/${fd}`));
+    } catch (error) {
+      const code = errorCode(error);
+      // A descriptor closed while it was read; anything else (a denied one) is not proof it is not the terminal.
+      if (code === "ENOENT" || code === "ESRCH") continue;
+      if (code === "EACCES" || code === "EPERM") return "denied";
+      throw error;
+    }
+  }
+  return files;
+}
+
 // Compare reported cwd by device/inode because sandbox mounts can reuse host path names; unreadable process state returns refusal.
-export async function readSandboxedShell(ptyPid: number, shellName: string, reportedCwd: string): Promise<SandboxedShellReading> {
+export async function readSandboxedShell(ptyPid: number, shellName: string, reportedCwd: string, options: TerminalForegroundOptions = {}): Promise<SandboxedShellReading> {
   try {
     const snapshot = await readProcSnapshot();
     const chain = findSandboxedShell(snapshot, ptyPid, shellName);
@@ -288,6 +359,14 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
       readlink(`/proc/${shell.pid}/cwd`),
     ]);
     if (actual === null) return { ok: false, reason: "the operating system did not report the shell's directory" };
+    // A process that left the shell's session can still hold its terminal open. The shell's standard input is its terminal.
+    let holders: { readonly holders: ProcEntry[]; readonly unreadable: string | null } = { holders: [], unreadable: null };
+    if (options.exclusive) {
+      const terminal = await openFileIdentity(`/proc/${shell.pid}/fd/0`);
+      holders = terminal.characterDevice
+        ? await sandboxTerminalHolders(snapshot, ptyPid, new Set([shell.pid, ...chain.relay.map((relay) => relay.pid)]), terminal, procOpenFiles)
+        : { holders: [], unreadable: "the shell's input is not a terminal" };
+    }
     // The shell must still be the process the snapshot found (same parent, same program) once everything about it has been read.
     const after = parseProcStat(shell.pid, await readFile(`/proc/${shell.pid}/stat`, "utf-8"));
     if (after.ppid !== shell.ppid || after.command !== shell.command || after.tpgid !== shell.tpgid) {
@@ -301,6 +380,8 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
         command: shell.command,
         foreground: { pgid: shell.tpgid, command: snapshot.get(shell.tpgid)?.command ?? null },
         children: chain.busyProcesses.map(({ pid, command }) => ({ pid, command })),
+        holders: holders.holders.map(({ pid, command }) => ({ pid, command })),
+        holdersUnreadable: holders.unreadable,
         cwd,
         cwdIsReported: reported !== null && sameFileIdentity(reported, actual),
       },

@@ -197,11 +197,12 @@ let foregroundReading: import("../shell-process.js").TerminalForegroundReading =
 const readForegroundMock = vi.fn(async (_ptyPid: number, _options?: import("../shell-process.js").TerminalForegroundOptions) => foregroundReading);
 /** Linux: what the operating system reports about the sandboxed shell. */
 let sandboxedShellReading: import("../shell-process.js").SandboxedShellReading = { ok: false, reason: "not set" };
-const readSandboxedShellMock = vi.fn(async (_ptyPid: number, _shellName: string, _reportedCwd: string) => sandboxedShellReading);
+const readSandboxedShellMock = vi.fn(async (_ptyPid: number, _shellName: string, _reportedCwd: string, _options?: import("../shell-process.js").TerminalForegroundOptions) => sandboxedShellReading);
 const forwardResizeMock = vi.fn(async (_ptyPid: number, _shellName: string) => true);
 vi.mock("../shell-process.js", () => ({
   readTerminalForeground: (ptyPid: number, options?: import("../shell-process.js").TerminalForegroundOptions) => readForegroundMock(ptyPid, options),
-  readSandboxedShell: (ptyPid: number, shellName: string, reportedCwd: string) => readSandboxedShellMock(ptyPid, shellName, reportedCwd),
+  readSandboxedShell: (ptyPid: number, shellName: string, reportedCwd: string, options?: import("../shell-process.js").TerminalForegroundOptions) =>
+    readSandboxedShellMock(ptyPid, shellName, reportedCwd, options),
   forwardResizeToSandboxedPtyRelay: (ptyPid: number, shellName: string) => forwardResizeMock(ptyPid, shellName),
 }));
 
@@ -1236,12 +1237,13 @@ describe("pty-manager typing an approved agent command", () => {
     expect(lease.finish).not.toHaveBeenCalled();
   });
 
-  it("keeps terminal emulator replies outside human-input revocation", async () => {
+  it("keeps the emulator's reply to the agent command's own query outside human-input revocation", async () => {
     const { lease } = observationSink();
     const { pty, mark, prompt } = await zshTerminal(3);
     pty.emitData(prompt());
     await agentType();
-    pty.emitData(mark("C;cmdline_url=echo%20approved"));
+    // The agent's command asks for the device attributes; xterm.js answers through the input path.
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}\u001b[c`);
     expect(writeTerminal(TAB, "\u001b[?1;2c")).toEqual({ ok: true });
     pty.emitData(`continued\n${mark("D;0")}`);
     expect(lease.revoke).not.toHaveBeenCalled();
@@ -1397,6 +1399,52 @@ describe("pty-manager typing an approved agent command", () => {
       // The agent's command, exit code and duration are still its own.
       expect(lease.finish).toHaveBeenCalledExactlyOnceWith(0, undefined);
     } finally { vi.useRealTimers(); }
+  });
+
+  const OSC_WRAPPED_USER_JOB = "\u001b]1;x\rsh -c '(sleep 15; printf \"USER_PRIVATE\\n\") &'\r\u0007";
+
+  it("treats a reply-shaped write that carries keys as user input, so the next agent command is withheld", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { start, lease } = observationSink();
+      const { pty, mark, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // A paste without bracketed paste mode: the line editor runs the command inside the OSC-shaped bytes.
+      expect(writeTerminal(TAB, OSC_WRAPPED_USER_JOB)).toEqual({ ok: true });
+      expect(getTerminalBlockTracker(TAB)!.userInputGeneration()).toBe(1);
+      // Typing refuses while the key is fresh.
+      await expect(agentType("sleep 20")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      expect(start).not.toHaveBeenCalled();
+      pty.emitData(`${mark("C;cmdline_url=sh")}${prompt()}`);
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
+      const respond = pty.respond;
+      pty.respond = (data) => {
+        respond?.(data);
+        if (data === "\r") pty.emitData(`${mark("C;cmdline_url=sleep%2020")}USER_PRIVATE\n`);
+      };
+      await expect(agentType("sleep 20")).resolves.toMatchObject({ ok: true });
+      expect(start).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({ command: "sleep 20", outputAvailability: "withheld-user-input" }));
+      pty.emitData(`more USER_PRIVATE\n${mark("D;0")}`);
+      expect(lease.write).not.toHaveBeenCalled();
+      expect(lease.bindEgress).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("revokes a running agent block when a reply-shaped write carries keys", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    // The command even asked for an OSC reply: a solicited shape still cannot carry keys.
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}agent output\n\u001b]1;?\u0007`);
+    pty.respond = () => {
+      expect(lease.revoke).toHaveBeenCalledTimes(1);
+      pty.emitData("USER_PRIVATE\n");
+    };
+    expect(writeTerminal(TAB, OSC_WRAPPED_USER_JOB)).toEqual({ ok: true });
+    pty.emitData(`${mark("D;0")}`);
+    expect(lease.write.mock.calls.map(([text]) => text).join("")).toBe("agent output\n");
+    expect(lease.finish).not.toHaveBeenCalled();
   });
 
   it("observes a pristine agent terminal with output and session egress", async () => {
@@ -2137,6 +2185,8 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
       children: [],
       cwd: "/w",
       cwdIsReported: true,
+      holders: [],
+      holdersUnreadable: null,
       ...overrides,
     },
   });
@@ -2254,7 +2304,7 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
     const { pty, prompt } = await linuxZsh();
     pty.emitData(prompt());
     await expect(verifyTerminalShell(LINUX_TAB, 3, "/w")).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch("/w") });
-    expect(readSandboxedShellMock).toHaveBeenCalledWith(9999, "zsh", "/w");
+    expect(readSandboxedShellMock).toHaveBeenCalledWith(9999, "zsh", "/w", {});
     expect(readForegroundMock).not.toHaveBeenCalled();
     // A prompt that reported another pid is not this shell's.
     pty.emitData(`\r\n${prompt("7")}`);
@@ -2279,6 +2329,9 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
     pty.emitData(prompt());
     await expect(typeTerminalCommand(LINUX_TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
     expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, "\u001b[200~ls -la\u001b[201~", TERMINAL_EDIT_LINE_QUERY, "\r"]);
+    // The last check before Enter also asks that nothing else in the sandbox holds the terminal open.
+    expect(readSandboxedShellMock).toHaveBeenLastCalledWith(9999, "zsh", "/w", { exclusive: true });
+    expect(readSandboxedShellMock.mock.calls.filter(([, , , options]) => options?.exclusive)).toHaveLength(1);
   });
 
   it("judges a reading: the reporting shell, in the foreground, idle, in the very directory", () => {
@@ -2296,6 +2349,13 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
       ok: false,
       reason: "shell-busy",
       message: expect.stringContaining('"sleep"'),
+    });
+    // A process in the sandbox that left the shell's session but still holds its terminal open, or one whose open files cannot be read.
+    expect(sandboxedShellVerdict(shellReading({ holders: [{ pid: 5002, command: "python3" }] }), "/w", 3)).toMatchObject({
+      ok: false, reason: "shell-busy", message: expect.stringContaining('"python3" pid 5002'),
+    });
+    expect(sandboxedShellVerdict(shellReading({ holdersUnreadable: "the open files of \"x\" (pid 5003) could not be read" }), "/w", 3)).toMatchObject({
+      ok: false, reason: "shell-busy", message: expect.stringContaining("pid 5003"),
     });
     // A directory only the sandbox has, at a path the host also has.
     expect(sandboxedShellVerdict(shellReading({ cwdIsReported: false }), "/w", 3)).toMatchObject({ ok: false, reason: "cwd-mismatch" });
