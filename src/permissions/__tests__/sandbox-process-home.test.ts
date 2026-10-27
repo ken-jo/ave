@@ -149,6 +149,41 @@ describe("createSandboxProcessHome", () => {
     );
   });
 
+  it("settles cleanup and reports a journal finish that throws synchronously", async () => {
+    const failure = new Error("journal finish failed");
+    const order: string[] = [];
+    const leases: Array<{ finish(): Promise<void> }> = [];
+    const sink: AgentObservationSink = {
+      openJournal: vi.fn(() => {
+        const lease = { poll: () => {}, finish: (): Promise<void> => { order.push("finish"); throw failure; }, dispose: () => {} };
+        leases.push(lease);
+        return lease;
+      }),
+      beforeMutation: async () => async () => {},
+      // Mirrors DocumentObservationRuntime: the owner re-calls each lease's finish.
+      finishInvocation: async () => { for (const lease of leases) await lease.finish(); },
+      revokeInvocation: () => {},
+      finishTurn: () => {},
+    };
+    setAgentObservationSink(sink);
+    let homePath = "";
+    let cleanupThrew: unknown;
+    const invocation = runWithAgentObservationTurn({ sessionId: "home-session", turnId: "home-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: "home-session", toolUseId: "home-tool" }, async () => {
+        const home = createSandboxProcessHome(process.platform, (path, options) => {
+          order.push("remove");
+          rmSync(path, options);
+        });
+        homePath = home.path;
+        try { home.cleanup(); } catch (error) { cleanupThrew = error; }
+      }),
+    );
+    await expect(invocation).rejects.toBe(failure);
+    expect(cleanupThrew).toBeUndefined();
+    expect(order).toEqual(["finish", "remove", "finish"]);
+    expect(existsSync(homePath)).toBe(false);
+  });
+
   it("removes a newly created HOME when observation admission fails", async () => {
     const originalHomes = [...sandboxProcessHomesInUse()];
     const createdHomes: string[] = [];

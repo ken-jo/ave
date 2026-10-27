@@ -13,6 +13,8 @@ import { cyclicWorkbook } from "../../../__tests__/support/table-document-fixtur
 import * as documentInput from "../../../tools/preview-document-input.js";
 import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
 import * as managedChildren from "../../../main/managed-child-processes.js";
+import * as allowedDirectories from "../../../permissions/allowed-directories.js";
+import * as fileReadCore from "../../../tools/file-read-core.js";
 import { validateHostRendererSender } from "../../gated.js";
 import { setSessionContentsLookup } from "../../../main/app-state.js";
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
@@ -523,18 +525,30 @@ describe("read-only observation sender boundary", () => {
   });
 
   it("keeps at most sixteen frame-bound preview opener receipts", async () => {
-    const event = documentEvent(OK_FRAME);
-    const results: PreviewReadFileResult[] = [];
-    for (let index = 0; index < 17; index += 1) {
-      const path = join(root, `preview-open-${index}.ts`);
-      writeFileSync(path, "const value = 1;");
-      results.push(await handlers.get(CHANNELS.preview.readFile)!(event, path) as PreviewReadFileResult);
-    }
-    expect(results.every((result) => result.ok)).toBe(true);
-    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[0].path)).toEqual({ ok: false, error: "path_not_authorized" });
-    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[16].path)).toEqual({ ok: true });
-    expect(openPath).toHaveBeenCalledExactlyOnceWith(results[16].path);
-    event.sender.emit("destroyed");
+    // Only the receipt watch is faked, so a single tick can be counted.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const event = documentEvent(OK_FRAME);
+      const results: PreviewReadFileResult[] = [];
+      for (let index = 0; index < 17; index += 1) {
+        const path = join(root, `preview-open-${index}.ts`);
+        writeFileSync(path, "const value = 1;");
+        results.push(await handlers.get(CHANNELS.preview.readFile)!(event, path) as PreviewReadFileResult);
+      }
+      expect(results.every((result) => result.ok)).toBe(true);
+      const scopes = vi.spyOn(allowedDirectories, "buildRuntimeAllowedDirectories");
+      const checks = vi.spyOn(fileReadCore, "assertReadableFilePath");
+      vi.advanceTimersByTime(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
+      // A tick rechecks each live receipt against one scope snapshot, not one per receipt.
+      expect(checks).toHaveBeenCalledTimes(16);
+      expect(scopes).toHaveBeenCalledTimes(1);
+      scopes.mockRestore();
+      checks.mockRestore();
+      expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[0].path)).toEqual({ ok: false, error: "path_not_authorized" });
+      expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[16].path)).toEqual({ ok: true });
+      expect(openPath).toHaveBeenCalledExactlyOnceWith(results[16].path);
+      event.sender.emit("destroyed");
+    } finally { vi.useRealTimers(); }
   });
 
   it.each(["latest-first", "stale-first"])("keeps the latest text baseline alive across overlapping reloads (%s)", async (order) => {

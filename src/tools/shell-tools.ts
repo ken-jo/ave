@@ -2307,6 +2307,43 @@ async function annotateSandboxCommandResult(
   };
 }
 
+// Every step runs in order even after an earlier one throws or rejects.
+// Only a returned promise is awaited, so leading sync steps stay synchronous.
+async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>): Promise<string[]> {
+  const failures: string[] = [];
+  for (const step of steps) {
+    try {
+      const pending = step();
+      if (pending instanceof Promise) await pending;
+    } catch (err) { failures.push(errorMessage(err)); }
+  }
+  return failures;
+}
+
+// Release failures make the result an error, like an ASRT cleanup failure.
+function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly string[]): T {
+  if (failures.length === 0) return result;
+  return {
+    ...result,
+    output: `${result.output}\nShell resource release failed: ${failures.join("; ")}`,
+    isError: true,
+    metadata: { ...result.metadata, sandboxCleanupFailed: true },
+  };
+}
+
+// For a release that runs after the result has already settled.
+function logReleaseFailures(label: string, failures: readonly string[]): void {
+  if (failures.length > 0) shellTaskLog.error({ label, failures }, "shell resource release failed after the result settled");
+}
+
+// A fault inside finalization still settles the spawn, as an error result.
+function finalizationFault(label: string, settle: (result: SpawnResult) => void, prefix = ""): (err: unknown) => void {
+  return (err) => {
+    shellTaskLog.error({ label, err: errorMessage(err) }, "shell finalization failed");
+    settle({ output: `${prefix}spawn failed: ${errorMessage(err)}`, isError: true, metadata: {} });
+  };
+}
+
 export async function spawnWithSandbox(
   command: string,
   resolvedCwd: string,
@@ -2353,32 +2390,29 @@ export async function spawnWithSandbox(
       binShell,
     });
   } catch (err) {
-    egress.release();
-    return {
+    return withReleaseFailures({
       output: `spawn failed: ${(err as Error).message}`,
       isError: true,
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
+    }, await runReleaseSteps([() => egress.release()]));
   }
 
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
-    void cleanupAsrtSandboxAfterCommand();
-    egress.release();
+    const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
     const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-    return { output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } };
+    return withReleaseFailures({ output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } }, released);
   }
   if (cmd === undefined) {
-    void cleanupAsrtSandboxAfterCommand();
-    egress.release();
+    const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
     const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "spawn failed: ASRT returned an empty argv", command, true);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-    return {
+    return withReleaseFailures({
       output: annotated.output,
       isError: true,
       metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
+    }, released);
   }
 
   // Per-platform env: on win32 ASRT returns a REAL env carrying the proxy
@@ -2411,16 +2445,16 @@ export async function spawnWithSandbox(
       });
     } catch (err) {
       observation?.finish(null, "failed");
-      void cleanupAsrtSandboxAfterCommand();
-      egress.release();
-      void annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true).then(annotated => {
+      void (async () => {
+        const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true);
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: annotated.output,
           isError: true,
           metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        });
-      });
+        }, released));
+      })().catch(finalizationFault("tool:bash:asrt", resolveResult));
       return;
     }
     const closed = checkedShellClose(child, waitForClose);
@@ -2442,23 +2476,23 @@ export async function spawnWithSandbox(
     let settled = false;
 
     let lifecycleCleaned = false;
-    const cleanupAfterTermination = (): void => {
-      if (lifecycleCleaned) return;
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return;
+    const cleanupAfterTermination = async (): Promise<string[]> => {
+      if (lifecycleCleaned) return [];
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
-      void cleanupAsrtSandboxAfterCommand();
-      egress.release();
-      cleanupPreparedAfterTermination();
-      egress.release();
+      return await runReleaseSteps([() => egress.release(), cleanupPreparedAfterTermination, () => cleanupAsrtSandboxAfterCommand()]);
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
       if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
-      cleanupAfterTermination();
+      const released = await cleanupAfterTermination();
       lifetime.dispose();
-      if (settled) return;
+      if (settled) {
+        logReleaseFailures("tool:bash:asrt", released);
+        return;
+      }
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
@@ -2467,25 +2501,26 @@ export async function spawnWithSandbox(
       )), command, lifecycleCleaned);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       if (lifetime.timedOut) {
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
-        });
+        }, released));
       } else {
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: formatted,
           isError: lifetime.aborted || code !== 0 || sandboxCleanupFailed,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        });
+        }, released));
       }
     };
+    const fault = finalizationFault("tool:bash:asrt", resolveResult);
 
-    void lifetime.stopped.then(() => finish(child.exitCode));
-    child.once("close", (code, signal) => { void finish(code, signal); });
+    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
+    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
     child.on("error", (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
@@ -2494,16 +2529,16 @@ export async function spawnWithSandbox(
         const artifactMetadata = await outputCollector.finish(true);
         // Node can emit `error` for a failed process operation while the child
         // remains alive. The later `close` event owns ASRT/HOME finalization.
-        cleanupAfterTermination();
+        const released = await cleanupAfterTermination();
         const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: annotated.output,
           isError: true,
           metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        });
-      })();
+        }, released));
+      })().catch(fault);
     });
   });
   } finally { releaseClaim(); }
@@ -2548,10 +2583,12 @@ async function spawnWithTimeout(
     const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
-    child.once("close", () => {
-      if (lifetime.termination) void lifetime.termination.then(cleanupPreparedAfterTermination);
-      else cleanupPreparedAfterTermination();
-    });
+    // Detached from the result, so a failure is logged.
+    const releaseAfterClose = async (): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
+      logReleaseFailures("tool:bash", await runReleaseSteps([cleanupPreparedAfterTermination]));
+    };
+    child.once("close", () => { void releaseAfterClose(); });
     const stopTracking = trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress,
@@ -2639,8 +2676,9 @@ async function spawnWithTimeout(
       }
     };
 
-    void lifetime.stopped.then(() => finish(child.exitCode));
-    child.once("close", (code, signal) => { void finish(code, signal); });
+    const fault = finalizationFault("tool:bash", resolve);
+    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
+    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
     child.on("error", (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
@@ -2656,7 +2694,7 @@ async function spawnWithTimeout(
           isError: true,
           metadata: { ...artifactMetadata },
         });
-      })();
+      })().catch(fault);
     });
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {
@@ -3614,35 +3652,31 @@ async function spawnPowerShellWithSandbox(
       ...(binShell !== undefined ? { binShell } : {}),
     });
   } catch (err) {
-    egress.release();
-    sandboxHome.cleanup();
-    return {
+    return withReleaseFailures({
       output: `PowerShell spawn failed: ${(err as Error).message}`,
       isError: true,
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
+    }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));
   }
 
+  const releaseSandboxResources = (): Promise<string[]> =>
+    runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup(), () => cleanupAsrtSandboxAfterCommand()]);
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
-    void cleanupAsrtSandboxAfterCommand();
-    egress.release();
-    sandboxHome.cleanup();
+    const released = await releaseSandboxResources();
     const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-    return { output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } };
+    return withReleaseFailures({ output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } }, released);
   }
   if (cmd === undefined) {
-    void cleanupAsrtSandboxAfterCommand();
-    egress.release();
-    sandboxHome.cleanup();
+    const released = await releaseSandboxResources();
     const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "PowerShell spawn failed: ASRT returned an empty argv", command, true);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-    return {
+    return withReleaseFailures({
       output: annotated.output,
       isError: true,
       metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
+    }, released);
   }
 
   // Per-platform env: on win32 ASRT returns a REAL env carrying the proxy
@@ -3677,17 +3711,16 @@ async function spawnPowerShellWithSandbox(
       });
     } catch (err) {
       observation?.finish(null, "failed");
-      void cleanupAsrtSandboxAfterCommand();
-      egress.release();
-      sandboxHome.cleanup();
-      void annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true).then(annotated => {
+      void (async () => {
+        const released = await releaseSandboxResources();
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true);
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: annotated.output,
           isError: true,
           metadata: { ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        });
-      });
+        }, released));
+      })().catch(finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell "));
       return;
     }
     const closed = checkedShellClose(child, waitForClose);
@@ -3703,41 +3736,42 @@ async function spawnPowerShellWithSandbox(
     let settled = false;
 
     let lifecycleCleaned = false;
-    const cleanupAfterTermination = (): void => {
-      if (lifecycleCleaned) return;
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return;
+    const cleanupAfterTermination = async (): Promise<string[]> => {
+      if (lifecycleCleaned) return [];
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
-      void cleanupAsrtSandboxAfterCommand();
-      egress.release();
-      sandboxHome.cleanup();
-      egress.release();
+      return await releaseSandboxResources();
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
       if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
-      cleanupAfterTermination();
+      const released = await cleanupAfterTermination();
       lifetime.dispose();
-      if (settled) return;
+      if (settled) {
+        logReleaseFailures("tool:powershell:asrt", released);
+        return;
+      }
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       const { output, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )), command, lifecycleCleaned);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
-      resolveResult({
+      resolveResult(withReleaseFailures({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
           : output,
         isError: lifetime.aborted || lifetime.timedOut || code !== 0 || sandboxCleanupFailed,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
           ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
-      });
+      }, released));
     };
+    const fault = finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell ");
 
-    void lifetime.stopped.then(() => finish(child.exitCode));
-    child.once("close", (code, signal) => { void finish(code, signal); });
+    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
+    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
     child.on("error", (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
@@ -3746,19 +3780,19 @@ async function spawnPowerShellWithSandbox(
         const artifactMetadata = await outputCollector.finish(true);
         // `error` may be a failed operation on a live process. The definitive
         // `close` event retains ASRT/HOME cleanup ownership.
-        cleanupAfterTermination();
+        const released = await cleanupAfterTermination();
         const annotated = await annotateSandboxCommandResult(egress.token, wrapped,
           err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`
             : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: annotated.output,
           isError: true,
           metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        });
-      })();
+        }, released));
+      })().catch(fault);
     });
   });
 }
@@ -3851,20 +3885,18 @@ async function spawnPowerShellInMxc(
       exists: existsSync,
     });
   } catch (err) {
-    egress.release();
-    sandboxHome.cleanup();
-    return {
+    return withReleaseFailures({
       output: `PowerShell spawn failed: ${(err as Error).message}`,
       isError: true,
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
+    }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));
   }
+  const releaseContainerResources = (): Promise<string[]> =>
+    runReleaseSteps([() => sandboxHome.cleanup(), () => launch.release(), () => egress.release()]);
   const [cmd, ...args] = launch.argv;
   if (signal?.aborted || cmd === undefined) {
-    void launch.release();
-    sandboxHome.cleanup();
-    egress.release();
-    return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
+    return withReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } },
+      await releaseContainerResources());
   }
   let observation: AgentTerminalObservationLease | undefined;
   try { observation = parserResponse === undefined ? startShellObservation(command, cwd,
@@ -3888,14 +3920,11 @@ async function spawnPowerShellInMxc(
       });
     } catch (err) {
       observation?.finish(null, "failed");
-      void launch.release();
-      sandboxHome.cleanup();
-      egress.release();
-      resolveResult({
+      void releaseContainerResources().then((released) => resolveResult(withReleaseFailures({
         output: `PowerShell spawn failed: ${(err as Error).message}`,
         isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-      });
+      }, released)));
       return;
     }
     const closed = checkedShellClose(child, waitForClose);
@@ -3909,12 +3938,11 @@ async function spawnPowerShellInMxc(
     let lifecycleCleaned = false;
     // After wxc-exec exits the container is gone, so the listener can close:
     // nothing is left that could reach its port.
-    const cleanupAfterTermination = (): Promise<void> => {
-      if (lifecycleCleaned) return Promise.resolve();
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return Promise.resolve();
+    const cleanupAfterTermination = async (): Promise<string[]> => {
+      if (lifecycleCleaned) return [];
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
-      sandboxHome.cleanup();
-      return launch.release().finally(() => egress.release());
+      return await releaseContainerResources();
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
@@ -3922,28 +3950,35 @@ async function spawnPowerShellInMxc(
       if (closed !== undefined) await closed;
       lifetime.dispose();
       if (settled) {
-        await cleanupAfterTermination();
+        logReleaseFailures("tool:powershell:mxc", await cleanupAfterTermination());
         return;
       }
       settled = true;
-      const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      const metadata = { ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true };
+      let completed: SpawnResult = { output: "", isError: true, metadata };
       // Read the proxy's refusals under this call's token before releasing it.
-      const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
-        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )));
-      await cleanupAfterTermination();
+      // A collector failure still releases the container resources below.
+      const finalized = await runReleaseSteps([async () => {
+        const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+        const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
+          lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+        )));
+        completed = {
+          output: lifetime.timedOut
+            ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
+            : output,
+          isError: lifetime.aborted || lifetime.timedOut || code !== 0,
+          metadata: { ...artifactMetadata, ...metadata },
+        };
+      }]);
+      const released = await cleanupAfterTermination();
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
-      resolveResult({
-        output: lifetime.timedOut
-          ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
-          : output,
-        isError: lifetime.aborted || lifetime.timedOut || code !== 0,
-        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true },
-      });
+      resolveResult(withReleaseFailures(completed, [...finalized, ...released]));
     };
+    const fault = finalizationFault("tool:powershell:mxc", resolveResult, "PowerShell ");
 
-    void lifetime.stopped.then(() => finish(child.exitCode));
-    child.once("close", (code, signal) => { void finish(code, signal); });
+    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
+    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
     child.on("error", (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
@@ -3951,20 +3986,24 @@ async function spawnPowerShellInMxc(
         // listener, the egress token and the sandbox HOME here. A running
         // child keeps its timeout and abort watch, and "close" releases its
         // resources (cleanupAfterTermination's guard waits for the exit).
+        let released: string[] = [];
         if (child.pid === undefined) {
           lifetime.dispose();
-          await cleanupAfterTermination();
+          released = await cleanupAfterTermination();
         }
-        if (settled) return;
+        if (settled) {
+          logReleaseFailures("tool:powershell:mxc", released);
+          return;
+        }
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);
         outputCollector.finishObservation(null, "failed");
-        resolveResult({
+        resolveResult(withReleaseFailures({
           output: `PowerShell spawn failed: ${err.message}`,
           isError: true,
           metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        });
-      })();
+        }, released));
+      })().catch(fault);
     });
   });
 }
@@ -4036,8 +4075,9 @@ async function spawnPowerShell(
       });
     };
 
-    void lifetime.stopped.then(() => finish(child.exitCode));
-    child.once("close", (code, signal) => { void finish(code, signal); });
+    const fault = finalizationFault("tool:powershell", resolve, "PowerShell ");
+    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
+    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
     child.on("error", (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
@@ -4053,7 +4093,7 @@ async function spawnPowerShell(
           isError: true,
           metadata: { ...artifactMetadata },
         });
-      })();
+      })().catch(fault);
     });
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {

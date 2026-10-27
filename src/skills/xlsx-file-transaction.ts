@@ -24,7 +24,7 @@ function stale(): never {
 }
 function checkParent(path: string, location: WorkbookLocation): void {
   try {
-    const parent = fs.realpathSync(dirname(path));
+    const parent = fs.realpathSync.native(dirname(path));
     const identity = fs.lstatSync(parent, { bigint: true });
     if (parent !== location.parent || join(parent, basename(path)) !== location.path || !identity.isDirectory()
       || identity.dev !== location.identity.dev || identity.ino !== location.identity.ino
@@ -39,7 +39,7 @@ function createWorkbookFileSnapshot(path: string, data: Buffer, identity: fs.Big
   requireCondition(Buffer.isBuffer(data) && data.length <= XLSX_EDIT_LIMITS.maxFileBytes
     && BigInt(data.length) === identity.size, "Invalid workbook snapshot size.");
   requireCondition(identity.isFile() && identity.nlink === 1n && parentIdentity.isDirectory(), "Invalid workbook snapshot identity.");
-  const parent = fs.realpathSync(dirname(path));
+  const parent = fs.realpathSync.native(dirname(path));
   const location = { path: join(parent, basename(path)), parent, identity: parentIdentity };
   checkParent(path, location);
   if (!sameIdentity(identity, fs.lstatSync(location.path, { bigint: true }))) stale();
@@ -52,7 +52,7 @@ function createWorkbookFileSnapshot(path: string, data: Buffer, identity: fs.Big
 export function readWorkbookSnapshot(path: string): WorkbookFileSnapshot {
   path = resolve(path);
   requireCondition(extname(path).toLowerCase() === ".xlsx", "Only .xlsx files can be edited.");
-  const parent = fs.realpathSync(dirname(path));
+  const parent = fs.realpathSync.native(dirname(path));
   const location = { path: join(parent, basename(path)), parent, identity: fs.lstatSync(parent, { bigint: true }) };
   requireCondition(location.identity.isDirectory(), "Workbook parent must be a directory.");
   const before = fs.lstatSync(location.path, { bigint: true });

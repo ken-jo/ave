@@ -104,8 +104,10 @@ export function drainAgentObservationHome(homePath: string): void {
   const reader = homeReaders.get(homePath);
   homeReaders.delete(homePath);
   // finish drains the capped journal and closes its reader synchronously before
-  // awaiting reconciliation. The invocation owner still awaits that same result.
-  if (reader) void reader.finish().catch(() => {});
+  // awaiting reconciliation, so it must run before the caller's rmSync. A sync
+  // throw becomes this same handled rejection; the owner's finishInvocation
+  // reports either outcome.
+  if (reader) void new Promise<void>((resolve) => { resolve(reader.finish()); }).catch(() => {});
 }
 
 export async function observeAgentDocumentMutation<T>(effects: readonly ObservedFileEffect[], run: () => Promise<T>): Promise<T> {
