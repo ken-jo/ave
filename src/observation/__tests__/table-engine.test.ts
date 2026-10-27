@@ -38,4 +38,13 @@ describe("table observation engine", () => {
     await expect(createTableObservationEngine().parse(Buffer.from("one"), "text", 1, new AbortController().signal))
       .rejects.toThrow("Invalid observed text selection.");
   });
+
+  it("reuses host parse admission with the engine cancellation signal", async () => {
+    const parse = vi.fn(async () => ({ format: "csv" } as never));
+    const signal = new AbortController().signal;
+    const input = Buffer.from("value");
+    await createTableObservationEngine().parse(input, "csv", 0, signal, { sessionId: "session", parse });
+    expect(parse).toHaveBeenCalledWith(input, "csv", 0, signal);
+    expect(mocks.acquire).not.toHaveBeenCalled();
+  });
 });

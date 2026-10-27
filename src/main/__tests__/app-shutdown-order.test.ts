@@ -3,6 +3,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 const calls: string[] = [];
 const hostExit = vi.fn();
@@ -16,6 +17,7 @@ const stopTailnetObserverServer = vi.fn(async () => { calls.push("stopTailnetObs
 const stopTelegramBridgeServer = vi.fn(async () => { calls.push("stopTelegramBridge"); });
 const stopRemoteA2AReceiverServer = vi.fn(async () => { calls.push("stopRemoteReceiver"); });
 const stopSubscriptionRuntimes = vi.fn(async () => { calls.push("stopSubscriptionRuntimes"); });
+const stopDocumentEngineSessions = vi.fn(async () => { calls.push("stopDocumentEngines"); });
 const runShutdownRoutines = vi.fn(async () => { calls.push("shutdownRoutines"); });
 const forceKillManagedChildProcesses = vi.fn((_reason: string) => {
   calls.push("forceKillManagedChildren");
@@ -65,6 +67,9 @@ vi.mock("../a2a-remote-receiver-server.js", () => ({
 }));
 vi.mock("../subscription-runtime-service.js", () => ({
   stopSubscriptionRuntimes: () => stopSubscriptionRuntimes(),
+}));
+vi.mock("../../observation/libreoffice-engine.js", () => ({
+  stopDocumentEngineSessions: () => stopDocumentEngineSessions(),
 }));
 vi.mock("../global-shortcuts.js", () => ({
   unregisterAllGlobalShortcuts: (...a: unknown[]) => unregisterAllGlobalShortcuts(...a),
@@ -137,6 +142,7 @@ beforeEach(() => {
   brokerShutdownSignal = undefined;
   shutdownCompleted = false;
   vi.clearAllMocks();
+  stopDocumentEngineSessions.mockReset().mockImplementation(async () => { calls.push("stopDocumentEngines"); });
 });
 
 describe("runAppShutdownCleanup ordering (critic M1)", () => {
@@ -153,7 +159,7 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     const host = createBootHostFixture({ close: async () => { calls.push("closeHost"); } });
     expect(await shutdown.runIncompleteBootShutdown(host)).toBe("completed");
     expect(calls).toEqual([
-      "partialWatcher", "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialPluginRuntimeStop", "stopSubscriptionRuntimes",
+      "partialWatcher", "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialPluginRuntimeStop", "stopDocumentEngines", "stopSubscriptionRuntimes",
       "forceKillTerminals", "drainManagedChildren", "closeHost", "closeFileLogSink",
     ]);
     expect(sealManagedChildProcessAdmission).toHaveBeenCalledWith("host bootstrap interrupted or failed");
@@ -254,6 +260,56 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     expect(services.shutdown).toHaveBeenCalledOnce();
   });
 
+  it.each(["normal", "incomplete"] as const)("awaits document engine cleanup before the %s child drain", async (mode) => {
+    const services = makeServices();
+    getServices.mockReturnValue(mode === "normal" ? services : undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const stopped = deferred<void>();
+    stopDocumentEngineSessions.mockImplementationOnce(() => {
+      calls.push("stopDocumentEngines");
+      return stopped.promise;
+    });
+    const cleanup = mode === "normal"
+      ? shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+      : shutdown.runIncompleteBootShutdown();
+    try {
+      await vi.waitFor(() => expect(stopDocumentEngineSessions).toHaveBeenCalledOnce());
+      expect(forceKillAndDrainManagedChildProcesses).not.toHaveBeenCalled();
+      expect(services.shutdown).not.toHaveBeenCalled();
+    } finally {
+      stopped.resolve();
+      await cleanup;
+    }
+    await expect(cleanup).resolves.toBe("completed");
+    expect(calls.indexOf("stopDocumentEngines")).toBeLessThan(calls.indexOf("drainManagedChildren"));
+    expect(forceKillAndDrainManagedChildProcesses).toHaveBeenCalledOnce();
+    if (mode === "normal") expect(calls.indexOf("stopDocumentEngines")).toBeLessThan(calls.indexOf("servicesShutdown"));
+  });
+
+  it.each(["normal", "incomplete"] as const)("reports a document engine cleanup failure during %s shutdown", async (mode) => {
+    const services = makeServices();
+    getServices.mockReturnValue(mode === "normal" ? services : undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    stopDocumentEngineSessions.mockRejectedValueOnce(new Error("Document engine cleanup failed"));
+    const cleanup = mode === "normal"
+      ? shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+      : shutdown.runIncompleteBootShutdown();
+    await expect(cleanup).resolves.toBe("failed");
+    expect(stopDocumentEngineSessions).toHaveBeenCalledOnce();
+    expect(forceKillManagedChildProcesses).toHaveBeenCalledOnce();
+    expect(calls.at(-1)).toBe("closeFileLogSink");
+    if (mode === "normal") {
+      expect(services.shutdown).not.toHaveBeenCalled();
+      expect(logError).toHaveBeenCalledWith({ killedChildCount: 1 }, "%s: shutdown cleanup failed: %s",
+        "before-quit", "Document engine cleanup failed");
+    } else {
+      expect(forceKillAndDrainManagedChildProcesses).toHaveBeenCalledOnce();
+      expect(logError).toHaveBeenCalledWith({ status: "failed" }, "incomplete host bootstrap cleanup did not complete");
+    }
+  });
+
   it("closes the file log sink LAST, after unregister runs FIRST", async () => {
     getServices.mockReturnValue(makeServices());
     vi.resetModules();
@@ -271,6 +327,10 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     vi.resetModules();
     const { runAppShutdownCleanup } = await configuredShutdown();
     await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+    expect(calls.indexOf("stopDocumentEngines")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("stopDocumentEngines")).toBeLessThan(calls.indexOf("stopLocalApi"));
+    expect(calls.indexOf("stopDocumentEngines")).toBeLessThan(calls.indexOf("servicesShutdown"));
+    expect(calls.indexOf("stopDocumentEngines")).toBeLessThan(calls.indexOf("drainManagedChildren"));
     expect(calls.indexOf("stopLocalApi")).toBeLessThan(calls.indexOf("stopRemoteReceiver"));
     expect(calls.indexOf("stopLocalApi")).toBeLessThan(calls.indexOf("stopTailnetObserver"));
     expect(calls.indexOf("stopTailnetObserver")).toBeLessThan(calls.indexOf("stopTelegramBridge"));

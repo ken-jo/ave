@@ -895,6 +895,11 @@ export function isAsrtSandboxActive(): boolean {
   return active;
 }
 
+/** Offline host processes always require OS isolation, independently of shell and extension routing. */
+export function isOfflineProcessConfinementActive(): boolean {
+  return active && !windowsExternalConfinement && getAveHomePrivacyFailure() === undefined;
+}
+
 // Host-shell spawn gate (bash / powershell tools, the workspace terminal): ASRT is active AND the shell sandbox (`features.osToolSandbox`) was requested at boot.
 export function isShellSandboxActive(): boolean {
   return active && isShellSandboxRequestedAtBoot();
