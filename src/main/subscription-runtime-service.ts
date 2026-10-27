@@ -1089,6 +1089,9 @@ export class SubscriptionRuntimeService {
     openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
     options: SubscriptionRuntimeServiceCreateOptions = {},
   ): Promise<SubscriptionRuntimeService> {
+    // Resolved before any directory, registry or client is made, so a creation attempted before boot configured the transport leaves nothing behind
+    // and the lazy getter's next call starts clean.
+    const claudeCodeReleaseFetch = options.claudeCodeClient ? null : requireClaudeCodeReleaseFetch(options.claudeCodeReleaseFetch);
     const namespace = options.namespace ?? openFeatureNamespace("subscription-runtimes");
     const claudeDirs = claudeCodeRuntimeDirectoryNames();
     const [
@@ -1149,7 +1152,7 @@ export class SubscriptionRuntimeService {
       workspaceDir: claudeWorkspace,
       runtimeTempDir: claudeTemp,
       openAuthorizationUrl,
-      releaseFetch: requireClaudeCodeReleaseFetch(options.claudeCodeReleaseFetch),
+      releaseFetch: claudeCodeReleaseFetch!,
     });
     return new SubscriptionRuntimeService(
       codexClient,
