@@ -9,6 +9,7 @@ import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath
 import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
+import { RECURSIVE_TRAVERSAL_COMMANDS, recursiveTraversalFlag } from "../shared/shell-recursive-traversal.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { modelShellPath } from "../shared/shell-native-path.js";
 import { expandShellTildePaths } from "../shared/home-tilde.js";
@@ -28,27 +29,6 @@ export interface ShellPathPolicyViolation {
   candidate?: string;
   path?: string;
 }
-
-const RECURSIVE_TRAVERSAL_COMMANDS = new Set([
-  "fd",
-  "fdfind",
-  "find",
-  "rg",
-  "tar",
-  "tree",
-  "unzip",
-  "zip",
-]);
-
-const RECURSIVE_FLAG_COMMANDS = new Map<string, readonly string[]>([
-  ["cp", ["-r", "-R", "--recursive", "-a", "--archive"]],
-  ["du", ["-a", "--all"]],
-  ["egrep", ["-r", "-R", "--recursive", "--dereference-recursive"]],
-  ["fgrep", ["-r", "-R", "--recursive", "--dereference-recursive"]],
-  ["grep", ["-r", "-R", "--recursive", "--dereference-recursive"]],
-  ["ls", ["-R"]],
-  ["mv", ["-r", "-R", "--recursive"]],
-]);
 
 // Exempt only public child standard streams; arbitrary descriptor paths can expose other files.
 const SHELL_DEVICE_PATHS: ReadonlySet<string> = new Set([
@@ -1239,17 +1219,6 @@ function buildRecursiveBlockMessage(
   return `${head} ${t(guidanceKey, { alt: t(capability.messageKey) })}`;
 }
 
-function hasShellFlag(token: string, flag: string): boolean {
-  if (token === flag) return true;
-  if (flag.length === 2 && /^-[A-Za-z]+$/.test(token)) {
-    return token.slice(1).includes(flag[1]);
-  }
-  if (flag.startsWith("--")) {
-    return token === flag || token.startsWith(flag + "=");
-  }
-  return false;
-}
-
 export type { ShellExecutionFacts } from "../shared/shell-execution.js";
 class PathPolicyError extends Error {
   constructor(readonly violation: ShellPathPolicyViolation) { super(violation.reason); }
@@ -1353,8 +1322,7 @@ export function findShellPathPolicyViolation(
         if (RECURSIVE_TRAVERSAL_COMMANDS.has(verb) && !(verb === "tar" && parseTarListing(knownArgv) && !projectedEnvironment.TAR_OPTIONS)) {
           throw new PathPolicyError({kind:"recursive-traversal",reason:buildRecursiveBlockMessage(head,verb),candidate:head});
         }
-        const flags=RECURSIVE_FLAG_COMMANDS.get(verb);
-        const selected=knownArgv[1] === "--" ? undefined : knownArgv.slice(1).find((argument)=>flags?.some((flag)=>hasShellFlag(argument,flag)));
+        const selected=recursiveTraversalFlag(verb, knownArgv);
         if(selected) throw new PathPolicyError({kind:"recursive-traversal",reason:buildRecursiveBlockMessage(head,verb,selected),candidate:selected});
       }
       const projectedSlots = offset === 0 && event.testExpression ? {

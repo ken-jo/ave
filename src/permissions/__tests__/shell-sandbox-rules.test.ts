@@ -139,6 +139,26 @@ describe("shell confinement and escape rules", () => {
     if (expected === "allow") expect(result.layer).toBe(3);
   });
 
+  it("keeps ordinary commands and wildcard allows unchanged on the MXC route", () => {
+    const plans = {
+      mxc: buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" }),
+      asrt: buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { kind: "asrt", confidence: "verified", platform: "linux", reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } } }),
+    };
+    const checkOn = (route: keyof typeof plans, command: string) => manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd: dir },
+      hostShellExecutionPlan: plans[route],
+      shellExecution: { runsSandboxed: plans[route].sandboxed },
+    });
+    for (const command of ["printf ready", "grep term notes.txt", "ls -la"]) {
+      expect(checkOn("mxc", command)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(checkOn("mxc", command)).toEqual(checkOn("asrt", command));
+    }
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    expect(checkOn("mxc", "printf other")).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkOn("mxc", "printf other")).toEqual(checkOn("asrt", "printf other"));
+    expect(checkOn("mxc", "env grep -R term .")).toMatchObject({ decision: "ask" });
+  });
+
   it("keeps a runtime-selected runner prefix unproven inside confinement", () => {
     expect(check("npm --prefix $project run build", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
