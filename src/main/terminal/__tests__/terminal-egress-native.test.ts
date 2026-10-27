@@ -9,14 +9,15 @@ import https from "node:https";
 import { execFileSync } from "node:child_process";
 import { shellQuote } from "../../../lib/shell-resolver.js";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
-import type { SandboxEgressDecisionAuditEntry } from "../../../audit/sandbox-audit.js";
-import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
+import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../../audit/sandbox-audit.js";
+import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, subscribeAsrtViolations } from "../../../permissions/asrt-sandbox.js";
 import {
   createEgressAskCallback,
   EGRESS_DENY_REASONS,
   type EgressApprovalAnswer,
   type EgressApprovalRequest,
 } from "../../../permissions/egress-ask.js";
+import { startEgressDenyMonitor } from "../../../permissions/egress-deny-monitor.js";
 import { EgressGrantStore } from "../../../permissions/egress-grants.js";
 import { egressIdentityStrength } from "../../../permissions/egress-identity.js";
 import {
@@ -51,6 +52,9 @@ const BODY = "terminal egress fixture response";
 let dir: string | undefined;
 // Each tab's output since the test began.
 const outputs = new Map<string, string>();
+let stopMonitor: (() => void) | undefined;
+let proxyAudit: (SandboxEgressDecisionAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressFailureAuditEntry)[] = [];
+let callbackAudit: SandboxEgressDecisionAuditEntry[] = [];
 let stopReleaseListener: (() => void) | undefined;
 let destination: Awaited<ReturnType<typeof startDestination>> | undefined;
 
@@ -74,6 +78,7 @@ async function startDestination(root: string) {
   origin.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
   await new Promise<void>((resolve) => origin.listen(0, "127.0.0.1", resolve));
   const originPort = (origin.address() as net.AddressInfo).port;
+  let connectMode: "tunnel" | "stall" | "upstream-deny" | "upstream-gateway" | "upstream-timeout" = "tunnel";
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
@@ -88,6 +93,12 @@ async function startDestination(root: string) {
       socket.off("data", onHead);
       if (connects.at(-1) !== `CONNECT ${ADDRESS}:${PORT} HTTP/1.1`) {
         socket.end("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+        return;
+      }
+      if (connectMode === "stall") return;
+      if (connectMode.startsWith("upstream-")) {
+        const status = connectMode === "upstream-deny" ? "403 Forbidden" : connectMode === "upstream-gateway" ? "502 Bad Gateway" : "504 Gateway Timeout";
+        socket.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
         return;
       }
       const upstream = net.connect(originPort, "127.0.0.1", () => {
@@ -107,9 +118,11 @@ async function startDestination(root: string) {
   const address = server.address() as net.AddressInfo;
   return {
     proxyUrl: `http://127.0.0.1:${address.port}`, certificate, connects, requests,
+    setConnectMode: (mode: typeof connectMode) => { connectMode = mode; },
+    stopAccepting: () => new Promise<void>((resolve) => server.close(() => resolve())),
     close: async () => {
       for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
       await new Promise<void>((resolve) => origin.close(() => resolve()));
     },
   };
@@ -125,6 +138,8 @@ async function requireNativeCase(context: TestContext): Promise<void> {
 
 beforeEach(() => {
   outputs.clear();
+  // The process-wide store retains its tail across resets; this monitor starts with this case.
+  SandboxManager.getSandboxViolationStore().clear();
 });
 
 afterEach(async () => {
@@ -133,6 +148,8 @@ afterEach(async () => {
   killTerminal(TAB);
   __resetTerminalsForTest();
   setTerminalEmitter(() => {});
+  stopMonitor?.();
+  stopMonitor = undefined;
   stopReleaseListener?.();
   stopReleaseListener = undefined;
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -147,6 +164,7 @@ afterEach(async () => {
 interface Harness {
   readonly asked: EgressApprovalRequest[];
   readonly audit: SandboxEgressDecisionAuditEntry[];
+  readonly proxyAudit: (SandboxEgressDecisionAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressFailureAuditEntry)[];
   readonly grants: EgressGrantStore;
 }
 
@@ -164,6 +182,13 @@ async function startSandbox(
   });
   const asked: EgressApprovalRequest[] = [];
   const audit: SandboxEgressDecisionAuditEntry[] = [];
+  callbackAudit = audit;
+  proxyAudit = [];
+  stopMonitor = await startEgressDenyMonitor({
+    subscribe: subscribeAsrtViolations,
+    emit: async (entry) => { proxyAudit.push(entry); },
+    capability: () => ({ kind: "asrt", confidence: "verified" }),
+  });
   const callback = createEgressAskCallback({
     identityStrength: egressIdentityStrength,
     ownerOf: egressInvocationOwner,
@@ -197,7 +222,7 @@ async function startSandbox(
     reason: "ASRT active (terminal egress acceptance)",
     confines: sandboxConfinementForPlatform(process.platform, "full"),
   });
-  return { asked, audit, grants };
+  return { asked, audit, proxyAudit, grants };
 }
 
 async function openTab(tabId = TAB): Promise<void> {
@@ -209,17 +234,21 @@ async function openTab(tabId = TAB): Promise<void> {
 }
 
 // Type `curl` into the tab and wait for its exit status line.
-async function curlInTab(marker: string, tabId = TAB, timeoutMs = 60_000, host = HOST): Promise<{ status: number; text: string }> {
+async function curlInTab(marker: string, tabId = TAB, timeoutMs = 60_000, host = HOST, requestTimeoutSeconds = 30): Promise<{ status: number; text: string }> {
   const output = (): string => outputs.get(tabId) ?? "";
   const start = output().length;
   if (!destination) throw new Error("Destination fixture is not running");
-  writeTerminal(tabId, `${CURL} -fsS --cacert ${shellQuote(destination.certificate)} --dump-header - -m 30 https://${host}:${PORT}/ ; echo "${marker}=$?"\r`);
+  writeTerminal(tabId, `${CURL} -fsS --cacert ${shellQuote(destination.certificate)} --dump-header - -m ${requestTimeoutSeconds} https://${host}:${PORT}/ ; echo "${marker}=$?"\r`);
   const pattern = new RegExp(`${marker}=(\\d+)`, "u");
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     // The echoed command line holds `${marker}=$?`; only the shell's own output carries a number after the `=`.
     const match = pattern.exec(output().slice(start));
-    if (match !== null) return { status: Number(match[1]), text: output().slice(start) };
+    if (match !== null) {
+      const result = { status: Number(match[1]), text: output().slice(start) };
+      console.log("terminal egress evidence", JSON.stringify({ marker, ...result, callbackAudit, proxyAudit }));
+      return result;
+    }
     if (Date.now() > deadline) throw new Error(`no ${marker} line in the tab's output:\n${output().slice(start).slice(-2000)}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -228,7 +257,7 @@ async function curlInTab(marker: string, tabId = TAB, timeoutMs = 60_000, host =
 const nativePlatform = process.platform === "darwin" || process.platform === "linux";
 
 describe.runIf(nativePlatform)("workspace terminal egress banner (native, design F)", () => {
-  it("reports a resolution refusal after Allow once without a grant denial", async (context) => {
+  it("reports a DNS transport failure after Allow once", async (context) => {
     await requireNativeCase(context);
     const harness = await startSandbox(async () => ({ allow: true, scope: "once" }));
     await openTab();
@@ -236,10 +265,85 @@ describe.runIf(nativePlatform)("workspace terminal egress banner (native, design
     SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "direct" }] }));
     const result = await curlInTab("RESOLUTION_REFUSED", TAB, 60_000, "unresolved.example.test");
     expect(result.status, result.text).not.toBe(0);
-    expect(result.text).toContain("403");
+    expect(result.text).toContain("502");
+    expect(result.text).toContain("transport-dns");
     expect(result.text).toContain("destination name did not resolve");
     expect(harness.asked).toHaveLength(1);
     expect(harness.audit).toEqual([]);
+    expect(harness.proxyAudit).toMatchObject([{ entryKind: "egress-failure", failure: { kind: "dns", httpStatus: 502 } }]);
+  });
+
+  it("reports a refused connection after Allow once as a transport failure", async (context) => {
+    await requireNativeCase(context);
+    const harness = await startSandbox(async () => ({ allow: true, scope: "once" }));
+    await destination!.stopAccepting();
+    await openTab();
+    const result = await curlInTab("CONNECT_FAILED");
+    expect(result.status, result.text).not.toBe(0);
+    expect(result.text).toContain("502");
+    expect(result.text).toContain("transport-connect");
+    expect(harness.audit).toMatchObject([{ decision: "allow", basis: "prompt", scope: "once" }]);
+    expect(harness.proxyAudit).toMatchObject([{ entryKind: "egress-failure", failure: { kind: "connect", httpStatus: 502 } }]);
+    expect(destination?.requests).toHaveLength(0);
+  });
+
+  it("reports a stalled CONNECT handshake after Allow once as a gateway timeout", async (context) => {
+    await requireNativeCase(context);
+    const harness = await startSandbox(async () => ({ allow: true, scope: "once" }));
+    destination!.setConnectMode("stall");
+    await openTab();
+    // The client must outwait the proxy's handshake timer so the proxy supplies the failure.
+    const result = await curlInTab("CONNECT_TIMED_OUT", TAB, 60_000, HOST, 40);
+    expect(result.status, result.text).not.toBe(0);
+    expect(result.text).toContain("504");
+    expect(result.text).toContain("transport-timeout");
+    expect(harness.audit).toMatchObject([{ decision: "allow", basis: "prompt", scope: "once" }]);
+    expect(harness.proxyAudit).toMatchObject([{ entryKind: "egress-failure", failure: { kind: "timeout", httpStatus: 504 } }]);
+    expect(destination?.requests).toHaveLength(0);
+  });
+
+  it("keeps an explicit policy denial as 403 with a denial audit", async (context) => {
+    await requireNativeCase(context);
+    const harness = await startSandbox(async () => ({ allow: false, reason: "denied by the user" }));
+    await openTab();
+    const result = await curlInTab("POLICY_DENIED");
+    expect(result.status, result.text).not.toBe(0);
+    expect(result.text).toContain("403");
+    expect(result.text).toContain("blocked-by-allowlist");
+    expect(harness.audit).toMatchObject([{ decision: "deny", basis: "prompt" }]);
+    expect(harness.proxyAudit).toMatchObject([{ entryKind: "egress-deny", deny: { reason: "denied by the user" } }]);
+    expect(destination?.connects).toHaveLength(0);
+    expect(destination?.requests).toHaveLength(0);
+  });
+
+  it("attributes an upstream CONNECT refusal in response headers and the monitor audit", async (context) => {
+    await requireNativeCase(context);
+    const harness = await startSandbox(async () => ({ allow: true, scope: "once" }));
+    destination!.setConnectMode("upstream-deny");
+    await openTab();
+    const result = await curlInTab("UPSTREAM_DENIED");
+    expect(result.status, result.text).not.toBe(0);
+    expect(result.text).toContain("403");
+    expect(result.text).toContain("upstream proxy refused the connection (HTTP 403)");
+    expect(harness.audit).toMatchObject([{ decision: "allow", basis: "prompt" }]);
+    expect(harness.proxyAudit).toMatchObject([
+      { entryKind: "egress-deny", deny: { reason: "upstream proxy refused the connection (HTTP 403)" } },
+      { entryKind: "egress-decision", decision: "deny", basis: "sandbox", reason: "upstream proxy refused the connection (HTTP 403)" },
+    ]);
+    expect(destination?.requests).toHaveLength(0);
+  });
+
+  it.for([502, 504] as const)("keeps an upstream %s transport failure out of denial audits", async (status, context) => {
+    await requireNativeCase(context);
+    const harness = await startSandbox(async () => ({ allow: true, scope: "once" }));
+    destination!.setConnectMode(status === 502 ? "upstream-gateway" : "upstream-timeout");
+    await openTab();
+    const result = await curlInTab("UPSTREAM_FAILURE");
+    expect(result.status, result.text).not.toBe(0);
+    expect(result.text).toContain(String(status));
+    expect(result.text).toContain(`upstream proxy returned HTTP ${status}`);
+    expect(harness.proxyAudit).toMatchObject([{ entryKind: "egress-failure", failure: { kind: status === 504 ? "timeout" : "connect", httpStatus: status } }]);
+    expect(destination?.requests).toHaveLength(0);
   });
 
   it("pins a resolved public destination to the local CONNECT and HTTPS fixtures", async (context) => {

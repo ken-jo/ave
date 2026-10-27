@@ -119,6 +119,16 @@ export function buildSandboxEgressDenyAuditEntry(params: {
   };
 }
 
+/** A failed transport leg records no permission decision. */
+export interface SandboxEgressFailureAuditEntry {
+  timestamp: string;
+  entryKind: "egress-failure";
+  sandbox: { kind: SandboxKind; confidence: SandboxCapability["confidence"] };
+  invocation: SandboxEgressDenyInvocation;
+  destination: { host: string; port: number };
+  failure: { kind: "dns" | "connect" | "timeout" | "routing"; httpStatus: 502 | 504; reason: string };
+}
+
 export type EgressDecisionBasis =
   /** A plugin worker reached a host its extension declares (or the host's model endpoint). */
   | "extension-allowlist"
