@@ -47,7 +47,9 @@ and panel acknowledgement, then releases it on success, failure, cancellation
 or timeout. A current parse, rendered view or concurrent preparation retains
 the shared session; its runtime is released when its final owner leaves.
 
-An absent installation is the only automatic engine-selection fallback.
+An absent installation is the only automatic engine-selection fallback. An
+installation that is being installed or removed has no admitted receipt and is
+absent to the engine, so documents opened meanwhile keep the existing reader.
 Integrity, signature, confinement, conversion and response-contract failures
 remain explicit failures. A process exiting successfully is insufficient:
 expected output must exist, fit its limits and pass the ordinary bounded
@@ -91,17 +93,54 @@ requires the platform's native code-signature policy where available:
   authenticated contents. Editing a local receipt cannot create trusted bytes.
 
 Existing verified-executable location and ownership checks still apply.
-Verification runs before first execution and again when an installation is
-replaced or changes. A corrupt receipt or payload is an error, not absence.
+A corrupt receipt or payload is an error, not absence.
+
+The release archive is hashed through a held descriptor before its signature is
+checked and before a system tool reads it by path. macOS mounts the image with
+`hdiutil attach -noverify`: its bytes are already pinned and signature-verified,
+and the image's own checksum pass would write a `com.apple.diskimages.recentcksum`
+attribute onto it. Because attribute writers outside Ave (provenance, indexing)
+still change an archive's ctime without changing bytes, the archive identity
+compares device, inode, size, mode, link count and mtime, and a ctime change is
+admitted only when the held descriptor still hashes to the pin. Installed
+payload entries keep the strict identity, ctime included.
+
+Full verification runs once per installation. The installer hashes every
+installed byte and compares the tree with the authenticated archive's tree (on
+macOS read from the same mount the copy came from), checks the extension, runs
+the platform signer checks above, and records the tree digest and a metadata
+identity digest in the schema 2 receipt. The identity digest covers each entry's
+path, kind, inode, size, mode, link count, mtime, ctime and link target. It is
+taken before the hash and must still hold afterwards, which binds it to the
+hashed bytes.
+
+Runtime admission happens once per process and installation, off the main
+thread and without blocking status reads. While it runs, status reports
+`verifying-installation` and the card shows that state without a cancel action.
+Admission recomputes the identity digest with asynchronous `lstat` calls and
+requires it to equal the receipt. On macOS it then relies on the TDF code-signing
+seal (`codesign --verify --deep --strict` plus the pinned team and identifier)
+instead of rereading the archive. Platforms without a payload seal, currently
+Linux, reconstruct the authenticated tree from the verified archive again, so
+the receipt is never a self-attesting trust root. A failed admission stays failed
+until install or uninstall; it is not retried on every status read. Each launch
+recomputes the asynchronous identity digest, and the synchronous check
+immediately before spawn covers a constant set of anchors (namespace, slot,
+payload, application root, executables and extension).
 Extraction is into Ave-owned storage and runs no downloaded maintainer script
 or global installer. Platform extraction prerequisites and native validation
 remain separate from the existence of a manifest entry.
 
 An installed payload being verified is separate from its execution capability.
-macOS and Linux execution require the native offline wrapper. The current
-Windows backend cannot attest this stricter no-network contract and returns
-`engine-confinement-unavailable`; a verified Windows download does not authorize
-an unconfined conversion. Execution uses only the payload's office executable
+macOS and Linux execution require the native offline wrapper. The
+[confinement platform list](../../src/permissions/offline-confinement-platforms.ts)
+is the single source for which platforms have one. Installation status, the
+install action and engine admission use it, so a platform without one (currently
+Windows) reports `unsupported` and the install action returns
+`unsupported-platform` before any download. Its release pins stay reviewed for
+when a confinement backend exists. On a supported platform, an unavailable
+runtime confinement capability still fails execution with
+`engine-confinement-unavailable` and never retries unconfined. Execution uses only the payload's office executable
 and, for HWP/HWPX importer registration, its extension tool. No scripting
 interpreter is started: on macOS 26 the pinned build's embedded Python and UNO
 helper executables are terminated at launch by the operating system's
@@ -169,8 +208,8 @@ confinement backend fails clearly and never retries unconfined.
 
 The isolated profile is written before the instance starts. It sets
 `DisableMacrosExecution`, the highest macro security level, no trusted macro
-locations and `DisableActiveContent`, and sets Calc and Writer link updates to
-never. Macro execution is disabled for the profile rather than per load.
+locations, `DisableActiveContent` and `BlockUntrustedRefererLinks`, and sets
+Calc and Writer link updates to never. Macro execution is disabled for the profile rather than per load.
 Headless mode alone is not the macro or network boundary. A conversion may read
 an untrusted parser input; signature verification establishes executable
 provenance, not the safety of that document.
@@ -185,6 +224,22 @@ work; process termination precedes deletion of its private profile and cache.
 Processes remain registered with host child-lifecycle management. A crash or
 contract violation is reported as an error, with no empty success or suppressed
 dialog used as recovery.
+
+Each session's private temporary directory holds an owner record with the
+creating Ave process ID, outside the confined writable output. If Ave itself
+crashes or is killed, its resident outlives it and the directory keeps its
+read-only input copies and profile. At boot, the engine host removes such a
+directory only when it is a real 0700 directory of this user, carries a valid
+owner record, and its owner is not running. It first ends this user's processes
+that run with that directory's unique profile argument. Unmarked directories,
+live owners, links and other users' entries are left alone.
+
+## Host composition
+
+The [engine host](../../src/observation/document-engine-host.ts) is the single
+module that names the concrete engine. The observation runtime, installation
+IPC, shutdown and boot hygiene use only it and the `DocumentObservationEngine`
+contract. Replacing the engine changes that module, not the host.
 
 ## Structured changes
 
