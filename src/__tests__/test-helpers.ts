@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "./support/feature-namespace.js";
 import { afterAll, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
 import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, symlinkSync } from "node:fs";
@@ -133,6 +134,7 @@ export function createInMemoryFeatureNamespace() {
       stored = structuredClone(value);
     },
     childDir: async (name: string): Promise<string> => name,
+    createFile: refuseNamespaceFileCreation,
   } satisfies FeatureNamespaceHandle;
   return {
     handle,

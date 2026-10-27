@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { RuntimeProcessFixture as FakeAppServerProcess } from "./support/runtime-process.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, utimesSync, writeFileSync } from "node:fs";
@@ -161,6 +162,7 @@ async function createServiceForRuntimes(harness: Harness, runtimes: CodexConvers
       },
       readJson: async (_name, fallback) => fallback,
       writeJson: async () => { throw new Error("Unexpected profile write"); },
+      createFile: refuseNamespaceFileCreation,
     },
     codexClient: {
       getStatus: async () => ({ runtime: "ready", connection: "connected", planType: "plus", pendingLogin: null, pendingDeviceCode: null }),

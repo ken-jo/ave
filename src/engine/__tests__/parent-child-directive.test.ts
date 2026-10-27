@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 // Only the host-recorded root parent may direct a child; delivery requires a live or resumable run.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
@@ -43,6 +44,7 @@ function volatileNamespace(): FeatureNamespaceHandle {
       contents = structuredClone(value);
     },
     childDir: async () => "/parent-directive/volatile",
+    createFile: refuseNamespaceFileCreation,
   };
 }
 

@@ -429,6 +429,7 @@ describe("createTelegramConnectionStore", () => {
         await real.writeJson(name, value);
       },
       childDir: real.childDir,
+      createFile: real.createFile,
     };
     const store = await openStore(directory, clock, { namespace });
     await connectedAndApproved(store);

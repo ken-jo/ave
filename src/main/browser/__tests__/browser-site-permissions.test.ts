@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../../__tests__/support/feature-namespace.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 async function setup() {
   const dir = await mkdtemp(join(tmpdir(), "ave-browser-policy-")); directories.push(dir);
-  const namespace: FeatureNamespaceHandle = { dir, readJson: async (_name, fallback) => fallback, writeJson: async () => undefined, childDir: async () => dir };
+  const namespace: FeatureNamespaceHandle = { dir, createFile: refuseNamespaceFileCreation, readJson: async (_name, fallback) => fallback, writeJson: async () => undefined, childDir: async () => dir };
   const store = new BrowserWorkspaceStore(namespace);
   let context: BrowserPermissionContext | null = { guestId: 7, windowId: 1, documentGeneration: 1, url: "https://site.example/" };
   const prompt = vi.fn(async () => true);

@@ -2,7 +2,8 @@
  * Windows access depends on inherited ACLs, not POSIX modes. */
 import { randomBytes } from "node:crypto";
 import { chmodSync, constants, promises as fs, linkSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, relative, resolve } from "node:path";
+import type { FileHandle } from "node:fs/promises";
 import { platform } from "node:process";
 import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
@@ -165,6 +166,42 @@ export interface FeatureNamespaceHandle {
   writeJson<T>(name: string, value: T): Promise<void>;
   /** Create a 0o700 subdirectory; exclusive creation rejects an existing entry. */
   childDir(name: string, options?: { exclusive?: boolean }): Promise<string>;
+  /** Create an exclusive 0o600 file below existing non-linked namespace directories. The caller owns streaming, sync and close. */
+  createFile(name: string): Promise<FileHandle>;
+}
+
+async function createNamespaceFile(root: string, name: string): Promise<FileHandle> {
+  if (!name || isAbsolute(name) || name.includes("\\") || name.includes("\0") || name.includes(":")
+    || name.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("Invalid namespace file name");
+  }
+  const path = resolve(root, name);
+  if (relative(root, path).startsWith("..")) throw new Error("Namespace file is outside its root");
+  const parent = dirname(path);
+  const components = [root];
+  for (const part of relative(root, parent).split(/[\\/]/).filter(Boolean)) components.push(join(components.at(-1)!, part));
+  for (const component of components) {
+    const info = await fs.lstat(component);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Namespace file parent is not a plain directory");
+  }
+  const flags = constants.O_RDONLY | (platform === "win32" ? 0 : constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const directory = platform === "win32" ? undefined : await fs.open(parent, flags);
+  try {
+    const before = directory ? await directory.stat({ bigint: true }) : await fs.lstat(parent, { bigint: true });
+    const target = platform === "linux" ? `/proc/self/fd/${directory!.fd}/${name.split("/").at(-1)!}` : path;
+    const handle = await fs.open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+      | (platform === "win32" ? 0 : constants.O_NOFOLLOW), PRIVATE_FILE_MODE);
+    try {
+      const current = await fs.lstat(parent, { bigint: true });
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== before.dev || current.ino !== before.ino) {
+        throw new Error("Namespace file parent changed during creation");
+      }
+      return handle;
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  } finally { await directory?.close(); }
 }
 
 /** Open a handle to the `~/.ave/<featureId>/` namespace. The directory is NOT created eagerly; it is materialized (0o700) on the first `writeJson` / `childDir`, so a read-only consumer never creates an empty directory. `featureId` is a single path segment
@@ -186,6 +223,7 @@ export function openFeatureNamespace(featureId: string): FeatureNamespaceHandle 
       else await ensureDir(child);
       return child;
     },
+    createFile: (name) => createNamespaceFile(resolveDir(), name),
   };
 }
 

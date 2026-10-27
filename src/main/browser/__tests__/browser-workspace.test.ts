@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../../__tests__/support/feature-namespace.js";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ const services: BrowserWorkspaceService[] = [];
 afterEach(async () => { for (const service of services.splice(0)) service.dispose(); await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 async function setup() {
   const dir = await mkdtemp(join(tmpdir(), "ave-browser-workspace-")); directories.push(dir);
-  const namespace: FeatureNamespaceHandle = { dir, readJson: async (_name, fallback) => fallback, writeJson: async () => undefined, childDir: async () => dir };
+  const namespace: FeatureNamespaceHandle = { dir, createFile: refuseNamespaceFileCreation, readJson: async (_name, fallback) => fallback, writeJson: async () => undefined, childDir: async () => dir };
   let generation = 1;
   let url = "https://site.example/";
   let factor = 1;
