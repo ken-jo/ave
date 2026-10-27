@@ -2,7 +2,7 @@ import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-a
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ import {
 
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
+vi.mock("../../permissions/rules/git-repository-inputs.js", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true }));
@@ -380,4 +381,48 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => ["abort", "error"
   stdout.end(); stderr.end();
   child.emit("exit", 1, null); child.emit("close", 1, null);
   expect(await pending).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
+});
+
+it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].flatMap((sandboxed) =>
+  [false, true].map((changed) => ({ dialect, sandboxed, changed })))))(
+  "reinspects $dialect after synchronous spawn failure with sandboxed=$sandboxed and changed=$changed", async ({ dialect, sandboxed, changed }) => {
+  const command = "git log HEAD";
+  const { cwd, identity } = fixture(sandboxed, command);
+  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
+  expect(verifiedShellCommand).toBeDefined();
+  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
+  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
+  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  let inspectionsAtSpawn: number | undefined;
+  vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
+    if (dialect === "powershell" && (invocation as string[]).at(-1)?.includes("Parser")) {
+      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
+        arguments: ["git", "log", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+    }
+    inspectionsAtSpawn = vi.mocked(inspectGitRepository).mock.calls.length;
+    if (changed) {
+      const moved = cwd + "-moved";
+      renameSync(cwd, moved);
+      roots.push(moved);
+      writeFileSync(cwd, "not a directory");
+    }
+    throw Object.assign(new Error("spawn ENOTDIR"), { code: "ENOTDIR" });
+  });
+  const progress = { write: vi.fn(), end: vi.fn() };
+  const capture = vi.fn();
+  const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
+  const result = await tool.execute({ command, timeoutSeconds: 5 }, {
+    cwd, extraAllowedDirectories: [], metadata: { toolOutputProgress: progress, toolOutputCaptureFactory: capture },
+    hostShellExecutionPlan: identity.plan, verifiedShellCommand,
+  });
+  expect(inspectionsAtSpawn).toBeDefined();
+  expect(vi.mocked(inspectGitRepository).mock.calls.length).toBe(inspectionsAtSpawn! + 1);
+  expect(inspectGitRepository).toHaveBeenLastCalledWith(cwd);
+  if (changed) {
+    expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
+  } else {
+    expect(result).toMatchObject({ output: `${dialect === "powershell" ? "PowerShell " : ""}spawn failed: spawn ENOTDIR`, isError: true });
+  }
+  expect(progress.write).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
 });
