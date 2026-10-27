@@ -447,12 +447,12 @@ describe("scoped rule management", () => {
     const listed = await fresh.listScopedRules();
     expect(listed.rules).toEqual(expect.arrayContaining([
       expect.objectContaining({ pattern: "Bash(git status *)", scope: "user" }),
-      expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: project }),
+      expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: captureApprovalWorkingDirectory(project).path }),
     ]));
     expect(listed.errors).toEqual([{ filePath: corrupt.filePath, errorCode: "rules-file-unavailable" }]);
     const projectRow = listed.rules.find((rule) => rule.scope === "project")!;
     expect(projectRow.storedFile).toBe(projectRulesLocation(dir, project).identity);
-    await fresh.removeRulePersist(projectRow, { kind: "project", projectCwd: project, storedFile: projectRow.storedFile! });
+    await fresh.removeRulePersist(projectRow, { kind: "project", projectCwd: projectRow.projectCwd!, storedFile: projectRow.storedFile! });
     expect((await fresh.listScopedRules()).rules).toHaveLength(1);
     expect(readFileSync(corrupt.filePath, "utf8")).toBe("{broken");
   });

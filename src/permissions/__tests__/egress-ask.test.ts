@@ -19,6 +19,7 @@ import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocati
 import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-identity.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
+import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -738,7 +739,7 @@ describe("egress ask callback — shell calls", () => {
     answer = async () => ({ allow: true, scope: "project" });
     expect(await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
     expect(asked[0]?.scopes).toEqual(["once", "session", "project", "always"]);
-    expect(await grants.listPersistent()).toEqual([expect.objectContaining({ scope: "project", origin: "shell", projectRoot: PROJECT, host: "pypi.org" })]);
+    expect(await grants.listPersistent()).toEqual([expect.objectContaining({ scope: "project", origin: "shell", projectRoot: captureApprovalWorkingDirectory(PROJECT).path, host: "pypi.org" })]);
     // A later call from the repository root, in another conversation, is covered; another repository is asked again.
     owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId: "session-2", workspaceRoot: PROJECT } });
     answer = async () => ({ allow: false, reason: "denied by the user" });

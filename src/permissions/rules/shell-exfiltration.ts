@@ -3,7 +3,7 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, posix, resolve } from "node:path";
 import {
   staticShellWord,
   type ShellCommand,
@@ -490,6 +490,12 @@ class ShellScanBudgetError extends Error {}
 function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolean, match: (path: string) => string | null, spend?: ScanWork, canonical = true): string | null {
   spend?.(1, glob.length);
   if (!glob || glob === "-") return null;
+  const matchPath = (path: string): string | null => {
+    // A Windows shell can expose virtual POSIX roots that native realpath resolves onto the current drive.
+    const shellRoot = process.platform === "win32" && /^\/(?!\/)/.test(path)
+      ? match(caseFoldForMatch(posix.normalize(path))) : null;
+    return shellRoot ?? match(caseFoldForMatch(canonical ? canonicalizePathForMatch(path) : foldCanonicalPathSeparators(path)));
+  };
   const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
   const segments = absolute.split(/[\\/]/);
   // Whatever a wildcard expands to stays below its literal directory prefix:
@@ -499,7 +505,7 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   if (firstWild > 0) {
     const prefix = unescapeGlob(segments.slice(0, firstWild).join("/")) || "/";
     spend?.(canonical ? MAX_WALK_UP + 1 : 1, prefix.length);
-    const hit = match(caseFoldForMatch(canonical ? canonicalizePathForMatch(prefix) : foldCanonicalPathSeparators(prefix)));
+    const hit = matchPath(prefix);
     if (hit) return hit;
   }
   let instances: string[][] = [[]];
@@ -535,7 +541,7 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
     // Canonicalization has a bounded ancestor walk; reserve its maximum work.
     spend?.(canonical ? MAX_WALK_UP + 1 : 1, parts.reduce((length, part) => length + part.length + 1, 0));
     const path = parts.join("/") || "/";
-    const hit = match(caseFoldForMatch(canonical ? canonicalizePathForMatch(path) : foldCanonicalPathSeparators(path)));
+    const hit = matchPath(path);
     if (hit) return hit;
   }
   return null;
@@ -721,7 +727,9 @@ function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState,
     }
   }
   // Plain lexical checks are linear in the bounded source text against the fixed path catalogue; they do not perform filesystem or glob expansion.
-  const path = resolve(cwd ?? "/", unescapeGlob(glob));
+  const literal = unescapeGlob(glob);
+  const path = process.platform === "win32" && /^\/(?!\/)/.test(literal)
+    ? posix.normalize(literal) : resolve(cwd ?? "/", literal);
   return state.match(caseFoldForMatch(foldCanonicalPathSeparators(path)));
 }
 

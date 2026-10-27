@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { windowsPolicyTrustFailure, type WindowsPolicyDescriptor } from "../windows-admin-policy.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readWindowsAdminPolicy, windowsPolicyTrustFailure, type WindowsPolicyDescriptor } from "../windows-admin-policy.js";
 
 const ADMINISTRATORS = "S-1-5-32-544";
 const SYSTEM = "S-1-5-18";
@@ -11,6 +14,20 @@ function descriptor(ownerSid = ADMINISTRATORS, sid = ADMINISTRATORS, mask = 0x1f
 }
 
 describe("Windows policy descriptor trust", () => {
+  it("retains the snapshot failure as its cause without exposing it in the public message", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "policy-read-error-"));
+    const path = join(directory, "policy.json");
+    writeFileSync(path, '{"duplicate":1,"duplicate":2}');
+    try {
+      await expect(readWindowsAdminPolicy(path)).rejects.toMatchObject({
+        message: expect.stringContaining("Policy snapshot could not be read"),
+        cause: expect.objectContaining({ message: "host-resources-unavailable" }),
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("requires an administrative file owner while allowing trusted system writers", () => {
     expect(windowsPolicyTrustFailure(descriptor(), descriptor())).toBeNull();
     expect(windowsPolicyTrustFailure(descriptor(SYSTEM, INSTALLER), descriptor(INSTALLER))).toBeNull();

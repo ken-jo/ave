@@ -2160,98 +2160,105 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
   collectValues(pipelines, ctx);
   invalidateVariableMutations(pipelines, ctx);
   collectTainted(pipelines, ctx);
-  sensitive ??= sensitiveValues(pipelines, ctx);
-  let exfiltration = walk(pipelines, ctx, networkText);
-  // Code-as-data can target a native shell even when a spelling is also a cmdlet alias. Slash options cannot inherit that cmdlet's positional binding.
-  if (probe && allPipelines(pipelines, ctx.budget).some((pipeline) => pipeline.stages.some((stage) => {
-    const { name, args } = headOf(stage, ctx);
-    return name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("file-write")
-      && args.some((token) => token.kind === "word" && !token.quoted && /^\/[a-z-]+(?::.*)?$/i.test(token.text));
-  }))) ordinarySignal(ctx, "PowerShell hidden code (opaque native output binding)");
-  const incomingBoundary = sensitive !== null || exfiltration !== null || executableBoundary(pipelines, ctx);
-  const candidate = incomingBoundary || allPipelines(pipelines, ctx.budget).some((pipeline) => pipeline.stages.some((stage) => {
-    const { name } = headOf(stage, ctx);
-    const policy = name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[name];
-    return (name !== undefined && isReaderCommand(name)) || policy?.effects.includes("dispatch");
-  }));
-  const nativeData = new Set<PsCommand>();
-  for (const pipeline of allPipelines(pipelines, budget)) for (const stage of pipeline.stages) {
-    const { name } = headOf(stage, ctx);
-    if (name === undefined || !POWERSHELL_COMMAND_POLICIES[name]?.executable) continue;
-    const code = embeddedCode(stage, undefined, ctx);
-    if (code.state !== "literal" || !code.native) continue;
-    const view = nativeTextView(code.text, code.native, ctx);
-    if (!genericInterpreter(canonicalName(code.native)) && (!view || !genericInvocation(view, ctx))) continue;
-    for (const group of code.data ?? []) for (const body of allPipelines(group.body, budget)) {
-      for (const data of body.stages) nativeData.add(data);
-    }
-  }
-  let argumentExfiltration: string | null = null;
-  for (const { stage, feeder, mutatingBlocks } of executionStages(pipelines, budget, ctx.files)) {
-    if (nativeData.has(stage)) continue;
-    const materialize = materializationPlan(stage, ctx);
-    const effective = unwrapCommand(stage, ctx);
-    const fileSignal = fileExecutionSignal(effective, feeder, ctx, probe, pathData);
-    if (fileSignal) ordinarySignal(ctx, fileSignal);
-    const { name, args } = headOf(stage, ctx);
-    if (name !== undefined) {
-      const native = nativeInvocation(name, args, ctx);
-      if (native.ordinaryAsk) ordinarySignal(ctx, native.ordinaryAsk);
-      const catalogue = ctx.files.executionTarget(name)?.catalogue;
-      if (catalogue) {
-        const signal = senderSignal({ tokens: [word(catalogue, catalogue, false, []), ...args] }, feeder !== undefined, ctx);
-        exfiltration ??= signal;
+  let exfiltration: string | null = null;
+  try {
+    sensitive ??= sensitiveValues(pipelines, ctx);
+    exfiltration = walk(pipelines, ctx, networkText);
+    // Code-as-data can target a native shell even when a spelling is also a cmdlet alias. Slash options cannot inherit that cmdlet's positional binding.
+    if (probe && allPipelines(pipelines, ctx.budget).some((pipeline) => pipeline.stages.some((stage) => {
+      const { name, args } = headOf(stage, ctx);
+      return name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("file-write")
+        && args.some((token) => token.kind === "word" && !token.quoted && /^\/[a-z-]+(?::.*)?$/i.test(token.text));
+    }))) ordinarySignal(ctx, "PowerShell hidden code (opaque native output binding)");
+    const incomingBoundary = sensitive !== null || exfiltration !== null || executableBoundary(pipelines, ctx);
+    const candidate = incomingBoundary || allPipelines(pipelines, ctx.budget).some((pipeline) => pipeline.stages.some((stage) => {
+      const { name } = headOf(stage, ctx);
+      const policy = name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[name];
+      return (name !== undefined && isReaderCommand(name)) || policy?.effects.includes("dispatch");
+    }));
+    const nativeData = new Set<PsCommand>();
+    for (const pipeline of allPipelines(pipelines, budget)) for (const stage of pipeline.stages) {
+      const { name } = headOf(stage, ctx);
+      if (name === undefined || !POWERSHELL_COMMAND_POLICIES[name]?.executable) continue;
+      const code = embeddedCode(stage, undefined, ctx);
+      if (code.state !== "literal" || !code.native) continue;
+      const view = nativeTextView(code.text, code.native, ctx);
+      if (!genericInterpreter(canonicalName(code.native)) && (!view || !genericInvocation(view, ctx))) continue;
+      for (const group of code.data ?? []) for (const body of allPipelines(group.body, budget)) {
+        for (const data of body.stages) nativeData.add(data);
       }
     }
-    if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("dispatch")) {
-      // Repeated dispatch can execute an earlier command after this body's writes. Literal destinations saturate in one pass; opaque destinations taint all.
-      for (const block of mutatingBlocks) {
-        const repeated = inspectPowerShell(block.raw.slice(1, -1), cwd, budget, true, false, ctx.files);
-        sensitive ??= repeated.sensitive;
-        exfiltration ??= repeated.exfiltration;
-        if (repeated.ordinaryAsk) ordinarySignal(ctx, repeated.ordinaryAsk);
+    let argumentExfiltration: string | null = null;
+    for (const { stage, feeder, mutatingBlocks } of executionStages(pipelines, budget, ctx.files)) {
+      if (nativeData.has(stage)) continue;
+      const materialize = materializationPlan(stage, ctx);
+      const effective = unwrapCommand(stage, ctx);
+      const fileSignal = fileExecutionSignal(effective, feeder, ctx, probe, pathData);
+      if (fileSignal) ordinarySignal(ctx, fileSignal);
+      const { name, args } = headOf(stage, ctx);
+      if (name !== undefined) {
+        const native = nativeInvocation(name, args, ctx);
+        if (native.ordinaryAsk) ordinarySignal(ctx, native.ordinaryAsk);
+        const catalogue = ctx.files.executionTarget(name)?.catalogue;
+        if (catalogue) {
+          const signal = senderSignal({ tokens: [word(catalogue, catalogue, false, []), ...args] }, feeder !== undefined, ctx);
+          exfiltration ??= signal;
+        }
       }
-    }
-    let scanned: string | undefined;
-    let nativePayload = false;
-    const handled = new Set<PsToken>();
-    const interpreted = genericArgumentSignals(effective, ctx, handled);
-    const generic = interpreted.generic;
-    sensitive ??= interpreted.sensitive;
-    exfiltration ??= interpreted.exfiltration;
-    if (!generic && (!probe || candidate || fileSignal !== null)) {
-      const code = embeddedCode(effective, feeder, ctx);
-      if (code.state === "opaque") {
-        const reason = stage.tokens.map((token) => evaluateValue([token], ctx)).find((value) => value.reason)?.reason ?? "runtime script";
-        ordinarySignal(ctx, `PowerShell hidden code (${reason})`);
-      } else if (code.state === "literal") {
-        scanned = code.text;
-        const nested = code.native ? nativeTextSignals(code.text, code.native, ctx) : inspectPowerShell(code.text, cwd, budget, true, false, ctx.files);
-        nativePayload = "generic" in nested && nested.generic;
-        sensitive ??= nested.sensitive;
-        exfiltration ??= nested.exfiltration;
-        if (nested.ordinaryAsk) ordinarySignal(ctx, nested.ordinaryAsk);
-        if (code.opaque) ordinarySignal(ctx, "PowerShell hidden code (opaque native command grammar)");
+      if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("dispatch")) {
+        // Repeated dispatch can execute an earlier command after this body's writes. Literal destinations saturate in one pass; opaque destinations taint all.
+        for (const block of mutatingBlocks) {
+          const repeated = inspectPowerShell(block.raw.slice(1, -1), cwd, budget, true, false, ctx.files);
+          sensitive ??= repeated.sensitive;
+          exfiltration ??= repeated.exfiltration;
+          if (repeated.ordinaryAsk) ordinarySignal(ctx, repeated.ordinaryAsk);
+        }
       }
+      let scanned: string | undefined;
+      let nativePayload = false;
+      const handled = new Set<PsToken>();
+      const interpreted = genericArgumentSignals(effective, ctx, handled);
+      const generic = interpreted.generic;
+      sensitive ??= interpreted.sensitive;
+      exfiltration ??= interpreted.exfiltration;
+      if (!generic && (!probe || candidate || fileSignal !== null)) {
+        const code = embeddedCode(effective, feeder, ctx);
+        if (code.state === "opaque") {
+          const reason = stage.tokens.map((token) => evaluateValue([token], ctx)).find((value) => value.reason)?.reason ?? "runtime script";
+          ordinarySignal(ctx, `PowerShell hidden code (${reason})`);
+        } else if (code.state === "literal") {
+          scanned = code.text;
+          const nested = code.native ? nativeTextSignals(code.text, code.native, ctx) : inspectPowerShell(code.text, cwd, budget, true, false, ctx.files);
+          nativePayload = "generic" in nested && nested.generic;
+          sensitive ??= nested.sensitive;
+          exfiltration ??= nested.exfiltration;
+          if (nested.ordinaryAsk) ordinarySignal(ctx, nested.ordinaryAsk);
+          if (code.opaque) ordinarySignal(ctx, "PowerShell hidden code (opaque native command grammar)");
+        }
+      }
+      const argumentsCode = nativePayload ? { sensitive: null, exfiltration: null } : inspectArgumentCode(stage, ctx, scanned, handled);
+      sensitive ??= argumentsCode.sensitive;
+      argumentExfiltration ??= argumentsCode.exfiltration;
+      materialize?.();
+      const first = stage.tokens[0];
+      if (name !== undefined && (!POWERSHELL_COMMAND_POLICIES[name] || POWERSHELL_COMMAND_POLICIES[name]?.native) && !isPowerShell(name)
+        && first?.kind === "word" && !first.quoted && !/^[\[$@]/.test(first.text)) ctx.files.observeOpaqueEffects();
     }
-    const argumentsCode = nativePayload ? { sensitive: null, exfiltration: null } : inspectArgumentCode(stage, ctx, scanned, handled);
-    sensitive ??= argumentsCode.sensitive;
-    argumentExfiltration ??= argumentsCode.exfiltration;
-    materialize?.();
-    const first = stage.tokens[0];
-    if (name !== undefined && (!POWERSHELL_COMMAND_POLICIES[name] || POWERSHELL_COMMAND_POLICIES[name]?.native) && !isPowerShell(name)
-      && first?.kind === "word" && !first.quoted && !/^[\[$@]/.test(first.text)) ctx.files.observeOpaqueEffects();
+    exfiltration ??= argumentExfiltration;
+    const boundary = candidate || sensitive !== null || exfiltration !== null || ctx.literalBoundary;
+    if (probe && !candidate && !boundary) return { sensitive: null, exfiltration: null, boundary: false };
+    const opaque = closedWorldSignal(pipelines, ctx, sensitive !== null);
+    if (opaque) ordinarySignal(ctx, opaque);
+    if (sensitive && !exfiltration) {
+      const detail = sensitive.replace(/^sensitive path argument/, "sensitive path");
+      if (networkText || hasNetwork(pipelines, ctx)) exfiltration = `${detail} with a network transport`;
+      else if (HIDDEN_CODE.test(normalizeDashes(command))) exfiltration = `${detail} with hidden code`;
+    }
+    const ordinaryAsk = ctx.ordinary.reason;
+    return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}), boundary: boundary || sensitive !== null || exfiltration !== null };
+  } catch (error) {
+    // Later analysis cannot erase a credential or transport floor already established.
+    if (!(error instanceof PowerShellBudgetError) || (sensitive === null && exfiltration === null)) throw error;
+    return { sensitive, exfiltration, ordinaryAsk: "PowerShell hidden code (analysis budget exceeded)", boundary: true };
   }
-  exfiltration ??= argumentExfiltration;
-  const boundary = candidate || sensitive !== null || exfiltration !== null || ctx.literalBoundary;
-  if (probe && !candidate && !boundary) return { sensitive: null, exfiltration: null, boundary: false };
-  const opaque = closedWorldSignal(pipelines, ctx, sensitive !== null);
-  if (opaque) ordinarySignal(ctx, opaque);
-  if (sensitive && !exfiltration) {
-    const detail = sensitive.replace(/^sensitive path argument/, "sensitive path");
-    if (networkText || hasNetwork(pipelines, ctx)) exfiltration = `${detail} with a network transport`;
-    else if (HIDDEN_CODE.test(normalizeDashes(command))) exfiltration = `${detail} with hidden code`;
-  }
-  const ordinaryAsk = ctx.ordinary.reason;
-  return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}), boundary: boundary || sensitive !== null || exfiltration !== null };
 }

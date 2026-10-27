@@ -253,6 +253,14 @@ describe("execution router", () => {
       reason: "legacy fixture without declared confinement",
     });
     const legacyPlan = getHostShellExecutionPlan();
+    if (process.platform === "win32") {
+      expect(legacyPlan).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, fallbackReason: "windows-partial-shell-acl-unsafe" });
+      expect(executionRouteForHostShellPlan(legacyPlan)).toBe("host");
+      expect(buildHostShellExecutionRouteProjection({
+        legacyPlan, toolName: "bash", command: "printf ok", cwd: "/workspace", timeoutSeconds: 120, background: false,
+      })).toMatchObject({ route: "host", fallback: "windows-partial-shell-acl-unsafe" });
+      return;
+    }
     expect(legacyPlan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "active-sandbox-not-shell-contained" });
     expect(executionRouteForHostShellPlan(legacyPlan)).toBeNull();
 

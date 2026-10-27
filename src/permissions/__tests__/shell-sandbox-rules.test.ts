@@ -111,7 +111,7 @@ describe("shell confinement and escape rules", () => {
     mkdirSync(join(process.env.HOME!, ".ssh"));
     writeFileSync(join(process.env.HOME!, ".ssh", "id_rsa"), "fixture");
     symlinkSync(join(process.env.HOME!, ".ssh"), join(clean, "linked"), "junction");
-    expect(check(`grep --dereference-recursive term ${clean}`, true)).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/sensitive|민감/) });
+    expect(check(`grep --dereference-recursive term '${clean.replace(/\\/g, "/")}'`, true)).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/sensitive|민감/) });
   });
 
   it("does not turn opaque runner arguments into an irreversible floor", () => {

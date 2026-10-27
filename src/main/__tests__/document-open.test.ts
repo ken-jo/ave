@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { pathToFileURL } from "node:url";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolExecutionContext } from "../../tools/types.js";
 
@@ -53,7 +54,7 @@ describe("document panel opening", () => {
   it("returns a file link without sending a panel request in link mode", async () => {
     state.mode = "link";
     const result = await openDocumentForSession("/workspace/a b.xlsx", context());
-    expect(JSON.parse(result.output)).toMatchObject({ mode: "link", opened: false, fileLink: "file:///workspace/a%20b.xlsx" });
+    expect(JSON.parse(result.output)).toMatchObject({ mode: "link", opened: false, fileLink: pathToFileURL("/workspace/a b.xlsx").href });
     expect(sender.send).not.toHaveBeenCalled();
   });
   it("refuses an expired acknowledgement even before the overdue timer runs", async () => {

@@ -393,17 +393,34 @@ describe("Windows helper integrity", () => {
   });
 
   // Run the captured step against a path that already holds something: it must refuse, and leave that object's owner and DACL exactly as they were.
-  it.runIf(process.platform === "win32").each(["Administrators-owned directory", "SYSTEM-owned directory", "junction"])(
+  it.runIf(process.platform === "win32").for(["Administrators-owned directory", "SYSTEM-owned directory", "junction"])(
     "refuses a private path that is already a %s and changes nothing",
-    async (kind) => {
+    async (kind, context) => {
       const [, script] = await captureScripts();
       const parent = mkdtempSync(join(tmpdir(), "ave-srt-existing-"));
       directories.push(parent);
-      const icacls = win32.join(process.env.SystemRoot!, "System32", "icacls.exe");
       const target = join(parent, "target");
-      mkdirSync(target);
-      execFileSync(icacls, [target, "/setowner", kind === "Administrators-owned directory" ? "*S-1-5-32-544" : "*S-1-5-18", "/q"],
-        { windowsHide: true, stdio: "pipe" });
+      if (kind !== "junction") {
+        const ownerSid = kind === "Administrators-owned directory" ? "S-1-5-32-544" : "S-1-5-18";
+        const ownership = spawnSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+          "-NoProfile", "-NonInteractive", "-Command",
+          [
+            "$ErrorActionPreference='Stop'",
+            "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+            "$acl=[System.Security.AccessControl.DirectorySecurity]::new()",
+            `$acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('${ownerSid}'))`,
+            "$acl.SetAccessRuleProtection($true,$false)",
+            "$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))",
+            `try { [System.IO.Directory]::CreateDirectory('${target.replace(/'/g, "''")}',$acl) | Out-Null } catch [System.UnauthorizedAccessException], [System.Security.AccessControl.PrivilegeNotHeldException] { exit 3 } catch [System.IO.IOException] { if (($_.Exception.HResult -band 0xffff) -eq 1307) { exit 3 }; throw }`,
+            `if ([System.IO.Directory]::GetAccessControl('${target.replace(/'/g, "''")}').GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne '${ownerSid}') { throw 'Foreign directory fixture retained the wrong owner' }`,
+          ].join("; "),
+        ], { windowsHide: true, encoding: "utf8" });
+        if (ownership.status === 3) return context.skip("Token cannot create a directory with a different owner");
+        expect(ownership.error).toBeUndefined();
+        expect(ownership.status, ownership.stderr).toBe(0);
+      } else {
+        mkdirSync(target);
+      }
       const path = kind === "junction" ? join(parent, "link") : target;
       if (kind === "junction") symlinkSync(target, path, "junction");
       const descriptor = () => execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
