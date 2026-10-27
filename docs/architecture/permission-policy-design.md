@@ -650,6 +650,8 @@ a renderer flag nor a process-wide capability can establish that a particular
 command will run sandboxed. This state contract does not redefine command-rule
 matching or approval precedence.
 
+Host-shipped JavaScript scripts use the [host runtime descriptor](../../src/main/host-script-runtime.ts), exposed as `javascriptRuntime` and `bundledScriptsDirectory` in the model's **Application paths (JSON)**. With `ELECTRON_RUN_AS_NODE=1`, only the exact host runtime and a verified direct first script operand receive read roles. The script must be a direct bundled CommonJS file matching the build manifest's SHA-256; arbitrary interpreters, traversal/namespace aliases and later data operands receive no such exemption. Workbook/request paths and redirections still pass ordinary path policy, permission and approval gates. Runtime directory reads are bound only for the admitted runtime/script pair, add no write roots and do not pierce protected read floors. The host script directory is write-denied in both host policy and native confinement, including beneath an admitted workspace. User-shadowable skill instructions cannot supply these trusted paths. The [workbook editing design](xlsx-skill-editing.md#execution-and-delivery) owns its script delivery and command examples.
+
 Sandbox writes are limited to the invocation's admitted project roots and
 temporary directories. Mandatory write denies protect these entries beneath
 each admitted write root, taking precedence over grants:

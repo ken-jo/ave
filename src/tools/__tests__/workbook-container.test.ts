@@ -8,6 +8,7 @@ import { TableDocumentError } from "../table-document-error.js";
 import { prepareWorkbookContainer } from "../workbook-container.js";
 
 const MIMETYPE = "application/vnd.oasis.opendocument.spreadsheet";
+const SPREADSHEET_MAIN_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 
 function workbook(bookType: XLSX.BookType, bookSST = false): Buffer {
   const book = XLSX.utils.book_new();
@@ -258,6 +259,125 @@ describe("workbook container validation", () => {
     expect(checked.length).toBeLessThan(bytes.length);
     expect(new AdmZip(checked).getEntries().every((entry) => (entry.header.flags & 8) === 0)).toBe(true);
     expect(XLSX.read(checked, { type: "buffer" }).SheetNames).toEqual(["Data"]);
+  });
+});
+
+describe("workbook calculation state", () => {
+  function calculationState(
+    children: string,
+    rootAttributes = `xmlns="${SPREADSHEET_MAIN_NAMESPACE}"`,
+    rootName = "workbook",
+  ): boolean {
+    const archive = new AdmZip(workbook("xlsx"));
+    archive.updateFile("xl/workbook.xml", Buffer.from(
+      `<${rootName} ${rootAttributes} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
+      + `<sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>${children}</${rootName}>`,
+    ));
+    let state: boolean | undefined;
+    prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS, 0, (value) => { state = value; });
+    expect(state).toBeDefined();
+    return state!;
+  }
+
+  it.each([
+    ['fullCalcOnLoad="1"', true],
+    ['fullCalcOnLoad="true"', true],
+    ['fullCalcOnLoad="&#49;"', true],
+    ['fullCalcOnLoad="&#x31;"', true],
+    ['fullCalcOnLoad="&#x74;rue"', true],
+    ['forceFullCalc="&#49;"', true],
+    ['calcCompleted="&#48;"', true],
+    ['calcCompleted="&#x66;alse"', true],
+    ['fullCalcOnLoad=" \ttrue\r\n "', true],
+    ['fullCalcOnLoad="&#x9;1&#xA;"', true],
+    ['fullCalcOnLoad="0" forceFullCalc="false" calcCompleted="1"', false],
+    ['fullCalcOnLoad="tr\nue"', false],
+    ['fullCalcOnLoad="&amp;#49;"', false],
+    ['fullCalcOnLoad="&lt;1&gt;"', false],
+    ['fullCalcOnLoad="&apos;1&quot;"', false],
+    ['fullCalcOnLoad="&custom;"', false],
+    ['fullCalcOnLoad="&#0;1"', false],
+    ['fullCalcOnLoad="&#xD800;1"', false],
+    ['fullCalcOnLoad="&#x110000;1"', false],
+    ['fullCalcOnLoad="&#xA0;1"', false],
+    ['fullcalconload="1"', false],
+    ['other:fullCalcOnLoad="1" xmlns:other="urn:other"', false],
+  ] as const)("normalizes calculation attributes %s", (attributes, expected) => {
+    expect(calculationState(`<calcPr ${attributes}/>`)).toBe(expected);
+  });
+
+  it("accepts a prefixed workbook and calculation element", () => {
+    expect(calculationState('<s:calcPr fullCalcOnLoad="1"/>', `xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}"`, "s:workbook"))
+      .toBe(true);
+  });
+
+  it("accepts inherited and locally declared calculation prefixes", () => {
+    expect(calculationState('<s:calcPr forceFullCalc="true"/>', `xmlns="${SPREADSHEET_MAIN_NAMESPACE}" xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}"`))
+      .toBe(true);
+    expect(calculationState(`<s:calcPr xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}" calcCompleted="false"/>`)).toBe(true);
+  });
+
+  it("accepts a default namespace on a child of a prefixed workbook", () => {
+    expect(calculationState(`<calcPr xmlns="${SPREADSHEET_MAIN_NAMESPACE}" fullCalcOnLoad="1"/>`,
+      `xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}"`, "s:workbook")).toBe(true);
+  });
+
+  it("keeps a prefixed workbook namespace separate from its default namespace", () => {
+    expect(calculationState('<calcPr fullCalcOnLoad="1"/>', `xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}"`, "s:workbook"))
+      .toBe(false);
+    expect(calculationState('<s:calcPr fullCalcOnLoad="1"/>',
+      `xmlns="urn:other" xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}"`, "s:workbook")).toBe(true);
+  });
+
+  it("decodes numeric references in namespace attributes", () => {
+    expect(calculationState('<calcPr fullCalcOnLoad="1"/>', `xmlns="${SPREADSHEET_MAIN_NAMESPACE.replaceAll("/", "&#47;")}"`))
+      .toBe(true);
+  });
+
+  it("accepts the strict main namespace", () => {
+    expect(calculationState('<calcPr fullCalcOnLoad="1"/>', 'xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"')).toBe(true);
+  });
+
+  it.each([
+    [SPREADSHEET_MAIN_NAMESPACE, "http://purl.oclc.org/ooxml/spreadsheetml/main"],
+    ["http://purl.oclc.org/ooxml/spreadsheetml/main", SPREADSHEET_MAIN_NAMESPACE],
+  ])("ignores calculation properties mixing root namespace %s with child namespace %s", (rootNamespace, childNamespace) => {
+    expect(calculationState(`<calcPr xmlns="${childNamespace}" fullCalcOnLoad="1"/>`, `xmlns="${rootNamespace}"`))
+      .toBe(false);
+  });
+
+  it("ignores a foreign calculation element inside an extension list", () => {
+    expect(calculationState('<extLst><ext uri="urn:extension"><other:calcPr xmlns:other="urn:other" fullCalcOnLoad="1"/></ext></extLst>'))
+      .toBe(false);
+  });
+
+  it.each([
+    '<extLst><calcPr fullCalcOnLoad="1"/></extLst>',
+    '<workbook><calcPr fullCalcOnLoad="1"/></workbook>',
+    '<calcPr xmlns="urn:other" fullCalcOnLoad="1"/>',
+    '<calcPr xmlns="" fullCalcOnLoad="1"/>',
+    '<other:calcPr xmlns:other="urn:other" fullCalcOnLoad="1"/>',
+    '<other:calcPr fullCalcOnLoad="1"/>',
+    '<!-- <calcPr fullCalcOnLoad="1"/> -->',
+  ])("ignores calculation properties outside the direct main-namespace child: %s", (children) => {
+    expect(calculationState(children)).toBe(false);
+  });
+
+  it("requires the workbook root to use the main namespace", () => {
+    expect(calculationState(`<calcPr xmlns="${SPREADSHEET_MAIN_NAMESPACE}" fullCalcOnLoad="1"/>`, 'xmlns="urn:other"')).toBe(false);
+    expect(calculationState(`<calcPr xmlns="${SPREADSHEET_MAIN_NAMESPACE}" fullCalcOnLoad="1"/>`, "")).toBe(false);
+  });
+
+  it("resolves prefix shadowing and restores sibling namespace scope", () => {
+    const rootAttributes = `xmlns="${SPREADSHEET_MAIN_NAMESPACE}" xmlns:s="${SPREADSHEET_MAIN_NAMESPACE}"`;
+    expect(calculationState('<s:calcPr xmlns:s="urn:other" fullCalcOnLoad="1"/>', rootAttributes)).toBe(false);
+    expect(calculationState('<extLst xmlns="urn:other" xmlns:s="urn:other"/><s:calcPr fullCalcOnLoad="1"/>', rootAttributes)).toBe(true);
+    expect(calculationState('<extLst xmlns="urn:other"><ext/></extLst><calcPr fullCalcOnLoad="1"/>')).toBe(true);
+  });
+
+  it("still refuses custom entity declarations before calculation inspection", () => {
+    expect(() => calculationState('<!DOCTYPE workbook [<!ENTITY flag "1">]><calcPr fullCalcOnLoad="&flag;"/>'))
+      .toThrow("Package XML declarations and text sections are unsupported");
   });
 });
 

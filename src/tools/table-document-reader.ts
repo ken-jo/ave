@@ -291,7 +291,8 @@ function parseWorkbook(
   limits: TableDocumentLimits,
   window?: PreviewTableWindow,
 ): Omit<PreviewTableDocument, "format"> {
-  const checkedBytes = prepareWorkbookContainer(bytes, format, limits, sheetIndex);
+  let needsRecalculation = false;
+  const checkedBytes = prepareWorkbookContainer(bytes, format, limits, sheetIndex, (value) => { needsRecalculation = value; });
   const common: XLSX.ParsingOptions = {
     type: "buffer",
     cellFormula: false,
@@ -377,6 +378,7 @@ function parseWorkbook(
     });
   }
   return {
+    needsRecalculation,
     sheetNames,
     totalSheets: allNames.length,
     sheetsTruncated: allNames.length > sheetNames.length,
@@ -421,7 +423,7 @@ export async function parseTableDocument(
   if (format === "csv" || format === "tsv") {
     if (sheetIndex !== 0) throw new TableDocumentError("sheet-not-found", `${format} has one sheet`);
     const sheet = await parseDelimited(bytes, format, limits, window);
-    return { format, sheetNames: [sheet.name], totalSheets: 1, sheetsTruncated: false, sheet };
+    return { format, needsRecalculation: false, sheetNames: [sheet.name], totalSheets: 1, sheetsTruncated: false, sheet };
   }
   return { format, ...parseWorkbook(bytes, format, sheetIndex, limits, window) };
 }

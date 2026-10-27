@@ -1,4 +1,5 @@
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { basename, delimiter, isAbsolute, sep } from "node:path";
 
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators, isSensitivePath } from "../permissions/sensitive-paths.js";
@@ -141,6 +142,7 @@ export function collectShellExecutableReadPaths(
     path() {},
     command(event) {
       if (event.functionCall) return;
+      for (const path of hostScriptInvocationReadPaths(event.argv, event.environment)) paths.add(path);
       const outer = event.node.words[0] && staticShellWord(event.node.words[0]);
       if (outer && !outer.includes("/") && event.definedFunctions.includes(outer)) return;
       const prefix = event.node.words.slice(0, event.node.words.indexOf(event.effective.words[0]!));
