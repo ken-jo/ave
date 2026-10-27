@@ -19,8 +19,6 @@ interface OfflineProcessInput {
   args: readonly string[];
   /** Caller-authenticated immutable runtime closure; never renderer supplied. */
   runtimeDirectories: readonly string[];
-  /** Additional authenticated executable files for this launch only. */
-  runtimeFiles?: readonly string[];
   inputDirectory: string;
   outputDirectory: string;
   ipcDirectory: string;
@@ -74,18 +72,11 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   const source = await canonicalDirectory(input.inputDirectory);
   const ipc = await canonicalDirectory(input.ipcDirectory);
   const runtimes = await Promise.all(input.runtimeDirectories.map(canonicalDirectory));
-  const runtimeFiles = await Promise.all((input.runtimeFiles ?? []).map(async path => {
-    if (!isAbsolute(path) || resolve(path) !== path || /[\0*?\[\]]/u.test(path)) throw new Error("Invalid offline runtime file.");
-    const entry = await lstat(path);
-    if (!entry.isFile() || entry.isSymbolicLink() || await realpath(path) !== path) throw new Error("Offline runtime file identity is invalid.");
-    await assertCodexExecutableLocation(path);
-    return path;
-  }));
   if (!within(output, ipc) || within(source, output) || within(output, source)
     || runtimes.length === 0 || runtimes.some(path => within(path, output) || within(output, path) || within(path, source))) {
     throw new Error("Offline process filesystem roots overlap.");
   }
-  if (!runtimes.some(root => within(root, input.command)) && !runtimeFiles.includes(input.command)) throw new Error("Offline executable is outside its authenticated runtime.");
+  if (!runtimes.some(root => within(root, input.command))) throw new Error("Offline executable is outside its authenticated runtime.");
   await assertCodexExecutableLocation(input.command);
   const systemReads = process.platform === "darwin"
     ? ["/bin/sh", "/usr/bin/env", "/private/var/select/sh", "/usr/lib", "/System/Library", "/Library/Fonts", "/dev/null", "/dev/random", "/dev/urandom"]
@@ -105,7 +96,7 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   // Only the authenticated runtime closure may reopen its installed private namespace.
   const readConfig = {
     denyOnly: ["/", ...denies.patterns], literalDenyOnly: denies.literals,
-    allowWithinDeny: reads.patterns, literalAllowWithinDeny: [...reads.literals, ...runtimes, ...runtimeFiles],
+    allowWithinDeny: reads.patterns, literalAllowWithinDeny: [...reads.literals, ...runtimes],
   };
   const writeConfig = {
     allowOnly: writes.patterns, literalAllowOnly: [...writes.literals, "/dev/null"],
@@ -148,7 +139,7 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
     }
     input.signal.throwIfAborted();
     return { ...hardenLinuxSandboxWrap({ argv: ["/bin/sh", "-c", wrapped], env }, {
-      allowRead: [...reads.patterns, ...reads.literals, ...runtimes, ...runtimeFiles], denyWrite: [...writeDenies.patterns, ...writeDenies.literals],
+      allowRead: [...reads.patterns, ...reads.literals, ...runtimes], denyWrite: [...writeDenies.patterns, ...writeDenies.literals],
     }), release };
   } catch (error) { release(); throw error; }
 }

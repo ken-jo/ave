@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { VerifiedDocumentEngineInstallation } from "../main/document-engine-installation.js";
 import { createPrivateTempDirectory, assertCodexLocations } from "../main/codex-executable-location.js";
@@ -14,7 +14,7 @@ import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { sleep } from "../shared/abortable-deadline.js";
-import { DOCUMENT_ENGINE_UNO_BRIDGE } from "./libreoffice-uno-bridge.js";
+import { DOCUMENT_ENGINE_IMPORTER } from "../shared/document-engine-importer.js";
 
 type ConversionFormat = "docx" | "odt" | "pptx" | "xlsx" | "ods" | "hwp" | "hwpx";
 export interface ConvertedObservationDocument { pdf: Buffer; recalculated?: Buffer; structured?: Buffer }
@@ -22,8 +22,29 @@ export interface ConvertedObservationDocument { pdf: Buffer; recalculated?: Buff
 const ENGINE_PROCESS_LIMITS = Object.freeze({
   sessions: 16, queuedJobs: 4, queuedBytes: 40 * 1024 * 1024,
   temporaryBytes: 256 * 1024 * 1024, temporaryEntries: 4096,
-  diagnosticBytes: 64 * 1024, pollMs: 100, treePollMs: 250,
+  diagnosticBytes: 64 * 1024, pollMs: 100, treePollMs: 250, forwardReceiptMs: 2_000,
 });
+
+interface ExportTarget { extension: "pdf" | "odt" | "xlsx" | "ods"; filter: string }
+
+/** Host-selected export per admitted format; the request never carries a caller-chosen filter. */
+const EXPORTS: Readonly<Record<ConversionFormat, readonly ExportTarget[]>> = Object.freeze({
+  docx: [{ extension: "pdf", filter: "writer_pdf_Export" }],
+  odt: [{ extension: "pdf", filter: "writer_pdf_Export" }],
+  pptx: [{ extension: "pdf", filter: "impress_pdf_Export" }],
+  xlsx: [{ extension: "xlsx", filter: "Calc MS Excel 2007 XML" }],
+  ods: [{ extension: "ods", filter: "calc8" }],
+  hwp: [{ extension: "pdf", filter: "writer_pdf_Export" }, { extension: "odt", filter: "writer8" }],
+  hwpx: [{ extension: "pdf", filter: "writer_pdf_Export" }, { extension: "odt", filter: "writer8" }],
+});
+
+/** Host-authored readiness document: proves the forwarded conversion path before any admitted bytes are staged. */
+const READINESS_PROBE = `<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text"><office:body><office:text><text:p>Ave</text:p></office:text></office:body></office:document>
+`;
+
+/** Keeps the resident's frame list non-empty so a completed forwarded conversion does not terminate it. */
+const RESIDENT_FRAME_HOLDER = "private:factory/swriter";
 
 const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry">
@@ -35,6 +56,9 @@ const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 </item>
 <item oor:path="/org.openoffice.Office.Calc/Content/Update">
 <prop oor:name="Link" oor:op="fuse"><value>1</value></prop>
+</item>
+<item oor:path="/org.openoffice.Office.Writer/Content/Update">
+<prop oor:name="Link" oor:op="fuse"><value>2</value></prop>
 </item>
 <item oor:path="/org.openoffice.Office.Calc/Formula/Load">
 <prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>
@@ -50,8 +74,9 @@ interface RunningProcess {
   child: ChildProcess;
   completion: Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>;
   ended: boolean;
+  /** Diagnostic text since the last job boundary; the resident's window restarts for each forwarded job. */
   output: string;
-  stdout: string;
+  diagnosticBytes: number;
   failure?: Error;
   release(): void;
   drain?: Promise<void>;
@@ -63,12 +88,8 @@ interface SessionRuntime {
   output: string;
   profile: string;
   ipc: string;
-  pipeName: string;
-  python: string;
-  bridge: string;
   env: NodeJS.ProcessEnv;
   runtimeDirectories: string[];
-  pythonRuntimeFiles: string[];
   resident?: RunningProcess;
   children: Set<RunningProcess>;
   importerReady: boolean;
@@ -241,7 +262,6 @@ export class LibreOfficeSessionPool {
   private async createRuntime(session: EngineSession, signal: AbortSignal): Promise<SessionRuntime> {
     await session.installation.verifyBeforeSpawn(signal);
     const runtimeDirectory = await realpath(session.installation.root);
-    const python = await this.findPython(runtimeDirectory, signal);
     signal.throwIfAborted();
     const directory = await createPrivateTempDirectory(process.platform === "darwin" ? "/private/tmp/avd-" : "/tmp/avd-");
     const output = join(directory, "output");
@@ -249,10 +269,8 @@ export class LibreOfficeSessionPool {
     const profile = join(output, "profile");
     const ipc = join(output, "ipc");
     const runtime: SessionRuntime = {
-      directory, input, output, profile, ipc, pipeName: `ave_${randomUUID().replaceAll("-", "")}`,
-      python: python.command, bridge: join(input, "uno-bridge.py"),
-      env: { ...childEnvironment(output), ...python.env, OSL_SOCKET_PATH: ipc, UserInstallation: pathToFileURL(profile).href },
-      runtimeDirectories: [runtimeDirectory], pythonRuntimeFiles: python.runtimeFiles, children: new Set(), importerReady: false,
+      directory, input, output, profile, ipc, env: { ...childEnvironment(output), OSL_SOCKET_PATH: ipc },
+      runtimeDirectories: [runtimeDirectory], children: new Set(), importerReady: false,
     };
     // Publish ownership before any child starts, so cancellation can always drain it.
     session.runtime = runtime;
@@ -261,7 +279,6 @@ export class LibreOfficeSessionPool {
       await mkdir(join(profile, "user"), { recursive: true, mode: 0o700 });
       await mkdir(ipc, { mode: 0o700 });
       await writeFile(join(profile, "user", "registrymodifications.xcu"), PROFILE_SETTINGS, { flag: "wx", mode: 0o600 });
-      await writeFile(runtime.bridge, DOCUMENT_ENGINE_UNO_BRIDGE, { flag: "wx", mode: 0o400 });
       aborted(signal);
       await this.startResident(session, runtime, signal);
       return runtime;
@@ -277,18 +294,84 @@ export class LibreOfficeSessionPool {
       "--headless", "--norestore", "--nodefault", "--nofirststartwizard", "--nologo"];
   }
 
+  /**
+   * The resident owns the session profile and its private single-instance pipe. It opens no UNO acceptor:
+   * conversion clients forward fixed command lines through that pipe, and the resident performs the work.
+   */
   private async startResident(session: EngineSession, runtime: SessionRuntime, signal: AbortSignal): Promise<void> {
     const resident = await this.spawn(session, runtime, session.installation.executable,
-      [...this.baseArguments(runtime), `--accept=pipe,name=${runtime.pipeName};urp;StarOffice.ComponentContext`], signal);
+      [...this.baseArguments(runtime), RESIDENT_FRAME_HOLDER], signal);
     runtime.resident = resident;
-    await this.runBridge(session, runtime, { operation: "ready" }, signal).catch((error: unknown) => {
-      signal.throwIfAborted();
-      if (!(error instanceof TableDocumentError) || error.code !== "engine-failed") throw error;
-      const unavailable = new TableDocumentError("engine-runtime-unavailable", "The private document engine bridge could not start.");
-      Object.defineProperty(unavailable, "cause", { value: error });
-      throw unavailable;
-    });
-    if (resident.ended) throw resident.failure ?? failure("Document engine exited before its private API was ready.");
+    await this.awaitInstancePipe(runtime, resident, signal);
+    await this.probeReadiness(session, runtime, signal);
+    if (resident.ended) throw resident.failure ?? failure("Document engine exited before it was ready.");
+  }
+
+  /** A client started before the pipe exists would become a second office on this profile instead of forwarding. */
+  private async awaitInstancePipe(runtime: SessionRuntime, resident: RunningProcess, signal: AbortSignal): Promise<void> {
+    const expires = Date.now() + TOOL_TIMEOUT_POLICY.documentEngineStartupMs;
+    for (;;) {
+      aborted(signal);
+      if (resident.ended) throw resident.failure ?? failure("Document engine exited before its private pipe was ready.");
+      for (const name of await readdir(runtime.ipc)) {
+        if (!name.startsWith("OSL_PIPE_")) continue;
+        const entry = await lstat(join(runtime.ipc, name));
+        if (entry.isSocket()) return;
+      }
+      if (Date.now() >= expires) throw new TableDocumentError("parse-limit", "Document engine startup timed out.");
+      await sleep(ENGINE_PROCESS_LIMITS.pollMs, signal);
+    }
+  }
+
+  private async probeReadiness(session: EngineSession, runtime: SessionRuntime, signal: AbortSignal): Promise<void> {
+    const id = randomUUID();
+    const source = join(runtime.input, `${id}.fodt`);
+    const output = join(runtime.output, id);
+    await mkdir(output, { mode: 0o700 });
+    try {
+      await writeFile(source, READINESS_PROBE, { flag: "wx", mode: 0o400 });
+      const pdf = await this.dispatch(session, runtime, source, output, { extension: "pdf", filter: "writer_pdf_Export" }, undefined, signal);
+      if (!pdf.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw failure("Document engine readiness probe did not produce a PDF document.");
+    } finally {
+      await rm(source, { force: true });
+      await rm(output, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Forward one fixed conversion to the resident and return its output. The forwarding client exits 0 even when
+   * the resident's conversion failed, so success requires the resident's own receipt line and the expected file.
+   */
+  private async dispatch(session: EngineSession, runtime: SessionRuntime, source: string, outputDirectory: string,
+    target: ExportTarget, inputFilter: string | undefined, signal: AbortSignal): Promise<Buffer> {
+    const resident = runtime.resident;
+    if (!resident || resident.ended) throw failure("Document engine resident is unavailable.");
+    resident.output = "";
+    resident.diagnosticBytes = 0;
+    const stem = basename(source).replace(/\.[^.]+$/u, "");
+    const destination = join(outputDirectory, `${stem}.${target.extension}`);
+    const client = await this.run(session, runtime, session.installation.executable, [...this.baseArguments(runtime),
+      ...(inputFilter ? [`--infilter=${inputFilter}`] : []),
+      "--convert-to", `${target.extension}:${target.filter}`, "--outdir", outputDirectory, source], signal);
+    const receipt = (text: string): boolean => text.split("\n").some(line => line.startsWith(`convert ${source}`)
+      && line.endsWith(` -> ${destination} using filter : ${target.filter}`));
+    if (receipt(client.output)) throw failure("Document engine conversion bypassed the session instance.");
+    const expires = Date.now() + ENGINE_PROCESS_LIMITS.forwardReceiptMs;
+    while (!receipt(resident.output)) {
+      if (resident.ended) throw resident.failure ?? failure("Document engine resident exited during a conversion.");
+      if (Date.now() >= expires) {
+        const missing = failure("Document engine session instance did not acknowledge the conversion.");
+        Object.defineProperty(missing, "cause", { value: { resident: resident.output, client: client.output } });
+        throw missing;
+      }
+      await sleep(ENGINE_PROCESS_LIMITS.pollMs, signal);
+    }
+    if (/^Error:/mu.test(resident.output)) {
+      const rejected = failure("Document engine rejected the conversion.");
+      Object.defineProperty(rejected, "cause", { value: { resident: resident.output } });
+      throw rejected;
+    }
+    return this.readConvertedOutput(destination, signal);
   }
 
   private async spawn(session: EngineSession, runtime: SessionRuntime, command: string,
@@ -299,8 +382,7 @@ export class LibreOfficeSessionPool {
     let wrapped: OfflineProcessWrap | undefined;
     try {
       wrapped = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,
-        ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories,
-        runtimeFiles: command === runtime.python ? runtime.pythonRuntimeFiles : [], env: runtime.env, signal });
+        ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env, signal });
       aborted(signal);
       session.installation.assertCurrent();
       const wrap = wrapped;
@@ -308,22 +390,20 @@ export class LibreOfficeSessionPool {
         env: wrap.env, cwd: runtime.output, stdio: ["ignore", "pipe", "pipe"], detached: true, shell: false,
       }, { label: "document-engine", killProcessGroup: true });
       let resolveCompletion!: (result: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void;
-      const process: RunningProcess = { child, ended: false, output: "", stdout: "", release: wrap.release,
+      const process: RunningProcess = { child, ended: false, output: "", diagnosticBytes: 0, release: wrap.release,
         completion: new Promise(resolve => { resolveCompletion = resolve; }) };
       runtime.children.add(process);
-      let diagnostics = 0;
-      const collect = (chunk: Buffer, stdout: boolean): void => {
-        diagnostics += chunk.length;
-        if (diagnostics > ENGINE_PROCESS_LIMITS.diagnosticBytes) {
+      const collect = (chunk: Buffer): void => {
+        process.diagnosticBytes += chunk.length;
+        if (process.diagnosticBytes > ENGINE_PROCESS_LIMITS.diagnosticBytes) {
           process.failure = failure("Document engine diagnostic output exceeds its limit.");
           void forceKillManagedChildProcess(child, "document engine diagnostic limit");
           return;
         }
         process.output += chunk.toString("utf8");
-        if (stdout) process.stdout += chunk.toString("utf8");
       };
-      child.stdout?.on("data", chunk => collect(chunk, true));
-      child.stderr?.on("data", chunk => collect(chunk, false));
+      child.stdout?.on("data", collect);
+      child.stderr?.on("data", collect);
       child.once("error", error => { process.failure = failure("Document engine process failed to start.");
         if (child.pid === undefined) { process.ended = true; wrap.release(); runtime.children.delete(process); resolveCompletion({ code: null, signal: null, error }); } });
       child.once("close", (code, childSignal) => {
@@ -383,17 +463,20 @@ export class LibreOfficeSessionPool {
       }
     });
     try {
-      await this.runBridge(session, runtime, { operation: "convert", source, outputDirectory: output, format }, signal);
+      // Spreadsheet caches are recomputed on load by the profile's always-recalculate policy, then exported.
+      const inputFilter = format === "hwp" || format === "hwpx" ? DOCUMENT_ENGINE_IMPORTER.filter : undefined;
+      const outputs: Buffer[] = [];
+      for (const target of EXPORTS[format]) {
+        outputs.push(await this.dispatch(session, runtime, source, output, target, inputFilter, signal));
+      }
       let result: ConvertedObservationDocument;
       if (format === "xlsx" || format === "ods") {
-        result = { pdf: Buffer.alloc(0), recalculated: await this.readConvertedOutput(join(output, `${id}.${format}`), signal) };
+        result = { pdf: Buffer.alloc(0), recalculated: outputs[0] };
       } else {
-        const pdf = await this.readConvertedOutput(join(output, `${id}.pdf`), signal);
+        const pdf = outputs[0]!;
         if (!pdf.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw failure("Document engine did not produce a PDF document.");
         result = { pdf };
-        if (format === "hwp" || format === "hwpx") {
-          result.structured = await this.readConvertedOutput(join(output, `${id}.odt`), signal);
-        }
+        if (format === "hwp" || format === "hwpx") result.structured = outputs[1];
       }
       if (monitorFailure) throw monitorFailure;
       await this.assertTemporaryBudget(runtime.output);
@@ -406,62 +489,6 @@ export class LibreOfficeSessionPool {
       await rm(source, { force: true });
       await rm(output, { recursive: true, force: true });
     }
-  }
-
-  private async runBridge(session: EngineSession, runtime: SessionRuntime,
-    operation: { operation: "ready" } | { operation: "convert"; source: string; outputDirectory: string; format: ConversionFormat },
-    signal: AbortSignal): Promise<void> {
-    const request = join(runtime.input, `request-${randomUUID()}.json`);
-    await writeFile(request, JSON.stringify({ version: 1, pipeName: runtime.pipeName,
-      connectionTimeoutMs: TOOL_TIMEOUT_POLICY.documentEngineStartupMs, pollMs: ENGINE_PROCESS_LIMITS.pollMs, ...operation }),
-    { flag: "wx", mode: 0o400 });
-    try {
-      const process = await this.run(session, runtime, runtime.python, ["-B", "-s", "-P", runtime.bridge, request], signal);
-      let response: unknown;
-      try { response = JSON.parse(process.stdout); } catch { throw failure("Document engine bridge response is invalid."); }
-      if (!response || typeof response !== "object" || Array.isArray(response)) throw failure("Document engine bridge response is invalid.");
-      const record = response as Record<string, unknown>;
-      if (Object.keys(record).length !== 2 || record.version !== 1
-        || record[operation.operation === "ready" ? "ready" : "converted"] !== true) {
-        throw failure("Document engine bridge response is invalid.");
-      }
-    } finally { await rm(request, { force: true }); }
-  }
-
-  private async findPython(root: string, signal: AbortSignal): Promise<{ command: string; env: Record<string, string>; runtimeFiles: string[] }> {
-    signal.throwIfAborted();
-    if (process.platform === "darwin") {
-      const framework = join(root, "Contents", "Frameworks", "LibreOfficePython.framework");
-      const version = join(framework, "Versions", "3.13");
-      const command = join(version, "Resources", "Python.app", "Contents", "MacOS", "LibreOfficePython");
-      const library = join(version, "lib", "python3.13");
-      const resources = join(root, "Contents", "Resources");
-      const entry = await lstat(command).catch((cause: unknown) => {
-        const unavailable = new TableDocumentError("engine-runtime-unavailable", "The bundled document engine bridge runtime is unavailable.");
-        Object.defineProperty(unavailable, "cause", { value: cause });
-        throw unavailable;
-      });
-      if (!entry.isFile() || entry.isSymbolicLink()) throw new TableDocumentError("engine-runtime-unavailable", "The bundled document engine bridge runtime is unavailable.");
-      return { command, runtimeFiles: [], env: { PYTHONHOME: framework, PATH: `${resources}:/usr/bin:/bin`,
-        PYTHONPATH: [resources, join(root, "Contents", "Frameworks"), library, join(library, "lib-dynload"), join(library, "site-packages")].join(":"),
-        UNO_PATH: resources, URE_BOOTSTRAP: `vnd.sun.star.pathname:${join(resources, "fundamentalrc")}`,
-        PYTHONNOUSERSITE: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONSAFEPATH: "1" } };
-    }
-    const program = join(root, "program");
-    const command = process.platform === "win32" ? join(program, "python.exe") : await realpath("/usr/bin/python3").catch((cause: unknown) => {
-      const unavailable = new TableDocumentError("engine-runtime-unavailable", "The system document engine bridge runtime is unavailable.");
-      Object.defineProperty(unavailable, "cause", { value: cause });
-      throw unavailable;
-    });
-    await assertCodexLocations([{ path: command, kind: "executable", routeKind: "native" }]).catch((cause: unknown) => {
-      const unavailable = new TableDocumentError("engine-runtime-unavailable", "The document engine bridge runtime did not pass executable admission.");
-      Object.defineProperty(unavailable, "cause", { value: cause });
-      throw unavailable;
-    });
-    return { command, runtimeFiles: process.platform === "win32" ? [] : [command],
-      env: { PYTHONPATH: program, UNO_PATH: program, URE_BOOTSTRAP: `vnd.sun.star.pathname:${join(program, "fundamentalrc")}`,
-        ...(process.platform === "linux" ? { LD_LIBRARY_PATH: program } : {}),
-        PYTHONNOUSERSITE: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONSAFEPATH: "1" } };
   }
 
   private async readConvertedOutput(path: string, signal: AbortSignal): Promise<Buffer> {
@@ -523,6 +550,7 @@ export class LibreOfficeSessionPool {
         candidates.push(join(root, entry.name, ...(process.platform === "darwin" ? ["Contents", "Home"] : [])));
       }
     }
+    const rejected: unknown[] = [];
     for (const candidate of candidates) {
       aborted(signal);
       const home = await realpath(candidate).catch((error: NodeJS.ErrnoException) => {
@@ -539,13 +567,20 @@ export class LibreOfficeSessionPool {
       const metadata = await readFile(join(home, "release"), "utf8");
       const major = /^JAVA_VERSION="(?:1\.)?(\d+)/mu.exec(metadata)?.[1];
       if (!major || Number(major) < 11) continue;
-      await assertCodexLocations([{ path: home, kind: "directory", routeKind: "native" },
-        { path: join(home, "bin", "java"), kind: "executable", routeKind: "native" }]).catch((cause: unknown) => {
-        const unavailable = new TableDocumentError("engine-runtime-unavailable", "The system Java runtime did not pass executable admission.");
-        Object.defineProperty(unavailable, "cause", { value: cause });
-        throw unavailable;
-      });
+      // Discovery picks the first admitted runtime in sorted order; a user-writable link is never trusted by location.
+      try {
+        await assertCodexLocations([{ path: home, kind: "directory", routeKind: "native" },
+          { path: join(home, "bin", "java"), kind: "executable", routeKind: "native" }]);
+      } catch (cause) {
+        rejected.push(cause);
+        continue;
+      }
       return home;
+    }
+    if (rejected.length > 0) {
+      const unavailable = new TableDocumentError("engine-runtime-unavailable", "The system Java runtime did not pass executable admission.");
+      Object.defineProperty(unavailable, "cause", { value: new AggregateError(rejected) });
+      throw unavailable;
     }
     throw new TableDocumentError("engine-runtime-unavailable", "A trusted system Java runtime version 11 or newer is required for this document format.");
   }
