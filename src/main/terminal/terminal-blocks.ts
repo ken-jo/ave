@@ -198,8 +198,10 @@ export const USER_INPUT_QUIET_MS = 1500;
 
 // Bound on the CSI parameter text kept while parsing output, enough for any query this tracker answers for.
 const MAX_QUERY_PARAMS_CHARS = 32;
-// Bound on unanswered queries of one kind; the oldest is dropped beyond it.
+// Bound on unanswered queries in total; the oldest is dropped beyond it.
 const MAX_OUTSTANDING_QUERIES = 16;
+// How long a query stays answerable. The emulator answers as soon as it parses the query, so a later reply-shaped write is the user's.
+export const EMULATOR_REPLY_WINDOW_MS = 2000;
 
 type QueryKind = "da1" | "da2" | "status" | "cursor" | "cursor-private" | `mode:${string}` | `color:${string}`;
 
@@ -217,11 +219,15 @@ const REPLY_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly kind: (
   { pattern: /^\u001b\[[IO]/u, kind: () => "focus" },
 ];
 
-// Which emulator replies the terminal's own programs have asked for. Input counts as the user's unless every byte of it is a reply to such a query: a
-// reply shape alone proves nothing, because the user can type or paste it (the line editor still runs any keys inside it).
+// Which emulator replies the terminal's own programs have asked for. Input counts as the user's unless it is exactly one reply to such a query, written
+// on its own within {@link EMULATOR_REPLY_WINDOW_MS} of the query (xterm.js sends each reply as a separate write). A reply shape alone proves nothing,
+// because the user can type or paste it (the line editor still runs any keys inside it); a stale or batched reply is therefore the user's.
 class EmulatorReplyLedger {
-  private readonly outstanding = new Map<QueryKind, number>();
+  // Unanswered queries, oldest first, each with the time its query was seen.
+  private outstanding: Array<{ readonly kind: QueryKind; readonly at: number }> = [];
   private focusReports = false;
+
+  constructor(private readonly now: () => number) {}
 
   // A complete CSI from the program (parameter text, final byte).
   noteQuery(params: string, final: string): void {
@@ -240,43 +246,27 @@ class EmulatorReplyLedger {
     if (query) this.expect(`color:${query[1]}`);
   }
 
-  // Whether `data` is wholly made of replies to outstanding queries (or focus reports while the program asked for them); consumes those queries only then.
+  // Whether `data` is exactly one reply to an unexpired outstanding query (or one focus report while the program asked for them); consumes that query.
   isEmulatorReply(data: string): boolean {
-    const consumed = new Map<QueryKind, number>();
-    let rest = data;
-    while (rest.length > 0) {
-      let matched = false;
-      for (const { pattern, kind } of REPLY_PATTERNS) {
-        const match = pattern.exec(rest);
-        if (!match) continue;
-        const answered = kind(match);
-        if (answered === "focus") {
-          if (!this.focusReports) return false;
-        } else {
-          const used = (consumed.get(answered) ?? 0) + 1;
-          if (used > (this.outstanding.get(answered) ?? 0)) return false;
-          consumed.set(answered, used);
-        }
-        rest = rest.slice(match[0].length);
-        matched = true;
-        break;
-      }
-      if (!matched) return false;
+    const now = this.now();
+    this.outstanding = this.outstanding.filter((query) => now - query.at <= EMULATOR_REPLY_WINDOW_MS);
+    for (const { pattern, kind } of REPLY_PATTERNS) {
+      const match = pattern.exec(data);
+      if (!match) continue;
+      if (match[0].length !== data.length) return false;
+      const answered = kind(match);
+      if (answered === "focus") return this.focusReports;
+      const index = this.outstanding.findIndex((query) => query.kind === answered);
+      if (index < 0) return false;
+      this.outstanding.splice(index, 1);
+      return true;
     }
-    for (const [kind, used] of consumed) {
-      const left = (this.outstanding.get(kind) ?? 0) - used;
-      if (left > 0) this.outstanding.set(kind, left);
-      else this.outstanding.delete(kind);
-    }
-    return true;
+    return false;
   }
 
   private expect(kind: QueryKind): void {
-    if (!this.outstanding.has(kind) && this.outstanding.size >= MAX_OUTSTANDING_QUERIES) {
-      const oldest = this.outstanding.keys().next().value;
-      if (oldest !== undefined) this.outstanding.delete(oldest);
-    }
-    this.outstanding.set(kind, Math.min(MAX_OUTSTANDING_QUERIES, (this.outstanding.get(kind) ?? 0) + 1));
+    if (this.outstanding.length >= MAX_OUTSTANDING_QUERIES) this.outstanding.shift();
+    this.outstanding.push({ kind, at: this.now() });
   }
 }
 
@@ -285,7 +275,7 @@ export class TerminalBlockTracker {
   // Where the escape-sequence parser stands between chunks.
   private esc: EscapeState = { state: "text" };
   // Queries the terminal's programs sent, which the emulator may answer through the input path.
-  private readonly replies = new EmulatorReplyLedger();
+  private readonly replies: EmulatorReplyLedger;
   // Display text of the chunk being parsed (see {@link recordOutput}).
   private display = "";
   private phase: Phase = "idle";
@@ -334,6 +324,7 @@ export class TerminalBlockTracker {
     this.nonce = options.nonce;
     this.marksPromptEnd = options.marksPromptEnd;
     this.now = options.now ?? Date.now;
+    this.replies = new EmulatorReplyLedger(this.now);
   }
 
   // True once the shell has emitted a marker carrying this terminal's nonce.

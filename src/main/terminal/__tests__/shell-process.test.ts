@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { findSandboxedShell, parseInnermostNsPid, parseProcStat, sandboxShellOwnProcesses, sandboxTerminalHolders, type OpenFileIdentity, type ProcEntry } from "../shell-process.js";
 
 function entry(pid: number, ppid: number, command: string, extra: Partial<ProcEntry> = {}): ProcEntry {
-  return { pid, ppid, command, pgrp: pid, session: pid, ttyNr: 0, tpgid: -1, ...extra };
+  return { pid, ppid, command, pgrp: pid, session: pid, ttyNr: 0, tpgid: -1, starttime: 1000 + pid, ...extra };
+}
+
+// The processes as they still are after the scan: unchanged.
+function unchanged(snap: ReadonlyMap<number, ProcEntry>) {
+  return async (pid: number): Promise<ProcEntry | "gone"> => snap.get(pid) ?? "gone";
 }
 
 function snapshot(...entries: ProcEntry[]): ReadonlyMap<number, ProcEntry> {
@@ -113,8 +118,10 @@ describe("/proc parsing", () => {
       session: 42,
       ttyNr: 34816,
       tpgid: 42,
+      starttime: 100,
     });
     expect(() => parseProcStat(1, "garbage")).toThrow(/expected format/);
+    expect(() => parseProcStat(1, "1 (x) S 0 1 1 0 -1 0")).toThrow(/start time/);
   });
 
   it("takes the innermost NSpid value", () => {
@@ -136,21 +143,21 @@ describe("sandboxTerminalHolders", () => {
 
   it("finds a sandbox process holding the shell's terminal open, only among the sandbox's own processes", async () => {
     const read = async (pid: number) => pid === 700 || pid === 546 || pid === 547 || pid === 800 ? [OTHER, TERMINAL] : [FILE, OTHER];
-    const found = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, read);
+    const found = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, read, unchanged(snapshot_));
     expect(found).toEqual({ holders: [detached], unreadable: null });
   });
 
   it("does not count a regular file or another terminal with the same numbers", async () => {
-    const found = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async () => [FILE, OTHER]);
+    const found = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async () => [FILE, OTHER], unchanged(snapshot_));
     expect(found).toEqual({ holders: [], unreadable: null });
   });
 
   it("skips a process that exited while it was read, and refuses one whose open files cannot be read", async () => {
-    expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 700 ? "gone" : [])).toEqual({ holders: [], unreadable: null });
-    const denied = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 700 ? "denied" : []);
+    expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 700 ? "gone" : [], unchanged(snapshot_))).toEqual({ holders: [], unreadable: null });
+    const denied = await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 700 ? "denied" : [], unchanged(snapshot_));
     expect(denied.unreadable).toContain("pid 700");
     // Outside the sandbox nothing is read, so an unreadable host process does not refuse.
-    expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 800 ? "denied" : [])).toEqual({ holders: [], unreadable: null });
+    expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 800 ? "denied" : [], unchanged(snapshot_))).toEqual({ holders: [], unreadable: null });
   });
 });
 
@@ -173,7 +180,7 @@ describe("the shell's own processes in the terminal holder check", () => {
   it("accepts the shell's launcher chain even though its open files cannot be read", async () => {
     const { snap, own } = ownProcesses();
     const read = async (pid: number) => LAUNCHER_PIDS.has(pid) ? "denied" as const : [TERMINAL];
-    expect(await sandboxTerminalHolders(snap, 538, own, TERMINAL, read)).toEqual({ holders: [], unreadable: null });
+    expect(await sandboxTerminalHolders(snap, 538, own, TERMINAL, read, unchanged(snap))).toEqual({ holders: [], unreadable: null });
   });
 
   it("refuses any other sandbox process holding the terminal, and one whose open files cannot be read", async () => {
@@ -181,9 +188,30 @@ describe("the shell's own processes in the terminal holder check", () => {
     const foreign = entry(700, 542, "python3");
     const { snap, own } = ownProcesses(foreign);
     expect(own.has(700)).toBe(false);
-    const holding = await sandboxTerminalHolders(snap, 538, own, TERMINAL, async (pid) => pid === 700 ? [TERMINAL] : "denied");
+    const holding = await sandboxTerminalHolders(snap, 538, own, TERMINAL, async (pid) => pid === 700 ? [TERMINAL] : "denied", unchanged(snap));
     expect(holding).toEqual({ holders: [foreign], unreadable: null });
-    const unreadable = await sandboxTerminalHolders(snap, 538, own, TERMINAL, async () => "denied");
+    const unreadable = await sandboxTerminalHolders(snap, 538, own, TERMINAL, async () => "denied", unchanged(snap));
     expect(unreadable.unreadable).toContain('"python3" (pid 700)');
+  });
+
+  it("refuses a foreign process named like a wrapper under a bridge, holding the terminal", async () => {
+    const impostor = entry(700, 542, "apply-seccomp");
+    const { snap, own } = ownProcesses(impostor);
+    expect(own.has(700)).toBe(false);
+    const read = async (pid: number) => LAUNCHER_PIDS.has(pid) ? "denied" as const : [TERMINAL];
+    expect(await sandboxTerminalHolders(snap, 538, own, TERMINAL, read, unchanged(snap))).toEqual({ holders: [impostor], unreadable: null });
+  });
+
+  it.each([
+    ["is reused by another process", (process: ProcEntry): ProcEntry | "gone" => ({ ...process, starttime: process.starttime + 1 })],
+    ["is reused under another parent", (process: ProcEntry): ProcEntry | "gone" => ({ ...process, ppid: 1 })],
+    ["has exited", (): ProcEntry | "gone" => "gone"],
+  ])("refuses when an exempt wrapper pid %s by the end of the scan", async (_name, change) => {
+    const { snap, own } = ownProcesses();
+    const read = async (pid: number) => LAUNCHER_PIDS.has(pid) ? "denied" as const : [TERMINAL];
+    // apply-seccomp's pid now names a different process, which the pid exemption would otherwise skip.
+    const current = async (pid: number) => pid === 544 ? change(snap.get(544)!) : snap.get(pid) ?? "gone";
+    const found = await sandboxTerminalHolders(snap, 538, own, TERMINAL, read, current);
+    expect(found.unreadable).toContain('"apply-seccomp" (pid 544) changed');
   });
 });

@@ -131,6 +131,8 @@ export interface ProcEntry {
   readonly ttyNr: number;
   // The foreground process group of that terminal; -1 when there is none.
   readonly tpgid: number;
+  // When the process started, in clock ticks after boot: with the pid, it names one process even after the pid is reused.
+  readonly starttime: number;
 }
 
 // Parse `/proc/<pid>/stat`; the `(comm)` field may itself hold spaces and parentheses.
@@ -138,8 +140,10 @@ export function parseProcStat(pid: number, text: string): ProcEntry {
   const open = text.indexOf("(");
   const close = text.lastIndexOf(")");
   if (open < 0 || close < open) throw new Error(`/proc/${pid}/stat is not in the expected format`);
-  // state ppid pgrp session tty_nr tpgid …
+  // state ppid pgrp session tty_nr tpgid … (fields 3 to 8), then starttime at field 22.
   const fields = text.slice(close + 2).split(" ");
+  const starttime = Number(fields[19]);
+  if (!Number.isSafeInteger(starttime) || starttime < 0) throw new Error(`/proc/${pid}/stat has no start time`);
   return {
     pid,
     command: text.slice(open + 1, close),
@@ -148,6 +152,7 @@ export function parseProcStat(pid: number, text: string): ProcEntry {
     session: Number(fields[3]),
     ttyNr: Number(fields[4]),
     tpgid: Number(fields[5]),
+    starttime,
   };
 }
 
@@ -290,13 +295,15 @@ export interface OpenFileIdentity {
 }
 
 // Every process in the sandbox (descendants of `ptyPid`) other than `exempt` that holds the terminal `terminal` open. A process that exits while it is read is
-// left out; one whose descriptors cannot be read makes the whole answer unreadable (refused, never assumed clean).
+// left out; one whose descriptors cannot be read makes the whole answer unreadable (refused, never assumed clean). Exemption is by pid, so once the scan
+// is done every exempt pid must still name the process the snapshot found (same start time, parent and program): a reused pid refuses.
 export async function sandboxTerminalHolders(
   snapshot: ReadonlyMap<number, ProcEntry>,
   ptyPid: number,
   exempt: ReadonlySet<number>,
   terminal: OpenFileIdentity,
   openFiles: (pid: number) => Promise<readonly OpenFileIdentity[] | "gone" | "denied">,
+  currentProcess: (pid: number) => Promise<ProcEntry | "gone">,
 ): Promise<{ readonly holders: ProcEntry[]; readonly unreadable: string | null }> {
   const inside = new Set<number>([ptyPid]);
   for (let grew = true; grew;) {
@@ -312,6 +319,13 @@ export async function sandboxTerminalHolders(
     if (files === "gone") continue;
     if (files === "denied") return { holders, unreadable: `the open files of ${JSON.stringify(snapshot.get(pid)?.command ?? "unknown")} (pid ${pid}) could not be read` };
     if (files.some((file) => file.characterDevice && file.dev === terminal.dev && file.rdev === terminal.rdev)) holders.push(snapshot.get(pid)!);
+  }
+  for (const pid of exempt) {
+    const found = snapshot.get(pid);
+    const current = await currentProcess(pid);
+    if (found === undefined || current === "gone" || current.starttime !== found.starttime || current.ppid !== found.ppid || current.command !== found.command) {
+      return { holders, unreadable: `the shell's own process ${JSON.stringify(found?.command ?? "unknown")} (pid ${pid}) changed while the terminal was checked` };
+    }
   }
   return { holders, unreadable: null };
 }
@@ -329,6 +343,16 @@ function errorCode(error: unknown): string | undefined {
 async function openFileIdentity(path: string): Promise<OpenFileIdentity> {
   const entry = await stat(path, { bigint: true });
   return { dev: entry.dev, rdev: entry.rdev, characterDevice: entry.isCharacterDevice() };
+}
+
+async function procCurrentProcess(pid: number): Promise<ProcEntry | "gone"> {
+  try {
+    return parseProcStat(pid, await readFile(`/proc/${pid}/stat`, "utf-8"));
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "ESRCH") return "gone";
+    throw error;
+  }
 }
 
 async function procOpenFiles(pid: number): Promise<readonly OpenFileIdentity[] | "gone" | "denied"> {
@@ -376,12 +400,12 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
     if (options.exclusive) {
       const terminal = await openFileIdentity(`/proc/${shell.pid}/fd/0`);
       holders = terminal.characterDevice
-        ? await sandboxTerminalHolders(snapshot, ptyPid, sandboxShellOwnProcesses(chain), terminal, procOpenFiles)
+        ? await sandboxTerminalHolders(snapshot, ptyPid, sandboxShellOwnProcesses(chain), terminal, procOpenFiles, procCurrentProcess)
         : { holders: [], unreadable: "the shell's input is not a terminal" };
     }
     // The shell must still be the process the snapshot found (same parent, same program) once everything about it has been read.
     const after = parseProcStat(shell.pid, await readFile(`/proc/${shell.pid}/stat`, "utf-8"));
-    if (after.ppid !== shell.ppid || after.command !== shell.command || after.tpgid !== shell.tpgid) {
+    if (after.starttime !== shell.starttime || after.ppid !== shell.ppid || after.command !== shell.command || after.tpgid !== shell.tpgid) {
       return { ok: false, reason: "the terminal's shell changed while it was being checked" };
     }
     return {

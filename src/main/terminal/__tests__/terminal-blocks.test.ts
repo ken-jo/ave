@@ -1,6 +1,7 @@
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
 import { describe, expect, it } from "vitest";
 import {
+  EMULATOR_REPLY_WINDOW_MS,
   TerminalBlockTracker,
   USER_INPUT_QUIET_MS,
   decodePercentEncoded,
@@ -726,9 +727,9 @@ describe("prompt state (whether a command may be typed now)", () => {
       ["\u001b[c", "\u001b[?1;2c"], ["\u001b[0c", "\u001b[?6c"], ["\u001b[>c", "\u001b[>0;276;0c"], ["\u001b[5n", "\u001b[0n"],
       ["\u001b[6n", "\u001b[12;40R"], ["\u001b[?6n", "\u001b[?12;40R"], ["\u001b[?2004$p", "\u001b[?2004;1$y"],
       ["\u001b]11;?\u0007", "\u001b]11;rgb:0000/0000/0000\u001b\\"], ["\u001b]4;1;?\u001b\\", "\u001b]4;1;rgb:cdcd/0000/0000\u0007"],
-      ["\u001b[?1004h", "\u001b[I"], ["", "\u001b[O\u001b[I"],
-      // Two queries answered in one write.
-      ["\u001b[c\u001b[6n", "\u001b[?1;2c\u001b[3;1R"],
+      ["\u001b[?1004h", "\u001b[I"], ["", "\u001b[O"], ["", "\u001b[I"],
+      // Two queries in one output, each answered by its own write as xterm.js sends them.
+      ["\u001b[c\u001b[6n", "\u001b[?1;2c"], ["", "\u001b[3;1R"],
     ];
     for (const [query, reply] of exchanges) {
       tracker.recordOutput(query);
@@ -742,6 +743,10 @@ describe("prompt state (whether a command may be typed now)", () => {
     // A reply shape with nothing asked for it, or asked for once and answered twice.
     { name: "unsolicited device report", query: "", input: "\u001b[?1;2c" },
     { name: "second answer to one query", query: "\u001b[5n", input: "\u001b[0n\u001b[0n" },
+    // Replies batched into one write: xterm.js sends each reply on its own.
+    { name: "two solicited replies in one write", query: "\u001b[c\u001b[6n", input: "\u001b[?1;2c\u001b[3;1R" },
+    { name: "a burst of 16 queued cursor replies", query: "\u001b[6n".repeat(16), input: "\u001b[1;1R".repeat(16) },
+    { name: "two focus reports in one write", query: "\u001b[?1004h", input: "\u001b[O\u001b[I" },
     { name: "focus report while focus reporting is off", query: "\u001b[?1004h\u001b[?1004l", input: "\u001b[I" },
     { name: "colour reply to a different colour query", query: "\u001b]10;?\u0007", input: "\u001b]11;rgb:0000/0000/0000\u0007" },
     // Keys around or inside a reply: the line editor runs them.
@@ -761,6 +766,22 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(tracker.userInputGeneration()).toBe(1);
     expect(tracker.typedSincePromptEnd()).toBe(true);
     expect(tracker.promptState()).toBe("pending-input");
+  });
+
+  it("counts a reply to an expired query as the user's input, and a reply inside the window as the emulator's", () => {
+    let clock = 10_000;
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => clock });
+    tracker.recordOutput(prompt());
+    tracker.recordOutput("\u001b[5n");
+    clock += EMULATOR_REPLY_WINDOW_MS;
+    tracker.recordInput("\u001b[0n");
+    expect(tracker.userInputGeneration()).toBe(0);
+    // The query was consumed; ask again and let the window pass unanswered.
+    tracker.recordOutput("\u001b[5n");
+    clock += EMULATOR_REPLY_WINDOW_MS + 1;
+    tracker.recordInput("\u001b[0n");
+    expect(tracker.userInputGeneration()).toBe(1);
+    expect(tracker.typedSincePromptEnd()).toBe(true);
   });
 
   it("never hands the marker nonce out in a block's command or output", () => {

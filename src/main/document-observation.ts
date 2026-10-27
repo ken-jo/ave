@@ -7,7 +7,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { findSessionMainWindowContents } from "./app-state.js";
 import { DocumentObservationAdapter, type JournalObservationLease } from "../observation/document-adapter.js";
 import { createTableObservationEngine } from "../observation/table-engine.js";
-import { ObservationDaemon } from "../observation/daemon.js";
+import { ObservationCapacityError, ObservationDaemon } from "../observation/daemon.js";
 import {
   isObservationAck, OBSERVATION_LIMITS,
   type ObservationBinding, type DocumentObservationEngine, type ObservationIdentity,
@@ -111,7 +111,8 @@ export class DocumentObservationRuntime {
     this.prune();
     for (const view of this.views.values()) if (view.event.sender === event.sender && view.event.senderFrame === event.senderFrame
       && view.sessionId === sessionId && view.path === path) this.release(view.id);
-    if (this.views.size >= OBSERVATION_LIMITS.maxViews) throw new TableDocumentError("busy", "Document observation limit exceeded");
+    // The daemon's limit is shared with terminal and browser targets, so its capacity, not the document view count, decides.
+    if (this.views.size >= OBSERVATION_LIMITS.maxViews || !this.daemon.hasCapacity()) throw new TableDocumentError("busy", "Document observation limit exceeded");
     const id = randomUUID();
     const release = (): void => this.release(id);
     const handleNavigation = (_event: unknown, _url: string, _status: number, _text: string,
@@ -129,13 +130,20 @@ export class DocumentObservationRuntime {
       event.sender.removeListener("did-frame-navigate", handleNavigation);
     } };
     this.views.set(id, view);
-    this.adapter.registerView({ id, sessionId, path, hash: digest(bytes), document,
-      isCurrent: () => this.isCurrent(view),
-      onEvents: (events) => {
-        if (!this.isCurrent(view)) { this.release(id); return; }
-        event.sender.send(CHANNELS.preview.observationEvents, events);
-      },
-    });
+    try {
+      this.adapter.registerView({ id, sessionId, path, hash: digest(bytes), document,
+        isCurrent: () => this.isCurrent(view),
+        onEvents: (events) => {
+          if (!this.isCurrent(view)) { this.release(id); return; }
+          event.sender.send(CHANNELS.preview.observationEvents, events);
+        },
+      });
+    } catch (error) {
+      // Leave no view owner, listener or timer behind.
+      this.release(id);
+      if (error instanceof ObservationCapacityError) throw new TableDocumentError("busy", "Document observation limit exceeded");
+      throw error;
+    }
     for (const target of this.knownTargets.values()) if (target.identity.sessionId === sessionId && target.path === path) {
       this.adapter.admitKnownTarget(sessionId, target.identity.turnId, path);
     }

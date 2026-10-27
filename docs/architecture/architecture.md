@@ -287,7 +287,9 @@ existing size ceiling, refusal rules, backup and atomic replacement; the host
 has no edit IPC, staging publisher, workbook transaction or write token.
 
 Each daemon has at most 16 active targets across document views, browser
-sessions and terminal subscriptions, 256 queued events and 1 MiB of queued metadata per target. It sends
+sessions and terminal subscriptions, 256 queued events and 1 MiB of queued
+metadata per target. A document open at that shared limit answers `busy` and
+leaves no view owner behind. It sends
 batches of at most 32 events with at most 64 unacknowledged events per target.
 Repeated pending document elements coalesce by address; document overload produces a
 resynchronization status and a fresh verified snapshot, never an unbounded
@@ -339,15 +341,21 @@ other sandbox process that holds the shell's terminal open, matched by device
 identity through `/proc/<pid>/fd`. The exempt processes are the shell's own,
 identified by their place in the verified chain: the launcher chain from the
 spawned process, the outer launcher's bridges, the pty relay and the shell.
-Any other process with an unreadable descriptor table also refuses.
+Exemption is by pid, so after the scan each exempt pid must still name the
+process the snapshot found (same start time, parent and program); a reused or
+vanished pid refuses. Any other process with an unreadable descriptor table
+also refuses.
 Otherwise `terminal_run` refuses with `shell-busy` and nothing is typed.
 Every write that reaches the terminal from its view counts as user input.
-The one exemption is a write made entirely of the emulator's replies to queries
+The one exemption is a write that is exactly one emulator reply to a query
 the terminal's own programs sent in their output: device attributes, status,
 cursor position, mode reports, colour queries, and focus reports while focus
-reporting is on. Each reply answers one outstanding query and must match that
-reply's exact form. A reply shape alone proves nothing, because the user can
-type or paste one, and the line editor runs any keys inside it.
+reporting is on. The reply must match its exact form, answer one outstanding
+query, and arrive within 2 seconds of that query, as its own write (xterm.js
+sends each reply separately). At most 16 queries are outstanding. A reply shape
+alone proves nothing, because the user can type or paste one, and the line
+editor runs any keys inside it; a late, unsolicited or batched reply therefore
+counts as user input.
 Second, once the user has typed into an Agent-lane terminal incarnation, a
 process they started may have left the terminal while keeping its egress
 credentials, or may later reopen the terminal by path; no process-table
