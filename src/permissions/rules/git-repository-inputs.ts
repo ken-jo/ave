@@ -91,7 +91,7 @@ function areOrdinaryWindowsPaths(paths: readonly string[]): boolean {
 export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
   if (!isAbsolute(cwd) || cwd.includes("\0")) return null;
   try {
-    // The cwd pin also admits every ancestor component walked below.
+    // Pinning the requested spelling first means realpath follows no reparse point.
     if (process.platform === "win32" && !areOrdinaryWindowsPaths([cwd])) return null;
     const workTree = realpathSync(cwd);
     const provenance: [string, string][] = [];
@@ -143,6 +143,8 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       }
       return true;
     };
+    // This pin uses the realpath spelling, so its ancestor components cover every
+    // provenance directory walked above as well as the metadata root itself.
     if (process.platform === "win32" && !areOrdinaryWindowsPaths([gitDirectory])) return null;
     if (!inspect(gitDirectory, "", 0)) return null;
     // Catch paths changed while another part of the bounded walk was inspected.

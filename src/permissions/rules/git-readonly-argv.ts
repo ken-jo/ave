@@ -185,8 +185,11 @@ export function gitReadOnlyEnvironment(
   });
 }
 
+/** The oldest native engine whose behavior the owned controls were proven against. */
+export const GIT_VERSION_FLOOR = Object.freeze({ major: 2, minor: 54 });
+
 export function isSupportedGitVersion(output: string): boolean {
   const match = /^git version (0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(?:\r?\n)?$/.exec(output);
   if (match === null || match[0] !== output) return false;
-  return Number(match[1]) === 2 && Number(match[2]) >= 54;
+  return Number(match[1]) === GIT_VERSION_FLOOR.major && Number(match[2]) >= GIT_VERSION_FLOOR.minor;
 }

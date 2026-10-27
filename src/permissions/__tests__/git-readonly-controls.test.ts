@@ -1,5 +1,5 @@
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -7,17 +7,69 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources } from "../../main/host-resources.js";
-import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../rules/git-readonly-argv.js";
+import { resolveWindowsPathKindHelper } from "../../main/windows-path-kind-launcher.js";
+import { GIT_VERSION_FLOOR, isSupportedGitVersion, readOnlyGitArguments, gitReadOnlyEnvironment } from "../rules/git-readonly-argv.js";
 import { inspectGitRepository } from "../rules/git-repository-inputs.js";
 
 vi.mock("node:fs", { spy: true });
+
+interface NativeGitEngine {
+  readonly version: string;
+  readonly admissible: boolean;
+}
+
+/**
+ * Classify the engine by its numeric version. Git for Windows reports
+ * "X.Y.Z.windows.N", which the product's strict upstream-format probe refuses
+ * outright, so branching on that probe would turn every Windows control into a
+ * refusal assertion even on an engine at or above the floor.
+ */
+function classifyNativeGit(output: string): NativeGitEngine {
+  const match = /^git version (\d+)\.(\d+)\.(\d+)(?:\.windows\.\d+)?\r?\n?$/.exec(output);
+  if (match === null) throw new Error(`Unrecognized native Git version output: ${JSON.stringify(output)}`);
+  const [major, minor, patch] = match.slice(1).map(Number) as [number, number, number];
+  return {
+    version: `${major}.${minor}.${patch}`,
+    admissible: major === GIT_VERSION_FLOOR.major && minor >= GIT_VERSION_FLOOR.minor,
+  };
+}
+
+/** Below the floor the product refuses the engine before any guarded execution. */
+function assertEngineRefused(engine: NativeGitEngine): void {
+  expect(engine.admissible).toBe(false);
+  expect(isSupportedGitVersion(`git version ${engine.version}\n`)).toBe(false);
+}
+
+const NATIVE_GIT = classifyNativeGit(spawnSync("git", ["--version"], { encoding: "utf8" }).stdout);
+const branches = { positive: 0, belowFloor: 0 };
+
+/** Controls prove the owned recipe on an admissible engine; an older engine must prove its refusal instead. */
+function control<Arguments extends unknown[]>(body: (...args: Arguments) => void | Promise<void>): (...args: Arguments) => void | Promise<void> {
+  return (...args) => {
+    if (!NATIVE_GIT.admissible) {
+      branches.belowFloor += 1;
+      assertEngineRefused(NATIVE_GIT);
+      return;
+    }
+    branches.positive += 1;
+    return body(...args);
+  };
+}
+
+const FIXTURE_MAINTENANCE_OFF = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "maintenance.auto", GIT_CONFIG_VALUE_0: "false" } as const;
 
 let root: string;
 let cwd: string;
 let environment: Record<string, string>;
 
+beforeAll(() => {
+  // Windows evidence pins every inspected path through the shipped native helper;
+  // a missing helper must fail here, not as an inspector refusal in every case.
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  if (process.platform === "win32") resolveWindowsPathKindHelper();
+});
+
 beforeEach(() => {
-  // Windows evidence pins every inspected path through the shipped native helper.
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   root = realpathSync(mkdtempSync(join(tmpdir(), "git-read-controls-")));
   stabilizeFixtureAncestorStats(root);
@@ -31,6 +83,9 @@ beforeEach(() => {
     HOME: home, XDG_CONFIG_HOME: home, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Boundary Author", GIT_AUTHOR_EMAIL: "author@example.invalid",
     GIT_COMMITTER_NAME: "Boundary Author", GIT_COMMITTER_EMAIL: "author@example.invalid",
+    // Fixture commits would otherwise start a detached auto-maintenance child
+    // whose lock file churn in .git/objects races the checked inspection.
+    ...FIXTURE_MAINTENANCE_OFF,
   });
   succeed(native(["init", "--initial-branch=main"]));
   writeFileSync(join(cwd, "alpha.txt"), "base\n");
@@ -135,7 +190,7 @@ function removed(marker: string): void {
 }
 
 describe("native repository read controls", () => {
-  it("refuses filesystem comparison after checked repository metadata disappears", async () => {
+  it("refuses filesystem comparison after checked repository metadata disappears", control(async () => {
     const plan = checked(["diff", "left", "right", "--name-only"]);
     const invocation = guardedInvocation(plan);
     writeFileSync(join(cwd, "left"), "outside-left-content\n");
@@ -157,9 +212,9 @@ describe("native repository read controls", () => {
     expect(result.status).toBe(128);
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(/not a git repository/i);
-  });
+  }));
 
-  it.each(["--name-only", "--name-status", "--raw"])("preserves recursive two-revision %s output through plumbing", (output) => {
+  it.each(["--name-only", "--name-status", "--raw"])("preserves recursive two-revision %s output through plumbing", control((output) => {
     mkdirSync(join(cwd, "nested"));
     writeFileSync(join(cwd, "nested", "content.txt"), "initial\n");
     writeFileSync(join(cwd, "executable.sh"), "#!/bin/sh\nexit 0\n");
@@ -172,9 +227,9 @@ describe("native repository read controls", () => {
     const control = succeed(native(["diff", "HEAD~1", "HEAD", output]));
     expect(control).toContain("nested/content.txt");
     expect(succeed(guarded(checked(["diff", "HEAD~1", "HEAD", output])))).toBe(control);
-  });
+  }));
 
-  it.each(["clean", "process"] as const)("never converts worktree content through a %s filter added after admission", (kind) => {
+  it.each(["clean", "process"] as const)("never converts worktree content through a %s filter added after admission", control((kind) => {
     const plans = [
       ["log", "-n", "1"], ["show", "--no-patch", "HEAD"],
       ["diff", "HEAD~1", "HEAD", "--name-only"], ["diff", "HEAD~1", "HEAD", "--name-status"],
@@ -205,14 +260,15 @@ describe("native repository read controls", () => {
     }
     expect(readOnlyGitArguments(["git", "status", "--porcelain"])).toBeNull();
     expect(readOnlyGitArguments(["git", "diff", "--name-only"])).toBeNull();
-  });
+  }));
 
-  it("uses a native engine supporting the required controls independently of installation trust", () => {
-    expect(succeed(native(["--version"]))).toMatch(/^git version 2\.(?:5[4-9]|[6-9]\d|\d{3,})\./);
+  it("uses a native engine supporting the required controls independently of installation trust", control(() => {
+    expect(NATIVE_GIT.admissible).toBe(true);
+    expect(isSupportedGitVersion(`git version ${NATIVE_GIT.version}\n`)).toBe(true);
     expect(succeed(guarded(checked(["log", "-n", "1"])))).toContain("second subject");
-  });
+  }));
 
-  it("blocks external diff and text conversion after repository admission", () => {
+  it("blocks external diff and text conversion after repository admission", control(() => {
     const external = script("external-diff");
     const converter = script("text-converter", 'printf "executed\\n" > "$CONTROL_MARKER"\ncat "$1"');
     const plan = checked(["diff", "HEAD~1", "HEAD", "--raw"]);
@@ -228,9 +284,9 @@ describe("native repository read controls", () => {
     removed(converter.marker);
     succeed(guarded(plan, { CONTROL_MARKER: converter.marker }));
     expect(existsSync(converter.marker)).toBe(false);
-  });
+  }));
 
-  it("disables filesystem monitors and index hooks even after mutable configuration changes", () => {
+  it("disables filesystem monitors and index hooks even after mutable configuration changes", control(() => {
     const monitor = script("filesystem-monitor", 'printf "executed\\n" > "$CONTROL_MARKER"\nprintf "token\\0"');
     const hook = script("index-hook");
     const plan = checked(["diff", "HEAD~1", "HEAD", "--name-only"]);
@@ -250,9 +306,9 @@ describe("native repository read controls", () => {
     removed(hook.marker);
     succeed(guarded(plan, { CONTROL_MARKER: hook.marker }));
     expect(existsSync(hook.marker)).toBe(false);
-  });
+  }));
 
-  it("prevents signature verifier execution from log defaults", () => {
+  it("prevents signature verifier execution from log defaults", control(() => {
     const verifier = script("signature-verifier", 'printf "executed\\n" > "$CONTROL_MARKER"\nexit 1');
     const plan = checked(["log", "-n", "1"]);
     const tree = succeed(native(["rev-parse", "HEAD^{tree}"])).trim();
@@ -265,9 +321,9 @@ describe("native repository read controls", () => {
     removed(verifier.marker);
     expect(succeed(guarded(plan, { CONTROL_MARKER: verifier.marker }))).toContain("signed synthetic subject");
     expect(existsSync(verifier.marker)).toBe(false);
-  });
+  }));
 
-  it("owns pretty format, decoration, branch order and diff order after checks", () => {
+  it("owns pretty format, decoration, branch order and diff order after checks", control(() => {
     const history = checked(["log", "-n", "1"]);
     const branches = checked(["branch", "--list"]);
     const diff = checked(["diff", "HEAD~1", "HEAD", "--name-only"]);
@@ -289,9 +345,9 @@ describe("native repository read controls", () => {
     configure("log.decorate", "full");
     expect(succeed(native(["log", "--format=medium", "-n", "1"]))).toContain("private-decoration");
     expect(succeed(guarded(history))).not.toContain("private-decoration");
-  });
+  }));
 
-  it("disables both configured and default worktree mailmaps after admission", () => {
+  it("disables both configured and default worktree mailmaps after admission", control(() => {
     const plan = checked(["log", "-n", "1"]);
     const mailmap = "Private Synthetic Contact <private@example.invalid> Boundary Author <author@example.invalid>\n";
     writeFileSync(join(cwd, ".mailmap"), mailmap);
@@ -304,9 +360,9 @@ describe("native repository read controls", () => {
     configure("mailmap.file", outside);
     expect(succeed(native(["log", "-n", "1"]))).toContain("Outside Contact");
     expect(succeed(guarded(plan))).not.toContain("Outside Contact");
-  });
+  }));
 
-  it.each(["event", "perf", "normal"])("prevents trace2 %s writes from global configuration selected after admission", (kind) => {
+  it.each(["event", "perf", "normal"])("prevents trace2 %s writes from global configuration selected after admission", control((kind) => {
     const plan = checked(["log", "-n", "1"]);
     const target = join(root, `trace-${kind}`);
     const globalConfig = join(root, "global-config");
@@ -316,9 +372,9 @@ describe("native repository read controls", () => {
     rmSync(target);
     succeed(guarded(plan, { GIT_CONFIG_GLOBAL: globalConfig }));
     expect(existsSync(target)).toBe(false);
-  });
+  }));
 
-  it("clears inherited trace output and arbitrary executable aliases", () => {
+  it("clears inherited trace output and arbitrary executable aliases", control(() => {
     const plan = checked(["log", "-n", "1"]);
     const alias = script("alias-helper");
     configure("alias.control", "!" + alias.helper);
@@ -332,9 +388,9 @@ describe("native repository read controls", () => {
     expect(existsSync(trace)).toBe(false);
     expect(existsSync(alias.marker)).toBe(false);
     expect(readOnlyGitArguments(["git", "control"])).toBeNull();
-  });
+  }));
 
-  it("disables paging in a real terminal after repository paging defaults change", async () => {
+  it("disables paging in a real terminal after repository paging defaults change", control(async () => {
     const helper = script("pager-helper", 'printf "executed\\n" > "$CONTROL_MARKER"\ncat');
     const plan = checked(["log", "-n", "1"]);
     configure("core.pager", helper.helper);
@@ -351,9 +407,9 @@ describe("native repository read controls", () => {
     expect(result.output).toContain("second subject");
     expect(existsSync(helper.marker)).toBe(false);
     expect(metadataState()).toEqual(before);
-  });
+  }));
 
-  it("disables replacement-object indirection after repository admission", () => {
+  it("disables replacement-object indirection after repository admission", control(() => {
     const plan = checked(["show", "--no-patch", "HEAD"]);
     const original = succeed(native(["rev-parse", "HEAD"])).trim();
     const replacement = succeed(native(["rev-parse", "HEAD~1"])).trim();
@@ -361,9 +417,9 @@ describe("native repository read controls", () => {
     expect(succeed(native(["show", "--no-patch", "HEAD"]))).toContain("first subject");
     expect(succeed(guarded(plan))).toContain("second subject");
     expect(succeed(guarded(plan))).not.toContain("first subject");
-  });
+  }));
 
-  it("blocks lazy-fetch transport helpers after promisor metadata changes", () => {
+  it("blocks lazy-fetch transport helpers after promisor metadata changes", control(() => {
     const helper = script("transport-helper", 'printf "executed\\n" > "$CONTROL_MARKER"\nexit 1');
     const plan = checked(["show", "--no-patch", "HEAD"]);
     const object = succeed(native(["rev-parse", "HEAD"])).trim();
@@ -380,9 +436,9 @@ describe("native repository read controls", () => {
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
     expect(existsSync(helper.marker)).toBe(false);
-  });
+  }));
 
-  it("does not run a configured credential helper for admitted local reads", () => {
+  it("does not run a configured credential helper for admitted local reads", control(() => {
     const helper = script("credential-helper", 'printf "executed\\n" > "$CONTROL_MARKER"\nprintf "username=synthetic\\npassword=synthetic\\n"');
     const plan = checked(["log", "-n", "1"]);
     configure("credential.helper", "!" + helper.helper);
@@ -391,9 +447,9 @@ describe("native repository read controls", () => {
     succeed(guarded(plan, { CONTROL_MARKER: helper.marker, GIT_ASKPASS: helper.helper, SSH_ASKPASS: helper.helper }));
     expect(existsSync(helper.marker)).toBe(false);
     expect(readOnlyGitArguments(["git", "credential", "fill"])).toBeNull();
-  });
+  }));
 
-  it("prevents a real loopback HTTP request after lazy-fetch metadata changes", async () => {
+  it("prevents a real loopback HTTP request after lazy-fetch metadata changes", control(async () => {
     const marker = join(root, "http-request.marker");
     const server = spawn("node", ["-e", `
       const fs = require("node:fs");
@@ -418,7 +474,7 @@ describe("native repository read controls", () => {
       configure("remote.origin.url", `http://127.0.0.1:${port}/synthetic`);
       configure("remote.origin.promisor", "true");
       // Git for Windows stores loose objects read-only; unlink clears that attribute.
-    unlinkSync(join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)));
+      unlinkSync(join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)));
       native(["show", "--no-patch", "HEAD"], { NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" });
       expect(readFileSync(marker, "utf8")).toBe("request\n");
       rmSync(marker);
@@ -433,9 +489,9 @@ describe("native repository read controls", () => {
         await new Promise<void>((resolve) => { server.once("exit", () => resolve()); server.kill(); });
       }
     }
-  });
+  }));
 
-  it("pins the files backend when mutable config selects an outside reference-store URI", () => {
+  it("pins the files backend when mutable config selects an outside reference-store URI", control(() => {
     const plan = checked(["show", "--no-patch", "HEAD"]);
     const outside = join(root, "outside-ref-store");
     mkdirSync(join(outside, "refs", "heads"), { recursive: true });
@@ -448,9 +504,9 @@ describe("native repository read controls", () => {
     expect(succeed(guarded(plan))).toContain("second subject");
     expect(succeed(guarded(plan))).not.toContain("first subject");
     expect(gitReadOnlyEnvironment({ ...environment, GIT_REFERENCE_BACKEND: `files://${outside}` }, plan.repository, join(root, "absent-index")).GIT_REFERENCE_BACKEND).toBe("files");
-  });
+  }));
 
-  it("neutralizes executable defaults in a config include added after admission", () => {
+  it("neutralizes executable defaults in a config include added after admission", control(() => {
     const history = checked(["log", "-n", "1"]);
     const diff = checked(["diff", "HEAD~1", "HEAD", "--raw"]);
     const helper = script("included-helper");
@@ -468,9 +524,9 @@ describe("native repository read controls", () => {
     expect(succeed(guarded(history, { CONTROL_MARKER: helper.marker }))).not.toContain("INCLUDED_PRETTY");
     succeed(guarded(diff, { CONTROL_MARKER: helper.marker }));
     expect(existsSync(helper.marker)).toBe(false);
-  });
+  }));
 
-  it("strips command-scope configuration injected through inherited environment", () => {
+  it("strips command-scope configuration injected through inherited environment", control(() => {
     const plan = checked(["diff", "HEAD~1", "HEAD", "--name-only"]);
     const helper = script("environment-config-helper");
     const malicious = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "diff.external", GIT_CONFIG_VALUE_0: helper.helper, CONTROL_MARKER: helper.marker };
@@ -482,9 +538,9 @@ describe("native repository read controls", () => {
     expect(owned.GIT_CONFIG_VALUE_0).toBeUndefined();
     expect(succeed(guarded(plan, malicious))).toBe("alpha.txt\nzeta.txt\n");
     expect(existsSync(helper.marker)).toBe(false);
-  });
+  }));
 
-  it("rejects cached split-index writes and preserves timestamps for every admitted command family", () => {
+  it("rejects cached split-index writes and preserves timestamps for every admitted command family", control(() => {
     expect(readOnlyGitArguments(["git", "diff", "--cached", "--name-only"])).toBeNull();
     expect(readOnlyGitArguments(["git", "diff", "--staged", "--raw", "HEAD"])).toBeNull();
     const cases = [
@@ -509,9 +565,9 @@ describe("native repository read controls", () => {
       succeed(guarded(plan));
       expect(lstatSync(shared, { bigint: true }).mtimeNs).toBe(before);
     }
-  });
+  }));
 
-  it("ignores submodule metadata changes for revision-only name output", () => {
+  it("ignores submodule metadata changes for revision-only name output", control(() => {
     const first = succeed(native(["rev-parse", "HEAD~1"])).trim();
     const second = succeed(native(["rev-parse", "HEAD"])).trim();
     succeed(native(["update-index", "--add", "--cacheinfo", `160000,${first},synthetic`]));
@@ -527,5 +583,42 @@ describe("native repository read controls", () => {
     expect(succeed(native(["diff", "HEAD~1", "HEAD", "--name-only"]))).toBe("synthetic\n");
     expect(succeed(guarded(plan, { CONTROL_MARKER: helper.marker }))).toBe("");
     expect(existsSync(helper.marker)).toBe(false);
+  }));
+});
+
+describe("native engine and fixture preconditions", () => {
+  it("refuses a forced below-floor engine in either version spelling", () => {
+    const below = `${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor - 1}.9`;
+    for (const output of [`git version ${below}\n`, `git version ${below}.windows.1\n`]) {
+      const engine = classifyNativeGit(output);
+      expect(engine.version).toBe(below);
+      assertEngineRefused(engine);
+    }
+    const floor = classifyNativeGit(`git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor}.0.windows.1\n`);
+    expect(floor.admissible).toBe(true);
+    // The product probe accepts only the upstream spelling; the numeric version is what the floor governs.
+    expect(isSupportedGitVersion(`git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor}.0.windows.1\n`)).toBe(false);
+    expect(isSupportedGitVersion(`git version ${floor.version}\n`)).toBe(true);
+    expect(() => classifyNativeGit("git version 2.54.0 (custom)\n")).toThrow(/Unrecognized native Git version/);
+  });
+
+  it("starts no detached auto-maintenance from fixture commits", () => {
+    const enabledTrace = join(root, "maintenance-enabled.trace");
+    writeFileSync(join(cwd, "alpha.txt"), "maintenance control\n");
+    succeed(native(["add", "."]));
+    succeed(native(["-c", "commit.gpgSign=false", "commit", "-m", "maintenance control"], { GIT_TRACE: enabledTrace, GIT_CONFIG_VALUE_0: "true" }));
+    expect(readFileSync(enabledTrace, "utf8")).toMatch(/maintenance run --auto/);
+    const fixtureTrace = join(root, "maintenance-fixture.trace");
+    writeFileSync(join(cwd, "alpha.txt"), "fixture commit\n");
+    succeed(native(["add", "."]));
+    succeed(native(["-c", "commit.gpgSign=false", "commit", "-m", "fixture commit"], { GIT_TRACE: fixtureTrace }));
+    expect(readFileSync(fixtureTrace, "utf8")).not.toMatch(/maintenance run/);
+  });
+
+  // Runs last in this file so the CI log records which branch every control took.
+  it("reports the branch every native control took on this engine", () => {
+    process.stderr.write(`[git-readonly-controls] native Git ${NATIVE_GIT.version}: ${branches.positive} positive controls, ${branches.belowFloor} below-floor refusals\n`);
+    if (NATIVE_GIT.admissible) expect(branches.belowFloor).toBe(0);
+    else expect(branches.positive).toBe(0);
   });
 });

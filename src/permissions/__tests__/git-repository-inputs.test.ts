@@ -267,6 +267,37 @@ describe("checked repository metadata inputs", () => {
     expect(inspectGitRepository(cwd)).toBeNull();
   });
 
+  it.each([["a first-level child", ["config"]], ["a nested child", ["refs", "heads"]]] as const)("refuses a reparse row for %s in a child batch", (_name, relative) => {
+    setProcessPlatform("win32");
+    const target = join(cwd, ".git", ...relative);
+    const ordinaryPin = vi.mocked(windowsPathFacts.pinWindowsPaths).getMockImplementation()!;
+    vi.mocked(windowsPathFacts.pinWindowsPaths).mockImplementation(paths => ordinaryPin(paths).map((row, index) =>
+      paths[index] === target ? { ...row, attributes: 0x400, reparseTag: 0xa000000c } : row));
+    expect(inspectGitRepository(cwd)).toBeNull();
+    expect(vi.mocked(windowsPathFacts.pinWindowsPaths).mock.calls.some(([paths]) => paths.length > 0 && paths.includes(target))).toBe(true);
+  });
+
+  it("refuses a child batch answered with fewer rows than requested", () => {
+    setProcessPlatform("win32");
+    const ordinaryPin = vi.mocked(windowsPathFacts.pinWindowsPaths).getMockImplementation()!;
+    vi.mocked(windowsPathFacts.pinWindowsPaths).mockImplementation(paths => ordinaryPin(paths).slice(paths.length > 1 ? 1 : 0));
+    expect(inspectGitRepository(cwd)).toBeNull();
+  });
+
+  it("splits a child batch that would exceed the helper command line", () => {
+    setProcessPlatform("win32");
+    const heads = join(cwd, ".git", "refs", "heads");
+    const names = Array.from({ length: 160 }, (_, index) => `${String(index).padStart(3, "0")}-${"r".repeat(96)}`);
+    for (const name of names) fs.writeFileSync(join(heads, name), "0000000000000000000000000000000000000000\n");
+    expect(inspectGitRepository(cwd)).not.toBeNull();
+    const batches = vi.mocked(windowsPathFacts.pinWindowsPaths).mock.calls.map(([paths]) => paths)
+      .filter(paths => paths.length > 0 && paths.every(path => dirname(path) === heads));
+    expect(batches.length).toBeGreaterThan(1);
+    // Every path is pinned exactly once, and each helper command line stays below the CreateProcess limit.
+    expect(batches.flat().sort()).toEqual(names.map(name => join(heads, name)).sort());
+    for (const batch of batches) expect(batch.reduce((total, path) => total + path.length + 3, 0)).toBeLessThan(32_767);
+  });
+
   it.each([
     "[include]\npath = /outside", "[INCLUDE]\nPATH = /outside", "[include \"scope\"]\npath = /outside", "[include.scope]\npath = /outside",
     "[includeIf \"gitdir:/outside\"]\npath = /outside", "[InClUdEiF]\npath = /outside", "[includeIf.gitdir:/outside]\npath = /outside",

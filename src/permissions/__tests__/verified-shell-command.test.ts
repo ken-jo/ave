@@ -8,6 +8,7 @@ import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution, verifiedShellRequiresResultCheck, verifiedShellResultRefusal, type VerifiedShellCommand } from "../verified-shell-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { GIT_VERSION_FLOOR } from "../rules/git-readonly-argv.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { inspectShellCommand } from "../rules/shell-exfiltration.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -182,6 +183,23 @@ describe("bound native command authority", () => {
     vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: "/verified-older-git" });
     vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.53.0\n");
     expect(prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+  });
+  it.each([
+    ["below the floor", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor - 1}.9\n`, false],
+    ["below the floor in Git for Windows spelling", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor - 1}.9.windows.1\n`, false],
+    ["at the floor in Git for Windows spelling", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor}.0.windows.1\n`, false],
+    ["at the floor", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor}.0\n`, true],
+  ] as const)("admits through the version probe only an engine %s that the floor accepts", (name, version, admitted) => {
+    const command = "git log";
+    for (const dialect of ["bash", "powershell"] as const) {
+      // Each installation path has its own cached probe result.
+      vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: `/verified-git-${dialect}-${name.replaceAll(" ", "-")}` });
+      vi.mocked(childProcess.execFileSync).mockClear().mockReturnValue(version);
+      const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
+      expect(childProcess.execFileSync).toHaveBeenCalledWith(expect.stringContaining("/verified-git-"), ["--version"], expect.anything());
+      expect(handle === undefined).toBe(!admitted);
+      expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule === null).toBe(!admitted);
+    }
   });
   it.each(["git diff --cached --name-only", "git diff --staged --raw"])("never upgrades an index-reading command through a saved rule: %s", (command) => {
     for (const dialect of ["bash", "powershell"] as const) {

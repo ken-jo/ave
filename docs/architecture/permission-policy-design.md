@@ -410,7 +410,14 @@ canonical host-tool handle above, a protected fixed-installation executable
 proof and a supported version probe. The supported version range is Git 2.x
 from 2.54 onward; an unknown version, a different major version or a PATH-derived
 installation is unproven. Fixed Git installations are registered only on macOS
-and Linux; Windows Git admission remains unproven. The original raw words,
+and Linux; Windows Git admission remains unproven. Two recipe facts must be re-proven
+before a Windows installation is registered. Git for Windows maps only an exact
+`/dev/null` file open to `nul`; `core.hooksPath=/dev/null` is a directory prefix,
+so hooks resolve to `<drive>:\dev\null\<hook>`, which a non-administrator can
+create. Windows needs a hooks value that a non-administrator cannot create. The
+version probe also accepts only the upstream `git version X.Y.Z` spelling, while
+Git for Windows reports `X.Y.Z.windows.N`; the probe must accept that format
+without accepting other suffixes. The original raw words,
 quoting and program spelling remain the rule identity. The shared executable
 verifier, Bash literal-evaluation recipe and unproven runtime recipes retain
 their existing contracts.

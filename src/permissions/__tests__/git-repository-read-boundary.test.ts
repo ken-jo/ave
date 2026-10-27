@@ -42,6 +42,9 @@ beforeEach(() => {
     HOME: home, XDG_CONFIG_HOME: home, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Boundary Author", GIT_AUTHOR_EMAIL: "author@example.invalid",
     GIT_COMMITTER_NAME: "Boundary Author", GIT_COMMITTER_EMAIL: "author@example.invalid",
+    // Fixture commits would otherwise start a detached auto-maintenance child
+    // whose lock file churn in .git/objects races the checked inspection.
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "maintenance.auto", GIT_CONFIG_VALUE_0: "false",
   });
   vi.stubEnv("AVE_HOME", join(root, "state"));
   // Installation trust is mocked; native engine controls are a separate assertion.
