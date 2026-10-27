@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 // The OS deny floor projected per platform, pinned inline. Every platform's list is locked so a table edit is a reviewed change to this file, and the darwin list must be main's floor minus exactly the rows whose location belongs to another OS.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

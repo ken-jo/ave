@@ -1,3 +1,6 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +20,7 @@ import { settingsFilePath } from "../../data/settings-store.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, opendirSync: vi.fn(actual.opendirSync), readSync: vi.fn(actual.readSync) };
+  return { ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(actual), opendirSync: vi.fn(actual.opendirSync), readSync: vi.fn(actual.readSync) };
 });
 
 function withPlatform<T>(platform: "darwin" | "linux", action: () => T): T {

@@ -1,3 +1,6 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Across scopes, floors outrank deny, then ask, then allow; corrupt rule data must not silently disappear.
@@ -12,7 +15,7 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const { resolve, sep } = await import("node:path");
   return {
-    ...actual,
+    ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(actual),
     // Discover repositories only inside the fixture, independent of host ancestors.
     existsSync: (path: import("node:fs").PathLike) => {
       const fold = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
