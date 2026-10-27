@@ -32,6 +32,7 @@ import {
   ClaudeCodeSubscriptionError,
   claudeCodeRuntimeDirectoryNames,
 } from "./claude-code-subscription-client.js";
+import { configuredClaudeCodeReleaseFetch } from "./claude-code-authenticity.js";
 import { ClaudeCodeConversationRuntime } from "./claude-code-conversation-runtime.js";
 import {
   CodexAppServerClient,
@@ -406,6 +407,8 @@ export interface SubscriptionRuntimeServiceCreateOptions {
   readonly codexRuntimeLocator?: CodexRuntimeLocator;
   readonly acpRegistry?: AcpSubscriptionRuntimeRegistry;
   readonly claudeCodeClient?: ClaudeCodeSubscriptionClient;
+  /** Release-metadata transport for the production Claude Code client. Defaults to the boot-configured host network stack; having neither fails creation. */
+  readonly claudeCodeReleaseFetch?: typeof fetch;
   readonly createCodexConversationRuntime?: (
     options: CodexConversationRuntimeOptions,
   ) => CodexConversationRuntime;
@@ -547,6 +550,13 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+// Publisher verification must use the host network stack; there is no fallback to the process-global fetch.
+function requireClaudeCodeReleaseFetch(supplied: typeof fetch | undefined): typeof fetch {
+  const releaseFetch = supplied ?? configuredClaudeCodeReleaseFetch();
+  if (!releaseFetch) throw new Error("Claude Code release verification transport is not configured; boot must call configureClaudeCodeReleaseFetch first");
+  return releaseFetch;
+}
+
 // The renderer-safe meaning of a user-CLI resolution failure.
 function codexRuntimeErrorCode(
   code: CodexUserRuntimeErrorCode | "codex-runtime-not-configured",
@@ -628,8 +638,14 @@ export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntim
         return "subscription-runtime-incompatible";
       case "claude-code-runtime-unsafe-location":
         return "subscription-runtime-unsafe-location";
-      case "claude-code-runtime-unsafe-npm-location":
-        return "subscription-runtime-unsafe-npm-location";
+      case "claude-code-runtime-native-required":
+        return "subscription-runtime-native-required";
+      case "claude-code-runtime-unauthenticated":
+        return "subscription-runtime-unauthenticated";
+      case "claude-code-runtime-release-metadata-unavailable":
+        return "subscription-runtime-release-metadata-unavailable";
+      case "claude-code-runtime-version-unsupported":
+        return "subscription-runtime-version-unsupported";
       case "claude-code-runtime-unverified":
         return "subscription-chat-unavailable";
       case "claude-code-runtime-unavailable":
@@ -1073,6 +1089,9 @@ export class SubscriptionRuntimeService {
     openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
     options: SubscriptionRuntimeServiceCreateOptions = {},
   ): Promise<SubscriptionRuntimeService> {
+    // Resolved before any directory, registry or client is made, so a creation attempted before boot configured the transport leaves nothing behind
+    // and the lazy getter's next call starts clean.
+    const claudeCodeReleaseFetch = options.claudeCodeClient ? null : requireClaudeCodeReleaseFetch(options.claudeCodeReleaseFetch);
     const namespace = options.namespace ?? openFeatureNamespace("subscription-runtimes");
     const claudeDirs = claudeCodeRuntimeDirectoryNames();
     const [
@@ -1133,6 +1152,7 @@ export class SubscriptionRuntimeService {
       workspaceDir: claudeWorkspace,
       runtimeTempDir: claudeTemp,
       openAuthorizationUrl,
+      releaseFetch: claudeCodeReleaseFetch!,
     });
     return new SubscriptionRuntimeService(
       codexClient,
@@ -1421,7 +1441,7 @@ export class SubscriptionRuntimeService {
         candidate.model === undefined || catalog.models.some((model) => model.id === candidate.model);
       if (!selectable(safeSelection)) {
         if (!safeFallbackSelection || !selectable(safeFallbackSelection)) {
-          throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
+          throw new SubscriptionRuntimeServiceError("subscription-model-not-supported");
         }
         this.emitAudit({ provider: "codex", outcome: "model-fallback" });
         effectiveSelection = safeFallbackSelection;

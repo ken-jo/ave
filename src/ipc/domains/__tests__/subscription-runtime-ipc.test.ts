@@ -236,6 +236,22 @@ beforeEach(async () => {
 });
 
 describe("common subscription runtime IPC", () => {
+  it("projects publisher authentication failure without raw diagnostics or selecting another route", async () => {
+    const deps = makeDeps();
+    const failure = Object.assign(new Error("private signature diagnostic"), { code: "subscription-runtime-unauthenticated" });
+    runtime.getStatus.mockRejectedValueOnce(failure);
+    runtime.verify.mockRejectedValueOnce(failure);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const expected = { ok: false, error: "subscription-runtime-unauthenticated" };
+    await expect(invoke("ave:settings:subscription:status", "claude-code")).resolves.toEqual(expected);
+    await expect(invoke("ave:settings:subscription:use-for-chat", "claude-code", "claude-sonnet-5-5")).resolves.toEqual(expected);
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    expect(deps.conversationLoop.refreshProvider).not.toHaveBeenCalled();
+    expect(runtime.startLogin).not.toHaveBeenCalled();
+  });
+
   it("uses the central service, verifies Codex, validates its exact model, and persists the chat selection", async () => {
     const deps = makeDeps();
     const rewire = vi.fn();
@@ -926,7 +942,7 @@ describe("common subscription runtime IPC", () => {
 
     expect(await invoke("ave:settings:subscription:use-for-chat", "codex", "not-listed")).toMatchObject({
       ok: false,
-      error: "subscription-chat-unavailable",
+      error: "subscription-model-not-supported",
     });
     expect(await invoke("ave:settings:subscription:use-for-chat", "grok-build", "not-allowed")).toMatchObject({
       ok: false,

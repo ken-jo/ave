@@ -30,6 +30,9 @@ import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
 import { CodexExecutableLocationError } from "../codex-executable-location.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 
+// Release metadata is fetched only by real Linux publisher verification; these services never reach it.
+const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
+
 const CODEX_CONNECTED: CodexSubscriptionStatus = {
   runtime: "ready",
   connection: "connected",
@@ -101,7 +104,7 @@ function runtimeService(
   acpRegistry: AcpSubscriptionRuntimeRegistry,
   options: Partial<NonNullable<Parameters<typeof SubscriptionRuntimeService.create>[1]>> = {},
 ) {
-  return SubscriptionRuntimeService.create(async () => undefined, {
+  return SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
     namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
     codexClient: fakeCodexClient(),
     acpRegistry,
@@ -112,7 +115,7 @@ function runtimeService(
 describe("SubscriptionRuntimeService", () => {
   it("claims every persistent runtime directory for the current account when it starts", async () => {
     claimFakeRuntimeDirectories.mockClear();
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories, codexClient: fakeCodexClient(),
       acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
     });
@@ -129,10 +132,18 @@ describe("SubscriptionRuntimeService", () => {
     }
   });
 
+  it("refuses to build the Claude Code client without the host release transport instead of using the process-global fetch", async () => {
+    // Boot configures the transport (configureClaudeCodeReleaseFetch); this worker never ran boot, so nothing is configured.
+    await expect(SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories, codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+    })).rejects.toThrow(/release verification transport is not configured/u);
+  });
+
   it("refuses to start when a persistent runtime directory cannot be claimed", async () => {
     const refusal = new CodexExecutableLocationError("Runtime directory is owned by another account");
     const stopAll = vi.fn(async () => undefined);
-    await expect(SubscriptionRuntimeService.create(async () => undefined, {
+    await expect(SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: vi.fn(async () => { throw refusal; }), codexClient: fakeCodexClient(),
       acpRegistry: { stopAll } as unknown as AcpSubscriptionRuntimeRegistry,
     })).rejects.toBe(refusal);
@@ -163,7 +174,7 @@ describe("SubscriptionRuntimeService", () => {
     const runtimeOptions: CodexConversationRuntimeOptions[] = [];
     const runtime = isolationRuntime();
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       acpRegistry: registry,
       createCodexAppServerClient: (options) => {
@@ -461,7 +472,7 @@ describe("SubscriptionRuntimeService", () => {
       stop: vi.fn(),
     } as unknown as CodexAppServerClient;
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient,
       acpRegistry: registry,
@@ -476,7 +487,7 @@ describe("SubscriptionRuntimeService", () => {
       kind: "subscription",
       provider: "codex",
       model: "removed-model",
-    })).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+    })).rejects.toMatchObject({ code: "subscription-model-not-supported" });
     expect(listModels).toHaveBeenCalledOnce();
     expect(runtimeOptions).toHaveLength(1);
 
@@ -531,7 +542,7 @@ describe("SubscriptionRuntimeService", () => {
     let runtimeCalls = 0;
     const audit = vi.fn();
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient,
       acpRegistry: registry,
@@ -1045,7 +1056,7 @@ describe("SubscriptionRuntimeService", () => {
         dispose: vi.fn(async () => undefined),
       };
       const codexClient = fakeCodexClient();
-      const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
         namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
         codexClient,
         codexRuntimeLocator: locator,
@@ -1071,7 +1082,7 @@ describe("SubscriptionRuntimeService", () => {
       }),
       stop: vi.fn(),
     } as unknown as CodexConversationRuntime;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
@@ -1096,8 +1107,14 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-unsafe-location");
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-location")))
       .toBe("subscription-runtime-unsafe-location");
-    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-npm-location")))
-      .toBe("subscription-runtime-unsafe-npm-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-native-required")))
+      .toBe("subscription-runtime-native-required");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unauthenticated")))
+      .toBe("subscription-runtime-unauthenticated");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-release-metadata-unavailable")))
+      .toBe("subscription-runtime-release-metadata-unavailable");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-version-unsupported")))
+      .toBe("subscription-runtime-version-unsupported");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
       .toBe("subscription-runtime-not-configured");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))

@@ -968,6 +968,33 @@ describe("SubscriptionLlmProvider", () => {
     }]);
   });
 
+  it.each([
+    ["subscription-model-not-supported", "subscription model not supported"],
+    ["subscription-runtime-native-required", "native subscription runtime installation required"],
+    ["subscription-runtime-unauthenticated", "subscription runtime publisher could not be authenticated"],
+    ["subscription-runtime-release-metadata-unavailable", "subscription runtime release metadata unavailable"],
+  ] as const)("reports %s without retrying or creating an API route", async (code, messagePreview) => {
+    const service = {
+      openTextSession: vi.fn(async () => {
+        throw new SubscriptionRuntimeServiceError(code);
+      }),
+    } as Pick<SubscriptionRuntimeService, "openTextSession">;
+    const getApiKey = vi.fn(() => { throw new Error("API-key fallback must not be created"); });
+    const retrying = new FallbackProvider(providerWith(service, "claude-code"), [{ provider: "claude", model: "fallback-model" }], getApiKey);
+    const events = await collect(retrying.streamTurn(params()));
+    expect(service.openTextSession).toHaveBeenCalledOnce();
+    expect(getApiKey).not.toHaveBeenCalled();
+    expect(events).toEqual([{
+      type: "error",
+      error: code,
+      classification: "subscription-chat-unavailable",
+      providerError: {
+        origin: "unknown", providerCode: code, isRetryable: false,
+        messagePreview,
+      },
+    }]);
+  });
+
   it("does not retry a locally rejected oversized subscription envelope", async () => {
     const service = {
       openTextSession: vi.fn(),

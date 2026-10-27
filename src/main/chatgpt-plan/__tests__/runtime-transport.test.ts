@@ -14,6 +14,9 @@ import { t } from "../../../i18n/index.js";
 import type { ToolSchema } from "../../../engine/llm/types.js";
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../../subscription-attachment-input.js";
 
+// Release metadata is fetched only by real Linux publisher verification; these services never reach it.
+const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
+
 const PLAN_SCOPES = ["chatgpt.tokens.use.direct", "email", "offline_access", "openid", "profile", "resource.invoke"];
 const IDENTITY_SCOPES = ["email", "offline_access", "openid", "profile"];
 const NOW = Date.now();
@@ -486,7 +489,7 @@ describe("ChatGPT plan transport", () => {
 
 describe("SubscriptionRuntimeService with ChatGPT plan usage", () => {
   async function service(chatGptPlanRuntime: ChatGptPlanRuntime | null) {
-    return SubscriptionRuntimeService.create(async () => undefined, {
+    return SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
       namespace: createSubscriptionRuntimeNamespace(),
       claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: { stop: vi.fn() } as unknown as CodexAppServerClient,

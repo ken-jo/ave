@@ -35,6 +35,7 @@ import type {
 import { EnvForcedNotice } from "./EnvForcedNotice.js";
 import { PlanUsageComposerControls } from "./PlanUsageComposerControls.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { apiModelBillingRoute, modelBillingApiAddress, modelBillingDisclosure } from "../utils/model-billing.js";
 
 export interface InputActionBarProps {
   // Leading; slash/command picker (folds plugins/mcp/skills inside its own categories, so
@@ -397,6 +398,7 @@ export function ComposerStatusRow({
             <PlanUsageComposerControls />
             <ModelQuickPicker
               vendorModel={vendorModel}
+              billingDisclosure={modelBillingDisclosure(statusRow.billingRoute, t)}
               displayModel={displayModel}
               enableThinking={enableThinkingChat}
               reasoningAvailable={reasoningAvailable}
@@ -722,6 +724,7 @@ function ReasoningGauge({ level }: { level: ReasoningLevel }): React.JSX.Element
 
 function ModelQuickPicker({
   vendorModel,
+  billingDisclosure,
   displayModel,
   enableThinking,
   reasoningAvailable,
@@ -729,6 +732,7 @@ function ModelQuickPicker({
   onOpenModelSettings,
 }: {
   vendorModel: string;
+  billingDisclosure: string | undefined;
   displayModel: string;
   enableThinking: boolean;
   reasoningAvailable: boolean;
@@ -742,6 +746,8 @@ function ModelQuickPicker({
   const chipRef = useRef<HTMLButtonElement>(null);
   const openedByChipRef = useRef(false);
   const [choices, setChoices] = useState<ModelCardChoice[]>([]);
+  const [choiceBilling, setChoiceBilling] = useState<ReadonlyMap<string, string>>(new Map());
+  const billingId = useId();
   const [anyPinned, setAnyPinned] = useState(true);
   const runtimeRef = useRef<string>("api");
   const { level, levelLabels, currentLabel, custom, apply } = useReasoningLevel({ enabled: enableThinking, onToggle: onToggleThinking });
@@ -750,9 +756,24 @@ function ModelQuickPicker({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    let billingEpoch = 0;
     const take = (settings: AppSettings) => {
       if (cancelled) return;
-      setChoices(modelCardChoices(settings.llm));
+      const epoch = ++billingEpoch;
+      const nextChoices = modelCardChoices(settings.llm);
+      setChoices(nextChoices);
+      setChoiceBilling(new Map());
+      void Promise.allSettled(nextChoices.map(async (choice) => {
+        if (choice.kind === "subscription") return [choice.provider, modelBillingDisclosure({ kind: "subscription", provider: choice.provider }, t) ?? ""] as const;
+        const presetId = choice.current && choice.vendor === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined;
+        const address = modelBillingApiAddress(settings, choice.vendor, presetId);
+        const keyConfigured = await api.hasApiKey(address.credentialId);
+        return [`${choice.vendor}::${choice.modelId}`, modelBillingDisclosure(apiModelBillingRoute(choice.vendor, address.requiresApiKey, keyConfigured), t) ?? ""] as const;
+      })).then((rows) => {
+        if (!cancelled && epoch === billingEpoch) {
+          setChoiceBilling(new Map(rows.flatMap((row) => row.status === "fulfilled" ? [row.value] : [])));
+        }
+      });
       setAnyPinned((settings.llm.pinnedModels ?? []).length > 0);
       runtimeRef.current = settings.llm.activeChatRuntime?.kind ?? "api";
     };
@@ -797,12 +818,16 @@ function ModelQuickPicker({
           // The visible text is the model alone, so the vendor would be lost to anyone who cannot hover for the tooltip. The accessible name
           // carries the whole route; it still contains the visible text, so name-in-label holds and voice control can still say the model.
           aria-label={vendorModel}
+          aria-describedby={billingDisclosure ? billingId : undefined}
           onClick={() => { openedByChipRef.current = false; }}
           className="inline-flex min-w-0 shrink items-center gap-1 text-left transition-opacity duration-(--motion-fast) ease-(--motion-ease-standard) hover:opacity-80 focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none"
-          title={vendorModel}
+          title={billingDisclosure ? `${vendorModel} · ${billingDisclosure}` : vendorModel}
         >
           <Brain className="h-3 w-3 shrink-0 text-input-bar-placeholder" aria-hidden="true" />
-          <span className="min-w-0 truncate">{displayModel}</span>
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate">{displayModel}</span>
+            {billingDisclosure ? <span id={billingId} className="truncate text-[10px]" data-testid="iab-model-billing">{billingDisclosure}</span> : null}
+          </span>
         </button>
       </PopoverTrigger>
       {reasoningAvailable ? (
@@ -859,6 +884,7 @@ function ModelQuickPicker({
             const cliDefault = modelLessSubscription && isSubscriptionRuntimeId(subscriptionChoice.provider)
               && subscriptionRuntimeDescriptor(subscriptionChoice.provider).offersCliDefaultModel;
             const vendorText = modelLessSubscription && !cliDefault ? "" : choice.vendorLabel;
+            const billingText = choiceBilling.get(apiChoice ? `${apiChoice.vendor}::${apiChoice.modelId}` : subscriptionChoice?.provider ?? "");
             const primaryText = cliDefault
               ? t("llmTab.cliDefaultModel")
               : modelLessSubscription ? choice.vendorLabel : (choice.modelId ?? "");
@@ -872,7 +898,14 @@ function ModelQuickPicker({
                 className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent focus:outline-none focus-visible:bg-accent disabled:cursor-default"
               >
                 <span className="max-w-[7rem] shrink-0 truncate text-caption text-muted-foreground">{vendorText}</span>
-                <span className="min-w-0 flex-1 truncate">{primaryText}</span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate">{primaryText}</span>
+                  {billingText ? (
+                    <span className="truncate text-[10px] text-muted-foreground">
+                      {billingText}
+                    </span>
+                  ) : null}
+                </span>
                 {choice.current ? <Check className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" /> : null}
               </button>
             </li>
