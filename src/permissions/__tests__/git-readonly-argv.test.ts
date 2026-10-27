@@ -30,9 +30,9 @@ describe("closed repository read arguments", () => {
     { input: ["git", "log", "--max-count", "999999", "main...HEAD", "--no-patch"], output: ["log", ...HISTORY_ARGUMENTS, "--format=medium", "--max-count=999999", "main...HEAD", "--"] },
     { input: ["git", "show", "--no-patch", "HEAD"], output: ["show", ...HISTORY_ARGUMENTS, "--format=medium", "HEAD", "--"] },
     { input: ["git", "show", "--no-patch", "--oneline"], output: ["show", ...HISTORY_ARGUMENTS, "--format=oneline", "--abbrev-commit", "--"] },
-    { input: ["git", "diff", "HEAD~1", "HEAD", "--name-only"], output: ["diff", ...DIFF_ARGUMENTS, "--name-only", "HEAD~1", "HEAD", "--"] },
-    { input: ["git", "diff", "--name-status", "main", "HEAD"], output: ["diff", ...DIFF_ARGUMENTS, "--name-status", "main", "HEAD", "--"] },
-    { input: ["git", "diff", "main", "HEAD", "--raw"], output: ["diff", ...DIFF_ARGUMENTS, "--raw", "main", "HEAD", "--"] },
+    { input: ["git", "diff", "HEAD~1", "HEAD", "--name-only"], output: ["diff-tree", "-r", "--no-commit-id", "--abbrev", ...DIFF_ARGUMENTS, "--name-only", "HEAD~1", "HEAD", "--"] },
+    { input: ["git", "diff", "--name-status", "main", "HEAD"], output: ["diff-tree", "-r", "--no-commit-id", "--abbrev", ...DIFF_ARGUMENTS, "--name-status", "main", "HEAD", "--"] },
+    { input: ["git", "diff", "main", "HEAD", "--raw"], output: ["diff-tree", "-r", "--no-commit-id", "--abbrev", ...DIFF_ARGUMENTS, "--raw", "main", "HEAD", "--"] },
     { input: ["git", "rev-parse", "--verify", "--quiet", "HEAD"], output: ["rev-parse", "--verify", "--quiet", "HEAD"] },
     { input: ["git", "rev-parse", "--verify", "HEAD~1"], output: ["rev-parse", "--verify", "HEAD~1"] },
     { input: ["git", "branch", "--list"], output: ["branch", "--no-sort", "--sort=refname", "--list", "--no-column", "--no-color"] },
@@ -87,21 +87,22 @@ describe("closed repository read arguments", () => {
 
 describe("owned child environment", () => {
   const repository = { gitDirectory: "/project/.git", workTree: "/project", referenceBackend: "files" as const };
+  const indexFile = "/verified/install/.ave-readonly-index";
   const OWNED_ENVIRONMENT = {
     GIT_DIR: "/project/.git", GIT_WORK_TREE: "/project", GIT_CEILING_DIRECTORIES: "/project",
-    GIT_DISCOVERY_ACROSS_FILESYSTEM: "0", GIT_REFERENCE_BACKEND: "files", GIT_CONFIG_NOSYSTEM: "1",
+    GIT_DISCOVERY_ACROSS_FILESYSTEM: "0", GIT_REFERENCE_BACKEND: "files", GIT_INDEX_FILE: indexFile, GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_ATTR_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "",
     GIT_PROTOCOL_FROM_USER: "0", GIT_PAGER: "", GIT_TRACE: "0", GIT_TRACE2: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE2_PERF: "0",
   };
   it("sets complete repository, configuration, transport and tracing boundaries", () => {
-    expect(gitReadOnlyEnvironment({ PATH: "/protected/bin", LANG: "C", ordinary: "kept" }, repository)).toEqual({
+    expect(gitReadOnlyEnvironment({ PATH: "/protected/bin", LANG: "C", ordinary: "kept" }, repository, indexFile)).toEqual({
       PATH: "/protected/bin", LANG: "C", ordinary: "kept", ...OWNED_ENVIRONMENT,
     });
   });
   it.each([
     "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS", "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_EXEC_PATH", "GIT_SSH_COMMAND", "GIT_ASKPASS",
+    "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_EXEC_PATH", "GIT_SSH_COMMAND", "GIT_ASKPASS",
     "GIT_NAMESPACE", "GIT_TRACE_PACKET", "GIT_TRACE_PACK_ACCESS", "GIT_TRACE_CURL", "GIT_TRACE_SETUP", "GIT_TRACE_SHALLOW",
     "PAGER", "MANPAGER", "LESS", "LV", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "_RLD_LIST", "LDR_PRELOAD", "LIBPATH",
     "SHLIB_PATH", "GCONV_PATH", "BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS", "BASHOPTS", "BASH_FUNC_exec%%", "CDPATH", "IFS",
@@ -109,12 +110,12 @@ describe("owned child environment", () => {
     "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB", "GEM_HOME", "BUNDLE_GEMFILE", "SSH_ASKPASS", "SSH_AUTH_SOCK", "SSLKEYLOGFILE",
   ])("removes inherited selector %s without case dependence", (key) => {
     const base = { [key]: "attack", [key.toLowerCase()]: "attack", unrelated: "kept" };
-    expect(gitReadOnlyEnvironment(base, repository)).toEqual({ unrelated: "kept", ...OWNED_ENVIRONMENT });
+    expect(gitReadOnlyEnvironment(base, repository, indexFile)).toEqual({ unrelated: "kept", ...OWNED_ENVIRONMENT });
     expect(base[key]).toBe("attack");
   });
   it("overwrites inherited host-owned fields and removes their case variants", () => {
     const base = { git_dir: "outside", GIT_DIR: "outside", GIT_REFERENCE_BACKEND: "other", GIT_ALLOW_PROTOCOL: "all", GIT_TRACE2_EVENT: "out" };
-    expect(gitReadOnlyEnvironment(base, repository)).toEqual(OWNED_ENVIRONMENT);
+    expect(gitReadOnlyEnvironment(base, repository, indexFile)).toEqual(OWNED_ENVIRONMENT);
   });
 });
 

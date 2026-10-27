@@ -137,13 +137,27 @@ syntax refuse. The host pins
 absolute repository/worktree roots and the `files` reference backend, strips
 inherited selectors, and forces execution, output, write and transport controls.
 
-Owner decision 2026-10-27 accepts disclosure of other local repository content
-caused by deliberate concurrent same-user metadata mutation after those checks,
-including object symlinks, alternates, config includes and reference-storage
-changes. Inputs are checked, not atomically sealed. The acceptance covers
-confidentiality only; helper execution, file writes and transport must remain
-excluded by the closed grammar and forced recipe. An unsafe repository at check
-time still refuses. Visible floors retain precedence; a checked command follows
+Two-revision comparisons execute as recursive `diff-tree` with no commit
+header and metadata-only output, so losing the repository cannot select
+filesystem comparison. An owned `GIT_INDEX_FILE` selects an absent path beside
+the verified executable, under its protected installation parent, so implicit
+index reads cannot refresh a mutable repository split index. A non-following
+check must establish absence; the host creates no file. After the actual
+child close, including cancellation or error paths, the same inspector must
+return unchanged `.git` state and worktree-root/physical-ancestor provenance
+through the filesystem root, including identities and change timestamps. The
+32-level ancestor bound still applies. Unrelated concurrent directory activity
+can conservatively refuse a benign read. Any mismatch discards stdout and
+stderr and returns a refusal. Checked reads keep bounded output private until
+that check succeeds, with no live output, artifact or background handle.
+
+Owner decision 2026-10-27 accepts only ref-shaped outside-file disclosure
+caused by deliberate concurrent same-user metadata mutation after checking:
+an object-id line or symbolic reference may come from any same-user-readable
+file, including one outside a repository. The revision-only execution and
+post-run discard are required; neither supplies atomic binding of every child
+open. No broader content disclosure, helper execution, file writes or transport
+is accepted. An unsafe repository at check time still refuses. Visible floors retain precedence; a checked command follows
 the normal sandbox route, while unsandboxed automatic execution, including
 headless, requires the current-format exact raw-word rule. Separately governed
 host Git services remain under their existing controls.

@@ -418,7 +418,11 @@ their existing contracts.
 The positive grammar consumes every argument of one literal simple outer
 command. Its scope is no-patch `log`/`show` with closed built-in formats,
 name/raw `diff` between two revisions, closed `rev-parse` queries and
-verification, and closed `branch --list` forms. It does not admit arbitrary
+verification, and closed `branch --list` forms. The two-revision comparison
+executes as `diff-tree -r --no-commit-id` with the owned metadata-only output
+options. It never uses the porcelain filesystem-comparison fallback when the
+repository disappears; a missing repository fails. This rewrite leaves the
+original raw command as the exact-rule identity. It does not admit arbitrary
 revision syntax, format strings, options or path operands. `status`, cached/staged
 diffs, worktree diffs, patch output, mutation, remote operations, wrappers,
 environment assignments, compounds, pipes and redirects remain unproven. Worktree comparison
@@ -453,7 +457,15 @@ and `GIT_CEILING_DIRECTORIES` values to that checked cwd and metadata. It remove
 all case-insensitive inherited `GIT_*` selectors and loader/runtime selectors
 before installing its owned environment. System and global configuration are
 disabled, and `GIT_REFERENCE_BACKEND=files` overrides later reference-storage
-configuration. The forced argv/environment recipe disables optional locks,
+configuration. The child also receives an owned `GIT_INDEX_FILE` pointing to
+`.ave-readonly-index` beside the verified executable. That path must be absent:
+a non-following check accepts only `ENOENT`, and its installation parent is
+already verified as host-owned and non-writable by the user. Nothing is
+created there. Existing entries, links, permission errors or unknown evidence
+refuse. This prevents even implicit index reads in tree plumbing from opening
+a mutable repository split index and refreshing its timestamps. Trusted
+administrator changes remain outside the verified-install boundary.
+The forced argv/environment recipe disables optional locks,
 lazy fetching, replacement objects, pager, prompts, credentials, transport,
 tracing, hooks, filesystem monitors, external diff/text conversion and signature
 verification. It forces built-in formats and refname sorting, disables mailmap
@@ -464,15 +476,40 @@ these controls. Command-line overrides and owned environment selectors retain
 precedence over repository configuration; the grammar excludes operations that
 would invoke a configured filter or transport.
 
-Owner decision 2026-10-27 accepts a deliberate concurrent same-user mutation
-after the host checks that causes disclosure of other local repository content.
-Examples include replacing object storage with a symlink, adding alternates or
-configuration includes, or changing reference-storage metadata. The checks do
-not atomically bind configuration bytes or every later metadata/object/ref open;
-there is no snapshot or race-free confidentiality guarantee. This acceptance is
-limited to confidentiality: the positive grammar and forced recipe must continue
-to exclude helper execution, file writes and transport after such a mutation.
-It does not authorize an unsafe repository already present at check time.
+The host waits for the actual child close, including after cancellation or
+an error, before rerunning the same repository-input inspector and comparing
+its evidence with the checked state. The bounded state records the full `.git`
+inventory, entry types, file identities and change timestamps. It also records
+the worktree root and every physical ancestor through the filesystem root,
+including their identities and change timestamps, within the 32-level bound.
+Read-access timestamps are excluded. The inspector rechecks the recorded
+evidence before returning. This provenance detects a detached, replaced or
+restored root or ancestor. Unrelated concurrent directory activity at one of
+these roots can conservatively discard an otherwise benign read. Missing or
+unreadable metadata, a new link or routing file, a changed ref or packed-ref
+type, a replacement root or ancestor, or any evidence mismatch discards both
+stdout and stderr.
+The agent receives only `Read-only Git output discarded: repository metadata changed during execution.`
+with an error result. Output stays private until this check succeeds: checked
+reads publish no live output, output artifact or background handle. Their
+private display buffer retains the ordinary output bound.
+
+Owner decision 2026-10-27 accepts only this confidentiality residual: a
+deliberate concurrent same-user mutation after checking may make an admitted
+read print content from any same-user-readable outside file when that content
+parses as a reference, such as an object-id line or symbolic reference. The
+file need not belong to another repository. The revision-only plumbing and
+post-run discard are required mitigations; these inspections do not atomically
+bind every child open or provide a race-free confidentiality guarantee. The
+acceptance covers no broader file-content disclosure, helper execution, file
+writes or transport. An unsafe repository already present at check time still
+refuses.
+
+The [native external key](headless-secret-encryption.md) contains exactly 32
+raw bytes, with no hexadecimal or Base64 decoding. A 40- or 64-character
+object-id line, with or without a trailing newline, is not an accepted key
+file. Its configured and canonical paths retain the existing sensitive-path
+and sandbox deny floors; this format check makes no claim about other secrets.
 
 Visible path, credential and sink floors still win. A checked plan follows the
 normal sandboxed route, including headless; unsandboxed automatic execution

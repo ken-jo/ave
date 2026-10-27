@@ -94,7 +94,7 @@ function differenceArguments(args: readonly string[]): readonly string[] | null 
   }
   // Index reads can update shared-index timestamps; worktree reads can run clean filters.
   if (output === undefined || revisions.length !== 2) return null;
-  return ["diff", ...DIFF_ARGUMENTS, output, ...revisions, "--"];
+  return ["diff-tree", "-r", "--no-commit-id", "--abbrev", ...DIFF_ARGUMENTS, output, ...revisions, "--"];
 }
 
 function revisionArguments(args: readonly string[]): readonly string[] | null {
@@ -153,6 +153,7 @@ export function readOnlyGitArguments(argv: readonly string[]): readonly string[]
 export function gitReadOnlyEnvironment(
   base: Readonly<Record<string, string>>,
   repository: { readonly gitDirectory: string; readonly workTree: string; readonly referenceBackend: "files" },
+  indexFile: string,
 ): Record<string, string> {
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
@@ -164,6 +165,7 @@ export function gitReadOnlyEnvironment(
     GIT_CEILING_DIRECTORIES: repository.workTree,
     GIT_DISCOVERY_ACROSS_FILESYSTEM: "0",
     GIT_REFERENCE_BACKEND: "files",
+    GIT_INDEX_FILE: indexFile,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: devNull,
     GIT_CONFIG_SYSTEM: devNull,

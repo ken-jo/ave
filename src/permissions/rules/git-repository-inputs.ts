@@ -1,11 +1,13 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { createHash } from "node:crypto";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync, type BigIntStats } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths } from "../../shared/windows-path-facts.js";
 
 export interface GitRepositoryInputs {
   readonly gitDirectory: string;
   readonly workTree: string;
   readonly referenceBackend: "files";
+  readonly stateFingerprint: string;
 }
 
 const MAX_METADATA_ENTRIES = 4096;
@@ -39,11 +41,15 @@ function hasSupportedConfig(contents: Buffer): boolean {
   return true;
 }
 
-function hasSupportedConfigFile(path: string): boolean {
+function metadataIdentity(stat: BigIntStats): string {
+  return [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.size, stat.nlink, stat.mtimeNs, stat.ctimeNs].join(":");
+}
+
+function readConfigFingerprint(path: string, expectedIdentity: string): string | null {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_CONFIG_BYTES) return false;
+    const stat = fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(MAX_CONFIG_BYTES) || metadataIdentity(stat) !== expectedIdentity) return null;
     const contents = Buffer.alloc(MAX_CONFIG_BYTES + 1);
     let length = 0;
     while (length < contents.length) {
@@ -51,7 +57,11 @@ function hasSupportedConfigFile(path: string): boolean {
       if (count === 0) break;
       length += count;
     }
-    return length <= MAX_CONFIG_BYTES && hasSupportedConfig(contents.subarray(0, length));
+    const bytes = contents.subarray(0, length);
+    if (length > MAX_CONFIG_BYTES || !hasSupportedConfig(bytes)
+      || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity
+      || metadataIdentity(lstatSync(path, { bigint: true })) !== expectedIdentity) return null;
+    return createHash("sha256").update(bytes).digest("hex");
   } finally {
     closeSync(descriptor);
   }
@@ -63,13 +73,25 @@ function isOrdinaryWindowsPath(path: string): boolean {
   return rows.length === 1 && row !== undefined && row.exists === true && admitWindowsReparse(row, "evidence") === true;
 }
 
-/** Check-time admission only; metadata can change after this inspection. */
+/** Bounded evidence for pre/post comparison; metadata is not atomically sealed. */
 export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
   if (!isAbsolute(cwd) || cwd.includes("\0")) return null;
   try {
     if (process.platform === "win32" && !isOrdinaryWindowsPath(cwd)) return null;
     const workTree = realpathSync(cwd);
-    if (!lstatSync(workTree).isDirectory()) return null;
+    const provenance: [string, string][] = [];
+    let ancestor = workTree;
+    for (let depth = 0; ; depth += 1) {
+      if (depth > MAX_METADATA_DEPTH) return null;
+      if (process.platform === "win32" && !isOrdinaryWindowsPath(ancestor)) return null;
+      const stat = lstatSync(ancestor, { bigint: true });
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+      provenance.push([ancestor, metadataIdentity(stat)]);
+      const parent = dirname(ancestor);
+      if (parent === ancestor) break;
+      ancestor = parent;
+    }
+    const evidence: [string, string, string][] = [];
     const gitDirectory = join(workTree, ".git");
     let entries = 0;
     const inspect = (path: string, relative: string, depth: number): boolean => {
@@ -77,12 +99,19 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
         || FORBIDDEN_METADATA_PATHS.has(metadataPath) || metadataPath.endsWith("/commondir")) return false;
       if (process.platform === "win32" && !isOrdinaryWindowsPath(path)) return false;
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1)) return false;
+      const stat = lstatSync(path, { bigint: true });
+      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1n)) return false;
+      const identity = metadataIdentity(stat);
       if (relative === "" && !stat.isDirectory()) return false;
       const isConfig = metadataPath === "config" || metadataPath === "config.worktree";
-      if (stat.isFile()) return !isConfig || hasSupportedConfigFile(path);
+      if (stat.isFile()) {
+        const configHash = isConfig ? readConfigFingerprint(path, identity) : "";
+        if (configHash === null) return false;
+        evidence.push([relative, identity, configHash]);
+        return true;
+      }
       if (isConfig) return false;
+      evidence.push([relative, identity, ""]);
       const directory = opendirSync(path);
       try {
         let entry;
@@ -94,7 +123,18 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       }
       return true;
     };
-    return inspect(gitDirectory, "", 0) ? { gitDirectory, workTree, referenceBackend: "files" } : null;
+    if (!inspect(gitDirectory, "", 0)) return null;
+    // Catch paths changed while another part of the bounded walk was inspected.
+    // This is a consistency check, not a lock on later path opens.
+    for (const [path, identity] of provenance) {
+      if (metadataIdentity(lstatSync(path, { bigint: true })) !== identity) return null;
+    }
+    for (const [relative, identity] of evidence) {
+      if (metadataIdentity(lstatSync(join(gitDirectory, relative), { bigint: true })) !== identity) return null;
+    }
+    evidence.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const stateFingerprint = createHash("sha256").update(JSON.stringify([provenance, evidence])).digest("hex");
+    return { gitDirectory, workTree, referenceBackend: "files", stateFingerprint };
   } catch {
     return null;
   }

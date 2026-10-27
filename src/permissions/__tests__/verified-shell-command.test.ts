@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, symlinkSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as childProcess from "node:child_process";
 import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
 import { PermissionManager } from "../permission-manager.js";
-import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution, type VerifiedShellCommand } from "../verified-shell-command.js";
+import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution, verifiedShellRequiresResultCheck, verifiedShellResultRefusal, type VerifiedShellCommand } from "../verified-shell-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { inspectShellCommand } from "../rules/shell-exfiltration.js";
@@ -47,6 +47,56 @@ function permission(command: string, dialect: "bash" | "powershell", handle: Ver
 }
 
 describe("bound native command authority", () => {
+  it.each(["bash", "powershell"] as const)("rechecks unchanged checked repository results on %s", dialect => {
+    const identity = { command: "git rev-parse --verify HEAD", dialect, cwd };
+    const handle = prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    expect(verifiedShellRequiresResultCheck(handle, identity)).toBe(true);
+    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+  });
+
+  it.each([
+    ["missing metadata", () => rmSync(join(cwd, ".git"), { recursive: true })],
+    ["gitfile", () => { rmSync(join(cwd, ".git"), { recursive: true }); writeFileSync(join(cwd, ".git"), "gitdir: /outside\n"); }],
+    ["new alternates", () => { mkdirSync(join(cwd, ".git", "objects", "info")); writeFileSync(join(cwd, ".git", "objects", "info", "alternates"), "/outside\n"); }],
+    ["ref symbolic link", () => { const outside = join(cwd, "outside-ref"); writeFileSync(outside, "a".repeat(40) + "\n"); symlinkSync(outside, join(cwd, ".git", "refs", "heads", "main")); }],
+    ["regular ref addition", () => writeFileSync(join(cwd, ".git", "refs", "heads", "main"), "a".repeat(40) + "\n")],
+    ["packed ref type", () => mkdirSync(join(cwd, ".git", "packed-refs"))],
+    ["config rewrite", () => writeFileSync(join(cwd, ".git", "config"), "[core]\nrepositoryformatversion = 0\nbare = false\nfilemode = false\n")],
+    ["outside include", () => writeFileSync(join(cwd, ".git", "config"), "[include]\npath = /outside\n")],
+    ["metadata rename", () => renameSync(join(cwd, ".git"), join(cwd, "renamed-metadata"))],
+  ] as const)("refuses checked output after %s", (_name, mutate) => {
+    const identity = { command: "git rev-parse --verify HEAD", dialect: "bash" as const, cwd };
+    const handle = prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    mutate();
+    expect(verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+  });
+
+  it("fails closed for forged or mismatched output-validation handles", () => {
+    const identity = { command: "git log", dialect: "bash" as const, cwd };
+    const handle = prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    for (const supplied of [{} as VerifiedShellCommand, handle]) {
+      const mismatched = { ...identity, command: "git show --no-patch" };
+      expect(verifiedShellRequiresResultCheck(supplied, mismatched)).toBe(true);
+      expect(verifiedShellResultRefusal(supplied, mismatched)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+    }
+    expect(verifiedShellRequiresResultCheck(undefined, identity)).toBe(false);
+    expect(verifiedShellResultRefusal(undefined, identity)).toBeUndefined();
+  });
+
+  it("retains exact-approved literal evaluation without repository output checks", () => {
+    const identity = { command: LITERAL_COMMAND, dialect: "bash" as const, cwd };
+    const handle = prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    rmSync(join(cwd, ".git"), { recursive: true });
+    expect(verifiedShellRequiresResultCheck(handle, identity)).toBe(false);
+    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+  });
+
   it.each((["bash", "powershell"] as const).flatMap((dialect) => READ_CASES.map((command) => ({ dialect, command }))))
     ("admits checked repository reads for $dialect $command", ({ dialect, command }) => {
       const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
@@ -68,7 +118,7 @@ describe("bound native command authority", () => {
       expect(verifiedShellExecution(handle, identity)?.command).toContain(`'--git-dir=${join(cwd, ".git")}'`);
       expect(verifiedShellExecution(handle, identity)?.command).toContain(`'--work-tree=${cwd}'`);
       expect(verifiedShellEnvironment(handle, identity, { GIT_CONFIG_PARAMETERS: "evil", git_dir: "/outside", HOME: cwd })).toMatchObject({
-        GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd, GIT_REFERENCE_BACKEND: "files", GIT_CEILING_DIRECTORIES: cwd, HOME: cwd,
+        GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd, GIT_INDEX_FILE: "/usr/bin/.ave-readonly-index", GIT_REFERENCE_BACKEND: "files", GIT_CEILING_DIRECTORIES: cwd, HOME: cwd,
       });
     });
 
@@ -115,6 +165,16 @@ describe("bound native command authority", () => {
     } finally { release(); }
     expect(verifiedShellExecution(handle, identity)).toBeDefined();
   });
+  it("refuses a pre-existing reserved installation index path", () => {
+    const executable = join(cwd, "verified-install", "git");
+    mkdirSync(join(cwd, "verified-install"));
+    writeFileSync(executable, "verified fixture");
+    writeFileSync(join(cwd, "verified-install", ".ave-readonly-index"), "index must never be read");
+    vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable });
+    expect(prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+  });
+
   it("requires a supported protected Git version", () => {
     vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: "/verified-older-git" });
     vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.53.0\n");

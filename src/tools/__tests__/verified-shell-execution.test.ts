@@ -1,17 +1,19 @@
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
-import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { prepareVerifiedShellCommand, verifiedShellExecution, type VerifiedShellCommand } from "../../permissions/verified-shell-command.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as shellResolver from "../../lib/shell-resolver.js";
 import * as sandboxHomeOwner from "../../permissions/sandbox-process-home.js";
-import { PowerShellTool } from "../shell-tools.js";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
+import { BashTool, listShellTasks, PowerShellTool } from "../shell-tools.js";
+import { inspectGitRepository } from "../../permissions/rules/git-repository-inputs.js";
+import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../../permissions/rules/git-readonly-argv.js";
 import * as installation from "../../shared/verified-executable.js";
 import {
   bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, matchesPreparedShellInvocation,
@@ -25,12 +27,15 @@ vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutabl
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true }));
 
 const ORIGINAL_PLATFORM = process.platform;
+const nativeChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+const nativeSearchPath = process.env.PATH;
 const roots: string[] = [];
 const handles: PreparedShellInvocation[] = [];
 afterEach(() => {
   for (const handle of handles.splice(0)) disposePreparedShellInvocation(handle);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   __resetSandboxRequestedAtBootForTest();
+  __resetActiveSandboxCapabilityForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.clearAllMocks();
@@ -42,6 +47,8 @@ function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'pr
   setProcessPlatform("linux");
   const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "verified-shell-execution-")));
   roots.push(cwd);
+  const profileRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "verified-shell-profiles-")));
+  roots.push(profileRoot);
   mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
   mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
   writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
@@ -66,18 +73,18 @@ function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'pr
   vi.spyOn(shellResolver, "shellPathForHostPath").mockImplementation((_, path) => path);
   vi.spyOn(shellResolver, "getBashCapabilities").mockReturnValue({ unicodeEscapes: true, prefixAssignmentRhs: "incoming" });
   vi.spyOn(sandboxHomeOwner, "createSandboxProcessHome").mockImplementation(() => {
-    const path = mkdtempSync(join(cwd, "owned-home-"));
+    const path = mkdtempSync(join(profileRoot, "owned-home-"));
     return { path, env: { HOME: path }, cleanup: () => rmSync(path, { recursive: true, force: true }) };
   });
   vi.stubEnv("PATH", `${shadowDirectory}${delimiter}${process.env.PATH ?? ""}`);
   vi.mocked(installation.resolveVerifiedExecutable).mockReturnValue({ executable });
   const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect: "bash", cwd });
   expect(verifiedShellCommand).toBeDefined();
-  const plan = buildHostShellExecutionPlan({ platform: process.platform, requestedSandbox: sandboxed,
-    activeCapability: sandboxed
-      ? { kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled sandbox fixture", confines: { filesystem: true, process: true, network: true } }
-      : { kind: "none", confidence: "verified", platform: process.platform, reason: "Controlled plain fixture", confines: { filesystem: false, process: false, network: false } },
-  });
+  setShellSandboxRequestedAtBoot(sandboxed);
+  __resetActiveSandboxCapabilityForTest();
+  if (sandboxed) setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
+    reason: "Controlled sandbox fixture", confines: { filesystem: true, process: true, network: true } });
+  const plan = getHostShellExecutionPlan();
   const identity = { command, executionCwd: cwd, resolvedCwd: cwd, plan, toolUseId: "verified-native-call", verifiedShellCommand };
   const handle = prepareShellInvocation(identity);
   handles.push(handle);
@@ -185,14 +192,15 @@ it("renders the sealed native image for the second shell dialect without changin
   expect(identity.command).toBe("bash --noprofile --norc -p -c 'printf ready'");
 });
 
-function completedChild(output: string) {
+function completedChild(output: string, beforeClose?: () => void, errorOutput = "") {
   const child = new EventEmitter();
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   Object.assign(child, { stdin, stdout, stderr, exitCode: null, signalCode: null, pid: undefined, killed: false, kill: vi.fn(() => true) });
   queueMicrotask(() => {
-    stdout.end(output); stderr.end();
+    stdout.end(output); stderr.end(errorOutput);
+    beforeClose?.();
     Object.assign(child, { exitCode: 0 });
     child.emit("exit", 0, null); child.emit("close", 0, null);
   });
@@ -258,4 +266,115 @@ it("refuses native records on an unsupported host before consulting an approving
   }
   expect(installation.resolveVerifiedExecutable).not.toHaveBeenCalled();
   expect(versionProbe).not.toHaveBeenCalled();
+});
+
+it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].flatMap((background) =>
+  [false, true].flatMap((sandboxed) => [40, 64].map((width) => ({ dialect, background, sandboxed, width }))))))(
+  "discards native $width-hex symlinked-ref output from $dialect with background=$background sandboxed=$sandboxed before delivery", async ({ dialect, background, sandboxed, width }) => {
+  const command = "git rev-parse --verify HEAD";
+  const { cwd, identity: preparedIdentity } = fixture(sandboxed, command);
+  const ref = join(cwd, ".git", "refs", "heads", "main");
+  writeFileSync(ref, "1".repeat(40) + "\n");
+  const token = "7a".repeat(width / 2);
+  const outside = join(cwd, "outside-ref-shaped-secret");
+  writeFileSync(outside, token + "\n");
+  const identity = { command, dialect, cwd };
+  const verifiedShellCommand = prepareVerifiedShellCommand(identity);
+  expect(verifiedShellCommand).toBeDefined();
+  const repository = inspectGitRepository(cwd)!;
+  const args = readOnlyGitArguments(["git", "rev-parse", "--verify", "HEAD"])!;
+  const progress = { write: vi.fn(), end: vi.fn() };
+  const capture = vi.fn(() => ({ captureId: "quarantined-output", append: () => true, waitForDrain: async () => {},
+    finish: async () => ({ version: 1 as const, captureId: "quarantined-output", status: "complete" as const,
+      capturedBytes: 0, observedBytes: 0, capturedChars: 0 }), abandon: () => {} }));
+  const sessionId = "quarantined-ref-result";
+  const previews: string[] = [];
+  let workloadStarted = false;
+  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
+  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
+  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  const spawned = vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
+    if (dialect === "powershell" && !workloadStarted && (invocation as string[]).at(-1)?.includes("Parser")) {
+      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
+        arguments: ["git", "rev-parse", "--verify", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+    }
+    workloadStarted = true;
+    if (width === 64) writeFileSync(join(cwd, ".git", "config"),
+      "[core]\n repositoryformatversion = 1\n bare = false\n[extensions]\n objectFormat = sha256\n");
+    rmSync(ref);
+    symlinkSync(outside, ref, "file");
+    // Native positive control: the owned argv/environment alone prints the token.
+    const native = nativeChildProcess.spawnSync("git", [`--git-dir=${repository.gitDirectory}`, `--work-tree=${cwd}`, ...args], {
+      cwd, encoding: "utf8", env: gitReadOnlyEnvironment({ PATH: nativeSearchPath ?? "", LANG: "C" }, repository, join(cwd, "absent-index")), timeout: 10_000,
+    });
+    expect(native.error).toBeUndefined();
+    expect(native.status, native.stderr).toBe(0);
+    expect(native.stdout.trim()).toBe(token);
+    return completedChild(native.stdout + "x".repeat(13_000), () => {
+      previews.push(JSON.stringify(listShellTasks(sessionId)));
+    }, token + "\n");
+  });
+  setShellSandboxRequestedAtBoot(false);
+  const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
+  const result = await tool.execute({ command, timeoutSeconds: 5, run_in_background: background }, {
+    cwd, extraAllowedDirectories: [], metadata: { sessionId, toolOutputProgress: progress, toolOutputCaptureFactory: capture },
+    hostShellExecutionPlan: preparedIdentity.plan, verifiedShellCommand,
+  });
+  expect(workloadStarted, result.output).toBe(true);
+  expect(spawned).toHaveBeenCalledTimes(dialect === "bash" ? 1 : 2);
+  expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
+  expect(JSON.stringify(result)).not.toContain(token);
+  expect(progress.write).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
+  expect(previews.join("")).not.toContain(token);
+});
+
+it.each((["bash", "powershell"] as const).flatMap((dialect) => ["abort", "error"].flatMap((event) =>
+  [false, true].map((sandboxed) => ({ dialect, event, sandboxed })))))(
+  "holds $dialect output through $event until child close with sandboxed=$sandboxed", async ({ dialect, event, sandboxed }) => {
+  const command = "git log HEAD";
+  const { cwd, identity } = fixture(sandboxed, command);
+  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
+  expect(verifiedShellCommand).toBeDefined();
+  const controller = new AbortController();
+  const child = new EventEmitter();
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  Object.assign(child, { stdin, stdout, stderr, exitCode: null, signalCode: null, pid: undefined, killed: false, kill: vi.fn(() => true) });
+  let started = false;
+  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
+  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
+  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
+    if (dialect === "powershell" && !started && (invocation as string[]).at(-1)?.includes("Parser")) {
+      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
+        arguments: ["git", "log", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+    }
+    started = true;
+    return child as ReturnType<typeof childProcess.spawn>;
+  });
+  const progress = { write: vi.fn(), end: vi.fn() };
+  const capture = vi.fn();
+  let settled = false;
+  const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
+  const pending = tool.execute({ command, timeoutSeconds: 5 }, {
+    cwd, extraAllowedDirectories: [], metadata: { toolOutputProgress: progress, toolOutputCaptureFactory: capture },
+    hostShellExecutionPlan: identity.plan, verifiedShellCommand, abortSignal: controller.signal,
+  }).then((result) => { settled = true; return result; });
+  await vi.waitFor(() => expect(started).toBe(true));
+  stdout.write("private output before close");
+  if (event === "abort") controller.abort();
+  else child.emit("error", new Error("synthetic live child error"));
+  // Drain the stopped/error result microtasks without supplying terminal evidence.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  expect(progress.write).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
+  // A mutation after the stop/error must still be included in the final check.
+  writeFileSync(join(cwd, ".git", "config"), "[core]\n bare = true\n");
+  Object.assign(child, { exitCode: 1 });
+  stdout.end(); stderr.end();
+  child.emit("exit", 1, null); child.emit("close", 1, null);
+  expect(await pending).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
 });

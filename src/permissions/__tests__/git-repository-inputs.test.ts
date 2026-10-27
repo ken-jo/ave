@@ -19,6 +19,8 @@ let root: string;
 let cwd: string;
 
 beforeEach(() => {
+  vi.mocked(fs.openSync).mockImplementation(nativeFs.openSync);
+  vi.mocked(fs.readSync).mockImplementation(nativeFs.readSync);
   vi.mocked(fs.lstatSync).mockImplementation(nativeFs.lstatSync);
   root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "git-inputs-")));
   cwd = join(root, "workspace");
@@ -48,10 +50,122 @@ function configure(text: string): void {
 }
 
 describe("checked repository metadata inputs", () => {
+  it("captures stable metadata evidence without depending on access timestamps", () => {
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    expect(first).toMatchObject({ stateFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    fs.readFileSync(join(cwd, ".git", "HEAD"));
+    expect(inspectGitRepository(cwd)).toEqual(first);
+  });
+
+  it("changes evidence conservatively when unrelated workspace entries change", () => {
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    fs.mkdirSync(join(cwd, "ordinary-directory"));
+    fs.writeFileSync(join(cwd, "ordinary-output"), "temporary output");
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("changes evidence after the workspace root is renamed and restored", () => {
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    const moved = join(root, "detached-workspace");
+    fs.renameSync(cwd, moved);
+    fs.renameSync(moved, cwd);
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("changes evidence after a physical ancestor is renamed and restored", () => {
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    const moved = root + "-detached";
+    fs.renameSync(root, moved);
+    fs.renameSync(moved, root);
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("bounds physical ancestor depth", () => {
+    const deeplyNested = join(cwd, ...Array.from({ length: 33 }, () => "nested"));
+    fs.mkdirSync(join(deeplyNested, ".git"), { recursive: true });
+    expect(inspectGitRepository(deeplyNested)).toBeNull();
+  });
+
+  it.each([
+    ["a new file", () => fs.writeFileSync(join(cwd, ".git", "refs", "heads", "new"), "a".repeat(40) + "\n")],
+    ["a changed HEAD", () => fs.writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/next\n")],
+    ["a changed config", () => configure(ORDINARY_CONFIG + "[core]\nfilemode = false\n")],
+    ["a changed index", () => fs.writeFileSync(join(cwd, ".git", "index"), "synthetic index")],
+    ["a removed file", () => fs.unlinkSync(join(cwd, ".git", "HEAD"))],
+    ["a new directory", () => fs.mkdirSync(join(cwd, ".git", "additional"))],
+    ["a changed metadata mode", () => fs.chmodSync(join(cwd, ".git", "HEAD"), 0o600)],
+  ] as const)("changes evidence for %s", (_name, change) => {
+    fs.chmodSync(join(cwd, ".git", "HEAD"), 0o644);
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    change();
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("changes evidence when packed refs change type", () => {
+    fs.writeFileSync(join(cwd, ".git", "packed-refs"), "# pack-refs with: peeled\n");
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    fs.unlinkSync(join(cwd, ".git", "packed-refs"));
+    fs.mkdirSync(join(cwd, ".git", "packed-refs"));
+    expect(inspectGitRepository(cwd)?.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("changes evidence for an equal-content replacement of the metadata root", () => {
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    const previous = join(cwd, "previous-metadata");
+    fs.renameSync(join(cwd, ".git"), previous);
+    fs.cpSync(previous, join(cwd, ".git"), { recursive: true });
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("rejects a config replacement between path inspection and open", () => {
+    vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] === join(cwd, ".git", "config")) {
+        nativeFs.renameSync(args[0], join(cwd, ".git", "old-config"));
+        nativeFs.writeFileSync(args[0], ORDINARY_CONFIG);
+      }
+      return nativeFs.openSync(...args);
+    });
+    expect(inspectGitRepository(cwd)).toBeNull();
+  });
+
+  it("rejects a config mutation during its descriptor read", () => {
+    let changed = false;
+    vi.spyOn(fs, "readSync").mockImplementation((...args: Parameters<typeof fs.readSync>) => {
+      const result = nativeFs.readSync(...args);
+      if (!changed) {
+        changed = true;
+        nativeFs.appendFileSync(join(cwd, ".git", "config"), "# mutation\n");
+      }
+      return result;
+    });
+    expect(inspectGitRepository(cwd)).toBeNull();
+  });
+
   it.each(["darwin", "linux", "win32"] as const)("accepts ordinary metadata with a fixed file backend on %s", platform => {
     setProcessPlatform(platform);
-    expect(inspectGitRepository(cwd)).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files" });
-    expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledTimes(platform === "win32" ? 8 : 0);
+    expect(inspectGitRepository(cwd)).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files", stateFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    if (platform === "win32") {
+      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([cwd]);
+      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([dirname(cwd)]);
+      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([join(cwd, ".git")]);
+    } else expect(windowsPathFacts.pinWindowsPaths).not.toHaveBeenCalled();
   });
 
   it.each(["relative", "", "invalid\0cwd"])("refuses unsupported root spelling %j", path => {
@@ -153,7 +267,7 @@ describe("checked repository metadata inputs", () => {
   it("accepts empty configuration, ordinary comments, CRLF and implicit booleans", () => {
     for (const text of ["", "# heading\n; comment\n", "[core] # heading\r\nfilemode\r\nbare = false ; comment\r\n"]) {
       configure(text);
-      expect(inspectGitRepository(cwd)).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files" });
+      expect(inspectGitRepository(cwd)).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files", stateFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     }
   });
 

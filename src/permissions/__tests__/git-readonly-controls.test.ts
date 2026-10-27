@@ -63,7 +63,7 @@ function script(name: string, body = 'printf "executed\\n" > "$CONTROL_MARKER"')
 
 function checked(args: readonly string[]) {
   const repository = inspectGitRepository(cwd);
-  expect(repository).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files" });
+  expect(repository).toEqual(expect.objectContaining({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files" }));
   const ownedArgs = readOnlyGitArguments(["git", ...args]);
   expect(ownedArgs).not.toBeNull();
   return { repository: repository!, ownedArgs: ownedArgs! };
@@ -76,6 +76,7 @@ function guarded(plan: ReturnType<typeof checked>, extra: Record<string, string>
     cwd, encoding: "utf8", env: invocation.env, timeout: 10_000, maxBuffer: 1024 * 1024,
   });
   expect(metadataState()).toEqual(before);
+  expect(existsSync(invocation.env.GIT_INDEX_FILE!)).toBe(false);
   return result;
 }
 
@@ -95,7 +96,8 @@ function metadataState(directory = join(cwd, ".git")): Record<string, string> {
 function guardedInvocation(plan: ReturnType<typeof checked>, extra: Record<string, string> = {}) {
   return {
     args: [`--git-dir=${plan.repository.gitDirectory}`, `--work-tree=${plan.repository.workTree}`, ...plan.ownedArgs],
-    env: gitReadOnlyEnvironment({ ...environment, ...extra }, plan.repository),
+    // Installation trust is tested separately; this file tests native engine controls.
+    env: gitReadOnlyEnvironment({ ...environment, ...extra }, plan.repository, join(root, "absent-index")),
   };
 }
 
@@ -116,6 +118,75 @@ function removed(marker: string): void {
 }
 
 describe("native repository read controls", () => {
+  it("refuses filesystem comparison after checked repository metadata disappears", () => {
+    const plan = checked(["diff", "left", "right", "--name-only"]);
+    const invocation = guardedInvocation(plan);
+    writeFileSync(join(cwd, "left"), "outside-left-content\n");
+    writeFileSync(join(cwd, "right"), "outside-right-content\n");
+    rmSync(join(cwd, ".git"), { recursive: true });
+    const control = spawnSync("git", [
+      `--git-dir=${plan.repository.gitDirectory}`, `--work-tree=${plan.repository.workTree}`,
+      "diff", "left", "right", "--name-only", "--",
+    ], { cwd, encoding: "utf8", env: invocation.env, timeout: 10_000 });
+    expect(control.error).toBeUndefined();
+    expect(control.status).toBe(1);
+    expect(control.stdout).toBe("right\n");
+    const result = spawnSync("git", invocation.args, {
+      cwd, encoding: "utf8", env: invocation.env, timeout: 10_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(128);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(/not a git repository/i);
+  });
+
+  it.each(["--name-only", "--name-status", "--raw"])("preserves recursive two-revision %s output through plumbing", (output) => {
+    mkdirSync(join(cwd, "nested"));
+    writeFileSync(join(cwd, "nested", "content.txt"), "initial\n");
+    writeFileSync(join(cwd, "executable.sh"), "#!/bin/sh\nexit 0\n");
+    succeed(native(["add", "."]));
+    succeed(native(["-c", "commit.gpgSign=false", "commit", "-m", "nested paths"]));
+    writeFileSync(join(cwd, "nested", "content.txt"), "modified\n");
+    chmodSync(join(cwd, "executable.sh"), 0o755);
+    succeed(native(["add", "."]));
+    succeed(native(["-c", "commit.gpgSign=false", "commit", "-m", "nested content and mode"]));
+    const control = succeed(native(["diff", "HEAD~1", "HEAD", output]));
+    expect(control).toContain("nested/content.txt");
+    expect(succeed(guarded(checked(["diff", "HEAD~1", "HEAD", output])))).toBe(control);
+  });
+
+  it.each(["clean", "process"] as const)("never converts worktree content through a %s filter added after admission", (kind) => {
+    const plans = [
+      ["log", "-n", "1"], ["show", "--no-patch", "HEAD"],
+      ["diff", "HEAD~1", "HEAD", "--name-only"], ["diff", "HEAD~1", "HEAD", "--name-status"],
+      ["diff", "HEAD~1", "HEAD", "--raw"], ["rev-parse", "--verify", "HEAD"], ["branch", "--list"],
+    ].map(checked);
+    const helper = script(`worktree-${kind}-filter`, kind === "clean"
+      ? 'printf "executed\\n" > "$CONTROL_MARKER"\ncat'
+      : 'printf "executed\\n" > "$CONTROL_MARKER"\nexit 1');
+    configure(`filter.aftercheck.${kind}`, helper.helper);
+    writeFileSync(join(cwd, ".gitattributes"), "alpha.txt filter=aftercheck\n");
+    // Same-size content makes conversion necessary beyond the size comparison.
+    writeFileSync(join(cwd, "alpha.txt"), "altered\n");
+    const old = new Date("2000-01-01T00:00:00.000Z");
+    utimesSync(join(cwd, "alpha.txt"), old, old);
+    for (const args of [
+      ["--no-optional-locks", "status", "--porcelain", "--untracked-files=no"],
+      ["--no-optional-locks", "diff", "--name-only"],
+    ]) {
+      const control = native(args, { CONTROL_MARKER: helper.marker });
+      expect(control.error).toBeUndefined();
+      expect(control.status).toBe(kind === "clean" ? 0 : 128);
+      removed(helper.marker);
+      for (const plan of plans) {
+        succeed(guarded(plan, { CONTROL_MARKER: helper.marker }));
+        expect(existsSync(helper.marker)).toBe(false);
+      }
+    }
+    expect(readOnlyGitArguments(["git", "status", "--porcelain"])).toBeNull();
+    expect(readOnlyGitArguments(["git", "diff", "--name-only"])).toBeNull();
+  });
+
   it("uses a native engine supporting the required controls independently of installation trust", () => {
     expect(succeed(native(["--version"]))).toMatch(/^git version 2\.(?:5[4-9]|[6-9]\d|\d{3,})\./);
     expect(succeed(guarded(checked(["log", "-n", "1"])))).toContain("second subject");
@@ -354,7 +425,7 @@ describe("native repository read controls", () => {
     expect(succeed(native(["show", "--no-patch", "HEAD"]))).toContain("first subject");
     expect(succeed(guarded(plan))).toContain("second subject");
     expect(succeed(guarded(plan))).not.toContain("first subject");
-    expect(gitReadOnlyEnvironment({ ...environment, GIT_REFERENCE_BACKEND: `files://${outside}` }, plan.repository).GIT_REFERENCE_BACKEND).toBe("files");
+    expect(gitReadOnlyEnvironment({ ...environment, GIT_REFERENCE_BACKEND: `files://${outside}` }, plan.repository, join(root, "absent-index")).GIT_REFERENCE_BACKEND).toBe("files");
   });
 
   it("neutralizes executable defaults in a config include added after admission", () => {
@@ -383,7 +454,7 @@ describe("native repository read controls", () => {
     const malicious = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "diff.external", GIT_CONFIG_VALUE_0: helper.helper, CONTROL_MARKER: helper.marker };
     succeed(native(["diff", "HEAD~1", "HEAD"], malicious));
     removed(helper.marker);
-    const owned = gitReadOnlyEnvironment({ ...environment, ...malicious }, plan.repository);
+    const owned = gitReadOnlyEnvironment({ ...environment, ...malicious }, plan.repository, join(root, "absent-index"));
     expect(owned.GIT_CONFIG_COUNT).toBeUndefined();
     expect(owned.GIT_CONFIG_KEY_0).toBeUndefined();
     expect(owned.GIT_CONFIG_VALUE_0).toBeUndefined();
