@@ -169,6 +169,7 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-verification-url-unavailable": "subscriptionProvidersSection.errorVerificationUrlUnavailable",
   "subscription-logout-not-supported": "subscriptionProvidersSection.errorLogoutNotSupported",
   "subscription-chat-unavailable": "subscriptionProvidersSection.errorChatUnavailable",
+  "subscription-model-not-supported": "formatIpcError.subscriptionModelNotSupported",
   "subscription-operation-failed": "subscriptionProvidersSection.errorOperationFailed",
 };
 
@@ -651,9 +652,18 @@ export function SignInMethodChoice({
             <RadioGroupItem
               value={method}
               id={optionId(method)}
+              aria-label={label}
+              aria-describedby={`${optionId(method)}-billing`}
               data-testid={`llm-tab:sign-in-method:${rowId}:${method}`}
             />
-            <Label htmlFor={optionId(method)} className="cursor-pointer text-sm font-normal">{label}</Label>
+            <Label htmlFor={optionId(method)} className="cursor-pointer text-sm font-normal">
+              <span className="block">{label}</span>
+              <span id={`${optionId(method)}-billing`} className="block text-xs text-muted-foreground">
+                {method === "api"
+                  ? t("modelBilling.apiKey")
+                  : t("modelBilling.subscription", { plan: planName })}
+              </span>
+            </Label>
           </div>
         ))}
       </RadioGroup>

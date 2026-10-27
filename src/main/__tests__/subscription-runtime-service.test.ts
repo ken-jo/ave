@@ -476,7 +476,7 @@ describe("SubscriptionRuntimeService", () => {
       kind: "subscription",
       provider: "codex",
       model: "removed-model",
-    })).rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+    })).rejects.toMatchObject({ code: "subscription-model-not-supported" });
     expect(listModels).toHaveBeenCalledOnce();
     expect(runtimeOptions).toHaveLength(1);
 

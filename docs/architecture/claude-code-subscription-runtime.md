@@ -61,8 +61,27 @@ with subscription metadata. Missing or contradictory metadata remains unavailabl
 Discovery, browser login, cancellation, logout, and verification use the
 existing subscription service and UI contracts. Settings lists Anthropic once:
 its card asks for "Claude subscription" or "API key" first, and shows the
-official install methods with "Check again" while no usable CLI is found. Model selection and native
+official install methods with "Check again" while no usable CLI is found. Native
 image attachments are not supported by this transport.
+
+Model settings use `catalogChatModelIds("claude")`, the active catalog shared
+with the API-key route; there is no separate subscription model list or alias
+table. Explicit IDs pass unchanged through the documented `--model` flag. An
+unlisted ID fails with `subscription-model-not-supported` whenever the service
+opens a model session, including a saved selection after restart, without
+substituting a model or authentication route. The runtime descriptor explicitly
+offers the CLI default: an absent persisted `model` omits `--model`.
+The installed runtime still decides account availability; a rejected request
+fails the turn rather than retrying with another model.
+
+The sign-in choices, model chooser, selected settings model and current composer
+disclose the selected authentication route's billing: the user's own subscription
+or the configured API key. Local routes without required API keys carry no
+API-key billing claim.
+The host drops every inherited `ANTHROPIC_*` and `CLAUDE_*` variable before
+spawn; its own `CLAUDE_CONFIG_DIR` points to the isolated runtime home. Login
+uses only `auth login` in that same home. Credential files and account tokens
+remain owned by the CLI, outside the host's settings and secret stores.
 
 `SubscriptionLlmProvider` sends the complete controlled conversation envelope for
 each Ave model round. A print invocation receives that envelope on stdin and runs

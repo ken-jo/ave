@@ -7,6 +7,8 @@ import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
 
 describe("formatIpcError (SOT — #830)", () => {
   it.each([
+    ["ko", "subscription-model-not-supported", "선택한 모델을 사용할 수 없습니다. 설정에서 지원되는 모델을 선택하세요."],
+    ["en", "subscription-model-not-supported", "The selected model is unavailable. Choose a supported model in Settings."],
     ["ko", "invalid-send-request-id", "잘못된 입력입니다."],
     ["en", "invalid-send-request-id", "Invalid input."],
     ["ko", "sub-agent-runner-unavailable", "지금은 서브에이전트를 사용할 수 없습니다."],

@@ -1,5 +1,5 @@
 import "../../../../../test/renderer/setup.js";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
@@ -418,6 +418,21 @@ describe("SubscriptionAuthControls", () => {
 });
 
 describe("SignInMethodChoice", () => {
+  it.each([
+    ["en", "Billed to your own Claude subscription, not an API key.", "Billed to your configured API key."],
+    ["ko", "API 키가 아닌 본인의 Claude 구독으로 청구됩니다.", "설정한 본인의 API 키로 청구됩니다."],
+  ] as const)("discloses both billing routes before selection in %s", async (locale, subscriptionBilling, apiBilling) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    render(<SignInMethodChoice rowId="claude-code" planName="Claude" value={null} onChange={vi.fn()} />);
+    const group = screen.getByTestId("llm-tab:sign-in-method:claude-code");
+    expect(within(group).getByText(subscriptionBilling)).toBeVisible();
+    expect(within(group).getByText(apiBilling)).toBeVisible();
+    expect(within(group).getByTestId("llm-tab:sign-in-method:claude-code:subscription")).toHaveAccessibleDescription(subscriptionBilling);
+    expect(within(group).getByTestId("llm-tab:sign-in-method:claude-code:api")).toHaveAccessibleDescription(apiBilling);
+    for (const radio of within(group).getAllByRole("radio")) expect(radio).toHaveAttribute("aria-checked", "false");
+  });
+
   it("asks with nothing chosen, then reports the method picked", () => {
     const onChange = vi.fn();
     const { rerender } = render(<SignInMethodChoice rowId="codex" planName="ChatGPT" value={null} onChange={onChange} />);

@@ -215,7 +215,7 @@ describe("subscription model choice through the installed CLI", () => {
   it("refuses a persisted model the catalog does not list", async () => {
     const { service, opened } = await claudeService();
     await expect(service.openTextSession({ kind: "subscription", provider: "claude-code", model: "claude-imaginary-9" }))
-      .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      .rejects.toMatchObject({ code: "subscription-model-not-supported" });
     expect(opened).toHaveLength(0);
   });
 

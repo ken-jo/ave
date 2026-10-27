@@ -209,10 +209,15 @@ export async function collectRoundStream(
             provider.subscriptionRuntime ? event.error : rawForClassification,
           );
           const imageInputRefused = event.code === "image-input-unsupported";
-          const classification = imageInputRefused ? "model" : event.providerError?.classification ?? classified.category;
+          const subscriptionModelRefused = provider.subscriptionRuntime !== undefined
+            && event.providerError?.providerCode === "subscription-model-not-supported";
+          const classification = imageInputRefused || subscriptionModelRefused
+            ? "model" : event.providerError?.classification ?? classified.category;
           const userMessage = imageInputRefused
             ? `${t("be_streamCollector.imageInputUnsupported")} ${imageInputRecoveryMessage(t)}`
-            : classified.userMessage;
+            : subscriptionModelRefused
+              ? t("formatIpcError.subscriptionModelNotSupported")
+              : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
             classification,

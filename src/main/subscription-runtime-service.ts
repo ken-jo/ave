@@ -1421,7 +1421,7 @@ export class SubscriptionRuntimeService {
         candidate.model === undefined || catalog.models.some((model) => model.id === candidate.model);
       if (!selectable(safeSelection)) {
         if (!safeFallbackSelection || !selectable(safeFallbackSelection)) {
-          throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
+          throw new SubscriptionRuntimeServiceError("subscription-model-not-supported");
         }
         this.emitAudit({ provider: "codex", outcome: "model-fallback" });
         effectiveSelection = safeFallbackSelection;

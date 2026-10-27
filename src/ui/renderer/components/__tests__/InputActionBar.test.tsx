@@ -26,6 +26,7 @@ const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd
 // ThinkingButton (now part of the unified bar) reads its depth from the renderer api on mount.
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
+const hasApiKey = vi.fn(async () => false);
 const onSettingsUpdated = vi.fn(() => () => {});
 const subscriptionUseApiForChat = vi.fn(async () => ({ ok: true }));
 // The permission card persists through the same two calls Settings → Permissions makes.
@@ -51,6 +52,7 @@ vi.mock("../../api-client.js", () => ({
     updateSettings,
     onSettingsUpdated,
     subscriptionUseApiForChat,
+    hasApiKey,
     permission: { setMode, reviewerDispatch, sandboxCapability },
   }),
 }));
@@ -59,6 +61,7 @@ const defaultStatusRow: InputStatusRow = {
   vendorModel: "OpenAI · gpt-5.4",
   activeChatModel: { kind: "api", vendor: "openai", model: "gpt-5.4" },
   permissionMode: "default",
+  billingRoute: { kind: "api-key" },
   pendingApprovals: 0,
 };
 
@@ -372,13 +375,13 @@ describe("InputActionBar (unified bar)", () => {
     expect(permission.compareDocumentPosition(ringHost) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
-  it("names the model alone in the status row, and keeps the vendor in the accessible name", () => {
+  it("names the model and billing route in the status row, and keeps the vendor in the accessible name", () => {
     const { getByTestId } = renderBar();
     const model = getByTestId("iab-status-model");
     expect(model.textContent).toContain("gpt-5.4");
     expect(model.textContent).not.toContain("OpenAI");
     // Hover and screen reader still get the whole route.
-    expect(model.getAttribute("title")).toBe("OpenAI · gpt-5.4");
+    expect(model.getAttribute("title")).toBe("OpenAI · gpt-5.4 · 설정한 본인의 API 키로 청구됩니다.");
     expect(model.getAttribute("aria-label")).toBe("OpenAI · gpt-5.4");
   });
 
@@ -838,6 +841,22 @@ describe("model card (status-row model cell)", () => {
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
   });
 
+  it("retains independent billing disclosures when one credential query fails", async () => {
+    getSettings.mockResolvedValue({
+      ...settingsWithPins(),
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
+    });
+    hasApiKey.mockRejectedValueOnce(new Error("credential-query-failed")).mockResolvedValueOnce(true);
+    const view = renderBar();
+    fireEvent.click(view.getByTestId("iab-status-model"));
+    const subscription = await view.findByTestId("model-quick-picker-option:claude-code");
+    const failed = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-nvfp4");
+    const verified = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-gguf");
+    await waitFor(() => expect(subscription).toHaveTextContent("API 키가 아닌 본인의 Claude 구독으로 청구됩니다."));
+    expect(verified).toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
+    expect(failed).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
+  });
+
   it("names the subscription provider in the primary column when the runtime has no model of its own", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
@@ -855,7 +874,8 @@ describe("model card (status-row model cell)", () => {
     // The muted vendor column would otherwise be the only place the label appears, leaving the primary
     // column visually empty; the label moves there instead when the runtime has no model of its own.
     expect(spans[0]?.textContent).toBe("");
-    expect(spans[1]?.textContent).toBe("Kimi");
+    expect(spans[1]?.firstElementChild?.textContent).toBe("Kimi");
+    expect(spans[1]?.lastElementChild?.textContent).toBe("API 키가 아닌 본인의 Kimi 구독으로 청구됩니다.");
   });
 
   it("labels an unchosen subscription model as the CLI default", async () => {
@@ -873,7 +893,8 @@ describe("model card (status-row model cell)", () => {
     });
     const spans = option.querySelectorAll("span");
     expect(spans[0]?.textContent).toBe("Claude");
-    expect(spans[1]?.textContent).toBe(t("llmTab.cliDefaultModel"));
+    expect(spans[1]?.firstElementChild?.textContent).toBe(t("llmTab.cliDefaultModel"));
+    expect(spans[1]?.lastElementChild?.textContent).toBe("API 키가 아닌 본인의 Claude 구독으로 청구됩니다.");
   });
 
   it("carries the reasoning control and the way to the full catalogue", async () => {
@@ -1119,4 +1140,56 @@ describe("permission card sandbox checkbox", () => {
     );
     expect(view.queryByTestId("permission-quick-picker-sandbox-setup")).toBeNull();
   });
+});
+
+describe("current session billing disclosure", () => {
+  it.each([
+    [{ kind: "subscription", provider: "claude-code", model: null }, "API 키가 아닌 본인의 Claude 구독으로 청구됩니다."],
+    [{ kind: "api", vendor: "claude", model: "claude-sonnet-5-5" }, "설정한 본인의 API 키로 청구됩니다."],
+  ] as const)("shows the active authentication route for %j", (activeChatModel, expected) => {
+    const { getByTestId } = renderBar({ statusRow: { ...defaultStatusRow, activeChatModel, billingRoute: activeChatModel.kind === "subscription" ? { kind: "subscription", provider: activeChatModel.provider } : { kind: "api-key" } } });
+    expect(getByTestId("iab-model-billing")).toHaveTextContent(expected);
+    expect(getByTestId("iab-status-model")).toHaveAccessibleDescription(expected);
+    expect(getByTestId("iab-status-model")).toHaveAttribute("title", expect.stringContaining(expected));
+  });
+
+  it("does not label a keyless endpoint as paid API-key usage", () => {
+    const { queryByTestId } = renderBar({ statusRow: {
+      ...defaultStatusRow,
+      activeChatModel: { kind: "api", vendor: "openai-compatible", model: "local-model" },
+      billingRoute: { kind: "keyless" },
+    } });
+    expect(queryByTestId("iab-model-billing")).toBeNull();
+  });
+});
+
+describe("localized configured route billing accessibility", () => {
+  for (const locale of ["en", "ko"] as const) {
+    it.each([
+      ["optional keyed endpoint", undefined, "api-key"],
+      ["keyless preset", "keyless-fixture", "keyless"],
+      ["keyed preset", "keyed-fixture", "api-key"],
+    ] as const)(`describes %s in ${locale}`, async (_label, presetId, kind) => {
+      const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
+      const { loadLocaleMessages } = await import("../../../../i18n/messages/index.js");
+      const previousLocale = getLocale();
+      await loadLocaleMessages(locale);
+      setLocale(locale);
+      try {
+        const view = renderBar({ statusRow: {
+          ...defaultStatusRow, billingRoute: { kind },
+          activeChatModel: { kind: "api", vendor: "openai-compatible", model: "fixture-model", ...(presetId ? { marketplaceProviderPresetId: presetId } : {}) },
+        } });
+        const button = view.getByTestId("iab-status-model");
+        if (kind === "api-key") {
+          expect(button).toHaveAccessibleDescription(locale === "en" ? "Billed to your configured API key." : "설정한 본인의 API 키로 청구됩니다.");
+        } else {
+          expect(button).not.toHaveAttribute("aria-describedby");
+          expect(view.queryByTestId("iab-model-billing")).toBeNull();
+        }
+      } finally {
+        setLocale(previousLocale);
+      }
+    });
+  }
 });

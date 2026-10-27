@@ -9,6 +9,7 @@ import {
   subscriptionRuntimeDescriptor,
 } from "../../../shared/subscription-runtime.js";
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../shared/permission-mode.js";
+import { apiModelBillingRoute, modelBillingApiAddress, type ModelBillingRoute } from "../utils/model-billing.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
 /** Resolve composer model and permission status from settings and permission subscriptions; missing-model alerts belong to the sidebar.
@@ -19,6 +20,7 @@ export interface InputStatusRow {
   /** Main's answer to which model chat is on; null until the first settings snapshot lands. `kind:
    * "none"` means there is no model to name, and the row offers provider setup instead of a label. */
   activeChatModel: ActiveChatModel | null;
+  billingRoute?: ModelBillingRoute;
   /** Permission policy mode for per-mode text color + label. */
   permissionMode: ExecutionModeDisplay;
   /** Pending deferred-approval count (appended to the permission cell). */
@@ -32,6 +34,7 @@ export interface InputStatusRow {
 export function useInputStatusRow(api: AveApi): InputStatusRow {
   const [vendorModel, setVendorModel] = useState("");
   const [activeChatModel, setActiveChatModel] = useState<ActiveChatModel | null>(null);
+  const [billingRoute, setBillingRoute] = useState<ModelBillingRoute>();
   const [permissionMode, setPermissionMode] = useState<ExecutionModeDisplay>("unknown");
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxStatus } =
@@ -41,9 +44,24 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
   useEffect(() => {
     if (typeof api.getSettings !== "function") return;
     let cancelled = false;
+    let billingEpoch = 0;
 
     const apply = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       if (cancelled) return;
+      const epoch = ++billingEpoch;
+      const active = settings.activeChatModel;
+      setBillingRoute(active.kind === "subscription" ? { kind: "subscription", provider: active.provider } : undefined);
+      if (active.kind === "api") {
+        const address = modelBillingApiAddress(settings, active.vendor, active.marketplaceProviderPresetId);
+        if (address.requiresApiKey) setBillingRoute(apiModelBillingRoute(active.vendor, true, false));
+        if (typeof api.hasApiKey === "function") {
+          void api.hasApiKey(address.credentialId).then((keyConfigured) => {
+            if (!cancelled && epoch === billingEpoch) {
+              setBillingRoute(apiModelBillingRoute(active.vendor, address.requiresApiKey, keyConfigured));
+            }
+          }).catch(() => { /* An optional route without a verified key makes no billing claim. */ });
+        }
+      }
       setActiveChatModel((current) =>
         JSON.stringify(current) === JSON.stringify(settings.activeChatModel) ? current : settings.activeChatModel);
       // No connected provider: the vendor block still carries its default id, but nothing was chosen and nothing could answer, so nothing is named.
@@ -118,5 +136,5 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
     };
   }, [api]);
 
-  return { vendorModel, activeChatModel, permissionMode, pendingApprovals, sandboxCapability, sandboxStatusQueryFailed, refreshSandboxStatus };
+  return { vendorModel, activeChatModel, billingRoute, permissionMode, pendingApprovals, sandboxCapability, sandboxStatusQueryFailed, refreshSandboxStatus };
 }

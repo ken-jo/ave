@@ -96,6 +96,7 @@ import {
   type SubscriptionProviderView,
 } from "./SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
+import { apiModelBillingRoute, modelBillingDisclosure, type ModelBillingRoute } from "../utils/model-billing.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
@@ -808,6 +809,7 @@ export interface UnifiedModelOption {
   /** `providerId::modelId`. The Select's value, so a model id repeated by two providers still resolves to the right one. */
   value: string;
   providerId: string;
+  billingRoute?: ModelBillingRoute;
   /** The name of the ROW this model is offered on; the card title. It is the chooser's group label. */
   providerLabel: string;
   /** Leading column: who serves THIS model. Usually the catalogue's own word, because an aggregator's catalogue is other companies' models and the sub-vendor is the only thing that tells them apart. It falls back to the row
@@ -1032,20 +1034,30 @@ export function UnifiedModelSelect({
     })).filter((provider) => provider.groups.length > 0),
   }), [groupedOptions, matches]);
 
-  const content = (option: UnifiedModelOption) => (
-    <ModelSelectItemContent
-      option={option.modelId}
-      {...(option.entry ? { entry: option.entry } : {})}
-      /* Kept on grouped rows too, where it repeats the group header: the collapsed trigger renders this same content and has no label of its own, so dropping it would leave the closed control showing a bare model id. */
-      provider={option.vendorLabel}
-      {...(option.vision === true ? { vision: true } : {})}
-      {...(option.toolCall ? { toolCall: option.toolCall } : {})}
-      {...(option.reasoning ? { reasoning: option.reasoning } : {})}
-      {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
-      {...(option.facts ? { factsOverride: option.facts } : {})}
-      {...(option.unlisted ? { tone: "destructive" as const } : {})}
-    />
-  );
+  const content = (option: UnifiedModelOption, showBilling = true) => {
+    const billing = showBilling ? modelBillingDisclosure(option.billingRoute, t) : undefined;
+    return (
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <ModelSelectItemContent
+          option={option.modelId}
+          {...(option.entry ? { entry: option.entry } : {})}
+          /* The collapsed trigger renders this same content without its group header. */
+          provider={option.vendorLabel}
+          {...(option.vision === true ? { vision: true } : {})}
+          {...(option.toolCall ? { toolCall: option.toolCall } : {})}
+          {...(option.reasoning ? { reasoning: option.reasoning } : {})}
+          {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
+          {...(option.facts ? { factsOverride: option.facts } : {})}
+          {...(option.unlisted ? { tone: "destructive" as const } : {})}
+        />
+        {billing ? (
+          <span className="whitespace-normal break-words text-[10px] leading-tight font-normal text-muted-foreground" data-model-billing={option.providerId}>
+            {billing}
+          </span>
+        ) : null}
+      </span>
+    );
+  };
   const selectedOption = options.find((option) => option.value === value);
 
   const togglePin = onTogglePin;
@@ -1090,6 +1102,7 @@ export function UnifiedModelSelect({
   };
 
   return (
+    <div className="min-w-0 space-y-1">
     <Select
       value={value}
       onValueChange={(nextValue) => {
@@ -1104,7 +1117,7 @@ export function UnifiedModelSelect({
     >
       <SelectTrigger id={triggerId} className="w-full" data-testid={testId}>
         <SelectValue placeholder={placeholder}>
-          {selectedOption ? content(selectedOption) : undefined}
+          {selectedOption ? content(selectedOption, false) : undefined}
         </SelectValue>
       </SelectTrigger>
       <SelectContent
@@ -1194,6 +1207,12 @@ export function UnifiedModelSelect({
         </div>
       </SelectContent>
     </Select>
+    {selectedOption && modelBillingDisclosure(selectedOption.billingRoute, t) ? (
+      <p className="text-xs text-muted-foreground" data-testid="llm-tab:model-billing">
+        {modelBillingDisclosure(selectedOption.billingRoute, t)}
+      </p>
+    ) : null}
+    </div>
   );
 }
 
@@ -2135,6 +2154,7 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value,
           providerId: apiProviderId(rowId),
+          billingRoute: apiModelBillingRoute(row.apiVendorId, rowRequiresApiKey(row), credentialedProviderIds.has(rowCredentialId(row))),
           providerLabel: row.label,
           vendorLabel: catalogueNamesItsModels
             ? entry?.provider ?? entry?.ownedBy ?? row.label
@@ -2175,6 +2195,7 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, ""),
           providerId: view.descriptor.id,
+          ...(isSubscriptionRuntimeId(view.descriptor.id) ? { billingRoute: { kind: "subscription" as const, provider: view.descriptor.id } } : {}),
           providerLabel: subscriptionModelsLabel(t, view),
           vendorLabel: subscriptionModelsLabel(t, view),
           modelId: t("llmTab.providerDefaultModel"),
@@ -2189,6 +2210,7 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, ""),
           providerId: view.descriptor.id,
+          ...(isSubscriptionRuntimeId(view.descriptor.id) ? { billingRoute: { kind: "subscription" as const, provider: view.descriptor.id } } : {}),
           providerLabel: subscriptionCompanyLabel(view),
           vendorLabel: subscriptionCompanyLabel(view),
           modelId: t("llmTab.cliDefaultModel"),
@@ -2198,6 +2220,7 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, model.id),
           providerId: view.descriptor.id,
+          ...(isSubscriptionRuntimeId(view.descriptor.id) ? { billingRoute: { kind: "subscription" as const, provider: view.descriptor.id } } : {}),
           providerLabel: subscriptionModelsLabel(t, view),
           vendorLabel: subscriptionModelsLabel(t, view),
           modelId: model.label || model.id,
@@ -2212,7 +2235,7 @@ export function LlmTab(props: LlmTabProps) {
     return options;
   }, [
     connections, rowRequiresApiKey, credentialedProviderIds, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
-    unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
+    unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, rowCredentialId, t,
   ]);
 
   /** Whether the route chat is on right now can actually answer a turn. Saving a credential deliberately does NOT adopt the provider it belongs to; the model list is the one
@@ -2682,6 +2705,11 @@ export function LlmTab(props: LlmTabProps) {
                 </Button>
               )}
             </div>
+            {apiModelBillingRoute(rowVendorId, rowNeedsApiKey, rowHasKey).kind === "api-key" ? (
+              <p className="text-xs text-muted-foreground" data-testid="llm-tab:api-billing-disclosure">
+                {t("modelBilling.apiKey")}
+              </p>
+            ) : null}
             <Input
               data-testid="llm-api-key-input"
               type="password"

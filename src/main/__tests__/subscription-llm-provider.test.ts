@@ -968,6 +968,28 @@ describe("SubscriptionLlmProvider", () => {
     }]);
   });
 
+  it("reports an unsupported selection without retrying or creating an API route", async () => {
+    const service = {
+      openTextSession: vi.fn(async () => {
+        throw new SubscriptionRuntimeServiceError("subscription-model-not-supported");
+      }),
+    } as Pick<SubscriptionRuntimeService, "openTextSession">;
+    const getApiKey = vi.fn(() => { throw new Error("API-key fallback must not be created"); });
+    const retrying = new FallbackProvider(providerWith(service), [{ provider: "claude", model: "fallback-model" }], getApiKey);
+    const events = await collect(retrying.streamTurn(params()));
+    expect(service.openTextSession).toHaveBeenCalledOnce();
+    expect(getApiKey).not.toHaveBeenCalled();
+    expect(events).toEqual([{
+      type: "error",
+      error: "subscription-model-not-supported",
+      classification: "subscription-chat-unavailable",
+      providerError: {
+        origin: "unknown", providerCode: "subscription-model-not-supported", isRetryable: false,
+        messagePreview: "subscription model not supported",
+      },
+    }]);
+  });
+
   it("does not retry a locally rejected oversized subscription envelope", async () => {
     const service = {
       openTextSession: vi.fn(),

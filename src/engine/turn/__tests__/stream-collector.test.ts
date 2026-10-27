@@ -72,6 +72,22 @@ describe("image capability refusal", () => {
 });
 
 describe("provider completion boundary", () => {
+  it.each([
+    ["en", "Error: The selected model is unavailable. Choose a supported model in Settings."],
+    ["ko", "오류: 선택한 모델을 사용할 수 없습니다. 설정에서 지원되는 모델을 선택하세요."],
+  ] as const)("localizes a subscription model refusal in %s without exposing diagnostics", async (locale, userMessage) => {
+    setLocale(locale);
+    const result = await collectRoundStream({
+      provider: new SubscriptionCapturingProvider([{
+        type: "error", error: "subscription-model-not-supported",
+        providerError: { origin: "unknown", providerCode: "subscription-model-not-supported",
+          messagePreview: "private runtime diagnostic", isRetryable: false },
+      }]),
+      model: "test-model", systemPrompt: "system", messages: [], toolSchemas: [], llmSettings: LLM_SETTINGS,
+    });
+    expect(result).toMatchObject({ kind: "stream_error", classification: "model", userMessage });
+  });
+
   it.each(["started", "cancelled", "runtime-switched"] as const)(
     "records dispatch only after the guards pass: %s", async (state) => {
       const provider = new ScriptedProvider([{ type: "message_complete", stopReason: "end_turn" }]);

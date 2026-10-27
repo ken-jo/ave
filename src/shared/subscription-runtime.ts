@@ -511,6 +511,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-verification-url-unavailable"
   | "subscription-logout-not-supported"
   | "subscription-chat-unavailable"
+  | "subscription-model-not-supported"
   | "subscription-operation-failed";
 
 export type SubscriptionRuntimeActionResult =

@@ -164,6 +164,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "codex-login-failed": "formatIpcError.codexLoginFailed",
   "subscription-operation-failed": "formatIpcError.subscriptionChatUnavailable",
   "subscription-chat-unavailable": "formatIpcError.subscriptionChatUnavailable",
+  "subscription-model-not-supported": "formatIpcError.subscriptionModelNotSupported",
   "subscription-logout-not-supported": "formatIpcError.subscriptionLogoutNotSupported",
   "subscription-provider-not-supported": "formatIpcError.subscriptionProviderNotSupported",
 

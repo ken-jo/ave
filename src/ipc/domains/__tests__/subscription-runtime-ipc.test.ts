@@ -923,7 +923,7 @@ describe("common subscription runtime IPC", () => {
 
     expect(await invoke("ave:settings:subscription:use-for-chat", "codex", "not-listed")).toMatchObject({
       ok: false,
-      error: "subscription-chat-unavailable",
+      error: "subscription-model-not-supported",
     });
     expect(await invoke("ave:settings:subscription:use-for-chat", "grok-build", "not-allowed")).toMatchObject({
       ok: false,
