@@ -1855,7 +1855,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     expect(vendors.nebius?.baseUrl).toBe("https://nebius-proxy.example.invalid/v1");
   });
 
-  it("bounds legacy profile budgets and persists the normalized value without changing the output cap", async () => {
+  it("preserves legacy profile budgets independently of the output cap", async () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
       llm: {
         provider: "openai",
@@ -1863,9 +1863,9 @@ describe("SettingsService LLM per-vendor patching", () => {
       },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // The stored 32000 is the old materialized default (no migration marker), so it becomes the host default; the budget is bounded against the same 32000.
+    // Migrate the materialized output default independently of the budget used to recover intent.
     expect(service.get("llm").vendors.openai).toMatchObject({
-      model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 16_000,
+      model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 24_000,
     });
     expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
     await service.patch({ llm: { vendors: { openai: { thinkingBudgetTokens: 14_000 } } } });
@@ -1874,22 +1874,22 @@ describe("SettingsService LLM per-vendor patching", () => {
     expect(reloaded.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
   });
 
-  it("clamps thinking on patches and output changes while preserving unrelated vendor fields", async () => {
+  it("preserves thinking intent on patches and output changes alongside unrelated vendor fields", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ llm: { vendors: { "openai-compatible": {
       model: "fixture-model", baseUrl: "https://provider.example/v1", enableThinking: false,
       contextWindow: 128_000, outputTokenLimit: 32_000, thinkingBudgetTokens: 32_000,
     } } } });
-    expect(service.get("llm").vendors["openai-compatible"]?.thinkingBudgetTokens).toBe(16_000);
+    expect(service.get("llm").vendors["openai-compatible"]?.thinkingBudgetTokens).toBe(32_000);
     await service.patch({ llm: { vendors: { "openai-compatible": { outputTokenLimit: 16_000 } } } });
     expect(service.get("llm").vendors["openai-compatible"]).toMatchObject({
       model: "fixture-model", baseUrl: "https://provider.example/v1", enableThinking: false,
-      contextWindow: 128_000, outputTokenLimit: 16_000, thinkingBudgetTokens: 8_000,
+      contextWindow: 128_000, outputTokenLimit: 16_000, thinkingBudgetTokens: 32_000,
     });
     await service.patch({ llm: { vendors: { "openai-compatible": { outputTokenLimit: 64_000 } } } });
-    expect(service.get("llm").vendors["openai-compatible"]?.thinkingBudgetTokens).toBe(8_000);
-    await service.patch({ llm: { vendors: { "openai-compatible": { thinkingBudgetTokens: 48_000 } } } });
     expect(service.get("llm").vendors["openai-compatible"]?.thinkingBudgetTokens).toBe(32_000);
+    await service.patch({ llm: { vendors: { "openai-compatible": { thinkingBudgetTokens: 48_000 } } } });
+    expect(service.get("llm").vendors["openai-compatible"]?.thinkingBudgetTokens).toBe(48_000);
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("llm").vendors["openai-compatible"]).toEqual(service.get("llm").vendors["openai-compatible"]);
   });
@@ -1907,7 +1907,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     expect(reloaded.get("llm").provider).toBe("openai");
     expect(reloaded.get("llm").vendors.groq).toMatchObject({ outputTokenLimit: 64_000, thinkingBudgetTokens: 8_000 });
     await reloaded.patch({ llm: { provider: "groq", vendors: { groq: { thinkingBudgetTokens: 40_000 } } } });
-    expect(reloaded.get("llm").vendors.groq).toMatchObject({ outputTokenLimit: 64_000, thinkingBudgetTokens: 32_000 });
+    expect(reloaded.get("llm").vendors.groq).toMatchObject({ outputTokenLimit: 64_000, thinkingBudgetTokens: 40_000 });
   });
 
   it("round-trips a per-vendor output ceiling through patch", async () => {

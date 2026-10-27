@@ -17,7 +17,7 @@ const popups = new Map<string, { window: BrowserWindow; owner: BrowserWindow; ti
 let service: BrowserWorkspaceService | null = null;
 
 function mainWindow(windowId: number): BrowserWindow | undefined {
-  return getMainWindows().find((window) => window.id === windowId && !window.isDestroyed());
+  return getMainWindows().find((window) => !window.isDestroyed() && window.id === windowId);
 }
 
 // Created only when the browser workspace is first used.
@@ -58,40 +58,42 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
 export function browserWorkspaceGuestWindowId(contents: WebContents | null): number | null {
   if (!contents || contents.isDestroyed() || contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) return null;
   const entry = guests.get(contents.id);
-  return entry?.contents === contents && mainWindow(entry.owner.id) === entry.owner ? entry.owner.id : null;
+  return entry?.contents === contents && !entry.owner.isDestroyed() && mainWindow(entry.owner.id) === entry.owner ? entry.owner.id : null;
 }
 
 export function observeBrowserWorkspaceGuest(contents: WebContents, owner: BrowserWindow): void {
-  if (contents.isDestroyed() || mainWindow(owner.id) !== owner
+  if (contents.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner
     || contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) throw new Error("browser-guest-owner-mismatch");
-  const existing = guests.get(contents.id);
+  const guestId = contents.id;
+  const windowId = owner.id;
+  const existing = guests.get(guestId);
   if (existing) {
     if (existing.contents !== contents || existing.owner !== owner) throw new Error("browser-guest-owner-mismatch");
     return;
   }
-  if (!windows.has(owner.id)) {
-    const invalidate = () => service?.invalidateWindow(owner.id);
+  if (!windows.has(windowId)) {
+    const invalidate = () => service?.invalidateWindow(windowId);
     const dispose = () => {
       owner.removeListener("hide", invalidate);
       owner.removeListener("minimize", invalidate);
       owner.removeListener("closed", dispose);
-      service?.disposeWindow(owner.id);
+      service?.disposeWindow(windowId);
       for (const entry of [...guests.values()]) if (entry.owner === owner) entry.dispose();
       for (const popup of [...popups.values()]) if (popup.owner === owner) popup.dispose();
-      windows.delete(owner.id);
+      windows.delete(windowId);
     };
-    windows.set(owner.id, { owner, dispose });
+    windows.set(windowId, { owner, dispose });
     owner.on("hide", invalidate);
     owner.on("minimize", invalidate);
     owner.once("closed", dispose);
   }
-  const stopObserving = getBrowserWorkspaceService().observeGuest(owner.id, contents);
+  const stopObserving = getBrowserWorkspaceService().observeGuest(windowId, contents);
   const dispose = () => {
     contents.removeListener("destroyed", dispose);
     stopObserving();
-    guests.delete(contents.id);
+    guests.delete(guestId);
   };
-  guests.set(contents.id, { contents, owner, dispose });
+  guests.set(guestId, { contents, owner, dispose });
   contents.once("destroyed", dispose);
 }
 
@@ -147,7 +149,7 @@ function nativeTitle(value: string): string {
 // Refreshes trusted native titles after the registry publishes its revisioned state.
 export function refreshBrowserPopupControl(windowId: number, state: BrowserTabControlState): void {
   for (const [handle, popup] of popups) {
-    if (popup.owner.id !== windowId || popup.window.isDestroyed()) continue;
+    if (popup.owner.isDestroyed() || popup.owner.id !== windowId || popup.window.isDestroyed()) continue;
     const tab = state.tabs.find((candidate) => candidate.tabId === handle && candidate.kind === "popup");
     if (!tab) continue;
     popup.window.setTitle(`Ave · ${t(`browserWorkspace.mode.${tab.mode}`)} · ${popup.title}`);

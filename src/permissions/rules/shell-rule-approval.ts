@@ -1,3 +1,4 @@
+import { verifiedShellParsed, type VerifiedShellCommand } from "../verified-shell-command.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import type { ShellRuleApproval, ShellRuleDialect } from "../../shared/permissions-events.js";
@@ -15,8 +16,10 @@ import { decodePowerShellEncodedCommands } from "./powershell-encoded-command.js
 
 interface CommandSyntax { bash?: ParsedShellCommand; powershell?: ParsedPowerShellCommand }
 
-function commandSyntax(dialect: ShellRuleDialect, command: string): CommandSyntax {
+function commandSyntax(dialect: ShellRuleDialect, command: string, cwd?: string, verifiedCommand?: VerifiedShellCommand): CommandSyntax {
   if (command.length > MAX_LITERAL_COMMAND_LENGTH) return {};
+  const bound = cwd === undefined ? undefined : verifiedShellParsed(verifiedCommand, { command, dialect, cwd });
+  if (bound !== undefined) return "syntax" in bound ? { powershell: bound } : { bash: bound };
   return dialect === "bash" ? { bash: parseShellCommand(command) } : { powershell: parsePowerShellCommand(command) };
 }
 
@@ -27,9 +30,12 @@ export function buildShellRuleApproval(
   projectCwd: string,
   saves: { allow: boolean; deny: boolean },
   sessionId?: string,
+  verifiedCommand?: VerifiedShellCommand,
 ): ShellRuleApproval {
   const decodedCommands = decodePowerShellEncodedCommands(command, dialect);
-  const syntax = commandSyntax(dialect, command);
+  const bound = verifiedShellParsed(verifiedCommand, { command, dialect, cwd: projectCwd });
+  const syntax: CommandSyntax = bound === undefined ? commandSyntax(dialect, command)
+    : "syntax" in bound ? { powershell: bound } : { bash: bound };
   const candidate = saves.allow && command.length <= MAX_LITERAL_COMMAND_LENGTH
     ? dialect === "bash" ? exactBashRule(syntax.bash!, projectCwd) : exactPowerShellRule(syntax.powershell!, projectCwd)
     : null;
@@ -126,8 +132,8 @@ function suggestionCovers(dialect: ShellRuleDialect, pattern: string, action: "a
 }
 
 // Reuse the strict store validator and matcher for a rule a card saves: true when `pattern` is a storable rule of the call's own shell dialect and, as `action`, decides this command (an allow covers it, a deny refuses it). Throws RuleSpecifierError for text outside the rule language.
-export function shellRuleCoversCommand(dialect: ShellRuleDialect, pattern: string, action: "allow" | "deny", command: string, cwd: string): boolean {
-  return shellRuleCoversParsedCommand(dialect, pattern, action, command, cwd, commandSyntax(dialect, command));
+export function shellRuleCoversCommand(dialect: ShellRuleDialect, pattern: string, action: "allow" | "deny", command: string, cwd: string, verifiedCommand?: VerifiedShellCommand): boolean {
+  return shellRuleCoversParsedCommand(dialect, pattern, action, command, cwd, commandSyntax(dialect, command, cwd, verifiedCommand));
 }
 
 function shellRuleCoversParsedCommand(dialect: ShellRuleDialect, pattern: string, action: "allow" | "deny", command: string, cwd: string, syntax: CommandSyntax): boolean {

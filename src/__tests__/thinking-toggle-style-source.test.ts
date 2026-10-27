@@ -20,7 +20,7 @@ describe("chat Thinking toggle styles", () => {
 
   it("defines one fill token per depth rung", () => {
     // Check the full reasoning-color ladder; missing variables silently render enabled levels as off.
-    const rungs = getLlmThinkingBudgetRungs(Number.MAX_SAFE_INTEGER);
+    const rungs = getLlmThinkingBudgetRungs(Number.MAX_SAFE_INTEGER, true);
     const styles = readRepoFile("src/styles.css");
 
     const fills = Array.from(styles.matchAll(/^\s*(--reasoning-fill-\d+):/gmu), (match) => match[1]);
@@ -35,7 +35,7 @@ describe("chat Thinking toggle styles", () => {
       const m = styles.match(new RegExp(`${match[1]}:\\s*(\\d+)`, "u"));
       return m ? Number(m[1]) : NaN;
     });
-    expect(ramp).toHaveLength(getLlmThinkingBudgetRungs(Number.MAX_SAFE_INTEGER).length);
+    expect(ramp).toHaveLength(getLlmThinkingBudgetRungs(Number.MAX_SAFE_INTEGER, true).length);
     expect(ramp.every((hue) => hue >= 42 && hue <= 48)).toBe(true);
   });
 });

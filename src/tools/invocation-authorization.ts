@@ -122,6 +122,7 @@ export interface AuthorizationStageContext {
   overlayTriggerOrigin: string | null | undefined;
   hostShellRequiresExplicitApproval: boolean;
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
+  verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellExecutionPlanAudit:
     | HostShellExecutionPlanAuditProjection | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
@@ -186,6 +187,7 @@ export async function authorizeToolInvocation(
     overlayTriggerOrigin,
     hostShellRequiresExplicitApproval,
     hostShellExecutionPlan,
+    verifiedShellCommand,
     hostShellExecutionPlanAudit,
     hostShellExecutionPermitBinding,
     finalInput,
@@ -479,6 +481,7 @@ export async function authorizeToolInvocation(
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
             ...(shellExecution === undefined ? {} : { shellExecution }),
             ...(shellRuleSubject !== undefined && sessionId !== undefined ? { sessionId } : {}),
@@ -1792,6 +1795,7 @@ export async function authorizeToolInvocation(
             );
           }
           decision = await services.approvalGate.requestAndWait({
+            ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...approvalRequest,
             // The other half of the abort check just above. That one refuses
             // to open a dialog for a turn already stopped; this one is what

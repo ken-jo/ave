@@ -11,6 +11,8 @@ import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const DECISION_COST_TARGET_MS = 40;
+// #223 executable-bound startup admission: win32 literal text cannot offer or replay exact rules.
+const UNPROVEN_STARTUP = process.platform === "win32";
 let cwd: string;
 let manager: PermissionManager;
 beforeEach(() => {
@@ -63,8 +65,8 @@ describe("visible literal decision regressions", () => {
     const saved = "Write-Output '0x10'";
     const different = "Write-Output 0x10";
     const approval = buildShellRuleApproval("powershell", saved, cwd, { allow: true, deny: true });
-    expect(approval.exactRule).not.toBeNull();
-    await manager.addRulePersist({ pattern: approval.exactRule!, action: "allow" }, { kind: "user" });
+    expect(approval.exactRule).toBe(UNPROVEN_STARTUP ? null : "PowerShell(Write-Output '0x10')");
+    await manager.addRulePersist({ pattern: "PowerShell(Write-Output '0x10')", action: "allow" }, { kind: "user" });
     manager = new PermissionManager(join(cwd, "permissions.json"));
     await manager.loadRulesFromFile();
     const keys = [saved, different].map((command) => canonicalRuleSpecifier(`PowerShell(${command})`));
@@ -73,8 +75,10 @@ describe("visible literal decision regressions", () => {
     const headless = check(different, "powershell", false, true);
     process.stdout.write(`literal identity ${JSON.stringify({ keys, exactRule: approval.exactRule, savedResult, other, headless })}\n`);
     expect(keys[0]).not.toBe(keys[1]);
-    expect(approval.exactRule).toContain("'0x10'");
-    expect(savedResult).toMatchObject({ decision: "allow", layer: 3 });
+    expect(keys[0]).toBe("PowerShell(Write-Output '0x10')");
+    expect(savedResult).toMatchObject(UNPROVEN_STARTUP
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+    expect(check(saved, "powershell", false, true).decision).toBe(UNPROVEN_STARTUP ? "deny" : "allow");
     expect(other.decision).toBe("ask");
     expect(headless.decision).toBe("deny");
   });
@@ -109,7 +113,9 @@ describe("visible literal decision regressions", () => {
     const timing = measured(command, "powershell", false);
     const headless = check(command, "powershell", false, true);
     process.stdout.write(`literal pipeline timing ${JSON.stringify({ chars: command.length, ...timing, headless })}\n`);
-    for (const result of [...timing.results, headless]) expect(result).toMatchObject({ decision: "allow", layer: 3 });
+    for (const result of timing.results) expect(result).toMatchObject(UNPROVEN_STARTUP
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+    expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", layer: 2 } : { decision: "allow", layer: 3 });
     expect(timing.median).toBeLessThan(DECISION_COST_TARGET_MS);
   });
 });

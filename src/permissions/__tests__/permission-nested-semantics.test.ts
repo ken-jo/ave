@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 
 const CWD = "/work/project";
+// #223 executable-bound startup admission: literal data does not pin win32 outer startup.
+const ORDINARY_OUTCOME = process.platform === "win32" ? "unproven" : "static-complete";
 const NESTED_BODIES = [
   "Write-Output ready",
   "Get-Content $env:HOME/.ssh/config",
@@ -42,7 +44,7 @@ describe("PowerShell static scope boundaries", () => {
       expect(result).toMatchObject({ outcome: "visible-floor", exfiltration: null });
       expect(result.sensitive).not.toBeNull();
     } else if (command.startsWith("Write-Output '& {")) {
-      expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
+      expect(result).toMatchObject({ outcome: ORDINARY_OUTCOME, sensitive: null, exfiltration: null });
     } else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
@@ -59,7 +61,7 @@ describe("PowerShell static scope boundaries", () => {
     expect(inspectPowerShellCommand(
       "Write-Output '& { dotnet build; Set-Content dotnet.exe whoami; Get-Content notes.txt }'",
       CWD,
-    )).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
+    )).toMatchObject({ outcome: ORDINARY_OUTCOME, sensitive: null, exfiltration: null });
   });
 
   it("retains a sensitive path used by a literal outer reader", () => {

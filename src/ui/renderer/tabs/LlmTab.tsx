@@ -37,6 +37,7 @@ import {
 import {
   canUseLlmVendorWithoutApiKey,
   isLLMVendor,
+  narrowLlmVendor,
   isRetiredLlmModelMarker,
   type LLMVendor,
   type LlmModelRetirementReason,
@@ -1306,7 +1307,6 @@ export function LlmTab(props: LlmTabProps) {
     settingsLoaded = true,
   } = props;
   const { t } = useTranslation();
-  const reasoningDepths = getReasoningDepths(outputTokenLimit);
   const selectedMarketplaceProviderPreset = vendor === "openai-compatible" && marketplaceProviderPresetId
     ? marketplaceProviderPresets.find((preset) => preset.providerId === marketplaceProviderPresetId)
     : undefined;
@@ -2214,6 +2214,13 @@ export function LlmTab(props: LlmTabProps) {
     connections, rowRequiresApiKey, credentialedProviderIds, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
     unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
   ]);
+
+  const reasoningDepths = getReasoningDepths(outputTokenLimit, {
+    vendor: narrowLlmVendor(vendor), model,
+    baseUrl: savedVendorBlocks[vendor]?.baseUrl,
+    catalogModel: selectedMarketplaceProviderPreset ? undefined : savedVendorBlocks[vendor]?.catalogModel,
+    reasoning: unifiedOptions.find((option) => option.value === unifiedValue(apiProviderId(activeApiRowId), model))?.reasoning,
+  });
 
   /** Whether the route chat is on right now can actually answer a turn. Saving a credential deliberately does NOT adopt the provider it belongs to; the model list is the one
    * switch, and a save silently moving the route would make it two. What a save does owe the user is the pointer: this is what says the key landed but chat is still elsewhere. */
@@ -3299,7 +3306,9 @@ export function LlmTab(props: LlmTabProps) {
                 step={1}
                 value={[budgetToDepthIndex(thinkingBudget, reasoningDepths)]}
                 onValueChange={([value]) => {
-                  setThinkingBudget(reasoningDepths[value ?? 0]!.budget);
+                  const rung = value === undefined ? undefined : reasoningDepths[value];
+                  if (!rung) throw new Error("Invalid reasoning depth");
+                  setThinkingBudget(rung.budget);
                   onImmediateChange?.();
                 }}
                 aria-label={t("llmTab.reasoningEffortAriaLabel")}

@@ -744,7 +744,7 @@ describe("egress ask callback — shell calls", () => {
     answer = async () => ({ allow: true, scope: "project" });
     expect(await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
     expect(asked[0]?.scopes).toEqual(["once", "session", "project", "always"]);
-    expect(await grants.listPersistent()).toEqual([expect.objectContaining({ scope: "project", origin: "shell", projectRoot: PROJECT, host: "pypi.org" })]);
+    expect(await grants.listPersistent()).toEqual([expect.objectContaining({ scope: "project", origin: "shell", projectRoot: PROJECT.replace(/\\/g, "/").replace(/^[A-Z]:/, (drive) => drive.toLowerCase()), host: "pypi.org" })]);
     // A later call from the repository root, in another conversation, is covered; another repository is asked again.
     owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId: "session-2", workspaceRoot: PROJECT } });
     answer = async () => ({ allow: false, reason: "denied by the user" });

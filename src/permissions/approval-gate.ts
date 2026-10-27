@@ -285,6 +285,8 @@ export type ApprovalRequestInput = Omit<
   ApprovalRequest,
   "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule"
 > & {
+  // Host-only native execution proof; removed before renderer/audit payloads.
+  readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-owned assessment provenance; never inferred from the displayed reason.
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
   readonly reviewerApprovalBasis?: ReviewerApprovalBasis;
@@ -652,6 +654,7 @@ interface PendingEntry {
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
   shellRule?: ShellRuleApproval;
+  verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
   riskCeilingAtApproval?: RiskLevel;
@@ -875,6 +878,7 @@ export type ApprovalSurfaceResolver = (
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
+  private readonly lifetime = new AbortController();
   // Renderers that displayed a pending card, including a former owner after a conversation move. Settlement removes stale cards from each of them.
   private readonly refetchedBy = new Map<string, Set<WebContents>>();
   // Null only for a gate built without any desktop surface (headless/tests).
@@ -1164,6 +1168,7 @@ export class ApprovalGate {
     notice: ParentEscalationNotice;
     verdict: RiskVerdict;
     auditFields: string;
+    abortSignal: AbortSignal;
   }): Promise<ApprovalDecision | null> {
     const { request, childProvenance, policy, notice } = input;
     if (policy.backgroundEscalation !== "deferred") return null;
@@ -1203,7 +1208,7 @@ export class ApprovalGate {
     }
     let deferredId: string;
     try {
-      deferredId = await queue.append({
+      const appended = await this.waitForApprovalStage(queue.append({
         toolName: request.toolName,
         source,
         category: toolCategory,
@@ -1213,7 +1218,9 @@ export class ApprovalGate {
           ? {}
           : { evaluationContext: request.evaluationContext }),
         verdict: input.verdict,
-      });
+      }), input.abortSignal, () => null);
+      if (appended === null || input.abortSignal.aborted) return null;
+      deferredId = appended;
     } catch {
       return null;
     }
@@ -1261,25 +1268,21 @@ export class ApprovalGate {
     options: ParentAdjudicationOptions,
   ): Promise<ParentAdjudicationResult> {
     const answer = deps.adjudicator(modelSource).adjudicate(evidence, options);
-    const signal = options.abortSignal;
+    return this.waitForApprovalStage(answer, options.abortSignal, () => ({
+      outcome: "escalate", cause: "turn-aborted", reason: "the turn was stopped",
+    }));
+  }
+
+  private async waitForApprovalStage<T>(answer: Promise<T>, signal: AbortSignal | undefined, cancelled: () => T): Promise<T> {
     if (signal === undefined) return answer;
     if (signal.aborted) {
       // Nothing will fire a listener for an abort that already happened.
       void answer.catch(() => undefined);
-      return {
-        outcome: "escalate",
-        cause: "turn-aborted",
-        reason: "the turn was stopped",
-      };
+      return cancelled();
     }
     let onAbort: (() => void) | undefined;
-    const stopped = new Promise<ParentAdjudicationResult>((resolve) => {
-      onAbort = (): void =>
-        resolve({
-          outcome: "escalate",
-          cause: "turn-aborted",
-          reason: "the turn was stopped",
-        });
+    const stopped = new Promise<T>((resolve) => {
+      onAbort = (): void => resolve(cancelled());
       signal.addEventListener("abort", onAbort, { once: true });
     });
     try {
@@ -1447,6 +1450,9 @@ export class ApprovalGate {
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
     assertEgressHostRequestShape(req);
+    if (this.lifetime.signal.aborted) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
+    }
     const {
       forceExplicit = false,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
@@ -1462,6 +1468,7 @@ export class ApprovalGate {
       parentAdjudicationEligible,
       reviewerOutcome,
       reviewerApprovalBasis,
+      verifiedShellCommand,
       ...request
     } = req;
     // Strip bindings, controller authority, abort signals and child eligibility/provenance before spreading renderer requests; live host capability must not reach renderer or audit. Audit only allowlisted plan fields and inject origin into every row so absence cannot masquerade as desk provenance.
@@ -1645,7 +1652,7 @@ export class ApprovalGate {
         allow: shellRuleSaveAllowed,
         // A deny only narrows, so "Always deny" stays on one-shot cards too; never for a remote controller.
         deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined,
-      }, req.sessionId)
+      }, req.sessionId, verifiedShellCommand)
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
@@ -1756,7 +1763,7 @@ export class ApprovalGate {
 
     // Aborted turns receive host-rejected deny-once with no remembered pattern, never a user-authored denial. Share the cancelled audit marker with rationale retirement and retain the stop reason to distinguish owner Stop from host tile release.
     const abortCause = (): string => {
-      const reason: unknown = abortSignal?.reason;
+      const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : abortSignal?.reason;
       if (reason instanceof Error) return reason.message;
       return typeof reason === "string" ? reason : "unspecified";
     };
@@ -1773,7 +1780,7 @@ export class ApprovalGate {
       });
     };
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
-    if (abortSignal?.aborted) return denyForAbortedTurn();
+    if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
 
     // Away authority runs after all path, binding, plan, rationale and window hard checks and after requested audit, before notifications/rendering. It reads only the request and local grant; inbound messages cannot influence this decision.
     const away = this.awayAuthority.consume(
@@ -1841,14 +1848,15 @@ export class ApprovalGate {
               : { remoteControllerOrigin }),
           });
     if (parentLane !== null && childProvenance !== undefined) {
+      const parentAbortSignal = AbortSignal.any([this.lifetime.signal, ...(abortSignal === undefined ? [] : [abortSignal])]);
       const stage = await this.askParent(parentLane, {
         request: fullReq,
         childProvenance,
-        ...(abortSignal === undefined ? {} : { abortSignal }),
+        abortSignal: parentAbortSignal,
         auditFields: auditFieldsFor(fullReq, executionPlanAudit),
       });
       // The stage awaits a model call, and the turn behind this ask can end during it. Checked before the outcome is honoured, and before the pending entry that the abort listener would otherwise cover exists: an abort that arrives in this window has no listener to fire, so without this check a stopped turn would sit on the dock until the five-minute timeout.
-      if (abortSignal?.aborted) return denyForAbortedTurn();
+      if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
       if (stage.kind === "answered") return stage.decision;
       if (stage.kind === "escalate") {
         // Tier 3, for a run nobody is watching. Returns null — and falls through to the dock below — whenever the route does not apply or could not record the ask.
@@ -1859,7 +1867,9 @@ export class ApprovalGate {
           notice: stage.notice,
           verdict: parentLane.verdict,
           auditFields: auditFieldsFor(fullReq, executionPlanAudit),
+          abortSignal: parentAbortSignal,
         });
+        if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
         if (deferred !== null) return deferred;
         parentEscalation = stage.notice;
       }
@@ -1894,6 +1904,8 @@ export class ApprovalGate {
     } catch {
       // notification failure must never block approval flow
     }
+
+    if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
 
     // Mint nonce + HMAC, attach to outgoing request (confused-deputy defense)
     const nonce = randomBytes(16).toString("hex");
@@ -2019,6 +2031,7 @@ export class ApprovalGate {
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
         shellRule,
+        verifiedShellCommand,
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
         riskCeilingAtApproval,
@@ -2110,6 +2123,7 @@ export class ApprovalGate {
           surfaceUnavailable = true;
           throw new Error("no approval surface");
         }
+        if (this.lifetime.signal.aborted || !this.pending.has(fullReq.id)) return;
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
       } catch (sendErr) {
@@ -2356,6 +2370,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
+    verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
     egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;
     workingDirectoryIdentity: string | undefined;
     riskCeilingAtApproval: RiskLevel | undefined;
@@ -2376,6 +2391,7 @@ export class ApprovalGate {
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,
+      ...(entry.verifiedShellCommand === undefined ? {} : { verifiedShellCommand: entry.verifiedShellCommand }),
       egress: entry.egressRule === undefined ? undefined : {
         ...entry.egressRule,
         scopes: entry.egressScopes ?? [],
@@ -2424,8 +2440,9 @@ export class ApprovalGate {
     };
   }
 
-  // Cleanup: deny every pending request during app shutdown.
+  // Permanently close admission, cancel approval stages, and deny parked requests during app shutdown.
   disposeAll(): void {
+    this.lifetime.abort(new Error("approval gate shutdown"));
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.resolve(
