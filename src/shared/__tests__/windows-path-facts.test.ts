@@ -1,13 +1,11 @@
 import { execFileSync } from "node:child_process";
-import * as childProcess from "node:child_process";
 import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
-import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
-import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -121,14 +119,9 @@ describe("Windows path facts admission and evaluation", () => {
   });
 });
 
-// The decoder is platform-independent: stub the helper and its output so every shard runs these.
+// Decode wire output without invoking native code.
 describe("Windows path facts decoder", () => {
-  const PINNED = "/fixture/target";
-  const decode = (rows: unknown[]): readonly WindowsPathFacts[] => {
-    const helper = vi.spyOn(pathKindLauncher, "resolveWindowsPathKindHelper").mockReturnValue("ave-path-kind.exe");
-    const output = vi.spyOn(childProcess, "execFileSync").mockReturnValue(JSON.stringify(rows));
-    try { return pinWindowsPaths([PINNED]); } finally { output.mockRestore(); helper.mockRestore(); }
-  };
+  const decode = (rows: unknown[]): readonly WindowsPathFacts[] => decodeWindowsPathFacts(JSON.stringify(rows), 1, "--pin");
 
   it("decodes a hex changeTime for targets and ancestors", () => {
     const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
@@ -139,6 +132,19 @@ describe("Windows path facts decoder", () => {
     const missing = { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null,
       volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 0, directory: false, ancestors: [] };
     expect(decode([missing])).toEqual([missing]);
+  });
+
+  it.each(["NTFS", "ReFS", null, undefined])("keeps the optional filesystem fact %s for targets and ancestors", fileSystemName => {
+    const component = { ...ORDINARY, ...(fileSystemName === undefined ? {} : { fileSystemName }) };
+    const row = { ...component, ancestors: [component] };
+    expect(decode([row])).toEqual([row]);
+  });
+
+  it.each(["target", "ancestor"])("refuses malformed filesystem facts on a %s", position => {
+    for (const fileSystemName of [42, "", "NTFS\0", {}, "x".repeat(256)]) {
+      const component = { ...ORDINARY, fileSystemName };
+      expect(() => decode([position === "target" ? component : { ...ORDINARY, ancestors: [component] }])).toThrow();
+    }
   });
 
   it.each(["target", "ancestor"])("refuses malformed changeTime on a %s and names the field", (position) => {
@@ -172,6 +178,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
       expect(BigInt(pin!.volumeSerialNumber!)).toBe(stat.dev);
       expect(BigInt(pin!.fileIndex!)).toBe(stat.ino);
       expect(pin!.fileId).toMatch(/^0x[0-9a-f]{32}$/);
+      for (const component of [pin!, ...pin!.ancestors]) expect(component.fileSystemName).toMatch(/^[A-Za-z0-9_-]{1,255}$/);
       const handle = openSync(path, "r");
       try {
         const opened = fstatSync(handle, { bigint: true });

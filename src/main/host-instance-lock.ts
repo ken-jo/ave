@@ -3,6 +3,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
+import { AveHomeConfigurationNotOwnerError, setAveHomeConfigurationOwner } from "../shared/ave-home-configuration-access.js";
 
 // Keep ownership until the OS process exits, including after a cleanup timeout.
 let processLock: Database.Database | undefined;
@@ -28,11 +29,12 @@ export async function acquireHostInstanceLock(): Promise<void> {
     database = new Database(path, { timeout: 0 });
     database.exec("BEGIN EXCLUSIVE");
     processLock = database;
+    setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => processLock?.open === true && processLock.inTransaction });
   } catch (error) {
     database?.close();
     const code = (error as { code?: string }).code;
     if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
-      throw new Error("host-already-running", { cause: error });
+      throw new AveHomeConfigurationNotOwnerError();
     }
     throw error;
   }

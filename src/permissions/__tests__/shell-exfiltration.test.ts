@@ -19,6 +19,7 @@ import { lookupApproval, recordApproval } from "../user-approval-store.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
 
 const CWD = "/work/project";
 let accountDirectory: string;
@@ -471,6 +472,34 @@ describe("security review: the floor does not depend on which command reads", ()
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it.each(["config", "keys", "sessions", "policy.json"])("keeps ordinary project glob paths outside the application anchor: %s", name => {
+    expect(sensitivePathInArgumentText(`/workspace/project/src*/${name}`, CWD)).toBeNull();
+    expect(sensitivePathInArgumentText(`/workspace/project/src*/${name}/child`, CWD)).toBeNull();
+  });
+
+  it("keeps literal and glob configuration paths under the live application home on the floor", () => {
+    const home = aveHome().replaceAll("\\", "/");
+    expect(sensitivePathInArgumentText(`${home}/config/policy.json`, CWD)).toMatch(/config/);
+    expect(sensitivePathInArgumentText(`${home}/confi*/policy.json`, CWD)).toMatch(/config/);
+    expect(sensitivePathInArgumentText(`${home}/config/pol*`, CWD)).toMatch(/config/);
+    expect(sensitivePathInArgumentText("/workspace/copied/.ave/confi*/policy.json", CWD)).toMatch(/config/);
+    expect(sensitivePathInArgumentText("/workspace/copied/.av*/config/policy.json", CWD)).toMatch(/config/);
+    expect(sensitivePathInArgumentText("/workspace/copied/.ss*/config", CWD)).toMatch(/\.ssh/);
+    expect(sensitivePathInArgumentText("/workspace/copied/Libr*/Keychains/item", CWD)).toMatch(/Keychains/);
+    if (process.platform === "win32") {
+      expect(sensitivePathInArgumentText(`${home.toUpperCase()}/CONFI*/policy.json`, CWD)).toMatch(/config/);
+    }
+  });
+
+  it("keeps the live configuration anchor through a directory alias before a glob", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-config-alias-"));
+    const alias = join(directory, "profile");
+    try {
+      symlinkSync(aveHome(), alias, process.platform === "win32" ? "junction" : "dir");
+      expect(sensitivePathInArgumentText(`${alias.replaceAll("\\", "/")}/confi*/policy.json`, CWD)).toMatch(/config/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
   it.each([

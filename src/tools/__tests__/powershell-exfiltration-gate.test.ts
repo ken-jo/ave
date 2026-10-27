@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 import "../../__tests__/support/trusted-powershell.js";
 /** Credential and exfiltration floors apply to every host command-string shell, even in allow mode and for ordinary project-file uploads.
  * Mock the unavailable platform parser and execution so these tests isolate permission decisions without spawning shells. */

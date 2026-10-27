@@ -1,5 +1,8 @@
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler, nativeChatFrameEvent as hostFrameEvent } from "../../../__tests__/support/native-chat-window.js";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import {
   foreignFrameEvent,
   invokeRegisteredHandlerWithEvent,

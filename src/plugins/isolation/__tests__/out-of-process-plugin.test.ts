@@ -1,5 +1,15 @@
+vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const spawnConfinedChild = vi.hoisted(() => vi.fn());
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
@@ -79,7 +89,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type {
   PluginHostApi,
   PluginManifest,
@@ -1658,10 +1668,11 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
     const approved = join(root, "approved");
     const pluginRoot = join(home, "plugins", "tilde-cache");
     const pluginDataDir = join(pluginRoot, "data");
-    mkdirSync(home, { recursive: true });
+    setFixtureOwner(root);
+    expect(ensureAveHomePrivate(home).enforcement).not.toBe("none");
     mkdirSync(approved, { recursive: true });
     mkdirSync(pluginDataDir, { recursive: true });
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [approved] } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { additionalDirectories: [approved] } }));
     const entryPath = join(pluginRoot, "plugin.mjs");
     writeFileSync(
       entryPath,

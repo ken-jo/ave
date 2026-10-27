@@ -1,7 +1,13 @@
+import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../../../shared/permissions-events.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -602,6 +608,10 @@ describe("permissions IPC handlers", () => {
     const oldHome = process.env.HOME;
     const reviewerHome = mkdtempSync(join(tmpdir(), "ave-reviewer-ipc-home-"));
     try {
+      setFixtureOwner(reviewerHome);
+      const home = join(reviewerHome, ".ave");
+      expect(ensureAveHomePrivate(home)).not.toMatchObject({ enforcement: "none" });
+      vi.stubEnv("AVE_HOME", home);
       process.env.HOME = reviewerHome;
       const { deps } = await setup();
       await invoke(PERMISSIONS.reviewerDispatch, {
@@ -633,6 +643,7 @@ describe("permissions IPC handlers", () => {
       } else {
         process.env.HOME = oldHome;
       }
+      vi.unstubAllEnvs();
       await cleanupTmpDir(reviewerHome);
     }
   });

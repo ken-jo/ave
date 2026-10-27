@@ -12,6 +12,7 @@ import { runAppShutdownCleanup, runIncompleteBootShutdown, runShutdownHooks } fr
 import { sealManagedChildProcessAdmission } from "./main/managed-child-processes.js";
 import { setAppShutdownStarted } from "./main/app-state.js";
 import { errorMessage } from "./shared/error-message.js";
+import { AveHomeConfigurationNotOwnerError } from "./shared/ave-home-configuration-access.js";
 import {
   EXEC_FAILURE_EXIT_CODE,
   EXEC_LOCKED_EXIT_CODE,
@@ -176,6 +177,6 @@ export function runHeadlessHost(): void {
   }, (error: unknown) => {
     const message = errorMessage(error);
     process.stderr.write(`headless: ${message}\n`);
-    process.exit(message === "host-already-running" ? EXEC_LOCKED_EXIT_CODE : EXEC_FAILURE_EXIT_CODE);
+    process.exit(error instanceof AveHomeConfigurationNotOwnerError || message === "host-already-running" ? EXEC_LOCKED_EXIT_CODE : EXEC_FAILURE_EXIT_CODE);
   });
 }

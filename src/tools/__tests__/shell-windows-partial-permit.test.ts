@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import type { ToolExecutionContext } from "../types.js";
 import {

@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 /** Check external stdio-worker confinement wiring, sensitive-path denial, sanitized spawn environment, and capability attribution.
  * Mocks verify wrapping and fail-closed write scope, not native backend enforcement. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";

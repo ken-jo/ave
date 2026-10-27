@@ -27,8 +27,10 @@
  * of the host fields.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../__tests__/test-helpers.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const { CHANNELS } = await import("../../contract/app-contract.js");
 const { ALERTS, ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
@@ -282,6 +284,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
 ];
 
 beforeEach(async () => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   handleMap.clear();
   appWindows.length = 0;
   auditRows.length = 0;

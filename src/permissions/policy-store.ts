@@ -1,17 +1,19 @@
 
 
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
+import { parsePolicyDocument } from "../shared/configuration-document.js";
 import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
+import { readAveHomeConfigurationFile, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 const log = createLogger("policy-store");
 
-export const userPolicyPath = (): string => resolve(aveHome(), "policy.json");
+export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), "policy.json");
 
 export function getAdminPolicyPath(): string {
   switch (process.platform) {
@@ -54,19 +56,6 @@ function defaultPolicy(): PolicyFile {
     managed: false,
     updatedAt: new Date().toISOString(),
   };
-}
-
-const policyLocks = new Map<string, Promise<void>>();
-
-async function withPolicyLock<T>(
-  filePath: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const key = resolve(filePath);
-  const prev = policyLocks.get(key) ?? Promise.resolve();
-  const next = prev.then(() => fn());
-  policyLocks.set(key, next.then(() => undefined, () => undefined));
-  return next;
 }
 
 // Read (single file)
@@ -116,35 +105,31 @@ async function readPolicyFile(filePath: string, administrative = false): Promise
   };
   let raw: string;
   try {
-    raw = administrative ? (await readAdminPolicyFile(filePath)).toString("utf8") : await readFile(filePath, "utf-8");
+    const bytes = administrative ? await readAdminPolicyFile(filePath) : readAveHomeConfigurationFile(filePath);
+    if (bytes === undefined) return { status: "absent" };
+    raw = bytes.toString("utf8");
   } catch (err: unknown) {
+    if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
     if (await isAdminPolicyFileAbsent(filePath, err)) return { status: "absent" };
     return invalid(err instanceof WindowsPolicyReadError ? err.message : `read failed (${typeof code === "string" ? code : "unknown error"})`, false);
   }
 
-  let parsed: unknown;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // Parser error messages can contain the file's contents.
-    return invalid(raw.trim() === "" ? "empty file; not valid JSON" : "not valid JSON");
+    parsed = parsePolicyDocument(raw);
+  } catch (error) {
+    return invalid((error as Error).message);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return invalid("not a JSON object");
-  }
-  const record = parsed as Record<string, unknown>;
-  if (record.version !== 1) {
-    return invalid("version mismatch: expected 1");
-  }
-  return { status: "valid", fields: statedPolicy(filePath, record) };
+  return { status: "valid", fields: statedPolicy(filePath, parsed) };
 }
 
-// Load policy. A valid admin file overrides only the fields it states. An invalid or unreadable admin file requires explicit approval and locks edits. Returned `source` field: - "defaults": no file exists, so defaults are used - "user": only the user file exists - "admin": only the admin file exists - "merged": both exist, with admin overriding user values @param userPath User policy file path (default: ~/.ave/policy.json) @param adminPath Admin policy file path (default: getAdminPolicyPath)
+// Load policy. A valid admin file overrides only the fields it states. An invalid or unreadable admin file requires explicit approval and locks edits. Returned `source` field: - "defaults": no file exists, so defaults are used - "user": only the user file exists - "admin": only the admin file exists - "merged": both exist, with admin overriding user values @param userPath User policy file path (default: ~/.ave/config/policy.json) @param adminPath Admin policy file path (default: getAdminPolicyPath)
 export async function loadPolicy(
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<LoadedPolicy> {
+  userPath = resolveConfigurationFile(userPath);
   const [userRead, adminRead] = await Promise.all([
     readPolicyFile(userPath),
     readPolicyFile(adminPath, true),
@@ -206,7 +191,7 @@ export async function savePolicy(
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<PolicyFile> {
-  return withPolicyLock(userPath, async () => {
+  return withAveHomeConfigurationWrite(userPath, async (userPath) => {
     // Check admin-dir first.
     const adminFile = await readPolicyFile(adminPath, true);
     if (adminFile.status !== "absent") {
@@ -230,14 +215,7 @@ export async function savePolicy(
       updatedAt: new Date().toISOString(),
     };
 
-    await mkdir(dirname(userPath), { recursive: true });
-    // 0o600 — owner read/write only
-    const fd = await open(userPath, "w", 0o600);
-    try {
-      await fd.writeFile(`${JSON.stringify(updated, null, 2)}\n`, "utf-8");
-    } finally {
-      await fd.close();
-    }
+    writeUtf8FileAtomicSync(userPath, `${JSON.stringify(updated, null, 2)}\n`, 0o600);
 
     return updated;
   });

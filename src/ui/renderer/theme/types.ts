@@ -24,7 +24,7 @@ export interface ThemeContextValue {
    * whichever of the two matches the OS color scheme.
    */
   effectiveBundleId: UnvalidatedBundleId;
-  /** Live-set the active bundle. Updates the DOM immediately and persists to `~/.ave/settings.json` via `api.updateSettings({
+  /** Live-set the active bundle. Updates the DOM immediately and persists to `~/.ave/config/settings.json` via `api.updateSettings({
    * appearance: ... })`. */
   setBundle: (id: UnvalidatedBundleId) => void;
   /** Shell color scheme derived from the active bundle's `shell` field. Kept for backward compatibility (CustomTitleBar uses

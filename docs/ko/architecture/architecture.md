@@ -2752,7 +2752,7 @@ Components ─► Semantic tokens (--background, --primary, --destructive)
 
 - **토큰 정의**: `src/styles.css` (`:root` primitive + `[data-theme-bundle="<id>"]` semantic)
 - **Provider**: `src/ui/renderer/theme/` (`ThemeProvider`, OS `prefers-color-scheme`
-  추적, `~/.ave/settings.json#appearance.schemaVersion=2` + `appearance.bundleId`
+  추적, `~/.ave/config/settings.json#appearance.schemaVersion=2` + `appearance.bundleId`
   영속화)
 - **번들**: `src/shared/theme-bundles.ts` 의 `BUNDLE_IDS` 가 SOT이며 기본값은
   `tokyo-night`. `followSystem`은 별도 boolean이고 violet light/dark pair에만
@@ -4768,6 +4768,51 @@ flowchart TB
 ---
 
 ## 15. Security Hardening — 구현 완료 항목
+
+설정 경계를 부팅 밖에서 사용할 때도 부팅과 같은 루트 허용 조건과 소유자 전용
+`config/` 보호 상태를 링크를 따라가지 않고 확인하므로, 두 디렉터리를 교체할 수
+있는 주체는 소유자뿐이며 검증 후 경로를 다시 열 수 있다. 설정 위치는 캐시하지
+않는다. 모든 읽기와 쓰기가 `config/`와 완료 마커를 링크를 따라가지 않고 조회한다.
+Windows 읽기 인증서는 홈의 RootSafe와 보호된 `config`의 OwnerOnly 결과를
+각 객체의 볼륨 일련번호, 파일 ID, ChangeTime에 묶는다. 두 조건은 상위
+디렉터리의 DACL을 검사하지 않는다. 경로 상위 디렉터리는 볼륨 일련번호와
+파일 ID로만 식별한다. 무관한 자식 항목 변경으로 검증이 무효화되지 않도록
+상위 디렉터리의 ChangeTime은 키에 넣지 않는다. 매 읽기는 전체 경로의
+디렉터리 형태와 디렉터리 항목의 재분석 지점 여부를 확인한다. 최초 네이티브
+검증이 실제 핸들에서 반환한 식별자는 호출 전후 관찰과 같아야 한다. 상위
+디렉터리 교체는 거부하고 DACL 시각 변경은 전체 검증을 요구한다. 안정된
+읽기는 자식 프로세스를 만들지 않는다. POSIX 장치와 inode 검증은 유지한다.
+설정 소유자는 데스크톱·헤드리스 모드와 관계없이 공유 호스트 인스턴스 잠금의
+현재 보유자이며, 이 소유자만 설정을 쓰고 부팅 마이그레이션을 실행한다.
+나머지 프로세스는 읽기 전용으로 시작한다. 비소유자의 변경은
+`AveHomeConfigurationNotOwnerError`와 정확한 메시지
+"Ave is running; close it or use the app"으로 거부한다.
+기존 호스트 경로의 권한 검사는 유지한다. 실행 모드의 비밀 저장은
+거부하고 비소유자 부팅은 비밀 마이그레이션을 건너뛴다. 설정 파일 잠금, 프로세스
+시작 시각 비교와 오래된 잠금 복구는 없다. 소유자 변경은 프로세스 내 FIFO 큐에서
+직렬화하며 큐 안에서 경계를 검증하고 디스크의 현재 목적지를 다시 결정한다.
+이 범위의 동기 원자적 쓰기는 임시 파일 생성과 이름 변경 시스템 호출 직전에
+기존 인증서를 확인하고 직후에 해당 디렉터리의 ChangeTime만 갱신한다.
+사이에 await나 호출자 콜백은 없다. 식별자, 상위 경로나 다른 경계가 바뀌면
+갱신을 거부한다. 비동기 콜백 완료 시점에는 인증서를 갱신하지 않는다.
+직후 관찰 이후의 외부 변경은 다시 전체 검증을 요구한다. 시스템 호출과 관찰
+사이에 같은 계정이 DACL을 변경하는 경쟁은 남는다. 이 계정은 이미 보호된
+객체를 제어하며 다른 계정에는 WRITE_DAC이 없다.
+동기 마이그레이션은 서비스 시작 전에 끝난다. `AVE_HOME`의 마지막 이름이
+`config`여도 지정한 홈을 그대로 사용하며 부모를 추측하지 않는다.
+읽기는 재분석 지점을 거부하고 열기 전·핸들·열기 후 식별자, 일반 파일 여부,
+4 MiB 크기 제한과 시각·바이트 일치를 확인한다. 파일이 사라지면
+위치를 한 번 다시 결정하며 관찰한 파일이나 완료 기록이 있는데도 없으면
+`AveHomeConfigurationUntrustedError`로 실패한다. 기본값은 두 후보 파일과 완료
+마커가 모두 없을 때만 유효하다. 새 완료 마커를 게시하기 전에 원본이 없던 문서는
+명시적 기본 문서로 저장한다. 이미 완료된 홈의 누락 문서는 자동 복구하지 않는다.
+보호가 거부된 홈은 마이그레이션 없이 루트만 사용한다.
+복사한 원본별 SHA-256을 `config/.ave-config-sources.json`에 원자적으로 기록한
+다음 완료 마커를 게시한다. 보호된 부팅은 기록된 해시와 같은 루트 복사본만
+삭제한다. 변경되었거나 새로 나타난 파일은 `<name>.post-migration-<UTC timestamp>`로
+보존하고 진단과 부팅 알림에 경로를 표시한다. 설정을 병합하지 않고 항목별로
+링크를 따라가지 않는 정리를 유지한다. 대화형 부팅의 신뢰
+검증 실패는 종료 전에 원인·경로·복구 방법이 담긴 현지화된 기본 오류 대화상자로 표시한다.
 
 ### 15.1 git 마켓플레이스 신뢰 근거
 

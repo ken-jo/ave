@@ -101,6 +101,17 @@ int change_time(const std::wstring& root) {
     if (file.value == INVALID_HANDLE_VALUE) return fail("create changeTime fixture"); }
   PathFacts original, unchanged, secured, moved;
   if (!pin_facts(path, original) || !pin_facts(path, unchanged)) return fail("pin changeTime fixture");
+  {
+    PinnedHandle opened(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    wchar_t name[MAX_PATH + 1]{};
+    if (opened.value == INVALID_HANDLE_VALUE || !GetVolumeInformationByHandleW(opened.value,
+        nullptr, 0, nullptr, nullptr, nullptr, name, MAX_PATH + 1)
+        || original.file_system_name != name || unchanged.file_system_name != name) return fail("retained handle filesystem name");
+    PathFacts unknown;
+    if (!unknown.file_system_name.empty()) return fail("unknown filesystem default");
+    std::puts("native filesystem: pins match the retained handle volume query");
+  }
   if (original.change_time.QuadPart == 0 || original.change_time.QuadPart != unchanged.change_time.QuadPart
       || !same_identity(original, unchanged)) return fail("stable changeTime");
   Sleep(20);

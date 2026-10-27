@@ -1,3 +1,4 @@
+import { permissionSettingsPath } from "../../../permissions/permission-settings-store.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,7 +82,8 @@ describe("real sandbox ceiling withdrawal", () => {
         mkdirSync(dataDir, { recursive: true });
         mkdirSync(chosen, { recursive: true });
         if (retarget) mkdirSync(other, { recursive: true });
-        const settingsPath = join(home, "settings.json");
+        const settingsPath = permissionSettingsPath(home);
+        mkdirSync(join(home, "config"), { mode: 0o700 });
         writeFileSync(settingsPath, JSON.stringify({ permissions: { additionalDirectories: retarget ? [approved, other] : [approved] } }));
         const childFile = join(chosen, "child.txt");
         const workerFile = join(chosen, "worker.txt");

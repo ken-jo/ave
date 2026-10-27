@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
 import { analyzeShell, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord } from "../../shared/shell-analysis.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
@@ -46,13 +47,12 @@ export function literalShellWord(word: ShellWord): string | undefined {
 }
 // Dynamic programming keeps wildcard work proportional to token length times
 // the fixed sensitive-name catalogue; it never enumerates input expansions.
-function segmentCouldMatch(pattern: string, value: string): boolean {
+function segmentCouldMatch(pattern: string, value: string, anchored = false): boolean {
   if (/[*?[\]]/.test(pattern)) {
     if (value.startsWith(".") && !pattern.startsWith(".")) return false;
     const evidence = pattern.replace(/\\(.)/g, "$1").split(/[*?[\]]/, 1)[0]!.replace(/[^A-Za-z0-9._-]/g, "");
-    // A generic wildcard is not evidence of a visible sensitive path. Runtime
-    // expansion may still be unproven, but it must not invent a floor hit.
-    if (evidence.length < 2) return false;
+    // A proven application anchor supplies evidence for its child wildcards.
+    if (evidence.length < 2 && !anchored) return false;
   }
   let states = new Uint8Array(value.length + 1); states[0] = 1;
   for (let offset = 0; offset < pattern.length; offset += 1) {
@@ -119,18 +119,42 @@ export function sensitivePathInArgumentText(text: string, cwd: string | undefine
       const hit = context.matchPath(caseFoldForMatch(context.canonicalize(absolute, true))); if (hit) return hit;
       continue;
     }
-    const segments = foldCanonicalPathSeparators(absolute).split("/"), first = segments.findIndex((segment) => /[*?[\]]/.test(segment));
-    if (first > 0) { const hit = context.matchPath(caseFoldForMatch(context.canonicalize(segments.slice(0, first).join("/") || "/", true))); if (hit) return hit; }
+    const segments = foldCanonicalPathSeparators(absolute).split("/");
+    let anchoredSegments = segments;
+    const first = segments.findIndex((segment) => /[*?[\]]/.test(segment));
+    if (first > 0) {
+      let literalPrefix = segments.slice(0, first).join("/");
+      if (process.platform === "win32" && /^[A-Za-z]:$/.test(literalPrefix)) literalPrefix += "/";
+      const prefix = context.canonicalize(literalPrefix || "/", true);
+      const hit = context.matchPath(caseFoldForMatch(prefix)); if (hit) return hit;
+      anchoredSegments = [...prefix.replace(/\/$/, "").split("/"), ...segments.slice(first)];
+    }
     // Sensitive entries have fixed, short segment lists. Compare those lists
     // directly with each source segment instead of rebuilding every path
     // suffix for every possible match.
     for (const entry of SENSITIVE_PATH_ENTRIES) {
-      for (let start = 0; start + entry.segments.length <= segments.length; start += 1) {
+      const sourceSegments = entry.anchor === "ave-home" ? anchoredSegments : segments;
+      for (let start = 0; start + entry.segments.length <= sourceSegments.length; start += 1) {
+        const prefix = sourceSegments.slice(0, start);
+        const namespaceMatches = entry.anchor === "ave-home" && prefix.length > 0
+          && segmentCouldMatch(caseFoldForMatch(prefix.at(-1)!), ".ave");
+        const root = entry.anchor === "ave-home" ? caseFoldForMatch(context.canonicalize(aveHome())).split("/") : [];
+        const rootMatches = entry.anchor === "ave-home" && prefix.length === root.length
+          && prefix.every((segment, index) => segmentCouldMatch(caseFoldForMatch(segment), root[index]!));
+        if (entry.anchor === "ave-home" && !namespaceMatches && !rootMatches) continue;
         let matches = true;
         for (let offset = 0; offset < entry.segments.length; offset += 1) {
-          if (!segmentCouldMatch(segments[start + offset]!, entry.segments[offset]!)) { matches = false; break; }
+          const segment = entry.anchor === "ave-home" ? caseFoldForMatch(sourceSegments[start + offset]!) : sourceSegments[start + offset]!;
+          if (!segmentCouldMatch(segment, entry.segments[offset]!, namespaceMatches || rootMatches)) { matches = false; break; }
         }
-        if (matches) return `**/${entry.segments.join("/")}${entry.kind === "dir" ? "/**" : ""}`;
+        if (!matches) continue;
+        if (entry.anchor === "ave-home") {
+          // Match the same namespace as the host-path projection, including a
+          // relocated home. A common basename alone cannot identify this store.
+          return namespaceMatches ? `**/.ave/${entry.segments.join("/")}${entry.kind === "dir" ? "/**" : ""}`
+            : `ave-home:${entry.segments.join("/")}`;
+        }
+        return `**/${entry.segments.join("/")}${entry.kind === "dir" ? "/**" : ""}`;
       }
     }
     for (const segment of segments) for (const name of SENSITIVE_PATTERN_NAMES) {

@@ -155,6 +155,7 @@ describe.runIf(process.platform === "win32")("Windows read deny native evidence"
 describe("Windows read deny evidence admission", () => {
   it("keeps a private target whose path is now missing", async () => {
     const fixture = mkdtempSync(join(tmpdir(), "ave-missing-private-"));
+    const pins = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockReturnValue([]);
     try {
       const path = join(fixture, "secret");
       const snapshot: WindowsReadDenySnapshot = new Map([[windowsReadDenyKey(path), {
@@ -162,12 +163,14 @@ describe("Windows read deny evidence admission", () => {
       }]]);
       expect(windowsReadDenyEvidence(path, snapshot).status).toBe("error");
     } finally {
+      pins.mockRestore();
       await cleanupTmpDir(fixture);
     }
   });
 
   it("keeps a target when a no-follow identity check fails", () => {
     const path = join(tmpdir(), "stat-denied-secret");
+    const pins = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockReturnValue([]);
     const stat = vi.spyOn(fs, "lstatSync").mockImplementation(() => { throw Object.assign(new Error("Access denied"), { code: "EACCES" }); });
     syncBuiltinESMExports();
     try {
@@ -175,6 +178,7 @@ describe("Windows read deny evidence admission", () => {
       expect(windowsReadDenyEvidence(path, new Map([[windowsReadDenyKey(path), { status: "private" }]])).status).toBe("error");
       expect(stat).toHaveBeenCalledWith(path, { bigint: true, throwIfNoEntry: false });
     } finally {
+      pins.mockRestore();
       stat.mockRestore();
       syncBuiltinESMExports();
     }

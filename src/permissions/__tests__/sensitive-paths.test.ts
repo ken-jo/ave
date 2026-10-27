@@ -3,6 +3,7 @@ import { realpathSync, symlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   SENSITIVE_PATH_PATTERNS,
+  SENSITIVE_PATH_ENTRIES,
   isSensitivePath,
   createSensitivePathMatcher,
   policyMatchPaths,
@@ -11,8 +12,18 @@ import {
   MAX_WALK_UP,
 } from "../sensitive-paths.js";
 import { PermissionTestResources } from "./test-resources.js";
+import { AVE_HOME_PROTECTED_DIRECTORIES } from "../../shared/ave-home.js";
 
 const resources = new PermissionTestResources();
+
+it("keeps protected boundaries aligned with credential directories", () => {
+  const credentialDirectories = SENSITIVE_PATH_ENTRIES.filter((entry) =>
+    entry.anchor === "ave-home" && entry.kind === "dir" &&
+    ["secrets", "subscription-runtimes", "keys", "certs", "config"].includes(entry.segments[0]),
+  ).map((entry) => entry.segments.join("/"));
+  expect([...AVE_HOME_PROTECTED_DIRECTORIES].sort()).toEqual(credentialDirectories.sort());
+  expect(AVE_HOME_PROTECTED_DIRECTORIES).toHaveLength(5);
+});
 
 describe("per-decision sensitive matcher", () => {
   it("reuses configured filesystem roots after the first match", () => {

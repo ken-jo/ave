@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -77,10 +78,12 @@ function makeDeps(opts: {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   handlers.clear();
   vi.clearAllMocks();
   vi.resetModules();
+  const { configureHostResources } = await import("../../../main/host-resources.js");
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
 });
 
 describe("settings.update shortcut/startup reconcile", () => {

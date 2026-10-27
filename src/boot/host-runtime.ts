@@ -14,6 +14,7 @@ import type { OpenOAuthLogin } from "../main/oauth-login.js";
 export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   "openAuthWindowService" | "openLinkWindowService" | "openAuthPartitionViewerService"
   | "clearAuthPartitionService" | "shellOpenExternal"> {
+  hasSingleInstanceLock(): boolean;
   getAppWindows(): BrowserWindow[];
   openOAuthLogin: OpenOAuthLogin;
   getFocusedWindow(): BrowserWindow | null;
