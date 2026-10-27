@@ -971,6 +971,7 @@ describe("SubscriptionLlmProvider", () => {
   it.each([
     ["subscription-model-not-supported", "subscription model not supported"],
     ["subscription-runtime-native-required", "native subscription runtime installation required"],
+    ["subscription-runtime-unauthenticated", "subscription runtime publisher could not be authenticated"],
   ] as const)("reports %s without retrying or creating an API route", async (code, messagePreview) => {
     const service = {
       openTextSession: vi.fn(async () => {

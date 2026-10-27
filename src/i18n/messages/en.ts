@@ -1,6 +1,8 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "be_streamCollector.runtimeUnauthenticated": "The subscription runtime publisher could not be verified. Follow the official setup guide to verify or reinstall it, then check again.",
+  "formatIpcError.subscriptionRuntimeUnauthenticated": "The subscription runtime publisher could not be verified. Follow the official setup guide to verify or reinstall it, then check again.",
   "be_streamCollector.nativeRuntimeRequired": "This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again.",
   "modelBilling.subscription": "Billed to your own {plan} subscription, not an API key.",
   "modelBilling.apiKey": "Billed to your configured API key.",

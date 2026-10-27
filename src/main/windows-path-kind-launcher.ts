@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { getHostResources } from "./host-resources.js";
 
 // The drive query opens nothing, so its lookup timeout only bounds a hung process.
@@ -50,6 +51,32 @@ export function queryDosDevice(drive: string): Promise<string | null> {
         return;
       }
       resolve(mapping);
+    });
+  });
+}
+
+// The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
+export async function queryWindowsSystemDirectory(): Promise<string> {
+  if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
+  const helper = resolveWindowsPathKindHelper();
+  return new Promise((resolve, reject) => {
+    execFile(helper, ["--system-directory"], {
+      windowsHide: true, shell: false, env: {}, encoding: "utf8",
+      timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024,
+    }, (error, stdout, stderr) => {
+      if (error || stderr) {
+        reject(new Error(`Windows system directory query failed. ${REPAIR}`, { cause: error ?? undefined }));
+        return;
+      }
+      const directory = stdout.replace(/\r?\n$/u, "");
+      if (directory.length > 32767 || !/^[a-z]:\\/iu.test(directory)
+        || /[\u0000-\u001f\u007f<>"|?*]/u.test(directory) || directory.slice(2).includes(":")
+        || win32.normalize(directory) !== directory || win32.dirname(directory) === win32.parse(directory).root
+        || win32.dirname(directory).length > 512) {
+        reject(new Error(`Windows system directory query returned an invalid path. ${REPAIR}`));
+        return;
+      }
+      resolve(directory);
     });
   });
 }

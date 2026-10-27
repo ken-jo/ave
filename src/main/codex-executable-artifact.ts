@@ -9,6 +9,7 @@ import {
   createPrivateObjects,
   createPrivateTempDirectory,
   type CodexLocationRequest,
+  type CodexLocationTrustInputs,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
 import { sameFileIdentity } from "../lib/file-identity.js";
@@ -125,8 +126,9 @@ export async function copyNativeExecutableFile(
   platform: NodeJS.Platform,
   arch: NodeJS.Architecture,
   routeKind: CodexLocationRequest["routeKind"] = "native",
+  trustInputs: CodexLocationTrustInputs = {},
 ): Promise<ExecutableArtifactFile> {
-  await assertCodexExecutableLocation(source, routeKind);
+  await assertCodexExecutableLocation(source, routeKind, trustInputs);
   const artifact = await copyAdmittedExecutableFile(source, executable);
   const copied = await openExecutableFile(executable);
   try {

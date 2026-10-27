@@ -37,6 +37,7 @@ export type ClaudeCodeSubscriptionErrorCode =
   | "claude-code-runtime-invalid-executable"
   | "claude-code-runtime-unsafe-location"
   | "claude-code-runtime-native-required"
+  | "claude-code-runtime-unauthenticated"
   /** A discovered executable failed runtime identity or authentication-command qualification. */
   | "claude-code-runtime-incompatible"
   /** The executable content proof changed or has not passed connected print verification. */

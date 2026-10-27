@@ -1,6 +1,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
+import * as authenticity from "../claude-code-authenticity.js";
 import { NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TEST, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -798,6 +799,7 @@ describe("Claude Code CLI discovery", () => {
   });
 
   it("checks the real private artifact and source before the next session turn", async () => {
+    vi.spyOn(authenticity, "authenticateClaudeCodeExecutable").mockResolvedValue();
     const directories = await paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
     const source = writeNativeExecutable(join(directories.runtimeHome, "installed", "claude"));
@@ -827,6 +829,7 @@ describe("Claude Code CLI discovery", () => {
   );
 
   it("discards private copies after retryable qualification failures", NATIVE_PROBE_HEAVY_TEST, async () => {
+    vi.spyOn(authenticity, "authenticateClaudeCodeExecutable").mockResolvedValue();
     const directories = await paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
     const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", process.platform === "win32" ? "claude.exe" : "claude"));

@@ -90,6 +90,7 @@ describe("claude-code subscription contract", () => {
         CLAUDE_CONFIG_DIR: "C:\\Users\\example\\.claude",
         ENABLE_TOOL_SEARCH: "true",
         ENABLE_CLAUDEAI_MCP_SERVERS: "true",
+        DISABLE_UPDATES: "0",
         LANG: "en_US.UTF-8",
       },
       "win32",
@@ -99,6 +100,7 @@ describe("claude-code subscription contract", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.ENABLE_TOOL_SEARCH).toBe("false");
     expect(env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
+    expect(env.DISABLE_UPDATES).toBe("1");
     expect(env.LANG).toBe("en_US.UTF-8");
     expect(env.TEMP).toBe("C:\\isolated\\claude-tmp");
   });

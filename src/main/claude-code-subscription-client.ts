@@ -24,6 +24,7 @@ import {
 } from "./user-cli-discovery.js";
 
 import { ClaudeCodeNativeRequiredError, pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "./claude-code-executable.js";
+import { ClaudeCodeAuthenticityError } from "./claude-code-authenticity.js";
 import { assertCodexLocations, CodexExecutableLocationError, createPrivateTempDirectory } from "./codex-executable-location.js";
 
 const PROBE_TIMEOUT_MS = 15_000;
@@ -262,6 +263,8 @@ export function sanitizedClaudeCodeEnvironment(
   // The host supplies the complete MCP catalog and owns tool discovery.
   env.ENABLE_TOOL_SEARCH = "false";
   env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  // Runtime updates require rediscovery and publisher authentication of a new sealed artifact.
+  env.DISABLE_UPDATES = "1";
   env.NO_COLOR = "1";
   env.TERM = "dumb";
   return env;
@@ -545,6 +548,7 @@ export class ClaudeCodeSubscriptionClient {
       this.adopt(null);
       if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
       if (error instanceof ClaudeCodeNativeRequiredError) throw new ClaudeCodeSubscriptionError("claude-code-runtime-native-required");
+      if (error instanceof ClaudeCodeAuthenticityError) throw new ClaudeCodeSubscriptionError("claude-code-runtime-unauthenticated");
       throw new ClaudeCodeSubscriptionError("claude-code-runtime-invalid-executable");
     }
     if (this.stopped || this.epoch !== epoch) {

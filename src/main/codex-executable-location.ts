@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../shared/windows-owner-claim.js";
 import { constants, promises as fs, type Stats } from "node:fs";
@@ -9,6 +8,7 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRecord } from "../shared/is-record.js";
 import { createLogger } from "../lib/logger.js";
 import { spawnManaged } from "./managed-child-processes.js";
+import { queryWindowsSystemDirectory } from "./windows-path-kind-launcher.js";
 import {
   WindowsAclHost,
   WindowsAclHostError,
@@ -59,12 +59,14 @@ const windowsAclHost = new WindowsAclHost((command, args, options) =>
   spawnManaged(command, args, options, { label: "windows-acl-host" }));
 let windowsAclQueue: Promise<void> = Promise.resolve();
 let windowsAclRequestId = 0;
+let windowsSystemDirectory: Promise<string> | undefined;
 
 // Kill the ACL host and drop queued work, the way a restart would.
 export function _resetWindowsAclHostForTest(): void {
   windowsAclHost.discard();
   windowsAclTransportSeam.override?.discard();
   windowsAclQueue = Promise.resolve();
+  windowsSystemDirectory = undefined;
 }
 
 const MAX_CAP_SID_BYTES = 1024 * 1024;
@@ -114,6 +116,8 @@ function mayIgnoreForeignSubdirectoryCreation(kind: CodexLocationRouteKind, role
 export interface CodexLocationTrustInputs {
   readonly capSidPath?: string;
   readonly readCapSidFile?: (path: string) => Promise<string | null>;
+  // Exact package-layout directories only; the caller must authenticate the sealed native bytes before execution.
+  readonly groupWritableSourceDirectories?: ReadonlySet<string>;
 }
 
 interface WindowsAccessEntry {
@@ -319,13 +323,15 @@ function assertAbsolutePath(candidate: string): void {
   if (!absolute) throw new CodexExecutableLocationError("Executable path must be absolute");
 }
 
-function assertPosixOwnership(path: InspectedPath): void {
+function assertPosixOwnership(path: InspectedPath, groupWritableDirectories: ReadonlySet<string>): void {
   const uid = process.getuid?.();
   if (uid === undefined || (path.stat.uid !== 0 && path.stat.uid !== uid)) {
     throw new CodexExecutableLocationError("Executable path has an untrusted owner");
   }
   const stickyRootDirectory = path.stat.isDirectory() && path.stat.uid === 0 && (path.stat.mode & 0o1000) !== 0;
-  if (!path.stat.isSymbolicLink() && (path.stat.mode & 0o022) !== 0 && !stickyRootDirectory) {
+  const admittedGroupDirectory = path.stat.isDirectory() && groupWritableDirectories.has(path.path)
+    && (path.stat.mode & 0o002) === 0;
+  if (!path.stat.isSymbolicLink() && (path.stat.mode & 0o022) !== 0 && !stickyRootDirectory && !admittedGroupDirectory) {
     throw new CodexExecutableLocationError("Executable path is writable by another account");
   }
 }
@@ -334,6 +340,7 @@ async function inspectPathRoute(
   candidate: string,
   inspected: Map<string, InspectedPath>,
   privateDirectory = false,
+  groupWritableDirectories: ReadonlySet<string> = new Set(),
 ): Promise<InspectedPath> {
   const paths = process.platform === "win32" ? win32 : posix;
   const separator = process.platform === "win32" ? /[\\/]/ : /\//;
@@ -343,7 +350,7 @@ async function inspectPathRoute(
 
   const inspect = async (path: string): Promise<InspectedPath> => {
     const entry = { path, stat: await fs.lstat(path) };
-    if (process.platform !== "win32") assertPosixOwnership(entry);
+    if (process.platform !== "win32") assertPosixOwnership(entry, groupWritableDirectories);
     inspected.set(process.platform === "win32" ? win32.normalize(path) : path, entry);
     return entry;
   };
@@ -567,11 +574,13 @@ function parseWindowsSecurity(value: unknown, skippedPackage?: DesktopPackagePri
   return { ...value, desktopPackage } as unknown as WindowsSecurityResult;
 }
 
-function windowsAclLaunch(): WindowsAclHostLaunch {
-  // The current account's process environment is trusted; arbitrary actions by that account are outside the filesystem admission boundary.
-  const systemRoot = windowsSystemRoot();
-  const system32 = win32SystemBinary("");
-  const command = win32SystemBinary("WindowsPowerShell/v1.0/powershell");
+async function windowsAclLaunch(): Promise<WindowsAclHostLaunch> {
+  const system32 = await (windowsSystemDirectory ??= queryWindowsSystemDirectory().catch((error: unknown) => {
+    windowsSystemDirectory = undefined;
+    throw error;
+  }));
+  const systemRoot = win32.dirname(system32);
+  const command = win32.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
   // The host process stays as fixed as the per-probe process was. Inputs that travelled in its environment travel in each request line instead.
   return {
     command,
@@ -581,7 +590,7 @@ function windowsAclLaunch(): WindowsAclHostLaunch {
 }
 
 async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids: readonly string[]): Promise<WindowsSecurityResult> {
-  const launch = windowsAclLaunch();
+  const launch = await windowsAclLaunch();
   // Captured before queueing, so concurrent first lookups each resolve the package and are compared with the cached outcome below.
   const skippedPackage = cachedDesktopPackage;
   const result = await exchangeWindowsAcl({
@@ -731,13 +740,14 @@ async function inspectLocation(
   candidate: string,
   inspected: Map<string, InspectedPath>,
   privateDirectory = false,
+  groupWritableDirectories: ReadonlySet<string> = new Set(),
 ): Promise<InspectedPath> {
   assertAbsolutePath(candidate);
-  await inspectPathRoute(candidate, inspected, privateDirectory);
-  return inspectPathRoute(await fs.realpath(candidate), inspected);
+  await inspectPathRoute(candidate, inspected, privateDirectory, groupWritableDirectories);
+  return inspectPathRoute(await fs.realpath(candidate), inspected, false, groupWritableDirectories);
 }
 
-// Batch deduplicated routes without weakening any leaf, private-path, or ancestor-child-creation rule.
+// Batch deduplicated routes; native sources may name exact group-writable directories while private paths remain strict.
 export async function assertCodexLocations(requests: readonly CodexLocationRequest[], trustInputs: CodexLocationTrustInputs = {}): Promise<void> {
   try {
     await inspectCodexLocations(requests, trustInputs);
@@ -762,7 +772,8 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
       }
     }
     const route = new Map<string, InspectedPath>();
-    const leaf = await inspectLocation(candidate, route, kind === "private-directory");
+    const leaf = await inspectLocation(candidate, route, kind === "private-directory",
+      kind === "executable" && routeKind === "native" ? trustInputs.groupWritableSourceDirectories : undefined);
     for (const [key, entry] of route) {
       inspected.set(key, entry);
       const role: ComponentRole = !entry.stat.isDirectory() || key === win32.normalize(candidate)
@@ -852,7 +863,7 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
 export async function claimPrivateOwnership(paths: readonly string[]): Promise<void> {
   if (process.platform !== "win32" || paths.length === 0) return;
   for (const path of paths) assertAbsolutePath(path);
-  const launch = windowsAclLaunch();
+  const launch = await windowsAclLaunch();
   for (const batch of aclBatches(paths.map((path) => ({ path })))) {
     const result = await exchangeWindowsAcl({
       id: ++windowsAclRequestId,

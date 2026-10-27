@@ -1098,6 +1098,8 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-unsafe-location");
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-native-required")))
       .toBe("subscription-runtime-native-required");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unauthenticated")))
+      .toBe("subscription-runtime-unauthenticated");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
       .toBe("subscription-runtime-not-configured");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))

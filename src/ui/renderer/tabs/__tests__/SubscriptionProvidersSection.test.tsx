@@ -365,6 +365,27 @@ describe("SubscriptionAuthControls", () => {
     expect(refreshStatus).toHaveBeenCalledWith("claude-code");
   });
 
+  it.each([
+    ["en", "The subscription runtime publisher could not be verified. Follow the official setup guide to verify or reinstall it, then check again."],
+    ["ko", "구독 실행 환경의 배포자를 확인할 수 없습니다. 공식 설치 안내에 따라 서명을 확인하거나 다시 설치한 뒤 다시 확인하세요."],
+  ] as const)("offers publisher verification guidance without login in %s", async (locale, message) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const refreshStatus = vi.fn();
+    const beginLogin = vi.fn();
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-unauthenticated" })], { refreshStatus, beginLogin });
+    expect(screen.getByTestId("subscription-provider:claude-code:error")).toHaveTextContent(message);
+    const guidance = screen.getByTestId("subscription-provider:claude-code:publisher-verification-guidance");
+    expect(guidance).toHaveTextContent("https://code.claude.com/docs/en/setup");
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+    expect(screen.queryByTestId("subscription-provider:claude-code:cli-unavailable")).toBeNull();
+    expect(beginLogin).not.toHaveBeenCalled();
+    expect(within(guidance).getAllByRole("button")).toEqual([screen.getByTestId("subscription-provider:claude-code:check-again")]);
+    expect(refreshStatus).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("subscription-provider:claude-code:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("claude-code");
+  });
+
   it("shows a found Claude Code CLI that lacks what Ave passes as an update, not a picker", () => {
     renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-incompatible" })], { refreshStatus: vi.fn(), configureRuntime: vi.fn() });
     expect(screen.getByTestId("subscription-provider:claude-code:update-guidance"))

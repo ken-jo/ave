@@ -32,6 +32,7 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
     "./managed-child-processes.js": ["forceKillManagedChildProcess", "spawnManaged"],
     "./user-cli-discovery.js": ["cliEnvironmentValue", "cliExecutableCandidates", "cliPathApi", "usableCliDirectory", "CliDiscoveryEnvironment"],
     "./claude-code-executable.js": ["ClaudeCodeNativeRequiredError", "pinClaudeCodeExecutable", "ClaudeCodeExecutable"],
+    "./claude-code-authenticity.js": ["ClaudeCodeAuthenticityError"],
     "./codex-executable-location.js": ["assertCodexLocations", "CodexExecutableLocationError", "createPrivateTempDirectory"],
   },
   "claude-code-conversation-runtime.ts": {
@@ -61,7 +62,8 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
     "node:fs": ["promises"],
     "node:path": ["join"],
     "./codex-executable-artifact.js": ["copyNativeExecutableFile", "discardCodexExecutableArtifact", "hashExecutableFile", "openExecutableFile", "verifyCodexExecutableArtifact", "CodexExecutableArtifact"],
-    "./codex-executable-location.js": ["assertCodexExecutableLocation", "assertCodexPrivateRuntimeDirectory", "createPrivateObjects", "createPrivateTempDirectory"],
+    "./codex-executable-location.js": ["assertCodexExecutableLocation", "assertCodexPrivateRuntimeDirectory", "createPrivateObjects", "createPrivateTempDirectory", "CodexLocationTrustInputs"],
+    "./claude-code-authenticity.js": ["authenticateClaudeCodeExecutable"],
     "./native-executable-format.js": ["isNativeExecutableFile"],
     "./user-cli-discovery.js": ["CliDiscoveryEnvironment"],
   },
@@ -72,14 +74,14 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
 const TRANSPORT_FS_OWNER_DIGESTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "claude-code-subscription-client.ts": {
     "resolveClaudeCodeSubscriptionExecutable": "36bc9fe7fcd9e3e16e2c6ed000dc51c93ecc2607d95bdb612e6475e493cd82a9",
-    "locate": "d45d3bd283df7eefb166d3988140fd17d26be73a3d4498f23f1c2568d4a036f0",
+    "locate": "73dc324ebff936797f80532cfdf6cc2c3ab2dc68bfcb1afb969bbd23c199cd2b",
     "qualify": "d671cee95ea05b799fdd37e884e004307fdaba78cb9a89c7965e46389c999e62"
   },
   "claude-code-conversation-runtime.ts": {
     "streamTurn": "10159534fafced47164c2004cdb93928ecddd7a51534125005201c7e204fbc1a"
   },
   "claude-code-executable.ts": {
-    "pinClaudeCodeExecutable": "d21ff613e6038ac9030c42d5a38c39f0c0045d0ac5e4a6e16d6aa5b12bf6832a"
+    "pinClaudeCodeExecutable": "a1ebd35029282839c954792d27cfa9ca705bf45f4979ab0d5c63f4c53189e2ec"
   }
 };
 
@@ -266,6 +268,7 @@ function assertIsolatedSpawn(command: string, options: SpawnOptions, f: Awaited<
   expect(options.shell).toBe(false);
   expect(options.cwd).toBe(f.workspaceDir);
   const env = options.env!;
+  expect(env.DISABLE_UPDATES).toBe("1");
   const expectedHome = probe ? expect.stringContaining(join(f.runtimeTempDir, "probe-")) : f.runtimeHome;
   expect(env.HOME).toEqual(expectedHome);
   expect(env.CLAUDE_CONFIG_DIR).toBe(env.HOME);
@@ -385,6 +388,14 @@ describe("subscription launch policy", () => {
       const file = path.split(/[\\/]/u).at(-1)!;
       expect(transportPolicyViolations(source, file)).toEqual([]);
     }
+  });
+
+  it("locks publisher verification to reviewed public metadata and system-verifier capabilities", () => {
+    // This helper can write isolated public-signature metadata and call system verifiers. Any change reopens that capability review.
+    const source = readFileSync(new URL("../claude-code-authenticity.ts", import.meta.url));
+    expect(createHash("sha256").update(source).digest("hex"),
+      "Publisher verifier changed; review fixed origins, subprocess commands, private public-metadata paths and credential isolation before updating this source freeze")
+      .toBe("3cb8920356f0637156bddb84f37b8c267efeb01b0d8e5c09651c50e107b02df8");
   });
 
   it.each([

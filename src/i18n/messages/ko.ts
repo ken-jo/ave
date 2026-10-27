@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "be_streamCollector.runtimeUnauthenticated": "구독 실행 환경의 배포자를 확인할 수 없습니다. 공식 설치 안내에 따라 서명을 확인하거나 다시 설치한 뒤 다시 확인하세요.",
+  "formatIpcError.subscriptionRuntimeUnauthenticated": "구독 실행 환경의 배포자를 확인할 수 없습니다. 공식 설치 안내에 따라 서명을 확인하거나 다시 설치한 뒤 다시 확인하세요.",
   "be_streamCollector.nativeRuntimeRequired": "이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요.",
   "modelBilling.subscription": "API 키가 아닌 본인의 {plan} 구독으로 청구됩니다.",
   "modelBilling.apiKey": "설정한 본인의 API 키로 청구됩니다.",

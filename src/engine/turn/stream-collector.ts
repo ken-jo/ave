@@ -213,6 +213,8 @@ export async function collectRoundStream(
             && event.providerError?.providerCode === "subscription-model-not-supported";
           const subscriptionNativeRequired = provider.subscriptionRuntime !== undefined
             && event.providerError?.providerCode === "subscription-runtime-native-required";
+          const subscriptionUnauthenticated = provider.subscriptionRuntime !== undefined
+            && event.providerError?.providerCode === "subscription-runtime-unauthenticated";
           const classification = imageInputRefused || subscriptionModelRefused
             ? "model" : event.providerError?.classification ?? classified.category;
           const userMessage = imageInputRefused
@@ -221,7 +223,9 @@ export async function collectRoundStream(
               ? t("be_errorClassifier.modelNotFound")
               : subscriptionNativeRequired
                 ? t("be_streamCollector.nativeRuntimeRequired")
-                : classified.userMessage;
+                : subscriptionUnauthenticated
+                  ? t("be_streamCollector.runtimeUnauthenticated")
+                  : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
             classification,

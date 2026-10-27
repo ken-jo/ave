@@ -630,6 +630,8 @@ export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntim
         return "subscription-runtime-unsafe-location";
       case "claude-code-runtime-native-required":
         return "subscription-runtime-native-required";
+      case "claude-code-runtime-unauthenticated":
+        return "subscription-runtime-unauthenticated";
       case "claude-code-runtime-unverified":
         return "subscription-chat-unavailable";
       case "claude-code-runtime-unavailable":

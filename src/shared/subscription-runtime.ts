@@ -503,6 +503,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-runtime-unavailable"
   | "subscription-runtime-unsafe-location"
   | "subscription-runtime-native-required"
+  | "subscription-runtime-unauthenticated"
   | "subscription-runtime-version-unsupported"
   | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"

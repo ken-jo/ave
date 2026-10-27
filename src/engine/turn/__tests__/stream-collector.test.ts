@@ -74,6 +74,8 @@ describe("image capability refusal", () => {
 describe("provider completion boundary", () => {
   it.each([
     ["en", "subscription-model-not-supported", "model", "Error: The selected model could not be found. Please check the model in your settings."],
+    ["en", "subscription-runtime-unauthenticated", "unknown", "Error: The subscription runtime publisher could not be verified. Follow the official setup guide to verify or reinstall it, then check again."],
+    ["ko", "subscription-runtime-unauthenticated", "unknown", "오류: 구독 실행 환경의 배포자를 확인할 수 없습니다. 공식 설치 안내에 따라 서명을 확인하거나 다시 설치한 뒤 다시 확인하세요."],
     ["ko", "subscription-model-not-supported", "model", "오류: 선택한 모델을 찾을 수 없습니다. 설정에서 모델을 확인해주세요."],
     ["en", "subscription-runtime-native-required", "unknown", "Error: This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again."],
     ["ko", "subscription-runtime-native-required", "unknown", "오류: 이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요."],
