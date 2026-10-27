@@ -123,7 +123,10 @@ seal (`codesign --verify --deep --strict` plus the pinned team and identifier)
 instead of rereading the archive. Platforms without a payload seal, currently
 Linux, reconstruct the authenticated tree from the verified archive again, so
 the receipt is never a self-attesting trust root. A failed admission stays failed
-until install or uninstall; it is not retried on every status read. Each launch
+until install or uninstall; it is not retried on every status read. An integrity
+or signature failure found at a later launch invalidates the completed admission
+in the same process, so status reports the error at once and later uses fail
+without trusting the stale result. Each launch
 recomputes the asynchronous identity digest, and the synchronous check
 immediately before spawn covers a constant set of anchors (namespace, slot,
 payload, application root, executables and extension).

@@ -255,14 +255,29 @@ function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineR
   const paths = documentEnginePayloadPaths(join(slot, "payload"), release);
   const extensionPath = join(slot, DOCUMENT_ENGINE_IMPORT_EXTENSION.filename);
   let anchors: readonly DocumentEnginePathIdentity[] | undefined;
+  let failure: DocumentEngineInstallError | undefined;
+  const current = (): boolean => generation === lifecycleGeneration && namespace.dir === namespaceRoot && !uninstalling;
+  /**
+   * An integrity or signature failure found at execution invalidates the completed admission in this process, so
+   * status reports the error at once and later uses fail with it instead of trusting the stale verified result.
+   */
+  const invalidate = (error: DocumentEngineInstallError): DocumentEngineInstallError => {
+    if (!current()) return error;
+    failure ??= error;
+    const rejected = Promise.reject(failure);
+    rejected.catch(() => undefined);
+    installations.set(slot, { promise: rejected, settled: true });
+    return failure;
+  };
   // Synchronous and constant-size: the whole tree is compared asynchronously in verifyBeforeSpawn.
   const assertCurrent = (): void => {
-    if (generation !== lifecycleGeneration || namespace.dir !== namespaceRoot || uninstalling) {
-      throw new DocumentEngineInstallError("integrity-failed", "Document engine installation is no longer current");
-    }
+    if (!current()) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation is no longer current");
+    if (failure) throw failure;
     if (!anchors) throw new DocumentEngineInstallError("integrity-failed", "Document engine installation was not admitted");
     try { assertDocumentEnginePathIdentities(anchors); }
-    catch (error) { throw new DocumentEngineInstallError("integrity-failed", "Document engine payload changed after verification", { cause: error }); }
+    catch (error) {
+      throw invalidate(new DocumentEngineInstallError("integrity-failed", "Document engine payload changed after verification", { cause: error }));
+    }
   };
   const installation: VerifiedDocumentEngineInstallation = Object.freeze({ ...paths, version: release.version, assertCurrent,
     extensionPath, extensionSha256: DOCUMENT_ENGINE_IMPORT_EXTENSION.sha256,
@@ -274,8 +289,9 @@ function bindInstallation(receipt: InstallationReceipt, release: DocumentEngineR
         assertCurrent();
       } catch (error) {
         signal.throwIfAborted();
-        if (error instanceof DocumentEngineInstallError) throw error;
-        throw new DocumentEngineInstallError("integrity-failed", "Document engine payload verification failed", { cause: error });
+        const refused = error instanceof DocumentEngineInstallError ? error
+          : new DocumentEngineInstallError("integrity-failed", "Document engine payload verification failed", { cause: error });
+        throw refused.code === "integrity-failed" || refused.code === "signature-failed" ? invalidate(refused) : refused;
       }
     },
   });

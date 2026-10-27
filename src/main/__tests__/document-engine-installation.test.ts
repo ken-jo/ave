@@ -35,15 +35,19 @@ vi.mock("../document-engine-payload.js", async (original) => {
   const actual = await original<typeof import("../document-engine-payload.js")>();
   const { createHash } = await import("node:crypto");
   const paths = (destination: string) => ({ root: join(destination, "engine"), executable: join(destination, "engine", "soffice"), unopkg: join(destination, "engine", "unopkg") });
+  const file = ([path, bytes]: [string, string]) => ({ path, kind: "file", size: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"), ...(process.platform !== "win32" ? { executable: false } : {}) });
+  // Same order as readDocumentEngineTree: directory first, then sorted children depth-first.
   const authenticatedTree = () => [
     { path: "", kind: "directory", size: 0 },
-    ...[["soffice", "engine"], ["unopkg", "package manager"]].map(([path, bytes]) => ({ path, kind: "file", size: bytes!.length,
-      sha256: createHash("sha256").update(bytes!).digest("hex"), ...(process.platform !== "win32" ? { executable: false } : {}) })),
+    { path: "program", kind: "directory", size: 0 }, file(["program/library", "shared library"]),
+    file(["soffice", "engine"]), file(["unopkg", "package manager"]),
   ];
   return { ...actual, documentEnginePayloadPaths: paths,
     extractDocumentEnginePayload: vi.fn(async (_archive: string, destination: string) => {
       const result = paths(destination); await mkdir(result.root);
       await writeFile(result.executable, fixtures.tamperExtraction ? "mutated engine" : "engine"); await writeFile(result.unopkg, "package manager");
+      await mkdir(join(result.root, "program")); await writeFile(join(result.root, "program", "library"), "shared library");
       return { paths: result, sourceTree: authenticatedTree() };
     }), reconstructDocumentEngineTree: vi.fn(async () => authenticatedTree()) };
 });
@@ -267,5 +271,21 @@ describe("optional document engine installation", () => {
       await expect(installing).rejects.toMatchObject({ code: "cancelled" });
       await engine.dispose?.();
     }
+  });
+
+  it("reports a tampered payload found at spawn as an error at once instead of reusing the completed verification", async () => {
+    await installer.installDocumentEngine(() => {}, new AbortController().signal);
+    const installation = await installer.getVerifiedDocumentEngineInstallation(new AbortController().signal);
+    expect(await installer.getDocumentEngineInstallationState()).toMatchObject({ phase: "ready" });
+    // A payload file outside the constant synchronous anchor set: only the spawn-time identity walk sees it.
+    await writeFile(join(installation!.root, "program", "library"), "replaced library");
+    expect(() => installation!.assertCurrent()).not.toThrow();
+    await expect(installation!.verifyBeforeSpawn(new AbortController().signal)).rejects.toMatchObject({ code: "integrity-failed" });
+    await expect(installer.getDocumentEngineInstallationState()).rejects.toMatchObject({ code: "integrity-failed" });
+    await expect(installer.getVerifiedDocumentEngineInstallation(new AbortController().signal)).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(() => installation!.assertCurrent()).toThrow("changed after verification");
+    const calls = fixtures.verifyRelease.mock.calls.length + fixtures.verifyPlatform.mock.calls.length;
+    await expect(installation!.verifyBeforeSpawn(new AbortController().signal)).rejects.toMatchObject({ code: "integrity-failed" });
+    expect(fixtures.verifyRelease.mock.calls.length + fixtures.verifyPlatform.mock.calls.length).toBe(calls);
   });
 });
