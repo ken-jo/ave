@@ -23,6 +23,8 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 // Host-owned child environment, not user configuration.
 const INTERNAL: readonly string[] = [
   "AVE_DEV_LAUNCHER",
+  // The host passes only its sealed native artifact path to the signature verifier.
+  "AVE_SIGNATURE_FILE",
   // Pass ACL paths as JSON data, never interpolate them into the child command.
   "AVE_DACL_REQUEST",
   // Hook metadata is host-owned; matcher and payload fields are conditional.
