@@ -52,7 +52,8 @@ describe("system executable admission", () => {
   it("keeps former executable resolvers on the shared fail-closed boundary", () => {
     for (const file of ["main/acp-subscription-runtime-client.ts", "main/codex-conversation-runtime.ts", "main/codex-executable-location.ts",
       "main/managed-child-processes.ts", "main/terminal/manual-shell.ts", "permissions/asrt-windows-support.ts", "permissions/confined-child.ts",
-      "permissions/srt-win-integrity.ts", "permissions/windows-acl-grant-holder.ts", "permissions/mxc-windows.ts", "tools/mxc-shell-launch.ts", "tools/shell-tools.ts", "shared/ave-home.ts"]) {
+      "permissions/srt-win-integrity.ts", "permissions/windows-acl-grant-holder.ts", "permissions/mxc-windows.ts", "tools/mxc-shell-launch.ts", "tools/shell-tools.ts", "shared/ave-home.ts",
+      "shared/powershell-executable.ts"]) {
       const source = readFileSync(resolve("src", file), "utf8");
       expect(source, file).toContain("windows-system-path.js");
       expect(source, file).not.toMatch(/(?:join\([^\n]*["']System32["']|\\\\System32\\\\)/);

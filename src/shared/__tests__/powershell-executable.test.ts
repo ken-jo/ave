@@ -226,7 +226,8 @@ describe("installation extended access", () => {
     for (const path of ["/", "/usr", "/usr/local", "/usr/local/microsoft", "/usr/local/microsoft/powershell", "/usr/local/microsoft/powershell/7", "/bin"]) add(path, true);
     add(executable, false);
     add("/bin/ls", false);
-    systemHelper.exec.mockReturnValue("-rwxr-xr-x 1 root wheel pwsh\n");
+    systemHelper.exec.mockImplementation((_image: string, args: readonly string[]) => args.slice(1).map((path) =>
+      `${entries.get(path)?.directory ? "d" : "-"}rwxr-xr-x 1 root wheel ${path}\n`).join(""));
     return executable;
   }
 
@@ -244,4 +245,14 @@ describe("installation extended access", () => {
     const { resolveTrustedPowerShellExecutable } = await import("../powershell-executable.js");
     expect(resolveTrustedPowerShellExecutable("darwin")).toBeNull();
   });
+  it.each([
+    "-rwxr-xr-x@ 1 root wheel pwsh\n 0: user:agent allow writesecurity\n",
+    "", "unexpected helper output\n", "-rwxr-xr-x 1 root wheel pwsh",
+  ])("refuses ambiguous or incomplete access evidence: %j", async (output) => {
+    darwinFixture();
+    systemHelper.exec.mockReturnValue(output);
+    const { resolveTrustedPowerShellExecutable } = await import("../powershell-executable.js");
+    expect(resolveTrustedPowerShellExecutable("darwin")).toBeNull();
+  });
+
 });

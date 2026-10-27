@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, win32 } from "node:path";
 import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, type WindowsDaclFacts } from "./windows-path-facts.js";
-import { windowsSystemRoot } from "./windows-system-path.js";
+import { win32SystemBinary } from "./windows-system-path.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 export interface TrustedPowerShellExecutable {
@@ -41,7 +41,7 @@ export function resolveTrustedPowerShellExecutable(platform: NodeJS.Platform = p
 }
 
 function windowsCandidates(): readonly string[] {
-  try { return [win32.join(windowsSystemRoot(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")]; }
+  try { return [win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe")]; }
   catch { return []; }
 }
 
@@ -104,7 +104,9 @@ function hasNoDarwinExtendedAcl(paths: readonly string[]): boolean {
       encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
       timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 1024 * 1024,
     });
-    if (/^[bcdlps-][rwxstST-]{9}\+/m.test(output)) return false;
+    const rows = output.split("\n");
+    if (rows.pop() !== "" || rows.length !== Math.min(32, paths.length - offset)
+      || !rows.every((row) => /^[d-][rwxstST-]{9} /.test(row))) return false;
   }
   return true;
 }

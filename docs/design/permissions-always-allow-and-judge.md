@@ -156,7 +156,9 @@ Startup proof follows the selected protected executable and installation, not
 an OS name. Parser and execution never resolve PowerShell through PATH or a
 user/agent-writable tree. Missing admission refuses native parsing. Candidate proof and refusal are
 cached for the process lifetime; newly installed or repaired paths require
-an application restart. On Windows,
+an application restart. On macOS installation access evidence must consist of
+complete plain permission records; extended or unfamiliar metadata refuses.
+On Windows,
 a protected System32 Windows PowerShell 5.1 path with suppressed profiles,
 disabled autoload, absolute protected module imports and Process policy can
 retain exact rules. Ordinary CurrentUser execution policy alone is not an

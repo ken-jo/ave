@@ -5,7 +5,7 @@ import type {
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { SHELL_TASK_OUTPUT_PREVIEW_CHARS } from "../shared/shell-tasks.js";
 import { createLogger } from "../lib/logger.js";
-import { windowsSystemRoot } from "../shared/windows-system-path.js";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
  * Host shell tool family: the `bash` and `powershell` execution tools, the
  * session-scoped background-shell registry, and the `bash_output` /
@@ -3575,7 +3575,7 @@ async function spawnPowerShellInMxc(
   signal?.throwIfAborted();
   const systemRoot = windowsSystemRoot();
   const installation = resolveTrustedPowerShellExecutable();
-  const systemExecutable = win32Path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const systemExecutable = win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe");
   if (installation === null || installation.kind !== "windows-powershell"
     || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
     return {

@@ -433,7 +433,9 @@ lifetime. A new or repaired installation requires an application restart;
 stale refusal cannot grant authority. Successful proof trusts only changes
 excluded by the host-trust boundary.
 POSIX admission requires root ownership, no group/other write or current write
-access on every ancestor and installation entry, and no extended ACL on macOS.
+access on every ancestor and installation entry. On macOS the fixed system
+helper must return one complete plain permission record per requested entry;
+extended metadata, ACL records, empty, truncated or unfamiliar output refuse.
 Windows admission requires non-reparse native ACL snapshots with only trusted
 system-principal ownership and mutation rights. Symlinks, elevated agents,
 special entries or incomplete evidence refuse. The fixed installation walk has
