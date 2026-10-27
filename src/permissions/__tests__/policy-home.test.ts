@@ -165,8 +165,8 @@ describe("independent home anchors", () => {
 
   beforeEach(() => {
     scratch = mkdtempSync(join(tmpdir(), "ave-home-anchors-"));
-    // Root-relative paths address the same temporary drive when exercising POSIX policy on win32.
-    home = platform === "win32" ? scratch.replace(/\\/g, "/").replace(/^[A-Za-z]:/, "") : scratch;
+    // Keep the temporary drive explicit while exercising POSIX policy on a native host.
+    home = platform === "win32" ? scratch.replace(/\\/g, "/") : scratch;
     shellHome = home + "/shell";
     passwd = home + "/account";
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });

@@ -90,16 +90,17 @@ export class BrowserWorkspaceService {
   requestPermission(guestId: number, permission: string, details: BrowserPermissionDetails): Promise<boolean> { return this.permissions.request(guestId, permission, details); }
   checkPermission(guestId: number, permission: string, details: BrowserPermissionDetails): boolean { return this.permissions.check(guestId, permission, details); }
   observeGuest(windowId: number, guest: WebContents): () => void {
-    const existing = this.guests.get(guest.id);
+    const guestId = guest.id;
+    const existing = this.guests.get(guestId);
     if (existing && existing.windowId !== windowId) throw new Error("guest-owner-mismatch");
     if (existing) return existing.dispose;
-    const invalidate = () => { const entry = this.guests.get(guest.id); if (entry) entry.generation++; this.permissions.invalidateGuest(guest.id); this.previews.invalidateGuest(guest.id); this.notify(); };
+    const invalidate = () => { const entry = this.guests.get(guestId); if (entry) entry.generation++; this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.notify(); };
     const visit = () => { if (!guest.isDestroyed()) void this.store.recordVisit(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     const started = (_event: unknown, _url: string, _inPlace: boolean, mainFrame: boolean) => { if (mainFrame) invalidate(); };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); guest.removeListener("destroyed", dispose); this.guests.delete(guest.id); this.permissions.invalidateGuest(guest.id); this.previews.invalidateGuest(guest.id); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); guest.removeListener("destroyed", dispose); this.guests.delete(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
-    this.guests.set(guest.id, { guest, windowId, generation: 1, dispose });
+    this.guests.set(guestId, { guest, windowId, generation: 1, dispose });
     guest.on("did-start-navigation", started); guest.on("did-navigate", visit); guest.on("did-navigate-in-page", navigatedInPage); guest.on("page-title-updated", titleChanged); guest.once("destroyed", dispose);
     return dispose;
   }

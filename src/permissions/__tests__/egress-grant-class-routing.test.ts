@@ -12,7 +12,7 @@ import { egressIdentityStrength } from "../egress-identity.js";
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
-import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../audit/sandbox-audit.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -261,7 +261,7 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
   it("records a listener refusal in invocation output and network denials", async () => {
     const invocation = openEgressInvocation(SHELL);
     const approval = approvalFixture("shell", invocation.token);
-    const rows: (SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry)[] = [];
+    const rows: (SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressFailureAuditEntry)[] = [];
     const store = SandboxManager.getSandboxViolationStore();
     store.clear();
     const stop = await startEgressDenyMonitor({

@@ -138,6 +138,7 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
       sheetNames: ["Sales", "Notes"],
       totalSheets: 2,
       sheetsTruncated: false,
+      needsRecalculation: false,
       sheet: sheets[sheetIndex]!,
     },
   };
@@ -171,6 +172,22 @@ afterEach(() => {
 });
 
 describe("file preview routing", () => {
+  it("renders a recalculation badge for stale workbook caches", async () => {
+    const result = workbookResult(0);
+    if (result.ok && "sheet" in result.document) result.document.needsRecalculation = true;
+    readDocument.mockResolvedValueOnce(result);
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    const badge = await screen.findByTestId("chat-side-panel-table-recalculation");
+    expect(badge.textContent).toMatch(/^(Needs recalculation|재계산 필요)$/);
+    expect(badge.getAttribute("title")).toMatch(/stale|이전 값/);
+  });
+
+  it("omits the recalculation badge for an ordinary workbook", async () => {
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    await screen.findByTestId("chat-side-panel-table-preview");
+    expect(screen.queryByTestId("chat-side-panel-table-recalculation")).toBeNull();
+  });
+
   it("shows a replaced page request as a recoverable error", async () => {
     const path = "/w/slides.pptx";
     readDocument.mockResolvedValueOnce({ ok: false, error: "superseded", message: "private supersession detail" })

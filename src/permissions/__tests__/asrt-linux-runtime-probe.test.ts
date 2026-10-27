@@ -22,6 +22,7 @@ import { getLocale, setLocale } from "../../i18n/index.js";
 import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import * as policyHome from "../../shared/policy-home.js";
+import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -546,17 +547,35 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     setProcessPlatform("win32");
     const root = mkdtempSync(join(tmpdir(), "asrt-win-probe-"));
     temporaryRoots.push(root);
+    const originalResources = getHostResources();
+    const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath")!;
+    const resourcePath = join(root, "resources");
+    const scripts = join(resourcePath, "skill-scripts");
+    mkdirSync(scripts, { recursive: true });
+    const runtime = join(root, "host-runtime.exe");
+    writeFileSync(runtime, "runtime image fixture");
     const profile = ORIGINAL_PLATFORM === "win32" ? join(root, "alice") : "C:\\Users\\alice";
     if (ORIGINAL_PLATFORM === "win32") mkdirSync(profile);
     vi.stubEnv("HOME", profile);
     vi.stubEnv("USERPROFILE", profile);
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
 
-    await initializeAsrtSandbox({ allowedDomains: [] });
+    Object.defineProperty(process, "execPath", { ...originalExecPath, value: runtime });
+    configureHostResources({ resourcePath, isPackaged: true });
+    try {
+      expect(getDefaultSensitiveWriteDenyPaths()).toEqual(expect.arrayContaining([scripts, runtime]));
+      await initializeAsrtSandbox({ allowedDomains: [] });
 
-    expect(isAsrtSandboxActive()).toBe(true);
-    expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
-    expect(h.spawn).not.toHaveBeenCalled();
+      expect(isAsrtSandboxActive()).toBe(true);
+      expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
+      expect(h.spawn).not.toHaveBeenCalled();
+    } finally {
+      try { if (isAsrtSandboxActive()) await resetAsrtSandbox(); }
+      finally {
+        try { configureHostResources(originalResources); }
+        finally { Object.defineProperty(process, "execPath", originalExecPath); }
+      }
+    }
   });
   it("resets the initialized manager and leaves the adapter inactive when the configured wrapper exits non-zero", async () => {
     h.spawn.mockImplementation(() => childThatCloses(1));

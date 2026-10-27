@@ -101,15 +101,15 @@ describe("LLMVendorSettings", () => {
     [10_000, undefined, 10_000],
     [14_000, undefined, 14_000],
     [16_000, 32_000, 16_000],
-    [16_001, 32_000, 16_000],
-    [32_000, undefined, 16_000],
-    [14_000, 16_000, 8_000],
-    [48_000, 64_000, 32_000],
+    [16_001, 32_000, 16_001],
+    [32_000, undefined, 32_000],
+    [14_000, 16_000, 14_000],
+    [48_000, 64_000, 48_000],
     [10_000, 25_001, 10_000],
-    [20_000, 25_001, 16_000],
-    [10_000, 1, 0],
+    [20_000, 25_001, 20_000],
+    [10_000, 1, 10_000],
     [0, 32_000, 0],
-  ])("normalizes thinking %s with output %s to %i", (thinkingBudgetTokens, outputTokenLimit, expected) => {
+  ])("preserves thinking intent %s with output %s as %i", (thinkingBudgetTokens, outputTokenLimit, expected) => {
     const block = getLlmVendorSettings({
       openai: { ...LLM_VENDOR_DEFAULTS.openai, thinkingBudgetTokens: thinkingBudgetTokens as number, outputTokenLimit },
     }, "openai");
@@ -121,10 +121,10 @@ describe("LLMVendorSettings", () => {
   });
 
   it.each([NaN, Infinity, -Infinity, -1, 1.5, "20000", null, {}, Number.MAX_VALUE])(
-    "replaces invalid thinking input %s with the bounded default", (value) => {
+    "replaces invalid thinking input %s with the default", (value) => {
       const stored = { ...LLM_VENDOR_DEFAULTS.openai, thinkingBudgetTokens: value as number };
       expect(getLlmVendorSettings({ openai: stored }, "openai").thinkingBudgetTokens).toBe(8_000);
-      expect(getLlmVendorSettings({ openai: { ...stored, outputTokenLimit: 8_000 } }, "openai").thinkingBudgetTokens).toBe(4_000);
+      expect(getLlmVendorSettings({ openai: { ...stored, outputTokenLimit: 8_000 } }, "openai").thinkingBudgetTokens).toBe(8_000);
     },
   );
 
@@ -154,7 +154,7 @@ describe("LLMVendorSettings", () => {
     expect(getLlmThinkingBudgetRungs(outputTokenLimit).map((rung) => rung.budget)).toEqual(budgets);
     expect(getLlmVendorSettings({ openai: {
       ...LLM_VENDOR_DEFAULTS.openai, outputTokenLimit, thinkingBudgetTokens: 32_000,
-    } }, "openai").thinkingBudgetTokens).toBe(cap);
+    } }, "openai").thinkingBudgetTokens).toBe(32_000);
   });
 
   it.each([
@@ -169,7 +169,7 @@ describe("LLMVendorSettings", () => {
   it.each([1, 2, 3, 4, 7, 9, 10, 11, 12, 25_001, 32_000, Number.MAX_SAFE_INTEGER])(
     "offers distinct bounded integer depths for output %i", (outputTokenLimit) => {
       const budgets = getLlmThinkingBudgetRungs(outputTokenLimit).map((rung) => rung.budget);
-      expect(budgets.every((budget) => [4_000, 8_000, 16_000, 32_000].includes(budget))).toBe(true);
+      expect(budgets.every((budget) => [4_000, 8_000, 16_000, 32_000, 64_000].includes(budget))).toBe(true);
       expect(new Set(budgets).size).toBe(budgets.length);
       expect(budgets).toEqual([...budgets].sort((a, b) => a - b));
       expect(budgets.every((budget) => Number.isSafeInteger(budget) && budget > 0 && budget < outputTokenLimit)).toBe(true);

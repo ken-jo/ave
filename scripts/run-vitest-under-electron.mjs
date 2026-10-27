@@ -260,6 +260,7 @@ function isMainModule() {
 if (isMainModule()) {
   try {
     ensureGeneratedAssets();
+    await (await import("./build-skill-scripts.mjs")).buildSkillScripts();
     const result = await runVitestUnderElectron(process.argv.slice(2));
     applyElectronVitestResult(result);
   } catch (error) {

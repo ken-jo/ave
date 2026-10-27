@@ -1,6 +1,7 @@
 // Replace raw block limits with route-effective output controls and bound thinking to the same limit.
 import type { ResolvedOutputTokenLimit, RouteContextWindow, RouteModelCapabilities } from "../../shared/context-budget.js";
 import { normalizeLlmThinkingBudgetTokens, type LLMVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { reasoningEffortForBudget, type ReasoningEffort } from "../../shared/reasoning-effort.js";
 import type { StreamTurnParams } from "../llm/types.js";
 
 export function apiRoundLlmSettings<Smoothing extends string>(
@@ -15,6 +16,7 @@ export function apiRoundLlmSettings<Smoothing extends string>(
   outputCeiling: Exclude<StreamTurnParams["outputCeiling"], undefined>;
   outputCeilingSource?: StreamTurnParams["outputCeilingSource"];
   requestedThinkingBudgetTokens: number;
+  reasoningEffort: ReasoningEffort;
   streamSmoothing: Smoothing;
   modelCapabilities?: RouteModelCapabilities;
 } {
@@ -29,6 +31,7 @@ export function apiRoundLlmSettings<Smoothing extends string>(
     outputCeiling: output.ceiling ?? null,
     ...(output.ceilingSource === undefined ? {} : { outputCeilingSource: output.ceilingSource }),
     requestedThinkingBudgetTokens: block.thinkingBudgetTokens,
+    reasoningEffort: reasoningEffortForBudget(block.thinkingBudgetTokens),
     // Unknown resolved facts stay unknown; transport must not rematch them by name.
     ...(route !== undefined
       ? { modelCapabilities: {

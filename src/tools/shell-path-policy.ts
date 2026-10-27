@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
 import { displayShellWord, shellWordHasSingleField, staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
@@ -119,6 +120,7 @@ export function findResolvedShellPathViolation(
     };
   }
   if (effect === "read" && isConfiguredSessionReadPath(canonicalPath)) return null;
+  if (effect === "read" && isHostScriptReadPath(absolute)) return null;
   if (!pathEffectIsConfined(effect, blockReadsOutsideWorkingDirectories)) return null;
   const check = validateSandboxPath(absolute, sandboxRoot, [...extraAllowedDirectories]);
   if (!check.allowed) {
@@ -1357,8 +1359,10 @@ export function findShellPathPolicyViolation(
         && (verb === "curl" || projectedSlots.programIndices?.has(index) || !projectedSlots.nonPathIndices.has(index) || projectedSlots.extraCandidates.some((path) => path.index === index)));
       if (unknown >= 0) decline("unresolved command operand", words[unknown]);
       // Executable paths inherit the command's proven effect; readable bytes alone cannot prove read-only execution.
+      const hostScriptReads = hostScriptInvocationReadPaths(argv, projectedEnvironment);
       for (const executable of executableHeads) {
-        checkPath(executable.value, executable.word.source.raw, executable.cwd, effect);
+        checkPath(executable.value, executable.word.source.raw, executable.cwd,
+          hostScriptReads.includes(executable.value) ? "read" : effect);
       }
       for (const wrapperPath of wrapperPaths) {
         checkPath(wrapperPath.value, wrapperPath.word.source.raw, wrapperPath.cwd, "read");
@@ -1376,7 +1380,8 @@ export function findShellPathPolicyViolation(
             checkPath(argument,words[index]!.source.raw,projectedCwd,effect);
             continue;
           }
-          for(const path of operandPaths(argument,!optionsEnded,verb))checkPath(path,words[index]!.source.raw,projectedCwd,effect);
+          for(const path of operandPaths(argument,!optionsEnded,verb))checkPath(path,words[index]!.source.raw,projectedCwd,
+            index === 1 && hostScriptReads.includes(path) ? "read" : effect);
         }
         for(const path of projectedSlots.extraCandidates){
           checkPath(path.value,words[path.index]!.source.raw,projectedCwd,path.effect ?? effect);

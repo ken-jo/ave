@@ -1,5 +1,6 @@
 /** Construct workflow stores, register builtin tools, and late-bind the sub-agent runner. */
 import { SessionTasksStore } from "../../main/session-tasks-store.js";
+import { join } from "node:path";
 import { SessionGoalStore } from "../../main/session-goal-store.js";
 import { AskUserQuestionGate } from "../../main/ask-user-question-gate.js";
 import { SkillStore } from "../../main/skill-store.js";
@@ -63,7 +64,7 @@ export async function setupWorkflowStores(
     load: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId)?.goal ?? null,
     save: (sessionId, goal) => sessionOwner(sessionId).saveSessionGoal(sessionId, goal),
   });
-  const skillStore = new SkillStore();
+  const skillStore = new SkillStore({ bundledDir: join(ctx.host.resourcePath, "skills") });
   const agentProfileStore = new AgentProfileStore();
   const personaPromptStore = new PersonaPromptStore();
   const skillOverlay = new SkillOverlay();
