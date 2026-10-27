@@ -741,6 +741,96 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
   }
 }
 
+// What waiting for an action's navigation needs of a guest. Production passes Electron `WebContents`.
+export interface NavigationGuest extends LoadingGuest {
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
+}
+
+// A navigation an input action may have started in a tab's main frame, watched from before the input goes out until it commits or fails.
+export interface ActionNavigation {
+  // Whether the main frame was asked to navigate in this tab after the watch began.
+  readonly requested: boolean;
+  // Resolve once a requested navigation commits or ends without a new document; refuse a failed one, a closed tab, or one still pending at `maxMs`.
+  // Resolves at once when nothing was requested.
+  outcome(signal: AbortSignal, maxMs: number): Promise<void>;
+  stop(): void;
+}
+
+type NavigationEnd = { kind: "committed" | "stopped" } | { kind: "failed"; error: BrowserActionError };
+
+// Watch the main frame for a navigation the action is about to start. A link activation reaches the page after its input is acknowledged, so the
+// browser learns of the navigation only after the action returns: the request (CDP Page.frameRequestedNavigation, renderer side) is the signal, and
+// commit (did-navigate / did-navigate-in-page) or its end (did-fail-load / did-stop-loading / tab gone) settles it. Electron 45 emits no
+// did-fail-load for a cancelled (ERR_ABORTED) navigation (electron_api_web_contents.cc DidFinishNavigation); did-stop-loading ends that one.
+export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSession): Promise<ActionNavigation> {
+  const mainFrameId = (await frameTree(cdp)).frame.id;
+  let requested = false;
+  let ended: NavigationEnd | undefined;
+  let notify: (() => void) | undefined;
+  const end = (outcome: NavigationEnd) => {
+    if (!requested || ended) return;
+    ended = outcome;
+    notify?.();
+  };
+  const stopCdp = cdp.onEvent((method, params) => {
+    if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") requested = true;
+    if (method === "Page.frameStartedNavigating" && params.frameId === mainFrameId) requested = true;
+  });
+  const listeners: Array<[string, (...args: unknown[]) => void]> = [
+    ["did-start-navigation", ((details: { isMainFrame?: boolean }) => { if (details.isMainFrame) requested = true; }) as never],
+    ["did-navigate", (() => { requested = true; end({ kind: "committed" }); }) as never],
+    ["did-navigate-in-page", ((_event: unknown, _url: string, isMainFrame: boolean) => {
+      if (isMainFrame) { requested = true; end({ kind: "committed" }); }
+    }) as never],
+    ["did-fail-load", ((_event: unknown, _errorCode: number, errorDescription: string, validatedURL: string, isMainFrame: boolean) => {
+      if (!isMainFrame) return;
+      end({
+        kind: "failed",
+        error: new BrowserActionError("load-failed", `the action started loading ${validatedURL.slice(0, 200)}, which failed: ${String(errorDescription).slice(0, 200)}`, true),
+      });
+    }) as never],
+    ["did-stop-loading", (() => end({ kind: "stopped" })) as never],
+    ["destroyed", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) })) as never],
+    ["render-process-gone", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab's page crashed while loading", true) })) as never],
+  ];
+  for (const [event, listener] of listeners) guest.on(event, listener);
+  const stop = () => {
+    stopCdp();
+    for (const [event, listener] of listeners) guest.removeListener(event, listener);
+  };
+  return {
+    get requested() { return requested; },
+    stop,
+    outcome: async (signal, maxMs) => {
+      throwIfAborted(signal);
+      if (!requested) return;
+      if (!ended) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, maxMs);
+          function done() {
+            clearTimeout(timer);
+            notify = undefined;
+            signal.removeEventListener("abort", done);
+            resolve();
+          }
+          notify = done;
+          signal.addEventListener("abort", done, { once: true });
+        });
+      }
+      throwIfAborted(signal);
+      if (!ended) {
+        throw new BrowserActionError("navigation-incomplete",
+          `the action started a navigation from ${guest.getURL().slice(0, 200)} that did not finish within ${Math.round(maxMs / 1000)}s; take a new browser_snapshot to see the page`, true);
+      }
+      if (ended.kind === "failed") throw ended.error;
+    },
+  };
+}
+
+// The navigation each tab's last input action started, kept from the action until its settle.
+const actionNavigations = new WeakMap<object, ActionNavigation>();
+
 // What the adapter needs of the tab registry.
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
@@ -1235,6 +1325,26 @@ export function createBrowserPageActions(
   originOf: (url: string) => string | null,
   hostContentOrigin: HostContentOrigin,
 ): BrowserPageActions<WebContents> {
+  // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
+  // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
+  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => {
+    const guest = live.tab.guest;
+    if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+    const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    actionNavigations.get(guest)?.stop();
+    actionNavigations.delete(guest);
+    const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
+    try {
+      await act();
+      try { await session.send("Page.enable"); } catch (err) {
+        throw new BrowserActionError("tab-gone", `the action was sent, but the tab stopped answering: ${(err as Error).message.slice(0, 200)}`, true);
+      }
+    } catch (err) {
+      navigation.stop();
+      throw err;
+    }
+    actionNavigations.set(guest, navigation);
+  };
   return {
     prepare: async (live) => {
       const guest = live.tab.guest;
@@ -1246,21 +1356,22 @@ export function createBrowserPageActions(
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       snapshot(await targetFor(live, attribution, hostContentOrigin), options),
     screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
-    hover: async (live, ref) => hover(await targetFor(live, attribution, hostContentOrigin, true), ref),
-    drag: async (live, sourceRef, targetRef) => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef),
-    select: async (live, ref, value) => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value),
-    scroll: async (live, ref, direction, pixels) => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels),
+    hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
+    drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
+    select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),
+    scroll: async (live, ref, direction, pixels) => tracked(live, async () => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels)),
     upload: async (live, ref, options) => {
       if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
       return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
     },
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       waitFor(await targetFor(live, attribution, hostContentOrigin), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget),
+    click: async (live: LiveTab, ref: string) =>
+      tracked(live, async () => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget)),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget),
+      tracked(live, async () => type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget)),
     pressKey: async (live: LiveTab, key: string, ref?: string) =>
-      pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref),
+      tracked(live, async () => pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref)),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
@@ -1271,7 +1382,11 @@ export function createBrowserPageActions(
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-      return settle(guest, live.signal);
+      const navigation = actionNavigations.get(guest);
+      actionNavigations.delete(guest);
+      const started = Date.now();
+      try { await navigation?.outcome(live.signal, SETTLE_MAX_MS); } finally { navigation?.stop(); }
+      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started)));
     },
   };
 }

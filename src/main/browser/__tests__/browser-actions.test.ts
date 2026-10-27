@@ -21,6 +21,7 @@ import {
   type ActionTarget,
   type CdpSession,
   type NavigableGuest,
+  watchActionNavigation,
 } from "../browser-actions.js";
 import { withGuardedAction } from "../browser-action-guard.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
@@ -465,6 +466,126 @@ describe("settle", () => {
     const controller = new AbortController();
     controller.abort(new Error("the user took over this tab"));
     await expect(settle(guest, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+  });
+});
+
+describe("action navigation", () => {
+  // A guest whose link activation is acknowledged before the browser commits the navigation it requested, as Chromium reports it.
+  function linkPage() {
+    const cdp = new FakeCdp();
+    let url = "https://a.example/page";
+    const guest = Object.assign(new EventEmitter(), { getURL: () => url, isLoading: () => false });
+    const request = (frameId = "main", disposition = "currentTab") =>
+      cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId, reason: "anchorClick", url: "https://a.example/next", disposition });
+    const commit = (next = "https://a.example/next") => { url = next; guest.emit("did-navigate", {}, next, 200, "OK"); };
+    return { cdp, guest, request, commit };
+  }
+
+  it("makes settle wait for the commit of a navigation the action requested", async () => {
+    const { cdp, guest, request, commit } = linkPage();
+    const navigation = await watchActionNavigation(guest, cdp);
+    request();
+    setTimeout(() => commit(), 50);
+    expect(navigation.requested).toBe(true);
+    await navigation.outcome(new AbortController().signal, 5_000);
+    navigation.stop();
+    // Without the wait, settle reads the old page at once: it is committed and not loading.
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next" });
+  });
+
+  it.each([
+    ["did-start-navigation then did-navigate", (page: ReturnType<typeof linkPage>) => {
+      page.guest.emit("did-start-navigation", { url: "https://a.example/next", isMainFrame: true, isSameDocument: false });
+      setTimeout(() => page.commit(), 20);
+    }],
+    ["Page.frameStartedNavigating then did-navigate", (page: ReturnType<typeof linkPage>) => {
+      page.cdp.events.emit("message", "Page.frameStartedNavigating", { frameId: "main", url: "https://a.example/next", loaderId: "l2", navigationType: "differentDocument" });
+      setTimeout(() => page.commit(), 20);
+    }],
+    ["a same-document navigation (did-navigate-in-page)", (page: ReturnType<typeof linkPage>) => {
+      page.request();
+      setTimeout(() => page.guest.emit("did-navigate-in-page", {}, "https://a.example/page#next", true), 20);
+    }],
+  ])("settles a navigation seen as %s", async (_name, drive) => {
+    const page = linkPage();
+    const navigation = await watchActionNavigation(page.guest, page.cdp);
+    drive(page);
+    expect(navigation.requested).toBe(true);
+    await expect(navigation.outcome(new AbortController().signal, 5_000)).resolves.toBeUndefined();
+  });
+
+  it("returns at once when nothing was requested, or only a child frame, new tab, or download was", async () => {
+    const { cdp, guest, request } = linkPage();
+    const navigation = await watchActionNavigation(guest, cdp);
+    request("child");
+    request("main", "newTab");
+    request("main", "download");
+    guest.emit("did-start-navigation", { url: "https://a.example/frame", isMainFrame: false, isSameDocument: false });
+    guest.emit("did-navigate-in-page", {}, "https://a.example/frame#x", false);
+    expect(navigation.requested).toBe(false);
+    await expect(navigation.outcome(new AbortController().signal, 5_000)).resolves.toBeUndefined();
+    navigation.stop();
+    expect(guest.listenerCount("did-navigate")).toBe(0);
+    expect(cdp.events.listenerCount("message")).toBe(0);
+  });
+
+  it("keeps a commit that lands before settle asks", async () => {
+    const { cdp, guest, request, commit } = linkPage();
+    const navigation = await watchActionNavigation(guest, cdp);
+    request();
+    commit();
+    await expect(navigation.outcome(new AbortController().signal, 1)).resolves.toBeUndefined();
+  });
+
+  it("ends without a new document when loading stops, as for a cancelled navigation", async () => {
+    // Electron emits no did-fail-load for ERR_ABORTED; the load stopping is what ends a cancelled navigation.
+    const { cdp, guest, request } = linkPage();
+    const navigation = await watchActionNavigation(guest, cdp);
+    request();
+    guest.emit("did-start-loading");
+    guest.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", "https://a.example/next", true);
+    guest.emit("did-stop-loading");
+    await expect(navigation.outcome(new AbortController().signal, 1)).resolves.toBeUndefined();
+    expect(guest.getURL()).toBe("https://a.example/page");
+  });
+
+  it("refuses a failed load, a closed tab, a crashed page, and a navigation still pending at its bound", async () => {
+    const failed = linkPage();
+    const failing = await watchActionNavigation(failed.guest, failed.cdp);
+    failed.request();
+    failed.guest.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://a.example/next", false);
+    failed.guest.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://a.example/next", true);
+    await expect(failing.outcome(new AbortController().signal, 1)).rejects.toMatchObject({ code: "load-failed", effectCommitted: true });
+
+    for (const event of ["destroyed", "render-process-gone"]) {
+      const gone = linkPage();
+      const going = await watchActionNavigation(gone.guest, gone.cdp);
+      gone.request();
+      setTimeout(() => gone.guest.emit(event, {}, { reason: "crashed" }), 10);
+      await expect(going.outcome(new AbortController().signal, 5_000)).rejects.toMatchObject({ code: "tab-gone", effectCommitted: true });
+    }
+
+    const stuck = linkPage();
+    const pending = await watchActionNavigation(stuck.guest, stuck.cdp);
+    stuck.request();
+    await expect(pending.outcome(new AbortController().signal, 30)).rejects.toMatchObject({ code: "navigation-incomplete", effectCommitted: true });
+
+    const controller = new AbortController();
+    const cancelled = await watchActionNavigation(stuck.guest, stuck.cdp);
+    stuck.request();
+    setTimeout(() => controller.abort(new Error("stop")), 10);
+    await expect(cancelled.outcome(controller.signal, 5_000)).rejects.toMatchObject({ code: "cancelled" });
+  });
+
+  it("refuses an already-cancelled settle at once instead of waiting out its bound", async () => {
+    const { cdp, guest, request } = linkPage();
+    const navigation = await watchActionNavigation(guest, cdp);
+    request();
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    const started = Date.now();
+    await expect(navigation.outcome(controller.signal, 15_000)).rejects.toMatchObject({ code: "cancelled" });
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
 
@@ -1001,6 +1122,34 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
   expect(tab.opener).toBe(destination.includes("b.example") ? "user" : "agent");
+});
+
+it("reports the page a clicked link commits after the click is acknowledged", async () => {
+  const { cdp, guest, tab, actions, approve, navigate, tool, registry } = adapterFixture();
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchTouchEvent" && params?.type === "touchEnd") {
+      // The page asks for the navigation while handling the tap; the browser commits it after the click has returned.
+      cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId: "main", reason: "anchorClick", url: "https://a.example/next", disposition: "currentTab" });
+      setTimeout(() => {
+        navigate("https://a.example/next");
+        guest.emit("did-navigate", {}, "https://a.example/next", 200, "OK");
+      }, 50);
+    }
+    return result;
+  });
+  registry.releaseControl(tab.handle, tab.lease!.id);
+  const result = await tool("browser_click").execute({ tabId: tab.handle, ref }, {
+    cwd: tmpdir(), extraAllowedDirectories: [],
+    metadata: { sessionId: "conversation", approvalMemoryScope: { kind: "browser-origin", ...live.approval, tabOpener: "user" } },
+  });
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: "https://a.example/next" });
+  expect(guest.listenerCount("did-navigate")).toBe(0);
 });
 
 describe("tap placement", () => {
