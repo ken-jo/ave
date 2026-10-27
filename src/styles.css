@@ -647,6 +647,7 @@
     --reasoning-fill-2: hsl(var(--p-yellow-200));
     --reasoning-fill-3: hsl(var(--p-yellow-400));
     --reasoning-fill-4: hsl(var(--p-yellow-600));
+    --reasoning-fill-5: hsl(var(--p-yellow-800));
 
     /* Brand gradient — violet → blue. The single source for the onboarding
      * brand avatar and primary CTA fills. --gradient-brand-soft is the faint
