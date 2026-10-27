@@ -211,6 +211,8 @@ export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildP
 }
 
 export async function codexExecutableArtifactFixture(home: string): Promise<CodexExecutableArtifact> {
+  const resources = await import("../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   const { createPrivateDirectory, createPrivateObjects, createPrivateTempDirectory } = await import("../../main/codex-executable-location.js");
   const parent = await createPrivateDirectory(join(home, "runtime"));
   const directory = await createPrivateTempDirectory(join(parent, "artifact-"));
