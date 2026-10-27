@@ -2046,7 +2046,7 @@ export interface AvePreviewApi {
    */
   readDocument: (path: string, sheetIndex: number, sessionId?: string) => Promise<PreviewReadDocumentResult>;
   onAgentObservation: (handler: (events: import("../../shared/agent-observation.js").AgentObservationEvent[]) => void) => () => void;
-  acknowledgeObservation: (ack: import("../../shared/agent-observation.js").ObservationAck) => Promise<{ ok: boolean; error?: string }>;
+  acknowledgeObservation: (request: import("../../shared/agent-observation.js").ObservationRequest) => Promise<import("../../shared/agent-observation.js").ObservationResponse>;
   onObservationPreview: (handler: (message: import("../../shared/agent-observation.js").BrowserObservationPreviewMessage) => void) => () => void;
   requestObservationPreview: (request: import("../../shared/agent-observation.js").BrowserObservationPreviewRequest) => Promise<{ ok: boolean; error?: string }>;
 }

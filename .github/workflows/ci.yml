@@ -681,6 +681,7 @@ jobs:
           src/main/__tests__/subscription-runtime-service.test.ts
           src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
           src/__tests__/support/native-executable.test.ts
+          src/__tests__/support/fixture-owner.test.ts
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
           src/lib/__tests__/admin-policy-file.test.ts

@@ -136,6 +136,7 @@ interface StringEscape {
   state: "string";
   // Only an OSC payload is kept; the others are skipped.
   osc: boolean;
+  introducer: string;
   payload: string;
   // Past {@link MAX_OSC_PAYLOAD_CHARS}: discarded at its terminator.
   overflow: boolean;
@@ -148,7 +149,7 @@ interface StringEscape {
 type EscapeState =
   | { state: "text" }
   | { state: "esc" }
-  | { state: "csi" }
+  | { state: "csi"; params: string }
   | { state: "charset" }
   | StringEscape;
 
@@ -195,14 +196,86 @@ export type TerminalPromptState =
 // it, so an empty echo just after typing proves nothing.
 export const USER_INPUT_QUIET_MS = 1500;
 
-// Recognize emulator replies separately from keystrokes; focus, device, status, cursor, and OSC/DCS answers do not edit the prompt.
-const TERMINAL_REPLY =
-  /^(?:\u001b\[[IO]|\u001b\[[?>=]?[0-9;]*[cnR]|\u001b\][0-9]+;[^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001bP[^\u001b]*\u001b\\)+$/u;
+// Bound on the CSI parameter text kept while parsing output, enough for any query this tracker answers for.
+const MAX_QUERY_PARAMS_CHARS = 32;
+// Bound on unanswered queries in total; the oldest is dropped beyond it.
+const MAX_OUTSTANDING_QUERIES = 16;
+// How long a query stays answerable. The emulator answers as soon as it parses the query, so a later reply-shaped write is the user's.
+export const EMULATOR_REPLY_WINDOW_MS = 2000;
+
+type QueryKind = "da1" | "da2" | "status" | "cursor" | "cursor-private" | `mode:${string}` | `color:${string}`;
+
+// One reply the terminal emulator (xterm.js) sends on its own, as a strict pattern anchored at the start of the remaining input, and the query it answers.
+// No pattern admits a control character other than the reply's own introducer and terminator.
+const REPLY_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly kind: (match: RegExpExecArray) => QueryKind | "focus" }> = [
+  { pattern: /^\u001b\[\?[0-9]{1,5}(?:;[0-9]{1,5}){0,15}c/u, kind: () => "da1" },
+  { pattern: /^\u001b\[>[0-9]{1,5}(?:;[0-9]{1,5}){0,15}c/u, kind: () => "da2" },
+  { pattern: /^\u001b\[0n/u, kind: () => "status" },
+  { pattern: /^\u001b\[[0-9]{1,5};[0-9]{1,5}R/u, kind: () => "cursor" },
+  { pattern: /^\u001b\[\?[0-9]{1,5};[0-9]{1,5}R/u, kind: () => "cursor-private" },
+  { pattern: /^\u001b\[(\??)([0-9]{1,5});[0-4]\$y/u, kind: (match) => `mode:${match[1]}${match[2]}` },
+  { pattern: /^\u001b\]((?:1[0-2])|(?:4;[0-9]{1,3}));rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}(?:\u0007|\u001b\\)/iu,
+    kind: (match) => `color:${match[1]}` },
+  { pattern: /^\u001b\[[IO]/u, kind: () => "focus" },
+];
+
+// Which emulator replies the terminal's own programs have asked for. Input counts as the user's unless it is exactly one reply to such a query, written
+// on its own within {@link EMULATOR_REPLY_WINDOW_MS} of the query (xterm.js sends each reply as a separate write). A reply shape alone proves nothing,
+// because the user can type or paste it (the line editor still runs any keys inside it); a stale or batched reply is therefore the user's.
+class EmulatorReplyLedger {
+  // Unanswered queries, oldest first, each with the time its query was seen.
+  private outstanding: Array<{ readonly kind: QueryKind; readonly at: number }> = [];
+  private focusReports = false;
+
+  constructor(private readonly now: () => number) {}
+
+  // A complete CSI from the program (parameter text, final byte).
+  noteQuery(params: string, final: string): void {
+    if (final === "c" && (params === "" || params === "0")) this.expect("da1");
+    else if (final === "c" && (params === ">" || params === ">0")) this.expect("da2");
+    else if (final === "n" && params === "5") this.expect("status");
+    else if (final === "n" && params === "6") this.expect("cursor");
+    else if (final === "n" && params === "?6") this.expect("cursor-private");
+    else if (final === "p" && /^\??[0-9]{1,5}\$$/u.test(params)) this.expect(`mode:${params.slice(0, -1)}`);
+    else if ((final === "h" || final === "l") && params.startsWith("?") && params.slice(1).split(";").includes("1004")) this.focusReports = final === "h";
+  }
+
+  // A complete OSC body from the program.
+  noteOscQuery(body: string): void {
+    const query = /^((?:1[0-2])|(?:4;[0-9]{1,3}));\?$/u.exec(body);
+    if (query) this.expect(`color:${query[1]}`);
+  }
+
+  // Whether `data` is exactly one reply to an unexpired outstanding query (or one focus report while the program asked for them); consumes that query.
+  isEmulatorReply(data: string): boolean {
+    const now = this.now();
+    this.outstanding = this.outstanding.filter((query) => now - query.at <= EMULATOR_REPLY_WINDOW_MS);
+    for (const { pattern, kind } of REPLY_PATTERNS) {
+      const match = pattern.exec(data);
+      if (!match) continue;
+      if (match[0].length !== data.length) return false;
+      const answered = kind(match);
+      if (answered === "focus") return this.focusReports;
+      const index = this.outstanding.findIndex((query) => query.kind === answered);
+      if (index < 0) return false;
+      this.outstanding.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
+
+  private expect(kind: QueryKind): void {
+    if (this.outstanding.length >= MAX_OUTSTANDING_QUERIES) this.outstanding.shift();
+    this.outstanding.push({ kind, at: this.now() });
+  }
+}
 
 // Turns one terminal's output (and, for the fallback, its typed input) into blocks. One tracker per PTY session.
 export class TerminalBlockTracker {
   // Where the escape-sequence parser stands between chunks.
   private esc: EscapeState = { state: "text" };
+  // Queries the terminal's programs sent, which the emulator may answer through the input path.
+  private readonly replies: EmulatorReplyLedger;
   // Display text of the chunk being parsed (see {@link recordOutput}).
   private display = "";
   private phase: Phase = "idle";
@@ -238,6 +311,7 @@ export class TerminalBlockTracker {
   private currentEditLineReport: { readonly generation: number; readonly line: string } | null = null;
   // Called after authenticated markers, user input, and exit (see {@link subscribe}).
   private readonly listeners = new Set<() => void>();
+  private blockOutput: { blockId: number; pending: string; onOutput: (text: string) => void } | undefined;
 
   private readonly nonce: string;
   private readonly now: () => number;
@@ -250,6 +324,7 @@ export class TerminalBlockTracker {
     this.nonce = options.nonce;
     this.marksPromptEnd = options.marksPromptEnd;
     this.now = options.now ?? Date.now;
+    this.replies = new EmulatorReplyLedger(this.now);
   }
 
   // True once the shell has emitted a marker carrying this terminal's nonce.
@@ -347,6 +422,38 @@ export class TerminalBlockTracker {
     };
   }
 
+  /** Stream one host-selected future block before scrollback retention can drop its framing. */
+  subscribeBlockOutput(blockId: number, onOutput: (text: string) => void): { flush(): void; dispose(): void } {
+    if (this.blockOutput || blockId !== this.nextId || this.exited) {
+      throw new Error("Terminal output subscription does not name an available next block.");
+    }
+    const subscription = { blockId, pending: "", onOutput };
+    this.blockOutput = subscription;
+    return {
+      flush: () => {
+        if (this.blockOutput === subscription) this.publishBlockOutput("", true);
+      },
+      dispose: () => {
+        subscription.pending = "";
+        if (this.blockOutput === subscription) this.blockOutput = undefined;
+      },
+    };
+  }
+
+  private publishBlockOutput(text: string, final = false): void {
+    const subscription = this.blockOutput;
+    if (!subscription || this.open?.id !== subscription.blockId || this.open.source !== "osc133") return;
+    const pending = subscription.pending + text;
+    let cut = final ? pending.length : Math.max(pending.lastIndexOf("\n") + 1, pending.length - this.nonce.length + 1, 0);
+    // Keep any nonce straddling the delivery cut whole; carry stays below two nonce lengths.
+    for (let at = pending.indexOf(this.nonce); at !== -1 && at < cut; at = pending.indexOf(this.nonce, at + this.nonce.length)) {
+      if (at + this.nonce.length > cut) { cut = at; break; }
+    }
+    const delivered = this.redactNonce(pending.slice(0, cut));
+    subscription.pending = pending.slice(cut);
+    if (delivered) subscription.onOutput(delivered);
+  }
+
   private notify(): void {
     for (const listener of [...this.listeners]) listener();
   }
@@ -365,26 +472,43 @@ export class TerminalBlockTracker {
     for (let i = 0; i < chunk.length; i++) {
       const ch = chunk[i] ?? "";
       const esc = this.esc;
+      // C1 controls and a fresh ESC interrupt other escape sequences, but remain payload inside control strings.
+      if (esc.state !== "string") {
+        if (ch === "\u001b") {
+          if (esc.state === "esc") this.display += "\u001b";
+          this.esc = { state: "esc" };
+          continue;
+        }
+        if (ch === "\u009d" || "\u0090\u0098\u009e\u009f".includes(ch)) {
+          if (esc.state === "esc") this.display += "\u001b";
+          const osc = ch === "\u009d";
+          if (!osc) this.display += ch;
+          this.esc = { state: "string", osc, introducer: ch, payload: "", overflow: false, hidden: false, sawEsc: false };
+          continue;
+        }
+        if (ch === "\u009b" || ch === "\u009c") {
+          if (esc.state === "esc") this.display += "\u001b";
+          this.display += ch;
+          this.esc = ch === "\u009b" ? { state: "csi", params: "" } : { state: "text" };
+          continue;
+        }
+      }
       switch (esc.state) {
         case "text":
-          if (ch === "\u001b") {
-            this.esc = { state: "esc" };
-          } else {
-            text += ch;
-            this.display += ch;
-          }
+          text += ch;
+          this.display += ch;
           break;
         case "esc":
           if (ch === "]") {
             // Held: the display gets it once it is known not to be a marker.
-            this.esc = { state: "string", osc: true, payload: "", overflow: false, hidden: false, sawEsc: false };
+            this.esc = { state: "string", osc: true, introducer: "\u001b]", payload: "", overflow: false, hidden: false, sawEsc: false };
             break;
           }
           this.display += `\u001b${ch}`;
           if (ch === "P" || ch === "_" || ch === "^" || ch === "X") {
-            this.esc = { state: "string", osc: false, payload: "", overflow: false, hidden: false, sawEsc: false };
+            this.esc = { state: "string", osc: false, introducer: `\u001b${ch}`, payload: "", overflow: false, hidden: false, sawEsc: false };
           } else if (ch === "[") {
-            this.esc = { state: "csi" };
+            this.esc = { state: "csi", params: "" };
           } else if (ch === "(" || ch === ")" || ch === "*" || ch === "+" || ch === "#" || ch === "%") {
             this.esc = { state: "charset" };
           } else {
@@ -394,7 +518,12 @@ export class TerminalBlockTracker {
         case "csi": {
           this.display += ch;
           const code = ch.charCodeAt(0);
-          if (code >= 0x40 && code <= 0x7e) this.esc = { state: "text" };
+          if (code >= 0x40 && code <= 0x7e) {
+            this.replies.noteQuery(esc.params, ch);
+            this.esc = { state: "text" };
+          } else if (esc.params.length < MAX_QUERY_PARAMS_CHARS) {
+            esc.params += ch;
+          }
           break;
         }
         case "charset":
@@ -402,7 +531,7 @@ export class TerminalBlockTracker {
           this.esc = { state: "text" };
           break;
         case "string": {
-          // Terminated by BEL or ST (ESC \). An ESC not followed by `\` is payload, as before.
+          // OSC accepts BEL or ST. DCS/SOS/PM/APC accept only ST; their BEL remains hidden payload.
           if (esc.sawEsc) {
             esc.sawEsc = false;
             if (ch === "\\") {
@@ -411,8 +540,8 @@ export class TerminalBlockTracker {
             }
             this.addToString(esc, "\u001b");
           }
-          if (ch === "\u0007") {
-            this.finishString(esc, "\u0007", flush);
+          if (ch === "\u009c" || ch === "\u0007" && esc.osc) {
+            this.finishString(esc, ch, flush);
           } else if (ch === "\u001b") {
             esc.sawEsc = true;
           } else {
@@ -438,7 +567,7 @@ export class TerminalBlockTracker {
       // it is unaffected. Only editor reports stay private: their final nonce cannot be known without retaining the whole payload.
       esc.overflow = true;
       esc.hidden = esc.payload.startsWith("133;E;") || esc.payload === "133;E";
-      if (!esc.hidden) this.display += `\u001b]${esc.payload}${ch}`;
+      if (!esc.hidden) this.display += `${esc.introducer}${esc.payload}${ch}`;
       esc.payload = "";
       return;
     }
@@ -453,16 +582,17 @@ export class TerminalBlockTracker {
     }
     const marker = this.handleOsc(esc.payload, flush);
     if (marker === null) {
-      this.display += `\u001b]${esc.payload}${terminator}`;
+      this.display += `${esc.introducer}${esc.payload}${terminator}`;
     } else if (marker !== "P" && marker !== "E") {
       // The view only needs the letter (PtyTerminalView re-lists on A/C/D).
       this.display += `\u001b]133;${marker}\u0007`;
     }
   }
 
-  // Track actual input timing but exclude emulator replies; markerless Enter input splits heuristic blocks.
+  // Every write counts as the user's input unless it is wholly the emulator's reply to queries the terminal's programs sent; markerless Enter input splits
+  // heuristic blocks.
   recordInput(data: string): void {
-    if (!TERMINAL_REPLY.test(data)) {
+    if (!this.replies.isEmulatorReply(data)) {
       this.currentEditLineReport = null;
       this.userInputs++;
       this.lastInputAt = this.now();
@@ -516,6 +646,7 @@ export class TerminalBlockTracker {
 
   // Apply one complete OSC. Returns the marker letter when it was an authenticated OSC 133 marker, else null (the sequence is ordinary output).
   private handleOsc(body: string, flush: () => void): string | null {
+    this.replies.noteOscQuery(body);
     if (!body.startsWith("133;")) return null;
     const fields = body.slice(4).split(";");
     if (fields[0] === "B") return this.handlePromptEnd(fields, flush);
@@ -639,7 +770,16 @@ export class TerminalBlockTracker {
     if (!text) return;
     switch (this.phase) {
       case "output":
-        if (this.open) this.open.output.append(text);
+        if (this.open) {
+          this.open.output.append(text);
+          if (this.blockOutput?.blockId === this.open.id) {
+            // The parser already removed escape sequences. Keep only display controls before secret masking.
+            const plain = text.replace(/[\u0000-\u0007\u000b\u000c\u000e-\u001f\u007f]/gu, "");
+            for (let offset = 0; offset < plain.length; offset += MAX_OPEN_LINE_CHARS) {
+              this.publishBlockOutput(plain.slice(offset, offset + MAX_OPEN_LINE_CHARS));
+            }
+          }
+        }
         else this.idle.append(text);
         break;
       case "input":
@@ -676,6 +816,7 @@ export class TerminalBlockTracker {
   private closeOpen(exitCode: number | null): void {
     const open = this.open;
     if (!open) return;
+    this.publishBlockOutput("", true);
     this.open = null;
     this.done.push({
       ...this.snapshotOpen(open),

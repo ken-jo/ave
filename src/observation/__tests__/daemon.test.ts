@@ -24,6 +24,29 @@ function element(row: number, after: string) {
 }
 
 describe("observation daemon delivery", () => {
+  it("releases a failed delivery and exposes an internal callback failure", async () => {
+    const daemon = new ObservationDaemon();
+    daemons.push(daemon);
+    daemon.registerAdapter({ source: "document", dispose: () => undefined });
+    daemon.registerTarget({ id: "failing-view", path: "/workspace/value.txt" }, "session", () => true,
+      () => { throw new Error("Observation delivery contract failed."); });
+    daemon.publish("failing-view", element(0, "value"));
+    await expect(tick()).rejects.toThrow("Observation delivery contract failed.");
+    expect(daemon.publish("failing-view", element(0, "late"))).toBeUndefined();
+  });
+
+  it("releases a native delivery whose frame expired during send", async () => {
+    const daemon = new ObservationDaemon();
+    daemons.push(daemon);
+    let current = true;
+    daemon.registerAdapter({ source: "document", dispose: () => undefined });
+    daemon.registerTarget({ id: "expired-view", path: "/workspace/value.txt" }, "session", () => current,
+      () => { current = false; throw new Error("Native frame was destroyed."); });
+    daemon.publish("expired-view", element(0, "value"));
+    await tick();
+    expect(daemon.publish("expired-view", element(0, "late"))).toBeUndefined();
+  });
+
   it("stamps local agent identity and coalesces pending elements", async () => {
     const { daemon, events } = fixture();
     daemon.publish("view", element(0, "first"));

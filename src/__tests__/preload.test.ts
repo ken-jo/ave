@@ -152,6 +152,14 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, listener);
   });
 
+  it("passes the terminal observation subscription on the existing acknowledgement channel", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const request = { action: "subscribe-terminal" as const, sessionId: "terminal-session" };
+    await preview.acknowledgeObservation(request);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationAck, request);
+    expect(Object.keys(request).sort()).toEqual(["action", "sessionId"]);
+  });
+
   afterEach(() => {
     if (originalDebugStreamEnv === undefined) {
       delete process.env.VITE_DEBUG_STREAM;

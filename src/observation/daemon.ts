@@ -44,6 +44,11 @@ function elementBytes(events: readonly ObservationEventEnvelope[]): number {
   return events.reduce((total, event) => total + (event.kind !== "snapshot" ? Buffer.byteLength(JSON.stringify(event)) : 0), 0);
 }
 
+/** The daemon's shared target limit, across every source, is reached; callers report it as their own busy contract. */
+export class ObservationCapacityError extends Error {
+  constructor() { super("Observation view limit exceeded."); this.name = "ObservationCapacityError"; }
+}
+
 /** Local delivery is bounded even when a renderer stops acknowledging frames. */
 export class ObservationDaemon {
   private readonly adapters = new Map<ObservationSource, ObservationAdapter>();
@@ -55,11 +60,16 @@ export class ObservationDaemon {
     this.adapters.set(adapter.source, adapter);
   }
 
+  /** Whether one more target of any source fits under the shared limit. */
+  hasCapacity(): boolean {
+    return this.targets.size < OBSERVATION_LIMITS.maxViews;
+  }
+
   registerTarget<Event extends ObservationEventEnvelope = DocumentObservationEvent>(target: ObservationTarget, sessionId: string, isCurrent: () => boolean,
     onEvents: (events: Event[]) => void, source: Event["source"] = "document"): void {
     if (this.disposed || this.targets.has(target.id)) throw new Error("Observation target already registered.");
     if (!this.adapters.has(source)) throw new Error("Observation source is not registered.");
-    if (this.targets.size >= OBSERVATION_LIMITS.maxViews) throw new Error("Observation view limit exceeded.");
+    if (!this.hasCapacity()) throw new ObservationCapacityError();
     this.targets.set(target.id, { target: { ...target }, sessionId, source, isCurrent,
       onEvents: (events) => onEvents(events as Event[]),
       nextSeq: 0, acknowledged: 0, sent: 0, queued: [], inFlight: [] });
@@ -164,7 +174,11 @@ export class ObservationDaemon {
       target.inFlight.push(...events);
       target.sent = events.at(-1)!.seq;
       try { target.onEvents(events); }
-      catch { this.release(target.target.id); return; }
+      catch (error) {
+        const current = target.isCurrent();
+        this.release(target.target.id);
+        if (current) throw error;
+      }
       this.schedule(target);
     }, 0);
     target.timer.unref?.();

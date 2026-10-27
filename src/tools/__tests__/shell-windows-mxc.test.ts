@@ -49,6 +49,8 @@ vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
 });
 
 import { BashTool, PowerShellTool } from "../shell-tools.js";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
+import { setAgentTerminalObservationSink } from "../agent-terminal-observation.js";
 import { MAX_POWERSHELL_PARSER_RESPONSE_BYTES } from "../powershell-parser-response.js";
 import type { ToolExecutionContext } from "../types.js";
 import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissions/mxc-windows.js";
@@ -150,6 +152,7 @@ describe("builtin shell — Windows MXC containers", () => {
   });
 
   afterEach(() => {
+    setAgentTerminalObservationSink(undefined);
     vi.unstubAllEnvs();
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
@@ -161,6 +164,29 @@ describe("builtin shell — Windows MXC containers", () => {
     mxcLaunchMock.prepare.mockReset();
     mxcLaunchMock.release.mockClear();
     installationMock.resolve.mockReset();
+  });
+
+  it("observes only the approved command container and excludes its internal parser", async () => {
+    bootMxcShells();
+    const write = vi.fn();
+    const finish = vi.fn();
+    const bindEgress = vi.fn();
+    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress, releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
+    setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
+    const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-observed" };
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-observed-")));
+    try {
+      const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+        () => new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 },
+          { ...context(identity.toolUseId), cwd, metadata: { ...context(identity.toolUseId).metadata, sessionId: identity.sessionId } })));
+      expect(result.isError).toBe(false);
+      expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
+      expect(start).toHaveBeenCalledExactlyOnceWith(identity, expect.objectContaining({ kind: "shell", command: "Write-Output hi", cwd,
+        sandbox: { mode: "isolated", detail: "filesystem/process confinement" } }));
+      expect(write.mock.calls.map((call) => call[0]).join("")).toBe(`${CONTAINER_OUTPUT}\n`);
+      expect(finish).toHaveBeenCalledExactlyOnceWith(0, undefined);
+      expect(bindEgress).toHaveBeenCalledExactlyOnceWith(mxcLaunchMock.prepare.mock.calls[1][0].egressToken);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
   it("runs a PowerShell command through wxc-exec with this invocation's token and closes its listener after", async () => {
