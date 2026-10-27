@@ -14,14 +14,12 @@ interface DocumentBinding {
   path: string;
   snapshot: WorkbookFileSnapshot;
   sheet: PreviewTableSheet;
-  approved: boolean;
   saved: boolean;
   isCurrent: () => boolean;
   observe: (invalidate: () => void) => () => void;
   stop: () => void;
   controller: AbortController;
 }
-interface SavedContinuation { path: string; sheet: number; snapshot: WorkbookFileSnapshot }
 interface WorkbookRuntime {
   run: (directory: string, operation: "edit" | "inspect", signal?: AbortSignal) => Promise<{ stdout: string }>;
   checkAvailable: () => void | Promise<void>;
@@ -42,13 +40,11 @@ function cellAddress(row: number, column: number): string {
   return `${letters}${row + 1}`;
 }
 
-/** A read identity becomes mutation authority only after native consent for that exact binding. */
+/** User edits remain bound to the host-verified viewer file and its captured revision. */
 export class XlsxPanelEditService {
   private readonly bindings = new Map<string, DocumentBinding>();
   private readonly owners = new Map<string, string>();
   private readonly revisions = new Map<string, number>();
-  private readonly continuations = new Map<string, SavedContinuation>();
-  private readonly readContinuations = new Map<string, { revision: number; saved: SavedContinuation }>();
   private active = false;
 
   constructor(private readonly runtime: WorkbookRuntime = {
@@ -61,40 +57,25 @@ export class XlsxPanelEditService {
     this.drop(old);
     const revision = (this.revisions.get(owner) ?? 0) + 1;
     this.revisions.set(owner, revision);
-    const saved = this.continuations.get(owner);
-    this.continuations.delete(owner);
-    this.readContinuations.delete(owner);
-    if (saved) this.readContinuations.set(owner, { revision, saved });
     return revision;
-  }
-
-  finishRead(owner: string, revision: number): void {
-    if (this.readContinuations.get(owner)?.revision === revision) this.readContinuations.delete(owner);
   }
 
   invalidate(owner: string): void {
     this.drop(this.bindings.get(this.owners.get(owner) ?? ""));
-    this.continuations.delete(owner);
-    this.readContinuations.delete(owner);
     this.revisions.set(owner, (this.revisions.get(owner) ?? 0) + 1);
   }
 
   bind(owner: string, revision: number, path: string, snapshot: WorkbookFileSnapshot, sheet: PreviewTableSheet,
-    isCurrent: () => boolean, observe: DocumentBinding["observe"]): { editToken: string; editEnabled: boolean } | undefined {
+    isCurrent: () => boolean, observe: DocumentBinding["observe"]): { editToken: string } | undefined {
     if (this.revisions.get(owner) !== revision || !isCurrent()) return undefined;
-    const pending = this.readContinuations.get(owner);
-    const continuation = pending?.revision === revision ? pending.saved : undefined;
-    this.readContinuations.delete(owner);
-    const approved = continuation !== undefined && continuation.path === path && continuation.sheet === sheet.index
-      && sameSnapshot(continuation.snapshot, snapshot);
     const token = randomBytes(32).toString("hex");
-    const binding: DocumentBinding = { token, owner, path, snapshot, sheet, approved, saved: false, isCurrent, observe,
+    const binding: DocumentBinding = { token, owner, path, snapshot, sheet, saved: false, isCurrent, observe,
       stop: () => {}, controller: new AbortController() };
     this.bindings.set(token, binding);
     this.owners.set(owner, token);
     binding.stop = observe(() => { if (this.bindings.get(token) === binding) this.invalidate(owner); });
     if (!isCurrent()) { this.invalidate(owner); return undefined; }
-    return { editToken: token, editEnabled: approved };
+    return { editToken: token };
   }
 
   private drop(binding: DocumentBinding | undefined): void {
@@ -122,7 +103,7 @@ export class XlsxPanelEditService {
     }
   }
 
-  async handle(owner: string, raw: unknown, confirm: (path: string) => Promise<boolean>): Promise<XlsxPanelEditResult> {
+  async handle(owner: string, raw: unknown): Promise<XlsxPanelEditResult> {
     if (!isXlsxPanelEditRequest(raw)) return { ok: false, error: "invalid-request" };
     const request: XlsxPanelEditRequest = raw;
     const binding = this.bindings.get(request.token);
@@ -140,17 +121,6 @@ export class XlsxPanelEditService {
       this.assertCurrent(binding);
       await this.runtime.checkAvailable();
       await this.assertUnchanged(binding);
-      if (request.action === "enable") {
-        if (!binding.approved) {
-          const approved = await confirm(binding.path);
-          this.assertCurrent(binding);
-          if (!approved) failure("permission-denied");
-          await this.assertUnchanged(binding);
-          binding.approved = true;
-        }
-        return { ok: true, action: "enable" };
-      }
-      if (!binding.approved) failure("permission-denied");
       const sheet = binding.sheet;
       if (request.row < sheet.firstRow || request.row >= sheet.firstRow + sheet.rows.length
         || request.column < sheet.firstColumn || request.column >= sheet.firstColumn + (sheet.rows[0]?.length ?? 0)) failure("unsupported-cell");
@@ -195,13 +165,6 @@ export class XlsxPanelEditService {
       publishWorkbookEdit(binding.path, binding.snapshot, output, 1, { assertCurrent: () => this.assertCurrent(binding) });
       // Publication is the commit point. A later refresh failure must not turn this into a retryable failed save.
       binding.saved = true;
-      this.continuations.delete(owner);
-      try {
-        const snapshot = await readPreviewDocumentSnapshot(binding.path);
-        if (snapshot.data.equals(output) && binding.isCurrent() && this.bindings.get(binding.token) === binding) {
-          this.continuations.set(owner, { path: binding.path, sheet: sheet.index, snapshot });
-        }
-      } catch { /* A committed save can still require a fresh explicit reload and consent. */ }
       return { ok: true, action: "save" };
     } catch (error) {
       cleanupUnproven = (error as { cleanupUnproven?: boolean }).cleanupUnproven === true;

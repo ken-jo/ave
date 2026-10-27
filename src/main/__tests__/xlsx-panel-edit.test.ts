@@ -23,7 +23,6 @@ function workbook(value = 12): Buffer {
 let directory: string;
 let path: string;
 let current: boolean;
-const confirm = vi.fn(async (_path: string) => true);
 const runtime = {
   checkAvailable: vi.fn<() => void | Promise<void>>(),
   run: vi.fn(async (root: string, operation: "edit" | "inspect") => {
@@ -40,33 +39,25 @@ async function bind(target = path, owner = "frame-one") {
   const revision = service.beginRead(owner);
   const token = service.bind(owner, revision, target, await readPreviewDocumentSnapshot(target), SHEET,
     () => current, () => () => {})!;
-  service.finishRead(owner, revision);
   return token;
 }
-async function enable(token: string) {
-  expect(await service.handle("frame-one", { action: "enable", token }, confirm)).toEqual({ ok: true, action: "enable" });
-}
 async function save(token: string, value = 84) {
-  return service.handle("frame-one", { action: "save", token, row: 0, column: 1, value }, confirm);
+  return service.handle("frame-one", { action: "save", token, row: 0, column: 1, value });
 }
 beforeEach(() => {
   directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-panel-edit-")));
   path = join(directory, "budget.xlsx");
   writeFileSync(path, workbook());
   current = true;
-  confirm.mockClear(); confirm.mockResolvedValue(true);
   runtime.checkAvailable.mockReset(); runtime.run.mockReset(); runtime.run.mockImplementation(execute);
   service = new XlsxPanelEditService(runtime);
 });
 afterEach(() => { rmSync(directory, { recursive: true, force: true }); });
 
 describe("user workbook edit authority", () => {
-  it("requires native consent for the bound canonical path, then inspects raw values and saves through the shared writer", async () => {
+  it("inspects raw values and saves the opened workbook directly through the shared writer", async () => {
     const { editToken } = await bind();
-    expect(await save(editToken)).toEqual({ ok: false, error: "permission-denied" });
-    await enable(editToken);
-    expect(confirm).toHaveBeenCalledExactlyOnceWith(path);
-    expect(await service.handle("frame-one", { action: "cell", token: editToken, row: 0, column: 1 }, confirm))
+    expect(await service.handle("frame-one", { action: "cell", token: editToken, row: 0, column: 1 }))
       .toEqual({ ok: true, action: "cell", value: 12, formula: false });
     expect(await save(editToken)).toEqual({ ok: true, action: "save" });
     const document = await parseTableDocument(readFileSync(path), "xlsx", 0);
@@ -80,28 +71,28 @@ describe("user workbook edit authority", () => {
     const { editToken } = await bind();
     const before = readFileSync(path);
     expect(await service.handle("frame-one", { action: "save", token: editToken, row: 0, column: 1, value: 84,
-      [key]: join(directory, "other.xlsx") }, confirm)).toEqual({ ok: false, error: "invalid-request" });
+      [key]: join(directory, "other.xlsx") })).toEqual({ ok: false, error: "invalid-request" });
     expect(runtime.run).not.toHaveBeenCalled();
     expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it("refuses another frame and a replaced preview identity", async () => {
     const { editToken } = await bind();
-    expect(await service.handle("frame-two", { action: "enable", token: editToken }, confirm)).toEqual({ ok: false, error: "expired" });
+    expect(await service.handle("frame-two", { action: "cell", token: editToken, row: 0, column: 1 })).toEqual({ ok: false, error: "expired" });
     service.beginRead("frame-one");
     expect(await save(editToken)).toEqual({ ok: false, error: "expired" });
-    expect(confirm).not.toHaveBeenCalled();
+    expect(runtime.run).not.toHaveBeenCalled();
   });
 
   it("refuses unsupported cells outside the displayed source rectangle", async () => {
-    const { editToken } = await bind(); await enable(editToken);
-    expect(await service.handle("frame-one", { action: "save", token: editToken, row: 1, column: 1, value: 84 }, confirm))
+    const { editToken } = await bind();
+    expect(await service.handle("frame-one", { action: "save", token: editToken, row: 1, column: 1, value: 84 }))
       .toEqual({ ok: false, error: "unsupported-cell" });
     expect(runtime.run).not.toHaveBeenCalled();
   });
 
   it("refuses stale disk bytes before running or creating a backup", async () => {
-    const { editToken } = await bind(); await enable(editToken);
+    const { editToken } = await bind();
     writeFileSync(path, workbook(77));
     expect(await save(editToken)).toEqual({ ok: false, error: "stale-file" });
     expect(runtime.run).not.toHaveBeenCalled();
@@ -109,18 +100,15 @@ describe("user workbook edit authority", () => {
     expect(existsSync(path + ".ave-bak")).toBe(false);
   });
 
-  it("retains bytes when consent is refused or scope is lost", async () => {
+  it("retains bytes when viewer scope is lost", async () => {
     const { editToken } = await bind(); const before = readFileSync(path);
-    confirm.mockResolvedValue(false);
-    expect(await service.handle("frame-one", { action: "enable", token: editToken }, confirm))
-      .toEqual({ ok: false, error: "permission-denied" });
     current = false;
     expect(await save(editToken)).toEqual({ ok: false, error: "expired" });
     expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it("refuses an external change made while the confined edit runs", async () => {
-    const { editToken } = await bind(); await enable(editToken);
+    const { editToken } = await bind();
     runtime.run.mockImplementationOnce(async (root, operation) => {
       const result = await execute(root, operation);
       writeFileSync(path, workbook(77));
@@ -131,49 +119,54 @@ describe("user workbook edit authority", () => {
     expect(existsSync(path + ".ave-bak")).toBe(false);
   });
 
-  it("fails unavailable confinement or integrity before prompting", async () => {
+  it("refuses unavailable confinement or integrity before editing", async () => {
     const { editToken } = await bind();
     runtime.checkAvailable.mockImplementation(() => { throw Object.assign(new Error("unavailable"),
       { name: "BundledScriptExecutionError", code: "integrity" }); });
-    expect(await service.handle("frame-one", { action: "enable", token: editToken }, confirm))
+    expect(await save(editToken))
       .toEqual({ ok: false, error: "edit-unavailable" });
-    expect(confirm).not.toHaveBeenCalled();
+    expect(runtime.run).not.toHaveBeenCalled();
   });
 
   it("an expired operation cannot revoke the next preview's token", async () => {
     const first = await bind();
     let resume!: () => void;
     runtime.checkAvailable.mockImplementationOnce(() => new Promise<void>((resolve) => { resume = resolve; }));
-    const pending = service.handle("frame-one", { action: "enable", token: first.editToken }, confirm);
+    const pending = save(first.editToken);
     await Promise.resolve();
     const second = await bind();
     resume();
     expect(await pending).toEqual({ ok: false, error: "expired" });
-    await enable(second.editToken);
+    expect(await save(second.editToken)).toEqual({ ok: true, action: "save" });
   });
 
-  it("carries consent only into the immediate own-save refresh with identical saved identity and bytes", async () => {
-    const first = await bind(); await enable(first.editToken);
+  it("requires a fresh host-bound revision after each save or reload", async () => {
+    const first = await bind();
     expect(await save(first.editToken)).toEqual({ ok: true, action: "save" });
     const second = await bind();
-    expect(second.editEnabled).toBe(true);
+    expect(second.editToken).not.toBe(first.editToken);
+    expect(await save(first.editToken, 85)).toEqual({ ok: false, error: "expired" });
     expect(await save(second.editToken, 85)).toEqual({ ok: true, action: "save" });
-    const revision = service.beginRead("frame-one"); service.finishRead("frame-one", revision);
+    service.beginRead("frame-one");
     const third = await bind();
-    expect(third.editEnabled).toBe(false);
+    expect(third.editToken).not.toBe(second.editToken);
+    expect(await save(third.editToken, 86)).toEqual({ ok: true, action: "save" });
+    expect((await parseTableDocument(readFileSync(path), "xlsx", 0)).sheet.rows).toEqual([["Budget", "86"]]);
   });
 
-  it("does not carry consent to a different workbook", async () => {
-    const first = await bind(); await enable(first.editToken);
+  it("cannot use the old token to edit a newly opened workbook", async () => {
+    const first = await bind();
     expect(await save(first.editToken)).toEqual({ ok: true, action: "save" });
     const other = join(directory, "other.xlsx"); writeFileSync(other, workbook());
-    expect((await bind(other)).editEnabled).toBe(false);
+    const next = await bind(other);
+    expect(next.editToken).not.toBe(first.editToken);
+    expect(await save(first.editToken)).toEqual({ ok: false, error: "expired" });
     expect(readFileSync(other).equals(workbook())).toBe(true);
   });
 
   it.each(["invalid package", "different scalar"])("refuses child output containing %s before publication", async (kind) => {
     const before = readFileSync(path);
-    const { editToken } = await bind(); await enable(editToken);
+    const { editToken } = await bind();
     runtime.run.mockImplementationOnce(async (root) => {
       writeFileSync(join(root, "workbook.xlsx"), kind === "invalid package" ? Buffer.from("invalid") : workbook(99));
       return { stdout: JSON.stringify({ editedCells: 1, needsRecalculation: true, backup: null }) };
@@ -184,7 +177,7 @@ describe("user workbook edit authority", () => {
 
   for (const kind of ["symlink", "hardlink"] as const) it(`recreates a child-replaced request ${kind} without writing its target`, async (context) => {
     if (kind === "symlink") requireSymlinkCapability(directory, "file", context.skip);
-    const { editToken } = await bind(); await enable(editToken);
+    const { editToken } = await bind();
     let victim: string | undefined;
     runtime.run.mockImplementationOnce(async (root, operation) => {
       const result = await execute(root, operation);
@@ -209,7 +202,7 @@ describe("user workbook edit authority", () => {
     const before = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
     writeFileSync(path, before);
     const sibling = join(directory, "sibling.txt"); writeFileSync(sibling, "keep");
-    const { editToken } = await bind(); await enable(editToken);
+    const { editToken } = await bind();
     expect(await save(editToken)).toEqual({ ok: true, action: "save" });
     expect(readFileSync(path + ".ave-bak").equals(before)).toBe(true);
     expect(readFileSync(sibling, "utf8")).toBe("keep");

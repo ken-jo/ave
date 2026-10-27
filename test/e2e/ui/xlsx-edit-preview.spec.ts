@@ -86,7 +86,7 @@ test("workbook panel edits raw values inline and reloads external changes", asyn
       dialog.showMessageBox = (async (...args: unknown[]) => {
         const options = args[args.length - 1] as { message?: string; detail?: string };
         state.workbookConfirmations!.push(`${options.message ?? ""}\n${options.detail ?? ""}`);
-        return { response: 0, checkboxChecked: false };
+        throw new Error("Unexpected workbook confirmation");
       }) as typeof dialog.showMessageBox;
     });
     await ctx.page.setViewportSize({ width: 960, height: 860 });
@@ -95,13 +95,8 @@ test("workbook panel edits raw values inline and reloads external changes", asyn
     const grid = ctx.page.getByTestId("chat-side-panel-table-grid");
     await expect(grid).toContainText("12");
     await expect(ctx.page.getByTestId("xlsx-cell-editor")).toHaveCount(0);
-    await ctx.page.getByTestId("xlsx-enable-editing").click();
-    await expect(ctx.page.getByTestId("xlsx-enable-editing")).toHaveCount(0);
-    const confirmations = await ctx.app.evaluate(() =>
-      (globalThis as typeof globalThis & { workbookConfirmations: string[] }).workbookConfirmations);
-    expect(confirmations).toHaveLength(1);
-    expect(confirmations[0]).toContain(path);
-    expect(confirmations[0]).toMatch(/backup/i);
+    expect(await ctx.app.evaluate(() =>
+      (globalThis as typeof globalThis & { workbookConfirmations: string[] }).workbookConfirmations)).toEqual([]);
 
     await grid.getByRole("gridcell", { name: "12", exact: true }).dblclick();
     const editor = ctx.page.getByTestId("xlsx-cell-editor");
@@ -150,6 +145,8 @@ test("workbook panel edits raw values inline and reloads external changes", asyn
     await expect(grid.getByRole("gridcell", { name: "84", exact: true })).toBeVisible();
     await expect(ctx.page.getByTestId("chat-side-panel-table-recalculation")).toHaveText("Needs recalculation");
     expect(XLSX.read(readFileSync(path), { type: "buffer" }).Sheets.Values!.B10002!.v).toBe(84);
+    expect(await ctx.app.evaluate(() =>
+      (globalThis as typeof globalThis & { workbookConfirmations: string[] }).workbookConfirmations)).toEqual([]);
     const savedScreenshot = test.info().outputPath("workbook-panel-saved.png");
     await ctx.page.screenshot({ path: savedScreenshot });
     await test.info().attach("workbook-panel-saved", { path: savedScreenshot, contentType: "image/png" });
@@ -176,8 +173,13 @@ test("workbook panel edits raw values inline and reloads external changes", asyn
     expect(readFileSync(path).equals(externalBytes)).toBe(true);
     await ctx.page.getByRole("button", { name: "Reload", exact: true }).click();
     await expect(grid.getByRole("gridcell", { name: "99", exact: true })).toBeVisible();
-    await expect(ctx.page.getByTestId("xlsx-enable-editing")).toBeVisible();
     await expect(editor).toHaveCount(0);
+    await grid.getByRole("gridcell", { name: "99", exact: true }).dblclick();
+    await expect(input).toHaveValue("99");
+    await input.press("Escape");
+    expect(readFileSync(path).equals(externalBytes)).toBe(true);
+    expect(await ctx.app.evaluate(() =>
+      (globalThis as typeof globalThis & { workbookConfirmations: string[] }).workbookConfirmations)).toEqual([]);
     const screenshot = test.info().outputPath("workbook-panel-reloaded.png");
     await ctx.page.screenshot({ path: screenshot });
     await test.info().attach("workbook-panel-reloaded", { path: screenshot, contentType: "image/png" });

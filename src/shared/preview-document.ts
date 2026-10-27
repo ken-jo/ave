@@ -177,5 +177,5 @@ export type PreviewDocumentError =
 
 export type PreviewReadDocumentResult =
   | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument;
-      editToken?: string; editEnabled?: boolean }
+      editToken?: string }
   | { ok: false; error: PreviewDocumentError; path?: string; bytes?: number; message: string };

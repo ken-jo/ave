@@ -244,6 +244,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
+  ["preview", CHANNELS.preview.editXlsx, [{ action: "save", token: "a".repeat(64), row: 0, column: 1, value: 84 }]],
   ["preview", CHANNELS.preview.documentOpenAck, [{ requestId: "request", sessionId: "session", opened: true }]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
@@ -378,6 +379,25 @@ describe("side-chat child transcript sender refusal", () => {
 
     expect(result).toEqual({ ok: false, error: "side-chat-unavailable" });
     expect(guardRowsFor(CHANNELS.sidechat.getSubAgentTranscript)).toEqual([]);
+  });
+});
+
+describe("workbook editing sender refusal", () => {
+  const request = { action: "save", token: "a".repeat(64), row: 0, column: 1, value: 84 };
+
+  it("returns unauthorized to a plugin shell before consuming a workbook identity", async () => {
+    expect(await invoke(CHANNELS.preview.editXlsx, pluginShellFrameEvent(), [request]))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(guardRowsFor(CHANNELS.preview.editXlsx)).toHaveLength(1);
+  });
+
+  it("admits the host sender before refusing an unissued workbook identity", async () => {
+    const event = hostFrameEvent();
+    Object.assign(event.sender, { id: 1 });
+    Object.assign(event.senderFrame!, { processId: 1, routingId: 1 });
+    expect(await invoke(CHANNELS.preview.editXlsx, event, [request]))
+      .toEqual({ ok: false, error: "expired" });
+    expect(guardRowsFor(CHANNELS.preview.editXlsx)).toEqual([]);
   });
 });
 

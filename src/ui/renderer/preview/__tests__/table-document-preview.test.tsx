@@ -417,10 +417,7 @@ async function openCell(value: string | number | boolean | null = 12, formula = 
   editXlsx.mockImplementation(async (request) => request.action === "cell"
     ? { ok: true, action: "cell", value, formula } : { ok: true, action: request.action });
   render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-  fireEvent.click(await screen.findByTestId("xlsx-enable-editing"));
-  await waitFor(() => expect(editXlsx).toHaveBeenCalledWith({ action: "enable", token: "a".repeat(64) }));
   const cell = await screen.findByText("120");
-  await waitFor(() => expect(screen.queryByTestId("xlsx-enable-editing")).toBeNull());
   fireEvent.doubleClick(cell);
   return screen.findByTestId("xlsx-cell-editor");
 }
@@ -452,7 +449,6 @@ describe("workbook cell editing", () => {
     if (refreshed.ok && "sheet" in refreshed.document) {
       refreshed.document.sheet.rows = [["Region", "Total"], ["North", "84"]];
       refreshed.document.needsRecalculation = true;
-      refreshed.editEnabled = true;
     }
     readDocument.mockResolvedValueOnce(refreshed);
     fireEvent.change(input, { target: { value: "84" } });
@@ -461,9 +457,13 @@ describe("workbook cell editing", () => {
     await screen.findByText("84");
     expect(editXlsx).toHaveBeenCalledWith({ action: "save", token: "a".repeat(64), row: 10_001, column: 1, value: 84 });
     expect(readDocument).toHaveBeenCalledTimes(2);
-    expect(editXlsx).not.toHaveBeenCalledWith({ action: "release", token: "a".repeat(64) });
+    expect(editXlsx).toHaveBeenCalledWith({ action: "release", token: "a".repeat(64) });
+    expect(editXlsx.mock.calls.map(([request]) => request.action)).not.toContain("enable");
     expect(screen.getByTestId("chat-side-panel-table-recalculation")).toBeTruthy();
     expect(screen.queryByTestId("xlsx-enable-editing")).toBeNull();
+    fireEvent.doubleClick(screen.getByText("84"));
+    await screen.findByTestId("xlsx-cell-editor");
+    expect(editXlsx).toHaveBeenCalledWith({ action: "cell", token: "b".repeat(64), row: 10_001, column: 1 });
   });
 
   it("activates the selected cell with Enter and refuses non-finite numbers", async () => {
@@ -480,12 +480,12 @@ describe("workbook cell editing", () => {
     expect(editXlsx.mock.calls.filter(([request]) => request.action === "save")).toEqual([]);
   });
 
-  it.each(["invalid-request", "unauthorized", "expired", "stale-file", "permission-denied", "edit-unavailable", "unsupported-cell", "backup-exists", "edit-failed", "busy"] as const)(
+  it.each(["invalid-request", "unauthorized", "expired", "stale-file", "edit-unavailable", "unsupported-cell", "backup-exists", "edit-failed", "busy"] as const)(
     "localizes %s editing refusals", async (error) => {
       readDocument.mockResolvedValueOnce(editableWorkbook());
       editXlsx.mockResolvedValueOnce({ ok: false, error, message: "private diagnostic" });
       render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-      fireEvent.click(await screen.findByTestId("xlsx-enable-editing"));
+      fireEvent.doubleClick(await screen.findByText("120"));
       const alert = await screen.findByRole("alert");
       expect(alert.textContent).not.toContain("chatPreviewRail.");
       expect(alert.textContent).not.toContain("private diagnostic");
@@ -596,7 +596,7 @@ describe("workbook cell editing", () => {
     expect(readDocument).toHaveBeenCalledTimes(1);
   });
 
-  it("clears stale authority and requires explicit editing permission after reload", async () => {
+  it("clears stale authority and uses the refreshed token directly after reload", async () => {
     await openCell();
     editXlsx.mockResolvedValueOnce({ ok: false, error: "stale-file" });
     fireEvent.keyDown(screen.getByRole("textbox", { name: /Cell value|셀 값/ }), { key: "Enter" });
@@ -605,7 +605,10 @@ describe("workbook cell editing", () => {
     readDocument.mockResolvedValueOnce(editableWorkbook("c".repeat(64)));
     fireEvent.click(screen.getByRole("button", { name: /^(Reload|다시 불러오기)$/ }));
     await waitFor(() => expect(readDocument).toHaveBeenCalledTimes(2));
-    expect(await screen.findByTestId("xlsx-enable-editing")).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByRole("tab").every((tab) => !tab.hasAttribute("disabled"))).toBe(true));
+    fireEvent.doubleClick(await screen.findByText("120"));
+    await screen.findByTestId("xlsx-cell-editor");
+    expect(editXlsx).toHaveBeenCalledWith({ action: "cell", token: "c".repeat(64), row: 10_001, column: 1 });
     expect(editXlsx).toHaveBeenCalledWith({ action: "release", token: "a".repeat(64) });
   });
 
@@ -635,8 +638,6 @@ describe("workbook cell editing", () => {
   it("releases its token on navigation and ignores a late cell descriptor", async () => {
     readDocument.mockResolvedValueOnce(editableWorkbook());
     const view = render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-    fireEvent.click(await screen.findByTestId("xlsx-enable-editing"));
-    await waitFor(() => expect(screen.queryByTestId("xlsx-enable-editing")).toBeNull());
     let resolveCell!: (value: unknown) => void;
     editXlsx.mockImplementationOnce(() => new Promise((resolve) => { resolveCell = resolve; }));
     fireEvent.doubleClick(await screen.findByText("120"));

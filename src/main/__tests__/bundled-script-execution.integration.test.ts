@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, win32 } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import * as XLSX from "xlsx";
 import { describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
@@ -114,6 +114,7 @@ describe("native bundled document execution", () => {
       expect(readFileSync(workbookPath)).toEqual(originalWorkbook);
 
       const otherHome = createSandboxProcessHome();
+      let runtimeProbeDirectory: string | undefined;
       try {
         const secret = join(otherHome.path, "private.txt");
         writeFileSync(secret, "other action private bytes");
@@ -122,9 +123,16 @@ describe("native bundled document execution", () => {
         mkdirSync(scripts, { recursive: true });
         const probe = join(scripts, "edit-xlsx.cjs");
         const runtime = hostScriptRuntimePaths()!.javascriptRuntime;
+        const runtimeDigest = createHash("sha256").update(readFileSync(runtime)).digest("hex");
+        runtimeProbeDirectory = mkdtempSync(join(dirname(realpathSync.native(runtime)), ".ave-runtime-probe-"));
+        const runtimeWitness = join(runtimeProbeDirectory, "host-writable-control");
+        writeFileSync(runtimeWitness, "runtime directory control");
+        // A nonexecuting control avoids executable-busy refusals that do not establish confinement.
+        const controlDescriptor = openSync(runtimeWitness, constants.O_WRONLY | constants.O_CREAT);
+        closeSync(controlDescriptor);
         writeFileSync(join(root, "source.xlsx"), "source document");
         const blocked = [join(root, "source.xlsx"), join(root, "source.xlsx.ave-bak"), join(root, "adjacent.tmp"),
-          join(otherHome.path, "other-write.txt"), runtime, probe];
+          join(otherHome.path, "other-write.txt"), runtimeWitness, probe];
         const source = `const fs=require('node:fs');const blocked=${JSON.stringify(blocked)};const results=blocked.map(path=>{try{const fd=fs.openSync(path,fs.constants.O_WRONLY|fs.constants.O_CREAT);fs.closeSync(fd);return 'allowed'}catch(error){return error.code}});try{fs.readFileSync(${JSON.stringify(secret)});results.push('read-allowed')}catch(error){results.push(error.code)};fs.writeFileSync('owned.txt','owned');console.log(JSON.stringify(results));`;
         writeFileSync(probe, source);
         writeFileSync(join(scripts, "manifest.json"), JSON.stringify({ version: 1,
@@ -136,6 +144,8 @@ describe("native bundled document execution", () => {
         expect(readFileSync(join(directory, "owned.txt"), "utf8")).toBe("owned");
         expect(readFileSync(join(root, "source.xlsx"), "utf8")).toBe("source document");
         expect(readFileSync(probe, "utf8")).toBe(source);
+        expect(readFileSync(runtimeWitness, "utf8")).toBe("runtime directory control");
+        expect(createHash("sha256").update(readFileSync(runtime)).digest("hex")).toBe(runtimeDigest);
         expect(readFileSync(secret, "utf8")).toBe("other action private bytes");
 
         // Capture the bundle generation first; a later byte change never becomes executable authority.
@@ -167,7 +177,10 @@ describe("native bundled document execution", () => {
         expect(liveEgressInvocationCount()).toBe(1);
         controller.abort();
         await cancelled;
-      } finally { otherHome.cleanup(); }
+      } finally {
+        otherHome.cleanup();
+        if (runtimeProbeDirectory) rmSync(runtimeProbeDirectory, { recursive: true, force: true });
+      }
 
       expect(liveEgressInvocationCount()).toBe(0);
       expect(sandboxProcessHomesInUse().size).toBe(0);

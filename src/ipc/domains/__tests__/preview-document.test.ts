@@ -403,7 +403,6 @@ async function readEditToken(event: ReturnType<typeof documentEvent>): Promise<s
   if (!result.ok) throw new Error(`Expected a workbook preview, got ${result.error}`);
   expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
   expect(result.editToken).toMatch(/^[a-f0-9]{64}$/);
-  expect(result.editEnabled).toBe(false);
   return result.editToken!;
 }
 
@@ -419,7 +418,6 @@ describe("preview:edit-xlsx boundary", () => {
       expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
       expect(floor).toHaveBeenCalled();
       expect(result.editToken).toBeUndefined();
-      expect(result.editEnabled).toBeUndefined();
       expect(event.sender.eventNames()).toEqual([]);
       expect(getManagedChildProcessCount()).toBe(0);
     } finally { event.sender.emit("destroyed"); }
@@ -436,7 +434,6 @@ describe("preview:edit-xlsx boundary", () => {
       expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
       expect(floor).toHaveBeenCalled();
       expect(result.editToken).toBeUndefined();
-      expect(result.editEnabled).toBeUndefined();
       expect(event.sender.eventNames()).toEqual([]);
       expect(getManagedChildProcessCount()).toBe(0);
     } finally { event.sender.emit("destroyed"); }
@@ -461,7 +458,7 @@ describe("preview:edit-xlsx boundary", () => {
     try {
       const token = await readEditToken(owner);
       const foreign = documentEvent(OK_FRAME, senderId, routingId);
-      expect(await editFromSender(foreign, { action: "enable", token }))
+      expect(await editFromSender(foreign, { action: "cell", row: 0, column: 1, token }))
         .toEqual({ ok: false, error: "expired" });
       expect(getManagedChildProcessCount()).toBe(0);
     } finally { owner.sender.emit("destroyed"); }
@@ -471,7 +468,7 @@ describe("preview:edit-xlsx boundary", () => {
     const owner = documentEvent(OK_FRAME);
     try {
       const token = await readEditToken(owner);
-      expect(await editFromSender(documentEvent(EVIL_FRAME), { action: "enable", token }))
+      expect(await editFromSender(documentEvent(EVIL_FRAME), { action: "cell", row: 0, column: 1, token }))
         .toEqual({ ok: false, error: "unauthorized" });
       expect(getManagedChildProcessCount()).toBe(0);
     } finally { owner.sender.emit("destroyed"); }
@@ -481,7 +478,7 @@ describe("preview:edit-xlsx boundary", () => {
     { senderFrame: { url: OK_FRAME, processId: 1, routingId: 0 } },
     { sender: { id: 1 }, senderFrame: { url: OK_FRAME } },
   ])("rejects incomplete edit sender identities %j", async (event) => {
-    expect(await handlers.get(CHANNELS.preview.editXlsx)!(event, { action: "enable", token: "a".repeat(64) }))
+    expect(await handlers.get(CHANNELS.preview.editXlsx)!(event, { action: "cell", row: 0, column: 1, token: "a".repeat(64) }))
       .toEqual({ ok: false, error: "unauthorized" });
     expect(getManagedChildProcessCount()).toBe(0);
   });
@@ -495,7 +492,7 @@ describe("preview:edit-xlsx boundary", () => {
       expect(next.document).toMatchObject({ sheet: { name: "Notes", rows: [["note"]] } });
       expect(next.editToken).toMatch(/^[a-f0-9]{64}$/);
       expect(next.editToken).not.toBe(token);
-      expect(await editFromSender(event, { action: "enable", token }))
+      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
         .toEqual({ ok: false, error: "expired" });
       expect(getManagedChildProcessCount()).toBe(0);
     } finally { event.sender.emit("destroyed"); }
@@ -507,7 +504,7 @@ describe("preview:edit-xlsx boundary", () => {
       const token = await readEditToken(event);
       expect(await readFromSender(event, join(outside, "secret.csv")))
         .toMatchObject({ ok: false, error: "path-not-allowed" });
-      expect(await editFromSender(event, { action: "enable", token }))
+      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
         .toEqual({ ok: false, error: "expired" });
       expect(getManagedChildProcessCount()).toBe(0);
     } finally { event.sender.emit("destroyed"); }
@@ -519,7 +516,7 @@ describe("preview:edit-xlsx boundary", () => {
       const token = await readEditToken(event);
       const text = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"));
       expect(text).toMatchObject({ ok: true, content: "plain" });
-      expect(await editFromSender(event, { action: "enable", token }))
+      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
         .toEqual({ ok: false, error: "expired" });
       expect(event.sender.eventNames()).toEqual([]);
       expect(getManagedChildProcessCount()).toBe(0);
@@ -532,7 +529,7 @@ describe("preview:edit-xlsx boundary", () => {
       const token = await readEditToken(event);
       expect(event.sender.listenerCount("did-frame-navigate")).toBe(1);
       event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 1, 0);
-      expect(await editFromSender(event, { action: "enable", token }))
+      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
         .toEqual({ ok: false, error: "expired" });
       expect(event.sender.eventNames()).toEqual([]);
       expect(getManagedChildProcessCount()).toBe(0);

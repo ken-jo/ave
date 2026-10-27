@@ -111,7 +111,6 @@ const XLSX_ERROR_KEYS: Record<XlsxPanelEditError, string> = {
   unauthorized: "chatPreviewRail.xlsxErrorUnauthorized",
   expired: "chatPreviewRail.xlsxErrorExpired",
   "stale-file": "chatPreviewRail.xlsxErrorStaleFile",
-  "permission-denied": "chatPreviewRail.xlsxErrorPermissionDenied",
   "edit-unavailable": "chatPreviewRail.xlsxErrorUnavailable",
   "unsupported-cell": "chatPreviewRail.xlsxErrorUnsupportedCell",
   "backup-exists": "chatPreviewRail.xlsxErrorBackupExists",
@@ -127,27 +126,20 @@ export function TableDocumentPreview({ path }: { path: string }) {
   const [revision, setRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
-  const [enabled, setEnabled] = useState(false);
   const [draft, setDraft] = useState<TableCellDraft | null>(null);
-  const [operation, setOperation] = useState<"enable" | "cell" | "save" | null>(null);
+  const [operation, setOperation] = useState<"cell" | "save" | null>(null);
   const [saved, setSaved] = useState(false);
   const [editError, setEditError] = useState<XlsxPanelEditError | "invalid-value" | null>(null);
   const generation = useRef(0);
   const operationActive = useRef(false);
-  const saveRefresh = useRef<{ token: string; path: string; sheet: number; revision: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let token: string | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    const continuation = saveRefresh.current;
-    if (continuation?.path === path && continuation.sheet === sheetIndex && continuation.revision === revision) {
-      saveRefresh.current = null;
-    }
     generation.current += 1;
     operationActive.current = false;
     setOperation(null);
-    setEnabled(false);
     setDraft(null);
     setRefreshFailed(false);
     setRefreshing(true);
@@ -171,7 +163,6 @@ export function TableDocumentPreview({ path }: { path: string }) {
         }
         if (result.ok) {
           token = result.editToken;
-          setEnabled(result.editEnabled === true);
           setState("sheet" in result.document
             ? { phase: "ok", document: result.document, editToken: token }
             : { phase: "error", code: "unsupported-format" });
@@ -203,17 +194,7 @@ export function TableDocumentPreview({ path }: { path: string }) {
       cancelled = true;
       generation.current += 1;
       clearTimeout(retryTimer);
-      if (token && saveRefresh.current?.token === token) {
-        // Only the immediately following own-save read may consume consent.
-        // An unmount without that read still releases the consumed identity.
-        const savedToken = token;
-        queueMicrotask(() => {
-          if (saveRefresh.current?.token === savedToken) {
-            saveRefresh.current = null;
-            release(savedToken);
-          }
-        });
-      } else if (token) release(token);
+      if (token) release(token);
     };
   }, [path, sheetIndex, revision]);
 
@@ -229,7 +210,6 @@ export function TableDocumentPreview({ path }: { path: string }) {
       if (!result.ok) {
         setEditError(result.error);
         if (["expired", "stale-file", "unauthorized"].includes(result.error)) {
-          setEnabled(false);
           setDraft(null);
           setState((previous) => previous.phase === "ok" ? { ...previous, editToken: undefined } : previous);
         }
@@ -246,13 +226,8 @@ export function TableDocumentPreview({ path }: { path: string }) {
     }
   };
   const token = state.phase === "ok" ? state.editToken : undefined;
-  const enableEditing = async () => {
-    if (!token) return;
-    const result = await requestEdit({ action: "enable", token });
-    if (result?.ok) setEnabled(true);
-  };
   const beginCell = async (row: number, column: number) => {
-    if (!enabled || !token || refreshing || operationActive.current) return;
+    if (!token || refreshing || operationActive.current) return;
     setSaved(false);
     const result = await requestEdit({ action: "cell", token, row, column });
     if (result?.ok && result.action === "cell") setDraft({ row, column, formula: result.formula,
@@ -271,16 +246,14 @@ export function TableDocumentPreview({ path }: { path: string }) {
     }
     const result = await requestEdit({ action: "save", token, row: draft.row, column: draft.column, value });
     if (result?.ok) {
-      saveRefresh.current = { token, path, sheet: sheetIndex, revision: revision + 1 };
       setDraft(null);
-      setEnabled(false);
       setSaved(true);
       setRevision((previous) => previous + 1);
     }
   };
   const cancelDraft = () => { setDraft(null); setEditError(null); };
   const reload = () => {
-    setEnabled(false); setDraft(null); setEditError(null); setSaved(false);
+    setDraft(null); setEditError(null); setSaved(false);
     setRevision((previous) => previous + 1);
   };
   const locked = operation !== null || refreshing;
@@ -351,11 +324,7 @@ export function TableDocumentPreview({ path }: { path: string }) {
       </div>
       {document.format === "xlsx" ? (
         <div className="flex shrink-0 flex-wrap items-center gap-2 text-[11px]" data-testid="xlsx-edit-controls">
-          {token && !enabled ? <button type="button" disabled={locked} onClick={() => void enableEditing()}
-            className="rounded border px-2 py-1 disabled:opacity-50" data-testid="xlsx-enable-editing">
-            {t("chatPreviewRail.xlsxEnableConfirm")}
-          </button> : null}
-          {enabled ? <span>{t("chatPreviewRail.xlsxEditHint")}</span> : null}
+          {token ? <span>{t("chatPreviewRail.xlsxEditHint")}</span> : null}
           {operation ? <span role="status">{t(operation === "save" ? "chatPreviewRail.xlsxSaving" : "chatPreviewRail.xlsxPreparing")}</span> : null}
           {refreshing ? <span role="status">{t("chatPreviewRail.xlsxReloading")}</span> : null}
           {saved ? <span role="status" data-testid="xlsx-saved">{t("chatPreviewRail.xlsxSaved")}</span> : null}
@@ -382,7 +351,7 @@ export function TableDocumentPreview({ path }: { path: string }) {
       ) : (
         <Suspense fallback={loading}>
           <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })}
-            onEditCell={enabled && !locked ? (row, column) => { void beginCell(row, column); } : undefined}
+            onEditCell={document.format === "xlsx" && token && !locked ? (row, column) => { void beginCell(row, column); } : undefined}
             draft={draft} editLocked={locked} onDraftChange={setDraft} onSave={() => void saveCell()} onCancel={cancelDraft} />
         </Suspense>
       )}

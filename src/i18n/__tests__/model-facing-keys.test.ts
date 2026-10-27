@@ -16,7 +16,6 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["ipc/domains/chat.ts", ["mainDialog."]], // delete / import / export dialogs
   ["ipc/domains/git-marketplace.ts", ["mainDialog."]], // marketplace folder picker
   ["ipc/domains/plugins.ts", ["mainDialog."]], // local plugin install dialogs
-  ["ipc/domains/preview.ts", ["chatPreviewRail.xlsxEnable"]], // native workbook permission dialog
   ["ipc/domains/ui.ts", ["chatPreviewRail.", "chatView.", "mainToolbar.", "sidebar.", "toolActivity.", "turnActionBar."]], // native context menus
   ["ipc/domains/workspace.ts", ["chatPreviewRail."]], // folder picker
   ["lib/chat-stream-state.ts", ["askUserQuestionCard."]], // transcript recap labels
@@ -105,6 +104,6 @@ describe("model-facing catalog keys", () => {
     expect(isModelFacingKey("sandboxPolicy.scanNarrowed")).toBe(true);
     expect(isModelFacingKey("appearanceTab.pageTitle")).toBe(false);
     expect(isModelFacingKey("routinePanel.errorNaturalParseFailed")).toBe(false);
-    expect(isModelFacingKey("chatPreviewRail.xlsxEnableMessage")).toBe(false);
+    expect(isModelFacingKey("chatPreviewRail.xlsxEditHint")).toBe(false);
   });
 });

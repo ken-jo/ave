@@ -13,7 +13,7 @@
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
  * reach it (fail-closed). Frame-guarded via validateHostRendererSender.
  */
-import { BrowserWindow, dialog, ipcMain, type WebContents, type WebFrameMain } from "electron";
+import { ipcMain, type WebContents, type WebFrameMain } from "electron";
 import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -35,7 +35,6 @@ import { readPreviewDocumentInput, readPreviewDocumentSnapshot } from "../../too
 import { XlsxPanelEditService } from "../../main/xlsx-panel-edit.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor, protectedReadDenyCovering } from "../../permissions/asrt-sandbox.js";
-import { t } from "../../i18n/index.js";
 import type { XlsxPanelEditResult } from "../../shared/xlsx-panel-edit.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
@@ -128,17 +127,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       return { ok: false, error: "unauthorized" };
     }
     const owner = `${e.sender.id}:${frame.processId}:${frame.routingId}`;
-    const result = await edits.handle(owner, request, async (path) => {
-      const win = BrowserWindow.fromWebContents(e.sender);
-      if (!win || win.isDestroyed()) return false;
-      const answer = await dialog.showMessageBox(win, {
-        type: "question", title: t("chatPreviewRail.xlsxEnableTitle"),
-        message: t("chatPreviewRail.xlsxEnableMessage", { path }),
-        buttons: [t("chatPreviewRail.xlsxEnableConfirm"), t("chatPreviewRail.xlsxEnableCancel")],
-        defaultId: 1, cancelId: 1, noLink: true,
-      });
-      return answer.response === 0;
-    });
+    const result = await edits.handle(owner, request);
     auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "preview-user-edit", type: "info",
       input: JSON.stringify({ channel: CHANNELS.preview.editXlsx, actor: "user", ok: result.ok,
         ...(result.ok ? { action: result.action } : { error: result.error }) }) });
@@ -264,89 +253,87 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       }
       const ownerKey = `${e.sender.id}:${frame.processId}:${frame.routingId}`;
       const readRevision = edits.beginRead(ownerKey);
+      if (typeof rawPath !== "string" || rawPath.length === 0) {
+        return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
+      }
+      if (typeof sheetIndex !== "number" || !Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
+        return { ok: false, error: "invalid-index", message: "sheetIndex must be a non-negative integer" };
+      }
+
+      const { cwd, extraAllowed } = currentReadScope();
+      const verdict = assertReadableFilePath(rawPath, cwd, extraAllowed);
+      if (!verdict.ok) {
+        return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
+      }
+      const resolved = verdict.resolved;
+      const format = previewDocumentFormatOf(resolved) ?? previewPageFormatOf(resolved);
+      if (!format) {
+        return { ok: false, error: "unsupported-format", path: resolved, message: "Unsupported preview document format." };
+      }
+
       try {
-        if (typeof rawPath !== "string" || rawPath.length === 0) {
-          return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
-        }
-        if (typeof sheetIndex !== "number" || !Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
-          return { ok: false, error: "invalid-index", message: "sheetIndex must be a non-negative integer" };
-        }
-
-        const { cwd, extraAllowed } = currentReadScope();
-        const verdict = assertReadableFilePath(rawPath, cwd, extraAllowed);
-        if (!verdict.ok) {
-          return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
-        }
-        const resolved = verdict.resolved;
-        const format = previewDocumentFormatOf(resolved) ?? previewPageFormatOf(resolved);
-        if (!format) {
-          return { ok: false, error: "unsupported-format", path: resolved, message: "Unsupported preview document format." };
-        }
-
+        const controller = new AbortController();
+        const abort = (): void => controller.abort(new TableDocumentError("superseded", DOCUMENT_PARSE_MESSAGES.superseded));
+        const stopObserving = observeDocumentOwner(e.sender, frame, abort);
+        controller.signal.addEventListener("abort", stopObserving, { once: true });
         try {
-          const controller = new AbortController();
-          const abort = (): void => controller.abort(new TableDocumentError("superseded", DOCUMENT_PARSE_MESSAGES.superseded));
-          const stopObserving = observeDocumentOwner(e.sender, frame, abort);
-          controller.signal.addEventListener("abort", stopObserving, { once: true });
+          if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
+          const slot = await acquireParseSlot(ownerKey, controller);
+          let inputBytes: number | undefined;
           try {
             if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
-            const slot = await acquireParseSlot(ownerKey, controller);
-            let inputBytes: number | undefined;
-            try {
-              if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
-              slot.signal.throwIfAborted();
-              const snapshot = format === "xlsx" && (await fs.lstat(resolved)).nlink === 1
-                ? await readPreviewDocumentSnapshot(resolved, slot.signal) : undefined;
-              const bytes = snapshot?.data ?? await readPreviewDocumentInput(resolved, slot.signal);
-              inputBytes = bytes.length;
-              const document = await slot.parse(bytes, format, sheetIndex);
-              auditLogger.log({
-                timestamp: new Date().toISOString(),
-                sessionId: "preview-read",
-                type: "info",
-                input: JSON.stringify({
-                  channel: CHANNELS.preview.readDocument,
-                  path: redactFsPath(resolved),
-                  bytes: bytes.length,
-                  sheetIndex,
-                }),
-              });
-              const isCurrent = (): boolean => {
-                if (!validateHostRendererSender(e) || e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) return false;
-                const scope = currentReadScope();
-                const allowed = assertReadableFilePath(resolved, scope.cwd, scope.extraAllowed);
-                const writeFloor = getDefaultSensitiveWriteDenyPaths();
-                const readFloor = getProtectedReadDenyFloor();
-                return allowed.ok && allowed.resolved === resolved && isSensitivePath(resolved, "write") === null
-                  && protectedReadDenyCovering(resolved, readFloor) === undefined
-                  && protectedReadDenyCovering(`${resolved}.ave-bak`, readFloor) === undefined
-                  && protectedReadDenyCovering(resolved, writeFloor) === undefined
-                  && protectedReadDenyCovering(`${resolved}.ave-bak`, writeFloor) === undefined;
-              };
-              const editing = snapshot && "sheet" in document
-                ? edits.bind(ownerKey, readRevision, resolved, snapshot, document.sheet, isCurrent,
-                  (invalidate) => observeDocumentOwner(e.sender, frame, invalidate)) : undefined;
-              return { ok: true, path: resolved, bytes: bytes.length, document, ...editing };
-            } catch (err) {
-              slot.signal.throwIfAborted();
-              if (err instanceof TableDocumentError) {
-                return { ok: false, error: err.code, path: resolved, bytes: err.bytes ?? inputBytes, message: err.message };
-              }
-              throw err;
-            } finally {
-              slot.release();
+            slot.signal.throwIfAborted();
+            const snapshot = format === "xlsx" && (await fs.lstat(resolved)).nlink === 1
+              ? await readPreviewDocumentSnapshot(resolved, slot.signal) : undefined;
+            const bytes = snapshot?.data ?? await readPreviewDocumentInput(resolved, slot.signal);
+            inputBytes = bytes.length;
+            const document = await slot.parse(bytes, format, sheetIndex);
+            auditLogger.log({
+              timestamp: new Date().toISOString(),
+              sessionId: "preview-read",
+              type: "info",
+              input: JSON.stringify({
+                channel: CHANNELS.preview.readDocument,
+                path: redactFsPath(resolved),
+                bytes: bytes.length,
+                sheetIndex,
+              }),
+            });
+            const isCurrent = (): boolean => {
+              if (!validateHostRendererSender(e) || e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) return false;
+              const scope = currentReadScope();
+              const allowed = assertReadableFilePath(resolved, scope.cwd, scope.extraAllowed);
+              const writeFloor = getDefaultSensitiveWriteDenyPaths();
+              const readFloor = getProtectedReadDenyFloor();
+              return allowed.ok && allowed.resolved === resolved && isSensitivePath(resolved, "write") === null
+                && protectedReadDenyCovering(resolved, readFloor) === undefined
+                && protectedReadDenyCovering(`${resolved}.ave-bak`, readFloor) === undefined
+                && protectedReadDenyCovering(resolved, writeFloor) === undefined
+                && protectedReadDenyCovering(`${resolved}.ave-bak`, writeFloor) === undefined;
+            };
+            const editing = snapshot && "sheet" in document
+              ? edits.bind(ownerKey, readRevision, resolved, snapshot, document.sheet, isCurrent,
+                (invalidate) => observeDocumentOwner(e.sender, frame, invalidate)) : undefined;
+            return { ok: true, path: resolved, bytes: bytes.length, document, ...editing };
+          } catch (err) {
+            slot.signal.throwIfAborted();
+            if (err instanceof TableDocumentError) {
+              return { ok: false, error: err.code, path: resolved, bytes: err.bytes ?? inputBytes, message: err.message };
             }
+            throw err;
           } finally {
-            controller.signal.removeEventListener("abort", stopObserving);
-            stopObserving();
+            slot.release();
           }
-        } catch (err) {
-          if (err instanceof TableDocumentError) {
-            return { ok: false, error: err.code, path: resolved, bytes: err.bytes, message: err.message };
-          }
-          return { ok: false, error: "read-failed", path: resolved, message: errorMessage(err) };
+        } finally {
+          controller.signal.removeEventListener("abort", stopObserving);
+          stopObserving();
         }
-      } finally { edits.finishRead(ownerKey, readRevision); }
+      } catch (err) {
+        if (err instanceof TableDocumentError) {
+          return { ok: false, error: err.code, path: resolved, bytes: err.bytes, message: err.message };
+        }
+        return { ok: false, error: "read-failed", path: resolved, message: errorMessage(err) };
+      }
     },
   );
 }
