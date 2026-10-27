@@ -28,6 +28,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { cleanupAsrtSandboxAfterCommand } from "../../permissions/asrt-sandbox.js";
+import { egressInvocationOwner, onEgressInvocationReleased } from "../../permissions/egress-invocations.js";
 import { spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
 
@@ -113,5 +114,33 @@ describe("shell interruption resource ownership", () => {
     expect((await pending).metadata?.aborted).toBe(true);
     expect(cleanupHome).toHaveBeenCalledOnce();
     expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+  });
+
+  it("settles with every release failure when egress release and HOME cleanup throw", async () => {
+    const child = Object.assign(new ChildProcess(), {
+      pid: 12345, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    vi.mocked(spawn).mockReturnValueOnce(child);
+    const home = mkdtempSync(join(tmpdir(), "shell-interruption-")); roots.push(home);
+    vi.mocked(createSandboxProcessHome).mockReturnValueOnce({ path: home, env: { HOME: home }, cleanup: () => { throw new Error("home removal threw"); } });
+    let token: string | undefined;
+    const unsubscribe = onEgressInvocationReleased((released) => { token = released; throw new Error("listener close threw"); });
+    try {
+      const pending = spawnWithSandbox("echo ready", process.cwd(), [process.cwd()], 5, prepareSandboxFixture("echo ready", process.cwd()));
+      await vi.advanceTimersByTimeAsync(0);
+      child.stdout.end("ready\n");
+      child.stderr.end();
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+      const result = await pending;
+      expect(result).toMatchObject({ isError: true, metadata: { returncode: 0, sandboxCleanupFailed: true } });
+      expect(result.output).toContain("ready");
+      expect(result.output).toContain("listener close threw");
+      expect(result.output).toContain("home removal threw");
+      expect(egressInvocationOwner(token!)).toBeUndefined();
+      expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
   });
 });

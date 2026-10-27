@@ -4,7 +4,9 @@ import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:p
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
 export function resolveShellFilesystemPath(path: string, cwd: string): string {
   if (process.platform === "win32") {
-    const absolute = isAbsolute(path) ? path : `${cwd}${sep}${path}`;
+    // A drive-less rooted path ("\x") names the cwd's drive or share, as path.resolve does, not the host process's drive.
+    const driveless = isAbsolute(path) && parse(path).root.length === 1;
+    const absolute = !isAbsolute(path) ? `${cwd}${sep}${path}` : driveless ? `${parse(cwd).root.replace(/[\\/]$/, "")}${path}` : path;
     const lexical = resolveExistingShellPath(resolve(cwd, path));
     // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
     const { root } = parse(absolute);

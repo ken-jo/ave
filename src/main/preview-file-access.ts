@@ -5,7 +5,7 @@ import { findSessionMainWindowContents } from "./app-state.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
-import { getProtectedReadDenyFloor, protectedReadDenyCovering } from "../permissions/asrt-sandbox.js";
+import { getProtectedReadDenyFloor, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { OBSERVATION_LIMITS } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { previewSupportsExternalOpen } from "../shared/preview-external-open.js";
@@ -26,22 +26,30 @@ function keyOf(event: IpcMainInvokeEvent, path: string): string {
   return JSON.stringify([event.sender.id, event.senderFrame?.processId, event.senderFrame?.routingId, path]);
 }
 
-function currentScopeCovers(path: string): boolean {
+interface ReadScope { cwd: string; allowed: string[]; floorCovering: (path: string) => string | undefined }
+
+// One snapshot serves every receipt a check visits.
+function currentReadScope(): ReadScope {
   const additional = readPermissionSettings().permissions.additionalDirectories;
-  const verdict = assertReadableFilePath(path, process.cwd(), buildRuntimeAllowedDirectories(additional));
-  return verdict.ok && verdict.resolved === path
-    && protectedReadDenyCovering(path, getProtectedReadDenyFloor()) === undefined;
+  return { cwd: process.cwd(), allowed: buildRuntimeAllowedDirectories(additional),
+    floorCovering: protectedReadDenyMatcher(getProtectedReadDenyFloor()) };
 }
 
-function principalIsCurrent(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string, sessionId?: string): boolean {
+function currentScopeCovers(path: string, scope: ReadScope): boolean {
+  const verdict = assertReadableFilePath(path, scope.cwd, scope.allowed);
+  return verdict.ok && verdict.resolved === path && scope.floorCovering(path) === undefined;
+}
+
+function principalIsCurrent(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string, sessionId?: string,
+  scope: () => ReadScope = currentReadScope): boolean {
   return validateAppWindowMainFrameSender(event, deps)
     && previewSupportsExternalOpen(path)
     && (sessionId === undefined || findSessionMainWindowContents(sessionId) === event.sender)
-    && currentScopeCovers(path);
+    && currentScopeCovers(path, scope());
 }
 
-function isCurrent(receipt: PreviewFileReceipt, deps = receipt.owner.deps): boolean {
-  return principalIsCurrent(receipt.owner.event, deps, receipt.path, receipt.sessionId);
+function isCurrent(receipt: PreviewFileReceipt, deps = receipt.owner.deps, scope?: () => ReadScope): boolean {
+  return principalIsCurrent(receipt.owner.event, deps, receipt.path, receipt.sessionId, scope);
 }
 
 function revoke(key: string): void {
@@ -66,9 +74,11 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
   const handleNavigationStart = (_event: unknown, _url: string, _inPlace: boolean,
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
   const timer = setInterval(() => {
+    let snapshot: ReadScope | undefined;
+    const scope = (): ReadScope => snapshot ??= currentReadScope();
     for (const key of [...owner.keys]) {
       const receipt = receipts.get(key);
-      if (receipt && !isCurrent(receipt)) revoke(key);
+      if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
     }
   }, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
   timer.unref();

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,7 +23,8 @@ const quotePowerShell = (value: string) => `'${value.replaceAll("'", "''")}'`;
 // Unsupported host tiers carry a per-test skip reason; integrity, probe and execution failures remain failures.
 describe("native governed XLSX command", () => {
   it("passes the real shell policy and confines the shipped runtime command", async (testContext) => {
-    const directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-xlsx-sandbox-")));
+    // Native realpath matches the journal's target (8.3 TEMP names expand).
+    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-xlsx-sandbox-")));
     const path = join(directory, "budget.xlsx");
     const request = join(directory, "edits.json");
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
@@ -69,7 +70,10 @@ describe("native governed XLSX command", () => {
             finish: () => {
               finished ??= (async () => {
                 const journal = join(homePath, "document-observation", "journal.jsonl");
-                if (!existsSync(journal)) return;
+                try { lstatSync(journal); } catch (error) {
+                  if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+                  throw error;
+                }
                 records.push(...readFileSync(journal, "utf8").trim().split("\n").map((line) => JSON.parse(line) as DocumentEditJournalRecord));
               })();
               return finished;
