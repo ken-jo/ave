@@ -2321,7 +2321,7 @@ describe("installer smoke and packaging discipline", () => {
     // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
     // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/fetch-mxc.mjs --current && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.
