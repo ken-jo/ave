@@ -45,7 +45,7 @@ async function emit(...events: DocumentObservationEvent[]): Promise<void> {
   await act(async () => { handlers.forEach((handler) => handler(events)); });
 }
 async function openText() {
-  const view = render(<PreviewDetail api={{} as never} sessionId={SESSION} target={FILE} />);
+  const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={FILE} />);
   await screen.findByTestId("document-text-lines");
   return view;
 }
@@ -87,7 +87,7 @@ describe("shared document viewer chrome", () => {
   it("offers the default app after a host read even when the tool target had no picker grant", async () => {
     const canonicalPath = "/workspace/src/tools/canonical-report.ts";
     readFile.mockResolvedValueOnce({ ok: true, path: canonicalPath, content: DOCUMENT.content, document: DOCUMENT });
-    const view = render(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, canOpenExternal: false }} />);
+    const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, canOpenExternal: false }} />);
     const button = await screen.findByRole("button", { name: "기본 앱으로 열기" });
     fireEvent.click(button);
     expect(window.ave.attach.openExternal).toHaveBeenCalledWith(canonicalPath);
@@ -99,13 +99,13 @@ describe("shared document viewer chrome", () => {
 
   it("does not invent an external-open grant before a read or for an inline snippet", async () => {
     readFile.mockResolvedValueOnce({ ok: false, error: "read-failed" });
-    const view = render(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, canOpenExternal: false }} />);
+    const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, canOpenExternal: false }} />);
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
     await screen.findByTestId("chat-side-panel-file-error");
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
-    view.rerender(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, inlineText: "Indexed source", canOpenExternal: false }} />);
+    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, inlineText: "Indexed source", canOpenExternal: false }} />);
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
-    view.rerender(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, inlineText: "Indexed source", canOpenExternal: true }} />);
+    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, inlineText: "Indexed source", canOpenExternal: true }} />);
     expect(screen.getByRole("button", { name: "기본 앱으로 열기" })).toBeTruthy();
     expect(readFile).toHaveBeenCalledTimes(1);
   });
@@ -113,12 +113,12 @@ describe("shared document viewer chrome", () => {
   it("does not synthesize a script-associated default-app action from a successful preview read", async () => {
     const path = "/workspace/scripts/report.js";
     readFile.mockResolvedValueOnce({ ok: true, path, content: DOCUMENT.content, document: DOCUMENT });
-    const view = render(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, path, canOpenExternal: false }} />);
+    const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, path, canOpenExternal: false }} />);
     await screen.findByText(/const total = 1;/);
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
     expect(screen.getByRole("button", { name: "복사" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "다시 불러오기" })).toBeTruthy();
-    view.rerender(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, path, canOpenExternal: true }} />);
+    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, path, canOpenExternal: true }} />);
     expect(screen.getByRole("button", { name: "기본 앱으로 열기" })).toBeTruthy();
   });
 
@@ -143,7 +143,7 @@ describe("shared document viewer chrome", () => {
       lines: ["# Report", "Original paragraph"], totalLines: 2, truncated: false };
     readFile.mockResolvedValueOnce({ ok: true, path, content: document.content, document,
       observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } });
-    render(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, path, title: "readme.md" }} />);
+    render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, path, title: "readme.md" }} />);
     expect(await screen.findByRole("heading", { name: "Report" })).toBeTruthy();
     expect(screen.queryByTestId("document-text-lines")).toBeNull();
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
@@ -162,7 +162,7 @@ describe("shared document viewer chrome", () => {
       observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } });
     let finish!: (value: { svg: string }) => void;
     renderDiagram.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
-    render(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, path, title: "flow.mmd" }} />);
+    render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, path, title: "flow.mmd" }} />);
     await screen.findByText("다이어그램 렌더링 중…");
     expect(acknowledge).not.toHaveBeenCalled();
     await act(async () => { finish({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Flow</text></svg>' }); });
@@ -182,7 +182,7 @@ describe("shared document viewer chrome", () => {
     let second!: (value: { svg: string }) => void;
     renderDiagram.mockReturnValueOnce(new Promise((resolve) => { first = resolve; }))
       .mockReturnValueOnce(new Promise((resolve) => { second = resolve; }));
-    render(<PreviewDetail api={{} as never} sessionId={SESSION} target={{ ...FILE, path, title: "diagrams.md" }} />);
+    render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, path, title: "diagrams.md" }} />);
     expect(await screen.findAllByText("다이어그램 렌더링 중…")).toHaveLength(2);
     expect(acknowledge).not.toHaveBeenCalled();
     await act(async () => { first({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>First</text></svg>' }); });

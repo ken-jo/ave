@@ -28,10 +28,18 @@ function readErrorKey(code: ReadError): string {
   }
 }
 
-/** Exact view bindings carry agent changes; ordinary file previews remain passive. */
-export function TextDocumentPreview({ target, sessionId }: {
+/**
+ * Exact view bindings carry agent changes; ordinary file previews remain passive.
+ *
+ * `observe` is false while the hosting panel is hidden. An observing view then
+ * holds no subscription or host binding but stays mounted with its last
+ * content, and observing again re-reads it as a fresh baseline. Passive views
+ * (a selected range, an inline snippet, no session) ignore the flag.
+ */
+export function TextDocumentPreview({ target, sessionId, observe }: {
   target: Extract<ChatPreviewTarget, { kind: "file" }>;
   sessionId?: string;
+  observe: boolean;
 }) {
   const { t } = useTranslation();
   const { startLine, endLine } = target;
@@ -42,15 +50,25 @@ export function TextDocumentPreview({ target, sessionId }: {
   const [state, setState] = useState<TextState>({ phase: "loading" });
   const generation = useRef(0);
   const acknowledged = useRef("");
+  const active = selected || inlineText !== undefined || sessionId === undefined || observe;
+  const resumed = useRef(false);
   useEffect(() => {
+    if (!active) {
+      // The previous run's cleanup already released its binding; the content stays without agent overlays.
+      resumed.current = true;
+      setState((previous) => previous.phase === "ok" ? { ...previous, binding: undefined, changes: [], status: undefined } : previous);
+      return;
+    }
     setOpenFailed(false);
     if (inlineText !== undefined) { setState({ phase: "loading" }); return; }
+    const refresh = resumed.current;
     let cancelled = false;
     let binding: DocumentObservationBinding | undefined;
     let observedPath = target.path;
     let lastSeq = 0;
     generation.current += 1;
-    setState({ phase: "loading" });
+    setState((previous) => refresh && previous.phase === "ok"
+      ? { ...previous, binding: undefined, changes: [], status: undefined } : { phase: "loading" });
     const api = window.ave.preview;
     const release = (value: DocumentObservationBinding): void => {
       void api.acknowledgeDocumentObservation({ action: "release", targetId: value.targetId,
@@ -93,6 +111,7 @@ export function TextDocumentPreview({ target, sessionId }: {
     void read.then((result) => {
       if (cancelled) { if (result.observation) release(result.observation); return; }
       if (!result.ok) { setState({ phase: "error", code: result.error ?? "read-failed" }); return; }
+      resumed.current = false;
       observedPath = result.path ?? target.path;
       binding = !selected && result.observation?.sessionId === sessionId ? result.observation : undefined;
       const content = result.document?.content ?? result.content ?? "";
@@ -103,7 +122,7 @@ export function TextDocumentPreview({ target, sessionId }: {
         binding, seq: lastSeq, changes: [] });
     }).catch(() => { if (!cancelled) setState({ phase: "error", code: "read-failed" }); });
     return () => { cancelled = true; generation.current += 1; stop(); if (binding) release(binding); };
-  }, [target.path, target.workspaceRoot, startLine, endLine, selected, inlineText, sessionId, revision]);
+  }, [target.path, target.workspaceRoot, startLine, endLine, selected, inlineText, sessionId, revision, active]);
 
   const passiveKind = state.phase === "ok" ? resolvePreviewRenderer({ text: state.content, path: state.path }).kind : undefined;
   const sourceVisible = selected || (state.phase === "ok" && state.binding !== undefined

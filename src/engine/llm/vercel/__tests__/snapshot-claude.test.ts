@@ -6,22 +6,11 @@ import {
   genericToModelMessages,
   fullStreamToStreamEvent,
 } from "../adapter.js";
-import { mapBudgetToEffort } from "../../reasoning-plan.js";
 import { claudeRequestShape } from "../../../../shared/model-host-policy.js";
 import { catalogModelFor } from "../../../../shared/context-budget.js";
 import { extractSignatureSafely } from "../signature-shim.js";
 
 describe("Claude helpers — budget → thinking effort mapping", () => {
-  it("maps 4 budget bands: low / medium / high / max", () => {
-    expect(mapBudgetToEffort(1000)).toBe("low");
-    expect(mapBudgetToEffort(3000)).toBe("low");
-    expect(mapBudgetToEffort(5000)).toBe("medium");
-    expect(mapBudgetToEffort(6000)).toBe("medium");
-    expect(mapBudgetToEffort(10_000)).toBe("high");
-    expect(mapBudgetToEffort(16_000)).toBe("high");
-    expect(mapBudgetToEffort(20_000)).toBe("max");
-    expect(mapBudgetToEffort(32_000)).toBe("max");
-  });
 
   it("reads the reasoning control from catalog metadata without inferring a future version", () => {
     expect(claudeRequestShape(catalogModelFor("claude", "claude-haiku-4-5")?.model).numericThinking).toBe(true);
@@ -430,7 +419,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     expect(callArg.providerOptions).toEqual({
       anthropic: {
         thinking: { type: "adaptive" },
-        effort: "high",
+        effort: "medium",
       },
     });
     // Adaptive thinking interleaves with the default context window without beta headers.

@@ -197,9 +197,12 @@ snapshot, never an unbounded replay. Snapshot payloads retain the existing
 4 MiB preview cap. Renderer acknowledgements advance the rendered baseline
 only for the matching snapshot sequence; a delivered snapshot is not assumed
 rendered. Releasing a view, changing its session, navigating or destroying
-its frame, closing the panel, ending a journal invocation or shutting down
-disposes the corresponding capabilities and bounded buffers. No observation
-survives a host restart.
+its frame, closing or hiding the panel, ending a journal invocation or
+shutting down disposes the corresponding capabilities and bounded buffers. A
+closed or hidden panel may stay mounted for a retained side chat or browser
+tab; its document views keep their sheet, scroll and page position but hold no
+subscription, and showing the panel again reads a fresh baseline. No
+observation survives a host restart.
 
 The terminal adapter admits shell-tool runs and individual commands in the
 Agent terminal lane only from the host's authorized model-turn invocation
@@ -271,6 +274,11 @@ received user input. The brokered shell transport currently supplies output only
 completion or an existing task read; its commands declare
 `outputAvailability: "on-completion"`. Observation neither invents a live
 stream nor adds polling that consumes the task's read cursor.
+A checked shell execution whose result is released only after repository
+revalidation keeps the same quarantine in observation. Its command is admitted
+as `on-completion` with held output: output is masked and bounded but enters
+no snapshot until the validated result is released. A refused result discards
+it, and the entry keeps only command metadata and exit state.
 
 Private observation push and acknowledgement IPC require the same registered
 app-window main-frame identity as preview reads: a live registered window,
@@ -310,10 +318,11 @@ The side panel's terminal observation strip uses the same agent theme color
 and shows the current command with elapsed time. A compact read-only command
 list exposes directory, output tail, exit state, duration, sandbox mode and
 the scope of egress decisions. An empty user-only session shows neither strip
-nor command list. Session changes, panel unmount and closing a panel that stays
-mounted (a retained side-chat or browser tab) release the subscription;
-reopening subscribes afresh;
-the renderer accepts only its current target/session and acknowledges a
+nor command list. Session changes, panel unmount, and closing or hiding a
+panel that stays mounted (a retained side-chat or browser tab) release the
+subscription. A hidden strip stays mounted, so expanded rows and list scroll
+survive; showing the panel again subscribes afresh and the next snapshot
+replaces the list. The renderer accepts only its current target/session and acknowledges a
 snapshot after rendering it. Stale or other-source events cannot enter that
 list, and localized observation errors occupy the same strip.
 
@@ -2401,7 +2410,10 @@ answers an egress ask; an answer from any other surface leaves it pending. Sessi
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
-row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
+row. DNS, route-lookup, and connection failures return 502; timeouts return
+504. They keep the connection closed and write an attributed `egress-failure`
+row with the failure kind and response status, without a denial decision.
+Policy refusals remain 403. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
 or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
 at This session (a terminal: This tab). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again

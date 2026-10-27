@@ -391,6 +391,30 @@ describe("terminal observation adapter", () => {
     expect(() => adapter.start(IDENTITY, { ...COMMAND, outputAvailability: "withheld-user-input" })).toThrow("Invalid terminal observation command.");
   });
 
+  it("keeps held output out of snapshots until the checked result is validated, and drops it otherwise", async () => {
+    const { adapter, addView, commands, events } = fixture();
+    addView();
+    const held = { ...COMMAND, outputAvailability: "on-completion" as const, outputHeld: true as const };
+    const validated = adapter.start(IDENTITY, held);
+    validated.write("checked output\n");
+    expect(() => validated.releaseHeldOutput(true)).toThrow("Held terminal observation output released before the command finished.");
+    validated.finish(0);
+    await flush();
+    expect(commands()[0]).toMatchObject({ status: "completed", outputTail: "" });
+    validated.releaseHeldOutput(true);
+    await flush();
+    expect(commands()[0]).toMatchObject({ outputTail: "checked output\n" });
+    expect(() => validated.releaseHeldOutput(true)).toThrow("Terminal observation output is not held.");
+    const refused = adapter.start({ ...IDENTITY, toolUseId: "refused-tool" }, held);
+    refused.write("refused output\n");
+    refused.finish(0);
+    refused.releaseHeldOutput(false);
+    await flush();
+    expect(JSON.stringify(events)).not.toContain("refused output");
+    expect(() => adapter.start(IDENTITY, { ...COMMAND, outputHeld: true })).toThrow("Invalid terminal observation command.");
+    expect(() => adapter.start(IDENTITY, COMMAND).releaseHeldOutput(true)).toThrow("Terminal observation output is not held.");
+  });
+
   it("records a withheld command's metadata and refuses any output or egress for it", async () => {
     const { adapter, addView, commands } = fixture();
     addView();

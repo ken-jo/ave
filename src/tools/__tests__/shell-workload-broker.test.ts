@@ -206,7 +206,7 @@ describe("brokered workload shell execution", () => {
     const binding = issueBrokerShellGrant({ command, cwd: "/app" });
     const write = vi.fn();
     const finish = vi.fn();
-    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), revoke: vi.fn() }));
+    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
     setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: SESSION_ID, turnId: "observed-turn", toolUseId: "tool-use-test" };
     broker.execute.mockResolvedValueOnce(successfulRun("observed broker output\n"));
@@ -227,7 +227,7 @@ describe("brokered workload shell execution", () => {
     const binding = issueBrokerShellGrant({ command, cwd: "/app", background: true });
     const write = vi.fn();
     const finish = vi.fn();
-    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), revoke: vi.fn() }));
+    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
     setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: SESSION_ID, turnId: "observed-turn", toolUseId: "tool-use-test" };
     broker.execute.mockResolvedValueOnce({ output: "", isError: false, executionId: "exec_observed", offset: 0, status: "running" });
@@ -253,7 +253,7 @@ describe("brokered workload shell execution", () => {
     const write = vi.fn();
     const finish = vi.fn();
     setAgentTerminalObservationSink({ start: () => ({ signal: new AbortController().signal, write, finish,
-      bindEgress: vi.fn(), revoke: vi.fn() }), egress: vi.fn(), releaseSessions: vi.fn() });
+      bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }), egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: SESSION_ID, turnId: "stopped-turn", toolUseId: "tool-use-test" };
     broker.execute.mockResolvedValueOnce({ output: "", isError: false, executionId: "exec_stopped", offset: 0, status: "running" });
     const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,

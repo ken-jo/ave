@@ -2,6 +2,7 @@
 // Frame every page read as untrusted web data.
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
+import { toolSessionId } from "./base.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
@@ -93,10 +94,6 @@ function fenced(header: unknown, body?: string): ToolExecutionResult {
   return { output: fenceBrowserContent(header, body), isError: false };
 }
 
-function sessionOf(ctx: ToolExecutionContext): string | undefined {
-  return typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
-}
-
 function signalOptions(ctx: ToolExecutionContext): { signal?: AbortSignal } {
   return ctx.abortSignal ? { signal: ctx.abortSignal } : {};
 }
@@ -104,7 +101,7 @@ function signalOptions(ctx: ToolExecutionContext): { signal?: AbortSignal } {
 export type BrowserToolExecutors = Record<BrowserToolName, (input: BrowserToolInput, ctx: ToolExecutionContext) => Promise<ToolExecutionResult>>;
 
 function actorOf<G extends BrowserGuest>(ctx: ToolExecutionContext, deps: BrowserToolDeps<G>): BrowserSessionActor {
-  const sessionId = sessionOf(ctx);
+  const sessionId = toolSessionId(ctx);
   if (!sessionId) throw new Error("Missing browser session identity");
   const directParentSessionId = deps.liveOriginSessionId(sessionId);
   return { sessionId, ...(directParentSessionId ? { directParentSessionId } : {}) };
@@ -119,7 +116,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     ctx: ToolExecutionContext,
     mutation = false,
   ): { ok: true; windowId: number; resolved: ResolvedBrowserTab<G>; signal: AbortSignal } | { ok: false; result: ToolExecutionResult } => {
-    const sessionId = sessionOf(ctx);
+    const sessionId = toolSessionId(ctx);
     const scope = policy.windowOf(sessionId);
     if (!scope) return { ok: false, result: failure(NO_WINDOW) };
     if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) {
@@ -265,7 +262,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
 
   const executors: BrowserToolExecutors = {
     [BROWSER_TOOL.tabs]: async (input, ctx) => {
-      const scope = policy.windowOf(sessionOf(ctx));
+      const scope = policy.windowOf(toolSessionId(ctx));
       if (!scope) return failure(NO_WINDOW);
       if (input.scope !== undefined && input.scope !== "window" && input.scope !== "conversation") return failure("scope must be window or conversation");
       if (input.includeDirectChildren !== undefined && typeof input.includeDirectChildren !== "boolean") return failure("includeDirectChildren must be a boolean");
@@ -428,7 +425,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     [BROWSER_TOOL.tabNew]: async (input, ctx) => {
       const url = validUrl(input.url);
       if (!url.ok) return url.result;
-      const scope = policy.windowOf(sessionOf(ctx));
+      const scope = policy.windowOf(toolSessionId(ctx));
       if (!scope) return failure(NO_WINDOW);
       const authorized = authorizedApprovalMemoryScope(ctx);
       if (authorized?.kind !== "browser-origin" || authorized.origin !== url.origin) {

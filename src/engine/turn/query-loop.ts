@@ -766,6 +766,7 @@ export async function queryLoop(
           model,
           enableThinking: apiRound.enableThinking,
           budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
+          requestedEffort: apiRound.reasoningEffort,
           baseUrl: runtimeContextBudget.baseUrl,
           catalogModel: apiRound.catalogModel,
           ...(apiRound.modelCapabilities?.reasoning !== undefined ? { reasoning: apiRound.modelCapabilities.reasoning } : {}),

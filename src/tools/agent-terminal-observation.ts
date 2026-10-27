@@ -9,6 +9,8 @@ export interface AgentTerminalObservationInput {
   tabId?: string;
   terminalSessionId?: string;
   outputAvailability?: TerminalOutputAvailability;
+  /** A checked shell result stays private until revalidation: keep its output out of snapshots until {@link AgentTerminalObservationLease.releaseHeldOutput}. Requires `on-completion`. */
+  outputHeld?: true;
 }
 
 export interface AgentTerminalObservationLease {
@@ -16,6 +18,8 @@ export interface AgentTerminalObservationLease {
   write(text: string, options?: { truncated?: boolean }): void;
   finish(exitCode: number | null, status?: Exclude<TerminalObservedCommand["status"], "running">): void;
   bindEgress(token: string, attribution?: TerminalObservationDecision["attribution"]): void;
+  /** After the command finished: publish held output if the result was validated, otherwise discard it. Only for `outputHeld` leases. */
+  releaseHeldOutput(validated: boolean): void;
   revoke(): void;
 }
 

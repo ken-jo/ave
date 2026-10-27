@@ -9,6 +9,8 @@ import { encodedPowerShellExecutionReason } from "../rules/powershell-encoded-co
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 
 const CWD = "/work/project";
+// #223 executable-bound startup admission: literal identity does not prove win32 startup.
+const UNPROVEN_STARTUP = process.platform === "win32";
 function powerShellAllow(pattern: string, command: string): string | null {
   return evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, [
     withCurrentShellRuleVersion({ pattern: canonicalRuleSpecifier(pattern), action: "allow" }),
@@ -20,7 +22,7 @@ describe("literal rule semantic identity", () => {
   it.each(["|", "&", "(", "*", "-eq", "--%"])("keeps quoted PowerShell data distinct from bare %s syntax", (value) => {
     const command = `Write-Output '${value}'`;
     const pattern = canonicalRuleSpecifier(`PowerShell(${command})`);
-    expect(powerShellAllow(pattern, command)).toBe("allow");
+    expect(powerShellAllow(pattern, command)).toBe(UNPROVEN_STARTUP ? null : "allow");
     expect(powerShellAllow(pattern, `Write-Output ${value}`)).not.toBe("allow");
     expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
   });
@@ -35,15 +37,17 @@ describe("literal rule semantic identity", () => {
       const knownBareParameter = knownGrammar && parameter === "-Force";
       const quoted = `${head} '${parameter}'`;
       const bare = `${head} ${parameter}`;
-      const quotedRule = canonicalRuleSpecifier(`PowerShell(${quoted})`);
-      const bareRule = canonicalRuleSpecifier(`PowerShell(${bare})`);
+      const quotedRule = `PowerShell(${quoted})`;
+      const bareRule = `PowerShell(${bare})`;
+      expect(canonicalRuleSpecifier(quotedRule)).toBe(quotedRule);
+      expect(canonicalRuleSpecifier(bareRule)).toBe(bareRule);
       expect(quotedRule).not.toBe(bareRule);
       expect(parseRuleSpecifier(quotedRule)).toMatchObject({ tokens: [expect.any(String), `'${parameter}'`] });
-      expect(powerShellAllow(quotedRule, quoted)).toBe(knownGrammar ? "allow" : "ask");
+      expect(powerShellAllow(quotedRule, quoted)).toBe(knownGrammar ? UNPROVEN_STARTUP ? null : "allow" : "ask");
       expect(powerShellAllow(quotedRule, bare)).not.toBe("allow");
-      expect(powerShellAllow(bareRule, bare)).toBe(knownBareParameter ? "allow" : "ask");
+      expect(powerShellAllow(bareRule, bare)).toBe(knownBareParameter ? UNPROVEN_STARTUP ? null : "allow" : "ask");
       expect(powerShellAllow(bareRule, quoted)).not.toBe("allow");
-      expect(buildShellRuleApproval("powershell", quoted, CWD, { allow: true, deny: true }).exactRule).toBe(knownGrammar ? quotedRule : null);
+      expect(buildShellRuleApproval("powershell", quoted, CWD, { allow: true, deny: true }).exactRule).toBe(knownGrammar && !UNPROVEN_STARTUP ? quotedRule : null);
     }
   });
 

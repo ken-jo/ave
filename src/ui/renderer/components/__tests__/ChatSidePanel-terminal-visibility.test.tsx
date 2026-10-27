@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
@@ -73,29 +73,41 @@ function Harness({ visible }: { visible: boolean }) {
 
 const actions = (action: string) => acknowledge.mock.calls.filter(([request]) => (request as TerminalObservationRequest).action === action);
 
+const COMMAND = {
+  id: "command-one", toolUseId: "tool-one", turnId: "turn-one", kind: "shell", command: "bun test", cwd: "/workspace/project",
+  startedAt: 1, finishedAt: 2, durationMs: 1, status: "completed", exitCode: 0, outputTail: "all passed\n", outputTruncated: false,
+  sandbox: { mode: "isolated", detail: "filesystem and process confinement" }, outputAvailability: "streaming", decisions: [],
+};
+
 function snapshot(seq: number): AgentObservationEvent {
   return {
     source: "terminal", kind: "snapshot", actor: "agent", sessionId: "s1", seq, ts: seq,
-    target: { id: TARGET_ID, path: "terminal:s1" }, before: null, after: { commands: [] },
+    target: { id: TARGET_ID, path: "terminal-activity" }, before: null, after: { commands: [COMMAND] },
   } as unknown as AgentObservationEvent;
 }
 
 describe("ChatSidePanel terminal observation visibility", () => {
-  it("releases the terminal subscription while a retained panel is closed and subscribes again on reopen", async () => {
+  it("releases the terminal subscription while a retained panel is closed, keeps its view, and subscribes again on reopen", async () => {
     const view = render(<Harness visible />);
     // A browser page tab keeps the panel retained (mounted) after it closes.
     act(() => { store!.openInEphemeral({ source: "browser", url: "https://a.example/" }); });
     await waitFor(() => expect(actions("subscribe-terminal")).toHaveLength(1));
-    expect(listener).not.toBeNull();
+    await act(async () => { listener!([snapshot(1)]); });
+    await waitFor(() => expect(actions("rendered")).toHaveLength(1));
+    const row = screen.getByTestId("terminal-observation-command-row");
+    fireEvent.click(within(row).getByText("bun test"));
+    expect(row).toHaveAttribute("open");
 
     view.rerender(<Harness visible={false} />);
     await waitFor(() => expect(actions("release")).toHaveLength(1));
     expect(actions("release")[0]![0]).toMatchObject({ action: "release", targetId: TARGET_ID, sessionId: "s1" });
     expect(stopListening).toHaveBeenCalledTimes(1);
     expect(listener).toBeNull();
-    // Not unmounted: the panel and its retained browser tab are still there.
+    // Not unmounted: the panel, its retained browser tab and the expanded command row are still there.
     expect(screen.getByTestId(TEST_IDS.chatSidePanel)).toBeInTheDocument();
     expect(screen.getByTestId("chat-side-panel-browser-tab-host")).toBeInTheDocument();
+    expect(screen.getByTestId("terminal-observation-command-row")).toBe(row);
+    expect(row).toHaveAttribute("open");
     const acknowledgedWhileHidden = acknowledge.mock.calls.length;
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(acknowledge.mock.calls.length).toBe(acknowledgedWhileHidden);
@@ -103,8 +115,10 @@ describe("ChatSidePanel terminal observation visibility", () => {
     view.rerender(<Harness visible />);
     await waitFor(() => expect(actions("subscribe-terminal")).toHaveLength(2));
     expect(listener).not.toBeNull();
-    await act(async () => { listener!([snapshot(1)]); });
-    await waitFor(() => expect(actions("rendered")).toHaveLength(1));
+    await act(async () => { listener!([snapshot(2)]); });
+    await waitFor(() => expect(actions("rendered")).toHaveLength(2));
+    expect(screen.getByTestId("terminal-observation-command-row")).toBe(row);
+    expect(row).toHaveAttribute("open");
     expect(actions("release")).toHaveLength(1);
   });
 });

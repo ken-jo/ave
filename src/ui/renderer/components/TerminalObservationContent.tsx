@@ -51,8 +51,10 @@ function elapsedSeconds(command: TerminalObservedCommand, now: number): number {
   return Math.max(0, Math.floor((command.status === "running" ? now - command.startedAt : command.durationMs) / 1_000));
 }
 
-/** The host supplies authenticated agent commands; this view never reads terminal history or input. */
-export function TerminalObservationContent({ sessionId }: { sessionId?: string }) {
+/** The host supplies authenticated agent commands; this view never reads terminal history or input.
+ * `observe` is the hosting panel's visibility: a hidden panel keeps this view mounted (expanded rows and scroll survive) but releases its
+ * subscription; showing it again subscribes afresh and the next snapshot replaces the list. */
+export function TerminalObservationContent({ sessionId, observe }: { sessionId?: string; observe: boolean }) {
   const { t } = useTranslation();
   const [view, setView] = useState<TerminalObservationView | null>(null);
   const [subscriptionError, setSubscriptionError] = useState<{ sessionId: string; code: ObservationError } | null>(null);
@@ -63,7 +65,10 @@ export function TerminalObservationContent({ sessionId }: { sessionId?: string }
     setView(null);
     setSubscriptionError(null);
     acknowledged.current = "";
-    if (!sessionId) return;
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || !observe) return;
     const preview = window.ave.preview;
     let disposed = false;
     let binding: DocumentObservationBinding | undefined;
@@ -133,7 +138,7 @@ export function TerminalObservationContent({ sessionId }: { sessionId?: string }
       pending = [];
       if (binding) release(binding);
     };
-  }, [sessionId]);
+  }, [sessionId, observe]);
 
   const current = view?.sessionId === sessionId ? view : null;
   const error = current?.error ?? (subscriptionError && subscriptionError.sessionId === sessionId ? subscriptionError.code : undefined);
@@ -142,11 +147,11 @@ export function TerminalObservationContent({ sessionId }: { sessionId?: string }
   const latest = running ?? commands.at(-1);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running || !observe) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(timer);
-  }, [running?.id]);
+  }, [running?.id, observe]);
 
   useEffect(() => {
     if (!current) return;

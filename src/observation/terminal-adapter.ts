@@ -112,7 +112,8 @@ export class TerminalObservationAdapter implements ObservationAdapter {
       || input.kind !== "shell" && input.kind !== "terminal"
       || input.kind === "terminal" && (!input.tabId || !input.terminalSessionId)
       || input.outputAvailability !== undefined && !["streaming", "on-completion", "withheld-user-input"].includes(input.outputAvailability)
-      || input.outputAvailability === "withheld-user-input" && input.kind !== "terminal") {
+      || input.outputAvailability === "withheld-user-input" && input.kind !== "terminal"
+      || input.outputHeld !== undefined && (input.outputHeld !== true || input.kind !== "shell" || input.outputAvailability !== "on-completion")) {
       throw new Error("Invalid terminal observation command.");
     }
     const session = this.session(identity.sessionId);
@@ -136,11 +137,18 @@ export class TerminalObservationAdapter implements ObservationAdapter {
     const controller = new AbortController();
     const active = (): boolean => !closed && !this.disposed && this.sessions.get(identity.sessionId) === session
       && session.commands.get(command.id) === owner;
+    // Held output (a checked command whose result is released only after revalidation) is masked and bounded as usual but stays out of every
+    // snapshot until releaseHeldOutput.
+    let held: { tail: string; truncated: boolean } | undefined = input.outputHeld ? { tail: "", truncated: false } : undefined;
     const append = (text: string): void => {
       if (!active()) return;
-      const combined = command.outputTail + text;
-      command.outputTruncated ||= combined.length > TERMINAL_OBSERVATION_LIMITS.maxOutputChars || text.includes("[REDACTED:OUTPUT_LIMIT]");
-      command.outputTail = combined.slice(-TERMINAL_OBSERVATION_LIMITS.maxOutputChars);
+      const target = held ?? { tail: command.outputTail, truncated: command.outputTruncated };
+      const combined = target.tail + text;
+      target.truncated ||= combined.length > TERMINAL_OBSERVATION_LIMITS.maxOutputChars || text.includes("[REDACTED:OUTPUT_LIMIT]");
+      target.tail = combined.slice(-TERMINAL_OBSERVATION_LIMITS.maxOutputChars);
+      if (held) return;
+      command.outputTail = target.tail;
+      command.outputTruncated = target.truncated;
       this.changed(identity.sessionId);
     };
     const relay = createMaskedProgressRelay(append, (text) => redact(text, Number.MAX_SAFE_INTEGER),
@@ -171,7 +179,10 @@ export class TerminalObservationAdapter implements ObservationAdapter {
       write: (text, options) => {
         if (command.outputAvailability === "withheld-user-input") throw new Error("Terminal observation output is withheld for this command.");
         if (!active()) return;
-        if (options?.truncated) { command.outputTruncated = true; this.changed(identity.sessionId); }
+        if (options?.truncated) {
+          if (held) held.truncated = true;
+          else { command.outputTruncated = true; this.changed(identity.sessionId); }
+        }
         framer.write(text);
       },
       finish,
@@ -182,6 +193,17 @@ export class TerminalObservationAdapter implements ObservationAdapter {
         const existing = this.egress.get(token);
         if (existing && existing.owner !== owner) throw new Error("Terminal observation egress binding already active.");
         this.egress.set(token, { owner, sessionId: identity.sessionId, attribution });
+      },
+      releaseHeldOutput: (validated) => {
+        if (!input.outputHeld || !held) throw new Error("Terminal observation output is not held.");
+        const current = !this.disposed && this.sessions.get(identity.sessionId) === session && session.commands.get(command.id) === owner;
+        if (current && command.status === "running") throw new Error("Held terminal observation output released before the command finished.");
+        const released = held;
+        held = undefined;
+        if (!current || !validated) return;
+        command.outputTail = released.tail;
+        command.outputTruncated = released.truncated;
+        this.changed(identity.sessionId);
       },
       revoke: () => {
         if (!active()) return;

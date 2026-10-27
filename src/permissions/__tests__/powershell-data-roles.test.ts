@@ -33,7 +33,8 @@ describe("static PowerShell argument roles", () => {
   ])("classifies a literal command without simulating argument data: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if ((command.includes("Set-Content") && command.includes(";")) || UNPROVEN_LITERAL_COMMANDS.has(command)) expect(result.outcome).toBe("unproven");
-    else expect(result).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
+    // #223 executable-bound startup admission: literal cmdlet argv does not pin win32 startup.
+    else expect(result).toMatchObject({ outcome: process.platform === "win32" ? "unproven" : "static-complete", sensitive: null, exfiltration: null });
   });
 
   it.each([

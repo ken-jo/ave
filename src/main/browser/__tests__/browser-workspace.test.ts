@@ -80,4 +80,13 @@ describe("browser workspace service", () => {
     expect(item.listenerCount("updated")).toBe(0); expect(item.listenerCount("done")).toBe(0);
     expect((await service.getState(1)).downloads).toEqual([]);
   });
+  it("removes a destroyed guest using its registered identity", async () => {
+    const { service, guest, events } = await setup();
+    service.observeGuest(1, guest);
+    Object.defineProperty(guest, "id", { get: () => { throw new TypeError("Object has been destroyed"); } });
+    expect(() => events.emit("destroyed")).not.toThrow();
+    expect(events.listenerCount("did-start-navigation")).toBe(0);
+    const replacement = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false }) as unknown as WebContents;
+    expect(() => service.observeGuest(2, replacement)).not.toThrow();
+  });
 });

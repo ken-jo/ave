@@ -1143,7 +1143,7 @@ describe("pty-manager typing an approved agent command", () => {
 
   function observationSink() {
     const controller = new AbortController();
-    const lease = { signal: controller.signal, write: vi.fn(), finish: vi.fn(), bindEgress: vi.fn(), revoke: vi.fn() };
+    const lease = { signal: controller.signal, write: vi.fn(), finish: vi.fn(), bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() };
     const start = vi.fn((_identity: unknown, _input: AgentTerminalObservationInput) => lease);
     setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
     return { start, lease, controller };

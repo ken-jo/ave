@@ -4,8 +4,10 @@ import type {
 } from "../shared/tool-output-artifact.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { SHELL_TASK_OUTPUT_PREVIEW_CHARS } from "../shared/shell-tasks.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createLogger } from "../lib/logger.js";
 import { beginAgentTerminalObservation, type AgentTerminalObservationInput, type AgentTerminalObservationLease } from "./agent-terminal-observation.js";
+import { errorMessage } from "../shared/error-message.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
@@ -58,6 +60,7 @@ export type { PowerShellAstSummary } from "./powershell-ast.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import { preparePowerShellLaunch, retainPowerShellLaunchUntilExit } from "./powershell-launch.js";
 import { createPowerShellParserResponse } from "./powershell-parser-response.js";
+import { verifiedShellEnvironment, verifiedShellExecution, verifiedShellRequiresResultCheck, verifiedShellResultRefusal, type VerifiedShellCommand, type VerifiedShellIdentity } from "../permissions/verified-shell-command.js";
 import { resolveTrustedPowerShellExecutable } from "../shared/powershell-executable.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../shared/powershell-startup-policy.js";
 import {
@@ -153,8 +156,14 @@ function shellObservationSandbox(plan: HostShellExecutionPlan, disposable: boole
       : { mode: "unconfined", detail: plan.executionRequest === "host" ? "explicit-host" : plan.fallbackReason };
 }
 
+/** Observations started while a checked shell result is pending ({@link checkedShellResult}); their output is released only with that result. */
+const heldShellObservations = new AsyncLocalStorage<AgentTerminalObservationLease[]>();
+
 function startShellObservation(command: string, cwd: string, sandbox: AgentTerminalObservationInput["sandbox"], token?: string) {
-  const observation = beginAgentTerminalObservation({ kind: "shell", command, cwd, sandbox });
+  const held = heldShellObservations.getStore();
+  const observation = beginAgentTerminalObservation({ kind: "shell", command, cwd, sandbox,
+    ...(held ? { outputAvailability: "on-completion" as const, outputHeld: true as const } : {}) });
+  if (observation) held?.push(observation);
   if (token !== undefined) observation?.bindEgress(token);
   return observation;
 }
@@ -400,6 +409,11 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
       return completion === undefined ? output : formatShellCompletion(output, text.trim().length === 0 && !truncated, completion);
     },
   };
+}
+
+/** Checked output cannot be validated while its child may still read metadata. */
+function checkedShellClose(child: ChildProcess, required: boolean): Promise<void> | undefined {
+  return required ? new Promise((resolve) => { child.once("close", () => resolve()); }) : undefined;
 }
 
 /** Own the deadline and cancellation subscription until the child settles. */
@@ -1659,8 +1673,10 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       return brokerFailureResult(error);
     }
     const identity = { command: input.command, requestedCwd: input.cwd, executionCwd: ctx.cwd, resolvedCwd,
-      toolUseId: typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, plan: hostShellPlan };
+      toolUseId: typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, plan: hostShellPlan,
+      verifiedShellCommand: ctx.verifiedShellCommand };
     if (brokeredAuthority !== null) {
+      if (ctx.verifiedShellCommand !== undefined) return brokerFailureResult(new Error("workload-broker:unexpected-native-shell-proof"));
       if (ctx.preparedShellInvocation !== undefined) {
         disposePreparedShellInvocation(ctx.preparedShellInvocation);
         return brokerFailureResult(new Error("workload-broker:unexpected-host-shell-preparation"));
@@ -1672,6 +1688,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       } catch (error) {
         return brokerFailureResult(error);
       }
+    }
+    if (disposableExecution && ctx.verifiedShellCommand !== undefined) {
+      return { output: "Verified shell commands require a native host execution route.", isError: true };
     }
     const cwdViolation = validateShellWorkingDirectory(
       resolvedCwd,
@@ -1703,6 +1722,11 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     if (!matchesPreparedShellInvocation(prepared, identity)) {
       return { output: "spawn failed: shell preparation does not match this invocation.", isError: true };
     }
+    const verifiedIdentity: VerifiedShellIdentity = { command: input.command, dialect: "bash", cwd: resolvedCwd };
+    const holdsOutput = verifiedShellRequiresResultCheck(ctx.verifiedShellCommand, verifiedIdentity);
+    // Checked native reads release only bounded final output after reinspection.
+    const outputCapture = holdsOutput ? undefined : captureFactoryFromContext(ctx);
+    const outputProgress = holdsOutput ? undefined : toolOutputProgressFromMetadata(ctx.metadata);
     try {
     const commandPathViolation = findShellPathPolicyViolation(
       input.command,
@@ -1787,15 +1811,16 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
           : {}),
         allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
       });
-      const sandboxResult = await spawnWithSandbox(
+      const checked = await checkedShellResult(() => spawnWithSandbox(
         input.command,
         resolvedCwd,
         writePaths,
-        input.timeoutSeconds, prepared, ctx.abortSignal, captureFactoryFromContext(ctx),
-        toolOutputProgressFromMetadata(ctx.metadata),
-      );
+        input.timeoutSeconds, prepared, ctx.abortSignal, outputCapture,
+        outputProgress, holdsOutput,
+      ), ctx.verifiedShellCommand, verifiedIdentity);
+      if (checked.refused) return checked.result;
       return withBackgroundUnavailable(
-        trackSessionCwd(sandboxResult, resolvedCwd, ctx),
+        trackSessionCwd(checked.result, resolvedCwd, ctx),
         input.run_in_background === true,
       );
     }
@@ -1811,23 +1836,25 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // background like sandbox-off.
     if (
       input.run_in_background === true &&
+      !holdsOutput &&
       (!hostShellPlan.requiresExplicitUserApproval || disposableExecution)
     ) {
       const result = spawnBackground(input.command, resolvedCwd, sessionIdFromContext(ctx), prepared, shellObservationSandbox(hostShellPlan, disposableExecution));
       return disposableExecution ? withDisposableExecutionMetadata(result) : result;
     }
 
-    const spawnedResult = await spawnWithTimeout(
+    const checked = await checkedShellResult(() => spawnWithTimeout(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
-      sessionIdFromContext(ctx), !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
-      shellObservationSandbox(hostShellPlan, disposableExecution),
-    );
+      outputCapture, outputProgress, hostSpawnAuthorization,
+      holdsOutput ? undefined : sessionIdFromContext(ctx), !holdsOutput && !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
+      holdsOutput, shellObservationSandbox(hostShellPlan, disposableExecution),
+    ), ctx.verifiedShellCommand, verifiedIdentity);
+    if (checked.refused) return checked.result;
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
     const plainResult = disposableExecution
-      ? withoutReportedCwd(spawnedResult)
-      : trackSessionCwd(spawnedResult, resolvedCwd, ctx);
+      ? withoutReportedCwd(checked.result)
+      : trackSessionCwd(checked.result, resolvedCwd, ctx);
     if (disposableExecution) {
       return withBackgroundUnavailable(
         withDisposableExecutionMetadata(plainResult),
@@ -2207,6 +2234,31 @@ interface SpawnResult {
   reportedCwd?: string;
 }
 
+function verifiedShellOutputRefusal(handle: VerifiedShellCommand | undefined, identity: VerifiedShellIdentity): SpawnResult | undefined {
+  const refusal = verifiedShellResultRefusal(handle, identity);
+  return refusal === undefined ? undefined : { output: refusal, isError: true, metadata: {} };
+}
+
+/** Reinspect checked executions whether they return a result or fail to spawn. */
+async function checkedShellResult<T extends ToolExecutionResult>(
+  execute: () => Promise<T>, handle: VerifiedShellCommand | undefined, identity: VerifiedShellIdentity,
+): Promise<{ result: T | SpawnResult; refused: boolean }> {
+  const requiresResultCheck = verifiedShellRequiresResultCheck(handle, identity);
+  // Agent observation of a checked execution follows the same quarantine as its result: no output before revalidation, none at all on refusal.
+  const held: AgentTerminalObservationLease[] = [];
+  let result: T | SpawnResult;
+  try {
+    result = requiresResultCheck ? await heldShellObservations.run(held, execute) : await execute();
+  } catch (error) {
+    if (!requiresResultCheck) throw error;
+    const prefix = identity.dialect === "powershell" ? "PowerShell " : "";
+    result = { output: `${prefix}spawn failed: ${errorMessage(error)}`, isError: true, metadata: {} };
+  }
+  const refusal = verifiedShellOutputRefusal(handle, identity);
+  for (const observation of held) observation.releaseHeldOutput(refusal === undefined);
+  return refusal === undefined ? { result, refused: false } : { result: refusal, refused: true };
+}
+
 /**
  * Execute a shell command under the ASRT (Anthropic sandbox-runtime) sandbox.
  *
@@ -2264,6 +2316,7 @@ export async function spawnWithSandbox(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  waitForClose = false,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -2370,6 +2423,7 @@ export async function spawnWithSandbox(
       });
       return;
     }
+    const closed = checkedShellClose(child, waitForClose);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
     // Detached, the child leads its own process group: the sandbox keeps the
@@ -2400,6 +2454,7 @@ export async function spawnWithSandbox(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       cleanupAfterTermination();
       lifetime.dispose();
@@ -2433,6 +2488,7 @@ export async function spawnWithSandbox(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        if (closed !== undefined) await closed;
         if (settled) return;
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);
@@ -2464,6 +2520,7 @@ async function spawnWithTimeout(
   spawnAuthorization?: HostShellSpawnAuthorization,
   sessionId?: string,
   backgroundable = false,
+  waitForClose = false,
   sandbox: AgentTerminalObservationInput["sandbox"] = { mode: "unconfined", detail: "host" },
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
@@ -2488,6 +2545,7 @@ async function spawnWithTimeout(
       shell: false,
     }) as PipedChild; }
     catch (error) { observation?.finish(null, "failed"); throw error; }
+    const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     child.once("close", () => {
@@ -2549,6 +2607,7 @@ async function spawnWithTimeout(
     });
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       foregroundShellTasks.delete(taskId);
@@ -2584,6 +2643,7 @@ async function spawnWithTimeout(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        if (closed !== undefined) await closed;
         if (settled) return;
         settled = true;
         foregroundShellTasks.delete(taskId);
@@ -3057,6 +3117,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     } catch (error) {
       return brokerFailureResult(error);
     }
+    if (disposableExecution && ctx.verifiedShellCommand !== undefined) {
+      return { output: "Verified shell commands require a native host execution route.", isError: true };
+    }
     const cwdViolation = validateShellWorkingDirectory(
       resolvedCwd,
       ctx.cwd,
@@ -3077,6 +3140,16 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     ) {
       return { output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit.", isError: true, metadata: { sandboxed: false, isolation: "none" } };
     }
+    let verified: VerifiedPowerShellExecution | undefined;
+    const verifiedIdentity: VerifiedShellIdentity = { command: input.command, dialect: "powershell", cwd: resolvedCwd };
+    if (ctx.verifiedShellCommand !== undefined) {
+      const execution = verifiedShellExecution(ctx.verifiedShellCommand, verifiedIdentity);
+      if (execution === undefined) return { output: "PowerShell spawn failed: verified shell command does not match this invocation.", isError: true };
+      verified = { ...execution, identity: verifiedIdentity, handle: ctx.verifiedShellCommand };
+    }
+    const holdsOutput = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
+    const outputCapture = holdsOutput ? undefined : captureFactoryFromContext(ctx);
+    const outputProgress = holdsOutput ? undefined : toolOutputProgressFromMetadata(ctx.metadata);
     let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
     const authorizeHostSpawn = (): void => {
       if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan, "powershell")) {
@@ -3139,6 +3212,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     ) {
       return { output: commandPathViolation.reason, isError: true };
     }
+    if (verified !== undefined && verifiedShellExecution(verified.handle, verified.identity) === undefined) {
+      return { output: "PowerShell spawn failed: verified shell command is no longer available for this invocation.", isError: true };
+    }
     // Explicit host requests and the Windows Plan B select a plain host child.
     // Its opaque permit exists only after an allow-once approval (or, for an
     // explicit host request, a matching allow rule) for this exact
@@ -3169,32 +3245,36 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
       });
       if (hostShellPlan.substrate === "mxc") {
-        return await spawnPowerShellInMxc(
+        const checked = await checkedShellResult(() => spawnPowerShellInMxc(
           input.command,
           resolvedCwd,
           writePaths,
-          input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
-          toolOutputProgressFromMetadata(ctx.metadata),
+          input.timeoutSeconds, ctx.abortSignal, outputCapture,
+          outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-          undefined, powerShellHostScriptReadPaths(commandAst, input.command),
-        );
+          undefined, powerShellHostScriptReadPaths(commandAst, input.command), verified,
+        ), ctx.verifiedShellCommand, verifiedIdentity);
+        return checked.result;
       }
-      return await spawnPowerShellWithSandbox(
+      const checked = await checkedShellResult(() => spawnPowerShellWithSandbox(
         input.command,
         resolvedCwd,
         writePaths,
-        input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
-        toolOutputProgressFromMetadata(ctx.metadata),
+        input.timeoutSeconds, ctx.abortSignal, outputCapture,
+        outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        powerShellHostScriptReadPaths(commandAst, input.command),
-      );
+        powerShellHostScriptReadPaths(commandAst, input.command), verified,
+      ), ctx.verifiedShellCommand, verifiedIdentity);
+      return checked.result;
     }
 
-    const plainResult = await spawnPowerShell(
+    const checked = await checkedShellResult(() => spawnPowerShell(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
+      outputCapture, outputProgress, hostSpawnAuthorization, verified,
       shellObservationSandbox(hostShellPlan, disposableExecution),
-    );
+    ), ctx.verifiedShellCommand, verifiedIdentity);
+    if (checked.refused) return checked.result;
+    const plainResult = checked.result;
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
     if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) return plainResult;
     return {
@@ -3377,10 +3457,21 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   return normalizePowerShellAstSummary(JSON.parse(response.read()));
 }
 
-function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }): ManagedPowerShellChild {
+interface VerifiedPowerShellExecution {
+  readonly command: string;
+  readonly executable: string;
+  readonly identity: VerifiedShellIdentity;
+  readonly handle: VerifiedShellCommand;
+}
+
+function powerShellExecutionEnvironment(verified: VerifiedPowerShellExecution | undefined, base: Record<string, string>): Record<string, string> {
+  return verified === undefined ? base : verifiedShellEnvironment(verified.handle, verified.identity, base);
+}
+
+function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }, verified?: VerifiedPowerShellExecution): ManagedPowerShellChild {
   const launch = preparePowerShellLaunch(command, options.env);
   try {
-    const child = spawn(executable, launch.args, { ...options, env: launch.env }) as ManagedPowerShellChild;
+    const child = spawn(executable, launch.args, { ...options, env: powerShellExecutionEnvironment(verified, launch.env) }) as ManagedPowerShellChild;
     retainPowerShellLaunchUntilExit(launch, child);
     return child;
   } catch (error) { launch.cleanup(); throw error; }
@@ -3470,7 +3561,9 @@ async function spawnPowerShellWithSandbox(
   progress?: ToolOutputProgressSink,
   toolUseId?: string,
   runtimeReadPaths: readonly string[] = [],
+  verified?: VerifiedPowerShellExecution,
 ): Promise<ToolExecutionResult> {
+  const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
   // executable cannot leave an orphaned sandbox HOME behind.
@@ -3487,7 +3580,7 @@ async function spawnPowerShellWithSandbox(
   }
   const isWindows = process.platform === "win32";
   let powerShellLaunch: ReturnType<typeof preparePowerShellLaunch>;
-  try { powerShellLaunch = preparePowerShellLaunch(command, buildSafeChildEnv({ ...sandboxHome.env }), sandboxHome); }
+  try { powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome); }
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
@@ -3496,7 +3589,7 @@ async function spawnPowerShellWithSandbox(
 
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths], home, sandboxHome.path);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path);
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,
@@ -3561,9 +3654,9 @@ async function spawnPowerShellWithSandbox(
   // allow-listed proxy/CA/SANDBOX_RUNTIME keys ASRT set/changed — so on win32
   // the proxy set is propagated (the "spread") and on mac/linux nothing extra
   // leaks (ASRT changed nothing in process.env). Secrets stay stripped on both.
-  const childEnv = buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
+  const childEnv = powerShellExecutionEnvironment(verified, buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
     XDG_CONFIG_HOME: powerShellLaunch.env.XDG_CONFIG_HOME!, PSModulePath: powerShellLaunch.env.PSModulePath!,
-  });
+  }));
   let observation: AgentTerminalObservationLease | undefined;
   try { observation = startShellObservation(command, cwd,
     { mode: "isolated", detail: "filesystem/process confinement" }, egress.token); }
@@ -3597,6 +3690,7 @@ async function spawnPowerShellWithSandbox(
       });
       return;
     }
+    const closed = checkedShellClose(child, waitForClose);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
     // Detached, the child leads its own process group: the sandbox keeps the
     // ended invocation's listener port while anything in that group lives.
@@ -3621,6 +3715,7 @@ async function spawnPowerShellWithSandbox(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       cleanupAfterTermination();
       lifetime.dispose();
@@ -3645,6 +3740,7 @@ async function spawnPowerShellWithSandbox(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        if (closed !== undefined) await closed;
         if (settled) return;
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);
@@ -3694,7 +3790,9 @@ async function spawnPowerShellInMxc(
   toolUseId?: string,
   parserResponse?: ReturnType<typeof createPowerShellParserResponse>,
   runtimeReadPaths: readonly string[] = [],
+  verified?: VerifiedPowerShellExecution,
 ): Promise<ToolExecutionResult> {
+  const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
   const systemRoot = windowsSystemRoot();
   const installation = resolveTrustedPowerShellExecutable();
@@ -3717,10 +3815,10 @@ async function spawnPowerShellInMxc(
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
-  const powerShellLaunch = preparePowerShellLaunch(command, buildSafeChildEnv({ ...sandboxHome.env }), sandboxHome);
+  const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths], hostHome, sandboxHome.path);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
   const egress = openEgressInvocation(
     { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
     signal ? { abortSignal: signal } : {},
@@ -3748,7 +3846,7 @@ async function spawnPowerShellInMxc(
         ])],
         floorPierces,
       },
-      env: powerShellLaunch.env,
+      env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
     });
@@ -3800,6 +3898,7 @@ async function spawnPowerShellInMxc(
       });
       return;
     }
+    const closed = checkedShellClose(child, waitForClose);
     trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress, observation });
@@ -3820,6 +3919,7 @@ async function spawnPowerShellInMxc(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (closed !== undefined) await closed;
       lifetime.dispose();
       if (settled) {
         await cleanupAfterTermination();
@@ -3846,6 +3946,7 @@ async function spawnPowerShellInMxc(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        if (closed !== undefined) await closed;
         // A spawn that fails (no pid) may never emit "close": release the
         // listener, the egress token and the sandbox HOME here. A running
         // child keeps its timeout and abort watch, and "close" releases its
@@ -3876,8 +3977,10 @@ async function spawnPowerShell(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   spawnAuthorization?: HostShellSpawnAuthorization,
+  verified?: VerifiedPowerShellExecution,
   sandbox: AgentTerminalObservationInput["sandbox"] = { mode: "unconfined", detail: "host" },
 ): Promise<ToolExecutionResult> {
+  const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
   const executable = resolvePowerShellExecutable();
   const prelude = spawnAuthorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(spawnAuthorization.cwdIdentity, "powershell", process.platform);
@@ -3887,17 +3990,18 @@ async function spawnPowerShell(
     const observation = startShellObservation(command, cwd, sandbox);
     let child: PipedChild;
     try { child = spawnManagedPowerShell(
-      executable, (prelude ?? "") + command,
+      executable, (prelude ?? "") + (verified?.command ?? command),
       {
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
-        env: buildHostShellChildEnv(),
+        env: powerShellExecutionEnvironment(verified, buildHostShellChildEnv()),
         shell: false,
-      },
+      }, verified,
     ) as PipedChild; }
     catch (error) { observation?.finish(null, "failed"); throw error; }
+    const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
@@ -3910,6 +4014,7 @@ async function spawnPowerShell(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       if (settled) return;
@@ -3935,6 +4040,7 @@ async function spawnPowerShell(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        if (closed !== undefined) await closed;
         if (settled) return;
         settled = true;
         control?.dispose();

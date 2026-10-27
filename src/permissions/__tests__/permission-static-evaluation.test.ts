@@ -39,7 +39,10 @@ const LITERAL_EVALUATIONS = [
 describe("literal evaluation approval", () => {
   it.each(LITERAL_EVALUATIONS)("requires complete exact approval for $dialect $command", async ({ dialect, command }) => {
     const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true });
-    expect(approval.exactRule).toBe(exact(dialect, command));
+    const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
+    // #223 executable-bound startup admission: direct evaluators require proven outer startup.
+    const unprovenStartup = dialect === "powershell" && process.platform === "win32";
+    expect(approval.exactRule).toBe(unprovenStartup ? null : pattern);
     for (const sandboxed of [false, true]) {
       expect(check(command, dialect, sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
       expect(check(command, dialect, sandboxed, true).decision).toBe("deny");
@@ -47,11 +50,13 @@ describe("literal evaluation approval", () => {
     const kind = dialect === "bash" ? "Bash" : "PowerShell";
     manager.setRules([withCurrentShellRuleVersion({ pattern: `${kind}(${command.split(" ")[0]} *)`, action: "allow" })]);
     expect(check(command, dialect)).toMatchObject({ decision: "ask", layer: 2 });
-    await manager.addRulePersist({ pattern: approval.exactRule!, action: "allow" }, { kind: "user" });
+    await manager.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
     manager = new PermissionManager(join(cwd, "permissions.json"));
     await manager.loadRulesFromFile();
     for (const sandboxed of [false, true]) for (const headless of [false, true]) {
-      expect(check(command, dialect, sandboxed, headless)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(check(command, dialect, sandboxed, headless)).toMatchObject(unprovenStartup
+        ? headless ? { decision: "deny", layer: 2 } : { decision: "ask", layer: 2, forceModal: true }
+        : { decision: "allow", layer: 3 });
     }
   });
 

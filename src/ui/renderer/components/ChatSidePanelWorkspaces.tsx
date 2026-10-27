@@ -778,11 +778,12 @@ function ProjectRootsBrowser({
 }
 
 export function FileBrowserWorkspace({
-  api, sessionId, files, targetById, selectedId, onSelect,
+  api, sessionId, visible, files, targetById, selectedId, onSelect,
   changes: providedChanges, revealRequest, onReference, onFileReference,
 }: {
   api: AveApi;
   sessionId?: string;
+  visible: boolean;
   files: WorkspaceFileItem[];
   targetById: Map<string, ChatPreviewTarget>;
   selectedId: string | null;
@@ -893,7 +894,7 @@ export function FileBrowserWorkspace({
       }}>
       {narrow ? <button type="button" className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-left text-xs text-primary" onClick={goBack} data-testid="chat-side-panel-file-back"><ArrowLeft className="h-3.5 w-3.5" />{t("chatPreviewRail.fileTreeBack")}</button> : null}
       {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference} />
-        : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} /></div>
+        : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} visible={visible} /></div>
           : <EmptyState>{t("chatPreviewRail.emptyState")}</EmptyState>}
     </div>
   </div>;
@@ -903,12 +904,14 @@ export function FileBrowserWorkspace({
 export function PreviewWorkspace({
   api,
   sessionId,
+  visible,
   targets,
   selectedId,
   onSelect,
 }: {
   api: AveApi;
   sessionId?: string;
+  visible: boolean;
   targets: ChatPreviewTarget[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -932,6 +935,7 @@ export function PreviewWorkspace({
     <ListDetailWorkspace
       api={api}
       sessionId={sessionId}
+      visible={visible}
       query={query}
       setQuery={setQuery}
       placeholder={t("chatPreviewRail.searchPlaceholder")}

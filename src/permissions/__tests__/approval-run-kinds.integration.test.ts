@@ -274,6 +274,47 @@ afterEach(async () => {
 });
 
 describe("production run construction approval ownership", () => {
+  it("drains a background child whose approval arrives after the gate shuts down", async () => {
+    const f = await setup();
+    const originSessionId = randomUUID();
+    f.sessions.add(originSessionId);
+    updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: f.owner as unknown as WebContents });
+    let release!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    const streaming = new Promise<void>((resolve) => { started = resolve; });
+    const provider = new ActionProvider([
+      [
+        { type: "tool_call", id: "late-write", name: "write_probe", input: { path: join(f.root, "late.txt") } },
+        { type: "message_complete", stopReason: "tool_use" },
+      ],
+      [{ type: "text_delta", text: "Child stopped" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]);
+    const streamTurn = provider.streamTurn.bind(provider);
+    provider.streamTurn = async function* () { started(); await paused; yield* streamTurn(); };
+    patchLoopProvider(provider);
+    const childMemory = new MemoryManager({ aveDir: join(f.root, "late-child") });
+    childMemory.load();
+    const runner = new SubAgentRunner({ parentDeps: f.deps, toolRegistry: f.registry, subAgentMemoryManager: childMemory });
+    const running = runner.spawn({
+      title: "Late child", instructions: "Perform the bounded action", originSessionId,
+      projectRoot: f.root, background: true, toolScope: PARENT_ALL_TOOL_SCOPE, maxRounds: 3,
+    }, { onLinked: ({ childSessionId }) => { f.sessions.add(childSessionId); } });
+    f.pending.push(running);
+    await streaming;
+    f.gate.disposeAll();
+    let settled = false;
+    void running.then(() => { settled = true; }, () => { settled = true; });
+    release();
+    // Detect admission before awaiting the run so a broken gate fails without its five-minute timer.
+    await vi.waitFor(() => expect(settled || f.gate.pendingCount > 0).toBe(true));
+    expect(f.gate.pendingCount).toBe(0);
+    expect(f.owner.send).not.toHaveBeenCalled();
+    await running;
+    expect(f.gate.pendingCount).toBe(0);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
   it.each(constructionPaths)("enforces registered consent for $factory / $binding", async (path) => {
     const f = await setup();
     switch (path.factory) {

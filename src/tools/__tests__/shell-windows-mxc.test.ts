@@ -162,7 +162,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const write = vi.fn();
     const finish = vi.fn();
     const bindEgress = vi.fn();
-    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress, revoke: vi.fn() }));
+    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress, releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
     setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-observed" };
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-observed-")));

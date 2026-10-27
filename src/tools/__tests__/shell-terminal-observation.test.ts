@@ -31,7 +31,7 @@ beforeEach(() => {
     start: (owner, input) => {
       const run: ObservedRun = { identity: owner, input, output: [], finish: vi.fn(), revoke: vi.fn() };
       runs.push(run);
-      return { signal: new AbortController().signal, write: (text) => { run.output.push(text); }, finish: run.finish, revoke: run.revoke, bindEgress: vi.fn() };
+      return { signal: new AbortController().signal, write: (text) => { run.output.push(text); }, finish: run.finish, revoke: run.revoke, bindEgress: vi.fn(), releaseHeldOutput: vi.fn() };
     },
     egress: vi.fn(), releaseSessions: vi.fn(),
   });
