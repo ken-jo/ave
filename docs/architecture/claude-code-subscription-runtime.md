@@ -4,41 +4,123 @@ The main process launches the official `claude` CLI the user installed. Ave
 finds it itself — each fully qualified PATH entry, then `~/.local/bin` (the
 native installer's launcher), `/opt/homebrew/bin`, `/usr/local/bin` and
 `/usr/bin`; on Windows PATH, the native install directory and the roaming
-package-manager prefix. The user never picks the file. The first runnable
+package-manager prefix. The user never picks the file. Filesystem checks
+identify runnable candidates without executing them. The first runnable
 candidate decides; an untrusted one stops discovery before any probe.
 
 Location admission, no-follow file opens, hashing and native artifact copying
 reuse the shared executable trust implementation. Every path component and
-symlink owner must be the current account or root; group/world mutation is
-rejected except for sticky root-owned directories. Windows uses owner/DACL
-checks; extended access rules follow the same shared policy.
+symlink owner must be the current account or root. Group/world mutation is
+rejected except for sticky root-owned directories and the bounded cask layout
+below. Windows uses owner/DACL checks. macOS also inspects extended access
+rules. Linux uses owner and POSIX mode bits, including the effective ACL mask;
+it does not separately enumerate extended ACL entries.
 
-Native executables run from a private, sealed, content-hashed copy. Package
-launchers resolve only the official package's `cli.js` and a pinned native
-interpreter, without a shell. The interpreter, package files and declared
-required/optional/peer dependency closure are copied through the same no-follow
-hashing and sealing primitives. Dependency directory layout is preserved, so
-nested and hoisted dependencies resolve inside the snapshot. Missing required
-dependencies, package symlinks and unsupported script interpreters fail closed.
-The manifest covers the declared transitive dependency graph. It does not
-enforce a separate direct-dependency allowlist for each package: a package may
-resolve another copied graph member when ordinary module resolution reaches it.
+The default cask prefixes are `/opt/homebrew` and `/usr/local` on macOS, and
+`/home/linuxbrew/.linuxbrew` on Linux. A `<prefix>/bin/claude` launcher may
+resolve into that same prefix's
+`Caskroom/claude-code/<version>/claude` or
+`Caskroom/claude-code@latest/<version>/claude`; discovery also accepts the
+versioned payload directly. Directory components in this layout may be
+group-writable, including the default `0775` `bin` directory.
+World-writable directories, mutable executable files and foreign owners remain
+rejected; macOS also rejects unsafe extended ACL entries. On Linux, named
+ACL writers admitted by the mask on these exact mutable directories share
+the same mutation authority as group writers. Such writers can deny service
+or replace a source with another valid signed release, including an older
+one at or above the supported minimum (see below). They cannot admit
+arbitrary executable bytes: the sealed copy must still pass publisher
+verification. Custom prefixes and other locations retain the shared strict
+rule; they do not cause selection of a later candidate.
 
-Package entry points run only from that snapshot. A sealed preload registers
-synchronous module resolution/loading hooks before entry execution. Both import
-and require are restricted to built-ins and the copied file manifest. Global
-module search is disabled; module sources outside the graph manifest, including
-absolute and network imports, are rejected. JavaScript and JSON code are loaded from
-no-follow handles and checked against their digests at load time. The script
-interpreter must support synchronous loading hooks (22.15.0 or later on the 22.x
-line, 23.5.0 or later on newer lines); unsupported runtimes are rejected before the CLI probe.
-Copied package metadata is also checked around resolution and loading.
-The invocation uses the private snapshot rather than reopening installed script
-paths, so ordinary installer replacements do not change its copied code.
+Only standalone native installations are supported. Script launchers, command
+shims and npm-managed installations fail with
+`subscription-runtime-native-required` before qualification, authentication or
+conversation spawn. The settings guidance offers manual migration with
+`claude install` or the official native installer, followed by removal of the
+npm-managed copy and another availability check. Ave does not run migration
+commands or select a later executable after rejecting the first runnable one.
 
-Qualification, authentication and each turn recheck the original launcher route,
-source dependency graph and the sealed private artifact immediately before
-spawn. Changes detected by these checks refuse the next turn of an existing session.
+Native executables run from a private, sealed, content-hashed copy. Admission
+requires the platform's native executable format and authenticates the copied
+bytes before the first version, help, account or conversation invocation.
+There is no interpreter, package snapshot, module loader or launcher argument
+prefix. The source and sealed copy must have the same SHA256 hash.
+
+Publisher verification uses the platform's trust mechanism:
+
+- macOS uses `/usr/bin/codesign` with strict integrity verification and an
+  Apple-anchored Developer ID requirement. It pins
+  `com.anthropic.claude-code`, team `Q6L2SF6YDW` and the certificate subject
+  `Developer ID Application: Anthropic PBC (Q6L2SF6YDW)`.
+- Windows uses system PowerShell's Authenticode verification and requires
+  `Valid` status, an exact signer-certificate simple name and decoded
+  organization of `Anthropic, PBC`, and the code-signing extended key usage.
+  Module autoloading is disabled; the signature cmdlet is imported only from
+  the system engine's exact module path, excluding user module shadows.
+  Both the signature verifier and the shared ACL host locate system
+  PowerShell through the packaged helper's `GetSystemDirectoryW` query.
+  Inherited `SystemRoot`, `WINDIR` and `PATH` cannot select either verifier;
+  a failed query stops admission without an environment-derived fallback.
+- Linux checks the release manifest's detached signature against the pinned
+  release-key fingerprint `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`, then
+  compares the platform checksum with the sealed copy. A release version used
+  to locate metadata is untrusted data; matching that version alone admits
+  nothing. Signature verification uses a private temporary keyring rather
+  than the user's keyring. Verification requires `/usr/bin/gpg` and HTTPS
+  access to `https://downloads.claude.ai` on every admission, with no offline
+  metadata cache and no cached trust: each discovery re-fetches the key,
+  manifest and detached signature. The requests go through the host network
+  stack, so the system proxy and trust store apply, behind a fixed allowlist
+  (`GET /keys/claude-code.asc` and
+  `GET /claude-code-releases/<version>/manifest.json[.sig]` on that origin
+  only, no redirects, no credentials). This is host-owned egress: plugin
+  `hostFetch` allowlists do not govern it and need no entry. The native
+  install's versioned source path supplies the version. For
+  `/usr/bin/claude` or `/usr/local/bin/claude`, system package metadata may
+  locate it (`dpkg-query`, `rpm`, or `apk info --who-owns`, whose
+  `<path> [symlink target ]is owned by claude-code-<version>-r<N>` line is
+  parsed); that metadata never replaces the signed checksum check. A custom
+  path without a version fails explicitly.
+
+Unavailable verification tools, unsigned or mismatched signatures, and
+checksum failures stop discovery with `subscription-runtime-unauthenticated`.
+The UI offers reinstall and publisher verification guidance. When the Linux
+release metadata cannot be fetched (offline, blocked by a firewall or proxy,
+or an HTTP error), discovery stops with
+`subscription-runtime-release-metadata-unavailable`: nothing about the binary
+was decided, and the message names `downloads.claude.ai`, asks the user to
+allow HTTPS access to it (directly or through the system proxy) and check
+again, and states there is no offline bypass. In every case Ave does not probe
+the rejected binary or try another candidate or authentication route.
+
+The supported minimum is `CLAUDE_CODE_CLI_MINIMUM_VERSION` (2.1.89) in
+`src/shared/claude-code-subscription.ts`, also the descriptor's
+`minimumVersion` shown in settings. It is the first release whose Linux
+manifest carries Anthropic's detached signature, so the first one Ave can
+authenticate on every platform, and it accepts every flag Ave passes (the
+newest, `--bare`, arrived in 2.1.81). On Linux the located version is checked
+before any metadata request; on macOS and Windows the authenticated binary's
+own `--bare --version` answer is checked before any other probe. An older
+release fails with `subscription-runtime-version-unsupported` and update
+guidance. Any signed release at or above the minimum is accepted, including
+one older than the previously admitted install: Anthropic publishes no
+revocation list, its `stable` channel deliberately trails `latest`, so pinning
+to the newest release would refuse supported stable installs. A writer who can
+swap the installed release can therefore choose among signed releases at or
+above the minimum, never below it and never unsigned bytes.
+
+The macOS check authenticates the embedded signature on the sealed copy;
+copying unchanged bytes preserves that signature. It does not assert a fresh
+offline notarization or revocation verdict. Standalone executables cannot
+carry stapled notarization tickets; a cached system assessment is not a
+portable ticket for the copy.
+
+Qualification, account authentication and each turn recheck the original
+launcher route and the sealed private artifact immediately before spawn.
+Changed source paths or bytes refuse the next invocation of an existing
+session. Rediscovery creates a new copy and authenticates the new bytes before
+qualification.
 The final hash check and spawn are not atomic. A same-UID or root attacker who can
 modify the private directory can replace its executable after the check for one
 invocation. That compromise is outside the current-user/root trust boundary;
@@ -53,7 +135,7 @@ recheck. It sends no prompt and consumes no subscription model usage. A signed-o
 verification creates no transport proof. Failed identity qualification is
 `claude-code-runtime-incompatible`, shown as update guidance; verdicts are
 cached by content identity and probes that cannot run are retried. An update or
-reinstall requires fresh verification. Authentication
+reinstall requires fresh publisher and account verification. Authentication
 commands use a separate application-owned home and `CLAUDE_CONFIG_DIR`; Ave
 does not read OAuth tokens, reuse API keys, or forward auth output to the renderer.
 The status projection accepts the CLI's `claude.ai` first-party authentication
@@ -61,8 +143,33 @@ with subscription metadata. Missing or contradictory metadata remains unavailabl
 Discovery, browser login, cancellation, logout, and verification use the
 existing subscription service and UI contracts. Settings lists Anthropic once:
 its card asks for "Claude subscription" or "API key" first, and shows the
-official install methods with "Check again" while no usable CLI is found. Model selection and native
+official install methods with "Check again" while no usable CLI is found. Native
 image attachments are not supported by this transport.
+
+Model settings use `catalogChatModelIds("claude")`, the active catalog shared
+with the API-key route; there is no separate subscription model list or alias
+table. Explicit IDs pass unchanged through the documented `--model` flag. An
+unlisted ID fails with `subscription-model-not-supported` whenever the service
+opens a model session, including a saved selection after restart, without
+substituting a model or authentication route. The runtime descriptor explicitly
+offers the CLI default: an absent persisted `model` omits `--model`.
+The installed runtime still decides account availability; a rejected request
+fails the turn rather than retrying with another model.
+
+The sign-in choices, model chooser, selected settings model and current composer
+disclose the selected authentication route's billing: the user's own subscription
+or the configured API key. Local routes without required API keys carry no
+API-key billing claim.
+The host drops every inherited `ANTHROPIC_*` and `CLAUDE_*` variable before
+spawn; its own `CLAUDE_CONFIG_DIR` points to the isolated runtime home. Login
+uses only `auth login` in that same home. Credential files and account tokens
+remain owned by the CLI, outside the host's settings and secret stores.
+Every isolated invocation also receives the documented `DISABLE_UPDATES=1`
+environment setting, which the official runtime uses to disable automatic
+and manual self-updates. This is a runtime behavior setting, not filesystem
+confinement; the sealed artifact's hash is checked independently. The user
+updates the original installation externally, then verifies it again in Ave.
+No updater flag is injected into the CLI arguments.
 
 `SubscriptionLlmProvider` sends the complete controlled conversation envelope for
 each Ave model round. A print invocation receives that envelope on stdin and runs
@@ -121,3 +228,7 @@ The external protocol is documented in the official [CLI reference](https://code
 [programmatic usage guide](https://code.claude.com/docs/en/headless), and
 [tools reference](https://code.claude.com/docs/en/tools-reference).
 The [MCP guide](https://code.claude.com/docs/en/mcp) defines the tool-discovery controls.
+The [setup guide](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing)
+defines release signatures, and the
+[notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
+describes the offline ticket limits for standalone executables.

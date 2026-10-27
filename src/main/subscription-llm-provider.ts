@@ -197,17 +197,27 @@ function subscriptionFailure(
   // Host-owned unavailable results use safe renderer text and bypass transient network retry budgets.
   if (
     failure instanceof SubscriptionRuntimeServiceError
-    && failure.code === "subscription-chat-unavailable"
+    && (failure.code === "subscription-chat-unavailable" || failure.code === "subscription-model-not-supported"
+      || failure.code === "subscription-runtime-native-required" || failure.code === "subscription-runtime-unauthenticated"
+      || failure.code === "subscription-runtime-release-metadata-unavailable")
   ) {
     return {
       type: "error",
-      error: SUBSCRIPTION_CHAT_UNAVAILABLE,
+      error: failure.code === "subscription-chat-unavailable" ? SUBSCRIPTION_CHAT_UNAVAILABLE : failure.code,
       classification: "subscription-chat-unavailable",
       providerError: {
         origin: "unknown",
         providerCode: failure.code,
         isRetryable: false,
-        messagePreview: "subscription runtime chat unavailable",
+        messagePreview: failure.code === "subscription-model-not-supported"
+          ? "subscription model not supported"
+          : failure.code === "subscription-runtime-native-required"
+            ? "native subscription runtime installation required"
+            : failure.code === "subscription-runtime-unauthenticated"
+              ? "subscription runtime publisher could not be authenticated"
+              : failure.code === "subscription-runtime-release-metadata-unavailable"
+                ? "subscription runtime release metadata unavailable"
+                : "subscription runtime chat unavailable",
       },
     };
   }

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 if (process.platform !== "win32") throw new Error("This test requires Windows");
 const helper = resolve(`resources/windows-path-kind/${process.arch}/ave-path-kind.exe`);
@@ -14,6 +14,26 @@ function run(...args) {
   if (result.error) throw result.error;
   return { code: result.status, stdout: result.stdout, stderr: result.stderr };
 }
+
+const systemDirectoryResult = run("--system-directory");
+assert.equal(systemDirectoryResult.code, 0, systemDirectoryResult.stderr);
+assert.equal(systemDirectoryResult.stderr, "");
+assert.match(systemDirectoryResult.stdout, /^[a-z]:\\[^\r\n]+\r?\n$/iu);
+const systemDirectory = systemDirectoryResult.stdout.replace(/\r?\n$/u, "");
+const spoofedDirectory = spawnSync(helper, ["--system-directory"], {
+  encoding: "utf8", windowsHide: true, shell: false, timeout: 10_000,
+  env: { SystemRoot: "Z:\\untrusted-root", WINDIR: "Y:\\untrusted-root", PATH: "X:\\untrusted-path" },
+});
+assert.ifError(spoofedDirectory.error);
+assert.equal(spoofedDirectory.status, 0, spoofedDirectory.stderr);
+assert.equal(spoofedDirectory.stdout, systemDirectoryResult.stdout, "parent system variables cannot change the OS directory answer");
+const runtimeSystemDirectory = execFileSync(join(systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"),
+  ["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write([Environment]::SystemDirectory)"],
+  { encoding: "utf8", windowsHide: true, shell: false, timeout: 10_000,
+    env: { SystemRoot: dirname(systemDirectory), WINDIR: dirname(systemDirectory), PATH: systemDirectory } });
+assert.equal(systemDirectory.toLowerCase(), runtimeSystemDirectory.toLowerCase(), "native and runtime OS system-directory APIs agree");
+assert.equal(run("--system-directory", "unexpected").code, 2);
+console.log(`OS system directory: ${systemDirectory}; spoofed environment ignored`);
 
 function unusedDrives() {
   const unused = [];

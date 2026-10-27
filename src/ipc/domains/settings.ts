@@ -1318,7 +1318,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         if (!models.models.some((candidate) => candidate.id === model)) {
           const failure: SubscriptionRuntimeActionResult = {
             ok: false,
-            error: "subscription-chat-unavailable",
+            error: "subscription-model-not-supported",
             status: models.status,
           };
           auditSubscriptionMutation("use-for-chat", providerValue, "rejected", failure.error);

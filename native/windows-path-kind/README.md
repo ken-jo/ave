@@ -42,6 +42,23 @@ but `0` or `1`, or output that is not one line fails the folder input with
 that cause: a broken install is reported, never guessed as a network folder.
 The Windows CI job runs the test.
 
+## OS system directory
+
+`ave-path-kind.exe --system-directory` prints the result of
+`GetSystemDirectoryW` as one UTF-8 line. This read-only query uses the OS API;
+`SystemRoot`, `WINDIR`, and `PATH` cannot select its answer. The publisher
+verifier uses this mode to locate the system signature-verification tool before
+starting any candidate executable. The helper itself is a packaged host asset,
+resolved from the composed host resources, with no command search.
+
+The launcher runs this mode without a shell or inherited environment and applies
+the shared global deadline. Missing helpers, query failures, malformed paths and
+unexpected diagnostics fail clearly; there is no environment-derived alternative.
+Exit `0` means one directory was printed, `2` means invalid arguments, `3` means
+output failed, and `4` means the system query failed. Unlike drive mode, exit `1`
+is never a directory answer. The native smoke compares the result with the runtime
+system-directory API and repeats the query with spoofed system-root variables.
+
 ## Path and descriptor facts
 
 `pin.h` owns normalization, component opens and handle lifetime for all path

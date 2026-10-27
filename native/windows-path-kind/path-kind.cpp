@@ -45,9 +45,37 @@ bool write_utf8(const std::wstring& text) {
   return std::fwrite(bytes.data(), 1, bytes.size(), stdout) == bytes.size() && std::fflush(stdout) == 0;
 }
 
+int print_system_directory() {
+  std::vector<wchar_t> buffer(MAX_PATH);
+  for (;;) {
+    const UINT written = GetSystemDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
+    if (written == 0) {
+      std::fprintf(stderr, "GetSystemDirectoryW failed: %lu\n", static_cast<unsigned long>(GetLastError()));
+      return 4;
+    }
+    if (written >= buffer.size()) {
+      if (written >= 32768u) {
+        std::fputs("system directory exceeds the path limit\n", stderr);
+        return 4;
+      }
+      buffer.resize(static_cast<size_t>(written) + 1);
+      continue;
+    }
+    if (!write_utf8(std::wstring(buffer.data(), written))) {
+      std::fputs("could not write the system directory\n", stderr);
+      return 3;
+    }
+    return 0;
+  }
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"--system-directory") {
+    if (argc != 2) return 2;
+    return print_system_directory();
+  }
   if (argc >= 2 && (std::wstring(argv[1]) == L"--pin" || std::wstring(argv[1]) == L"--dacl")) return print_path_facts(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]) == L"--deny-acls") return print_deny_acls(argc, argv);
   if (argc != 2 || !is_drive(argv[1])) {

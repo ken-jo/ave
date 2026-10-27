@@ -847,6 +847,13 @@ request projection; transport adapters retain their wire formats, credentials,
 and native session state. Subscription credentials never become API keys, and
 an unavailable connection never silently selects another authentication route.
 
+The [installed CLI subscription runtime](claude-code-subscription-runtime.md)
+defines its model selection, billing disclosure and isolated authentication.
+It admits only publisher-signed releases at or above a single-sourced minimum
+version; a signed release older than the previous install but above that
+minimum is accepted by design, because the provider's stable channel trails
+its latest release and publishes no revocation list.
+
 API requests retain the existing SDK transport and configured reasoning/output
 controls. Subscription requests retain their active native profile and governed
 tool handoff. A numeric API thinking budget does not override a native reasoning

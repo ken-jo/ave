@@ -66,7 +66,10 @@ BINARY_FILE_RE='\.(png|jpe?g|gif|webp|avif|bmp|ico|icns|svgz|pdf|zip|gz|tgz|bz2|
 #   C:/Users/<name>          Windows, slash-normalised
 #   -Users-<name>-           the dash-encoded form an agent tool uses for a
 #                            per-project state directory
-SLASH_RE='(/Users/|/home/|[A-Za-z]:[\\/]{1,2}[Uu]sers[\\/]{1,2})[A-Za-z0-9_.-]+'
+# A fixed package installation prefix is public system layout, not a contributor's home. Do not allow the account's other paths.
+INSTALL_ACCOUNT='linuxbrew'
+INSTALL_PREFIX_RE="/home/${INSTALL_ACCOUNT}/[.]linuxbrew(/|[\"'\`]|$)"
+SLASH_RE="(${INSTALL_PREFIX_RE}|(/Users/|/home/|[A-Za-z]:[\\\\/]{1,2}[Uu]sers[\\\\/]{1,2})[A-Za-z0-9_.-]+)"
 DASH_RE='-Users-[A-Za-z0-9_.]+'
 
 is_allowed() {
@@ -138,6 +141,9 @@ scan() {
       # reads. Filtering here rather than in the pathspec keeps the skip rule
       # in one regex instead of splitting it across two syntaxes.
       printf '%s\n' "$file" | grep -qE -e "$BINARY_FILE_RE" && continue
+      if [ "$pattern" = "$SLASH_RE" ] && printf '%s\n' "$rest" | grep -qE -e "^${INSTALL_PREFIX_RE}"; then
+        continue
+      fi
       name=$(printf '%s' "$rest" | sed -E "$strip")
       [ -z "$name" ] && continue
       if ! is_allowed "$name"; then
@@ -301,6 +307,27 @@ selftest() {
     # snippet in the docs becomes a violation.
     printf 'run `cp ~/.config/app.json /Users/example/backup`\n' >> b.md
   }
+  w_package_prefix() {
+    w_clean_placeholder
+    printf 'const prefix = "/home/%s/.linuxbrew";\n' "$INSTALL_ACCOUNT" >> a.ts
+    printf 'const payload = "/home/%s/.linuxbrew/Caskroom/package/1.2.3/cli";\n' "$INSTALL_ACCOUNT" >> a.ts
+  }
+  w_package_account_other_path() {
+    w_package_prefix
+    printf 'const privatePath = "/home/%s/Documents";\n' "$INSTALL_ACCOUNT" >> a.ts
+  }
+  w_package_prefix_lookalike() {
+    w_clean_placeholder
+    printf 'const privatePath = "/home/%s/.linuxbrew-private";\n' "$INSTALL_ACCOUNT" >> a.ts
+  }
+  w_package_prefix_same_line() {
+    w_clean_placeholder
+    printf 'const paths = ["/home/%s/.linuxbrew", "/home/%s/Documents"];\n' "$INSTALL_ACCOUNT" "$INSTALL_ACCOUNT" >> a.ts
+  }
+  w_package_prefix_suffix() {
+    w_clean_placeholder
+    printf 'const privatePath = "/home/%s/.linuxbrew%s/Documents";\n' "$INSTALL_ACCOUNT" "$PACKAGE_LOOKALIKE_SUFFIX" >> a.ts
+  }
 
   echo "home-path-gate self-test:"
   run_case clean-placeholders-pass   PASS  w_clean_placeholder
@@ -316,6 +343,14 @@ selftest() {
   run_case hyphenated-placeholder    PASS  w_hyphenated_placeholder
   run_case tilde-home-not-flagged    PASS  w_tilde_lookalike
   run_case shared-windows-profile    PASS  w_shared_windows_profile
+  run_case package-prefix            PASS  w_package_prefix
+  run_case package-account-private   BLOCK w_package_account_other_path
+  run_case package-prefix-lookalike  BLOCK w_package_prefix_lookalike
+  run_case package-same-line-private BLOCK w_package_prefix_same_line
+  local PACKAGE_LOOKALIKE_SUFFIX
+  for PACKAGE_LOOKALIKE_SUFFIX in '@private' '%private' '+private' '~private' '=private'; do
+    run_case "package-prefix-${PACKAGE_LOOKALIKE_SUFFIX}" BLOCK w_package_prefix_suffix
+  done
 
   echo "  $pass passed, $fail failed"
   [ "$fail" -eq 0 ] || return 1

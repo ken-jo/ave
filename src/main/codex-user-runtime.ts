@@ -5,6 +5,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CODEX_CLI_MINIMUM_VERSION } from "../shared/codex-subscription.js";
+import { meetsMinimumCliVersion } from "../shared/subscription-runtime.js";
 import {
   CodexExecutableArtifactError,
   copyCodexExecutableArtifact,
@@ -288,21 +289,6 @@ export function parseCodexVersion(output: string): string | null {
   return `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}${match[4] ?? ""}`;
 }
 
-// Whether `version` is at least {@link CODEX_CLI_MINIMUM_VERSION}; a pre-release of the minimum is below it.
-export function meetsCodexMinimumVersion(version: string, minimum: string = CODEX_CLI_MINIMUM_VERSION): boolean {
-  const parse = (value: string) => {
-    const [core, prerelease] = value.split(/-(.*)/s, 2) as [string, string | undefined];
-    return { parts: core.split(".").map((part) => Number(part)), prerelease: prerelease !== undefined };
-  };
-  const found = parse(version);
-  const required = parse(minimum);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = (found.parts[index] ?? 0) - (required.parts[index] ?? 0);
-    if (difference !== 0) return difference > 0;
-  }
-  return !found.prerelease || required.prerelease;
-}
-
 // Disabled features the CLI's `features list` output does not name.
 export function missingCodexFeatures(
   listing: string,
@@ -549,7 +535,7 @@ export class CodexUserRuntimeLocator {
 
       const version = parseCodexVersion(await probe(["--version"]));
       if (!version) throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
-      if (!meetsCodexMinimumVersion(version)) {
+      if (!meetsMinimumCliVersion(version, CODEX_CLI_MINIMUM_VERSION)) {
         throw new CodexUserRuntimeError("codex-runtime-version-unsupported", version);
       }
       const missing = missingCodexFeatures(await probe(["features", "list"]));
