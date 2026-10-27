@@ -545,18 +545,22 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     const root = mkdtempSync(join(tmpdir(), "asrt-win-probe-"));
     temporaryRoots.push(root);
     const originalResources = getHostResources();
+    const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath")!;
     const resourcePath = join(root, "resources");
     const scripts = join(resourcePath, "skill-scripts");
     mkdirSync(scripts, { recursive: true });
+    const runtime = join(root, "host-runtime.exe");
+    writeFileSync(runtime, "runtime image fixture");
     const profile = ORIGINAL_PLATFORM === "win32" ? join(root, "alice") : "C:\\Users\\alice";
     if (ORIGINAL_PLATFORM === "win32") mkdirSync(profile);
     vi.stubEnv("HOME", profile);
     vi.stubEnv("USERPROFILE", profile);
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
 
+    Object.defineProperty(process, "execPath", { ...originalExecPath, value: runtime });
     configureHostResources({ resourcePath, isPackaged: true });
     try {
-      expect(getDefaultSensitiveWriteDenyPaths()).toContain(scripts);
+      expect(getDefaultSensitiveWriteDenyPaths()).toEqual(expect.arrayContaining([scripts, runtime]));
       await initializeAsrtSandbox({ allowedDomains: [] });
 
       expect(isAsrtSandboxActive()).toBe(true);
@@ -564,7 +568,10 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       expect(h.spawn).not.toHaveBeenCalled();
     } finally {
       try { if (isAsrtSandboxActive()) await resetAsrtSandbox(); }
-      finally { configureHostResources(originalResources); }
+      finally {
+        try { configureHostResources(originalResources); }
+        finally { Object.defineProperty(process, "execPath", originalExecPath); }
+      }
     }
   });
   it("resets the initialized manager and leaves the adapter inactive when the configured wrapper exits non-zero", async () => {
