@@ -134,7 +134,8 @@ export function TextDocumentPreview({ target, sessionId }: {
   const copyValue = inlineText ?? (state.phase === "ok" ? state.content : target.path);
   const lines = state.phase === "ok" ? state.lines : [];
   const changes = new Map(state.phase === "ok" ? state.changes.map((change) => [change.line, change]) : []);
-  const lineCount = inlineText !== undefined ? inlineText.split(/\r\n|\r|\n/).length : state.phase === "ok" ? state.lineCount : undefined;
+  const lineCount = inlineText !== undefined ? inlineText.split(/\r\n|\r|\n/).length
+    : state.phase === "ok" && !state.image ? state.lineCount : undefined;
   return <div className="space-y-2" data-testid="chat-side-panel-file-preview">
     <PreviewDocumentHeader path={state.phase === "ok" ? state.path : target.path} workspaceRoot={target.workspaceRoot}
       canOpenExternal={target.canOpenExternal || (inlineText === undefined && !selected && state.phase === "ok" && previewSupportsExternalOpen(state.path))}

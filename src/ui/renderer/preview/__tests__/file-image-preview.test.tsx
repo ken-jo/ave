@@ -13,7 +13,7 @@ const image = { mimeType: "image/png", dataUrl: "data:image/png;base64,iVBORw0KG
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("directory image preview", () => {
-  it("keeps an absolute directory target path hidden behind its relative display hint", async () => {
+  it("shows the relative directory beside its file name and retains the full path tooltip", async () => {
     const actualPath = "/work/project/images/source.png";
     const readFile = vi.fn().mockResolvedValue({ ok: true, image, bytes: 8, path: actualPath });
     vi.stubGlobal("ave", { preview: { readFile } });
@@ -21,7 +21,10 @@ describe("directory image preview", () => {
     await screen.findByRole("img", { name: "source.png" });
     const body = screen.getByTestId("chat-side-panel-file-preview");
     expect(body.textContent).not.toContain("/work/project");
-    expect(body.textContent).toContain("images/source.png");
+    expect(screen.getByRole("heading", { name: "source.png" })).toBeVisible();
+    expect(screen.getByTestId("preview-document-path")).toHaveTextContent("images/");
+    expect(screen.getByTestId("preview-document-path")).toHaveAttribute("title", "/work/project/images/source.png");
+    expect(screen.getByTestId("document-preview-footer")).toHaveTextContent(/^PNG$/);
   });
 
   it("forwards the workspace resolution hint for a relative image without exposing an absolute label", async () => {
