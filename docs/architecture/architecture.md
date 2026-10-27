@@ -90,35 +90,39 @@ Every event has `source: "document" | "browser" | "terminal"`,
 `actor: "agent"`, host-derived `sessionId`, `target: { id, path }`, monotonically
 increasing target-local `seq`, `kind`, `before`, `after`, and `ts` (epoch
 milliseconds). Document kinds are `element`, `snapshot`, and `status`.
-An element names a cell by sheet name and absolute row/column, or a text line
-by one-based line number, and carries bounded display strings in `before`/`after`.
+An element names a cell by sheet name and absolute row/column, a text line
+by one-based line number, a paragraph/run by zero-based indices, or a slide
+shape by zero-based slide index and shape ID. It carries bounded display
+strings in `before`/`after`.
 Journal cells are explicitly advisory until reconciliation; native line diffs
-come from a verified save. A snapshot replaces the bounded rendered table and
-its recalculation signal, or the bounded text document. A status carries a
-stable localized code without document contents. Element addresses leave room
-for paragraph and shape adapters without implementing them. The daemon, not a
-journal or renderer, supplies actor, session, target identity, sequence and
-timestamp.
+and structured document diffs come from a verified save. A snapshot replaces
+the bounded rendered table and its recalculation signal, text document, or page
+document. A status carries a stable localized code without document contents.
+The daemon, not a journal, engine or renderer, supplies actor, session, target
+identity, sequence and timestamp.
 
 The adapter contract starts an exact target, accepts a rendered snapshot and
 agent mutation evidence, reconciles a settled save, and disposes all watches,
 timers and pending work. A replaceable `DocumentObservationEngine` accepts
-already admitted bytes, a format and selection index, and returns a bounded
-table or text document under cancellation. Table decoding delegates to the
-existing isolated parser; text decoding retains the existing UTF-8 preview's
-2,000,000-byte and 5,000-line ceilings and rejects binary content. There is no
-converter download, warm conversion service or new document serializer. Engine
-absence produces the explicit `engine-unavailable` status and leaves the existing viewer usable;
-parse, integrity and contract errors remain errors rather than selecting that
-fallback. Future engines must retain bounded input/output, verification,
-confinement and per-session lifecycle ownership.
+already admitted bytes, a format and selection index, and a host-derived session
+context. It returns a bounded table, text or page document under cancellation
+and releases its session-owned resources when observation ends. The optional
+[document conversion engine](document-observation-engine.md) renders page
+documents and recalculates temporary workbook copies. Its installation,
+verification, offline confinement and warm session queue are separate from
+source attribution and the event transport. Engine absence deterministically
+selects the existing bounded readers; a format needing the engine reports
+`engine-unavailable`. Parse, integrity, confinement and contract errors remain
+errors rather than selecting that fallback. Text decoding retains the existing
+UTF-8 preview's 2,000,000-byte and 5,000-line ceilings and rejects binary content.
 
 Full default text/code reads can bind observation through the same private
 preview read contract and rendered acknowledgement as tables. Selected line
 windows, inline snippets and images retain ordinary viewing without observation.
 The initial content and digest come from the same admitted bytes. Page documents
-retain their existing readers without synthetic live events; adding a shared
-viewer header does not add a page observation engine or content capture.
+use the same admission and acknowledgement path; paragraph/run and slide-shape
+diffs come from bounded structured representations of verified before/after
+bytes. Rendering a page does not itself create an activity event.
 Observed text reads retain only the newest request owner for each actual frame
 and canonical path. A late replaced read cannot register or release the newer
 view. There are at most 16 current request-owner keys; cancellation still waits
@@ -140,8 +144,8 @@ renderer metadata and UI/plugin tool origins cannot create that context.
 Watching a parent directory only filters the exact basename so replacement
 renames remain observable; it never reads sibling contents.
 
-For an agent table open, the existing tab-selection receipt and a host-accepted
-initial rendered-grid acknowledgement must both arrive before `open_document`
+For an agent document open, the existing tab-selection receipt and a host-accepted
+initial rendered-view acknowledgement must both arrive before `open_document`
 completes. Either may arrive first; a still-live matching rendered baseline can
 satisfy readiness immediately. The original document-open deadline, frame,
 session and cancellation guards remain in force. This prevents an immediate
@@ -149,6 +153,14 @@ following edit from outrunning baseline admission. Pending agent-open marks
 without a parsed view expire within the existing reader startup, parse and busy
 retry budgets. Files without a rendered baseline are never watched or read by
 the observer merely because a tool named them.
+
+Optional engine preparation verifies the installed payload and starts its
+session runtime through the bounded conversion queue under the tool's
+cancellation signal. Private UNO readiness and required importer registration
+complete before the panel request's acknowledgement window starts. Preparation
+reads no source document bytes and creates no observation target or filesystem
+watch. Native conversion and the existing bounded output reader retain their
+own cancellable process budgets.
 
 Filesystem notifications are wakeups, not writer identity. Native mutations
 provide their exact intended post-image; the skill provides a tool-bound
@@ -161,7 +173,7 @@ requires reload. Mere temporal overlap with an agent tool is insufficient.
 Unattributed or conflicting saves must not be recorded as agent changes.
 The adapter debounces notifications for 80 ms, requires two equal descriptor
 size/mtime observations 40 ms apart, retries a transient rename for at most
-eight settle attempts, and computes the cell or line diff against the last
+eight settle attempts, and computes the element diff against the last
 acknowledged rendered snapshot. A prior user save therefore cannot be folded
 into an attributed agent delta.
 
@@ -172,6 +184,9 @@ directory to one admitted tool call, turn and session. The skill appends UTF-8
 JSON Lines with version `1`: `begin` has `editId`, canonical `target`, and
 `beforeHash`; `cell` has `editId`, `sheet`, A1 `cell`, `before`, and `after`;
 `commit` has `editId` and `afterHash`. Hashes are lowercase SHA-256 hex.
+The same `begin`/`commit` pair can reconcile an admitted table or page target;
+provisional `cell` records apply only to table views. Page paragraph/run and
+shape changes come from the verified saved package, never from journal text.
 The journal is capped at 2 MiB per invocation, 16 KiB per line, 500 cell
 records per edit, and 2,000 display characters per value. The reader reads at
 most 64 KiB per poll, retains an incomplete final line until its newline,
@@ -219,7 +234,7 @@ accessible labels. There is no separate path box, file-kind badge or source row.
 
 A single live-strip slot beneath that header appears only for authenticated
 agent observation activity or its error/resynchronization state. It reports
-editing or edited, the latest cell/line change summary and recency. The current
+editing or edited, the latest element change summary and recency. The current
 element has an outline and a small Ave tag; earlier changes retain a faint tint.
 These marks use one theme color with light and dark variants. A compact footer
 owns format, selected sheet/page or line count, recalculation status and

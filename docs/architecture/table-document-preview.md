@@ -2,7 +2,7 @@
 
 The table viewer accepts CSV, TSV, XLSX, XLS and ODS files and displays a bounded grid of strings. [The shared preview contract](../../src/shared/preview-document.ts) owns supported formats, result types, error codes and every resource ceiling.
 
-XLSX workbooks requesting recalculation show a localized badge because cached formula results may be stale. The [XLSX editing contract](xlsx-skill-editing.md) owns the calculation signal, preservation limits and approved sandbox-shell editing. The panel remains read-only while showing live agent changes under the [observation contract](architecture.md#agent-activity-observation).
+XLSX workbooks requesting recalculation show a localized badge because cached formula results may be stale. The optional [document conversion engine](document-observation-engine.md) recalculates private copies when installed; an absent engine retains the cached-value viewer and badge. The [XLSX editing contract](xlsx-skill-editing.md) owns the source calculation signal, preservation limits and approved sandbox-shell editing. The panel remains read-only while showing live agent changes under the [observation contract](architecture.md#agent-activity-observation).
 
 ## Read authority
 
@@ -40,7 +40,7 @@ The document adapter combines exact-file save notifications with the skill's app
 
 Private observation push and acknowledgement channels reuse registered app-window main-frame checks and session ownership. Acknowledgements carry only a read-only target identity and sequence; there is no path, script or document-write payload. The renderer acknowledges snapshots after rendering and releases the binding on document, sheet or session change and unmount. The [observation contract](architecture.md#agent-activity-observation) owns event schemas, journal containment and caps, lifecycle, back-pressure and agent-only local privacy.
 
-The replaceable observation engine uses the same bounded table-reader child as manual previews. The same document adapter also accepts verified native text saves and emits line diffs for full text/code previews; selected line windows, snippets and images are outside that live scope. Page previews share the compact presentation but retain their existing reader without fabricated live activity. If the observation engine is absent, the explicit `engine-unavailable` state leaves the existing viewer and reload action available. Parser or protocol failures stay errors. Conversion services and browser/terminal adapters are outside this implementation.
+The replaceable observation engine validates table results through the same bounded reader child as manual previews. When installed, the [conversion engine](document-observation-engine.md) supplies a recalculated temporary workbook to that child; it never publishes those bytes to the source. With no installation, the existing reader displays source caches and their recalculation signal. The same document adapter handles verified native text, paragraph/run and slide-shape diffs. Selected text windows, snippets, images and user-only activity remain outside observation scope. Integrity, confinement, parser and protocol failures stay errors. Browser and terminal adapters are outside this implementation.
 
 ## Parsing process and budgets
 
@@ -70,7 +70,7 @@ ODS repeated-row and repeated-column declarations are checked against the shared
 
 Workbook row and column windows start at the used range's first cell. The used range comes from the parser's `!fullref` when present, otherwise `!ref`. `firstRow` and `firstColumn` preserve that cell's zero-based source coordinates for labels; `totalRows` and `totalColumns` describe the used-range dimensions. A sheet whose reported range begins at `A10001` starts its preview there. Absolute row position must not turn an offset used range into an empty preview. A sheet without a reported range returns an empty grid with zero dimensions and origins.
 
-The reader returns at most the shared row, column, total-cell and sheet limits, pads retained rows to a consistent width and clips long cells. A wider grid has a smaller row window to fit the total-cell ceiling. Truncation flags tell the viewer which limits removed data. Cells are display strings; formulas are not evaluated and macros are not executed.
+The reader returns at most the shared row, column, total-cell and sheet limits, pads retained rows to a consistent width and clips long cells. A wider grid has a smaller row window to fit the total-cell ceiling. Truncation flags tell the viewer which limits removed data. Cells are display strings. The reader decodes caches without evaluating formulas or executing macros; optional recalculation happens in the separately verified and confined conversion engine.
 
 CSV and TSV decode bytes lazily into bounded input chunks. Delimiter and line-ending detection use a bounded initial sample and one bounded look-ahead chunk. When more input follows, the sample must establish a complete initial record; an overlong initial record or ambiguous terminal carriage return is refused with `parse-limit`. Inspection stops after the retained row window plus the next record needed to establish truncation, with bounded chunk read-ahead; the source stream is destroyed on completion or failure. It does not decode the complete suffix or continue record scanning to compute whole-file totals after truncation. When inspection stops early, `totalRows` and `totalColumns` describe the observed prefix and are lower bounds for the complete file. The viewer selects lower-bound labels for both totals when the format is CSV or TSV and `sheet.rowsTruncated` is true; `columnsTruncated` independently reports width clipping. A fatal quoting error encountered in the inspected window returns `corrupt-document`; malformed quoting that requires parser repair is fatal. A successful prefix preview makes no validity claim about the uninspected suffix.
 
@@ -85,6 +85,11 @@ The shared error union and the renderer's localized mapping remain the response 
 | `invalid-index` | The sheet or page index is not a non-negative integer. |
 | `too-large` | The source file exceeds its byte ceiling. |
 | `encrypted`, `unsupported-encoding` | The content needs unsupported decryption or text decoding. |
+| `engine-unavailable` | The format requires an optional engine that is not installed; supported cached-value and outline readers remain usable. |
+| `engine-integrity-failed` | The installed engine fails payload or signature verification. |
+| `engine-confinement-unavailable` | The host cannot provide the required offline conversion sandbox. |
+| `engine-runtime-unavailable` | An additional importer runtime or its private-profile registration is unavailable. |
+| `engine-failed` | Conversion or its derived output fails the engine contract. |
 | `corrupt-document` | Inspected content is malformed or inconsistent with its requested container, including fatal delimited quoting errors. |
 | `archive-too-large` | Archive or declared document expansion cannot fit the supported expansion limits. |
 | `busy` | Another sender or frame holds the request lease; retry shortly. |
