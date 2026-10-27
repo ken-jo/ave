@@ -36,6 +36,7 @@ beforeEach(() => {
     volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001", changeTime: "0x0000000000000001",
     attributes: 0, reparseTag: 0, reparseTarget: null, directory: fs.lstatSync(path).isDirectory(), ancestors: [],
   })));
+  vi.mocked(windowsPathFacts.pinWindowsPaths).mockClear();
   for (const entry of CHILD_ENTRY_POINTS) vi.mocked(childProcess[entry]).mockClear();
 });
 
@@ -105,12 +106,28 @@ describe("checked repository metadata inputs", () => {
     ["a changed index", () => fs.writeFileSync(join(cwd, ".git", "index"), "synthetic index")],
     ["a removed file", () => fs.unlinkSync(join(cwd, ".git", "HEAD"))],
     ["a new directory", () => fs.mkdirSync(join(cwd, ".git", "additional"))],
-    ["a changed metadata mode", () => fs.chmodSync(join(cwd, ".git", "HEAD"), 0o600)],
   ] as const)("changes evidence for %s", (_name, change) => {
-    fs.chmodSync(join(cwd, ".git", "HEAD"), 0o644);
     const first = inspectGitRepository(cwd);
     expect(first).not.toBeNull();
     change();
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("changes evidence for an observed metadata mode change", () => {
+    const readStat = vi.mocked(fs.lstatSync).getMockImplementation()!;
+    let mode = 0o100644n;
+    vi.mocked(fs.lstatSync).mockImplementation(((path, options) => {
+      const stat = readStat(path, options);
+      if (path === join(cwd, ".git", "HEAD") && options?.bigint === true) {
+        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode });
+      }
+      return stat;
+    }) as typeof fs.lstatSync);
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    mode = 0o100600n;
     const second = inspectGitRepository(cwd);
     expect(second).not.toBeNull();
     expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
@@ -164,9 +181,14 @@ describe("checked repository metadata inputs", () => {
     setProcessPlatform(platform);
     expect(inspectGitRepository(cwd)).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files", stateFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     if (platform === "win32") {
-      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([cwd]);
-      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([dirname(cwd)]);
-      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([join(cwd, ".git")]);
+      // The cwd pin carries every ancestor component; each metadata directory pins its children in one batch.
+      const metadata = join(cwd, ".git");
+      const batches = vi.mocked(windowsPathFacts.pinWindowsPaths).mock.calls.map(([paths]) => [...paths].sort().join("|"));
+      expect(batches.slice(0, 2)).toEqual([cwd, metadata]);
+      expect(batches.slice(2).sort()).toEqual([
+        [join(metadata, "HEAD"), join(metadata, "config"), join(metadata, "objects"), join(metadata, "refs")].sort().join("|"),
+        join(metadata, "objects", "info"), join(metadata, "refs", "heads"),
+      ].sort());
     } else expect(windowsPathFacts.pinWindowsPaths).not.toHaveBeenCalled();
   });
 
@@ -243,6 +265,37 @@ describe("checked repository metadata inputs", () => {
     setProcessPlatform("win32");
     vi.mocked(windowsPathFacts.pinWindowsPaths).mockReturnValue([]);
     expect(inspectGitRepository(cwd)).toBeNull();
+  });
+
+  it.each([["a first-level child", ["config"]], ["a nested child", ["refs", "heads"]]] as const)("refuses a reparse row for %s in a child batch", (_name, relative) => {
+    setProcessPlatform("win32");
+    const target = join(cwd, ".git", ...relative);
+    const ordinaryPin = vi.mocked(windowsPathFacts.pinWindowsPaths).getMockImplementation()!;
+    vi.mocked(windowsPathFacts.pinWindowsPaths).mockImplementation(paths => ordinaryPin(paths).map((row, index) =>
+      paths[index] === target ? { ...row, attributes: 0x400, reparseTag: 0xa000000c } : row));
+    expect(inspectGitRepository(cwd)).toBeNull();
+    expect(vi.mocked(windowsPathFacts.pinWindowsPaths).mock.calls.some(([paths]) => paths.length > 0 && paths.includes(target))).toBe(true);
+  });
+
+  it("refuses a child batch answered with fewer rows than requested", () => {
+    setProcessPlatform("win32");
+    const ordinaryPin = vi.mocked(windowsPathFacts.pinWindowsPaths).getMockImplementation()!;
+    vi.mocked(windowsPathFacts.pinWindowsPaths).mockImplementation(paths => ordinaryPin(paths).slice(paths.length > 1 ? 1 : 0));
+    expect(inspectGitRepository(cwd)).toBeNull();
+  });
+
+  it("splits a child batch that would exceed the helper command line", () => {
+    setProcessPlatform("win32");
+    const heads = join(cwd, ".git", "refs", "heads");
+    const names = Array.from({ length: 160 }, (_, index) => `${String(index).padStart(3, "0")}-${"r".repeat(96)}`);
+    for (const name of names) fs.writeFileSync(join(heads, name), "0000000000000000000000000000000000000000\n");
+    expect(inspectGitRepository(cwd)).not.toBeNull();
+    const batches = vi.mocked(windowsPathFacts.pinWindowsPaths).mock.calls.map(([paths]) => paths)
+      .filter(paths => paths.length > 0 && paths.every(path => dirname(path) === heads));
+    expect(batches.length).toBeGreaterThan(1);
+    // Every path is pinned exactly once, and each helper command line stays below the CreateProcess limit.
+    expect(batches.flat().sort()).toEqual(names.map(name => join(heads, name)).sort());
+    for (const batch of batches) expect(batch.reduce((total, path) => total + path.length + 3, 0)).toBeLessThan(32_767);
   });
 
   it.each([

@@ -227,14 +227,14 @@ describe("preload contextBridge world shape lock", () => {
             "set",
           ],
           "preview": [
-            "acknowledgeAgentObservation",
-            "acknowledgeDocumentObservation",
             "acknowledgeDocumentOpen",
+            "acknowledgeObservation",
             "onAgentObservation",
-            "onDocumentObservation",
             "onDocumentOpen",
+            "onObservationPreview",
             "readDocument",
             "readFile",
+            "requestObservationPreview",
           ],
           "ui": [
             "onDynamicMenuAction",

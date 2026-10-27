@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
-import type { AgentObservationEvent, TerminalObservationRequest } from "../../../../shared/agent-observation.js";
+import type { AgentObservationEvent, ObservationRequest } from "../../../../shared/agent-observation.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
@@ -25,14 +25,14 @@ beforeEach(() => {
   previousWindowAve = window.ave;
   const ns = makeMockAveNamespace().ns;
   stopListening = vi.fn(() => { listener = null; });
-  acknowledge = vi.fn(async (request: TerminalObservationRequest) => ({
+  acknowledge = vi.fn(async (request: ObservationRequest) => ({
     ok: true,
     ...(request.action === "subscribe-terminal" ? { observation: { targetId: TARGET_ID, sessionId: request.sessionId, seq: 0 } } : {}),
   }));
   (window as unknown as { ave: unknown }).ave = { ...ns, preview: {
     ...ns.preview,
     onAgentObservation: vi.fn((handler: (events: AgentObservationEvent[]) => void) => { listener = handler; return stopListening; }),
-    acknowledgeAgentObservation: acknowledge,
+    acknowledgeObservation: acknowledge,
   } };
 });
 
@@ -71,7 +71,7 @@ function Harness({ visible }: { visible: boolean }) {
   );
 }
 
-const actions = (action: string) => acknowledge.mock.calls.filter(([request]) => (request as TerminalObservationRequest).action === action);
+const actions = (action: string) => acknowledge.mock.calls.filter(([request]) => (request as ObservationRequest).action === action);
 
 const COMMAND = {
   id: "command-one", toolUseId: "tool-one", turnId: "turn-one", kind: "shell", command: "bun test", cwd: "/workspace/project",

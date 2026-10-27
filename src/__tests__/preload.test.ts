@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
-import type { AgentObservationEvent, DocumentObservationEvent, TerminalObservationEvent } from "../shared/agent-observation.js";
+import type { AgentObservationEvent } from "../shared/agent-observation.js";
 import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -90,9 +90,26 @@ describe("preload — plugin webview asset URLs", () => {
   it.each(["rendered", "release"] as const)("passes only the read-only %s observation acknowledgement", async (action) => {
     const preview = (await loadAveNamespace()).preview as AvePreviewApi;
     const request = { action, targetId: "11111111-1111-4111-8111-111111111111", sessionId: "document-session", seq: 3 };
-    await preview.acknowledgeDocumentObservation(request);
+    await preview.acknowledgeObservation(request);
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationAck, request);
     expect(Object.keys(request).sort()).toEqual(["action", "seq", "sessionId", "targetId"]);
+  });
+
+  it("passes only the bounded browser preview request and subscribes to transient frames", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const request = { action: "rendered" as const, targetId: "11111111-1111-4111-8111-111111111111", sessionId: "browser-session",
+      tabId: "tab-1", frame: 2 };
+    await preview.requestObservationPreview(request);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationPreview, request);
+    const handler = vi.fn();
+    const unsubscribe = preview.onObservationPreview(handler);
+    const listener = mockOn.mock.calls.findLast(([channel]) => channel === CHANNELS.preview.observationPreviewFrames)?.[1] as
+      (event: unknown, message: unknown) => void;
+    const message = { targetId: request.targetId, sessionId: request.sessionId, tabId: "tab-1", kind: "state", state: "updating" };
+    listener({}, message);
+    expect(handler).toHaveBeenCalledWith(message);
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationPreviewFrames, listener);
   });
 
   it("preserves preview reads and adds a session binding only when supplied", async () => {
@@ -115,42 +132,32 @@ describe("preload — plugin webview asset URLs", () => {
     ]);
   });
 
-  it("subscribes to local document observations and removes the same listener", async () => {
+  it("subscribes to local agent observations and removes the same listener", async () => {
     const preview = (await loadAveNamespace()).preview as AvePreviewApi;
     const handler = vi.fn();
-    const unsubscribe = preview.onDocumentObservation(handler);
+    const unsubscribe = preview.onAgentObservation(handler);
     expect(mockOn).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, expect.any(Function));
     const listener = mockOn.mock.calls.findLast(([channel]) => channel === CHANNELS.preview.observationEvents)?.[1] as
-      (event: unknown, events: DocumentObservationEvent[]) => void;
-    const events: DocumentObservationEvent[] = [{ source: "document", actor: "agent", sessionId: "document-session",
+      (event: unknown, events: AgentObservationEvent[]) => void;
+    const events: AgentObservationEvent[] = [{ source: "document", actor: "agent", sessionId: "document-session",
       target: { id: "11111111-1111-4111-8111-111111111111", path: "/workspace/budget.xlsx" },
       seq: 3, ts: 1_000, kind: "element", element: { kind: "cell", sheet: "Budget", row: 0, column: 1 },
-      before: "12", after: "84", advisory: true }];
+      before: "12", after: "84", advisory: true },
+      { source: "browser", actor: "agent", sessionId: "browser-session", target: { id: "22222222-2222-4222-8222-222222222222", path: "browser", hostSessionId: "browser-session" },
+        seq: 1, ts: 1_000, kind: "action", before: null, after: { action: "click", tabId: "tab-1", rendererTabId: "browser:1",
+          url: "https://example.test/", title: "Example", element: { ref: "e1", role: "button", name: "Continue", redacted: false } } }];
     listener({}, events);
     expect(handler).toHaveBeenCalledWith(events);
     unsubscribe();
     expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, listener);
   });
 
-  it("multiplexes terminal snapshots on the existing channel without delivering them to document viewers", async () => {
+  it("passes the terminal observation subscription on the existing acknowledgement channel", async () => {
     const preview = (await loadAveNamespace()).preview as AvePreviewApi;
-    const documents = vi.fn();
-    const all = vi.fn();
-    preview.onDocumentObservation(documents);
-    const stop = preview.onAgentObservation(all);
-    const listeners = mockOn.mock.calls.filter(([channel]) => channel === CHANNELS.preview.observationEvents)
-      .map(([, listener]) => listener as (event: unknown, events: AgentObservationEvent[]) => void);
-    const terminal: TerminalObservationEvent = { source: "terminal", actor: "agent", sessionId: "terminal-session",
-      target: { id: "11111111-1111-4111-8111-111111111111", path: "terminal-activity" }, seq: 1, ts: 1000,
-      kind: "snapshot", before: null, after: { commands: [] } };
-    for (const listener of listeners) listener({}, [terminal]);
-    expect(documents).not.toHaveBeenCalled();
-    expect(all).toHaveBeenCalledExactlyOnceWith([terminal]);
-    stop();
-    expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, listeners[1]);
     const request = { action: "subscribe-terminal" as const, sessionId: "terminal-session" };
-    await preview.acknowledgeAgentObservation(request);
+    await preview.acknowledgeObservation(request);
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationAck, request);
+    expect(Object.keys(request).sort()).toEqual(["action", "sessionId"]);
   });
 
   afterEach(() => {

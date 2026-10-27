@@ -9,8 +9,8 @@ import { DocumentObservationAdapter, type JournalObservationLease } from "../obs
 import { createTableObservationEngine } from "../observation/table-engine.js";
 import { ObservationDaemon } from "../observation/daemon.js";
 import {
-  isDocumentObservationAck, OBSERVATION_LIMITS,
-  type DocumentObservationBinding, type DocumentObservationEngine, type ObservationIdentity,
+  isObservationAck, OBSERVATION_LIMITS,
+  type ObservationBinding, type DocumentObservationEngine, type ObservationIdentity,
   type ObservedDocument,
 } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
@@ -22,7 +22,8 @@ import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directori
 import { protectedReadDenyCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
 import { setAgentObservationSink, type ObservedFileEffect } from "../tools/agent-observation-context.js";
 import { TerminalObservationRuntime } from "./terminal-observation.js";
-import type { TerminalObservationResponse } from "../shared/agent-observation.js";
+import type { ObservationResponse } from "../shared/agent-observation.js";
+import { installBrowserObservation, type BrowserObservationRuntime } from "./browser-observation.js";
 
 interface ViewOwner {
   id: string;
@@ -44,6 +45,7 @@ export class DocumentObservationRuntime {
   private readonly adapter: DocumentObservationAdapter;
   private readonly daemon = new ObservationDaemon();
   private readonly terminalObservation: TerminalObservationRuntime;
+  private readonly browser: BrowserObservationRuntime;
   private readonly views = new Map<string, ViewOwner>();
   private readonly journals = new Map<string, JournalObservationLease[]>();
   private readonly readyWaiters = new Set<{ sessionId: string; path: string; finish: (ready: boolean) => void }>();
@@ -53,6 +55,7 @@ export class DocumentObservationRuntime {
   constructor(private readonly deps: IpcDeps, engine: DocumentObservationEngine | null = createTableObservationEngine()) {
     this.adapter = new DocumentObservationAdapter(engine, this.daemon);
     this.terminalObservation = new TerminalObservationRuntime(deps, this.daemon);
+    this.browser = installBrowserObservation(deps, this.daemon);
     setAgentObservationSink({
       openJournal: (identity, path) => {
         const lease = this.adapter.openJournal(identity, path);
@@ -101,7 +104,7 @@ export class DocumentObservationRuntime {
   }
 
   registerView(event: IpcMainInvokeEvent, sessionId: unknown, path: string, bytes: Buffer,
-    document: ObservedDocument): DocumentObservationBinding | undefined {
+    document: ObservedDocument): ObservationBinding | undefined {
     if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 256) return undefined;
     const prospective = { event, sessionId, path };
     if (!this.isCurrent(prospective)) return undefined;
@@ -139,11 +142,17 @@ export class DocumentObservationRuntime {
     return { targetId: id, sessionId, seq: 0 };
   }
 
-  acknowledge(event: IpcMainInvokeEvent, raw: unknown): TerminalObservationResponse {
+  browserPreview(event: IpcMainInvokeEvent, raw: unknown): { ok: boolean; error?: string } {
+    return this.browser.previewRequest(event, raw);
+  }
+
+  acknowledge(event: IpcMainInvokeEvent, raw: unknown): ObservationResponse {
     if (!validateAppWindowMainFrameSender(event, this.deps)) return { ok: false, error: "unauthorized" };
     const terminal = this.terminalObservation.acknowledge(event, raw);
     if (terminal) return terminal;
-    if (!isDocumentObservationAck(raw)) return { ok: false, error: "bad-request" };
+    if (!isObservationAck(raw)) return { ok: false, error: "bad-request" };
+    const browserResult = this.browser.acknowledge(event, raw);
+    if (browserResult) return browserResult;
     const view = this.views.get(raw.targetId);
     if (!view || !this.isCurrent(view) || view.event.sender !== event.sender
       || view.event.senderFrame !== event.senderFrame || view.sessionId !== raw.sessionId) {
@@ -228,8 +237,15 @@ export class DocumentObservationRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.terminalObservation.dispose();
     setAgentObservationSink(undefined);
+    try { this.terminalObservation.dispose(); }
+    finally {
+      try { this.browser.dispose(); }
+      finally { this.disposeDocuments(); }
+    }
+  }
+
+  private disposeDocuments(): void {
     for (const id of this.views.keys()) this.release(id);
     for (const leases of this.journals.values()) for (const lease of leases) lease.dispose();
     this.journals.clear();

@@ -739,6 +739,10 @@ export const CHANNELS = {
     readDocument: "ave:preview:read-document",
     observationEvents: "ave:preview:observation-events",
     observationAck: "ave:preview:observation-ack",
+    // Transient live preview of an agent-driven browser tab. The invoke starts, stops or
+    // acknowledges a frame; frames are pushed outbound only and never retained. INTERNAL.
+    observationPreview: "ave:preview:observation-preview",
+    observationPreviewFrames: "ave:preview:observation-preview-frames",
     documentOpenRequest: "ave:preview:document-open-request",
     documentOpenAck: "ave:preview:document-open-ack",
   },

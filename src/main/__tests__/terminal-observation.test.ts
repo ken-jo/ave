@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { ObservationDaemon } from "../../observation/daemon.js";
 import { CHANNELS } from "../../contract/app-contract.js";
-import type { TerminalObservationEvent, DocumentObservationBinding } from "../../shared/agent-observation.js";
+import type { TerminalObservationEvent, ObservationBinding } from "../../shared/agent-observation.js";
 import { beginAgentTerminalObservation, releaseAgentTerminalObservationSessions } from "../../tools/agent-terminal-observation.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 
@@ -22,7 +22,7 @@ const input = { kind: "shell" as const, command: "bun test", cwd: "/workspace", 
 let daemon: ObservationDaemon;
 let runtime: TerminalObservationRuntime;
 
-function subscribe(): DocumentObservationBinding {
+function subscribe(): ObservationBinding {
   const result = runtime.acknowledge(event, { action: "subscribe-terminal", sessionId: identity.sessionId });
   expect(result?.ok).toBe(true);
   return result!.observation!;

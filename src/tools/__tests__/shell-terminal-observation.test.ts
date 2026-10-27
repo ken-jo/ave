@@ -2,11 +2,11 @@ import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runAdmittedAgentWork } from "../../__tests__/support/agent-observation-admission.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import type { ObservationIdentity } from "../../shared/agent-observation.js";
-import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
 import { setAgentTerminalObservationSink, type AgentTerminalObservationInput, type AgentTerminalObservationLease } from "../agent-terminal-observation.js";
 import { backgroundShellManager, BashTool, controlShellTask, listShellTasks } from "../shell-tools.js";
 
@@ -51,7 +51,7 @@ function execute(command: string, background = false, signal?: AbortSignal) {
   });
 }
 function agent<T>(run: () => Promise<T>) {
-  return runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity, run));
+  return runAdmittedAgentWork(identity, run);
 }
 
 describe("shell command observation provenance and lifetime", () => {

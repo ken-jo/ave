@@ -3,7 +3,9 @@
 import "../../../../../test/renderer/setup.js";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AveApi } from "../../types.js";
+import type { AveApi, AvePreviewApi } from "../../types.js";
+import type { AgentObservationEvent } from "../../../../shared/agent-observation.js";
+import { connectBrowserObservations } from "../../preview/browser-observation-bridge.js";
 import { useState } from "react";
 import { readFileSync } from "node:fs";
 import { FAVICON_SCHEMES, faviconSource } from "../../preview/favicon-source.js";
@@ -224,6 +226,31 @@ describe("WebSurfaceLayer", () => {
     rerender(<Two both={false} />);
     expect(screen.queryByTestId("web-surface-mounted-elsewhere")).toBeNull();
     expect(guests()).toHaveLength(1);
+  });
+
+  it("wraps the notice of a second slot in the agent's live preview, which waits until the slot is laid out", () => {
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    let emit!: (events: AgentObservationEvent[]) => void;
+    const requestObservationPreview = vi.fn(async () => ({ ok: true }));
+    const disconnect = connectBrowserObservations({ onAgentObservation: (handler: typeof emit) => { emit = handler; return () => {}; },
+      acknowledgeObservation: async () => ({ ok: true }), onObservationPreview: () => () => {}, requestObservationPreview } as unknown as AvePreviewApi);
+    try {
+      render(<>
+        <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" sessionId="agent-session" />
+        <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="pane:main" />
+        <WebSurfaceLayer api={layerApi} />
+      </>);
+      expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+      act(() => emit([{ source: "browser", actor: "agent", sessionId: "agent-session",
+        target: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", path: "browser", hostSessionId: "agent-session" }, seq: 1, ts: 1, kind: "action",
+        before: null, after: { action: "click", tabId: "tab-1", rendererTabId: "browser:1", url: "https://example.com/", title: "Example" } }]));
+      const preview = screen.getByTestId("browser-observation-preview");
+      expect(preview.contains(screen.getByTestId("web-surface-mounted-elsewhere"))).toBe(true);
+      // jsdom lays nothing out, exactly like a panel that is mounted but not shown.
+      expect(requestObservationPreview).not.toHaveBeenCalled();
+    } finally {
+      disconnect();
+    }
   });
 
   it("places the guest over the visible part of its slot and cuts occluding cards out of it", () => {

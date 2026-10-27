@@ -643,6 +643,12 @@ jobs:
         run: >
           bun run test --
           src/permissions/__tests__/asrt-sandbox.test.ts
+          src/permissions/__tests__/git-readonly-argv.test.ts
+          src/permissions/__tests__/git-readonly-controls.test.ts
+          src/permissions/__tests__/git-repository-inputs.test.ts
+          src/permissions/__tests__/git-repository-read-boundary.test.ts
+          src/permissions/__tests__/verified-shell-command.test.ts
+          src/main/__tests__/document-open.test.ts
           src/permissions/__tests__/asrt-deny-absent.test.ts
           src/permissions/__tests__/asrt-deny-absent-native.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts

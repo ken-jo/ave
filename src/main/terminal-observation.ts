@@ -6,10 +6,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { findSessionMainWindowContents } from "./app-state.js";
 import { TerminalObservationAdapter } from "../observation/terminal-adapter.js";
 import type { ObservationDaemon } from "../observation/daemon.js";
-import {
-  isDocumentObservationAck, isTerminalObservationSubscription,
-  type TerminalObservationResponse,
-} from "../shared/agent-observation.js";
+import { isObservationAck, isTerminalObservationSubscription, type ObservationResponse } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { setAgentTerminalObservationSink } from "../tools/agent-terminal-observation.js";
 
@@ -42,7 +39,7 @@ export class TerminalObservationRuntime {
       && findSessionMainWindowContents(view.sessionId) === view.event.sender;
   }
 
-  acknowledge(event: IpcMainInvokeEvent, raw: unknown): TerminalObservationResponse | undefined {
+  acknowledge(event: IpcMainInvokeEvent, raw: unknown): ObservationResponse | undefined {
     const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
     if (record?.action !== "subscribe-terminal" && !(typeof record?.targetId === "string" && this.views.has(record.targetId))) return undefined;
     if (!validateAppWindowMainFrameSender(event, this.deps)) return { ok: false, error: "unauthorized" };
@@ -78,7 +75,7 @@ export class TerminalObservationRuntime {
       this.views.set(id, view);
       return { ok: true, observation: { targetId: id, sessionId: raw.sessionId, seq: 0 } };
     }
-    if (!isDocumentObservationAck(raw)) return { ok: false, error: "bad-request" };
+    if (!isObservationAck(raw)) return { ok: false, error: "bad-request" };
     const view = this.views.get(raw.targetId);
     if (!view || !this.isCurrent(view) || view.event.sender !== event.sender || view.event.senderFrame !== event.senderFrame
       || view.sessionId !== raw.sessionId) return { ok: false, error: "unauthorized" };

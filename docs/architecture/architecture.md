@@ -80,12 +80,18 @@ the host observes and renders, with no document publication API.
 
 One main-process observation daemon owns bounded, session-bound adapter
 lifetimes. Its source interface is deliberately separate from its document
-rendering engine. Document and terminal adapters share that daemon; browser
-observation is not implemented. User document, browser and terminal activity
-is outside the observation contract. Events and snapshots remain local:
-terminal history exists only in memory, and document journals use private
-process directories. Neither becomes transcript content, telemetry,
+rendering engine. Document, browser and terminal adapters share that daemon.
+User document, browser and terminal activity is outside the observation
+contract. Browser events and terminal history stay in memory and create no
+observation files. Document journals retain their existing private process
+directories. Neither source becomes transcript content, telemetry,
 remote-surface events or provider input.
+
+The [shared schema](../../src/shared/agent-observation.ts) defines canonical
+event and acknowledgement shapes; the [daemon](../../src/observation/daemon.ts)
+owns delivery. [Browser control](#browser-control-and-tab-lifetime) and the
+[permission policy](permission-policy-design.md#shared-browser-control-and-effects)
+own command authority and its invalidation.
 
 Every event has `source: "document" | "browser" | "terminal"`,
 `actor: "agent"`, host-derived `sessionId`, `target: { id, path }`, monotonically
@@ -100,6 +106,97 @@ stable localized code without document contents. Element addresses leave room
 for paragraph and shape adapters without implementing them. The daemon, not a
 journal or renderer, supplies actor, session, target identity, sequence and
 timestamp.
+
+Browser events reuse that envelope and the private observation channel. An
+`action` has `before: null` and bounded metadata in `after`: action, main-issued
+tab handle, optional embedded renderer slot, URL, title, and an optional element
+description or download state. Browser actions cover navigation, clicks,
+typing, tab open/close/switch, downloads, hover, drag, selection, scroll, upload
+and supported keys. A browser session has one opaque target identity with
+`target.path: "browser"` and required host-derived `target.hostSessionId`.
+Document targets retain their existing shape. The hosting identity accompanies
+actions and statuses so initial errors or resynchronization can reach the right
+panel. The URL is metadata, never a path or authority supplied by a renderer.
+Browser statuses report observation errors, delivery resynchronization or
+session clearing. These are command receipts, so the
+browser adapter needs no document parser or additional rendering engine.
+
+Browser attribution starts only inside the host's model-turn context and an
+already authorized tool invocation. Page effects require the exact actor's
+active control lease and original live guest; authorized tab switching and
+closing may refer to the agent-owned tab's durable identity. A completed close
+can describe the original guest after destruction. Failed or cancelled
+commands, guest replacement and recognized human takeover supply no successful
+action event. Navigation metadata comes from command completion, not general
+page navigation or title listeners. User page events are never an observation
+source, including in the tab the agent uses. UI/plugin tool origins and
+renderer-supplied session metadata cannot create agent provenance. A live
+sub-agent routes delivery through its nearest hosted ancestor while events
+retain the actual acting session. That validated host binding survives the end
+of the child run; session end or loss of window/frame ownership releases it.
+The existing native input correlation limit still applies: a human click
+indistinguishable from an armed agent click cannot
+be separately identified. Observation does not strengthen that source proof.
+
+The browser observer retains no typed or selected values, supported-key
+operands, cookies, browser storage, arbitrary page text, snapshots or
+screenshots. The live preview below is transient display, not retention. Permitted page metadata is limited to the title and bounded
+role/name fields from references already available to the agent; it authorizes
+no other page-content extraction.
+Typing targets omit names as well as values, and credential
+field descriptions are redacted. URL metadata omits embedded credentials, query strings
+and fragments before entering delivery or retention buffers. Observation
+does not copy ordinary browser history or download destinations.
+
+Download admission uses the existing native Save-admitted callback and only an
+active command receipt for the exact guest, actor and current control lease.
+Recognized takeover, caller cancellation and unrelated guests cannot supply
+that receipt. The item's URL chain must also match the approved navigation URL
+or resolved clicked-link destination from that command. This expected URL is
+ephemeral attribution evidence, not retained event data. Click-initiated
+downloads also require the native item's user-gesture flag; explicit navigation
+and tab opening need no such flag. Unproved button or script downloads and
+downloads arriving after the command are excluded. Only state transitions are
+retained: started, completed, cancelled or interrupted.
+Filenames, destination paths and file contents are omitted. The original
+admitted item may complete after the command. Completion listeners end with
+the item, session, owning frame/window or observation runtime. Listener-capacity
+overload emits resynchronization without interrupting the native download or
+throwing through its Save callback. Observation adds no download approval or
+automatic open behavior.
+
+A live preview shows the agent's tab where that tab is open in another panel:
+the second slot of the same web surface, beneath its activity strip. It is bound
+to the exact main-issued tab handle and observation target of the latest agent
+action for that renderer tab, and never falls back to another tab. Main admits
+only a tab that the acting session leases or owns, or whose owner's direct
+parent it is (the same ownership rule that admits tab switch and close events; a
+grandparent or sibling session is refused), that is not paused by the user, and
+on which that session ran a command within the last 30 seconds. Recognized user
+input, address-bar navigation and Stop pause an agent-owned tab; the agent's own
+cross-origin navigation does not. User takeover, user navigation, idleness,
+session end and window or frame loss stop it. It reuses the guest's existing in-
+process debugger session through Chromium's screencast: it never attaches a
+debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
+every third compositor frame, and at most four forwarded per second with one
+unrendered frame in flight. Main acknowledges every Chromium frame on receipt,
+independently of renderer delivery. The screencast is re-armed on each main-
+frame commit and after two seconds without a frame while Chromium reports the
+page visible; a hidden page is not re-armed until it is visible again. Only a
+frame within 1.5 seconds of a commit is decoded: a uniform one keeps the
+previous frame, marked as updating; later uniform frames render. A forwarded
+frame the renderer never reports painted stops blocking delivery after two
+seconds. Closing the page session rejects pending preview commands, including a
+stop in progress, at once with a closed error. A transient empty URL during a
+cross-site commit is not a close. Frames use a separate private push channel
+beside the observation stream and never enter the daemon, its queues, event
+history, transcripts or files. The renderer keeps only the newest frame for a
+preview element while that element is shown. A mounted panel that is hidden, has
+no size, is outside the viewport or sits in a hidden document stops the preview
+and drops its frame. A hidden guest paints no frames, so its preview keeps the
+last real frame marked as updating. The agent's typing tools already refuse
+password, card and one-time code fields, so the preview adds no secret-input
+display path.
 
 The document adapter starts an exact target, accepts a rendered snapshot and
 agent mutation evidence, reconciles a settled save, and disposes all watches,
@@ -189,12 +286,19 @@ a reload rather than keeping a draft as file truth. The skill retains its
 existing size ceiling, refusal rules, backup and atomic replacement; the host
 has no edit IPC, staging publisher, workbook transaction or write token.
 
-Each daemon has at most 16 active observation views, 256 queued events and
-1 MiB of queued element data per view. It sends batches of at most 32 events
-with at most 64 unacknowledged events. Repeated pending elements coalesce by
-address; overload produces a resynchronization status and a fresh verified
-snapshot, never an unbounded replay. Snapshot payloads retain the existing
-4 MiB preview cap. Renderer acknowledgements advance the rendered baseline
+Each daemon has at most 16 active targets across document views, browser
+sessions and terminal subscriptions, 256 queued events and 1 MiB of queued metadata per target. It sends
+batches of at most 32 events with at most 64 unacknowledged events per target.
+Repeated pending document elements coalesce by address; document overload produces a
+resynchronization status and a fresh verified snapshot, never an unbounded
+replay. Snapshot payloads retain the existing 4 MiB preview cap. Browser
+metadata is bounded to 2,048 characters per URL and
+256 characters per display string. The browser renderer retains at most 64
+events per session to support the current strip, within the same 16-session
+limit. This adds no activity-history interface. Delivery overload reports
+resynchronization instead of replaying an unbounded history. Browser events
+are acknowledged after bounded local consumption and need no document
+baseline. Document renderer acknowledgements advance the rendered baseline
 only for the matching snapshot sequence; a delivered snapshot is not assumed
 rendered. Releasing a view, changing its session, navigating or destroying
 its frame, closing or hiding the panel, ending a journal invocation or
@@ -202,7 +306,15 @@ shutting down disposes the corresponding capabilities and bounded buffers. A
 closed or hidden panel may stay mounted for a retained side chat or browser
 tab; its document views keep their sheet, scroll and page position but hold no
 subscription, and showing the panel again reads a fresh baseline. No
-observation survives a host restart.
+observation survives a host restart. Ending or clearing a browser session
+releases its receipt, download listeners and delivery buffers and clears its
+renderer history through a content-free, daemon-sequenced terminal status.
+Clear-delivery failure still releases all host buffers and listeners;
+session-end and shutdown cleanup report collected failures as an
+`AggregateError`. Ending a root conversation also clears its descendants
+through the existing session-permission lifetime boundary. Browser
+observations stay only in memory; they are not persisted with ordinary browser
+bookmarks or history.
 
 The terminal adapter admits shell-tool runs and individual commands in the
 Agent terminal lane only from the host's authorized model-turn invocation
@@ -319,14 +431,25 @@ it truncates with ellipsis while its title exposes the complete path. Open in
 the default application, copy and applicable reload actions have localized
 accessible labels. There is no separate path box, file-kind badge or source row.
 
-A single live-strip slot beneath that header appears only for authenticated
-agent observation activity or its error/resynchronization state. It reports
-editing or edited, the latest cell/line change summary and recency. The current
+A single live strip beneath the relevant viewer chrome appears only for
+authenticated agent observation activity or its error/resynchronization state.
+For documents it reports editing or edited, the latest cell/line change summary
+and recency. The current
 element has an outline and a small Ave tag; earlier changes retain a faint tint.
 These marks use one theme color with light and dark variants. A compact footer
 owns format, selected sheet/page or line count, recalculation status and
 truncation notices. Idle user-only previews have no live strip. Localized
 observation errors occupy that same slot rather than creating additional status rows.
+Browser panels use the same compact activity treatment for the latest agent
+action, safe URL, element description or download state and recency. User-only
+browsing has no observation strip. Closing or switching tabs is an agent event
+only when the admitted agent command performs it; user chrome does not emit
+activity.
+Browser control state and Stop/Resume stay in a persistent toolbar of fixed
+height. A compact observation slot of fixed height is reserved from mount and
+remains transparent until authenticated activity or errors render the strip.
+Control changes and the first observation keep the guest viewport in place
+during native input; user-only previews show no agent label or stripe.
 
 The side panel's terminal observation strip uses the same agent theme color
 and shows the current command with elapsed time. A compact read-only command

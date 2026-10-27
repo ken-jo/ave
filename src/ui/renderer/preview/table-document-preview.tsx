@@ -16,7 +16,7 @@ import {
   type PreviewDocumentError,
   type PreviewTableDocument,
 } from "../../../shared/preview-document.js";
-import type { DocumentObservationBinding, DocumentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
+import type { ObservationBinding, AgentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import type { ObservedTableCell } from "./table-document-grid.js";
 import { columnLetters } from "./table-coordinates.js";
 import { PreviewDocumentHeader, PreviewDocumentLiveStrip, PreviewDocumentFooter, previewFormatLabel } from "./preview-document-chrome.js";
@@ -69,7 +69,7 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
 
 type LoadState =
   | { phase: "loading" }
-  | { phase: "ok"; path: string; document: PreviewTableDocument; observation?: DocumentObservationBinding;
+  | { phase: "ok"; path: string; document: PreviewTableDocument; observation?: ObservationBinding;
     seq: number; changes: ObservedTableCell[]; status?: DocumentObservationStatus;
     latest?: { row: number; column: number; before: string; after: string; ts: number; advisory: boolean } }
   | { phase: "error"; code: Exclude<PreviewDocumentError, "superseded"> };
@@ -144,7 +144,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     }
     const refresh = revision > 0 || resumed.current;
     let cancelled = false;
-    let binding: DocumentObservationBinding | undefined;
+    let binding: ObservationBinding | undefined;
     let lastSeq = 0;
     let observedPath = path;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -156,11 +156,11 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
       ? { ...previous, changes: [], observation: undefined, status: undefined, latest: undefined }
       : { phase: "loading" });
     const api = window.ave.preview;
-    const release = (value: DocumentObservationBinding) => {
-      void api.acknowledgeDocumentObservation({ action: "release", targetId: value.targetId,
+    const release = (value: ObservationBinding) => {
+      void api.acknowledgeObservation({ action: "release", targetId: value.targetId,
         sessionId: value.sessionId, seq: lastSeq }).catch(() => {});
     };
-    const handleObservations = (events: DocumentObservationEvent[]): void => {
+    const handleObservations = (events: AgentObservationEvent[]): void => {
       if (cancelled || !binding || binding.sessionId !== sessionId) return;
       for (const event of events) {
         if (event.source !== "document" || event.actor !== "agent" || event.sessionId !== binding.sessionId
@@ -208,7 +208,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
         });
       }
     };
-    const stopObserving = api.onDocumentObservation(handleObservations);
+    const stopObserving = api.onAgentObservation(handleObservations);
     const read = (attempt: number): void => {
       const resultPromise = sessionId === undefined
         ? api.readDocument(path, sheetIndex) : api.readDocument(path, sheetIndex, sessionId);
@@ -270,7 +270,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     if (lastAcknowledgement.current === key) return;
     lastAcknowledgement.current = key;
     const current = generation.current;
-    void window.ave.preview.acknowledgeDocumentObservation({ action: "rendered",
+    void window.ave.preview.acknowledgeObservation({ action: "rendered",
       targetId: observation.targetId, sessionId: observation.sessionId, seq }).then((result) => {
       if (!result.ok && current === generation.current) {
         setState((previous) => previous.phase === "ok"

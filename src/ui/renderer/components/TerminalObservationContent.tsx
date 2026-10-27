@@ -7,7 +7,7 @@ import {
   OBSERVATION_LIMITS,
   TERMINAL_OBSERVATION_LIMITS,
   type AgentObservationEvent,
-  type DocumentObservationBinding,
+  type ObservationBinding,
   type TerminalObservedCommand,
   type TerminalObservationEvent,
   type TerminalObservationDecision,
@@ -41,7 +41,7 @@ function decisionMessageKeys(decision: TerminalObservationDecision): { basis: st
 type ObservationError = "unavailable" | "resync-required";
 interface TerminalObservationView {
   sessionId: string;
-  binding: DocumentObservationBinding;
+  binding: ObservationBinding;
   seq: number;
   commands: TerminalObservedCommand[];
   error?: ObservationError;
@@ -71,7 +71,7 @@ export function TerminalObservationContent({ sessionId, observe }: { sessionId?:
     if (!sessionId || !observe) return;
     const preview = window.ave.preview;
     let disposed = false;
-    let binding: DocumentObservationBinding | undefined;
+    let binding: ObservationBinding | undefined;
     let lastSeq = 0;
     let pending: TerminalObservationEvent[] = [];
     const fail = (code: ObservationError = "unavailable"): void => {
@@ -79,8 +79,8 @@ export function TerminalObservationContent({ sessionId, observe }: { sessionId?:
       setSubscriptionError({ sessionId, code });
       setView((previous) => previous?.sessionId === sessionId ? { ...previous, commands: [], error: code } : previous);
     };
-    const release = (owner: DocumentObservationBinding): void => {
-      void preview.acknowledgeAgentObservation({ action: "release", ...owner }).then((result) => {
+    const release = (owner: ObservationBinding): void => {
+      void preview.acknowledgeObservation({ action: "release", ...owner }).then((result) => {
         if (!result.ok && result.error !== "unauthorized") {
           if (disposed) console.error("Terminal observation release failed.");
           else fail();
@@ -123,7 +123,7 @@ export function TerminalObservationContent({ sessionId, observe }: { sessionId?:
         }
       }
     });
-    void preview.acknowledgeAgentObservation({ action: "subscribe-terminal", sessionId }).then((result) => {
+    void preview.acknowledgeObservation({ action: "subscribe-terminal", sessionId }).then((result) => {
       if (!result.ok || !result.observation || result.observation.sessionId !== sessionId) { fail(); return; }
       if (disposed) { release(result.observation); return; }
       const owner = result.observation;
@@ -162,7 +162,7 @@ export function TerminalObservationContent({ sessionId, observe }: { sessionId?:
       setView((previous) => previous?.binding.targetId === current.binding.targetId && previous.sessionId === current.sessionId
         ? { ...previous, commands: [], error: "unavailable" } : previous);
     };
-    void window.ave.preview.acknowledgeAgentObservation({ action: "rendered", targetId: current.binding.targetId,
+    void window.ave.preview.acknowledgeObservation({ action: "rendered", targetId: current.binding.targetId,
       sessionId: current.sessionId, seq: current.seq }).then((result) => { if (!result.ok) fail(); }, fail);
   }, [current?.binding.targetId, current?.sessionId, current?.seq]);
 

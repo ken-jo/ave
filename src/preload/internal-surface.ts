@@ -2,7 +2,9 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
-import type { AgentObservationEvent, DocumentObservationAck, DocumentObservationEvent, TerminalObservationRequest } from "../shared/agent-observation.js";
+import type {
+  ObservationRequest, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
+} from "../shared/agent-observation.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
 import {
@@ -220,21 +222,18 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.preview.readFile, filePath, ...(window === undefined ? [] : [window])),
     readDocument: (filePath: string, sheetIndex: number, sessionId?: string) =>
       ipcRenderer.invoke(CHANNELS.preview.readDocument, filePath, sheetIndex, ...(sessionId === undefined ? [] : [sessionId])),
-    onDocumentObservation: (handler: (events: DocumentObservationEvent[]) => void) => {
-      const listener = (_event: unknown, events: AgentObservationEvent[]) => {
-        const documents = events.filter((event): event is DocumentObservationEvent => event.source === "document");
-        if (documents.length > 0) handler(documents);
-      };
-      ipcRenderer.on(CHANNELS.preview.observationEvents, listener);
-      return () => ipcRenderer.removeListener(CHANNELS.preview.observationEvents, listener);
-    },
-    acknowledgeDocumentObservation: (ack: DocumentObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
     onAgentObservation: (handler: (events: AgentObservationEvent[]) => void) => {
       const listener = (_event: unknown, events: AgentObservationEvent[]) => handler(events);
       ipcRenderer.on(CHANNELS.preview.observationEvents, listener);
       return () => ipcRenderer.removeListener(CHANNELS.preview.observationEvents, listener);
     },
-    acknowledgeAgentObservation: (request: TerminalObservationRequest) => ipcRenderer.invoke(CHANNELS.preview.observationAck, request),
+    acknowledgeObservation: (request: ObservationRequest) => ipcRenderer.invoke(CHANNELS.preview.observationAck, request),
+    onObservationPreview: (handler: (message: BrowserObservationPreviewMessage) => void) => {
+      const listener = (_event: unknown, message: BrowserObservationPreviewMessage) => handler(message);
+      ipcRenderer.on(CHANNELS.preview.observationPreviewFrames, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.preview.observationPreviewFrames, listener);
+    },
+    requestObservationPreview: (request: BrowserObservationPreviewRequest) => ipcRenderer.invoke(CHANNELS.preview.observationPreview, request),
   },
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),

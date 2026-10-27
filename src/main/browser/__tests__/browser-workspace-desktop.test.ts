@@ -13,6 +13,8 @@ const workspace = vi.hoisted(() => ({
   observeGuest: vi.fn((_windowId: number, _guest: unknown) => vi.fn()), observeDownload: vi.fn(),
   invalidateWindow: vi.fn(), disposeWindow: vi.fn(), dispose: vi.fn(),
 }));
+const observeAgentDownload = vi.hoisted(() => vi.fn());
+vi.mock("../../browser-observation.js", () => ({ observeAgentBrowserDownload: observeAgentDownload }));
 vi.mock("electron", () => ({
   dialog: { showMessageBox: native.showMessageBox },
   session: { fromPartition: () => native.session },
@@ -123,6 +125,7 @@ describe("browser workspace desktop composition", () => {
     const item = {} as Parameters<typeof observeBrowserWorkspaceDownload>[1];
     observeBrowserWorkspaceDownload(asGuest(guest), item);
     expect(workspace.observeDownload).toHaveBeenCalledWith(1, item);
+    expect(observeAgentDownload).toHaveBeenCalledWith(guest, item);
     window.emit("hide"); window.emit("minimize");
     expect(workspace.invalidateWindow.mock.calls).toEqual([[1], [1]]);
     expect(() => window.close()).not.toThrow();
@@ -130,6 +133,14 @@ describe("browser workspace desktop composition", () => {
     expect(browserWorkspaceGuestWindowId(asGuest(guest))).toBeNull();
     expect(window.listenerCount("hide")).toBe(0);
     expect(workspace.observeGuest.mock.results[0]!.value).toHaveBeenCalledOnce();
+  });
+
+  it("does not forward downloads from guests outside the owned browser workspace", () => {
+    const guest = new Guest(72);
+    const item = {} as Parameters<typeof observeBrowserWorkspaceDownload>[1];
+    observeBrowserWorkspaceDownload(asGuest(guest), item);
+    expect(workspace.observeDownload).not.toHaveBeenCalled();
+    expect(observeAgentDownload).not.toHaveBeenCalled();
   });
 
   it("disposes a destroyed guest by its captured identity and permits a replacement", () => {

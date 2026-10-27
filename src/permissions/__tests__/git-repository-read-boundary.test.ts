@@ -1,7 +1,7 @@
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import * as childProcess from "node:child_process";
 import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
@@ -10,6 +10,7 @@ import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution } from "../verified-shell-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
@@ -38,9 +39,12 @@ beforeEach(() => {
   mkdirSync(home);
   environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_|^(?:HOME|XDG_CONFIG_HOME|EMAIL)$/i.test(key)));
   Object.assign(environment, {
-    HOME: home, XDG_CONFIG_HOME: home, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull,
+    HOME: home, XDG_CONFIG_HOME: home, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Boundary Author", GIT_AUTHOR_EMAIL: "author@example.invalid",
     GIT_COMMITTER_NAME: "Boundary Author", GIT_COMMITTER_EMAIL: "author@example.invalid",
+    // Fixture commits would otherwise start a detached auto-maintenance child
+    // whose lock file churn in .git/objects races the checked inspection.
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "maintenance.auto", GIT_CONFIG_VALUE_0: "false",
   });
   vi.stubEnv("AVE_HOME", join(root, "state"));
   // Installation trust is mocked; native engine controls are a separate assertion.
@@ -48,15 +52,16 @@ beforeEach(() => {
   vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.54.0\n");
 });
 
-afterEach(() => {
+afterEach(async () => {
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  rmSync(root, { recursive: true, force: true });
+  // Git for Windows writes loose objects read-only; asynchronous removal clears them.
+  await cleanupTmpDir(root);
 });
 
 function nativeGit(cwd: string, args: readonly string[], extraEnvironment: NodeJS.ProcessEnv = {}) {
-  return nativeChildProcess.spawnSync("git", ["-c", "core.hooksPath=" + devNull, "-C", cwd, ...args], {
+  return nativeChildProcess.spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
     encoding: "utf8", env: { ...environment, ...extraEnvironment }, timeout: 10_000, maxBuffer: 1024 * 1024,
   });
 }
@@ -204,7 +209,7 @@ describe("implicit repository file reads", () => {
   });
 });
 
-it("admits checked reads without starting an available libexec helper", () => {
+it("admits checked reads on registered hosts without starting an available libexec helper", () => {
   const cwd = repository("workspace");
   const libexec = join(root, "outside-libexec");
   mkdirSync(libexec);
@@ -219,6 +224,25 @@ it("admits checked reads without starting an available libexec helper", () => {
   rmSync(marker);
   vi.stubEnv("GIT_EXEC_PATH", libexec);
   vi.stubEnv("BOUNDARY_HELPER_MARKER", marker);
+  if (process.platform === "win32") {
+    // Fixed Git installations are registered only for macOS and Linux, so a
+    // real Windows host proves the contractual refusal without starting Git.
+    for (const dialect of ["bash", "powershell"] as const) {
+      for (const command of READ_COMMANDS) {
+        for (const entry of CHILD_ENTRY_POINTS) vi.mocked(childProcess[entry]).mockClear();
+        vi.mocked(resolveVerifiedExecutable).mockClear();
+        const identity = { command, dialect, cwd };
+        const handle = prepareVerifiedShellCommand(identity);
+        expect(handle, command).toBeUndefined();
+        expect(verifiedShellExecution(handle, identity)).toBeUndefined();
+        expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).toBeNull();
+        expect(resolveVerifiedExecutable).not.toHaveBeenCalled();
+        for (const entry of CHILD_ENTRY_POINTS) expect(childProcess[entry]).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+      }
+    }
+    return;
+  }
   const nativePath = nativeChildProcess.execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8", env: environment }).trim();
   vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: nativePath });
   for (const dialect of ["bash", "powershell"] as const) {

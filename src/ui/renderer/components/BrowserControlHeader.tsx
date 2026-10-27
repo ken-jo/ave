@@ -10,14 +10,15 @@ export function BrowserControlHeader({ api, tabId }: { api: AveApi; tabId: strin
   const unavailable = useBrowserControlUnavailable();
   const tab = state.tabs.find((candidate) => candidate.rendererTabId === tabId);
   const controls = api.browserTabs;
-  return <>
-    {unavailable && <div role="alert" className="shrink-0 border-b px-3 py-1.5 text-xs text-destructive">
+  return <div className="flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden px-1">
+    {unavailable && <span role="alert" title={t("agentBrowser.controlUnavailable")}
+      className="min-w-0 truncate text-[11px] text-destructive">
       {t("agentBrowser.controlUnavailable")}
-    </div>}
+    </span>}
     {controls && tab && (tab.mode === "agent-active" || tab.mode === "human-paused") && <AgentControlBadge
       mode={tab.mode}
       onPause={() => controls.pause(tabId)}
       onResume={() => controls.resume(tabId)}
     />}
-  </>;
+  </div>;
 }

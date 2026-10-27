@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalObservationContent } from "../TerminalObservationContent.js";
-import { OBSERVATION_LIMITS, type AgentObservationEvent, type TerminalObservedCommand, type TerminalObservationResponse } from "../../../../shared/agent-observation.js";
+import { OBSERVATION_LIMITS, type AgentObservationEvent, type TerminalObservedCommand, type ObservationResponse } from "../../../../shared/agent-observation.js";
 import { en } from "../../../../i18n/messages/en.js";
 import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js";
 import type { EgressDecisionBasis } from "../../../../audit/sandbox-audit.js";
@@ -36,13 +36,13 @@ async function open() {
 
 beforeEach(() => {
   listeners = new Set();
-  acknowledge = vi.fn(async (request: { action: string; sessionId: string }): Promise<TerminalObservationResponse> =>
+  acknowledge = vi.fn(async (request: { action: string; sessionId: string }): Promise<ObservationResponse> =>
     request.action === "subscribe-terminal"
       ? { ok: true, observation: { targetId: TARGET, sessionId: request.sessionId, seq: 0 } } : { ok: true });
   previousAve = window.ave;
   (window as unknown as { ave: unknown }).ave = { preview: {
     onAgentObservation: (listener: (events: AgentObservationEvent[]) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
-    acknowledgeAgentObservation: acknowledge,
+    acknowledgeObservation: acknowledge,
   } };
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); (window as unknown as { ave: unknown }).ave = previousAve; });
@@ -63,9 +63,9 @@ describe("agent terminal observation view", () => {
   });
 
   it("keeps an initial host snapshot that arrives before the subscription reply", async () => {
-    let finish: (response: TerminalObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
+    let finish: (response: ObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
     acknowledge.mockImplementation((request: { action: string }) => request.action === "subscribe-terminal"
-      ? new Promise<TerminalObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
+      ? new Promise<ObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
     render(<TerminalObservationContent sessionId={SESSION} observe />);
     await emit(snapshot(1));
     expect(screen.queryByTestId("terminal-observation-live-strip")).toBeNull();
@@ -179,9 +179,9 @@ describe("agent terminal observation view", () => {
   });
 
   it("releases a late subscription reply after unmount", async () => {
-    let finish: (response: TerminalObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
+    let finish: (response: ObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
     acknowledge.mockImplementation((request: { action: string }) => request.action === "subscribe-terminal"
-      ? new Promise<TerminalObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
+      ? new Promise<ObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
     const result = render(<TerminalObservationContent sessionId={SESSION} observe />);
     result.unmount();
     await act(async () => { finish({ ok: true, observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }); });
@@ -207,7 +207,7 @@ describe("agent terminal observation view", () => {
   });
 
   it("bounds snapshots waiting for the subscription reply and reports overload", async () => {
-    acknowledge.mockImplementation(() => new Promise<TerminalObservationResponse>(() => {}));
+    acknowledge.mockImplementation(() => new Promise<ObservationResponse>(() => {}));
     render(<TerminalObservationContent sessionId={SESSION} observe />);
     await emit(...Array.from({ length: OBSERVATION_LIMITS.maxViews + 1 }, (_, index) => snapshot(index + 1, [command()], { target: { id: `pending-${index}`, path: "agent-terminal" } })));
     expect(screen.getByRole("alert").textContent).toBe("에이전트 터미널 활동을 다시 연결해야 합니다");
