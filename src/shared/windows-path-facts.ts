@@ -18,6 +18,8 @@ interface WindowsPathComponentFacts {
   readonly volumeSerialNumber: string | null;
   /** The legacy 64-bit file index exposed as Node's bigint ino. */
   readonly fileIndex: string | null;
+  /** Filesystem reported by the retained native handle; absent in older helper output. */
+  readonly fileSystemName?: string | null;
   /** FILE_BASIC_INFO.ChangeTime from the pinned handle; changes on content, metadata or ACL change. */
   readonly changeTime: string | null;
   readonly attributes: number;
@@ -74,6 +76,8 @@ function isUint(value: unknown, maximum = 0xffffffff): value is number {
 function isComponent(value: unknown): value is WindowsPathComponentFacts {
   if (value === null || typeof value !== "object") return false;
   const row = value as WindowsPathComponentFacts;
+  if (row.fileSystemName !== undefined && row.fileSystemName !== null
+    && (typeof row.fileSystemName !== "string" || !/^[A-Za-z0-9_-]{1,255}$/.test(row.fileSystemName))) return false;
   if (row.reparseTarget !== null && (typeof row.reparseTarget !== "string" || !row.reparseTarget || row.reparseTarget.includes("\0"))) return false;
   if (![true, false, null].includes(row.exists) || !isUint(row.attributes) || !isUint(row.reparseTag) || typeof row.directory !== "boolean") return false;
   if (row.exists === true ? typeof row.changeTime !== "string" || !HEX_64_PATTERN.test(row.changeTime) : row.changeTime !== null) {

@@ -62,6 +62,42 @@ function weaken(path: string): void {
 }
 
 describe.runIf(process.platform === "win32")("configuration handle reads", () => {
+  it.each(["ReFS", null, undefined])("revalidates with P0 on every read for filesystem %s", (fileSystemName) => {
+    const { path } = fixture();
+    const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
+    vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
+      const result = Reflect.apply(execute, undefined, args);
+      if (!Array.isArray(args[1]) || !["--pin", "--dacl"].includes(String(args[1][0]))) return result;
+      const rows = JSON.parse(String(result));
+      for (const row of rows) for (const component of [row, ...row.ancestors]) {
+        if (fileSystemName === undefined) delete component.fileSystemName;
+        else component.fileSystemName = fileSystemName;
+      }
+      return JSON.stringify(rows);
+    });
+    try {
+      for (let index = 0; index < 3; index++) {
+        vi.clearAllMocks();
+        expect(readAveHomeConfigurationFile(path)).toBeDefined();
+        expect(vi.mocked(childProcess.execFileSync).mock.calls.filter(([, args]) =>
+          Array.isArray(args) && args[0] === "--dacl" && args.includes(dirname(resolve(path))))).toHaveLength(1);
+      }
+    } finally { vi.mocked(childProcess.execFileSync).mockImplementation(execute); }
+  });
+
+  it("keeps a legacy file deleted before its certified handle opens absent", () => {
+    const home = paths();
+    setFixtureOwner(dirname(home));
+    vi.stubEnv("AVE_HOME", home);
+    expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
+    rmdirSync(join(home, "config"));
+    const path = join(home, "settings.json");
+    writeFileSync(path, "{}");
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe("{}");
+    fs.unlinkSync(path);
+    expect(readAveHomeConfigurationFile(path)).toBeUndefined();
+  });
+
   it.each(["home", "config"])("revalidates every read when the pinned %s ChangeTime is zero", (target) => {
     const { home, path } = fixture();
     const pinned = pinWindowsPaths([target === "home" ? home : join(home, "config")])[0]!;
@@ -230,7 +266,9 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     } finally { stat.mockImplementation(execute); }
   });
 
-  it.each(["migrated", "legacy"])("refuses a certified %s file that disappears during a warm read", (layout) => {
+  it.each(["migrated", "legacy"].flatMap(layout => [1, 2].flatMap(check =>
+    ["throw", "mismatch"].map(failure => ({ layout, check, failure })))))
+  ("refuses a certified $layout file that disappears at warm fstat $check with $failure", ({ layout, check, failure }) => {
     const home = paths();
     setFixtureOwner(dirname(home));
     vi.stubEnv("AVE_HOME", home);
@@ -244,14 +282,15 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     const inode = lstatSync(file, { bigint: true }).ino;
     const stat = vi.mocked(fs.fstatSync);
     const execute = stat.getMockImplementation()!;
-    // The first matching stat validates the certified handle; the second is the read of that handle.
+    // Both the initial certificate check and the subsequent read must retain the observation.
     let matched = 0, moved = false;
     stat.mockImplementation((...args) => {
       const result = Reflect.apply(execute, undefined, args);
-      if (!moved && BigInt(result.ino) === inode && ++matched === 2) {
+      if (!moved && BigInt(result.ino) === inode && ++matched === check) {
         moved = true;
         renameSync(file, `${file}.gone`);
-        throw new Error("Fixture file vanished");
+        if (failure === "throw") throw new Error("Fixture file vanished");
+        return Object.assign(Object.create(Object.getPrototypeOf(result)), result, { ino: inode + 1n });
       }
       return result;
     });

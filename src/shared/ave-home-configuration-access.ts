@@ -53,7 +53,7 @@ function writeHome(path: string): string {
 function verifyWriteBoundary(home: string): void {
   if (isAveHomeConfigurationRefused(home)) return;
   if (process.platform === "win32") {
-    try { windowsReadBoundary(resolveConfigurationFile(join(home, "settings.json"))).handles?.close(); }
+    try { windowsReadBoundary(resolveConfigurationFile(join(home, "settings.json")), { present: false }).handles?.close(); }
     catch (error) {
       if (error instanceof AveHomeConfigurationUntrustedError) throw error;
       throw new AveHomeConfigurationUntrustedError(home, (error as Error).message);
@@ -188,7 +188,7 @@ function observeOwnerDirectoryMutation(directory: string): () => void {
   };
 }
 
-function windowsReadBoundary(path: string): WindowsReadBoundary {
+function windowsReadBoundary(path: string, seen: { present: boolean }): WindowsReadBoundary {
   const home = configurationHomeForFile(path);
   const protectedDirectory = home !== undefined && homeKey(dirname(path)) === homeKey(join(home, "config"));
   const directory = dirname(path);
@@ -197,11 +197,12 @@ function windowsReadBoundary(path: string): WindowsReadBoundary {
   const key = `${homeKey(root)}|${homeKey(directory)}|${verifyHome}|${protectedDirectory}|${homeKey(path)}`;
   const cached = windowsReadCertificates.get(key);
   if (cached !== undefined) {
-    const handles = openWindowsConfigurationHandles([
+    const { handles, fileOpened } = openWindowsConfigurationHandles([
       ...windowsConfigurationDirectoryEntries(root, cached.directories[0]!),
       ...(protectedDirectory ? windowsConfigurationDirectoryEntries(directory, cached.directories[1]!) : []),
       { path, facts: cached.file, changeTimeRequired: true },
     ]);
+    seen.present ||= fileOpened;
     if (handles !== undefined) return { ...cached, handles };
   }
   const paths = [root, directory, path];
@@ -241,7 +242,7 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
   let descriptor: number | undefined;
   let boundary: WindowsReadBoundary | undefined;
   try {
-    boundary = process.platform === "win32" ? windowsReadBoundary(path) : undefined;
+    boundary = process.platform === "win32" ? windowsReadBoundary(path, seen) : undefined;
     const before = boundary === undefined ? lstatSync(path, { bigint: true }) : undefined;
     if (boundary !== undefined) {
       if (!admitWindowsReparse(boundary.file, "evidence")) throw new Error("Configuration is not a regular file");
@@ -300,18 +301,17 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
 
 export function readAveHomeConfigurationFile(path: string): Buffer | undefined {
   const home = configurationHomeForFile(path);
-  let observed = false;
+  const seen = { present: false };
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       const target = resolveConfigurationFile(path);
       const hasCertificate = process.platform === "win32" && [...windowsReadCertificates.values()].some(boundary => homeKey(boundary.path) === homeKey(target));
       const present = hasCertificate || configurationEntryExists(target);
-      const seen = { present: present && !hasCertificate };
+      seen.present ||= present && !hasCertificate;
       const bytes = present ? readOpenedFile(target, seen) : undefined;
-      if (seen.present) observed = true;
       if (bytes !== undefined) return bytes;
     }
-    if (observed || (home !== undefined && aveHomeConfigurationDirectory(home) !== resolve(home))) {
+    if (seen.present || (home !== undefined && aveHomeConfigurationDirectory(home) !== resolve(home))) {
       throw new Error("Configuration file disappeared or is missing after migration");
     }
     if (home !== undefined) {

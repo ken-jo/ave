@@ -141,6 +141,19 @@ describe("Windows path facts decoder", () => {
     expect(decode([missing])).toEqual([missing]);
   });
 
+  it.each(["NTFS", "ReFS", null, undefined])("keeps the optional filesystem fact %s for targets and ancestors", fileSystemName => {
+    const component = { ...ORDINARY, ...(fileSystemName === undefined ? {} : { fileSystemName }) };
+    const row = { ...component, ancestors: [component] };
+    expect(decode([row])).toEqual([row]);
+  });
+
+  it.each(["target", "ancestor"])("refuses malformed filesystem facts on a %s", position => {
+    for (const fileSystemName of [42, "", "NTFS\0", {}, "x".repeat(256)]) {
+      const component = { ...ORDINARY, fileSystemName };
+      expect(() => decode([position === "target" ? component : { ...ORDINARY, ancestors: [component] }])).toThrow();
+    }
+  });
+
   it.each(["target", "ancestor"])("refuses malformed changeTime on a %s and names the field", (position) => {
     const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
     const { changeTime: omitted, ...absent } = component;
@@ -172,6 +185,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
       expect(BigInt(pin!.volumeSerialNumber!)).toBe(stat.dev);
       expect(BigInt(pin!.fileIndex!)).toBe(stat.ino);
       expect(pin!.fileId).toMatch(/^0x[0-9a-f]{32}$/);
+      for (const component of [pin!, ...pin!.ancestors]) expect(component.fileSystemName).toMatch(/^[A-Za-z0-9_-]{1,255}$/);
       const handle = openSync(path, "r");
       try {
         const opened = fstatSync(handle, { bigint: true });

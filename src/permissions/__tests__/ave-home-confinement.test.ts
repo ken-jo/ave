@@ -1,3 +1,6 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";

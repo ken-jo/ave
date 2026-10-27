@@ -37,7 +37,7 @@ describe.skipIf(process.platform !== "win32")("configuration handle identity", (
     const before = observe("initial");
     const directory = dirname(path);
     const entries = windowsConfigurationDirectoryEntries(directory, pinWindowsPaths([directory])[0]!);
-    const handles = openWindowsConfigurationHandles(entries);
+    const { handles } = openWindowsConfigurationHandles(entries);
     try {
       process.stdout.write(`${JSON.stringify({ directoryHandlePaths: entries.map(entry => entry.path), matched: handles !== undefined })}\n`);
       expect(handles).toBeDefined();

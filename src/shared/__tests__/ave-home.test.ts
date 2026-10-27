@@ -360,6 +360,15 @@ describe("ensureAveHomePrivate", () => {
     ] });
     expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "directory-failed", reason: "Access is denied" });
   });
+  it("refuses a foreign-owned home before invoking the protecting step", () => {
+    const dir = home();
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(paths => paths.map(path => nativeDescriptor(path, "S-1-5-18")));
+    const before = vi.mocked(execFileSync).mock.calls.length;
+    expect(readWindowsDirectoryDacls([dir], true)).toEqual([
+      { path: dir, category: "invalid-owner-grant", error: "Home protection was refused before writing" },
+    ]);
+    expect(vi.mocked(execFileSync).mock.calls).toHaveLength(before);
+  });
   it("rejects a malformed native read-back result set", () => {
     vi.spyOn(pathKindLauncher, "resolveWindowsPathKindHelper").mockReturnValue(process.execPath);
     vi.mocked(execFileSync).mockReturnValueOnce("{}");
@@ -477,7 +486,7 @@ describe("ensureAveHomePrivate", () => {
     execFileSync(win32SystemBinary("icacls"), [dir, "/setowner", "*S-1-5-18", "/q"], { encoding: "utf-8", windowsHide: true });
     const before = sddl(dir);
     const result = ensureAveHomePrivate(dir);
-    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "invalid-owner-grant", reason: "Directory is owned by another account" });
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "invalid-owner-grant", reason: "Home protection was refused before writing" });
     expect(sddl(dir)).toBe(before);
     expect(existsSync(join(dir, "secrets"))).toBe(false);
   });

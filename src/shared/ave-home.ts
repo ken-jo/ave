@@ -95,7 +95,7 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
 function windowsConfigurationDirectory(root: string, config: string, key: string): string {
   const cached = windowsConfigurationLocations.get(key);
   if (cached !== undefined) {
-    const handles = openWindowsConfigurationHandles(cached.entries);
+    const { handles } = openWindowsConfigurationHandles(cached.entries);
     if (handles !== undefined) {
       try {
         const marker = handles.descriptors.at(-1)!;
