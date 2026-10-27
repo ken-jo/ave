@@ -76,7 +76,7 @@ describe("native governed XLSX command", () => {
       const protectedResult = await tool.execute({ command: mutation, timeoutSeconds }, { ...context, extraAllowedDirectories: [runtime.bundledScriptsDirectory] });
       expect(protectedResult.isError).toBe(true);
       expect(readFileSync(script)).toEqual(originalScript);
-      expect(readFileSync(runtime.javascriptRuntime)).toEqual(originalRuntime);
+      expect(readFileSync(runtime.javascriptRuntime).equals(originalRuntime)).toBe(true);
 
       const fixtureResources = join(directory, "host");
       const protectedDirectory = join(fixtureResources, "skill-scripts");

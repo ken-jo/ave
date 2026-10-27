@@ -75,7 +75,7 @@ describe("XLSX skill command", () => {
     expect(Object.keys(edited.files).sort()).toEqual(Object.keys(original.files).sort());
     for (const [name, entry] of Object.entries(original.files)) {
       if (entry.dir || ["xl/worksheets/sheet1.xml", "xl/workbook.xml"].includes(name)) continue;
-      expect(await edited.file(name)!.async("nodebuffer"), name).toEqual(await entry.async("nodebuffer"));
+      expect((await edited.file(name)!.async("nodebuffer")).equals(await entry.async("nodebuffer")), name).toBe(true);
     }
     expect(await edited.file("xl/worksheets/sheet1.xml")!.async("string")).toContain('<c r="B1" s="0"><v>150</v></c>');
     const document = readDocumentResponse(await parseTableDocument(readFileSync(path), "xlsx", 0));
@@ -130,7 +130,7 @@ describe("XLSX skill command", () => {
     const result = run(path, [{ cell: "A1", value: "한글" }]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Only UTF-8 XML is supported.");
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it.each([[8 * 1024 * 1024, false], [8 * 1024 * 1024 + 1, true]])("enforces the exact backup boundary at %i bytes", async (bytes, backupExpected) => {
@@ -153,12 +153,12 @@ describe("XLSX skill command", () => {
     const result = run(path, [{ cell: "B1", value: 42 }]);
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
-    expect(readFileSync(`${path}.ave-bak`)).toEqual(before);
+    expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
     const edited = readFileSync(path);
     expect((await parseTableDocument(edited, "xlsx", 0)).sheet.rows[0]).toEqual(["Revenue", "42", "24"]);
     expect(run(path, [{ cell: "B1", value: 43 }]).status).toBe(1);
-    expect(readFileSync(path)).toEqual(edited);
-    expect(readFileSync(`${path}.ave-bak`)).toEqual(before);
+    expect(readFileSync(path).equals(edited)).toBe(true);
+    expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
   });
 
   it("removes an incomplete backup after a write failure and permits retry", async () => {
@@ -177,10 +177,10 @@ describe("XLSX skill command", () => {
     } })).rejects.toMatchObject({ code: "ENOSPC" });
     expect(written).toBe(1024);
     expect(existsSync(path + ".ave-bak")).toBe(false);
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
     expect(readdirSync(directory).filter((name) => name.startsWith(".ave-xlsx-"))).toEqual([]);
     await expect(editWorkbookFile(path, request)).resolves.toEqual({ editedCells: 1, needsRecalculation: true, backup: path + ".ave-bak" });
-    expect(readFileSync(path + ".ave-bak")).toEqual(before);
+    expect(readFileSync(path + ".ave-bak").equals(before)).toBe(true);
   });
 
   it("refuses an existing incomplete recovery copy without changing either file", async () => {
@@ -191,8 +191,8 @@ describe("XLSX skill command", () => {
     const partial = before.subarray(0, 1024);
     writeFileSync(path + ".ave-bak", partial);
     await expect(editWorkbookFile(path, { sheet: 0, edits: [{ cell: "B1", value: 55 }] })).rejects.toMatchObject({ code: "EEXIST" });
-    expect(readFileSync(path)).toEqual(before);
-    expect(readFileSync(path + ".ave-bak")).toEqual(partial);
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(readFileSync(path + ".ave-bak").equals(partial)).toBe(true);
     expect(readdirSync(directory).filter((name) => name.startsWith(".ave-xlsx-"))).toEqual([]);
   });
 
@@ -208,7 +208,7 @@ describe("XLSX skill command", () => {
     const path = await save(zip);
     const before = readFileSync(path);
     expect(run(path, [{ cell: "B1", value: 20 }]).status).toBe(1);
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it.each([[{ cell: "D1", value: 4 }], [{ cell: "B1", value: 4, formula: "1+1" }],
@@ -216,7 +216,7 @@ describe("XLSX skill command", () => {
     const path = await save(await fixture());
     const before = readFileSync(path);
     expect(run(path, edits).status).toBe(1);
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it.each(["macro", "declaration", "entity", "expansion", "member-link"])("refuses unsafe %s packages without mutation", async (kind) => {
@@ -234,7 +234,7 @@ describe("XLSX skill command", () => {
     writeFileSync(path, await zip.generateAsync({ type: "nodebuffer", platform: "UNIX", compression: kind === "expansion" ? "DEFLATE" : "STORE" }));
     const before = readFileSync(path);
     expect(run(path, [{ cell: "B1", value: 10 }]).status).toBe(1);
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it("retains compressed opaque members within the output budget", async () => {
@@ -244,7 +244,7 @@ describe("XLSX skill command", () => {
     writeFileSync(path, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
     expect(run(path, [{ cell: "B1", value: 99 }]).status).toBe(0);
     const result = await JSZip.loadAsync(readFileSync(path));
-    expect(await result.file("xl/media/compressed.bin")!.async("nodebuffer")).toEqual(await zip.file("xl/media/compressed.bin")!.async("nodebuffer"));
+    expect((await result.file("xl/media/compressed.bin")!.async("nodebuffer")).equals(await zip.file("xl/media/compressed.bin")!.async("nodebuffer"))).toBe(true);
   });
 
   it("refuses linked workbook paths", async () => {
@@ -253,7 +253,7 @@ describe("XLSX skill command", () => {
     symlinkSync(path, linked);
     const before = readFileSync(path);
     expect(run(linked, [{ cell: "B1", value: 42 }]).status).toBe(1);
-    expect(readFileSync(path)).toEqual(before);
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it.each([['fullCalcOnLoad="true"', true], ['forceFullCalc="1"', true], ['calcCompleted="false"', true],
