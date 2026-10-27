@@ -16,8 +16,6 @@ describe("PowerShell static floor analysis", () => {
   it("keeps a literal dynamic-evaluation payload opaque but exact-rule eligible", () => {
     for (const command of [
       "Invoke-Expression 'Get-ChildItem'",
-      "bash --noprofile --norc -p -c 'npm test'",
-      "fish --no-config -c 'printf ready'",
     ]) {
       expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: true }));
       expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
@@ -45,18 +43,17 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
-  it("recognizes only positively parsed literal evaluators as exact-only", () => {
+  it("refuses child evaluator argv without executable startup proof", () => {
     for (const command of [
       "python3 -I -S -c 'print(1)'",
       "fish --no-config --command 'printf ready'",
     ]) {
       expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
         outcome: "unproven",
-        exactLiteralEvaluation: true,
         sensitive: null,
         exfiltration: null,
       }));
-      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: true }));
+      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
     }
 
     const unsupportedCommonParameter = "Invoke-Expression -Command 'Write-Output ready' -Verbose";
@@ -218,10 +215,10 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
-  it("does not mistake flags after an interpreter module or script operand for code", () => {
+  it("keeps interpreter script operands unproven regardless of trailing flags", () => {
     for (const command of ["python3 -I -S script.py -c data"]) {
       const result = inspectPowerShellCommand(command, CWD);
-      expect(result).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
+      expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
       expect(result.exactLiteralEvaluation).toBeUndefined();
     }
   });

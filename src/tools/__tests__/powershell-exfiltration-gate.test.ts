@@ -100,7 +100,7 @@ describe("shell floors cover powershell in allow mode", () => {
     ["Get-Content notes.txt | Select-String TODO", true],
     ["Set-Clipboard 'hello'", false],
     ["python script.py", false],
-    ["python3 -I -S script.py", true],
+    ["python3 -I -S script.py", false],
     ["Invoke-Item p.txt", false], ["ii p.md", false], ["Invoke-Item p.png", false], ["Invoke-Item ./docs/", false],
   ] as const)("classifies benign powershell %s by the known grammar", async (command, knownGrammar) => {
     const { decision, execute, requestAndWait } = await run("powershell", command, undefined, true);

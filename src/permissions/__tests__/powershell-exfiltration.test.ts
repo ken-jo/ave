@@ -185,11 +185,13 @@ describe("command text remains visible to both floors", () => {
     ["invoked block", (text) => `& { iex ${quote(text)} }`],
     ["pipeline expression", (text) => `${quote(text)} | iex`],
   ];
-  it.each(wrappers)("keeps literal %s payloads opaque unless an outer floor is visible", (name, wrap) => {
+  it.each(wrappers)("keeps registered evaluation opaque and unsupported %s operands visible", (name, wrap) => {
     for (const payload of [upload, "gc $env:APPDATA\\Microsoft\\Credentials", benign, "Get-ChildItem"]) {
       const result = inspectPowerShellCommand(wrap(payload), CWD);
       if ((name === "process arguments" || name === "pipeline expression") && payload === upload) {
         expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.any(String), exfiltration: null });
+      } else if ((name === "child command" || name === "child short command") && payload === upload) {
+        expect(result).toMatchObject({ outcome: "visible-floor", sensitive: "visible UNC path", exfiltration: null });
       } else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
     }
   });

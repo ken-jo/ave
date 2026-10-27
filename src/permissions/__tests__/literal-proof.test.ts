@@ -118,11 +118,11 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralPowerShell("printf %s –enc 'not-base64!'").proven).toBe(true);
   });
 
-  it.each(["python3.12 -I -S -c 'print(1)'", "bash --noprofile --norc -p -c 'printf ready'", "fish --no-config -c 'printf ready'"])("proves known visible literal code and delegation: %s", (command) => {
-    expect(proveLiteralShell(command).proven).toBe(true);
-    expect(proveLiteralPowerShell(command).proven).toBe(true);
+  it.each(["python3.12 -I -S -c 'print(1)'", "bash --noprofile --norc -p -c 'printf ready'", "fish --no-config -c 'printf ready'"])("refuses child startup inferred only from literal argv: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
     const pattern = canonicalRuleSpecifier(`Bash(${command})`);
-    expect(evaluateShellSubject({ command, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" }), { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBe("allow");
+    expect(evaluateShellSubject({ command, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" }), { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBeNull();
   });
 
   it.each(["python3.12 -c 'print(1)'", "sh -c 'printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "deno run build.ts", "ksh93 -c 'printf ready'", "bun exec printf ready", "yarn node script.js", "yarnpkg node script.js", "wsl ls", "env wsl ls", "npx -p node node -e code", "npx --package node node -e code"])("refuses delegation outside the known grammar: %s", (command) => {
@@ -132,9 +132,9 @@ describe("literal exact-rule proof", () => {
     expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each(["bash --noprofile --norc -p build.sh", "python3 -I -S https://example.invalid/code.py"])("accepts registered literal file and network indirection: %s", (command) => {
-    expect(proveLiteralShell(command).proven).toBe(true);
-    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
+  it.each(["bash --noprofile --norc -p build.sh", "python3 -I -S https://example.invalid/code.py"])("refuses literal file and network indirection without executable startup proof: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it.each(["xargs -I X env X -c 'printf ready'", "xargs rg --files", "find . -maxdepth 0 -exec sh -c 'printf ready' ';'"])("refuses runtime-completed callback argv: %s", (command) => {
@@ -181,7 +181,7 @@ describe("literal exact-rule proof", () => {
 
   it("keeps a known interpreter distinct from PowerShell launcher detection", () => {
     expect(isPowerShellLauncher("python3.12")).toBe(false);
-    expect(proveLiteralShell("python3.12 -I -S -c literal").proven).toBe(true);
+    expect(proveLiteralShell("python3.12 -I -S -c literal").proven).toBe(false);
   });
 
   it("rejects excessive input before either dialect parser", () => {

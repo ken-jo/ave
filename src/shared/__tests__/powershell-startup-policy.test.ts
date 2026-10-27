@@ -15,9 +15,9 @@ describe("managed shell startup capabilities", () => {
     expect(isPowerShellStartupPinned(platform)).toBe(true);
     expect(resolveTrustedPowerShellExecutable).toHaveBeenLastCalledWith(platform);
   });
-  it("restores proof for the protected system edition with suppressed profiles and absolute module imports", () => {
+  it("refuses the protected system edition while user registry startup remains unproved", () => {
     vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue({ executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", kind: "windows-powershell" });
-    expect(isPowerShellStartupPinned("win32")).toBe(true);
+    expect(isPowerShellStartupPinned("win32")).toBe(false);
   });
   it("does not transfer that proof to a modern Windows installation with user JSON startup", () => {
     vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue({ executable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", kind: "pwsh" });

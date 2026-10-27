@@ -262,17 +262,17 @@ describe("PowerShell encoded code and literal rule proof", () => {
     }
   });
 
-  it.each(["python3 -I -S -c 'print(1)'", "bash --noprofile --norc -p -c 'printf ready'", "fish --no-config -c 'printf ready'", "python3 -I -S main.py"])("remembers literal visible code and accepted file indirection: %s", (command) => {
+  it.each(["python3 -I -S -c 'print(1)'", "bash --noprofile --norc -p -c 'printf ready'", "fish --no-config -c 'printf ready'", "python3 -I -S main.py"])("refuses literal child code and file indirection without executable startup proof: %s", (command) => {
     for (const dialect of ["bash", "powershell"] as const) {
       const approval = buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true });
-      expect(approval.exactRule).toEqual(expect.any(String));
-      manager.setRules(([{ pattern: approval.exactRule!, action: "allow" }, { pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(rm *)`, action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-      expect(check(command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(approval.exactRule).toBeNull();
+      manager.setRules(([{ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" }, { pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(rm *)`, action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
       expect(manager.checkDetailed(dialect, "builtin", "shell", null, {
         headless: true,
         ruleSubject: { kind: "shell", dialect, command, cwd: dir },
         shellExecution: { runsSandboxed: false },
-      })).toMatchObject({ decision: "allow", layer: 3 });
+      })).toMatchObject({ decision: "deny", layer: 2 });
     }
   });
 

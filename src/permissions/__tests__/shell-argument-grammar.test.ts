@@ -110,9 +110,9 @@ describe("positive shell argument grammars", () => {
     expect(proveStaticArgv(["Write-Output", "-Force"], "powershell", ["Write-Output", "-Force"]).kind).toBe("unproven");
     expect(proveStaticArgv(["Invoke-Expression", "-Command", "dir", "-Verbose"], "powershell").kind).toBe("unproven");
   });
-  it.each(["bash", "powershell"] as const)("proves supported literal evaluation without certifying its payload in %s", (dialect) => {
+  it.each(["bash", "powershell"] as const)("refuses child evaluation without executable startup proof in %s", (dialect) => {
     for (const words of [["fish", "--no-config", "--command", "printf ready"], ["bash", "--noprofile", "--norc", "-p", "-c", "npm test"], ["python3", "-I", "-S", "-c", "print(1)"]]) {
-      expect(proveStaticArgv(words, dialect).kind).toBe("literal-evaluation");
+      expect(proveStaticArgv(words, dialect).kind).toBe("unproven");
     }
     expect(proveStaticArgv(["pwsh", "-EncodedCommand", "P"], dialect).kind).toBe("unproven");
   });
@@ -131,15 +131,15 @@ describe("positive shell argument grammars", () => {
       expect(proveStaticArgv(["env", ...argv], dialect).kind, "env " + argv.join(" ")).toBe("unproven");
     }
   });
-  it.each(["bash", "powershell"] as const)("retains only complete isolated nested launcher grammars in %s", (dialect) => {
+  it.each(["bash", "powershell"] as const)("refuses nested launchers even with startup suppression flags in %s", (dialect) => {
     for (const argv of [
       ["bash", "--noprofile", "--norc", "-p", "-c", "npm test"],
       ["python3", "-I", "-S", "-c", "print(1)"], ["python3.12", "-S", "-I", "-c", "print(1)", "literal-argv"],
       ["fish", "--no-config", "--command", "printf ready"],
-    ]) expect(proveStaticArgv(argv, dialect).kind, argv.join(" ")).toBe("literal-evaluation");
+    ]) expect(proveStaticArgv(argv, dialect).kind, argv.join(" ")).toBe("unproven");
     for (const argv of [
       ["bash", "--noprofile", "--norc", "-p", "script.sh"], ["python3", "-I", "-S", "script.py"], ["fish", "-N", "script.fish"],
-    ]) expect(proveStaticArgv(argv, dialect).kind, argv.join(" ")).toBe("static-complete");
+    ]) expect(proveStaticArgv(argv, dialect).kind, argv.join(" ")).toBe("unproven");
     for (const argv of [
       ["bash", "--noprofile", "--norc", "-p", "--rcfile", "rc", "-c", "ready"],
       ["python3", "-I", "-S", "-i", "-c", "print(1)"], ["fish", "-N", "-C", "printf other", "-c", "printf ready"],
@@ -156,7 +156,7 @@ describe("positive shell argument grammars", () => {
       }
       expect(proveStaticArgv([...prefix, "eval", "ls"], "bash").kind).toBe("unproven");
       expect(proveStaticArgv([...prefix, "printf", "ready"], "powershell").kind).toBe("static-complete");
-      expect(proveStaticArgv([...prefix, "bash", "--noprofile", "--norc", "-p", "-c", "ls"], "powershell").kind).toBe("literal-evaluation");
+      expect(proveStaticArgv([...prefix, "bash", "--noprofile", "--norc", "-p", "-c", "ls"], "powershell").kind).toBe("unproven");
     }
     expect(proveStaticArgv(["eval", "ls"], "powershell").kind).toBe("unproven");
     expect(proveStaticArgv(["exec", "eval", "ls"], "bash").kind).toBe("unproven");

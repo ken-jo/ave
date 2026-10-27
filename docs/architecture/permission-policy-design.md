@@ -290,8 +290,7 @@ The grammar's `changesState` flag is a conservative command-family property,
 not an inference about this invocation's effects. For families that can write
 through implicit or alternate modes, every admitted form is possible-write. The
 current family-level set covers all positively parsed native `curl`,
-`sort` and `uniq` forms, plus startup-guarded script-file interpreter forms,
-including read-looking forms with no write option. Therefore any such form in a
+`sort` and `uniq` forms, including read-looking forms with no write option. Therefore any such form in a
 multi-command input makes the whole input unproven. The authoritative flags and
 closed argv grammars live in
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
@@ -349,8 +348,9 @@ same-input file-provenance or execution-state model.
 Literal-payload dynamic evaluation has one narrow exception. A registered,
 closed evaluator grammar must recognize a single outer simple command, consume
 every option and operand, and identify a fully literal payload. This covers the
-supported forms of `eval "ls"`, `Invoke-Expression 'dir'`, `bash -c "npm test"`
-and `powershell -Command 'Get-ChildItem'`; the names alone are not enough. An
+supported direct builtin `eval "ls"` and `Invoke-Expression 'dir'` forms on an
+independently proven outer host; the names alone are not enough. Nested
+interpreter launchers have no positive grammar, even with a literal payload. An
 unknown option, including an unsupported common parameter, makes the request
 unproven and ineligible for every allow rule. For example, a common parameter on
 `Invoke-Expression` is unsupported unless the evaluator grammar lists it.
@@ -456,17 +456,18 @@ records their presence and retains its full visible-floor pass; it does not
 enumerate directive names or treat an unknown directive as inert. Quoted `#`
 text remains literal argument data.
 
-The Windows path is selected by installation proof, not by OS name. A protected
-System32 Windows PowerShell 5.1 installation can retain static command and
-exact-rule eligibility: the host suppresses profiles, disables module discovery,
-imports only protected absolute installation manifests and sets Process
-execution policy. Ordinary CurrentUser execution policy does not itself load
-code and does not revoke this proof. Administrative Group Policy remains host
-trust. A Windows PowerShell 7 path with uncontrolled CurrentUser JSON remains
-unproven because it can select a session endpoint before the prelude; no exact
-rule, saved grant or broad allow upgrades that path. A failed installation,
-ACL or startup proof also offers no exact rule and denies headless. Elevated
-processes cannot prove an installation immutable to themselves.
+A protected executable is necessary but does not establish Windows startup
+proof. Both the protected System32 Windows PowerShell 5.1 path and modern
+Windows PowerShell remain unproven. The legacy console's user-registry session
+configuration has not been proven ignored under the launch flags; this is an
+evidence gap, not an assertion of a verified exploit on that edition. Modern
+Windows user JSON can select an endpoint before the prelude. Ordinary
+CurrentUser execution policy alone is not the reason for refusal. No exact
+rule, saved grant or broad allow upgrades an unproven startup path; foreground
+requires per-call consent and headless denies. Executable admission remains
+independent and required before any parser spawn. Administrative policy is host
+trust only where user or agent mutation is excluded. Elevated processes cannot
+prove an installation immutable to themselves.
 
 An unpinned host AST parser starts only after genuine one-shot host authority
 is verified and consumed, and only if executable admission independently
@@ -477,16 +478,16 @@ oversized response is a parser failure, never a partial proof. Native preflight
 is deferred on unpinned paths. A pinned path retains the original full-text
 literal-evaluation exact exception.
 
-Nested launchers need their own startup proof; the outer host's prelude does
-not configure a child. The registered subset requires all of Bash's
-`--noprofile --norc -p`, fish's `--no-config`/`-N`, or Python 3's `-I -S`
-before the supported literal script or command operand. Unknown options and
-other launchers remain unproven, including an unguarded `bash -c`, `zsh -f`,
-`pwsh -NoProfile`, Node and package runners with implicit configuration.
-An unproven startup cannot acquire the opaque-payload exact exception. For a
-proven child startup, a literal evaluation payload remains opaque and requires
-an exact rule over the entire original command. Static script-file forms retain
-the documented file-indirection limit; no script is read or simulated.
+All nested interpreter launchers are unproven, including literal child-shell
+code and script-file forms with startup-suppression flags. No child runtime has
+a registered positive grammar. An argv proof cannot establish the identity or
+installation of a PATH-resolved executable, adjacent path-initialization files,
+or inherited startup inputs. Existing exact and broad rules cannot upgrade
+these requests; foreground requires per-call approval and headless denies.
+The outer host's protected executable and startup preparation do not transfer
+authority to a nested process. Re-admission requires a shared installation
+verifier plus a complete startup contract for the resolved image and argv, in
+a separate grammar-widening change.
 
 System-scope startup files count as host-trusted only when their installation
 and permissions exclude user and agent mutation. A location called system-wide
@@ -503,7 +504,7 @@ Package task, exec and runner forms have no positive-proof grammar because
 their implicit configuration can choose startup code and execution options.
 They remain in raw rule identity for detection and narrowing rules, but never
 supply an allow rule. No runner-option suffix heuristic supplies proof.
-Guarded interpreter file forms are limited to the startup grammars above;
+Interpreter file forms have no positive grammar;
 module, stdin, interactive and other runtime modes remain unproven.
 
 Shell rules are dialect-scoped: `Bash(...)` rules match bash and

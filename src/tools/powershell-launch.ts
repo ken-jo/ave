@@ -50,9 +50,9 @@ export function preparePowerShellLaunch(
   };
   try {
     if (process.platform === "win32") {
-      // The verified system edition has no user JSON endpoint selection.
-      // Process policy overrides ordinary lower scopes; installation admission
-      // supplies the separate proof of image and module integrity.
+      // These guards do not prove registry-selected startup is absent.
+      // Windows host execution independently requires per-invocation consent;
+      // installation admission still supplies image and module integrity.
       args.push("-ExecutionPolicy", "RemoteSigned");
       env.PSModulePath = "";
     } else {

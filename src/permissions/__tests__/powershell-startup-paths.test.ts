@@ -26,8 +26,8 @@ const STARTUP_PATH_CASES: readonly {
   { platform: "win32", installation: null, command: "Get-Date", outcome: "unproven", exact: false },
   { platform: "win32", installation: MODERN_INSTALLATION, command: "Get-Date", outcome: "unproven", exact: false },
   { platform: "win32", installation: MODERN_INSTALLATION, command: "Invoke-Expression 'Get-Date'", outcome: "unproven", exact: false },
-  { platform: "win32", installation: SYSTEM_INSTALLATION, command: "Get-Date", outcome: "static-complete", exact: true },
-  { platform: "win32", installation: SYSTEM_INSTALLATION, command: "Invoke-Expression 'Get-Date'", outcome: "unproven", exact: true },
+  { platform: "win32", installation: SYSTEM_INSTALLATION, command: "Get-Date", outcome: "unproven", exact: false },
+  { platform: "win32", installation: SYSTEM_INSTALLATION, command: "Invoke-Expression 'Get-Date'", outcome: "unproven", exact: false },
 ];
 let cwd: string;
 let manager: PermissionManager;

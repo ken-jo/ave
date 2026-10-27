@@ -67,24 +67,6 @@ const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.free
   "invoke-webrequest": { flags: ["usebasicparsing"], values: ["uri", "method", "infile", "body", "outfile", "contenttype", "timeoutsec"], numeric: ["timeoutsec"], maximum: 1, required: [["uri", "#0"]] },
   "invoke-restmethod": { flags: ["usebasicparsing"], values: ["uri", "method", "infile", "body", "outfile", "contenttype", "timeoutsec"], numeric: ["timeoutsec"], maximum: 1, required: [["uri", "#0"]] },
 });
-interface LauncherGrammar {
-  requiredFlags: readonly (readonly string[])[];
-  codeOptions: readonly string[];
-  scriptFile: RegExp;
-  codeArguments: boolean;
-}
-const BASH_LAUNCHER: LauncherGrammar = Object.freeze({
-  requiredFlags: [["--noprofile"], ["--norc"], ["-p"]],
-  codeOptions: ["-c"], scriptFile: /\.(?:sh|bash)$/, codeArguments: true,
-});
-const FISH_LAUNCHER: LauncherGrammar = Object.freeze({
-  requiredFlags: [["-N", "--no-config"]],
-  codeOptions: ["-c", "--command"], scriptFile: /\.fish$/, codeArguments: false,
-});
-const PYTHON_LAUNCHER: LauncherGrammar = Object.freeze({
-  requiredFlags: [["-I"], ["-S"]],
-  codeOptions: ["-c"], scriptFile: /\.py$/, codeArguments: true,
-});
 const BASH_BUILTINS = new Set([":", "true", "false", "pwd", "cd", "printf", "echo", "eval"]);
 
 function matchArgumentGrammar(argv: readonly (string | undefined)[], from: number, grammar: ArgumentGrammar, powershell: boolean, raw?: readonly string[], work?: StaticArgvWork): boolean {
@@ -234,34 +216,8 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
       if (at + 1 >= argv.length || read(at + 1)!.startsWith("-")) return UNPROVEN;
       return evaluation(Array.from({ length: argv.length - at - 1 }, (_, index) => at + 1 + index));
     }
-    // A child runtime inherits its own startup files and environment. Only a
-    // complete suppressor grammar can make its outer argv provable.
-    const launcher = name === "bash" ? BASH_LAUNCHER : name === "fish" ? FISH_LAUNCHER
-      : /^python3(?:\.\d+)?$/.test(name) ? PYTHON_LAUNCHER : undefined;
-    if (launcher !== undefined) {
-      const flags = new Set(launcher.requiredFlags.flat());
-      const present = new Set<string>();
-      let cursor = at + 1;
-      while (cursor < argv.length) {
-        const option = read(cursor)!;
-        if (!flags.has(option)) break;
-        present.add(option);
-        cursor += 1;
-      }
-      if (!launcher.requiredFlags.every((group) => group.some((flag) => present.has(flag)))) return UNPROVEN;
-      const token = read(cursor);
-      if (token === undefined) return UNPROVEN;
-      if (launcher.codeOptions.includes(token)) {
-        const payload = read(cursor + 1);
-        return payload !== undefined && payload !== "-" && (launcher.codeArguments || cursor + 2 === argv.length)
-          ? evaluation([cursor + 1]) : UNPROVEN;
-      }
-      const equal = token.indexOf("=");
-      if (equal > 0 && token.startsWith("--") && launcher.codeOptions.includes(token.slice(0, equal))) {
-        return cursor + 1 === argv.length && equal + 1 < token.length ? evaluation([cursor]) : UNPROVEN;
-      }
-      return !token.startsWith("-") && launcher.scriptFile.test(token) ? complete(true) : UNPROVEN;
-    }
+    // No child interpreter has a registered grammar: argv cannot prove the
+    // resolved installation or its adjacent and inherited startup inputs.
     const grammar = Object.hasOwn(NATIVE_GRAMMARS, name) ? NATIVE_GRAMMARS[name] : undefined;
     if (grammar === undefined || !matchesOptions(at + 1, grammar)) return UNPROVEN;
     return complete(grammar.changesState === true);

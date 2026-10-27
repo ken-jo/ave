@@ -302,12 +302,14 @@ describe("AST shell matcher", () => {
   });
 
   it.each([
-    ["python3 -I -S -c 'print(1)'", "python3", "literal-evaluation"],
+    ["printf ready", "printf", "static-complete"],
+    ["eval 'printf ready'", "eval", "literal-evaluation"],
+    ["python3 -I -S -c 'print(1)'", "python3", "unproven"],
     ["perl -e 'print 1'", "perl", "unproven"],
     ["node -e 'console.log(1)'", "node", "unproven"],
     ["node x.js", "node", "unproven"],
-    ["python3 -I -S x.py", "python3", "static-complete"],
-    ["bash --noprofile --norc -p -c ls", "bash", "literal-evaluation"],
+    ["python3 -I -S x.py", "python3", "unproven"],
+    ["bash --noprofile --norc -p -c ls", "bash", "unproven"],
     ["pwsh -c Get-Date", "pwsh", "unproven"],
     ["GIT_SSH_COMMAND='ssh -v' git status", "git", "unproven"],
     ["env PATH=/tmp/tools git status", "env", "unproven"],
@@ -471,10 +473,10 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("git -C . status", set).decision).toBeNull();
   });
 
-  it("permits literal interpreter files without reading their contents", () => {
+  it("refuses literal interpreter files without executable startup proof", () => {
     const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(python3 -I -S scripts/build.py)"] });
-    expect(evaluateShellRules("python3 -I -S scripts/build.py", set)).toMatchObject({ decision: "allow" });
-    expect(evaluateShellRules("python3 -I -S scripts/build.py", rules({ allow: ["Bash(python3 -I -S scripts/build.py)"] })).decision).toBe("allow");
+    expect(evaluateShellRules("python3 -I -S scripts/build.py", set).decision).toBeNull();
+    expect(evaluateShellRules("python3 -I -S scripts/build.py", rules({ allow: ["Bash(python3 -I -S scripts/build.py)"] })).decision).toBeNull();
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
     expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBeNull();
     expect(evaluateShellRules("bun run build", rules({ ask: ["Bash(bun run build)"] })).decision).toBe("ask");

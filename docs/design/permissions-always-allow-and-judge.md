@@ -158,25 +158,25 @@ user/agent-writable tree. Missing admission refuses native parsing. Candidate pr
 cached for the process lifetime; newly installed or repaired paths require
 an application restart. On macOS installation access evidence must consist of
 complete plain permission records; extended or unfamiliar metadata refuses.
-On Windows,
-a protected System32 Windows PowerShell 5.1 path with suppressed profiles,
-disabled autoload, absolute protected module imports and Process policy can
-retain exact rules. Ordinary CurrentUser execution policy alone is not an
-execution surface. Administrative policy is host trust. Windows PowerShell 7
-with uncontrolled CurrentUser JSON remains unproven because it can select an
-endpoint before the prelude. Unverified or elevated host paths offer no exact
-allow, require foreground consent and deny headless; executable admission still
-precedes any parser spawn. MXC parses inside confinement and receives internal
+On Windows both the protected System32 5.1 installation and modern
+installations remain unproven. The former has an unresolved user-registry
+session-configuration boundary; the latter can select an endpoint from user
+JSON before the prelude. This is not inferred from ordinary CurrentUser
+execution policy alone. Protected image admission does not prove startup.
+These paths offer no exact allow, require per-call consent and deny headless;
+executable admission still precedes any parser spawn. MXC parses inside confinement and receives internal
 AST bytes under a separate bound, without the display-output truncation.
 
-Every nested launcher must independently suppress its implicit startup. The
-current registered forms require Bash `--noprofile --norc -p`, fish
-`--no-config`/`-N`, or Python 3 `-I -S`. Other forms and package runners
-remain unproven with no exact upgrade. A guarded literal evaluation payload
-keeps the full-original-text exact exception. A guarded script-file form keeps
-the documented indirection limit. System files are host trust only when users
-and the agent cannot mutate them; an unavoidable unverified startup file,
-including the one read by `zsh -f`, supplies no positive proof.
+All nested interpreter launchers are unproven, including literal child-shell
+code and script-file forms with startup-suppression flags. No child runtime has
+a registered positive grammar. An argv proof cannot establish the identity or
+installation of a PATH-resolved executable, adjacent path-initialization files,
+or inherited startup inputs. Existing exact and broad rules cannot upgrade
+these requests; foreground requires per-call approval and headless denies.
+The outer host's protected executable and startup preparation do not transfer
+authority to a nested process. Re-admission requires a shared installation
+verifier plus a complete startup contract for the resolved image and argv, in
+a separate grammar-widening change.
 
 Local transcription is an accepted host-trust residual and does not itself
 disable cmdlet automatic allowance. It is separate from executable settings;
@@ -185,8 +185,9 @@ profile suppression must not be described as disabling all configuration.
 Runtime-dependent execution, including substitutions, variables, splats,
 loops, callbacks, generated strings and runtime argv, produces no persistent
 suggestion. A registered evaluator grammar may recognize a fully literal,
-single outer `eval`, `Invoke-Expression`, child-shell `-c` or PowerShell
-`-Command` payload as the narrow exception. The grammar must consume every
+single outer builtin `eval` or `Invoke-Expression` payload on a separately
+proven host as the narrow exception. Nested interpreter launchers have no
+positive grammar and cannot acquire this exception. The grammar must consume every
 option and operand; unknown options, including unsupported common parameters,
 refuse. A common parameter on `Invoke-Expression`, for example, is unsupported
 unless that closed grammar lists it. Only a current-format exact rule for the
@@ -614,9 +615,8 @@ proven stage does not retain an independently reusable allow result.
 `changesState` is conservative at the registered command-family level, not a
 claim that this invocation was observed writing. Families that can write through
 implicit or alternate modes mark all admitted forms possible-write. This covers
-every positively parsed native `curl`, `sort` and `uniq` form, plus
-guarded script-file interpreter forms,
-including read-looking forms.
+every positively parsed native `curl`, `sort` and `uniq` form, including
+read-looking forms.
 Their presence in a multi-command input refuses the whole input. The single source is
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
 the analyzer does not refine the flag through file-state or provenance
@@ -628,8 +628,8 @@ exception. Its registered evaluator grammar must consume every option and
 operand and identify the payload as literal. Unknown options, including
 unsupported common parameters, refuse rather than falling back to ordinary
 command mode. After that positive proof, a current-format exact rule may
-authorize the complete original text of `eval`, `Invoke-Expression`,
-child-shell `-c` or PowerShell `-Command`. The key preserves quote style and raw
+authorize the complete original text of direct builtin `eval` or
+`Invoke-Expression` on a proven outer host. The key preserves quote style and raw
 content. The payload stays opaque, so the floor neither reparses it nor infers
 paths or effects from it. Without that exact rule the request remains
 `unproven`, including in the sandboxed lane.
@@ -717,11 +717,11 @@ code or execution options. No suffix summary or unknown-option fallback proves
 them. Known native wrappers retain index-range delegation; both outer grammar
 and delegated argv must be proven.
 
-The only registered interpreter forms are the startup-guarded Bash, fish and
-Python 3 forms above. Their literal code payloads remain opaque and exact-only;
-explicit supported script files retain the documented indirection limit.
-Module, stdin, interactive and other runtime forms remain unproven. Visible
-outer paths and upload sinks retain their floors regardless of a rule.
+No nested interpreter form has a positive grammar, including script, literal
+code, module, stdin and interactive forms. Startup flags cannot establish the
+resolved installation and adjacent path-init inputs. Such launches are
+unproven and ineligible for every exact or broad allow. Visible outer paths
+and upload sinks retain their floors regardless of a rule.
 
 ### Dialect-scoped rules and grants
 
