@@ -7,13 +7,16 @@ import {
   installDocumentEngine,
   uninstallDocumentEngine,
 } from "../../main/document-engine-installation.js";
-import { stopDocumentEngineSessions } from "../../observation/libreoffice-engine.js";
+import { cleanupStaleDocumentEngineRuntimes, stopHostDocumentEngineSessions } from "../../observation/document-engine-host.js";
 import type { DocumentEngineInstallationError, DocumentEngineInstallationState } from "../../shared/document-engine.js";
 import type { DocumentEngineActionResult, DocumentEngineStatusResult } from "../../shared/document-engine-api.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { createLogger } from "../../lib/logger.js";
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
 import { auditUnauthorized } from "../gated.js";
 import type { IpcDeps } from "../types.js";
+
+const log = createLogger("document-engine");
 
 interface InstallationOperation {
   kind: "install" | "uninstall";
@@ -24,6 +27,10 @@ interface InstallationOperation {
 /** Installation has one local owner; preview/observation never authorizes an install. */
 export function registerDocumentEngineHandlers(deps: IpcDeps): void {
   initializeDocumentEngineInstallationNetwork(deps.singleHopNetworkFetch);
+  // Boot hygiene only: a failed sweep leaves stale private directories behind but never blocks the engine.
+  void cleanupStaleDocumentEngineRuntimes().then(
+    (removed) => { if (removed > 0) log.info("removed %d stale document engine runtime directories", removed); },
+    (error: unknown) => { log.warn("stale document engine runtime cleanup failed: %s", errorMessage(error)); });
   let operation: InstallationOperation | undefined;
   let state: DocumentEngineInstallationState | undefined;
 
@@ -76,6 +83,11 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
       operation = undefined;
       return { ok: true };
     }
+    // A platform that cannot confine the engine is never offered a download it could not run.
+    if (initial.phase === "unsupported") {
+      operation = undefined;
+      return { ok: false, error: "unsupported-platform" };
+    }
     state = { ...initial, phase: "downloading", error: undefined };
     current.completion = (async () => {
       try {
@@ -112,7 +124,7 @@ export function registerDocumentEngineHandlers(deps: IpcDeps): void {
     operation = current;
     try {
       current.completion = (async () => {
-        await uninstallDocumentEngine(stopDocumentEngineSessions);
+        await uninstallDocumentEngine(stopHostDocumentEngineSessions);
         await refresh();
       })();
       await current.completion;

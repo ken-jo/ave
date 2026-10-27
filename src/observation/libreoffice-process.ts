@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ChildProcess } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -51,6 +52,7 @@ const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 <prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>
 <prop oor:name="DisableActiveContent" oor:op="fuse"><value>true</value></prop>
 <prop oor:name="SecureURL" oor:op="fuse"><value/></prop>
+<prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop>
 </item>
 <item oor:path="/org.openoffice.Office.Calc/Content/Update">
 <prop oor:name="Link" oor:op="fuse"><value>1</value></prop>
@@ -67,6 +69,108 @@ const PROFILE_SETTINGS = `<?xml version="1.0" encoding="UTF-8"?>
 </item>
 </oor:items>
 `;
+
+const RUNTIME_PREFIX = "avd-";
+const RUNTIME_OWNER = "owner.json";
+const RUNTIME_OWNER_KIND = "ave-document-engine-runtime";
+
+function runtimeTempRoot(): string {
+  return process.platform === "darwin" ? "/private/tmp" : "/tmp";
+}
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+}
+
+async function readRuntimeOwner(directory: string): Promise<number | undefined> {
+  let handle;
+  try { handle = await open(join(directory, RUNTIME_OWNER), constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch { return undefined; }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > 256 || info.uid !== process.getuid?.()) return undefined;
+    const raw: unknown = JSON.parse(await handle.readFile("utf8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const owner = raw as Record<string, unknown>;
+    return owner.kind === RUNTIME_OWNER_KIND && Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0 ? owner.pid as number : undefined;
+  } catch { return undefined; }
+  finally { await handle.close(); }
+}
+
+const execFileAsync = promisify(execFile);
+
+function profileArgument(directory: string): string {
+  return `-env:UserInstallation=${pathToFileURL(join(directory, "output", "profile")).href}`;
+}
+
+/** This user's processes started with the runtime's unique private profile: the orphaned resident and its clients. */
+async function processesUsingRuntime(directory: string, uid: number): Promise<number[]> {
+  const argument = profileArgument(directory);
+  const pids: number[] = [];
+  if (process.platform === "linux") {
+    for (const name of await readdir("/proc")) {
+      if (!/^\d+$/u.test(name)) continue;
+      let argv: string[];
+      try {
+        if ((await lstat(`/proc/${name}`)).uid !== uid) continue;
+        argv = (await readFile(`/proc/${name}/cmdline`, "utf8")).split("\0");
+      } catch (error) {
+        // The process ended during the scan.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ESRCH") continue;
+        throw error;
+      }
+      if (argv.includes(argument)) pids.push(Number(name));
+    }
+    return pids;
+  }
+  const { stdout } = await execFileAsync("/bin/ps", ["-axww", "-o", "pid=,uid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  for (const line of stdout.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+    if (match && Number(match[2]) === uid && match[3]!.split(" ").includes(argument)) pids.push(Number(match[1]));
+  }
+  return pids;
+}
+
+async function endOrphanedProcesses(directory: string, uid: number): Promise<void> {
+  const pids = (await processesUsingRuntime(directory, uid)).filter((pid) => pid !== process.pid);
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  }
+  const deadline = Date.now() + TOOL_TIMEOUT_POLICY.documentEngineShutdownMs;
+  while (pids.some(processAlive)) {
+    if (Date.now() > deadline) throw new Error("An orphaned document engine process did not exit.");
+    await sleep(ENGINE_PROCESS_LIMITS.pollMs, new AbortController().signal);
+  }
+}
+
+/**
+ * Boot hygiene: an Ave crash or kill leaves its confined resident running and its private input copies and profile
+ * behind. For a runtime directory whose recorded Ave owner process no longer exists, end this user's processes that
+ * run with that directory's unique profile, then remove the directory. A directory is touched only when it is a
+ * real 0700 directory of this user under the runtime prefix with a valid owner record; live owners, this process,
+ * links and unmarked directories are left alone.
+ */
+export async function sweepStaleDocumentEngineRuntimes(root = runtimeTempRoot()): Promise<string[]> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return [];
+  const removed: string[] = [];
+  for (const name of (await readdir(root)).filter((entry) => entry.startsWith(RUNTIME_PREFIX)).sort()) {
+    const directory = join(root, name);
+    const info = await lstat(directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!info || !info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 0o777) !== 0o700) continue;
+    const pid = await readRuntimeOwner(directory);
+    if (pid === undefined || pid === process.pid || processAlive(pid)) continue;
+    await endOrphanedProcesses(directory, uid);
+    await rm(directory, { recursive: true, force: true });
+    removed.push(directory);
+  }
+  return removed;
+}
 
 interface RunningProcess {
   child: ChildProcess;
@@ -272,7 +376,7 @@ export class LibreOfficeSessionPool {
     await session.installation.verifyBeforeSpawn(signal);
     const runtimeDirectory = await realpath(session.installation.root);
     signal.throwIfAborted();
-    const directory = await createPrivateTempDirectory(process.platform === "darwin" ? "/private/tmp/avd-" : "/tmp/avd-");
+    const directory = await createPrivateTempDirectory(join(runtimeTempRoot(), RUNTIME_PREFIX));
     const output = join(directory, "output");
     const input = join(directory, "input");
     const profile = join(output, "profile");
@@ -284,6 +388,8 @@ export class LibreOfficeSessionPool {
     // Publish ownership before any child starts, so cancellation can always drain it.
     session.runtime = runtime;
     try {
+      // Ownership record for boot hygiene; outside the confined process's writable output directory.
+      await writeFile(join(directory, RUNTIME_OWNER), JSON.stringify({ kind: RUNTIME_OWNER_KIND, pid: process.pid }), { flag: "wx", mode: 0o600 });
       await mkdir(input, { mode: 0o700 });
       await mkdir(join(profile, "user"), { recursive: true, mode: 0o700 });
       await mkdir(ipc, { mode: 0o700 });
@@ -407,7 +513,6 @@ export class LibreOfficeSessionPool {
     args: readonly string[], signal: AbortSignal): Promise<RunningProcess> {
     aborted(signal);
     await session.installation.verifyBeforeSpawn(signal);
-    session.installation.assertCurrent();
     let wrapped: OfflineProcessWrap | undefined;
     try {
       wrapped = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,

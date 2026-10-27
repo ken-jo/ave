@@ -68,8 +68,8 @@ vi.mock("../a2a-remote-receiver-server.js", () => ({
 vi.mock("../subscription-runtime-service.js", () => ({
   stopSubscriptionRuntimes: () => stopSubscriptionRuntimes(),
 }));
-vi.mock("../../observation/libreoffice-engine.js", () => ({
-  stopDocumentEngineSessions: () => stopDocumentEngineSessions(),
+vi.mock("../../observation/document-engine-host.js", () => ({
+  stopHostDocumentEngineSessions: () => stopDocumentEngineSessions(),
 }));
 vi.mock("../global-shortcuts.js", () => ({
   unregisterAllGlobalShortcuts: (...a: unknown[]) => unregisterAllGlobalShortcuts(...a),

@@ -2,8 +2,9 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { chmod, mkdtemp, mkdir, writeFile, readFile, rm, stat, symlink } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +32,7 @@ vi.mock("node:fs/promises", async importOriginal => {
   };
 });
 
-import { LibreOfficeSessionPool } from "../libreoffice-process.js";
+import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
 import { spawnManaged, forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
 
@@ -172,7 +173,13 @@ describe("private conversion process ownership", () => {
     expect(jobs().map(child => child.job!.filter)).toEqual(["writer_pdf_Export", "impress_pdf_Export"]);
     expect(new Set(children.map(child => child.profile)).size).toBe(1);
     expect(installation.verifyBeforeSpawn).toHaveBeenCalledTimes(5);
-    expect(installation.assertCurrent).toHaveBeenCalledTimes(8);
+    // One synchronous boundary check per launch, after confinement wrapping and immediately before spawn.
+    expect(installation.assertCurrent).toHaveBeenCalledTimes(4);
+    const profile = children[0].profile;
+    const settings = await readFile(join(profile, "user", "registrymodifications.xcu"), "utf8");
+    expect(settings).toMatch(/Security\/Scripting">(?:(?!<\/item>)[\s\S])*<prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true<\/value><\/prop>/);
+    expect(JSON.parse(await readFile(join(dirname(dirname(profile)), "owner.json"), "utf8")))
+      .toEqual({ kind: "ave-document-engine-runtime", pid: process.pid });
     for (const call of vi.mocked(wrapOfflineProcess).mock.calls) {
       expect(call[0].inputDirectory).not.toBe(call[0].outputDirectory);
       expect(call[0].env.HOME).toBe(call[0].outputDirectory);
@@ -381,5 +388,54 @@ describe("private conversion process ownership", () => {
     await expect(pool.convert(installation, "one", Buffer.alloc(PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1), "xlsx", new AbortController().signal))
       .rejects.toMatchObject({ code: "too-large" });
     expect(spawnManaged).not.toHaveBeenCalled();
+  });
+});
+
+describe("stale private runtime directories", () => {
+  async function runtimeDirectory(root: string, name: string, pid: number | undefined, mode = 0o700): Promise<string> {
+    const path = join(root, name);
+    await mkdir(join(path, "input"), { recursive: true });
+    await writeFile(join(path, "input", "source.docx"), "admitted copy", { mode: 0o400 });
+    if (pid !== undefined) await writeFile(join(path, "owner.json"), JSON.stringify({ kind: "ave-document-engine-runtime", pid }), { mode: 0o600 });
+    await chmod(path, mode);
+    return path;
+  }
+
+  it("removes only this user's marked directories whose owning process no longer runs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ave-runtime-sweep-"));
+    try {
+      if (process.platform === "win32") {
+        // No POSIX owner identity and no converter runtime on Windows: the sweep owns nothing there.
+        await runtimeDirectory(root, "avd-dead", 2 ** 30);
+        expect(await sweepStaleDocumentEngineRuntimes(root)).toEqual([]);
+        return;
+      }
+      const exited = spawnSync(process.execPath, ["-e", ""], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+      expect(exited.status).toBe(0);
+      const dead = await runtimeDirectory(root, "avd-dead", exited.pid);
+      const live = await runtimeDirectory(root, "avd-live", process.ppid);
+      const self = await runtimeDirectory(root, "avd-self", process.pid);
+      const unmarked = await runtimeDirectory(root, "avd-unmarked", undefined);
+      const shared = await runtimeDirectory(root, "avd-shared", exited.pid, 0o755);
+      const unrelated = await runtimeDirectory(root, "other-dead", exited.pid);
+      const target = await runtimeDirectory(root, "link-target", exited.pid);
+      await symlink(target, join(root, "avd-link"));
+      // The crashed owner's confined resident outlives it; it is recognised only by that directory's unique profile.
+      const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `-env:UserInstallation=${pathToFileURL(join(dead, "output", "profile")).href}`],
+        { stdio: "ignore", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+      const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `-env:UserInstallation=${pathToFileURL(join(live, "output", "profile")).href}`],
+        { stdio: "ignore", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+      const exitOf = (child: typeof orphan) => new Promise<NodeJS.Signals | null>((resolve) => child.once("exit", (_code, signal) => resolve(signal)));
+      const orphanExit = exitOf(orphan);
+      try {
+        await vi.waitFor(() => expect(orphan.pid).toBeTypeOf("number"));
+        expect(await sweepStaleDocumentEngineRuntimes(root)).toEqual([dead]);
+        expect(await orphanExit).toBe("SIGKILL");
+        expect(bystander.exitCode).toBeNull();
+        expect(bystander.signalCode).toBeNull();
+      } finally { orphan.kill("SIGKILL"); bystander.kill("SIGKILL"); }
+      await expect(stat(dead)).rejects.toMatchObject({ code: "ENOENT" });
+      for (const kept of [live, self, unmarked, shared, unrelated, target]) expect((await stat(kept)).isDirectory()).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

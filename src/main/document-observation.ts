@@ -7,7 +7,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { findSessionMainWindowContents } from "./app-state.js";
 import { DocumentObservationAdapter, type JournalObservationLease } from "../observation/document-adapter.js";
 import { createTableObservationEngine } from "../observation/table-engine.js";
-import { createDocumentObservationEngine } from "../observation/libreoffice-engine.js";
+import { createHostDocumentObservationEngine } from "../observation/document-engine-host.js";
 import { readObservedDocumentSelection } from "../observation/observed-document.js";
 import { createLogger } from "../lib/logger.js";
 import { ObservationDaemon } from "../observation/daemon.js";
@@ -57,7 +57,7 @@ export class DocumentObservationRuntime {
   private readonly previewReader = createTableObservationEngine();
   private disposed = false;
 
-  constructor(private readonly deps: IpcDeps, private readonly engine: DocumentObservationEngine | null = createDocumentObservationEngine()) {
+  constructor(private readonly deps: IpcDeps, private readonly engine: DocumentObservationEngine | null = createHostDocumentObservationEngine()) {
     this.adapter = new DocumentObservationAdapter(engine, this.daemon);
     setAgentObservationSink({
       openJournal: (identity, path) => {

@@ -7,7 +7,7 @@ import type { DocumentEngineInstallationState } from "../../../shared/document-e
 
 const mocks = vi.hoisted(() => ({
   session: {}, handlers: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
-  state: vi.fn(), install: vi.fn(), uninstall: vi.fn(), stop: vi.fn(), initialize: vi.fn(),
+  state: vi.fn(), install: vi.fn(), uninstall: vi.fn(), stop: vi.fn(), initialize: vi.fn(), cleanup: vi.fn(),
 }));
 vi.mock("electron", () => ({ session: { defaultSession: mocks.session },
   ipcMain: { handle: (channel: string, handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>) => mocks.handlers.set(channel, handler) } }));
@@ -18,7 +18,8 @@ vi.mock("../../../main/document-engine-installation.js", () => ({
   uninstallDocumentEngine: mocks.uninstall,
   initializeDocumentEngineInstallationNetwork: mocks.initialize,
 }));
-vi.mock("../../../observation/libreoffice-engine.js", () => ({ stopDocumentEngineSessions: mocks.stop }));
+vi.mock("../../../observation/document-engine-host.js", () => ({ stopHostDocumentEngineSessions: mocks.stop,
+  cleanupStaleDocumentEngineRuntimes: mocks.cleanup }));
 import { registerDocumentEngineHandlers } from "../document-engine.js";
 import { DocumentEngineInstallError } from "../../../main/document-engine-installation.js";
 
@@ -51,6 +52,7 @@ beforeEach(() => {
   mocks.install.mockResolvedValue(undefined);
   mocks.uninstall.mockImplementation(async (beforeRemove?: () => Promise<void>) => { await beforeRemove?.(); });
   mocks.stop.mockResolvedValue(undefined);
+  mocks.cleanup.mockResolvedValue(0);
   registerDocumentEngineHandlers(deps);
 });
 afterEach(() => { mocks.handlers.clear(); });
@@ -59,6 +61,14 @@ describe("optional document engine local installation", () => {
   it("keeps all installation channels private and binds the host network transport", () => {
     for (const channel of Object.values(CHANNELS.documentEngine)) expect(isPublicChannel(channel)).toBe(false);
     expect(mocks.initialize).toHaveBeenCalledWith(deps.singleHopNetworkFetch);
+    expect(mocks.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("refuses installation on a platform without engine confinement before any download starts", async () => {
+    mocks.state.mockResolvedValue({ ...ABSENT, phase: "unsupported" });
+    await expect(invoke(CHANNELS.documentEngine.install)).resolves.toEqual({ ok: false, error: "unsupported-platform" });
+    expect(mocks.install).not.toHaveBeenCalled();
+    expect(await invoke(CHANNELS.documentEngine.status)).toEqual({ ok: true, state: { ...ABSENT, phase: "unsupported" } });
   });
 
   it.each(["guest", "subframe", "partition", "unregistered", "destroyed"])("refuses a %s sender before reading or changing installation state", async (kind) => {
