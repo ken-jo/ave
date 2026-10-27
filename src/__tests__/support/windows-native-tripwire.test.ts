@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as pathFacts from "../../shared/windows-path-facts.js";
 import * as configurationHandles from "../../shared/windows-configuration-handles.js";
 import { installWindowsNativeTripwire } from "./windows-native-tripwire.js";
+import { setProcessPlatform } from "./process-platform.js";
 
 vi.mock("node:fs", async original => (await import("./simulated-win32-drive.js")).simulatedConfigurationFs(await original(), "linux"));
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("./simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
@@ -11,6 +12,8 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:os", async original => ({
   ...await original<typeof import("node:os")>(), platform: () => "win32",
 }));
+
+const ORIGINAL_PLATFORM = process.platform;
 
 describe("native Windows tripwire", () => {
   it.each(["linux", "darwin"] as const)("blocks real native entry points on a captured %s host", async host => {
@@ -54,6 +57,8 @@ describe("native Windows tripwire", () => {
 
   it("lets the per-file simulated factories bypass native access", async () => {
     const tripwire = await installWindowsNativeTripwire("linux", () => expect.getState().testPath);
+    // The factories simulate only while the process reports win32.
+    setProcessPlatform("win32");
     try {
       const path = join(tmpdir(), "native-tripwire-missing");
       expect(pathFacts.pinWindowsPaths([path])[0]!.exists).toBe(false);
@@ -64,7 +69,7 @@ describe("native Windows tripwire", () => {
       expect(simulated.openWindowsConfigurationHandles([])).toEqual({ handles: undefined, fileOpened: false });
       expect(provider).toHaveBeenCalledOnce();
       expect(tripwire.takeViolation()).toBeUndefined();
-    } finally { tripwire.restore(); }
+    } finally { setProcessPlatform(ORIGINAL_PLATFORM); tripwire.restore(); }
   });
 
   it("reports a caught native violation without stack traces", async () => {

@@ -686,6 +686,7 @@ jobs:
           src/shared/__tests__/ave-home-configuration-owners.test.ts
           src/shared/__tests__/ave-home-configuration-authority.test.ts
           src/shared/__tests__/windows-path-facts.test.ts
+          src/shared/__tests__/windows-native-host.test.ts
           src/shared/__tests__/windows-home-boundary-parity.test.ts
           src/shared/__tests__/windows-system-path.test.ts
           src/tools/__tests__/file-read-core.test.ts
