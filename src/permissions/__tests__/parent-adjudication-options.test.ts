@@ -275,6 +275,23 @@ describe("tier 3 — where a background escalation goes", () => {
     expect(gate.pendingCount).toBe(0);
   });
 
+  it("does not notify when shutdown follows append settlement before its continuation", async () => {
+    const { queue, append } = fakeQueue();
+    const { gate, wc, notificationService, auditLogger } = makeGate({ deferredQueue: queue });
+    append.mockImplementationOnce(() => {
+      const completed = Promise.resolve("settled-deferred-entry");
+      // The race has won before shutdown; the gate's awaiting continuation has not resumed.
+      void completed.then(() => queueMicrotask(() => queueMicrotask(() => gate.disposeAll())));
+      return completed;
+    });
+    await expect(gate.requestAndWait(makeChildRequest())).resolves.toMatchObject({ choice: "deny-once" });
+    expect(append).toHaveBeenCalledOnce();
+    expect(notificationService.fire).not.toHaveBeenCalled();
+    expect(auditRowStartingWith(auditLogger, "[approval:parent-escalation-deferred]")).toBeUndefined();
+    expect(wc.send).not.toHaveBeenCalled();
+    expect(gate.pendingCount).toBe(0);
+  });
+
   it("queues it, denies fail-closed, and never paints a dock", async () => {
     const { queue, append } = fakeQueue();
     const { gate, wc, auditLogger, notificationService } = makeGate({

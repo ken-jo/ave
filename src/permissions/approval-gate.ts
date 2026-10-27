@@ -1219,7 +1219,7 @@ export class ApprovalGate {
           : { evaluationContext: request.evaluationContext }),
         verdict: input.verdict,
       }), input.abortSignal, () => null);
-      if (appended === null) return null;
+      if (appended === null || input.abortSignal.aborted) return null;
       deferredId = appended;
     } catch {
       return null;
