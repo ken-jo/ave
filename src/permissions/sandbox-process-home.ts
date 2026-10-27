@@ -119,7 +119,7 @@ export function createSandboxProcessHome(
 
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));
     createProfileDirectories(env);
-    mkdirSync(dirname(env.AVE_DOCUMENT_JOURNAL!), { mode: 0o700 });
+    mkdirSync(join(homePath, "document-observation"), { mode: 0o700 });
     registerAgentObservationHome(homePath);
   } catch (err) {
     if (
