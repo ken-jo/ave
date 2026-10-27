@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 const releaseEgressSessions = vi.fn<(ended: (sessionId: string) => boolean) => void>();
 vi.mock("../egress-runtime.js", () => ({ releaseEgressSessions }));
+const endAgentBrowserObservationSessions = vi.fn<(ended: (sessionId: string) => boolean) => void>();
+vi.mock("../../tools/agent-browser-observation.js", () => ({ endAgentBrowserObservationSessions }));
 
 const { PermissionManager } = await import("../permission-manager.js");
 const { endSessionScopedPermissions } = await import("../session-scope-end.js");
@@ -14,6 +16,8 @@ const { dropSessionApprovals, listSessionApprovals, recordApproval, setApprovalC
 function releasedAmong(...sessionIds: string[]): string[] {
   expect(releaseEgressSessions).toHaveBeenCalledTimes(1);
   const ended = releaseEgressSessions.mock.calls[0]![0];
+  expect(endAgentBrowserObservationSessions).toHaveBeenCalledTimes(1);
+  expect(sessionIds.filter(endAgentBrowserObservationSessions.mock.calls[0]![0])).toEqual(sessionIds.filter(ended));
   return sessionIds.filter((sessionId) => ended(sessionId));
 }
 
@@ -23,6 +27,7 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", join(dir, "state"));
   __resetSessionStoreForTest();
   releaseEgressSessions.mockClear();
+  endAgentBrowserObservationSessions.mockClear();
 });
 afterEach(() => {
   __resetSessionStoreForTest();

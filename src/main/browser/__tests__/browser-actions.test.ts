@@ -267,6 +267,51 @@ describe("typing", () => {
     return { cdp, ref, refs };
   }
 
+  it("describes typing targets without retaining values or credential labels", async () => {
+    const { cdp, ref, refs } = await field({ type: "text", name: "api_key", "aria-label": "throwaway-field-label" });
+    const observed = vi.fn();
+    await typeInto(target(cdp), ref, "throwaway-typed-value", {}, refs, observed);
+    expect(observed.mock.calls).toEqual([[{ ref, role: "textbox", name: "", redacted: true }]]);
+    expect(JSON.stringify(observed.mock.calls)).not.toMatch(/throwaway-(?:typed-value|field-label)/);
+  });
+
+  it("does not describe rejected password typing", async () => {
+    const { cdp, ref, refs } = await field({ type: "password" });
+    const observed = vi.fn();
+    await expect(typeInto(target(cdp), ref, "throwaway-typed-value", {}, refs, observed)).rejects.toMatchObject({ code: "sensitive-field" });
+    expect(observed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ type: "password" }], [{ name: "api_key" }], [{ autocomplete: "one-time-code" }],
+  ])("redacts credential click targets with attributes %o", async (attributes) => {
+    const { cdp, ref, refs } = await field(attributes);
+    const observed = vi.fn();
+    await click(target(cdp), ref, refs, observed);
+    expect(observed.mock.calls).toEqual([[{ ref, role: "textbox", name: "", redacted: true }, undefined]]);
+  });
+
+  it.each(["API token: private-label", "암호: private-label"])("redacts credential labels supplied only by the accessibility tree: %s", async (name) => {
+    const { refs, cdp } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", name, { backendDOMNodeId: 6 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
+    const observed = vi.fn();
+    await click(target(cdp), ref, refs, observed);
+    expect(observed.mock.calls).toEqual([[{ ref, role: "button", name: "", redacted: true }, undefined]]);
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("private-label");
+  });
+
+  it("describes a known link and supplies only its exact download candidate", async () => {
+    const { refs, cdp } = snapshotFixture();
+    cdp.nodes = page([ax("download", "link", "Download report", { backendDOMNodeId: 6 })]);
+    cdp.attributes.set(6, { href: "/report.csv?download=1" });
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
+    const observed = vi.fn();
+    await click(target(cdp), ref, refs, observed);
+    expect(observed.mock.calls).toEqual([[{ ref, role: "link", name: "Download report", redacted: false }, "https://a.example/report.csv?download=1"]]);
+    expect(observed.mock.calls[0]![0]).not.toHaveProperty("href");
+  });
+
   it.each([
     [{ type: "password" }, "a password field"],
     [{ type: "PASSWORD" }, "a password field"],
@@ -968,13 +1013,25 @@ describe("tap placement", () => {
     return { ...fixture, run: () => actions.click(live, ref), tab };
   }
 
-  it("presses the page point at the page's place in its window", async () => {
+  it("preserves viewport points for a page offset inside its window", async () => {
     const { cdp, run } = await clickLink();
     await run();
     const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
     const start = cdp.calls.find((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")!.params!;
-    // The pointer move stays a page point; the tap is the same point in window space.
-    expect(start.touchPoints).toEqual([{ x: (move.x as number) + PAGE_IN_WINDOW.x, y: (move.y as number) + PAGE_IN_WINDOW.y, id: 1 }]);
+    expect(PAGE_IN_WINDOW.x).not.toBe(0);
+    expect(PAGE_IN_WINDOW.y).not.toBe(0);
+    expect(start.touchPoints).toEqual([{ x: move.x, y: move.y, id: 1 }]);
+  });
+
+  it("keeps a narrow page's element center inside its own viewport", async () => {
+    const { cdp, run } = await clickLink();
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getContentQuads"
+      ? { quads: [[40, 105, 408, 105, 408, 143, 40, 143]] }
+      : send(method, params));
+    await run();
+    const start = cdp.calls.find((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")!.params!;
+    expect(start.touchPoints).toEqual([{ x: 224, y: 124, id: 1 }]);
   });
 
   it("hit-tests the press point in document space on a scrolled page", async () => {
