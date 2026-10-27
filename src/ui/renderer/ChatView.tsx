@@ -43,6 +43,7 @@ import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
 import { closeBrowserTab, registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
+import { releaseBrowserObservationSession } from "./preview/browser-observation-bridge.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -477,6 +478,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
 
   // Key side-chat requests only on nonce to prevent tab changes reopening the panel; refs keep browser registrations stable.
   const browserTabHostRef = useRef({ workspaceTabs, currentSessionId, onSidePanelOpenChange });
+  useEffect(() => () => {
+    if (currentSessionId) releaseBrowserObservationSession(currentSessionId);
+  }, [currentSessionId]);
   useLayoutEffect(() => {
     browserTabHostRef.current = { workspaceTabs, currentSessionId, onSidePanelOpenChange };
   }, [workspaceTabs, currentSessionId, onSidePanelOpenChange]);

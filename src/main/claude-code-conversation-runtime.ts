@@ -84,7 +84,6 @@ export class ClaudeCodeConversationRuntime {
     let ended = false;
     let toolBoundary = false;
     let failure: Error | null = null;
-    let routeKind: ClaudeCodeExecutable["routeKind"];
     let wake: (() => void) | null = null;
     const queue: StreamEvent[] = [];
     const notify = () => { const next = wake; wake = null; next?.(); };
@@ -126,8 +125,7 @@ export class ClaudeCodeConversationRuntime {
 
     try {
       const runtime = await this.options.resolveRuntime();
-      routeKind = runtime.routeKind;
-      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
       assertActive();
       const mcpServers = bridge.tools.length ? {
         [CLAUDE_CODE_MCP_SERVER_NAME]: await bridge.startMcpServer().then((mcp) => ({
@@ -155,10 +153,10 @@ export class ClaudeCodeConversationRuntime {
         });
         return HOST_TOOL_ACCEPTED;
       });
-      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
       await runtime.verify();
       assertActive();
-      const spawned = this.spawn(runtime.executable, [...runtime.args, ...claudeCodePrintArgs(configPath, toolNames, this.options.model)], {
+      const spawned = this.spawn(runtime.executable, claudeCodePrintArgs(configPath, toolNames, this.options.model), {
         cwd: workspaceDir,
         env: sanitizedClaudeCodeEnvironment(runtimeHome, process.env, this.options.platform, runtimeTempDir),
         stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,
@@ -250,7 +248,7 @@ export class ClaudeCodeConversationRuntime {
         await new Promise<void>((resolveNext) => { wake = resolveNext; });
       }
     } catch (error) {
-      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, routeKind);
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
       if (error instanceof ClaudeCodeSubscriptionError || (error instanceof Error && error.name === "AbortError")) throw error;
       throw operationFailed();
     } finally {

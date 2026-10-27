@@ -90,6 +90,7 @@ describe("claude-code subscription contract", () => {
         CLAUDE_CONFIG_DIR: "C:\\Users\\example\\.claude",
         ENABLE_TOOL_SEARCH: "true",
         ENABLE_CLAUDEAI_MCP_SERVERS: "true",
+        DISABLE_UPDATES: "0",
         LANG: "en_US.UTF-8",
       },
       "win32",
@@ -99,6 +100,7 @@ describe("claude-code subscription contract", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.ENABLE_TOOL_SEARCH).toBe("false");
     expect(env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
+    expect(env.DISABLE_UPDATES).toBe("1");
     expect(env.LANG).toBe("en_US.UTF-8");
     expect(env.TEMP).toBe("C:\\isolated\\claude-tmp");
   });
@@ -168,7 +170,7 @@ function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
     getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
     verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
     verifiedRuntime: vi.fn(async () => ({
-      executable: "/approved/claude", args: [], identity: "approved-runtime",
+      executable: "/approved/claude", identity: "approved-runtime",
       verify: vi.fn(async () => undefined), discard: vi.fn(async () => undefined),
     })),
     getRuntimePaths: vi.fn(() => ({
@@ -215,7 +217,7 @@ describe("subscription model choice through the installed CLI", () => {
   it("refuses a persisted model the catalog does not list", async () => {
     const { service, opened } = await claudeService();
     await expect(service.openTextSession({ kind: "subscription", provider: "claude-code", model: "claude-imaginary-9" }))
-      .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      .rejects.toMatchObject({ code: "subscription-model-not-supported" });
     expect(opened).toHaveLength(0);
   });
 

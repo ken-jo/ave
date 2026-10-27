@@ -1,137 +1,99 @@
 import { promises as fs } from "node:fs";
-import { basename, dirname, join, win32 } from "node:path";
+import { join } from "node:path";
+import { authenticateClaudeCodeExecutable } from "./claude-code-authenticity.js";
 import {
   copyNativeExecutableFile, discardCodexExecutableArtifact, hashExecutableFile, openExecutableFile,
   verifyCodexExecutableArtifact, type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
 import {
-  assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, createPrivateObjects, createPrivateTempDirectory, type CodexLocationRequest,
+  assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, createPrivateObjects, createPrivateTempDirectory,
+  type CodexLocationTrustInputs,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
-import { cliExecutableCandidates, type CliDiscoveryEnvironment } from "./user-cli-discovery.js";
-import { copySubscriptionPackageArtifact } from "./subscription-package-artifact.js";
+import type { CliDiscoveryEnvironment } from "./user-cli-discovery.js";
 
 export interface ClaudeCodeExecutable {
   readonly executable: string;
-  readonly args: readonly string[];
   readonly identity: string;
   readonly verify: () => Promise<void>;
   readonly discard: () => Promise<void>;
-  readonly routeKind?: CodexLocationRequest["routeKind"];
 }
 
-const PACKAGE_NAME = "@anthropic-ai/claude-code";
+export class ClaudeCodeNativeRequiredError extends Error {
+  constructor() {
+    super("Native subscription runtime installation required");
+    this.name = "ClaudeCodeNativeRequiredError";
+  }
+}
 
-async function contentHash(path: string, routeKind: CodexLocationRequest["routeKind"] = "script"): Promise<string> {
-  await assertCodexExecutableLocation(path, routeKind);
+// Package-managed launchers and platform packages belong to the unsupported install route.
+function isNpmInstallation(path: string): boolean {
+  return /(?:^|\/)node_modules\/@anthropic-ai\/claude-code(?:-[^/]+)?(?:\/|$)/iu.test(path.replaceAll("\\", "/"));
+}
+
+// Only the default cask launcher and its versioned payload share the package manager's group-writable directories.
+function sourceLocationTrust(candidate: string, source: string, platform: NodeJS.Platform): CodexLocationTrustInputs {
+  const prefixes = platform === "darwin" ? ["/opt/homebrew", "/usr/local"]
+    : platform === "linux" ? ["/home/linuxbrew/.linuxbrew"] : [];
+  for (const prefix of prefixes) {
+    const payload = source.slice(prefix.length).match(/^\/Caskroom\/(claude-code(?:@latest)?)\/(\d+\.\d+\.\d+)\/claude$/u);
+    if (!source.startsWith(`${prefix}/`) || !payload
+      || candidate !== `${prefix}/bin/claude` && candidate !== source) continue;
+    const packageDirectory = `${prefix}/Caskroom/${payload[1]}`;
+    return { groupWritableSourceDirectories: new Set([
+      prefix, `${prefix}/bin`, `${prefix}/Caskroom`, packageDirectory, `${packageDirectory}/${payload[2]}`,
+    ]) };
+  }
+  return {};
+}
+
+async function contentHash(path: string, trustInputs: CodexLocationTrustInputs): Promise<string> {
+  await assertCodexExecutableLocation(path, "native", trustInputs);
   const file = await openExecutableFile(path);
   try { return await hashExecutableFile(file); } finally { await file.close(); }
 }
 
-async function isNativeFile(
-  path: string,
-  platform: NodeJS.Platform,
-  routeKind: CodexLocationRequest["routeKind"] = "script",
-): Promise<boolean> {
-  const file = await openExecutableFile(path);
-  try {
-    const native = await isNativeExecutableFile(file, platform, process.arch);
-    await assertCodexExecutableLocation(path, native ? routeKind : "guarded-script");
-    return native;
-  } finally { await file.close(); }
-}
-
-// The shim is only an install marker. Its batch contents are never executed.
-export function claudeCodeNpmShimTarget(shim: string, platform: NodeJS.Platform = process.platform): string {
-  const paths = platform === "win32" ? win32 : { basename, dirname, join };
-  if (paths.basename(shim).toLowerCase() !== "claude.cmd") throw new Error("Invalid subscription launcher");
-  return paths.join(paths.dirname(shim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
-}
-
-// Admit all launch inputs before the first probe and retain a content proof.
+// Only native bytes are admitted; scripts and package launchers are never probed or executed. `releaseFetch` carries Linux release-metadata requests.
 export async function pinClaudeCodeExecutable(
   candidate: string,
   runtimeDirectory: string,
   discovery: CliDiscoveryEnvironment,
+  releaseFetch: typeof fetch,
 ): Promise<ClaudeCodeExecutable> {
   const source = await fs.realpath(candidate);
-  const isNpmShim = discovery.platform === "win32" && source.toLowerCase().endsWith(".cmd");
-  let script: string | null = isNpmShim ? claudeCodeNpmShimTarget(source) : null;
-  let interpreter: string = source;
-  let root: string | null = null;
-  if (script === null && !await isNativeFile(source, discovery.platform, "native")) script = source;
-  // Source shims and package files are only copied; module loading runs in the guarded snapshot.
-  const routeKind = script === null ? "native" : "guarded-script";
-  await assertCodexExecutableLocation(candidate, routeKind);
-  const launcherHash = await contentHash(source, routeKind);
-  if (script !== null) {
-    await assertCodexExecutableLocation(script, routeKind);
-    script = await fs.realpath(script);
-    root = dirname(script);
-    if (basename(script) !== "cli.js" || basename(root) !== "claude-code"
-      || basename(dirname(root)) !== "@anthropic-ai") throw new Error("Unsupported subscription launcher");
-    const manifest = join(root, "package.json");
-    await contentHash(manifest, routeKind);
-    const metadata: unknown = JSON.parse(await fs.readFile(manifest, "utf8"));
-    if (!metadata || typeof metadata !== "object" || !("name" in metadata) || metadata.name !== PACKAGE_NAME) {
-      throw new Error("Invalid subscription package");
-    }
-    let explicitInterpreter: string | null = null;
-    const input = await openExecutableFile(script);
-    try {
-      const header = Buffer.alloc(128);
-      const { bytesRead } = await input.read(header, 0, header.length, 0);
-      const shebang = /^#!(\/usr\/bin\/env node|\/[^\r\n ]*\/node)\r?\n/.exec(header.subarray(0, bytesRead).toString("utf8"));
-      if (!shebang) {
-        throw new Error("Unsupported subscription interpreter");
-      }
-      if (shebang[1] !== "/usr/bin/env node") explicitInterpreter = shebang[1]!;
-    } finally { await input.close(); }
-    const candidates = explicitInterpreter ? [explicitInterpreter] : [
-      ...(isNpmShim ? [join(dirname(source), "node.exe")] : []),
-      ...cliExecutableCandidates(discovery, [discovery.platform === "win32" ? "node.exe" : "node"], []),
-    ];
-    let resolved: string | null = null;
-    for (const path of candidates) {
-      try { await fs.lstat(path); } catch (error) {
-        if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
-        throw error;
-      }
-      // An existing but untrusted interpreter stops discovery before execution.
-      if (!await isNativeFile(path, discovery.platform, "native")) throw new Error("Invalid subscription interpreter");
-      resolved = await fs.realpath(path);
-      break;
-    }
-    if (!resolved) throw new Error("Subscription interpreter is unavailable");
-    interpreter = resolved;
+  if (isNpmInstallation(candidate) || isNpmInstallation(source) || /\.(?:cmd|bat|[cm]?js)$/iu.test(source)) {
+    throw new ClaudeCodeNativeRequiredError();
   }
-  const interpreterHash = await contentHash(interpreter, "native");
-  await assertCodexPrivateRuntimeDirectory(runtimeDirectory, routeKind);
+  const trustInputs = sourceLocationTrust(candidate, source, discovery.platform);
+  await assertCodexExecutableLocation(candidate, "native", trustInputs);
+  const input = await openExecutableFile(source);
+  try {
+    if (!await isNativeExecutableFile(input, discovery.platform, process.arch)) throw new ClaudeCodeNativeRequiredError();
+  } finally { await input.close(); }
+  const sourceHash = await contentHash(source, trustInputs);
+  await assertCodexPrivateRuntimeDirectory(runtimeDirectory, "native");
   const directory = await createPrivateTempDirectory(join(runtimeDirectory, "executable-"));
   try {
-    await assertCodexPrivateRuntimeDirectory(directory, routeKind);
+    await assertCodexPrivateRuntimeDirectory(directory, "native");
     const primary = await createPrivateObjects(async (created) => {
-      const copy = await copyNativeExecutableFile(interpreter,
-        join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch, "native");
+      const copy = await copyNativeExecutableFile(source,
+        join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch, "native", trustInputs);
       created.push(copy.executable);
       return copy;
     });
-    if (primary.contentHash !== interpreterHash) throw new Error("Subscription interpreter changed");
-    const packageArtifact = root === null || script === null ? null : await copySubscriptionPackageArtifact(root, script, directory);
+    if (primary.contentHash !== sourceHash) throw new Error("Subscription executable changed");
     const artifact: CodexExecutableArtifact = Object.freeze({ ...primary, companion: null });
+    await authenticateClaudeCodeExecutable(artifact.executable, source, sourceHash, discovery.platform, process.arch, releaseFetch);
     const verify = async (): Promise<void> => {
-      // Retain the launcher's link route as well as the canonical target.
-      await assertCodexExecutableLocation(candidate, routeKind);
-      if (await fs.realpath(candidate) !== source || await contentHash(source, routeKind) !== launcherHash
-        || await contentHash(interpreter, "native") !== interpreterHash) {
+      await assertCodexExecutableLocation(candidate, "native", trustInputs);
+      if (await fs.realpath(candidate) !== source || await contentHash(source, trustInputs) !== sourceHash) {
         throw new Error("Subscription executable changed");
       }
-      await verifyCodexExecutableArtifact(artifact, routeKind);
-      await packageArtifact?.verify();
+      await verifyCodexExecutableArtifact(artifact, "native");
     };
     await verify();
-    return Object.freeze({ executable: artifact.executable, args: packageArtifact?.args ?? Object.freeze([]), routeKind,
-      identity: JSON.stringify([source, launcherHash, interpreter, interpreterHash, packageArtifact?.identity ?? null]), verify,
+    return Object.freeze({ executable: artifact.executable,
+      identity: JSON.stringify([source, sourceHash]), verify,
       discard: () => discardCodexExecutableArtifact(artifact),
     });
   } catch (error) {

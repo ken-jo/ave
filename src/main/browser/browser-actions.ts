@@ -3,6 +3,8 @@
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
+import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
+import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
@@ -221,11 +223,19 @@ async function centerOf(cdp: CdpSession, backendNodeId: number): Promise<{ x: nu
   return visibleCenter(cdp, backendNodeId);
 }
 
-export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<void> {
+export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs,
+  onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void): Promise<void> {
   return withGuardedAction(target, async (target) => {
     throwIfAborted(target.signal);
     const backendNodeId = await resolveRef(target, ref, refs);
     target.expectNode(backendNodeId);
+    if (onObservationTarget) {
+      const attributes = await attributesOf(target.cdp, backendNodeId);
+      const href = attributes.href;
+      const candidate = href && URL.canParse(href, target.url()) ? new URL(href, target.url()).href : undefined;
+      const download = candidate === undefined ? undefined : validateExternalUrl(candidate);
+      onObservationTarget(observationElement(ref, refs, attributes, false), download?.ok ? download.url : undefined);
+    }
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
     await target.injectInput(() => withPageFocus(target, () => pressAt(target, x, y, target.finishWithInput)));
@@ -299,21 +309,37 @@ async function attributesOf(cdp: CdpSession, backendNodeId: number): Promise<Rec
   return nodeAttributes(result.node);
 }
 
+function observationElement(ref: string, refs: BrowserRefTable, attributes: Readonly<Record<string, string>>,
+  typing: boolean): BrowserObservationElement {
+  const entry = refs.get(ref);
+  if (!entry) throw new Error("Missing browser observation target");
+  const credential = /pass(?:word|code)?|pwd|secret|token|api[-_ ]?key|credential|one[-_ ]?time|otp|security[-_ ]?code|비밀번호|암호|토큰|인증.?코드/i;
+  const fieldIdentity = [attributes.type, attributes.autocomplete, attributes.name, attributes.id,
+    attributes["aria-label"], attributes.placeholder, entry.role, entry.name].filter(Boolean).join(" ");
+  const redacted = typing || ["textbox", "searchbox", "combobox", "spinbutton"].includes(entry.role)
+    || sensitiveFieldReason(attributes) !== null || credential.test(fieldIdentity);
+  return { ref, role: entry.role.slice(0, OBSERVATION_LIMITS.browserTextChars),
+    name: redacted ? "" : entry.name.slice(0, OBSERVATION_LIMITS.browserTextChars), redacted };
+}
+
 export async function type(
   target: ActionTarget,
   ref: string,
   value: string,
   options: { submit?: boolean },
   refs: BrowserRefTable = browserRefs,
+  onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void,
 ): Promise<void> {
   return withGuardedAction(target, async (target) => {
     throwIfAborted(target.signal);
     const backendNodeId = await resolveRef(target, ref, refs);
     target.expectNode(backendNodeId);
-    const sensitive = sensitiveFieldReason(await attributesOf(target.cdp, backendNodeId));
+    const attributes = await attributesOf(target.cdp, backendNodeId);
+    const sensitive = sensitiveFieldReason(attributes);
     if (sensitive) {
       throw new BrowserActionError("sensitive-field", `refused: ${ref} is ${sensitive}; the user types those themselves`);
     }
+    onObservationTarget?.(observationElement(ref, refs, attributes, true));
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
     await target.injectInput(() => withPageFocus(target, async () => {
@@ -845,17 +871,16 @@ async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTa
   }
 }
 
-// CDP mouse coordinates are guest-relative but touch coordinates are window-relative; translate only at the native boundary.
-// Measure the offset from native pointer echoes and the host content origin, never renderer-reported geometry.
-function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContentOrigin) {
-  let offset: { x: number; y: number } | null = null;
+// Pointer echoes prove the native page recipient before contact; both pointer and touch dispatch use viewport coordinates.
+function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostContentOrigin) {
+  let positionKnown = false;
   type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
   return {
-    // Before a pointer move is sent: listen for its native echo. `settle`, after the send, learns the page's offset in its window from it.
+    // The exact page point and its native screen echo must be observed before a contact starts.
     watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void>; stop(): void } | null {
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
-      // Each pointer move measures afresh: an echo that never comes must leave no earlier offset behind for the press that follows.
-      offset = null;
+      // An echo that never comes must leave no earlier receipt behind for the press that follows.
+      positionKnown = false;
       const point = { x: params.x, y: params.y };
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
       let timer: ReturnType<typeof setTimeout>;
@@ -880,21 +905,20 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
             const seen = await echo;
             const host = hostContentOrigin(guest);
             if (!seen || !host) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
-            offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
+            positionKnown = true;
           } finally { stop(); }
         },
       };
     },
-    // A touch event's page points as window points; a clear refusal when never measured.
-    placed(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    // A host offset must not be added to a point that already belongs to the guest viewport.
+    checked(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
       if (method !== "Input.dispatchTouchEvent") return params;
       const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
       if (points.length === 0) return params;
-      if (!offset) {
+      if (!positionKnown) {
         throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
       }
-      const by = offset;
-      return { ...params, touchPoints: points.map((point) => ({ ...point, x: point.x + by.x, y: point.y + by.y })) };
+      return params;
     },
   };
 }
@@ -925,7 +949,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   assertCurrent(false);
   const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
   assertCurrent(false);
-  const touch = createTouchPlacement(guest, hostContentOrigin);
+  const touch = createTouchPositionGuard(guest, hostContentOrigin);
   // A touch start went out and its sequence is not ended yet.
   let touchOpen = false;
   let touchEnded = false;
@@ -953,7 +977,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         || nativeDrag.enabled || !nativeDrag.disabled || !nativeDrag.cancelled || nativeDrag.error || nativeDrag.delivery().elsewhere !== 0)) {
         throw new BrowserActionError("drag-unavailable", "the native source drag has not been safely released; no drop was sent");
       }
-      params = touch.placed(method, params);
+      params = touch.checked(method, params);
       const echo = touch.watch(method, params);
       const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
       const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
@@ -1232,9 +1256,9 @@ export function createBrowserPageActions(
     },
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       waitFor(await targetFor(live, attribution, hostContentOrigin), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref),
+    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options),
+      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget),
     pressKey: async (live: LiveTab, key: string, ref?: string) =>
       pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {

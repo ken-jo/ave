@@ -1,11 +1,10 @@
-import { devNull } from "node:os";
 import { describe, expect, it } from "vitest";
 import { gitReadOnlyEnvironment, isSupportedGitVersion, readOnlyGitArguments } from "../rules/git-readonly-argv.js";
 
 const GLOBAL_ARGUMENTS = [
   "--no-pager", "--no-lazy-fetch", "--no-optional-locks", "--no-replace-objects",
-  "-c", "core.fsmonitor=false", "-c", `core.hooksPath=${devNull}`,
-  "-c", `core.attributesFile=${devNull}`, "-c", `core.excludesFile=${devNull}`,
+  "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+  "-c", "core.attributesFile=/dev/null", "-c", "core.excludesFile=/dev/null",
   "-c", "core.untrackedCache=false", "-c", "diff.autoRefreshIndex=false",
   "-c", "diff.submodule=short", "-c", "status.submoduleSummary=false", "-c", "submodule.recurse=false",
   "-c", "log.showSignature=false", "-c", "log.mailmap=false", "-c", "log.decorate=false",
@@ -15,7 +14,7 @@ const GLOBAL_ARGUMENTS = [
 ];
 const DIFF_ARGUMENTS = [
   "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--submodule=short", "--no-renames",
-  "--no-color", "--no-relative", `-O${devNull}`,
+  "--no-color", "--no-relative", "-O/dev/null",
 ];
 const HISTORY_ARGUMENTS = [
   ...DIFF_ARGUMENTS, "--no-show-signature", "--no-patch", "--no-use-mailmap", "--no-notes",
@@ -91,7 +90,7 @@ describe("owned child environment", () => {
   const OWNED_ENVIRONMENT = {
     GIT_DIR: "/project/.git", GIT_WORK_TREE: "/project", GIT_CEILING_DIRECTORIES: "/project",
     GIT_DISCOVERY_ACROSS_FILESYSTEM: "0", GIT_REFERENCE_BACKEND: "files", GIT_INDEX_FILE: indexFile, GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_ATTR_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "",
     GIT_PROTOCOL_FROM_USER: "0", GIT_PAGER: "", GIT_TRACE: "0", GIT_TRACE2: "0", GIT_TRACE2_EVENT: "0", GIT_TRACE2_PERF: "0",
   };

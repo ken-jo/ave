@@ -39,6 +39,7 @@ import { surfaceMountLocation, useSurfaceMountRevision } from "./preview/surface
 import { approvalsForDocks } from "./components/permissions/TerminalEgressBanner.js";
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
+import { connectBrowserObservations } from "./preview/browser-observation-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
@@ -560,6 +561,7 @@ export function App() {
   }), [api, refreshSessions]);
 
   // Main-area browser selection reveals an existing page; new agent tabs belong beside the requesting chat.
+  useEffect(() => connectBrowserObservations(window.ave.preview), []);
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => null,
     hasTab: (tabId) => mainBrowserHostRef.current.mainSurfaces.get(tabId)?.kind === "browser",

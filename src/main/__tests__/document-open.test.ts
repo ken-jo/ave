@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolExecutionContext } from "../../tools/types.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
@@ -106,10 +108,14 @@ describe("document panel opening", () => {
   });
   it("returns a file link without sending a panel request in link mode", async () => {
     state.mode = "link";
-    const path = process.platform === "win32" ? "C:/workspace/a b.xlsx" : "/workspace/a b.xlsx";
-    const result = await openDocumentForSession(path, context());
-    const fileLink = process.platform === "win32" ? "file:///C:/workspace/a%20b.xlsx" : "file:///workspace/a%20b.xlsx";
-    expect(JSON.parse(result.output)).toMatchObject({ mode: "link", opened: false, fileLink });
+    // The file tool passes a canonical absolute path, which carries a drive on Windows.
+    const document = resolve("/workspace/a b.xlsx");
+    const output = JSON.parse((await openDocumentForSession(document, context())).output);
+    expect(output).toMatchObject({ mode: "link", opened: false, path: document });
+    expect(output.fileLink).toMatch(process.platform === "win32"
+      ? /^file:\/\/\/[A-Za-z]:\/workspace\/a%20b\.xlsx$/
+      : /^file:\/\/\/workspace\/a%20b\.xlsx$/);
+    expect(fileURLToPath(output.fileLink)).toBe(document);
     expect(sender.send).not.toHaveBeenCalled();
   });
   it("refuses an expired acknowledgement even before the overdue timer runs", async () => {

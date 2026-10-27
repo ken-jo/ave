@@ -9,11 +9,16 @@ import { sanitizedCodexConversationEnvironment } from "../../main/codex-conversa
 import { grantAsrtWindowsBackendAcl } from "../../permissions/asrt-windows-support.js";
 import { startWindowsAclGrantHolder } from "../../permissions/windows-acl-grant-holder.js";
 import { powerShellMxcCommandLine } from "../../permissions/mxc-windows.js";
-import { claimPrivateOwnership } from "../../main/codex-executable-location.js";
+import { claimPrivateOwnership, _resetWindowsAclHostForTest } from "../../main/codex-executable-location.js";
+import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
 import { prepareSrtWinExecutable } from "../../permissions/srt-win-integrity.js";
 import { getVendoredSrtWinExePath } from "../../permissions/asrt-sandbox.js";
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  _resetWindowsAclHostForTest();
+});
 
 describe("system executable admission", () => {
   it.each([{}, { SystemRoot: "" }, { SystemRoot: "relative" }, { SystemRoot: "C:Windows" }, { windir: "\\Windows" },
@@ -50,7 +55,7 @@ describe("system executable admission", () => {
   });
 
   it("keeps former executable resolvers on the shared fail-closed boundary", () => {
-    for (const file of ["main/acp-subscription-runtime-client.ts", "main/codex-conversation-runtime.ts", "main/codex-executable-location.ts",
+    for (const file of ["main/acp-subscription-runtime-client.ts", "main/codex-conversation-runtime.ts",
       "main/managed-child-processes.ts", "main/terminal/manual-shell.ts", "permissions/asrt-windows-support.ts", "permissions/confined-child.ts",
       "permissions/srt-win-integrity.ts", "permissions/windows-acl-grant-holder.ts", "permissions/mxc-windows.ts", "tools/mxc-shell-launch.ts", "tools/shell-tools.ts", "shared/ave-home.ts",
       "shared/powershell-executable.ts"]) {
@@ -61,9 +66,21 @@ describe("system executable admission", () => {
     expect(win32.isAbsolute(win32SystemBinary("cmd", { SystemRoot: "C:\\Windows" }))).toBe(true);
   });
 
-  it.runIf(process.platform === "win32")("refuses security-reader and private-helper effects without a system root", async () => {
+  it("requires OS directory proof for publisher and ACL verifiers instead of environment-selected roots", () => {
+    for (const file of ["main/claude-code-authenticity.ts", "main/codex-executable-location.ts"]) {
+      const source = readFileSync(resolve("src", file), "utf8");
+      expect(source, file).toContain('from "./windows-path-kind-launcher.js"');
+      expect(source, file).toContain("queryWindowsSystemDirectory()");
+      expect(source, file).not.toContain("windows-system-path.js");
+      expect(source, file).not.toMatch(/process\.env\.(?:SystemRoot|WINDIR|windir)/u);
+    }
+  });
+
+  it.runIf(process.platform === "win32")("refuses private-helper effects without OS directory proof and legacy readers without a system root", async () => {
     for (const key of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(key, undefined);
-    await expect(claimPrivateOwnership([resolve("resources")])).rejects.toThrow(/system root/i);
+    _resetWindowsAclHostForTest();
+    vi.spyOn(pathKindLauncher, "queryWindowsSystemDirectory").mockRejectedValue(new Error("OS directory proof unavailable"));
+    await expect(claimPrivateOwnership([resolve("resources")])).rejects.toThrow("OS directory proof unavailable");
     expect(() => prepareSrtWinExecutable(getVendoredSrtWinExePath())).toThrow(expect.objectContaining({
       cause: expect.objectContaining({ message: expect.stringMatching(/system root/i) }),
     }));

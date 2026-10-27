@@ -18,6 +18,7 @@ import type {
 } from "../main/browser/browser-tab-registry.js";
 import type { BrowserToolExecutors } from "./browser-tools-execute.js";
 import type { BrowserSessionActor, BrowserControlLease } from "../shared/browser-surface.js";
+import type { BrowserObservationElement } from "../shared/agent-observation.js";
 import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
 
@@ -46,6 +47,7 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
   readonly leaseId?: string;
   readonly callerSignal?: AbortSignal;
   readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number; readonly controlGeneration: number };
+  readonly onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void;
 }
 
 /** The page actions (main/browser/browser-actions.ts), loaded on first use. */

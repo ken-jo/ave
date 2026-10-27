@@ -67,23 +67,37 @@ function readConfigFingerprint(path: string, expectedIdentity: string): string |
   }
 }
 
-function isOrdinaryWindowsPath(path: string): boolean {
-  const rows = pinWindowsPaths([path]);
-  const row = rows[0];
-  return rows.length === 1 && row !== undefined && row.exists === true && admitWindowsReparse(row, "evidence") === true;
+// Keeps each helper command line well below the 32,767-character CreateProcess limit.
+const MAX_WINDOWS_PIN_BATCH_CHARACTERS = 16 * 1024;
+
+/** One pin covers a path and every ancestor component; batches bound helper starts per directory. */
+function areOrdinaryWindowsPaths(paths: readonly string[]): boolean {
+  for (let start = 0; start < paths.length;) {
+    let end = start;
+    let characters = 0;
+    while (end < paths.length && (end === start || characters + paths[end]!.length + 3 <= MAX_WINDOWS_PIN_BATCH_CHARACTERS)) {
+      characters += paths[end]!.length + 3;
+      end += 1;
+    }
+    const batch = paths.slice(start, end);
+    const rows = pinWindowsPaths(batch);
+    if (rows.length !== batch.length || !rows.every(row => row.exists === true && admitWindowsReparse(row, "evidence") === true)) return false;
+    start = end;
+  }
+  return true;
 }
 
 /** Bounded evidence for pre/post comparison; metadata is not atomically sealed. */
 export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
   if (!isAbsolute(cwd) || cwd.includes("\0")) return null;
   try {
-    if (process.platform === "win32" && !isOrdinaryWindowsPath(cwd)) return null;
+    // Pinning the requested spelling first means realpath follows no reparse point.
+    if (process.platform === "win32" && !areOrdinaryWindowsPaths([cwd])) return null;
     const workTree = realpathSync(cwd);
     const provenance: [string, string][] = [];
     let ancestor = workTree;
     for (let depth = 0; ; depth += 1) {
       if (depth > MAX_METADATA_DEPTH) return null;
-      if (process.platform === "win32" && !isOrdinaryWindowsPath(ancestor)) return null;
       const stat = lstatSync(ancestor, { bigint: true });
       if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
       provenance.push([ancestor, metadataIdentity(stat)]);
@@ -98,7 +112,7 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       const metadataPath = relative.toLowerCase();
       if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
         || FORBIDDEN_METADATA_PATHS.has(metadataPath) || metadataPath.endsWith("/commondir")) return false;
-      if (process.platform === "win32" && !isOrdinaryWindowsPath(path)) return false;
+      // The caller pinned this path, alone for the root and with its siblings otherwise.
       const stat = lstatSync(path, { bigint: true });
       if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1n)) return false;
       const identity = metadataIdentity(stat);
@@ -112,17 +126,26 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       }
       if (isConfig) return false;
       evidence.push([relative, identity, ""]);
+      const names: string[] = [];
       const directory = opendirSync(path);
       try {
         let entry;
         while ((entry = directory.readSync()) !== null) {
-          if (!inspect(join(path, entry.name), relative ? `${relative}/${entry.name}` : entry.name, depth + 1)) return false;
+          if (entries + names.length >= MAX_METADATA_ENTRIES) return false;
+          names.push(entry.name);
         }
       } finally {
         directory.closeSync();
       }
+      if (process.platform === "win32" && !areOrdinaryWindowsPaths(names.map(name => join(path, name)))) return false;
+      for (const name of names) {
+        if (!inspect(join(path, name), relative ? `${relative}/${name}` : name, depth + 1)) return false;
+      }
       return true;
     };
+    // This pin uses the realpath spelling, so its ancestor components cover every
+    // provenance directory walked above as well as the metadata root itself.
+    if (process.platform === "win32" && !areOrdinaryWindowsPaths([gitDirectory])) return null;
     if (!inspect(gitDirectory, "", 0)) return null;
     // Catch paths changed while another part of the bounded walk was inspected.
     // This is a consistency check, not a lock on later path opens.

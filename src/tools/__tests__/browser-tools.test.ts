@@ -25,11 +25,16 @@ import { ToolRegistry } from "../registry.js";
 import { browserOrigin, createBrowserTools, type BrowserActionTab, type BrowserPageActions } from "../browser-tools.js";
 import { fenceBrowserContent } from "../browser-tools-execute.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { runWithAgentObservationTurn } from "../agent-observation-context.js";
+import { setAgentBrowserObservationSink } from "../agent-browser-observation.js";
+import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
+import type { BrowserObservationDetail, ObservationIdentity } from "../../shared/agent-observation.js";
 
 class FakeGuest implements BrowserGuest {
   constructor(readonly id: number, public url: string, public title = "Page") {}
+  destroyed = false;
   isDestroyed(): boolean {
-    return false;
+    return this.destroyed;
   }
   getURL(): string {
     return this.url;
@@ -127,6 +132,7 @@ describe("browser tools", () => {
   });
 
   afterEach(async () => {
+    setAgentBrowserObservationSink(undefined);
     await auditLogger.close();
     await reviewerCache?.flush();
     reviewerCache = undefined;
@@ -249,6 +255,114 @@ describe("browser tools", () => {
     };
     return { run, cards, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
+
+  function browserObservations() {
+    const completed: Array<{ identity: ObservationIdentity; detail: BrowserObservationDetail; downloadUrl?: string }> = [];
+    const begun: string[] = [];
+    setAgentBrowserObservationSink({
+      begin: (identity, _tab, action, _isCurrent, initial, expectedDownloadUrl) => {
+        begun.push(action);
+        let detail = { ...initial };
+        let downloadUrl = expectedDownloadUrl;
+        return {
+          target: (element, expected) => { detail = { ...detail, element }; downloadUrl = expected; },
+          complete: () => { completed.push({ identity, detail, downloadUrl }); },
+          dispose: () => {},
+        };
+      },
+      endSessions: () => {},
+    });
+    return { completed, begun };
+  }
+
+  it("observes admitted model commands without retaining input strings", async () => {
+    const observed = browserObservations();
+    const h = harness();
+    const tab = await h.agentTab("https://a.example/form");
+    h.page.actions.click = async (target) => {
+      target.onObservationTarget?.({ ref: "e1", role: "button", name: "Log in", redacted: false });
+    };
+    h.page.actions.type = async (target) => {
+      target.onObservationTarget?.({ ref: "e2", role: "textbox", name: "", redacted: true });
+    };
+    await runWithAgentObservationTurn({ sessionId: HOST_SESSION, turnId: "browser-turn" }, async () => {
+      expect((await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" })).isError).toBe(false);
+      expect((await h.run(BROWSER_TOOL.type, { tabId: tab.handle, ref: "e2", text: "throwaway-input-value" })).isError).toBe(false);
+      expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://a.example/next" })).isError).toBe(false);
+    });
+    expect(observed.completed.map((entry) => entry.detail.action)).toEqual(["click", "type", "navigate"]);
+    expect(observed.completed[0]).toMatchObject({ identity: { sessionId: HOST_SESSION, turnId: "browser-turn", toolUseId: "call-1" },
+      detail: { tabId: tab.handle, element: { name: "Log in" } } });
+    expect(observed.completed[1]?.detail.element).toEqual({ ref: "e2", role: "textbox", name: "", redacted: true });
+    expect(observed.completed[2]?.downloadUrl).toBe("https://a.example/next");
+    expect(JSON.stringify(observed.completed)).not.toContain("throwaway-input-value");
+  });
+
+  it.each(["ui", "mcp-app"] as const)("does not observe %s calls even during a model turn", async (origin) => {
+    const observed = browserObservations();
+    const h = harness();
+    const tab = await h.agentTab("https://a.example/form");
+    expect((await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" })).isError).toBe(false);
+    const result = await runWithAgentObservationTurn({ sessionId: HOST_SESSION, turnId: "browser-turn" }, () =>
+      runWithInvocationOrigin(origin, undefined, () => h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" })));
+    expect(result.isError).toBe(false);
+    expect(h.page.calls.map((call) => call.action)).toEqual(["click", "click"]);
+    expect(observed.begun).toEqual([]);
+    expect(observed.completed).toEqual([]);
+  });
+
+  it("excludes passive browsing and user takeover during an admitted command", async () => {
+    const observed = browserObservations();
+    const h = harness();
+    const agent = await h.agentTab("https://a.example/form");
+    const user = h.userTab("https://user.example/");
+    agent.guest.url = "https://a.example/user-navigation";
+    user.guest.url = "https://user.example/private";
+    h.tabs.userInput(user.guest.id);
+    expect(observed.completed).toEqual([]);
+    h.page.actions.click = async () => {
+      h.tabs.userInput(agent.guest.id);
+      agent.guest.url = "https://a.example/human-takeover";
+    };
+    await runWithAgentObservationTurn({ sessionId: HOST_SESSION, turnId: "browser-turn" }, () =>
+      h.run(BROWSER_TOOL.click, { tabId: agent.handle, ref: "e1" }));
+    expect(observed.begun).toEqual(["click"]);
+    expect(observed.completed).toEqual([]);
+  });
+
+  it("does not complete observations for failed page actions", async () => {
+    const observed = browserObservations();
+    const h = harness();
+    const tab = await h.agentTab("https://a.example/form");
+    h.page.actions.click = async () => { throw new Error("Action fixture failed"); };
+    const result = await runWithAgentObservationTurn({ sessionId: HOST_SESSION, turnId: "browser-turn" }, () =>
+      h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" }));
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Action fixture failed") });
+    expect(observed.begun).toEqual(["click"]);
+    expect(observed.completed).toEqual([]);
+  });
+
+  it("observes successful agent open, switch and close operations", async () => {
+    const observed = browserObservations();
+    const h = harness();
+    await runWithAgentObservationTurn({ sessionId: HOST_SESSION, turnId: "browser-turn" }, async () => {
+      const opening = h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
+      await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
+      const guest = new FakeGuest(500, "about:blank", "Start");
+      h.tabs.guestAttached(guest, 1);
+      h.tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: h.ops.at(-1)!.requestId! });
+      expect((await opening).isError).toBe(false);
+      h.tabs.setActiveSurface(1, { kind: "browser", tabId: "renderer-500" });
+      expect((await h.run(BROWSER_TOOL.tabs, { select: "tab-1" })).isError).toBe(false);
+      const closing = h.run(BROWSER_TOOL.tabClose, { tabId: "tab-1" });
+      await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("close"));
+      guest.destroyed = true;
+      h.tabs.guestDestroyed(guest.id);
+      expect((await closing).isError).toBe(false);
+    });
+    expect(observed.completed.map((entry) => entry.detail.action)).toEqual(["tab-open", "tab-switch", "tab-close"]);
+    expect(observed.completed[0]?.downloadUrl).toBe("https://a.example/start");
+  });
 
   it.each([BROWSER_TOOL.navigate, BROWSER_TOOL.tabNew])("applies domain deny rules before %s", async (name) => {
     const { run, cards, page, agentTab, ops, manager } = harness({ mode: "allow" });

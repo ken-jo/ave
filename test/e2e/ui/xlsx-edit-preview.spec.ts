@@ -239,7 +239,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       if (!mode.ok) throw new Error("Could not select strict tool approval");
       const state = window as unknown as { observedDocumentEvents: unknown[] };
       state.observedDocumentEvents = [];
-      window.ave.preview.onDocumentObservation((events) => state.observedDocumentEvents.push(...events));
+      window.ave.preview.onAgentObservation((events) => state.observedDocumentEvents.push(...events));
     });
     await ctx.page.exposeFunction("captureProvisionalDocumentFrame", (frame: ProvisionalFrame) => {
       const sourceHash = createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -441,7 +441,7 @@ test("approved native edits highlight lines in the read-only code viewer", async
       if (!mode.ok) throw new Error("Could not select strict tool approval");
       const state = window as unknown as { observedTextEvents: unknown[] };
       state.observedTextEvents = [];
-      window.ave.preview.onDocumentObservation((events) => state.observedTextEvents.push(...events));
+      window.ave.preview.onAgentObservation((events) => state.observedTextEvents.push(...events));
     });
     const composer = ctx.page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
     await composer.fill("Update the two constants and show the agent changes.");

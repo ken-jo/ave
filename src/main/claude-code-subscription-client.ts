@@ -9,11 +9,13 @@ import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { isRecord } from "../shared/is-record.js";
 import {
+  CLAUDE_CODE_CLI_MINIMUM_VERSION,
   CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID,
   claudeCodeSubscriptionStatus,
   type ClaudeCodeSubscriptionErrorCode,
   type ClaudeCodeSubscriptionStatus,
 } from "../shared/claude-code-subscription.js";
+import { meetsMinimumCliVersion } from "../shared/subscription-runtime.js";
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
 import {
   cliEnvironmentValue,
@@ -23,8 +25,9 @@ import {
   type CliDiscoveryEnvironment,
 } from "./user-cli-discovery.js";
 
-import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "./claude-code-executable.js";
-import { assertCodexLocations, CodexExecutableLocationError, createPrivateTempDirectory, type CodexLocationRequest } from "./codex-executable-location.js";
+import { ClaudeCodeNativeRequiredError, pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "./claude-code-executable.js";
+import { ClaudeCodeAuthenticityError, ClaudeCodeVersionUnsupportedError } from "./claude-code-authenticity.js";
+import { assertCodexLocations, CodexExecutableLocationError, createPrivateTempDirectory } from "./codex-executable-location.js";
 
 const PROBE_TIMEOUT_MS = 15_000;
 const LOGIN_TIMEOUT_MS = 15 * 60_000;
@@ -46,12 +49,8 @@ export class ClaudeCodeSubscriptionError extends Error {
   }
 }
 
-export function claudeCodeLocationError(
-  error: CodexExecutableLocationError,
-  routeKind: CodexLocationRequest["routeKind"] = error.routeKind,
-): ClaudeCodeSubscriptionError {
-  return new ClaudeCodeSubscriptionError(routeKind === "guarded-script"
-    ? "claude-code-runtime-unsafe-npm-location" : "claude-code-runtime-unsafe-location");
+export function claudeCodeLocationError(): ClaudeCodeSubscriptionError {
+  return new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-location");
 }
 
 export interface ClaudeCodeSubscriptionClientOptions {
@@ -63,6 +62,8 @@ export interface ClaudeCodeSubscriptionClientOptions {
   runtimeTempDir?: string;
   // Opens a trusted login page only when the CLI prints one.
   openAuthorizationUrl?: OpenOAuthLogin;
+  // The host network stack behind the release allowlist ({@link createClaudeCodeReleaseFetch}); Linux publisher verification fetches signed metadata.
+  releaseFetch: typeof fetch;
   // Test seam; production uses the managed-child registry.
   spawn?: SpawnClaude;
   // Test seam for filesystem-based executable validation.
@@ -74,6 +75,12 @@ export interface ClaudeCodeSubscriptionClientOptions {
   homeDir?: string;
   // Test seam: where to look, most specific first. Production uses {@link claudeCodeExecutableCandidates}.
   candidates?: () => readonly string[];
+}
+
+// An answer about the probed bytes themselves, cached by content identity; anything else is asked again.
+function isBinaryVerdict(error: unknown): boolean {
+  return error instanceof ClaudeCodeSubscriptionError
+    && (error.code === "claude-code-runtime-incompatible" || error.code === "claude-code-runtime-version-unsupported");
 }
 
 // A found CLI that passed qualification, bound to the bytes it was probed on.
@@ -96,15 +103,14 @@ interface AuthStatusPayload {
 
 export async function validateClaudeCodeRuntimeDirectories(
   directories: readonly string[],
-  routeKind: CodexLocationRequest["routeKind"] = "script",
 ): Promise<void> {
   try {
     for (const directory of directories) {
       if (!isAbsolute(directory) || CONTROL_CHARACTERS.test(directory)) throw new Error("invalid-directory");
     }
-    await assertCodexLocations(directories.map((path) => ({ path, kind: "private-directory", routeKind })));
+    await assertCodexLocations(directories.map((path) => ({ path, kind: "private-directory", routeKind: "native" })));
   } catch (error) {
-    if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, routeKind);
+    if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
     throw new ClaudeCodeSubscriptionError("claude-code-runtime-unavailable");
   }
 }
@@ -200,7 +206,7 @@ export async function resolveClaudeCodeSubscriptionExecutable(
   }
 }
 
-// Search absolute PATH entries before standard install locations; resolve package shims without a shell.
+// Search absolute PATH entries before standard install locations; unsupported launchers are identified without execution.
 export function claudeCodeExecutableCandidates(discovery: CliDiscoveryEnvironment): string[] {
   const { platform, env, homeDir } = discovery;
   const paths = cliPathApi(platform);
@@ -216,13 +222,7 @@ export function claudeCodeExecutableCandidates(discovery: CliDiscoveryEnvironmen
     if (home) installLocations.push(paths.join(home, ".local", "bin", "claude"));
     installLocations.push("/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude");
   }
-  if (platform === "win32") {
-    return [
-      ...cliExecutableCandidates(discovery, ["claude.exe"], installLocations.filter((path) => path.endsWith(".exe"))),
-      ...cliExecutableCandidates(discovery, ["claude.cmd"], installLocations.filter((path) => path.endsWith(".cmd"))),
-    ];
-  }
-  return cliExecutableCandidates(discovery, ["claude"], installLocations);
+  return cliExecutableCandidates(discovery, platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"], installLocations);
 }
 
 const CLAUDE_CODE_VERSION_PATTERN = /^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?) \(Claude Code\)\s*$/m;
@@ -273,6 +273,8 @@ export function sanitizedClaudeCodeEnvironment(
   // The host supplies the complete MCP catalog and owns tool discovery.
   env.ENABLE_TOOL_SEARCH = "false";
   env.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  // Runtime updates require rediscovery and publisher authentication of a new sealed artifact.
+  env.DISABLE_UPDATES = "1";
   env.NO_COLOR = "1";
   env.TERM = "dumb";
   return env;
@@ -328,9 +330,10 @@ export class ClaudeCodeSubscriptionClient {
     this.platform = options.platform ?? process.platform;
     this.env = options.env ?? process.env;
     this.homeDir = options.homeDir ?? homedir();
+    const releaseFetch = options.releaseFetch;
     this.pinExecutable = options._pinExecutableForTest ?? ((candidate) => pinClaudeCodeExecutable(candidate, this.runtimeHome, {
       platform: this.platform, env: this.env, homeDir: this.homeDir,
-    }));
+    }, releaseFetch));
     this.candidates = options.candidates ?? (() => claudeCodeExecutableCandidates({
       platform: this.platform, env: this.env, homeDir: this.homeDir,
     }));
@@ -385,8 +388,7 @@ export class ClaudeCodeSubscriptionClient {
         this.verifiedVersion ?? found.version,
       ));
     } catch (error) {
-      if (error instanceof ClaudeCodeSubscriptionError && (error.code === "claude-code-runtime-unsafe-location"
-        || error.code === "claude-code-runtime-unsafe-npm-location")) throw error;
+      if (error instanceof ClaudeCodeSubscriptionError && error.code === "claude-code-runtime-unsafe-location") throw error;
       return this.remember(unavailableStatus());
     }
   }
@@ -414,7 +416,7 @@ export class ClaudeCodeSubscriptionClient {
       return this.remember(claudeCodeSubscriptionStatus("unverified", "signed-out", found.version));
     }
     try { await found.artifact.verify(); } catch (error) {
-      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, found.artifact.routeKind);
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
       throw error;
     }
     this.assertCurrent(epoch);
@@ -434,7 +436,7 @@ export class ClaudeCodeSubscriptionClient {
     this.loginStarting = true;
     try {
       await this.prepareExecutable(executable, epoch);
-      const child = this.spawn(executable, [...this.artifacts.get(executable)!.args, "auth", "login"], {
+      const child = this.spawn(executable, ["auth", "login"], {
         cwd: this.workspaceDir,
         env: sanitizedClaudeCodeEnvironment(this.runtimeHome, process.env, this.platform, this.runtimeTempDir),
         stdio: ["ignore", "pipe", "pipe"],
@@ -507,9 +509,9 @@ export class ClaudeCodeSubscriptionClient {
   private async prepareExecutable(executable: string, epoch: number): Promise<void> {
     const artifact = this.artifacts.get(executable);
     if (!artifact) throw new ClaudeCodeSubscriptionError("claude-code-runtime-invalid-executable");
-    await validateClaudeCodeRuntimeDirectories([this.runtimeHome, this.workspaceDir, this.runtimeTempDir], artifact.routeKind);
+    await validateClaudeCodeRuntimeDirectories([this.runtimeHome, this.workspaceDir, this.runtimeTempDir]);
     try { await artifact.verify(); } catch (error) {
-      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, artifact.routeKind);
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
       throw new ClaudeCodeSubscriptionError("claude-code-runtime-unverified");
     }
     this.assertCurrent(epoch);
@@ -555,8 +557,16 @@ export class ClaudeCodeSubscriptionClient {
     let artifact: ClaudeCodeExecutable;
     try { artifact = await this.pinExecutable(candidatePath); } catch (error) {
       this.adopt(null);
-      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error,
-        candidatePath.toLowerCase().endsWith(".cmd") ? "guarded-script" : error.routeKind);
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
+      if (error instanceof ClaudeCodeNativeRequiredError) throw new ClaudeCodeSubscriptionError("claude-code-runtime-native-required");
+      if (error instanceof ClaudeCodeVersionUnsupportedError) {
+        this.lastVersion = error.version;
+        throw new ClaudeCodeSubscriptionError("claude-code-runtime-version-unsupported");
+      }
+      if (error instanceof ClaudeCodeAuthenticityError) {
+        throw new ClaudeCodeSubscriptionError(error.reason === "release-metadata-unavailable"
+          ? "claude-code-runtime-release-metadata-unavailable" : "claude-code-runtime-unauthenticated");
+      }
       throw new ClaudeCodeSubscriptionError("claude-code-runtime-invalid-executable");
     }
     if (this.stopped || this.epoch !== epoch) {
@@ -571,7 +581,7 @@ export class ClaudeCodeSubscriptionClient {
       this.qualifications.set(identity, verdict);
       verdict.catch((error: unknown) => {
         // Only an answer about the binary is a verdict; a probe that could not run says nothing and is asked again next time.
-        if (!(error instanceof ClaudeCodeSubscriptionError && error.code === "claude-code-runtime-incompatible")) {
+        if (!isBinaryVerdict(error)) {
           if (this.qualifications.get(identity) === verdict) this.qualifications.delete(identity);
         }
       });
@@ -587,7 +597,7 @@ export class ClaudeCodeSubscriptionClient {
       return qualified;
     } catch (error) {
       this.adopt(null);
-      if (!(error instanceof ClaudeCodeSubscriptionError && error.code === "claude-code-runtime-incompatible")) {
+      if (!isBinaryVerdict(error)) {
         if (this.qualifications.get(identity) === verdict) this.qualifications.delete(identity);
       }
       if (this.artifacts.get(retained.executable) === retained) {
@@ -599,7 +609,7 @@ export class ClaudeCodeSubscriptionClient {
           throw cleanupError;
         }
       }
-      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, retained.routeKind);
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError();
       throw error;
     }
   }
@@ -625,7 +635,7 @@ export class ClaudeCodeSubscriptionClient {
     // A probe that ran and exited non-zero is an answer about the binary (an old CLI without `auth`, a different program named `claude`); one that could not
     // run, timed out or was cancelled rejects instead and is retried.
     this.lastVersion = null;
-    await validateClaudeCodeRuntimeDirectories([this.runtimeTempDir], artifact.routeKind);
+    await validateClaudeCodeRuntimeDirectories([this.runtimeTempDir]);
     const probeHome = await createPrivateTempDirectory(join(this.runtimeTempDir, "probe-"));
     try {
       const probe = async (args: readonly string[]): Promise<string> => {
@@ -636,6 +646,10 @@ export class ClaudeCodeSubscriptionClient {
       const version = parseClaudeCodeVersion(await probe(["--bare", "--version"]));
       this.lastVersion = version;
       if (!version) throw incompatible();
+      // The bytes are publisher-authenticated, so the release reports its own version truthfully. Older signed releases are refused, not run further.
+      if (!meetsMinimumCliVersion(version, CLAUDE_CODE_CLI_MINIMUM_VERSION)) {
+        throw new ClaudeCodeSubscriptionError("claude-code-runtime-version-unsupported");
+      }
       const authHelp = await probe(["auth", "--help"]);
       if (missingClaudeCodeAuthCommands(authHelp).length > 0) throw incompatible();
       return Object.freeze({ artifact, executable, identity, version });
@@ -713,14 +727,14 @@ export class ClaudeCodeSubscriptionClient {
     options: { probeHome?: string; acceptedCodes?: readonly number[]; anyExitCode?: boolean } = {},
   ): Promise<{ stdout: string; code: number }> {
     const epoch = this.epoch;
-    if (options.probeHome) await validateClaudeCodeRuntimeDirectories([options.probeHome], this.artifacts.get(executable)?.routeKind);
+    if (options.probeHome) await validateClaudeCodeRuntimeDirectories([options.probeHome]);
     await this.prepareExecutable(executable, epoch);
     return await new Promise((resolvePromise, rejectPromise) => {
       let settled = false;
       let outputBytes = 0;
       let stdout = "";
       const stdoutDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-      const child = this.spawn(executable, [...this.artifacts.get(executable)!.args, ...args], {
+      const child = this.spawn(executable, args, {
         cwd: this.workspaceDir,
         env: sanitizedClaudeCodeEnvironment(options.probeHome ?? this.runtimeHome, process.env, this.platform, this.runtimeTempDir),
         stdio: ["ignore", "pipe", "pipe"],
