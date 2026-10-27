@@ -1,4 +1,4 @@
-import { posix, win32 } from "node:path";
+import { posix, sep, win32 } from "node:path";
 import { existsSync } from "node:fs";
 
 export type ShellPathDialect = "native" | "powershell" | "bash";
@@ -44,7 +44,7 @@ function windowsVolumeRoot(path: string): string {
 }
 
 export function modelShellPath(path: string, model: ShellPathModel): NativeShellPath {
-  if (process.platform !== "win32") {
+  if (sep !== "\\") {
     const absolute = posix.isAbsolute(path) ? path : posix.resolve(model.location ?? "/", path);
     return { nativePath: absolute, normalizedPath: posix.normalize(absolute), volumeRoot: posix.parse(absolute).root, floorPaths: [] };
   }

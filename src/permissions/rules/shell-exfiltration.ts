@@ -108,7 +108,7 @@ function normalizeVisiblePath(text: string, home: string): string {
     .replace(/\{([^{}]+)\}/g, (_match, choices: string) => choices.includes(",") || choices.includes("..") ? "*" : choices);
 }
 function nativePathProbe(candidate: string, cwd: string | undefined, context: ShellFloorContext): { hit: string | null; paths: readonly string[]; sessionRead: boolean } {
-  const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd });
+  const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() });
   let sessionRead = false;
   if (modeled.nativePath !== undefined) {
     const canonical = caseFoldForMatch(context.canonicalize(modeled.normalizedPath, true));
@@ -136,7 +136,7 @@ export function sensitivePathInArgumentText(text: string, cwd: string | undefine
       const { hit } = nativePathProbe(candidate, cwd, context); if (hit) return hit;
       continue;
     }
-    const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd });
+    const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() });
     const originalSegments = foldCanonicalPathSeparators(globSource).split("/"), first = originalSegments.findIndex((segment) => /[*?[\]]/.test(segment));
     if (first > 0) { const { hit } = nativePathProbe(originalSegments.slice(0, first).join("/") || "/", cwd, context); if (hit) return hit; }
     const sessionRead = modeled.nativePath !== undefined && context.isSessionReadPath(caseFoldForMatch(context.canonicalize(modeled.normalizedPath, true)));
