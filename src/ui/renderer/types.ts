@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../../shared/shell-tasks.js";
 import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
@@ -720,6 +721,7 @@ export type AveApi = {
       | { ok: false; error: string; message: string }
     >;
   };
+  documentEngine: DocumentEngineApi;
   /** Open an http(s) URL in the system browser. Main-side rejects any other scheme. */
   openExternalUrl: (url: string) => Promise<{
     ok: boolean;
@@ -2189,6 +2191,7 @@ declare global {
       ui: AveUiApi;
       attach: AveAttachApi;
       preview: AvePreviewApi;
+      documentEngine: DocumentEngineApi;
       workspace: AveWorkspaceApi;
       env: {
         isDev: boolean;

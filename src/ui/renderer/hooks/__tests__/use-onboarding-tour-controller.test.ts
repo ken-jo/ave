@@ -44,6 +44,7 @@ describe("useOnboardingTourController", () => {
     expect(start).toHaveBeenCalledTimes(1);
 
     act(() => result.current.onTourDismiss());
+    expect(result.current.documentEngineOnboardingOpen).toBe(false);
     await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({
       features: { onboardingCompleted: true },
     }));
@@ -64,6 +65,9 @@ describe("useOnboardingTourController", () => {
 
     act(() => result.current.onTourComplete());
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(1));
+    expect(result.current.documentEngineOnboardingOpen).toBe(true);
+    act(() => result.current.dismissDocumentEngineOnboarding());
+    expect(result.current.documentEngineOnboardingOpen).toBe(false);
 
     // The gate opens once per launch, however many times the tree re-renders.
     rerender();

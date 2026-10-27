@@ -58,6 +58,34 @@ beforeEach(() => {
 afterEach(async () => { runtime.dispose(); await cleanupTmpDir(state.root); });
 
 describe("document observation desktop ownership", () => {
+  it("releases prepared runtimes after the final opening lease when no rendered view exists", async () => {
+    runtime.dispose();
+    const releaseSession = vi.fn();
+    const prepare = vi.fn().mockResolvedValue(undefined);
+    runtime = new DocumentObservationRuntime(deps, { ...engine, prepare, releaseSession });
+    const first = runtime.acquireEnginePreparation("session-one", path, new AbortController().signal)!;
+    const second = runtime.acquireEnginePreparation("session-one", path, new AbortController().signal)!;
+    await Promise.all([first.ready, second.ready]);
+    first.release();
+    expect(releaseSession).not.toHaveBeenCalled();
+    second.release();
+    expect(releaseSession).toHaveBeenCalledExactlyOnceWith("session-one");
+    expect(events()).toEqual([]);
+  });
+
+  it("keeps a prepared runtime owned by the rendered view after opening completes", async () => {
+    runtime.dispose();
+    const releaseSession = vi.fn();
+    runtime = new DocumentObservationRuntime(deps, { ...engine, prepare: async () => {}, releaseSession });
+    const preparation = runtime.acquireEnginePreparation("session-one", path, new AbortController().signal)!;
+    await preparation.ready;
+    const binding = baseline();
+    preparation.release();
+    expect(releaseSession).not.toHaveBeenCalled();
+    runtime.release(binding.targetId);
+    expect(releaseSession).toHaveBeenCalledExactlyOnceWith("session-one");
+  });
+
   function textBaseline(engineAvailable = true) {
     runtime.dispose();
     runtime = new DocumentObservationRuntime(deps, engineAvailable ? {

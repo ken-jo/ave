@@ -184,7 +184,7 @@ function FilePreviewBody({ target, sessionId, observe }: { target: Extract<ChatP
   if (route === "table") return <TableDocumentPreview key={target.path} path={target.path} sessionId={sessionId}
     workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} observe={observe} />;
   if (route === "page") return <PageDocumentPreview key={target.path} path={target.path} sessionId={sessionId}
-    workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} />;
+    workspaceRoot={target.workspaceRoot} canOpenExternal={target.canOpenExternal} observe={observe} />;
   return <TextDocumentPreview target={target} sessionId={sessionId} observe={observe} />;
 }
 

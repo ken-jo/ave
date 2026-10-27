@@ -80,6 +80,7 @@ import { useRoutineOverlay } from "./hooks/use-routine-overlay.js";
 import { isSuggestionsSession, sessionDisplayTitle } from "../../shared/suggestions-session.js";
 import { usePluginViewRouting } from "./hooks/use-plugin-view-routing.js";
 import { useOnboardingTourController } from "./hooks/use-onboarding-tour-controller.js";
+import { DocumentEngineInstallContent } from "./components/DocumentEngineInstallContent.js";
 import { usePluginLifecycleRefresh } from "./hooks/use-plugin-lifecycle-refresh.js";
 import { useStatusBar, type NotificationToastMeta } from "./hooks/use-status-bar.js";
 import { useSettings } from "./hooks/use-settings.js";
@@ -184,6 +185,8 @@ export function App() {
     onTourDismiss,
     checkApiKey,
     effectiveHasApiKey,
+    documentEngineOnboardingOpen,
+    dismissDocumentEngineOnboarding,
   } = useOnboardingTourController(api);
   const [deferredQueueOpen, setDeferredQueueOpen] = useState(false);
   // Persist the current settings tab and return view so restart resumes the same page.
@@ -1906,6 +1909,7 @@ export function App() {
                     className="flex shrink-0 flex-col gap-2 px-(--chrome-gap) pt-2 empty:hidden [&>*]:m-0"
                     data-testid="window-notice-strip"
                   >
+                    {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
                     <RetiredProviderNotice
                       retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
                       onChooseProvider={() => onOpenSettings("llm")}

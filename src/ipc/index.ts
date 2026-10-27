@@ -75,6 +75,7 @@ import { registerAppHandlers } from "./domains/app.js";
 import { registerWorkBoardHandlers } from "./domains/work-board.js";
 import { registerAttachHandlers } from "./domains/attach.js";
 import { registerPreviewHandlers } from "./domains/preview.js";
+import { registerDocumentEngineHandlers } from "./domains/document-engine.js";
 import { registerWorkspaceHandlers } from "./domains/workspace.js";
 import { registerUiHandlers } from "./domains/ui.js";
 import { registerTerminalHandlers } from "./domains/terminal.js";
@@ -166,6 +167,7 @@ export function registerIpcHandlers(
   registerAlertsHandlers(deps, gitMarketplace.getService);
   registerAttachHandlers(deps);
   registerPreviewHandlers(deps);
+  registerDocumentEngineHandlers(deps);
   registerWorkspaceHandlers(deps);
   registerUiHandlers(deps);
   registerTerminalHandlers(deps);

@@ -15,8 +15,9 @@ import { setDocumentPanelOpener } from "../tools/document-panel-access.js";
 import { parseDocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import type { ObservationIdentity } from "../shared/agent-observation.js";
 import { currentAgentObservationIdentity } from "../tools/agent-observation-context.js";
-import { observeAgentOpenedDocument } from "./document-observation.js";
+import { acquireDocumentEnginePreparation, observeAgentOpenedDocument } from "./document-observation.js";
 import { previewDocumentFormatOf } from "../shared/preview-document.js";
+import { previewPageFormatOf } from "../shared/preview-page-document.js";
 
 interface PendingOpen {
   sender: WebContents;
@@ -66,7 +67,7 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
       return { ok: false, error: "stale-request" };
     }
     entry.acknowledged = true;
-    if (ack.opened && entry.identity && previewDocumentFormatOf(entry.path)) {
+    if (ack.opened && entry.identity && (previewDocumentFormatOf(entry.path) || previewPageFormatOf(entry.path))) {
       void observeAgentOpenedDocument(entry.identity, entry.path, entry.expiresAt, entry.observationSignal).then((ready) => {
         entry.finish(ready && Date.now() < entry.expiresAt && validateAppWindowMainFrameSender(event, deps)
           && visibleSession(entry.sessionId) === entry.sender);
@@ -89,33 +90,38 @@ export async function openDocumentForSession(path: string, context: ToolExecutio
   if (mode === "link") {
     return { isError: false, output: JSON.stringify({ ok: true, path, mode, opened: false, fileLink: pathToFileURL(path).href }) };
   }
-  const requestId = randomUUID();
-  const request: DocumentOpenRequest = { requestId, sessionId, path, expiresAt: Date.now() + TOOL_TIMEOUT_POLICY.documentPanelAckMs };
-  const opened = await new Promise<boolean>((resolve) => {
-    const observationController = new AbortController();
-    const finish = (success: boolean): void => {
-      if (!pending.delete(requestId)) return;
-      observationController.abort();
-      clearTimeout(timer);
-      sender.removeListener("destroyed", cancel);
-      sender.removeListener("render-process-gone", cancel);
-      sender.removeListener("did-start-navigation", cancel);
-      context.abortSignal?.removeEventListener("abort", cancel);
-      resolve(success);
-    };
-    const cancel = (): void => finish(false);
-    const timer = setTimeout(cancel, TOOL_TIMEOUT_POLICY.documentPanelAckMs);
-    timer.unref?.();
-    const identity = currentAgentObservationIdentity();
-    pending.set(requestId, { sender, frame: sender.mainFrame, sessionId, expiresAt: request.expiresAt, path,
-      ...(identity?.sessionId === sessionId ? { identity } : {}), acknowledged: false,
-      observationSignal: observationController.signal, finish });
-    sender.once("destroyed", cancel);
-    sender.once("render-process-gone", cancel);
-    sender.once("did-start-navigation", cancel);
-    context.abortSignal?.addEventListener("abort", cancel, { once: true });
-    try { sender.send(CHANNELS.preview.documentOpenRequest, request); }
-    catch { cancel(); }
-  });
-  return opened ? { isError: false, output: JSON.stringify({ ok: true, path, mode: "direct", opened: true }) } : unavailable();
+  const preparation = acquireDocumentEnginePreparation(sessionId, path, context.abortSignal ?? new AbortController().signal);
+  try {
+    if (preparation) await preparation.ready;
+    if (context.abortSignal?.aborted || visibleSession(sessionId) !== sender) return unavailable();
+    const requestId = randomUUID();
+    const request: DocumentOpenRequest = { requestId, sessionId, path, expiresAt: Date.now() + TOOL_TIMEOUT_POLICY.documentPanelAckMs };
+    const opened = await new Promise<boolean>((resolve) => {
+      const observationController = new AbortController();
+      const finish = (success: boolean): void => {
+        if (!pending.delete(requestId)) return;
+        observationController.abort();
+        clearTimeout(timer);
+        sender.removeListener("destroyed", cancel);
+        sender.removeListener("render-process-gone", cancel);
+        sender.removeListener("did-start-navigation", cancel);
+        context.abortSignal?.removeEventListener("abort", cancel);
+        resolve(success);
+      };
+      const cancel = (): void => finish(false);
+      const timer = setTimeout(cancel, TOOL_TIMEOUT_POLICY.documentPanelAckMs);
+      timer.unref?.();
+      const identity = currentAgentObservationIdentity();
+      pending.set(requestId, { sender, frame: sender.mainFrame, sessionId, expiresAt: request.expiresAt, path,
+        ...(identity?.sessionId === sessionId ? { identity } : {}), acknowledged: false,
+        observationSignal: observationController.signal, finish });
+      sender.once("destroyed", cancel);
+      sender.once("render-process-gone", cancel);
+      sender.once("did-start-navigation", cancel);
+      context.abortSignal?.addEventListener("abort", cancel, { once: true });
+      try { sender.send(CHANNELS.preview.documentOpenRequest, request); }
+      catch { cancel(); }
+    });
+    return opened ? { isError: false, output: JSON.stringify({ ok: true, path, mode: "direct", opened: true }) } : unavailable();
+  } finally { preparation?.release(); }
 }

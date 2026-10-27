@@ -72,6 +72,23 @@ describe("observation daemon delivery", () => {
     ]);
   });
 
+  it("keeps paragraph runs and slide shapes distinct while coalescing their own address", async () => {
+    const { daemon, events } = fixture();
+    const publish = (element: Extract<DocumentObservationEvent, { kind: "element" }>["element"], after: string) =>
+      daemon.publish("view", { kind: "element", element, before: "original", after, advisory: false });
+    publish({ kind: "paragraph", paragraph: 0, run: 0 }, "draft");
+    publish({ kind: "paragraph", paragraph: 0, run: 1 }, "other run");
+    publish({ kind: "paragraph", paragraph: 0 }, "paragraph");
+    publish({ kind: "shape", slide: 0, shapeId: "3" }, "first slide");
+    publish({ kind: "shape", slide: 1, shapeId: "3" }, "other slide");
+    publish({ kind: "paragraph", paragraph: 0, run: 0 }, "saved run");
+    publish({ kind: "shape", slide: 0, shapeId: "3" }, "saved shape");
+    await tick();
+    expect(events).toHaveLength(5);
+    expect(events.map((event) => event.after)).toEqual(["other run", "paragraph", "other slide", "saved run", "saved shape"]);
+    expect(events.map((event) => event.seq)).toEqual([2, 3, 5, 6, 7]);
+  });
+
   it("bounds in-flight events until an actual delivery acknowledgement", async () => {
     const { daemon, events } = fixture();
     for (let row = 0; row < 100; row += 1) daemon.publish("view", element(row, "changed"));
@@ -86,11 +103,13 @@ describe("observation daemon delivery", () => {
   it("signals resynchronization on overload and retains the authoritative snapshot", async () => {
     const { daemon, events } = fixture();
     for (let row = 0; row < 300; row += 1) daemon.publish("view", element(row, "changed"));
-    const document = { format: "xlsx", needsRecalculation: true } as PreviewTableDocument;
+    const document: PreviewTableDocument = { format: "xlsx", needsRecalculation: true, sheetNames: ["Sheet1"], totalSheets: 1,
+      sheetsTruncated: false, sheet: { index: 0, name: "Sheet1", rows: [], firstRow: 0, firstColumn: 0,
+        totalRows: 0, totalColumns: 0, rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [] } };
     daemon.publish("view", { kind: "snapshot", before: null, after: document });
     await tick();
     expect(events.some((event) => event.kind === "status" && event.after.code === "resync-required")).toBe(true);
-    expect(events.some((event) => event.kind === "snapshot" && event.after.format !== "text" && event.after.needsRecalculation)).toBe(true);
+    expect(events.some((event) => event.kind === "snapshot" && "sheet" in event.after && event.after.needsRecalculation)).toBe(true);
     expect(events.length).toBeLessThanOrEqual(64);
   });
 

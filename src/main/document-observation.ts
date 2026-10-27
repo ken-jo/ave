@@ -7,13 +7,19 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { findSessionMainWindowContents } from "./app-state.js";
 import { DocumentObservationAdapter, type JournalObservationLease } from "../observation/document-adapter.js";
 import { createTableObservationEngine } from "../observation/table-engine.js";
+import { createHostDocumentObservationEngine } from "../observation/document-engine-host.js";
+import { readObservedDocumentSelection } from "../observation/observed-document.js";
+import { createLogger } from "../lib/logger.js";
 import { ObservationCapacityError, ObservationDaemon } from "../observation/daemon.js";
 import {
   isObservationAck, OBSERVATION_LIMITS,
   type ObservationBinding, type DocumentObservationEngine, type ObservationIdentity,
   type ObservedDocument,
+  type DocumentObservationEngineContext,
 } from "../shared/agent-observation.js";
-import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
+import { previewPageFormatOf, type PreviewAnyFormat, type PreviewPageDocument } from "../shared/preview-page-document.js";
+import type { PreviewTableDocument } from "../shared/preview-document.js";
+import { PREVIEW_DOCUMENT_LIMITS, previewDocumentFormatOf } from "../shared/preview-document.js";
 import { assertReadableFilePath, MAX_TEXT_FILE_BYTES } from "../tools/file-read-core.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
@@ -35,6 +41,8 @@ interface ViewOwner {
   stop: () => void;
 }
 
+const log = createLogger("document-observation");
+
 function digest(bytes: Buffer | string): string { return createHash("sha256").update(bytes).digest("hex"); }
 function invocationKey(identity: ObservationIdentity): string {
   return JSON.stringify([identity.sessionId, identity.turnId, identity.toolUseId]);
@@ -50,9 +58,11 @@ export class DocumentObservationRuntime {
   private readonly journals = new Map<string, JournalObservationLease[]>();
   private readonly readyWaiters = new Set<{ sessionId: string; path: string; finish: (ready: boolean) => void }>();
   private readonly knownTargets = new Map<string, { identity: ObservationIdentity; path: string }>();
+  private readonly previewSessions = new Map<string, number>();
+  private readonly previewReader = createTableObservationEngine();
   private disposed = false;
 
-  constructor(private readonly deps: IpcDeps, engine: DocumentObservationEngine | null = createTableObservationEngine()) {
+  constructor(private readonly deps: IpcDeps, private readonly engine: DocumentObservationEngine | null = createHostDocumentObservationEngine()) {
     this.adapter = new DocumentObservationAdapter(engine, this.daemon);
     this.terminalObservation = new TerminalObservationRuntime(deps, this.daemon);
     this.browser = installBrowserObservation(deps, this.daemon);
@@ -101,6 +111,64 @@ export class DocumentObservationRuntime {
 
   private prune(): void {
     for (const view of this.views.values()) if (!this.isCurrent(view)) this.release(view.id);
+  }
+
+  acquireEnginePreparation(sessionId: string, path: string, signal: AbortSignal): {
+    ready: Promise<void>;
+    release(): void;
+  } | undefined {
+    if (this.disposed) throw new Error("Document observation runtime is disposed.");
+    const format = previewDocumentFormatOf(path) ?? previewPageFormatOf(path);
+    if (!format || !this.engine?.prepare) return undefined;
+    const release = this.retainEngineSession(sessionId);
+    try { return { ready: this.engine.prepare(format, signal, { sessionId }), release }; }
+    catch (error) { release(); throw error; }
+  }
+
+  private retainEngineSession(sessionId: string): () => void {
+    this.previewSessions.set(sessionId, (this.previewSessions.get(sessionId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) throw new Error("Preview engine lease was already released.");
+      released = true;
+      const remaining = (this.previewSessions.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) this.previewSessions.set(sessionId, remaining);
+      else this.previewSessions.delete(sessionId);
+      this.releaseEngineSession(sessionId);
+    };
+  }
+
+  /** Parsing user previews creates no observation admission or activity events. */
+  acquirePreviewEngine(event: IpcMainInvokeEvent, sessionId: unknown, path: string,
+    parse: NonNullable<DocumentObservationEngineContext["parse"]>): {
+      parse(bytes: Buffer, format: PreviewAnyFormat, index: number, signal: AbortSignal): Promise<PreviewTableDocument | PreviewPageDocument>;
+      release(): void;
+    } {
+    if (this.disposed || !validateAppWindowMainFrameSender(event, this.deps)) throw new Error("Preview engine owner is unavailable.");
+    const owner = typeof sessionId === "string" && sessionId.length > 0 && sessionId.length <= 256
+      && this.isCurrent({ event, sessionId, path }) ? sessionId : `preview:${randomUUID()}`;
+    const release = this.retainEngineSession(owner);
+    let released = false;
+    return {
+      parse: async (bytes, format, index, signal) => {
+        if (released || this.disposed) throw new Error("Preview engine lease is unavailable.");
+        const parsed = await (this.engine ?? this.previewReader).parse(bytes, format, index, signal, { sessionId: owner, parse });
+        const document = readObservedDocumentSelection(parsed, format, index);
+        if (document.format === "text") throw new Error("Document engine returned a different document kind.");
+        return document;
+      },
+      release: () => {
+        if (released) throw new Error("Preview engine lease was already released.");
+        released = true;
+        release();
+      },
+    };
+  }
+
+  private releaseEngineSession(sessionId: string): void {
+    if (this.previewSessions.has(sessionId) || [...this.views.values()].some((view) => view.sessionId === sessionId)) return;
+    const cleanup = this.engine?.releaseSession?.(sessionId);
+    if (cleanup) void cleanup.catch((error: unknown) => log.error({ error }, "Document engine session cleanup failed."));
   }
 
   registerView(event: IpcMainInvokeEvent, sessionId: unknown, path: string, bytes: Buffer,
@@ -240,6 +308,7 @@ export class DocumentObservationRuntime {
     this.views.delete(id);
     view.stop();
     this.adapter.release(id);
+    this.releaseEngineSession(view.sessionId);
   }
 
   dispose(): void {
@@ -260,6 +329,8 @@ export class DocumentObservationRuntime {
     this.knownTargets.clear();
     for (const waiter of this.readyWaiters) waiter.finish(false);
     this.daemon.dispose();
+    const cleanup = this.engine?.dispose?.();
+    if (cleanup) void cleanup.catch((error: unknown) => log.error({ error }, "Document engine cleanup failed."));
   }
 }
 
@@ -273,5 +344,9 @@ export function observeAgentOpenedDocument(identity: ObservationIdentity, path: 
   if (!documentObservation) return Promise.resolve(false);
   documentObservation.markAgentDocument(identity, path);
   return documentObservation.waitForRendered(identity, path, expiresAt, signal);
+}
+export function acquireDocumentEnginePreparation(sessionId: string, path: string, signal: AbortSignal):
+  ReturnType<DocumentObservationRuntime["acquireEnginePreparation"]> {
+  return documentObservation?.acquireEnginePreparation(sessionId, path, signal);
 }
 process.once("exit", () => documentObservation?.dispose());

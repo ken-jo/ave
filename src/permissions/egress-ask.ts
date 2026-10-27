@@ -93,6 +93,7 @@ export const EGRESS_DENY_REASONS = {
   unattributed: "unattributed connection",
   malformed: "malformed destination",
   workerOffList: "not on the extension's network allowlist",
+  offline: "outbound network is disabled for this service",
   terminalTimeout: "network approval timed out: nobody answered the terminal tab's banner within 120 seconds",
   askOff: "host is not on the allow list (network asks are off)",
   headless: "host needs approval; unavailable in background run",
@@ -295,6 +296,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (token === undefined) return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
     const owner = deps.ownerOf(token);
     if (owner === undefined) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
+    if (owner.kind === "worker" && owner.network === "offline") {
+      return { owner, decision: deny("policy", EGRESS_DENY_REASONS.offline) };
+    }
     // Where this kind of process has its own listener only the listener vouches for who connected; a key that came from the proxy username alone may have been read off another process, so it names nobody.
     const strength = deps.identityStrength(owner.kind === "worker" ? "extension" : "shell", owner.kind === "terminal" ? undefined : context);
     if (strength === "kernel-channel"

@@ -1,4 +1,5 @@
-import type { PreviewDocumentFormat, PreviewTableDocument } from "./preview-document.js";
+import type { PreviewTableDocument } from "./preview-document.js";
+import type { PreviewAnyFormat, PreviewDocumentFor, PreviewPageDocument, PreviewDocumentElement } from "./preview-page-document.js";
 import type { EgressGrantScope } from "./egress-grant-scopes.js";
 import type { EgressDecisionBasis } from "../audit/sandbox-audit.js";
 
@@ -27,10 +28,10 @@ export interface PreviewObservedTextDocument {
   totalLines: number;
   truncated: boolean;
 }
-export type ObservedDocument = PreviewTableDocument | PreviewObservedTextDocument;
+export type ObservedDocument = PreviewTableDocument | PreviewObservedTextDocument | PreviewPageDocument;
 export type DocumentObservationEvent =
   | DocumentEventBase & { kind: "element"; element: { kind: "cell"; sheet: string; row: number; column: number }
-    | { kind: "line"; line: number };
+    | { kind: "line"; line: number } | PreviewDocumentElement["element"];
     before: string; after: string; advisory: boolean }
   | DocumentEventBase & { kind: "snapshot"; before: null; after: ObservedDocument }
   | DocumentEventBase & { kind: "status"; before: null; after: { code: DocumentObservationStatus } };
@@ -205,5 +206,15 @@ export const OBSERVATION_LIMITS = Object.freeze({
 
 export interface DocumentObservationEngine {
   readonly id: string;
-  parse(bytes: Buffer, format: PreviewDocumentFormat | "text", sheetIndex: number, signal: AbortSignal): Promise<ObservedDocument>;
+  prepare?(format: PreviewAnyFormat, signal: AbortSignal, context?: DocumentObservationEngineContext): Promise<void>;
+  parse(bytes: Buffer, format: PreviewAnyFormat | "text", selectionIndex: number, signal: AbortSignal,
+    context?: DocumentObservationEngineContext): Promise<ObservedDocument>;
+  releaseSession?(sessionId: string): void | Promise<void>;
+  dispose?(): void | Promise<void>;
+}
+
+/** Host-owned parse admission can be retained across conversion and output decoding. */
+export interface DocumentObservationEngineContext {
+  sessionId: string;
+  parse?: <F extends PreviewAnyFormat>(bytes: Buffer, format: F, selectionIndex: number, signal: AbortSignal) => Promise<PreviewDocumentFor<F>>;
 }

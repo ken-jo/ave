@@ -32,7 +32,12 @@ interface EventTarget {
 function elementKey(event: ObservationEventEnvelope): string | undefined {
   if (event.source !== "document" || event.kind !== "element") return undefined;
   const element = (event as Extract<DocumentObservationEvent, { kind: "element" }>).element;
-  return element.kind === "line" ? `line\0${element.line}` : `${element.sheet}\0${element.row}\0${element.column}`;
+  switch (element.kind) {
+    case "line": return `line\0${element.line}`;
+    case "cell": return `cell\0${element.sheet}\0${element.row}\0${element.column}`;
+    case "paragraph": return `paragraph\0${element.paragraph}\0${element.run ?? ""}`;
+    case "shape": return `shape\0${element.slide}\0${element.shapeId}`;
+  }
 }
 
 function elementBytes(events: readonly ObservationEventEnvelope[]): number {

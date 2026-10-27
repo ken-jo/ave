@@ -38,6 +38,8 @@ export interface WorkerEgressOwner {
   readonly pluginId: string | undefined;
   // The worker's id, the MCP server's id, or a user hook's hashed id.
   readonly instanceId?: string;
+  /** Offline services never inherit an extension allowlist or model endpoints. */
+  readonly network?: "offline";
 }
 
 export type EgressInvocationOwner = ShellEgressOwner | TerminalEgressOwner | WorkerEgressOwner;
