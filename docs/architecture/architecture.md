@@ -156,8 +156,8 @@ the observer merely because a tool named them.
 
 Optional engine preparation verifies the installed payload and starts its
 session runtime through the bounded conversion queue under the tool's
-cancellation signal. Private UNO readiness and required importer registration
-complete before the panel request's acknowledgement window starts. Preparation
+cancellation signal. The session instance's readiness probe and required importer
+registration complete before the panel request's acknowledgement window starts. Preparation
 reads no source document bytes and creates no observation target or filesystem
 watch. Native conversion and the existing bounded output reader retain their
 own cancellable process budgets.

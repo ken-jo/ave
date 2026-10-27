@@ -38,7 +38,8 @@ work. They do not add an observation channel or an alternate event envelope.
 Before an agent panel request is sent, the optional engine `prepare` hook verifies
 the installed payload and starts the session runtime through the same bounded
 FIFO used for conversion, under the tool's cancellation signal. It waits for
-private UNO readiness and, for HWP/HWPX, importer registration. The panel's
+the session instance's readiness probe and, for HWP/HWPX, importer
+registration. The panel's
 existing acknowledgement window starts after preparation completes. Preparation
 reads no source document bytes and creates no watch, rendered baseline or
 activity event. The main process retains a preparation lease through readiness
@@ -100,41 +101,61 @@ An installed payload being verified is separate from its execution capability.
 macOS and Linux execution require the native offline wrapper. The current
 Windows backend cannot attest this stricter no-network contract and returns
 `engine-confinement-unavailable`; a verified Windows download does not authorize
-an unconfined conversion. The private UNO bridge uses the macOS interpreter and
-modules included in the authenticated optional payload. Linux uses the fixed
-system interpreter with that payload's UNO modules and must pass the confined
-compatibility/readiness probe; an incompatible or unavailable runtime returns
-`engine-runtime-unavailable`. This adds no separate runtime download or PATH
-lookup. Linux native compatibility remains an execution prerequisite, not a
-consequence of having a release pin. HWP/HWPX additionally require a trusted Java 11 or
-newer installation and a successful confined runtime/profile probe. Missing Java
-returns `engine-runtime-unavailable` without affecting other document formats.
+an unconfined conversion. Execution uses only the payload's office executable
+and, for HWP/HWPX importer registration, its extension tool. No scripting
+interpreter is started: on macOS 26 the pinned build's embedded Python and UNO
+helper executables are terminated at launch by the operating system's
+launch-constraint policy, including when run from the mounted official image.
+There is no separate runtime download or PATH lookup. Linux native
+compatibility remains an execution prerequisite, not a consequence of having a
+release pin. HWP/HWPX additionally require a trusted Java 11 or newer
+installation and successful confined registration. Missing Java or failed
+registration returns `engine-runtime-unavailable` without affecting other
+document formats in the same session.
 
 ## Confined session execution
 
 The [session process owner](../../src/observation/libreoffice-process.ts) owns
 one warm headless instance and one single-writer queue per admitted host
 session. A private profile is selected with `-env:UserInstallation`; another
-session and the user's normal office profile are never reused. Commands use
-host-selected arguments and a random private pipe, with no TCP listener. The
-profile and socket directory belong to that session's temporary output tree.
+session and the user's normal office profile are never reused. The profile and
+the instance's socket directory (`OSL_SOCKET_PATH`) belong to that session's
+temporary output tree. The resident opens no UNO acceptor and no TCP listener.
 
-The [fixed UNO bridge](../../src/observation/libreoffice-uno-bridge.ts) resolves
-the session's component context and obtains the desktop service. It retains a
-hidden blank model when the component list is empty and verifies that a model
-exists before reporting readiness. This model holds no source document and has
-no export path. The host validates the bounded readiness reply. Each queued conversion loads
-the admitted private input through that context with `Hidden` and `ReadOnly`,
-`MacroExecMode.NEVER_EXECUTE`, and `UpdateDocMode.NO_UPDATE`. Unsupported document
-interaction aborts with an explicit error. Bridge requests contain host-selected
-data and export formats; they accept no executable source from the renderer.
-The resident process remains available while documents are loaded, exported
-and closed through this private API.
+The resident starts headless with one host-authored, empty text document from
+its private output tree. The office's command-line dispatcher terminates the
+instance when a forwarded request completes while no frame is open, and the
+instance's own command-line open is asynchronous. This holder document keeps the
+warm instance alive; it is never exported and holds no source document. Each
+conversion is a fixed `--convert-to <extension>:<filter> --outdir <private
+output>` command line, plus a fixed `--infilter` for HWP/HWPX, run by a confined
+client on the same profile. The client forwards it through the instance's
+private single-instance pipe and exits.
 
-For XLSX/ODS, the bridge calls `calculateAll()` and exports a temporary workbook
-of the original format. Page formats export PDF; imported HWP/HWPX also export
-an ODT representation for structured reading. `storeToURL` writes only to the
-owned output directory, and the loaded component is closed after export.
+Forwarding starts only after the holder document's lock file exists, which the
+office writes while loading that document into its frame, and after the
+single-instance pipe exists, so a client can neither end the instance early
+nor become a second office on the profile. The office places that pipe under
+`/tmp` or `/var/tmp` when either is writable and otherwise under the private
+`OSL_SOCKET_PATH`. The macOS confinement denies writes to both shared
+directories. Linux confinement must do the same so that every confined process
+of a session meets the same pipe; this has not been validated natively. A
+client that cannot reach the instance converts by itself and is refused, as
+described below.
+
+A forwarding client exits successfully even when the forwarded conversion
+fails. A result is therefore accepted only when the resident printed its
+conversion receipt for the exact source, target and filter, reported no error
+line, and wrote the expected file, which must then pass the bounded reader. A
+client that converted the document itself is refused. Before admitted bytes are
+staged, a host-authored flat ODT readiness probe proves this path.
+
+Page formats export PDF; imported HWP/HWPX also export an ODT representation for
+structured reading. XLSX/ODS export a temporary workbook of the original format.
+Their formula caches come from the profile's recalculate-on-load policy:
+`OOXMLRecalcMode` and `ODFRecalcMode` are set to always recalculate, which makes
+the office run a hard recalculation on load whatever application saved the
+workbook. ODS has no source recalculation signal in the table contract.
 
 Execution requires the OS sandbox. Its read scope contains the verified runtime,
 required OS libraries/fonts and that session's staging directory of admitted
@@ -146,8 +167,10 @@ native wrapper with no proxy exception or approval prompt. External resources
 and document links cannot widen this policy. An unavailable or unprovable
 confinement backend fails clearly and never retries unconfined.
 
-The isolated profile disables macro execution and trusted macro locations before
-any document is loaded, and disables external-link and data-update behavior.
+The isolated profile is written before the instance starts. It sets
+`DisableMacrosExecution`, the highest macro security level, no trusted macro
+locations and `DisableActiveContent`, and sets Calc and Writer link updates to
+never. Macro execution is disabled for the profile rather than per load.
 Headless mode alone is not the macro or network boundary. A conversion may read
 an untrusted parser input; signature verification establishes executable
 provenance, not the safety of that document.
@@ -206,6 +229,14 @@ reported explicitly. Ordinary DOCX/ODT/PPTX/XLSX/ODS conversion does not prove
 this importer works. Importer logs can include document contents, so its HOME,
 profile and caches remain local, private and subject to session cleanup.
 
+Registering the extension's Java component makes the extension tool start the
+office's separate UNO helper process. On macOS 26 the pinned build's helper is
+terminated at launch by the operating system's launch-constraint policy, so
+registration fails, HWP/HWPX return `engine-runtime-unavailable`, and the
+operating system records a crash report for the helper. Other formats in the
+session keep working. HWP/HWPX import on macOS therefore depends on a release
+whose helper can run there; the pin is not changed to hide this.
+
 ## Validation and upstream references
 
 Targeted tests must cover engine absence, integrity failures, serialized work,
@@ -225,14 +256,24 @@ Primary sources below were accessed on **2026-10-27**:
   document headless mode, alternate user profiles and UNO acceptors. Ave's
   private transport and sandbox policy are host
   requirements, not guarantees made by those CLI flags.
-- The UNO [component loader](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1frame_1_1XComponentLoader.html),
-  [macro execution mode](https://api.libreoffice.org/docs/idl/ref/namespacecom_1_1sun_1_1star_1_1document_1_1MacroExecMode.html)
-  and [document update mode](https://api.libreoffice.org/docs/idl/ref/namespacecom_1_1sun_1_1star_1_1document_1_1UpdateDocMode.html)
-  define the explicit load properties. The
-  [calculation interface](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1sheet_1_1XCalculatable.html)
-  defines full recalculation, and
-  [storage interface](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1frame_1_1XStorable.html)
-  distinguishes export from changing the loaded component's location.
+- The command-line [dispatch watcher](https://github.com/LibreOffice/core/blob/master/desktop/source/app/dispatchwatcher.cxx)
+  prints the conversion receipt before storing, reports store failures only on
+  the office's own error stream, and terminates the office when no frame
+  remains; the [request handler](https://github.com/LibreOffice/core/blob/master/desktop/source/app/officeipcthread.cxx)
+  forwards a second instance's command line without returning that error state.
+- The [pipe implementation](https://github.com/LibreOffice/core/blob/master/sal/osl/unx/pipe.cxx)
+  selects `/tmp`, then `/var/tmp`, and only then `OSL_SOCKET_PATH`.
+- The configuration schemas for
+  [Common](https://github.com/LibreOffice/core/blob/master/officecfg/registry/schema/org/openoffice/Office/Common.xcs)
+  (`DisableMacrosExecution`), [Calc](https://github.com/LibreOffice/core/blob/master/officecfg/registry/schema/org/openoffice/Office/Calc.xcs)
+  (`Content/Update/Link`, `Formula/Load/OOXMLRecalcMode`, `ODFRecalcMode`) and
+  [Writer](https://github.com/LibreOffice/core/blob/master/officecfg/registry/schema/org/openoffice/Office/Writer.xcs)
+  (`Content/Update/Link`) define the profile values above.
+- The spreadsheet [document shell](https://github.com/LibreOffice/core/blob/master/sc/source/ui/docshell/docsh.cxx)
+  performs a hard recalculation on ODF load when `ODFRecalcMode` is set to
+  always; the generator check applies only to the ask mode.
+- The pinned extension's `registry/H2Orestart_filters.xcu` declares the
+  `Hwp2002_Reader` import filter.
 - [Macro security levels](https://help.libreoffice.org/latest/en-US/text/shared/optionen/macrosecurity_sl.html)
   explain that the highest level still permits trusted locations; the isolated
   profile therefore supplies none.
