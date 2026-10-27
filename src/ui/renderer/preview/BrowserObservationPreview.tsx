@@ -38,9 +38,11 @@ function useElementShown(element: Element | null, probe: (element: Element) => b
  * handle and observation target of the latest agent action for this renderer tab, runs only while shown, and keeps
  * no frame after it stops. Without an agent binding it renders `children` unchanged.
  */
-export function BrowserObservationPreview({ tabId, sessionId, children, probe }: {
+export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true }: {
   tabId: string;
   sessionId?: string;
+  /** The hosting panel's visibility. A hidden panel stops the preview even before its styles settle. */
+  active?: boolean;
   children?: ReactNode;
   probe?: (element: Element) => boolean;
 }) {
@@ -55,7 +57,8 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe }:
   const binding = useMemo<PreviewBinding | undefined>(() => targetId ? { targetId, sessionId: actingSession, tabId: handle } : undefined,
     [targetId, actingSession, handle]);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
-  const shown = useElementShown(binding && store ? element : null, probe);
+  const painted = useElementShown(binding && store && active ? element : null, probe);
+  const shown = active && painted;
   const state = useSyncExternalStore(store?.subscribe ?? noSubscription, () => store?.get(binding), () => undefined);
 
   // Stop when hidden, unmounted, rebound or disconnected; the store drops the frame with the request.

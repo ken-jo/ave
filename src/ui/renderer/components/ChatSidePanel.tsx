@@ -524,6 +524,7 @@ function ContentTabView({
         api={api}
         sessionId={sessionId}
         target={browserTarget}
+        observe={visible}
         surfaceTabId={tab.id}
         browserTab={{ tabId: tab.id, ...(tab.agentRequestId === undefined ? {} : { agentRequestId: tab.agentRequestId }) }}
       />

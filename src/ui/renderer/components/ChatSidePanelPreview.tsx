@@ -361,10 +361,13 @@ export function UrlDocumentViewer({
   surfaceTabId,
   browserTab,
   sessionId,
+  observe = true,
 }: {
   api: AveApi;
   target: Extract<ChatPreviewTarget, { kind: "url" }>;
   sessionId?: string;
+  /** The hosting panel's visibility; a hidden panel never runs the agent's live preview. */
+  observe?: boolean;
   /**
    * The browser tab this page belongs to. A tab's page is a web SURFACE: its
    * guest lives in the window's `WebSurfaceLayer` and this viewer renders only
@@ -488,7 +491,7 @@ export function UrlDocumentViewer({
       {surfaceTabId ? <BrowserObservationLiveStrip tabId={surfaceTabId} sessionId={sessionId} /> : null}
       {surfaceTabId ? (
         <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" {...(bindRequestId === undefined ? {} : { bindRequestId })}
-          {...(sessionId === undefined ? {} : { sessionId })} />
+          {...(sessionId === undefined ? {} : { sessionId })} observe={observe} />
       ) : createElement("webview", {
         ref: setWebviewElement,
         "data-testid": "chat-side-panel-browser-webview",

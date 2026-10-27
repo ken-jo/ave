@@ -664,11 +664,11 @@ describe("hidden panel keeps previews mounted", () => {
     await screen.findByTestId("chat-side-panel-table-grid");
     fireEvent.click(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!);
     await screen.findByText("<b>not markup</b>");
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[1], sessionId: OBSERVATION_SESSION, seq: 0 }));
     const grid = screen.getByTestId("chat-side-panel-table-grid");
     view.rerender(workbookBody(false));
-    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release",
       targetId: targets[1], sessionId: OBSERVATION_SESSION, seq: 0 });
     expect(observationHandlers.size).toBe(0);
     expect(grid.isConnected).toBe(true);
@@ -684,7 +684,7 @@ describe("hidden panel keeps previews mounted", () => {
     expect(screen.queryByTestId("chat-side-panel-table-loading")).toBeNull();
     expect(grid.isConnected).toBe(true);
     expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 1, OBSERVATION_SESSION);
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
     expect(readDocument).toHaveBeenCalledTimes(3);
     expect(observationHandlers.size).toBe(1);
@@ -703,7 +703,7 @@ describe("hidden panel keeps previews mounted", () => {
     await screen.findByText("North");
     expect(screen.getByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeTruthy();
     expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[0]!.getAttribute("aria-selected")).toBe("true");
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
     expect(observationHandlers.size).toBe(1);
     // Choosing a sheet again clears the notice.

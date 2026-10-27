@@ -97,6 +97,20 @@ describe("agent browser live preview panel", () => {
     expect(actions()).toEqual(["start", "stop", "start"]);
   });
 
+  it("stops at once when the hosting panel reports itself hidden, even while its styles still paint", async () => {
+    const view = render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} active>
+      <div data-testid="notice">open elsewhere</div>
+    </BrowserObservationPreview>);
+    act(() => emitEvents([action(1)]));
+    act(() => emitPreview(frame(1)));
+    expect(screen.getByRole("img")).toBeTruthy();
+    view.rerender(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} active={false}>
+      <div data-testid="notice">open elsewhere</div>
+    </BrowserObservationPreview>);
+    expect(actions()).toEqual(["start", "stop"]);
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
   it("never starts while the panel is hidden from the first paint", async () => {
     visible = false;
     show();

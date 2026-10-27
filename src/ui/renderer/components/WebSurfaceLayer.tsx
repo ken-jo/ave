@@ -369,6 +369,7 @@ export function WebSurfaceSlot({
   location,
   bindRequestId,
   sessionId,
+  observe = true,
 }: {
   tabId: string;
   /** The url the host wants this tab on; navigates the guest when it changes. */
@@ -379,6 +380,8 @@ export function WebSurfaceSlot({
   bindRequestId?: string;
   /** The hosting conversation; scopes the agent's live preview while this tab is open in another panel. */
   sessionId?: string;
+  /** The hosting panel's own visibility; the preview also checks that the slot is actually painted. */
+  observe?: boolean;
 }) {
   const { t } = useTranslation();
   const mount = useSurfaceMount(tabId, location);
@@ -403,7 +406,7 @@ export function WebSurfaceSlot({
       data-owned={mount.owned ? "true" : "false"}
     >
       {mount.owned ? null : (
-        <BrowserObservationPreview tabId={tabId} {...(sessionId === undefined ? {} : { sessionId })}>
+        <BrowserObservationPreview tabId={tabId} active={observe} {...(sessionId === undefined ? {} : { sessionId })}>
           <div
             className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground"
             data-testid="web-surface-mounted-elsewhere"
