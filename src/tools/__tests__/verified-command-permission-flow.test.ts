@@ -9,6 +9,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import * as verifiedCommands from "../../permissions/verified-shell-command.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
@@ -30,12 +31,14 @@ const COMMAND = "bash --noprofile --norc -p -c 'printf ready'";
 const EXACT_RULE = "Bash(bash --noprofile --norc -p -c 'printf ready')";
 let cwd: string;
 let manager: PermissionManager;
+let auditLogger: AuditLogger;
 let gate: ApprovalGate;
 beforeEach(() => {
   vi.clearAllMocks();
   setProcessPlatform("linux");
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "verified-permission-flow-")));
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
+  auditLogger = new AuditLogger(join(cwd, "audit"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("allow");
   __resetActiveSandboxCapabilityForTest();
@@ -46,8 +49,10 @@ beforeEach(() => {
   vi.mocked(shellResolver.shellEnvForChild).mockImplementation((_, environment) => ({ ...environment, LD_PRELOAD: "/untrusted-loader", DYLD_INSERT_LIBRARIES: "/untrusted-loader" }));
   vi.mocked(shellResolver.getBashCapabilities).mockReturnValue({ unicodeEscapes: true, prefixAssignmentRhs: "sequential" });
 });
-afterEach(() => {
+afterEach(async () => {
   gate?.disposeAll();
+  await auditLogger.close();
+  expect(auditLogger.getWriterStats()).toMatchObject({ pendingWrites: 0, pendingBytes: 0, acceptingWrites: false });
   setProcessPlatform(originalPlatform);
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -70,7 +75,7 @@ function fixture() {
     return { output: "bound native output", isError: false };
   });
   registry.register(tool);
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
   let serial = 0;
   const run = (headless: boolean, command = COMMAND) => runWithToolExecutionCwd(cwd, () => executor.executeAll(
     [{ id: `native-flow-${++serial}`, name: "bash", input: { command } }],
