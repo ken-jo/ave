@@ -1,6 +1,6 @@
 // Measured sandbox chain: nested bwrap → bash/socat → apply-seccomp → script → interactive shell.
 import { describe, expect, it } from "vitest";
-import { findSandboxedShell, parseInnermostNsPid, parseProcStat, sandboxTerminalHolders, type OpenFileIdentity, type ProcEntry } from "../shell-process.js";
+import { findSandboxedShell, parseInnermostNsPid, parseProcStat, sandboxShellOwnProcesses, sandboxTerminalHolders, type OpenFileIdentity, type ProcEntry } from "../shell-process.js";
 
 function entry(pid: number, ppid: number, command: string, extra: Partial<ProcEntry> = {}): ProcEntry {
   return { pid, ppid, command, pgrp: pid, session: pid, ttyNr: 0, tpgid: -1, ...extra };
@@ -151,5 +151,39 @@ describe("sandboxTerminalHolders", () => {
     expect(denied.unreadable).toContain("pid 700");
     // Outside the sandbox nothing is read, so an unreadable host process does not refuse.
     expect(await sandboxTerminalHolders(snapshot_, 538, EXEMPT, TERMINAL, async (pid) => pid === 800 ? "denied" : [])).toEqual({ holders: [], unreadable: null });
+  });
+});
+
+describe("the shell's own processes in the terminal holder check", () => {
+  const TERMINAL: OpenFileIdentity = { dev: 22n, rdev: 34816n, characterDevice: true };
+  // Not dumpable (apply-seccomp, bwrap): their open files cannot be read, and they may hold the terminal as the shell's wrappers.
+  const LAUNCHER_PIDS = new Set([538, 540, 541, 542, 543, 544, 545]);
+
+  function ownProcesses(...extra: ProcEntry[]) {
+    const snap = snapshot(...MEASURED, ...extra);
+    const chain = findSandboxedShell(snap, 538, "zsh");
+    if (!chain.ok) throw new Error(chain.reason);
+    return { snap, own: sandboxShellOwnProcesses(chain) };
+  }
+
+  it("names the verified launcher chain, its bridges, the relay and the shell by their place in the chain", () => {
+    expect([...ownProcesses().own].sort()).toEqual([538, 540, 541, 542, 543, 544, 545, 546, 547]);
+  });
+
+  it("accepts the shell's launcher chain even though its open files cannot be read", async () => {
+    const { snap, own } = ownProcesses();
+    const read = async (pid: number) => LAUNCHER_PIDS.has(pid) ? "denied" as const : [TERMINAL];
+    expect(await sandboxTerminalHolders(snap, 538, own, TERMINAL, read)).toEqual({ holders: [], unreadable: null });
+  });
+
+  it("refuses any other sandbox process holding the terminal, and one whose open files cannot be read", async () => {
+    // Under a bridge, where the chain walk does not look: a process the shell's wrappers did not start.
+    const foreign = entry(700, 542, "python3");
+    const { snap, own } = ownProcesses(foreign);
+    expect(own.has(700)).toBe(false);
+    const holding = await sandboxTerminalHolders(snap, 538, own, TERMINAL, async (pid) => pid === 700 ? [TERMINAL] : "denied");
+    expect(holding).toEqual({ holders: [foreign], unreadable: null });
+    const unreadable = await sandboxTerminalHolders(snap, 538, own, TERMINAL, async () => "denied");
+    expect(unreadable.unreadable).toContain('"python3" (pid 700)');
   });
 });

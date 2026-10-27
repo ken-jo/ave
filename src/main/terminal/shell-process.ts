@@ -177,6 +177,9 @@ export type SandboxedShellChain =
       // The pty relay: one `script` process, or two for util-linux before 2.35, which forks itself once.
       readonly relay: readonly ProcEntry[];
       readonly shell: ProcEntry;
+      // The verified launcher chain from the spawned pty process down to the relay, with the bridges of its outer launcher: the shell's own wrappers,
+      // identified by their place in that chain, never by name.
+      readonly launcher: readonly ProcEntry[];
       // Shell children and other processes sharing its terminal session or foreground group.
       readonly busyProcesses: readonly ProcEntry[];
     }
@@ -200,6 +203,7 @@ export function findSandboxedShell(
   if (top === undefined || top.command !== "bwrap") return fail("the terminal's sandbox is not running");
   let node: ProcEntry = top;
   let outerReaperPid: number | undefined;
+  const launcher: ProcEntry[] = [top];
   for (let depth = 0; ; depth++) {
     if (depth >= MAX_SANDBOX_WRAPPERS) return fail("the terminal's sandbox has more wrapper processes than expected");
     const children = childrenOf(node.pid);
@@ -209,12 +213,14 @@ export function findSandboxedShell(
       const continuation = children.filter((child) => child.command === "apply-seccomp" || child.command === INNER_PTY_RELAY);
       if (continuation.length !== 1) return fail(`the sandbox bridge launcher has no unique continuation among ${children.map((child) => JSON.stringify(child.command)).join(", ")}`);
       const bridgePids = new Set(children.filter((child) => child.pid !== continuation[0]!.pid).map((child) => child.pid));
+      launcher.push(...children.filter((child) => bridgePids.has(child.pid)));
       next = children.filter((child) => !bridgePids.has(child.pid));
     }
     if (next.length !== 1) return fail(`the sandbox process ${JSON.stringify(node.command)} has ${next.length} children where one was expected`);
     node = next[0]!;
     if (depth === 0 && node.command === "bwrap") outerReaperPid = node.pid;
     if (node.command === INNER_PTY_RELAY) break;
+    launcher.push(node);
     if (!SANDBOX_WRAPPERS.has(node.command)) return fail(`unexpected process ${JSON.stringify(node.command)} in the terminal's sandbox`);
   }
   const relay: ProcEntry[] = [node];
@@ -232,7 +238,7 @@ export function findSandboxedShell(
     entry.ppid === shell.pid
     || (shell.ttyNr !== 0 && entry.ttyNr === shell.ttyNr && (entry.session === shell.session || entry.pgrp === shell.tpgid))
   ));
-  return { ok: true, relay, shell, busyProcesses };
+  return { ok: true, relay, shell, launcher, busyProcesses };
 }
 
 // What the operating system says about a sandboxed Linux terminal's shell ({@link readSandboxedShell}).
@@ -310,6 +316,12 @@ export async function sandboxTerminalHolders(
   return { holders, unreadable: null };
 }
 
+// The processes that are the shell itself or its verified wrappers (launcher chain, bridges, pty relay). Every other sandbox process holding the terminal,
+// readable or not, refuses.
+export function sandboxShellOwnProcesses(chain: Extract<SandboxedShellChain, { ok: true }>): ReadonlySet<number> {
+  return new Set([chain.shell.pid, ...chain.relay.map((relay) => relay.pid), ...chain.launcher.map((process) => process.pid)]);
+}
+
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }
@@ -364,7 +376,7 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
     if (options.exclusive) {
       const terminal = await openFileIdentity(`/proc/${shell.pid}/fd/0`);
       holders = terminal.characterDevice
-        ? await sandboxTerminalHolders(snapshot, ptyPid, new Set([shell.pid, ...chain.relay.map((relay) => relay.pid)]), terminal, procOpenFiles)
+        ? await sandboxTerminalHolders(snapshot, ptyPid, sandboxShellOwnProcesses(chain), terminal, procOpenFiles)
         : { holders: [], unreadable: "the shell's input is not a terminal" };
     }
     // The shell must still be the process the snapshot found (same parent, same program) once everything about it has been read.

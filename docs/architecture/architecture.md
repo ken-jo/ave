@@ -223,9 +223,11 @@ device open, such as one that left the session with `setsid`. The sandboxed
 Linux shell is checked through its sandbox process tree and terminal session.
 That tree check already refuses an orphan, because the sandbox's init must have
 exactly one child. As a second check, the last check before Enter refuses any
-other sandbox process (outside the shell and its pty relay) that holds the
-shell's terminal open, matched by device identity through `/proc/<pid>/fd`.
-An unreadable descriptor table also refuses.
+other sandbox process that holds the shell's terminal open, matched by device
+identity through `/proc/<pid>/fd`. The exempt processes are the shell's own,
+identified by their place in the verified chain: the launcher chain from the
+spawned process, the outer launcher's bridges, the pty relay and the shell.
+Any other process with an unreadable descriptor table also refuses.
 Otherwise `terminal_run` refuses with `shell-busy` and nothing is typed.
 Every write that reaches the terminal from its view counts as user input.
 The one exemption is a write made entirely of the emulator's replies to queries
