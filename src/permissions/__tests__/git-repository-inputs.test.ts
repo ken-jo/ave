@@ -36,6 +36,7 @@ beforeEach(() => {
     volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001", changeTime: "0x0000000000000001",
     attributes: 0, reparseTag: 0, reparseTarget: null, directory: fs.lstatSync(path).isDirectory(), ancestors: [],
   })));
+  vi.mocked(windowsPathFacts.pinWindowsPaths).mockClear();
   for (const entry of CHILD_ENTRY_POINTS) vi.mocked(childProcess[entry]).mockClear();
 });
 
@@ -105,12 +106,28 @@ describe("checked repository metadata inputs", () => {
     ["a changed index", () => fs.writeFileSync(join(cwd, ".git", "index"), "synthetic index")],
     ["a removed file", () => fs.unlinkSync(join(cwd, ".git", "HEAD"))],
     ["a new directory", () => fs.mkdirSync(join(cwd, ".git", "additional"))],
-    ["a changed metadata mode", () => fs.chmodSync(join(cwd, ".git", "HEAD"), 0o600)],
   ] as const)("changes evidence for %s", (_name, change) => {
-    fs.chmodSync(join(cwd, ".git", "HEAD"), 0o644);
     const first = inspectGitRepository(cwd);
     expect(first).not.toBeNull();
     change();
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("changes evidence for an observed metadata mode change", () => {
+    const readStat = vi.mocked(fs.lstatSync).getMockImplementation()!;
+    let mode = 0o100644n;
+    vi.mocked(fs.lstatSync).mockImplementation(((path, options) => {
+      const stat = readStat(path, options);
+      if (path === join(cwd, ".git", "HEAD") && options?.bigint === true) {
+        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode });
+      }
+      return stat;
+    }) as typeof fs.lstatSync);
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    mode = 0o100600n;
     const second = inspectGitRepository(cwd);
     expect(second).not.toBeNull();
     expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);

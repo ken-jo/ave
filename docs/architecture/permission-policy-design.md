@@ -469,7 +469,7 @@ The forced argv/environment recipe disables optional locks,
 lazy fetching, replacement objects, pager, prompts, credentials, transport,
 tracing, hooks, filesystem monitors, external diff/text conversion and signature
 verification. It forces built-in formats and refname sorting, disables mailmap
-use explicitly and overrides diff ordering with the platform null device.
+use explicitly and overrides diff ordering with the Git null path `/dev/null`.
 The [owned argv/environment recipe](../../src/permissions/rules/git-readonly-argv.ts)
 owns the exact accepted options and forced values. Caller options cannot undo
 these controls. Command-line overrides and owned environment selectors retain
@@ -482,6 +482,12 @@ its evidence with the checked state. The bounded state records the full `.git`
 inventory, entry types, file identities and change timestamps. It also records
 the worktree root and every physical ancestor through the filesystem root,
 including their identities and change timestamps, within the 32-level bound.
+The fingerprint includes the stat-reported device, inode, mode, uid, gid, size,
+link count, mtime and ctime, plus configuration content hashes. POSIX mode
+changes are covered where the filesystem reports them. Windows evidence covers
+these reported stat fields, inventory and configuration bytes, with non-following
+reparse checks at inspection; it does not attest POSIX permissions or DACLs.
+A permission change invisible to those stat fields cannot change this digest.
 Read-access timestamps are excluded. The inspector rechecks the recorded
 evidence before returning. This provenance detects a detached, replaced or
 restored root or ancestor. Unrelated concurrent directory activity at one of

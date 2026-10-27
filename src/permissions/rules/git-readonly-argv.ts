@@ -1,10 +1,11 @@
-import { devNull } from "node:os";
+// Git maps this spelling to the null device on every supported host.
+const GIT_NULL_PATH = "/dev/null";
 
 const CONFIGURATION = Object.freeze([
   ["core.fsmonitor", "false"],
-  ["core.hooksPath", devNull],
-  ["core.attributesFile", devNull],
-  ["core.excludesFile", devNull],
+  ["core.hooksPath", GIT_NULL_PATH],
+  ["core.attributesFile", GIT_NULL_PATH],
+  ["core.excludesFile", GIT_NULL_PATH],
   ["core.untrackedCache", "false"],
   ["diff.autoRefreshIndex", "false"],
   ["diff.submodule", "short"],
@@ -28,7 +29,7 @@ const GLOBAL_ARGUMENTS = Object.freeze([
 ]);
 const DIFF_ARGUMENTS = Object.freeze([
   "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--submodule=short", "--no-renames",
-  "--no-color", "--no-relative", `-O${devNull}`,
+  "--no-color", "--no-relative", `-O${GIT_NULL_PATH}`,
 ]);
 const REVISION_QUERIES = new Set([
   "--show-toplevel", "--show-prefix", "--git-dir", "--absolute-git-dir",
@@ -167,8 +168,8 @@ export function gitReadOnlyEnvironment(
     GIT_REFERENCE_BACKEND: "files",
     GIT_INDEX_FILE: indexFile,
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: devNull,
-    GIT_CONFIG_SYSTEM: devNull,
+    GIT_CONFIG_GLOBAL: GIT_NULL_PATH,
+    GIT_CONFIG_SYSTEM: GIT_NULL_PATH,
     GIT_ATTR_NOSYSTEM: "1",
     GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1",

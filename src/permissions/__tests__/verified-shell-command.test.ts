@@ -121,7 +121,7 @@ describe("bound native command authority", () => {
       expect(verifiedShellExecution(handle, identity)?.command).toContain(`'--git-dir=${join(cwd, ".git")}'`);
       expect(verifiedShellExecution(handle, identity)?.command).toContain(`'--work-tree=${cwd}'`);
       expect(verifiedShellEnvironment(handle, identity, { GIT_CONFIG_PARAMETERS: "evil", git_dir: "/outside", HOME: cwd })).toMatchObject({
-        GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd, GIT_INDEX_FILE: "/usr/bin/.ave-readonly-index", GIT_REFERENCE_BACKEND: "files", GIT_CEILING_DIRECTORIES: cwd, HOME: cwd,
+        GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd, GIT_INDEX_FILE: join("/usr/bin", ".ave-readonly-index"), GIT_REFERENCE_BACKEND: "files", GIT_CEILING_DIRECTORIES: cwd, HOME: cwd,
       });
     });
 

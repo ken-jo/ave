@@ -1,7 +1,7 @@
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import * as childProcess from "node:child_process";
 import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
@@ -38,7 +38,7 @@ beforeEach(() => {
   mkdirSync(home);
   environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_|^(?:HOME|XDG_CONFIG_HOME|EMAIL)$/i.test(key)));
   Object.assign(environment, {
-    HOME: home, XDG_CONFIG_HOME: home, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull,
+    HOME: home, XDG_CONFIG_HOME: home, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Boundary Author", GIT_AUTHOR_EMAIL: "author@example.invalid",
     GIT_COMMITTER_NAME: "Boundary Author", GIT_COMMITTER_EMAIL: "author@example.invalid",
   });
@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 function nativeGit(cwd: string, args: readonly string[], extraEnvironment: NodeJS.ProcessEnv = {}) {
-  return nativeChildProcess.spawnSync("git", ["-c", "core.hooksPath=" + devNull, "-C", cwd, ...args], {
+  return nativeChildProcess.spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
     encoding: "utf8", env: { ...environment, ...extraEnvironment }, timeout: 10_000, maxBuffer: 1024 * 1024,
   });
 }
