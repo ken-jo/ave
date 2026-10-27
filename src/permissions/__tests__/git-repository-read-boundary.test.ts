@@ -10,6 +10,7 @@ import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution } from "../verified-shell-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
@@ -48,11 +49,12 @@ beforeEach(() => {
   vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.54.0\n");
 });
 
-afterEach(() => {
+afterEach(async () => {
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  rmSync(root, { recursive: true, force: true });
+  // Git for Windows writes loose objects read-only; asynchronous removal clears them.
+  await cleanupTmpDir(root);
 });
 
 function nativeGit(cwd: string, args: readonly string[], extraEnvironment: NodeJS.ProcessEnv = {}) {
@@ -204,7 +206,7 @@ describe("implicit repository file reads", () => {
   });
 });
 
-it("admits checked reads without starting an available libexec helper", () => {
+it("admits checked reads on registered hosts without starting an available libexec helper", () => {
   const cwd = repository("workspace");
   const libexec = join(root, "outside-libexec");
   mkdirSync(libexec);
@@ -219,6 +221,25 @@ it("admits checked reads without starting an available libexec helper", () => {
   rmSync(marker);
   vi.stubEnv("GIT_EXEC_PATH", libexec);
   vi.stubEnv("BOUNDARY_HELPER_MARKER", marker);
+  if (process.platform === "win32") {
+    // Fixed Git installations are registered only for macOS and Linux, so a
+    // real Windows host proves the contractual refusal without starting Git.
+    for (const dialect of ["bash", "powershell"] as const) {
+      for (const command of READ_COMMANDS) {
+        for (const entry of CHILD_ENTRY_POINTS) vi.mocked(childProcess[entry]).mockClear();
+        vi.mocked(resolveVerifiedExecutable).mockClear();
+        const identity = { command, dialect, cwd };
+        const handle = prepareVerifiedShellCommand(identity);
+        expect(handle, command).toBeUndefined();
+        expect(verifiedShellExecution(handle, identity)).toBeUndefined();
+        expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).toBeNull();
+        expect(resolveVerifiedExecutable).not.toHaveBeenCalled();
+        for (const entry of CHILD_ENTRY_POINTS) expect(childProcess[entry]).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+      }
+    }
+    return;
+  }
   const nativePath = nativeChildProcess.execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8", env: environment }).trim();
   vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: nativePath });
   for (const dialect of ["bash", "powershell"] as const) {

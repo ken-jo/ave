@@ -1,10 +1,12 @@
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../rules/git-readonly-argv.js";
 import { inspectGitRepository } from "../rules/git-repository-inputs.js";
 
@@ -15,6 +17,8 @@ let cwd: string;
 let environment: Record<string, string>;
 
 beforeEach(() => {
+  // Windows evidence pins every inspected path through the shipped native helper.
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   root = realpathSync(mkdtempSync(join(tmpdir(), "git-read-controls-")));
   stabilizeFixtureAncestorStats(root);
   const home = join(root, "home");
@@ -39,9 +43,9 @@ beforeEach(() => {
   succeed(native(["-c", "commit.gpgSign=false", "commit", "-m", "second subject"]));
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  rmSync(root, { recursive: true, force: true });
+  await cleanupTmpDir(root);
 });
 
 function native(args: readonly string[], extra: Record<string, string> = {}, input?: string) {
@@ -60,12 +64,17 @@ function configure(key: string, value: string): void {
   succeed(native(["config", "--local", key, value]));
 }
 
+function shellPath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 function script(name: string, body = 'printf "executed\\n" > "$CONTROL_MARKER"'): { helper: string; marker: string } {
   const helper = join(root, name);
   const marker = join(root, name + ".marker");
   writeFileSync(helper, `#!/bin/sh\n${body}\n`);
   chmodSync(helper, 0o755);
-  return { helper, marker };
+  // Git runs configured helpers through sh, which drops unquoted Windows backslashes.
+  return { helper: shellPath(helper), marker };
 }
 
 function checked(args: readonly string[]) {
@@ -111,7 +120,8 @@ function guardedInvocation(plan: ReturnType<typeof checked>, extra: Record<strin
 async function terminal(args: string[], env: Record<string, string>): Promise<{ exitCode: number; output: string }> {
   const { spawn } = await import("node-pty");
   return await new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, env, name: "xterm", cols: 80, rows: 30 });
+    // node-pty searches Path for the literal name without applying PATHEXT.
+    const child = spawn(process.platform === "win32" ? "git.exe" : "git", args, { cwd, env, name: "xterm", cols: 80, rows: 30 });
     let output = "";
     const timer = setTimeout(() => { child.kill(); reject(new Error("Native terminal did not exit")); }, 10_000);
     child.onData((data) => { output += data; });
@@ -125,12 +135,14 @@ function removed(marker: string): void {
 }
 
 describe("native repository read controls", () => {
-  it("refuses filesystem comparison after checked repository metadata disappears", () => {
+  it("refuses filesystem comparison after checked repository metadata disappears", async () => {
     const plan = checked(["diff", "left", "right", "--name-only"]);
     const invocation = guardedInvocation(plan);
     writeFileSync(join(cwd, "left"), "outside-left-content\n");
     writeFileSync(join(cwd, "right"), "outside-right-content\n");
-    rmSync(join(cwd, ".git"), { recursive: true });
+    // Git for Windows stores objects read-only; asynchronous removal clears them.
+    await cleanupTmpDir(join(cwd, ".git"));
+    expect(existsSync(join(cwd, ".git"))).toBe(false);
     const control = spawnSync("git", [
       `--git-dir=${plan.repository.gitDirectory}`, `--work-tree=${plan.repository.workTree}`,
       "diff", "left", "right", "--name-only", "--",
@@ -360,7 +372,8 @@ describe("native repository read controls", () => {
     configure("remote.origin.url", `ext::${helper.helper}`);
     configure("remote.origin.promisor", "true");
     configure("protocol.ext.allow", "always");
-    rmSync(join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)));
+    // Git for Windows stores loose objects read-only; unlink clears that attribute.
+    unlinkSync(join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)));
     native(["show", "--no-patch", "HEAD"], { CONTROL_MARKER: helper.marker });
     removed(helper.marker);
     const result = guarded(plan, { CONTROL_MARKER: helper.marker, GIT_NO_LAZY_FETCH: "0", GIT_ALLOW_PROTOCOL: "ext" });
@@ -404,7 +417,8 @@ describe("native repository read controls", () => {
       configure("extensions.partialClone", "origin");
       configure("remote.origin.url", `http://127.0.0.1:${port}/synthetic`);
       configure("remote.origin.promisor", "true");
-      rmSync(join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)));
+      // Git for Windows stores loose objects read-only; unlink clears that attribute.
+    unlinkSync(join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)));
       native(["show", "--no-patch", "HEAD"], { NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" });
       expect(readFileSync(marker, "utf8")).toBe("request\n");
       rmSync(marker);

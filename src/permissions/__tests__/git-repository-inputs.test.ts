@@ -181,9 +181,14 @@ describe("checked repository metadata inputs", () => {
     setProcessPlatform(platform);
     expect(inspectGitRepository(cwd)).toEqual({ gitDirectory: join(cwd, ".git"), workTree: cwd, referenceBackend: "files", stateFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     if (platform === "win32") {
-      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([cwd]);
-      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([dirname(cwd)]);
-      expect(windowsPathFacts.pinWindowsPaths).toHaveBeenCalledWith([join(cwd, ".git")]);
+      // The cwd pin carries every ancestor component; each metadata directory pins its children in one batch.
+      const metadata = join(cwd, ".git");
+      const batches = vi.mocked(windowsPathFacts.pinWindowsPaths).mock.calls.map(([paths]) => [...paths].sort().join("|"));
+      expect(batches.slice(0, 2)).toEqual([cwd, metadata]);
+      expect(batches.slice(2).sort()).toEqual([
+        [join(metadata, "HEAD"), join(metadata, "config"), join(metadata, "objects"), join(metadata, "refs")].sort().join("|"),
+        join(metadata, "objects", "info"), join(metadata, "refs", "heads"),
+      ].sort());
     } else expect(windowsPathFacts.pinWindowsPaths).not.toHaveBeenCalled();
   });
 
