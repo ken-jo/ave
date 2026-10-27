@@ -34,10 +34,11 @@ describe("document child bundle boundary", () => {
         if (!imported.external) pending.push(imported.path);
       }
     }
-    const forbidden = /(?:table-document-reader|page-document-reader|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse|jszip|fast-xml-parser)\//;
+    const forbidden = /(?:table-document-reader|page-document-reader|structured-document|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse|jszip|fast-xml-parser)\//;
     expect([...visited].filter((path) => forbidden.test(path))).toEqual([]);
     expect(Object.keys(inputs).some((path) => /node_modules\/xlsx\//.test(path))).toBe(true);
-    expect(Object.keys(inputs).some((path) => /node_modules\/jszip\//.test(path))).toBe(true);
+    expect(Object.keys(inputs)).toContain("src/observation/structured-document.ts");
+    expect(Object.keys(inputs).some((path) => /node_modules\/fast-xml-parser\//.test(path))).toBe(true);
     expect(MAIN_BUNDLE_ROOT_FILES).toContain("preview-document-child-main.js");
     const child = Object.entries(result.metafile!.outputs)
       .find(([, output]) => output.entryPoint === "src/tools/preview-document-child-main.ts");
@@ -61,7 +62,6 @@ describe("document child bundle boundary", () => {
       const name = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(path)?.[1];
       return name ? [name] : [];
     }));
-    expect(bundledPackages).toContain("jszip");
     expect(bundledPackages).toContain("fast-xml-parser");
     const notices = readdirSync(resolve(root, "resources/licenses/document-preview"));
     const missing = [...bundledPackages].filter((name) => {

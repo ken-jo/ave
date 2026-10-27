@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,14 +7,11 @@ import {
   type TailnetControllerReceiptReservation,
 } from "../tailnet-controller-receipt-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { contentHash as digest } from "../../__tests__/support/content-hash.js";
 
 const OWNER_ONE = "00000000-0000-4000-8000-000000000001";
 const OWNER_TWO = "00000000-0000-4000-8000-000000000002";
 const scratchDirs: string[] = [];
-
-function digest(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function createFixture(options: Readonly<{ now?: () => number; ttlMs?: number; maxReceipts?: number }> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "ave-tailnet-controller-receipts-"));

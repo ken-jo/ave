@@ -58,6 +58,15 @@ const SHARED_PART_CONTENT_TYPES = new Set([
   "application/vnd.ms-excel.person+xml",
 ]);
 const ODS_DECODED_PARTS = ["meta-inf/manifest.xml", "content.xml", "styles.xml", "meta.xml"];
+const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
+const EMPTY_NAMESPACE_SCOPE: ReadonlyMap<string, string> = new Map([["xml", XML_NAMESPACE]]);
+const ODS_COLLAPSED_ATTRIBUTE_CONTROLS = new Set(["full-path", "media-type", "c"]);
+
+interface XmlScanOptions {
+  retainQualifiedAttributes?: boolean;
+  namespaceAwareAttributes?: boolean;
+}
 
 interface XmlTag {
   name: string;
@@ -81,6 +90,36 @@ function refuse(message: string): never {
 
 const NO_ATTRIBUTES: ReadonlyMap<string, string> = new Map();
 
+/** Ordinary attributes use expanded names; decoder expansion controls still share one effective name. */
+function xmlAttributeNamespaces(qualified: ReadonlyMap<string, string>, inherited: ReadonlyMap<string, string>, name: string): ReadonlyMap<string, string> {
+  let declarations: Map<string, string> | undefined;
+  for (const [key, raw] of qualified) {
+    if (key !== "xmlns" && !key.startsWith("xmlns:")) continue;
+    const prefix = key === "xmlns" ? "" : key.slice(6);
+    const namespace = normalizeXmlAttribute(raw);
+    if ((key !== "xmlns" && (!prefix || prefix.includes(":") || !namespace)) || namespace === undefined
+      || prefix === "xmlns" || namespace === XMLNS_NAMESPACE
+      || (prefix === "xml" ? namespace !== XML_NAMESPACE : namespace === XML_NAMESPACE)) refuse("Invalid XML namespace declaration");
+    declarations ??= new Map(inherited);
+    declarations.set(prefix, namespace);
+  }
+  const bindings = declarations ?? inherited;
+  const parts = name.split(":");
+  if (parts.length > 2 || parts.some((part) => !part) || (parts.length === 2 && !bindings.has(parts[0]!))) refuse("Invalid XML element namespace");
+  const names = new Set<string>();
+  for (const key of qualified.keys()) {
+    const parts = key.split(":");
+    if (parts.length > 2 || parts.some((part) => !part)) refuse("Invalid XML attribute namespace");
+    const namespace = key === "xmlns" || parts[0] === "xmlns" ? XMLNS_NAMESPACE
+      : parts.length === 1 ? "" : bindings.get(parts[0]!);
+    if (namespace === undefined) refuse("Unbound XML attribute namespace");
+    const expanded = `${namespace}\0${parts.at(-1)!}`;
+    if (names.has(expanded)) refuse("Duplicate XML attribute name");
+    names.add(expanded);
+  }
+  return bindings;
+}
+
 /** End of an ASCII `[A-Za-z_][\w.:-]*` name at `start`, or `start` when none begins there. */
 function nameEnd(xml: string, start: number): number {
   let position = start;
@@ -101,7 +140,7 @@ function spaceEnd(xml: string, start: number): number {
 }
 
 /** Scans tags without expanding entities or allocating any document objects. */
-function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void, retainQualifiedAttributes = false): void {
+function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void, options: XmlScanOptions = {}): void {
   let xml: string;
   try {
     xml = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -111,6 +150,7 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void, retainQualifiedAtt
   if (xml.includes("\0")) refuse("Package XML contains unsupported encoding bytes");
   let offset = 0;
   const stack: string[] = [];
+  const namespaceScopes: ReadonlyMap<string, string>[] = [];
   while ((offset = xml.indexOf("<", offset)) >= 0) {
     const marker = xml.charCodeAt(offset + 1);
     if (marker === 0x21 && xml.startsWith("<!--", offset)) {
@@ -161,19 +201,34 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void, retainQualifiedAtt
       if (value.includes("<")) refuse("Invalid XML tag contents");
       position = valueEnd + 1;
       attributes ??= new Map();
-      // Attribute namespaces do not separate expansion controls for the
-      // decoder; reject duplicate effective names before inspecting values.
       const effectiveName = key.slice(key.lastIndexOf(":") + 1).toLowerCase();
-      if (attributes.has(effectiveName)) refuse("Duplicate XML attribute name");
-      attributes.set(effectiveName, value);
-      if (retainQualifiedAttributes) (qualifiedAttributes ??= new Map()).set(key, value);
+      const declaration = key === "xmlns" || key.startsWith("xmlns:");
+      if (!options.namespaceAwareAttributes || !declaration) {
+        const control = ODS_COLLAPSED_ATTRIBUTE_CONTROLS.has(effectiveName)
+          || /^number-(?:(?:matrix-)?(?:rows|columns))-(?:repeated|spanned)(?:_|$)/.test(effectiveName);
+        if (attributes.has(effectiveName) && (!options.namespaceAwareAttributes || control)) refuse("Duplicate XML attribute name");
+        attributes.set(effectiveName, value);
+      }
+      if (options.retainQualifiedAttributes || options.namespaceAwareAttributes) {
+        qualifiedAttributes ??= new Map();
+        if (qualifiedAttributes.has(key)) refuse("Duplicate XML attribute name");
+        qualifiedAttributes.set(key, value);
+      }
     }
     const selfClosing = xml.charCodeAt(position) === 0x2f;
     if (selfClosing) position = spaceEnd(xml, position + 1);
     if (xml.charCodeAt(position) !== 0x3e) refuse("Invalid or unterminated XML tag");
     if (closing) {
       if (selfClosing || attributes || stack.pop() !== name) refuse("Unbalanced XML tags");
-    } else if (!selfClosing) stack.push(name);
+      if (options.namespaceAwareAttributes) namespaceScopes.pop();
+    } else {
+      const namespaces = options.namespaceAwareAttributes
+        ? xmlAttributeNamespaces(qualifiedAttributes ?? NO_ATTRIBUTES, namespaceScopes.at(-1) ?? EMPTY_NAMESPACE_SCOPE, name) : undefined;
+      if (!selfClosing) {
+        stack.push(name);
+        if (namespaces) namespaceScopes.push(namespaces);
+      }
+    }
     onTag({ name, localName, closing, selfClosing, attributes: attributes ?? NO_ATTRIBUTES, qualifiedAttributes });
     offset = position + 1;
   }
@@ -236,7 +291,7 @@ function workbookNeedsRecalculation(bytes: Buffer): boolean {
         || ["0", "false"].includes(booleanValue("calcCompleted") ?? "")) needsRecalculation = true;
     }
     if (!tag.selfClosing) depth += 1;
-  }, true);
+  }, { retainQualifiedAttributes: true });
   return needsRecalculation;
 }
 
@@ -272,9 +327,9 @@ function requiredPart(parts: ReadonlyMap<string, Buffer>, name: string): Buffer 
   return bytes;
 }
 
-function validateXmlRoot(bytes: Buffer, expected: string): void {
+function validateXmlRoot(bytes: Buffer, expected: string, options: XmlScanOptions = {}): void {
   let root: string | undefined;
-  scanXml(bytes, (tag) => { if (root === undefined) root = tag.localName; });
+  scanXml(bytes, (tag) => { if (root === undefined) root = tag.localName; }, options);
   if (root !== expected) refuse(`Invalid package XML root: ${expected}`);
 }
 
@@ -463,7 +518,7 @@ function verifyOdsExpansion(content: Buffer, limits: Readonly<PreviewDocumentLim
     } else if (tag.localName === "table-column" && !tag.closing) {
       repeatCount(tag, "number-columns-repeated", limits.maxOdsExpandedCells);
     }
-  });
+  }, { namespaceAwareAttributes: true });
   if (root !== "document-content" || inTable || rowRepeat > 0) refuse("Invalid spreadsheet content document");
 }
 
@@ -471,7 +526,7 @@ function validateOds(parts: ReadonlyMap<string, Buffer>, limits: Readonly<Previe
   if (parts.has("[Content_Types].xml")) refuse("Package declares conflicting document families");
   if (requiredPart(parts, "mimetype").toString("utf8") !== ODS_MIMETYPE) refuse("Package mimetype is not a spreadsheet");
   const manifest = requiredPart(parts, "META-INF/manifest.xml");
-  validateXmlRoot(manifest, "manifest");
+  validateXmlRoot(manifest, "manifest", { namespaceAwareAttributes: true });
   let spreadsheetDeclared = false;
   let contentDeclared = false;
   scanXml(manifest, (tag) => {
@@ -479,7 +534,7 @@ function validateOds(parts: ReadonlyMap<string, Buffer>, limits: Readonly<Previe
     if (tag.closing || tag.localName !== "file-entry") return;
     if (tag.attributes.get("full-path") === "/" && tag.attributes.get("media-type") === ODS_MIMETYPE) spreadsheetDeclared = true;
     if (tag.attributes.get("full-path") === "content.xml" && tag.attributes.get("media-type") === "text/xml") contentDeclared = true;
-  });
+  }, { namespaceAwareAttributes: true });
   if (!spreadsheetDeclared || !contentDeclared) refuse("Spreadsheet manifest parts are missing");
   verifyOdsExpansion(requiredPart(parts, "content.xml"), limits);
 }
@@ -523,7 +578,7 @@ export function prepareWorkbookContainer(
   else validateOds(parts, limits);
   for (const key of decoded) {
     const part = xmlParts.get(key);
-    if (part) scanXml(part, () => {});
+    if (part) scanXml(part, () => {}, { namespaceAwareAttributes: format === "ods" });
   }
   if (format === "xlsx") {
     const needsRecalculation = workbookNeedsRecalculation(requiredPart(parts, "xl/workbook.xml"));
