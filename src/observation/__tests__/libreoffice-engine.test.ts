@@ -16,13 +16,13 @@ vi.mock("../libreoffice-process.js", () => ({ LibreOfficeSessionPool: class {
   releaseSession = mocks.release;
   dispose = mocks.dispose;
 } }));
-import { createDocumentObservationEngine, stopDocumentEngineSessions } from "../libreoffice-engine.js";
+import { createDocumentObservationEngine, documentEngineImportSupported, stopDocumentEngineSessions } from "../libreoffice-engine.js";
 
 const engines: DocumentObservationEngine[] = [];
 const signal = () => new AbortController().signal;
 const context = { sessionId: "session-one" };
-function engine(): DocumentObservationEngine {
-  const value = createDocumentObservationEngine();
+function engine(platform?: NodeJS.Platform): DocumentObservationEngine {
+  const value = createDocumentObservationEngine(platform ? { platform } : {});
   engines.push(value);
   return value;
 }
@@ -44,6 +44,40 @@ beforeEach(() => {
   mocks.dispose.mockResolvedValue(undefined);
 });
 afterEach(async () => { for (const value of engines.splice(0)) await value.dispose?.(); });
+
+describe("HWP/HWPX supported-format decision", () => {
+  it("refuses HWP/HWPX on macOS with an explicit reason before any installation or engine call", async () => {
+    const value = engine("darwin");
+    for (const format of ["hwp", "hwpx"] as const) {
+      await expect(value.parse(Buffer.from("hangul"), format, 0, signal(), context))
+        .rejects.toMatchObject({ code: "engine-format-unsupported-on-platform" });
+      await expect(value.prepare!(format, signal(), context)).rejects.toMatchObject({ code: "engine-format-unsupported-on-platform" });
+    }
+    expect(documentEngineImportSupported("darwin")).toBe(false);
+    expect(mocks.installation).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.convert).not.toHaveBeenCalled();
+    expect(mocks.read).not.toHaveBeenCalled();
+  });
+
+  it("keeps other formats on macOS on the engine path", async () => {
+    mocks.convert.mockResolvedValue({ pdf: Buffer.alloc(0), recalculated: Buffer.from("derived") });
+    mocks.read.mockResolvedValue(table());
+    await engine("darwin").parse(Buffer.from("workbook"), "xlsx", 0, signal(), context);
+    expect(mocks.convert).toHaveBeenCalledWith(expect.anything(), context.sessionId, expect.any(Buffer), "xlsx", expect.any(AbortSignal));
+  });
+
+  it.each(["linux", "win32"] as const)("hands HWP/HWPX to the engine unchanged on %s", async (platform) => {
+    expect(documentEngineImportSupported(platform)).toBe(true);
+    const value = engine(platform);
+    mocks.prepare.mockResolvedValue(undefined);
+    await value.prepare!("hwpx", signal(), context);
+    expect(mocks.prepare).toHaveBeenCalledWith(expect.anything(), context.sessionId, "hwpx", expect.any(AbortSignal));
+    mocks.convert.mockRejectedValue(Object.assign(new Error("engine reached"), { code: "engine-runtime-unavailable" }));
+    await expect(value.parse(Buffer.from("hangul"), "hwp", 0, signal(), context)).rejects.toThrow("engine reached");
+    expect(mocks.convert).toHaveBeenCalledWith(expect.anything(), context.sessionId, expect.any(Buffer), "hwp", expect.any(AbortSignal));
+  });
+});
 
 describe("optional document observation engine", () => {
   it("awaits runtime readiness without reading document bytes during preparation", async () => {

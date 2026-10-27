@@ -795,7 +795,7 @@ export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
   readonly name = "open_document";
   readonly description =
     "Present a local CSV, TSV, XLSX, XLS, ODS, PDF, PPTX, DOCX, ODT, HWP or HWPX to the user. " +
-    "HWP and HWPX require the optional document engine and compatible import runtime. " +
+    "HWP and HWPX require the optional document engine and compatible import runtime, and are not supported on macOS yet. " +
     "The user's document setting chooses direct side-panel opening or a clickable file link. " +
     "Uses ordinary read permissions without an additional prompt. Does not feed document contents to the model. " +
     "Requires the originating foreground session; unavailable headless or for isolated guest paths.";

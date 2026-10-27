@@ -8,6 +8,24 @@ import { createTableObservationEngine } from "./table-engine.js";
 import { LibreOfficeSessionPool } from "./libreoffice-process.js";
 
 type ConversionFormat = "docx" | "odt" | "pptx" | "xlsx" | "ods" | "hwp" | "hwpx";
+
+/**
+ * Owner decision (supported formats, not a test skip): HWP/HWPX are not offered on macOS. Registering the pinned
+ * importer's Java component makes `unopkg` start the office's `uno` helper, and on macOS 26 the pinned LibreOffice
+ * 26.8.1 helper is killed at launch (`CODESIGNING / Launch Constraint Violation`), leaving a crash report each time.
+ * Lift this when a pinned TDF build's helper runs on macOS. The engine never receives these formats here.
+ */
+const IMPORT_UNSUPPORTED_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["darwin"]);
+
+export function documentEngineImportSupported(platform: NodeJS.Platform): boolean {
+  return !IMPORT_UNSUPPORTED_PLATFORMS.has(platform);
+}
+
+function assertFormatSupported(format: PreviewAnyFormat | "text", platform: NodeJS.Platform): void {
+  if ((format === "hwp" || format === "hwpx") && !documentEngineImportSupported(platform)) {
+    throw new TableDocumentError("engine-format-unsupported-on-platform", "HWP/HWPX documents are not supported on this platform.");
+  }
+}
 interface EngineLifetime { stop(): Promise<void> }
 interface EngineParse { controller: AbortController; sessionId?: string; conversion: boolean }
 const engineLifetimes = new Set<EngineLifetime>();
@@ -22,7 +40,7 @@ function invalidOutput(): never {
 }
 
 /** An absent optional installation selects the admitted reader; conversion failures never do. */
-export function createDocumentObservationEngine(): DocumentObservationEngine {
+export function createDocumentObservationEngine({ platform = process.platform }: { platform?: NodeJS.Platform } = {}): DocumentObservationEngine {
   const reader = createTableObservationEngine();
   let pool: LibreOfficeSessionPool | undefined;
   const shutdown = new AbortController();
@@ -54,6 +72,7 @@ export function createDocumentObservationEngine(): DocumentObservationEngine {
     prepare(format, signal, context) {
       return runOwned(format, signal, context, async (ownedSignal, entry) => {
         if (!converts(format)) return;
+        assertFormatSupported(format, platform);
         const installation = await readInstallation(ownedSignal);
         ownedSignal.throwIfAborted();
         if (installation === null) {
@@ -134,6 +153,7 @@ export function createDocumentObservationEngine(): DocumentObservationEngine {
       throw new TableDocumentError("invalid-index", "Document index must be a non-negative integer.");
     }
     if (!converts(format)) return reader.parse(bytes, format, selectionIndex, signal, context);
+    assertFormatSupported(format, platform);
     const installation = await readInstallation(signal);
     signal.throwIfAborted();
     if (installation === null) {

@@ -19,7 +19,7 @@ User document, browser and terminal activity never becomes agent observation.
 | ODT | A temporary PDF rendered by the existing page reader, plus bounded paragraph source elements. | A bounded text outline from the isolated reader. |
 | PPTX | A temporary PDF rendered by the existing page reader, plus bounded slide-shape source elements. | The existing slide text outline. |
 | XLSX, ODS | A recalculated temporary workbook of the same format decoded by the existing table reader. | The existing cached-value grid and source recalculation signal. |
-| HWP v5, HWPX | A temporary PDF page, with an ODT import representation when available, through the private-profile extension and verified Java 11 or newer. | An explicit `engine-unavailable` result. |
+| HWP v5, HWPX | Linux: a temporary PDF page, with an ODT import representation when available, through the private-profile extension and verified Java 11 or newer. macOS: an explicit `engine-format-unsupported-on-platform` result (see [Korean document importer](#korean-document-importer)). | An explicit `engine-unavailable` result; on macOS, `engine-format-unsupported-on-platform`. |
 | PDF, CSV, TSV, XLS, text/code | The existing bounded reader. | The same reader. |
 
 LibreOffice supplies conversion and formula recalculation behind
@@ -230,12 +230,20 @@ this importer works. Importer logs can include document contents, so its HOME,
 profile and caches remain local, private and subject to session cleanup.
 
 Registering the extension's Java component makes the extension tool start the
-office's separate UNO helper process. On macOS 26 the pinned build's helper is
-terminated at launch by the operating system's launch-constraint policy, so
-registration fails, HWP/HWPX return `engine-runtime-unavailable`, and the
-operating system records a crash report for the helper. Other formats in the
-session keep working. HWP/HWPX import on macOS therefore depends on a release
-whose helper can run there; the pin is not changed to hide this.
+office's separate UNO helper process. On macOS 26 the pinned LibreOffice 26.8.1
+helper is terminated at launch by the operating system
+(`CODESIGNING / Launch Constraint Violation`, reproduced from the mounted
+official image), which also leaves a crash report on the user's machine.
+
+The owner therefore decided that HWP/HWPX are **not supported on macOS**. This
+is a supported-format decision held in one place, the platform capability in the
+[engine](../../src/observation/libreoffice-engine.ts): on macOS, preparing or
+parsing HWP/HWPX returns `engine-format-unsupported-on-platform` before any
+installation lookup or engine call, so no extension tool or helper is ever
+started and no crash report is produced. The panel and tool descriptions say
+the format is not supported on macOS yet; every other format keeps working.
+The gate is lifted when a pinned TDF build's helper runs on macOS, proven by
+native importer registration and an HWP/HWPX conversion there.
 
 ## Validation and upstream references
 

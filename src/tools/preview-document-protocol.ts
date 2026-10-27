@@ -21,6 +21,7 @@ export const DOCUMENT_PARSE_MESSAGES: Readonly<Record<ParseError, string>> = Obj
   "engine-integrity-failed": "Document engine integrity verification failed.",
   "engine-confinement-unavailable": "Document engine confinement is unavailable.",
   "engine-runtime-unavailable": "The document importer requires a verified Java runtime.",
+  "engine-format-unsupported-on-platform": "This document format is not supported on this operating system yet.",
   "engine-failed": "The document engine failed to convert the document.",
   encrypted: "Encrypted documents cannot be previewed.",
   "unsupported-encoding": "Document encoding is not supported.",

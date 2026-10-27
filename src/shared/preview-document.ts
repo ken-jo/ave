@@ -171,6 +171,7 @@ export type PreviewDocumentError =
   | "engine-integrity-failed"
   | "engine-confinement-unavailable"
   | "engine-runtime-unavailable"
+  | "engine-format-unsupported-on-platform"
   | "engine-failed"
   | "encrypted"
   | "unsupported-encoding"
