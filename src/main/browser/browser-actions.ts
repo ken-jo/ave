@@ -715,6 +715,97 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
   }
 }
 
+// What waiting for an action's navigation needs of a guest. Production passes Electron `WebContents`.
+export interface NavigationGuest extends LoadingGuest {
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
+}
+
+// A navigation an input action may have started in a tab's main frame, watched from before the input goes out until it commits or fails.
+export interface ActionNavigation {
+  // Whether the main frame was asked to navigate in this tab after the watch began.
+  readonly requested: boolean;
+  // Resolve once a requested navigation commits or ends without a new document; refuse a failed one, a closed tab, or one still pending at `maxMs`.
+  // Resolves at once when nothing was requested.
+  outcome(signal: AbortSignal, maxMs: number): Promise<void>;
+  stop(): void;
+}
+
+type NavigationEnd = { kind: "committed" | "stopped" } | { kind: "failed"; error: BrowserActionError };
+
+// ERR_ABORTED: the navigation was replaced or cancelled, so the tab keeps its document (net/base/net_error_list.h).
+const NET_ERR_ABORTED = -3;
+
+// Watch the main frame for a navigation the action is about to start. A link activation reaches the page after its input is acknowledged, so the
+// browser learns of the navigation only after the action returns: the request (CDP Page.frameRequestedNavigation, renderer side) is the signal, and
+// commit (did-navigate / did-navigate-in-page) or failure (did-fail-load / did-stop-loading / tab gone) ends it.
+export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSession): Promise<ActionNavigation> {
+  const mainFrameId = (await frameTree(cdp)).frame.id;
+  let requested = false;
+  let ended: NavigationEnd | undefined;
+  let notify: (() => void) | undefined;
+  const end = (outcome: NavigationEnd) => {
+    if (!requested || ended) return;
+    ended = outcome;
+    notify?.();
+  };
+  const stopCdp = cdp.onEvent((method, params) => {
+    if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") requested = true;
+    if (method === "Page.frameStartedNavigating" && params.frameId === mainFrameId) requested = true;
+  });
+  const listeners: Array<[string, (...args: unknown[]) => void]> = [
+    ["did-start-navigation", ((details: { isMainFrame?: boolean }) => { if (details.isMainFrame) requested = true; }) as never],
+    ["did-navigate", (() => { requested = true; end({ kind: "committed" }); }) as never],
+    ["did-navigate-in-page", ((_event: unknown, _url: string, isMainFrame: boolean) => {
+      if (isMainFrame) { requested = true; end({ kind: "committed" }); }
+    }) as never],
+    ["did-fail-load", ((_event: unknown, errorCode: number, errorDescription: string, validatedURL: string, isMainFrame: boolean) => {
+      if (!isMainFrame) return;
+      end(errorCode === NET_ERR_ABORTED ? { kind: "stopped" } : {
+        kind: "failed",
+        error: new BrowserActionError("load-failed", `the action started loading ${validatedURL.slice(0, 200)}, which failed: ${String(errorDescription).slice(0, 200)}`, true),
+      });
+    }) as never],
+    ["did-stop-loading", (() => end({ kind: "stopped" })) as never],
+    ["destroyed", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) })) as never],
+    ["render-process-gone", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab's page crashed while loading", true) })) as never],
+  ];
+  for (const [event, listener] of listeners) guest.on(event, listener);
+  const stop = () => {
+    stopCdp();
+    for (const [event, listener] of listeners) guest.removeListener(event, listener);
+  };
+  return {
+    get requested() { return requested; },
+    stop,
+    outcome: async (signal, maxMs) => {
+      if (!requested) return;
+      if (!ended) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, maxMs);
+          function done() {
+            clearTimeout(timer);
+            notify = undefined;
+            signal.removeEventListener("abort", done);
+            resolve();
+          }
+          notify = done;
+          signal.addEventListener("abort", done, { once: true });
+        });
+      }
+      throwIfAborted(signal);
+      if (!ended) {
+        throw new BrowserActionError("navigation-incomplete",
+          `the action started a navigation from ${guest.getURL().slice(0, 200)} that did not finish within ${Math.round(maxMs / 1000)}s; take a new browser_snapshot to see the page`, true);
+      }
+      if (ended.kind === "failed") throw ended.error;
+    },
+  };
+}
+
+// The navigation each tab's last input action started, kept from the action until its settle.
+const actionNavigations = new WeakMap<object, ActionNavigation>();
+
 // What the adapter needs of the tab registry.
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
@@ -824,7 +915,7 @@ function within<T>(call: Promise<T>, ms: number, signal?: AbortSignal): Promise<
   });
 }
 
-// Touch echoes carry no point; derive coordinates from the pointer-move echo and confirm only this page received the marked start, end, and tap.
+// Touch echoes carry no point; confirm only this page received the marked start, end, and tap.
 async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTap: boolean, deadline: number): Promise<void> {
   const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, deadline);
   // Judge once this page's sequence is complete (or never will be): its derived tap arrives after the touch end.
@@ -845,27 +936,22 @@ async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTa
   }
 }
 
-// CDP mouse coordinates are guest-relative but touch coordinates are window-relative; translate only at the native boundary.
-// Measure the offset from native pointer echoes and the host content origin, never renderer-reported geometry.
-function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContentOrigin) {
-  let offset: { x: number; y: number } | null = null;
-  type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
+// Mouse and touch points are both in the page's viewport (CDP Input.dispatchMouseEvent and Input.dispatchTouchEvent), so a press goes out at the page
+// point the guard hit-tested. Each pointer move must still be reported back by this guest's native input, or the action is refused.
+function createPointerEcho(guest: WebContents) {
   return {
-    // Before a pointer move is sent: listen for its native echo. `settle`, after the send, learns the page's offset in its window from it.
+    // Before a pointer move is sent: listen for its native echo. `settle`, after the send, fails unless it came.
     watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void>; stop(): void } | null {
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
-      // Each pointer move measures afresh: an echo that never comes must leave no earlier offset behind for the press that follows.
-      offset = null;
       const point = { x: params.x, y: params.y };
-      let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
+      let onInput: ((event: unknown, input: { type?: string; x?: number; y?: number }) => void) | undefined;
       let timer: ReturnType<typeof setTimeout>;
-      const echo = new Promise<PointerEcho | null>((resolve) => {
-        timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
+      const echo = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), POINTER_ECHO_MAX_MS);
         onInput = (_event, input) => {
           if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y) return;
-          if (typeof input.globalX !== "number" || typeof input.globalY !== "number") return;
           clearTimeout(timer);
-          resolve(input);
+          resolve(true);
         };
         guest.on("input-event", onInput as never);
       });
@@ -877,24 +963,10 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
         stop,
         settle: async () => {
           try {
-            const seen = await echo;
-            const host = hostContentOrigin(guest);
-            if (!seen || !host) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
-            offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
+            if (!await echo) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
           } finally { stop(); }
         },
       };
-    },
-    // A touch event's page points as window points; a clear refusal when never measured.
-    placed(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-      if (method !== "Input.dispatchTouchEvent") return params;
-      const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
-      if (points.length === 0) return params;
-      if (!offset) {
-        throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
-      }
-      const by = offset;
-      return { ...params, touchPoints: points.map((point) => ({ ...point, x: point.x + by.x, y: point.y + by.y })) };
     },
   };
 }
@@ -925,7 +997,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   assertCurrent(false);
   const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
   assertCurrent(false);
-  const touch = createTouchPlacement(guest, hostContentOrigin);
+  const pointer = createPointerEcho(guest);
   // A touch start went out and its sequence is not ended yet.
   let touchOpen = false;
   let touchEnded = false;
@@ -953,9 +1025,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         || nativeDrag.enabled || !nativeDrag.disabled || !nativeDrag.cancelled || nativeDrag.error || nativeDrag.delivery().elsewhere !== 0)) {
         throw new BrowserActionError("drag-unavailable", "the native source drag has not been safely released; no drop was sent");
       }
-      params = touch.placed(method, params);
-      const echo = touch.watch(method, params);
-      const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
+      const echo = pointer.watch(method, params);
+      const pointerDispatch = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
       const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
       if (phase === "touchStart") touchOpen = true;
       if (phase === "touchMove") touchMoved = true;
@@ -972,7 +1043,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         const sent = session.send(method, params);
         const result = pressDeadline !== null
           ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.callerSignal)
-          : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
+          : pointerDispatch ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
         if (method === "Input.cancelDragging" && nativeDrag) { nativeDrag.cancelled = true; mouseOpen = false; }
         if (method === "Input.setInterceptDrags" && params?.enabled === false && nativeDrag) {
           nativeDrag.enabled = false; nativeDrag.disabled = true; nativeDrag.stop();
@@ -1211,6 +1282,26 @@ export function createBrowserPageActions(
   originOf: (url: string) => string | null,
   hostContentOrigin: HostContentOrigin,
 ): BrowserPageActions<WebContents> {
+  // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
+  // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
+  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => {
+    const guest = live.tab.guest;
+    if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+    const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    actionNavigations.get(guest)?.stop();
+    actionNavigations.delete(guest);
+    const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
+    try {
+      await act();
+      try { await session.send("Page.enable"); } catch (err) {
+        throw new BrowserActionError("tab-gone", `the action was sent, but the tab stopped answering: ${(err as Error).message.slice(0, 200)}`, true);
+      }
+    } catch (err) {
+      navigation.stop();
+      throw err;
+    }
+    actionNavigations.set(guest, navigation);
+  };
   return {
     prepare: async (live) => {
       const guest = live.tab.guest;
@@ -1222,21 +1313,21 @@ export function createBrowserPageActions(
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       snapshot(await targetFor(live, attribution, hostContentOrigin), options),
     screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
-    hover: async (live, ref) => hover(await targetFor(live, attribution, hostContentOrigin, true), ref),
-    drag: async (live, sourceRef, targetRef) => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef),
-    select: async (live, ref, value) => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value),
-    scroll: async (live, ref, direction, pixels) => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels),
+    hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
+    drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
+    select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),
+    scroll: async (live, ref, direction, pixels) => tracked(live, async () => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels)),
     upload: async (live, ref, options) => {
       if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
       return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
     },
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       waitFor(await targetFor(live, attribution, hostContentOrigin), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref),
+    click: async (live: LiveTab, ref: string) => tracked(live, async () => click(await targetFor(live, attribution, hostContentOrigin, true), ref)),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options),
+      tracked(live, async () => type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options)),
     pressKey: async (live: LiveTab, key: string, ref?: string) =>
-      pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref),
+      tracked(live, async () => pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref)),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
@@ -1247,7 +1338,11 @@ export function createBrowserPageActions(
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-      return settle(guest, live.signal);
+      const navigation = actionNavigations.get(guest);
+      actionNavigations.delete(guest);
+      const started = Date.now();
+      try { await navigation?.outcome(live.signal, SETTLE_MAX_MS); } finally { navigation?.stop(); }
+      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started)));
     },
   };
 }
