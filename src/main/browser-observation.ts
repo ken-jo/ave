@@ -260,9 +260,11 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
 
   private previewAllowed(view: BrowserView, tab: BrowserTabRecord<BrowserGuest>, guest: BrowserGuest): boolean {
     if (this.disposed || tab.guest !== guest || guest.isDestroyed() || tab.windowId !== view.windowId) return false;
+    // Any recognized user input, address-bar navigation or Stop pauses an agent-owned tab. The agent's own
+    // cross-origin navigation clears the tab's original-origin provenance but is not user browsing.
     if (tab.controlMode === "human-paused") return false;
     const leased = tab.lease?.actor.sessionId === view.sessionId;
-    const owned = tab.owner?.sessionId === view.sessionId && tab.opener === "agent";
+    const owned = tab.owner?.sessionId === view.sessionId;
     if (!leased && !owned) return false;
     const activity = this.activity.get(tab.handle);
     if (!activity || activity.sessionId !== view.sessionId) return false;

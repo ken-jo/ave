@@ -107,15 +107,25 @@ describe("agent browser live preview", () => {
     expect(started).toEqual([]);
   });
 
-  it("refuses user tabs: unowned, user-navigated and paused tabs never preview", async () => {
+  it("refuses user tabs: unowned, another session's and user-paused tabs never preview", async () => {
     const observed = await agentClick();
     tab.owner = null;
     expect(request("start", observed.target.id)).toEqual({ ok: false, error: "not-agent-tab" });
-    tab.owner = { sessionId: identity.sessionId }; tab.opener = "user";
+    tab.owner = { sessionId: "another-session" };
     expect(request("start", observed.target.id)).toEqual({ ok: false, error: "not-agent-tab" });
-    tab.opener = "agent"; tab.controlMode = "human-paused";
+    // User input, address-bar navigation and Stop all pause an agent-owned tab and clear its agent provenance.
+    tab.owner = { sessionId: identity.sessionId }; tab.opener = "user"; tab.controlMode = "human-paused";
     expect(request("start", observed.target.id)).toEqual({ ok: false, error: "not-agent-tab" });
     expect(started).toEqual([]);
+  });
+
+  it("keeps previewing an owned tab after the agent's own cross-origin navigation", async () => {
+    const observed = await agentClick();
+    // The registry drops original-origin provenance on any new origin; the tab is still agent-owned and not paused.
+    tab.opener = "user"; tab.agentOrigin = null;
+    expect(request("start", observed.target.id)).toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs * 3);
+    expect(started[0]!.stop).not.toHaveBeenCalled();
   });
 
   it("delivers frames only on the transient preview channel, never through the observation daemon", async () => {

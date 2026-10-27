@@ -76,7 +76,7 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe }:
       className="pointer-events-none h-full w-full select-none object-contain"
       onLoad={() => store.rendered(binding, frame.frame)} onError={() => store.rendered(binding, frame.frame)} /> : children}
     {frame && state?.updating ? <span data-testid="browser-observation-preview-updating"
-      className="absolute right-2 top-2 rounded bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+      className="absolute right-2 top-2 rounded bg-background/(--opacity-emphatic) px-1.5 py-0.5 text-[11px] text-muted-foreground">
       {t("agentBrowser.observationPreviewUpdating")}
     </span> : null}
   </div>;

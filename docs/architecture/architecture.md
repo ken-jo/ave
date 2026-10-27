@@ -169,9 +169,10 @@ A live preview shows the agent's tab where that tab is open in another panel:
 the second slot of the same web surface, beneath its activity strip. It is
 bound to the exact main-issued tab handle and observation target of the latest
 agent action for that renderer tab, and never falls back to another tab. Main
-admits only a tab that the acting session leases, or owns with agent
-provenance, that is not paused by the user, and on which that session ran a
-command within the last 30 seconds. User takeover, user navigation, idleness,
+admits only a tab that the acting session leases or owns, that is not paused
+by the user, and on which that session ran a command within the last 30
+seconds. Recognized user input, address-bar navigation and Stop pause an
+agent-owned tab; the agent's own cross-origin navigation does not. User takeover, user navigation, idleness,
 session end and window or frame loss stop it. It reuses the guest's existing
 in-process debugger session through Chromium's screencast: it never attaches a
 debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
