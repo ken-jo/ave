@@ -19,8 +19,8 @@ import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
-import { BrowserControlHeader } from "./BrowserControlHeader.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
+import { BrowserObservationLiveStrip } from "../preview/BrowserObservationLiveStrip.js";
 
 /** A web page's name for its pane: its title, else its host, else the kind's label. */
 export function webPanelTitle(navigation: GuestNavigation, fallbackUrl: string | null, kindLabel: string): string {
@@ -84,7 +84,6 @@ function WebPanelBody({
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
-      <BrowserControlHeader api={api} tabId={surface.tabId} />
       <form
         className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
         onSubmit={(event) => {
@@ -118,6 +117,7 @@ function WebPanelBody({
         )}
       </form>
       <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
+      <BrowserObservationLiveStrip tabId={surface.tabId} />
       {error ? (
         <div className="shrink-0 border-b px-3 py-1.5 text-[11px] text-destructive" data-testid="web-panel-address-error">{error}</div>
       ) : null}

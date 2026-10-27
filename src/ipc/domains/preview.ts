@@ -36,7 +36,7 @@ import { readPreviewDocumentInput } from "../../tools/preview-document-input.js"
 import { installDocumentObservation } from "../../main/document-observation.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
 import { recordPreviewFileAccess } from "../../main/preview-file-access.js";
-import { OBSERVATION_LIMITS, type DocumentObservationBinding, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
+import { OBSERVATION_LIMITS, type ObservationBinding, type PreviewObservedTextDocument } from "../../shared/agent-observation.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
 import { previewPageFormatOf } from "../../shared/preview-page-document.js";
@@ -61,7 +61,7 @@ export interface PreviewReadFileResult {
   /** Text was truncated by the line window. */
   truncated?: boolean;
   lineCount?: number;
-  observation?: DocumentObservationBinding;
+  observation?: ObservationBinding;
   document?: PreviewObservedTextDocument;
   /** Signature-verified passive image bytes; line-window requests remain text-only. */
   image?: { dataUrl: string; mimeType: string };
@@ -130,6 +130,13 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       return { ok: false, error: "unauthorized" };
     }
     return observation.acknowledge(e, request);
+  });
+  ipcMain.handle(CHANNELS.preview.observationPreview, (e, request: unknown) => {
+    if (!validateAppWindowMainFrameSender(e, deps)) {
+      auditUnauthorized(auditLogger, CHANNELS.preview.observationPreview, e);
+      return { ok: false, error: "unauthorized" };
+    }
+    return observation.browserPreview(e, request);
   });
 
   ipcMain.handle(
@@ -311,6 +318,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         try {
           if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
           const slot = await acquireParseSlot(ownerKey, controller);
+          let engine: ReturnType<typeof observation.acquirePreviewEngine> | undefined;
           let inputBytes: number | undefined;
           try {
             if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
@@ -320,7 +328,18 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             }
             const bytes = await readPreviewDocumentInput(resolved, slot.signal);
             inputBytes = bytes.length;
-            const document = await slot.parse(bytes, format, sheetIndex);
+            if (!validateAppWindowMainFrameSender(e, deps)) {
+              auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+              return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+            }
+            engine = observation.acquirePreviewEngine(e, sessionId, resolved, async (input, inputFormat, index, signal) => {
+              const handleAbort = (): void => controller.abort(signal.reason);
+              signal.addEventListener("abort", handleAbort, { once: true });
+              if (signal.aborted) handleAbort();
+              try { return await slot.parse(input, inputFormat, index); }
+              finally { signal.removeEventListener("abort", handleAbort); }
+            });
+            const document = await engine.parse(bytes, format, sheetIndex, slot.signal);
             if (!validateAppWindowMainFrameSender(e, deps)) {
               auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
               return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
@@ -341,7 +360,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
               return { ok: false, error: "path-not-allowed", message: "Preview read scope changed" };
             }
-            const binding = "sheet" in document ? observation.registerView(e, sessionId, resolved, bytes, document) : undefined;
+            const binding = observation.registerView(e, sessionId, resolved, bytes, document);
             recordPreviewFileAccess(e, deps, resolved, sessionId);
             return { ok: true, path: resolved, bytes: bytes.length, document, ...(binding ? { observation: binding } : {}) };
           } catch (err) {
@@ -351,6 +370,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             }
             throw err;
           } finally {
+            engine?.release();
             slot.release();
           }
         } finally {

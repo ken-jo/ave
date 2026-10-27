@@ -167,6 +167,12 @@ export type PreviewDocumentError =
   | "sheet-not-found"
   | "page-not-found"
   | "renderer-unavailable"
+  | "engine-unavailable"
+  | "engine-integrity-failed"
+  | "engine-confinement-unavailable"
+  | "engine-runtime-unavailable"
+  | "engine-format-unsupported-on-platform"
+  | "engine-failed"
   | "encrypted"
   | "unsupported-encoding"
   | "corrupt-document"
@@ -177,5 +183,5 @@ export type PreviewDocumentError =
 
 export type PreviewReadDocumentResult =
   | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument;
-      observation?: import("./agent-observation.js").DocumentObservationBinding }
+      observation?: import("./agent-observation.js").ObservationBinding }
   | { ok: false; error: PreviewDocumentError; path?: string; bytes?: number; message: string };

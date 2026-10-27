@@ -1,5 +1,5 @@
 import "../../__tests__/support/trusted-powershell.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,9 @@ import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { normalizeRuleSpecifierInput } from "../rules/rule-specifier.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 import { literalShellRulePattern as pattern } from "../../__tests__/support/permission-lane.js";
+
+// These cases model a pinned-startup host; win32 is never pinned (permission-policy-design.md, Windows startup proof).
+vi.mock("../../shared/powershell-startup-policy.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => true }));
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });

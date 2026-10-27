@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agentObservationFixture } from "../../__tests__/support/agent-observation.js";
 
 import { checkpointFileMutation } from "../../memory/code-checkpoints.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
@@ -22,6 +23,7 @@ import { MoveFileTool, WriteFileTool } from "../file-tools.js";
 const TURN = { sessionId: "document-session", turnId: "document-turn" };
 const INVOCATION = { sessionId: "document-session", toolUseId: "document-tool" };
 const IDENTITY = { ...TURN, toolUseId: "document-tool" };
+const admitted = agentObservationFixture(IDENTITY);
 
 let directory: string;
 let sink: AgentObservationSink;
@@ -46,9 +48,6 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-function admitted<T>(run: () => Promise<T>): Promise<T> {
-  return runWithAgentObservationTurn(TURN, () => runWithAgentObservationInvocation(INVOCATION, run));
-}
 
 describe("agent document observation context", () => {
   it("does not derive observation authority from file-tool metadata", async () => {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
-import type { DocumentObservationEvent } from "../../../../shared/agent-observation.js";
+import type { DocumentObservationEvent, ObservationRequest } from "../../../../shared/agent-observation.js";
 import type { PreviewTableDocument } from "../../../../shared/preview-document.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { chatSidePanelLauncherTestId } from "../../../../shared/test-ids.js";
@@ -20,6 +20,7 @@ import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 const SESSION = "document-panel-session";
 const FIRST_TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const FRESH_TARGET = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const TERMINAL_TARGET = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 type PreviewRoute = "content" | "file-browser";
 
 function workbook(value: string): PreviewTableDocument {
@@ -80,11 +81,15 @@ describe("retained panel document observation", () => {
     const target: Extract<ChatPreviewTarget, { kind: "file" }> = { id: "document-target", kind: "file", title: format === "xlsx" ? "book.xlsx" : "source.ts",
       path, sourceLabel: "read_file", createdOrder: 0, workspaceRoot: "/ws", canOpenExternal: false };
     const handlers = new Set<(events: DocumentObservationEvent[]) => void>();
-    const onDocumentObservation = vi.fn((handler: (events: DocumentObservationEvent[]) => void) => {
+    const onAgentObservation = vi.fn((handler: (events: DocumentObservationEvent[]) => void) => {
       handlers.add(handler);
       return () => { handlers.delete(handler); };
     });
-    const acknowledgeDocumentObservation = vi.fn(async () => ({ ok: true }));
+    // The panel's terminal strip subscribes alongside the document view while the panel is visible.
+    const terminalBinding = { targetId: TERMINAL_TARGET, sessionId: SESSION, seq: 0 };
+    const acknowledgeObservation = vi.fn(async (request: ObservationRequest) =>
+      request.action === "subscribe-terminal" ? { ok: true, observation: terminalBinding } : { ok: true });
+    const terminalSubscriptions = () => acknowledgeObservation.mock.calls.filter(([request]) => request.action === "subscribe-terminal").length;
     let reopened = false;
     const baseline = () => ({ targetId: reopened ? FRESH_TARGET : FIRST_TARGET, sessionId: SESSION, seq: 0 });
     const readDocument = vi.fn(async () => ({ ok: true as const, path, bytes: 1024,
@@ -92,7 +97,7 @@ describe("retained panel document observation", () => {
     const readFile = vi.fn(async () => ({ ok: true, path, content: reopened ? "Fresh disk value" : "Initial disk value",
       lineCount: 1, truncated: false, observation: baseline() }));
     (window as unknown as { ave: unknown }).ave = { ...namespace,
-      preview: { readDocument, readFile, onDocumentObservation, acknowledgeDocumentObservation } };
+      preview: { ...namespace.preview, readDocument, readFile, onAgentObservation, acknowledgeObservation } };
     render(<TooltipProvider><ApprovalSurfaceProvider value={approvalSurfaceStub()}>
       <RetainedPanel api={mockApi as unknown as AveApi} target={target} />
     </ApprovalSurfaceProvider></TooltipProvider>);
@@ -102,9 +107,11 @@ describe("retained panel document observation", () => {
     expect(retained).not.toBeNull();
     openPreview(route);
     await screen.findByText("Initial disk value");
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: FIRST_TARGET, sessionId: SESSION, seq: 0 }));
-    expect(handlers.size).toBe(1);
+    // One document view subscriber and one terminal strip subscriber.
+    expect(handlers.size).toBe(2);
+    expect(terminalSubscriptions()).toBe(1);
     const event = (seq: number, after: string): DocumentObservationEvent => ({ source: "document", actor: "agent", sessionId: SESSION,
       target: { id: FIRST_TARGET, path }, kind: "element", seq, ts: 1_700_000_000_000,
       element: format === "xlsx" ? { kind: "cell", sheet: "Sheet1", row: 0, column: 0 } : { kind: "line", line: 1 },
@@ -113,7 +120,8 @@ describe("retained panel document observation", () => {
     await screen.findByText("Agent overlay");
     const body = screen.getByTestId(format === "xlsx" ? "chat-side-panel-table-preview" : "chat-side-panel-file-preview");
     fireEvent.click(screen.getByTestId("chat-side-panel-close"));
-    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release", targetId: FIRST_TARGET, sessionId: SESSION, seq: 1 });
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release", targetId: FIRST_TARGET, sessionId: SESSION, seq: 1 });
+    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release", ...terminalBinding });
     expect(handlers.size).toBe(0);
     expect(retained?.isConnected).toBe(true);
     // The hidden body stays mounted (sheet, scroll and page position survive) without agent overlays.
@@ -129,10 +137,11 @@ describe("retained panel document observation", () => {
     await screen.findByText("Fresh disk value");
     expect(body.isConnected).toBe(true);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(onDocumentObservation).toHaveBeenCalledTimes(2);
-    expect(handlers.size).toBe(1);
+    expect(onAgentObservation).toHaveBeenCalledTimes(4);
+    expect(handlers.size).toBe(2);
+    expect(terminalSubscriptions()).toBe(2);
     expect(retained?.isConnected).toBe(true);
-    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+    await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: FRESH_TARGET, sessionId: SESSION, seq: 0 }));
     act(() => { handlers.forEach((handler) => handler([event(3, "Stale binding")])); });
     expect(screen.queryByText("Stale binding")).toBeNull();

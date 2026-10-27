@@ -269,6 +269,38 @@ describe("masked live output relay", () => {
     expect(all()).not.toContain("MIIE");
   });
 
+  it("redacts an unfinished private key when a command closes", () => {
+    const { sink, all } = relay();
+    sink.write("step\n-----BEGIN PRIVATE KEY-----\nunfinished-private-material");
+    sink.end();
+    expect(all()).toBe("step\n[REDACTED:PRIVATE_KEY]");
+  });
+
+  it("bounds an open private key and resumes only after its split footer", () => {
+    const delivered: string[] = [];
+    const sink = createMaskedProgressRelay((text) => delivered.push(text),
+      (text) => maskSensitiveData(text, { pii: false }).masked, { maxHeldChars: 8192 });
+    sink.write("start\n-----BEGIN PRIVATE KEY-----\n");
+    for (let index = 0; index < 100; index++) sink.write("private-material".repeat(1024));
+    sink.write("-----END PRIVATE ");
+    sink.write("KEY-----\nresumed\n");
+    sink.end();
+    expect(delivered.join("")).toBe("start\n[REDACTED:PRIVATE_KEY]\nresumed\n");
+  });
+
+  it("discards an oversized credential line without leaking a suffix and continues its tail", () => {
+    const delivered: string[] = [];
+    const sink = createMaskedProgressRelay((text) => delivered.push(text),
+      (text) => maskSensitiveData(text, { pii: false }).masked, { maxHeldChars: 8192 });
+    sink.write("Authorization: Bearer ");
+    for (let index = 0; index < 100; index++) sink.write("credential-body".repeat(1024));
+    sink.write("\nresumed\n");
+    sink.end();
+    expect(delivered.join("")).not.toContain("credential-body");
+    expect(delivered.join("")).toContain("resumed\n");
+    expect(delivered.join("").length).toBeLessThan(100);
+  });
+
   it("delivers nothing after end", () => {
     const { sink, delivered } = relay();
     sink.end();

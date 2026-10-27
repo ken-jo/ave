@@ -3611,9 +3611,60 @@ describe("subscription models in the unified chooser", () => {
     const cliDefault = t("llmTab.cliDefaultModel");
     expect(await chooserModelIds()).toEqual(expect.arrayContaining([cliDefault, "claude-sonnet-5-5"]));
     expect(chooserGroupText(cliDefault)).toMatch(/Claude/);
+    expect(screen.getAllByText("API 키가 아닌 본인의 Claude 구독으로 청구됩니다.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("설정한 본인의 API 키로 청구됩니다.").length).toBeGreaterThan(0);
 
     pickChooserOption(cliDefault);
     // No model is sent: the CLI runs its own default.
     await waitFor(() => expect(useForChat).toHaveBeenCalledWith("claude-code", null));
   });
+});
+
+describe("model chooser billing from configured route credentials", () => {
+  for (const locale of ["en", "ko"] as const) {
+    it.each([
+      ["optional key", undefined, true],
+      ["keyless preset", false, false],
+      ["keyed preset", true, true],
+    ] as const)(`discloses %s correctly in ${locale}`, async (_label, presetRequiresKey, hasKey) => {
+      const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
+      const { loadLocaleMessages } = await import("../../../../i18n/messages/index.js");
+      const previousLocale = getLocale();
+      await loadLocaleMessages(locale);
+      setLocale(locale);
+      try {
+        installSubscription([]);
+        const routePreset = {
+          ...preset("billing-fixture", "Billing fixture", CUSTOM_ENDPOINT),
+          requiresApiKey: presetRequiresKey ?? false,
+        };
+        const isPreset = presetRequiresKey !== undefined;
+        const credentialId = isPreset ? "marketplace-provider:billing-fixture" : "openai-compatible";
+        const api = makeApi({
+          hasApiKey: storedKeysFor(...(hasKey ? [credentialId] : [])),
+          listLlmModels: vi.fn().mockResolvedValue(listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, ["billing-fixture-default"])),
+          getSettings: vi.fn().mockResolvedValue(profileSettings({
+            provider: "openai-compatible",
+            vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model: "billing-fixture-default" } },
+            installedProviderPresets: isPreset ? [routePreset] : [],
+          })),
+        });
+        await renderTab(api, {
+          vendor: "openai-compatible", model: "billing-fixture-default",
+          ...(isPreset ? { marketplaceProviderPresetId: routePreset.providerId, marketplaceProviderPresets: [routePreset] } : {}),
+        });
+        await chooserModelIds();
+        const group = document.querySelector(`[data-model-provider="api:${credentialId}"]`);
+        expect(group).not.toBeNull();
+        const disclosure = group?.querySelector("[data-model-billing]");
+        if (hasKey) {
+          expect(disclosure).toHaveTextContent(locale === "en" ? "Billed to your configured API key." : "설정한 본인의 API 키로 청구됩니다.");
+        } else {
+          expect(disclosure).toBeNull();
+        }
+      } finally {
+        setLocale(previousLocale);
+      }
+    });
+  }
 });

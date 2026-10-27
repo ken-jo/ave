@@ -403,6 +403,31 @@ state changes refuse. The closed Bash launcher recipe below is a separate
 literal-evaluation form, not general wrapper delegation. An absolute path alone
 or startup-suppression flags alone supply no authority.
 
+### PowerShell static scope boundaries
+
+The PowerShell floor simulates a nested body only when it runs inline in the
+same scope. A literal `-InFile` operand of `Invoke-WebRequest` or
+`Invoke-RestMethod`, bound by any parameter prefix, returns the `visible-floor`
+upload sink when every body that encloses it is a control-statement body:
+
+- `if`, `elseif` and `else`;
+- `switch` and its clause bodies;
+- `foreach`, `for`, `while` and `do`;
+- `try`, `catch` and `finally`.
+
+Script-block bodies open a separate scope or depend on runtime, so the floor
+declines them and returns `unproven`, which still forces the modal ask:
+
+- `& {}` and `. {}`;
+- `ForEach-Object` (including `foreach` and `%` as a pipeline stage) and
+  `Where-Object` blocks;
+- any scriptblock passed as an argument or assigned as a value.
+
+A control body inside a script block is declined, because the script block
+decides. The floor never replays state from another scope: a variable operand,
+or a value assigned outside the body, is declined in every body. A sensitive
+literal still visible in the outer command keeps its own floor.
+
 ### Checked Repository Reads
 
 A direct native Git command can receive `static-complete` only through the
@@ -410,7 +435,14 @@ canonical host-tool handle above, a protected fixed-installation executable
 proof and a supported version probe. The supported version range is Git 2.x
 from 2.54 onward; an unknown version, a different major version or a PATH-derived
 installation is unproven. Fixed Git installations are registered only on macOS
-and Linux; Windows Git admission remains unproven. The original raw words,
+and Linux; Windows Git admission remains unproven. Two recipe facts must be re-proven
+before a Windows installation is registered. Git for Windows maps only an exact
+`/dev/null` file open to `nul`; `core.hooksPath=/dev/null` is a directory prefix,
+so hooks resolve to `<drive>:\dev\null\<hook>`, which a non-administrator can
+create. Windows needs a hooks value that a non-administrator cannot create. The
+version probe also accepts only the upstream `git version X.Y.Z` spelling, while
+Git for Windows reports `X.Y.Z.windows.N`; the probe must accept that format
+without accepting other suffixes. The original raw words,
 quoting and program spelling remain the rule identity. The shared executable
 verifier, Bash literal-evaluation recipe and unproven runtime recipes retain
 their existing contracts.
@@ -469,7 +501,7 @@ The forced argv/environment recipe disables optional locks,
 lazy fetching, replacement objects, pager, prompts, credentials, transport,
 tracing, hooks, filesystem monitors, external diff/text conversion and signature
 verification. It forces built-in formats and refname sorting, disables mailmap
-use explicitly and overrides diff ordering with the platform null device.
+use explicitly and overrides diff ordering with the Git null path `/dev/null`.
 The [owned argv/environment recipe](../../src/permissions/rules/git-readonly-argv.ts)
 owns the exact accepted options and forced values. Caller options cannot undo
 these controls. Command-line overrides and owned environment selectors retain
@@ -482,6 +514,12 @@ its evidence with the checked state. The bounded state records the full `.git`
 inventory, entry types, file identities and change timestamps. It also records
 the worktree root and every physical ancestor through the filesystem root,
 including their identities and change timestamps, within the 32-level bound.
+The fingerprint includes the stat-reported device, inode, mode, uid, gid, size,
+link count, mtime and ctime, plus configuration content hashes. POSIX mode
+changes are covered where the filesystem reports them. Windows evidence covers
+these reported stat fields, inventory and configuration bytes, with non-following
+reparse checks at inspection; it does not attest POSIX permissions or DACLs.
+A permission change invisible to those stat fields cannot change this digest.
 Read-access timestamps are excluded. The inspector rechecks the recorded
 evidence before returning. This provenance detects a detached, replaced or
 restored root or ancestor. Unrelated concurrent directory activity at one of

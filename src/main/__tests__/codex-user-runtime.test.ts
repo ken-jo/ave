@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CODEX_CLI_MINIMUM_VERSION } from "../../shared/codex-subscription.js";
+import { meetsMinimumCliVersion } from "../../shared/subscription-runtime.js";
 import { CODEX_DISABLED_FEATURES } from "../codex-conversation-runtime.js";
 import {
   codexExecutableCandidates,
   CodexUserRuntimeError,
   CodexUserRuntimeLocator,
-  meetsCodexMinimumVersion,
   missingCodexFeatures,
   parseCodexVersion,
   resolveCodexNativeExecutable,
@@ -240,13 +240,16 @@ describe("version gate", () => {
   });
 
   it("admits the minimum and later, and refuses earlier versions and the minimum's pre-releases", () => {
-    expect(meetsCodexMinimumVersion(CODEX_CLI_MINIMUM_VERSION)).toBe(true);
-    expect(meetsCodexMinimumVersion("0.152.1")).toBe(true);
-    expect(meetsCodexMinimumVersion("0.163.0")).toBe(true);
-    expect(meetsCodexMinimumVersion("1.0.0")).toBe(true);
-    expect(meetsCodexMinimumVersion("0.151.0")).toBe(false);
-    expect(meetsCodexMinimumVersion("0.144.6")).toBe(false);
-    expect(meetsCodexMinimumVersion("0.152.0-alpha.1")).toBe(false);
+    expect(meetsMinimumCliVersion(CODEX_CLI_MINIMUM_VERSION, CODEX_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(meetsMinimumCliVersion("0.152.1", CODEX_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(meetsMinimumCliVersion("0.163.0", CODEX_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(meetsMinimumCliVersion("1.0.0", CODEX_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(meetsMinimumCliVersion("0.151.0", CODEX_CLI_MINIMUM_VERSION)).toBe(false);
+    expect(meetsMinimumCliVersion("0.144.6", CODEX_CLI_MINIMUM_VERSION)).toBe(false);
+    expect(meetsMinimumCliVersion("0.152.0-alpha.1", CODEX_CLI_MINIMUM_VERSION)).toBe(false);
+    expect(meetsMinimumCliVersion("0.152.0+build.7", CODEX_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(meetsMinimumCliVersion("0.151.9+build.7", CODEX_CLI_MINIMUM_VERSION)).toBe(false);
+    for (const malformed of ["", "1.0", "1.0.0.0", "1.x.0", "v1.0.0"]) expect(meetsMinimumCliVersion(malformed, CODEX_CLI_MINIMUM_VERSION)).toBe(false);
   });
 });
 

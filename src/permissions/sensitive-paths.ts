@@ -524,6 +524,19 @@ export function getConfiguredSessionReadRoot(): string | undefined {
 // Membership only: callers must still apply every other sensitive-path rule.
 export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
   const root = getConfiguredSessionReadRoot();
+  return isSessionReadPathUnderRoot(canonicalPath, root);
+}
+
+// Snapshot the namespace once for one permission decision.
+export function createConfiguredSessionReadPathMatcher(): (canonicalPath: string) => boolean {
+  let snapshot: { root: string | undefined } | undefined;
+  return (canonicalPath) => {
+    snapshot ??= { root: getConfiguredSessionReadRoot() };
+    return isSessionReadPathUnderRoot(canonicalPath, snapshot.root);
+  };
+}
+
+function isSessionReadPathUnderRoot(canonicalPath: string, root: string | undefined): boolean {
   if (root === undefined) return false;
   const foldedRoot = caseFoldForMatch(root);
   const foldedPath = caseFoldForMatch(canonicalPath);

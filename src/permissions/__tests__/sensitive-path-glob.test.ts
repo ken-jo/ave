@@ -52,6 +52,14 @@ describe("deterministic sensitive path glob matching", () => {
     expect(match(`${"a/".repeat(2_000)}ordinary`)).toBe(false);
   });
 
+  it("preserves literal suffixes after repeated wildcard spans", () => {
+    const prefix = `/${"AppData/Local/a/User Data/b/".repeat(256)}`;
+    const match = compileSensitivePathGlob("**/AppData/Local/**/User Data/**/Login Data", true);
+    expect(match(prefix + "tail")).toBe(false);
+    expect(match(prefix + "Login Data")).toBe(true);
+    expect(match((prefix + "Login Data").toUpperCase().replaceAll("/", "\\"))).toBe(true);
+  });
+
   it("indexes deep paths without hashing every full prefix", () => {
     const path = `/${"AppData/Local/a/User Data/b/".repeat(256)}tail`;
     const match = createSensitivePathMatcher("write");

@@ -226,9 +226,8 @@ describe("scoped permission rules", () => {
     symlinkSync(outside, join(project, "src", "escape"), "junction");
     symlinkSync(join(directory, "absent"), join(project, "src", "dangling"), "junction");
     for (const path of ["src/escape/new.ts", "src/escape/../new.ts", "../outside/new.ts", "src/dangling/new.ts"]) {
-      // Win32 collapses `escape/..` before the junction is seen, so that write lands in src/.
-      const lexicalOnWin32 = process.platform === "win32" && path === "src/escape/../new.ts";
-      expect(evaluate(edit(path), [allow("Edit(**)")]), path).toMatchObject(lexicalOnWin32 ? { decision: "allow" } : { floor: expect.any(String) });
+      // A link followed by a parent component has ambiguous shell semantics and must stay on the floor.
+      expect(evaluate(edit(path), [allow("Edit(**)")]), path).toMatchObject({ floor: expect.any(String) });
     }
     expect(evaluate(edit(join(outside, "new.ts")), [allow("Edit(src/**)")]).decision).toBeUndefined();
     const escapedAnchor = `Edit(${join(project, "src", "escape")}/**)`;

@@ -1,10 +1,13 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, win32 } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertCodexExecutableLocation, assertCodexLocations } from "../../main/codex-executable-location.js";
-import { fixtureAclHost, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "./native-executable.js";
+import { codexExecutableArtifactFixture, fakeFixtureAclTransport, fixtureAclHost, maskFixtureAncestorAclTransport, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "./native-executable.js";
+import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { cleanupTmpDir } from "./tmp-dir-teardown.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("./native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
@@ -15,11 +18,12 @@ const icacls = (...args: string[]): void => {
 };
 
 const roots: { path: string; granted: boolean }[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const root of roots.splice(0)) {
     if (root.granted) icacls(root.path, "/remove:g", AUTHENTICATED_USERS);
-    rmSync(root.path, { recursive: true, force: true });
+    await cleanupTmpDir(root.path);
   }
+  vi.restoreAllMocks();
 });
 
 function fixture(grant = false): string {
@@ -29,6 +33,31 @@ function fixture(grant = false): string {
   if (grant) icacls(root, "/grant", `${AUTHENTICATED_USERS}:(M)`);
   return writeNativeExecutable(join(root, "bin", "codex.exe"));
 }
+
+it("composes packaged resources before fixture access-rule transports query the operating system", () => {
+  const previousHost = fixtureAclHost.current;
+  for (const createTransport of [() => fakeFixtureAclTransport(execFile), () => maskFixtureAncestorAclTransport(spawn)]) {
+    configureHostResources({ resourcePath: join(tmpdir(), "uncomposed-fixture"), isPackaged: false });
+    const transport = createTransport();
+    expect(getHostResources()).toEqual({ resourcePath: resolve("resources"), isPackaged: false });
+    transport.discard();
+  }
+  fixtureAclHost.current = previousHost;
+});
+
+it("composes the resource instance used by dynamically imported artifact helpers after a module reset", { timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs }, async () => {
+  vi.resetModules();
+  const resources = await import("../../main/host-resources.js");
+  expect(() => resources.getHostResources()).toThrow("host-resources-unavailable");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-artifact-module-generation-")));
+  roots.push({ path: root, granted: false });
+  normalizeFixtureAncestorPermissions(root);
+  const artifact = await codexExecutableArtifactFixture(root);
+  expect(resources.getHostResources()).toEqual({ resourcePath: resolve("resources"), isPackaged: false });
+  expect(artifact.executable.startsWith(root)).toBe(true);
+  const location = await import("../../main/codex-executable-location.js");
+  location._resetWindowsAclHostForTest();
+});
 
 describe.skipIf(process.platform !== "win32")("Windows fixture ancestor ACL masking", () => {
   it("admits a clean fixture once only its shared ancestors read as owner-only", async () => {

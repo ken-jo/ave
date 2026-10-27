@@ -46,12 +46,17 @@ const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 export function createMaskedProgressRelay(
   deliver: (text: string) => void,
   mask: (text: string) => string,
+  options: { maxHeldChars?: number } = {},
 ): ToolOutputProgressSink {
+  if (options.maxHeldChars !== undefined && (!Number.isSafeInteger(options.maxHeldChars)
+    || options.maxHeldChars < MASKED_RELAY_HELD_LIMIT_CHARS)) throw new Error("Invalid masked output limit.");
   let held = "";
   /** Raw text already delivered since the last line break: the context of what follows on its line. */
   let lineContext = "";
   let ended = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let discarding: "line" | "private-key" | undefined;
+  let discardedTail = "";
 
   // Mask continuations with delivered line context; if its masked prefix changes, mask new text independently because shown bytes cannot retract.
   const maskOnLine = (text: string): string => {
@@ -127,9 +132,33 @@ export function createMaskedProgressRelay(
   return {
     write(text) {
       if (ended || text.length === 0) return;
+      if (discarding === "private-key") {
+        const combined = discardedTail + text;
+        const end = PRIVATE_KEY_END.exec(combined);
+        if (!end) { discardedTail = combined.slice(-128); return; }
+        text = combined.slice(end.index + end[0].length);
+        discarding = undefined;
+        discardedTail = "";
+      } else if (discarding === "line") {
+        const end = text.search(/[\r\n]/);
+        if (end === -1) return;
+        text = text.slice(end + 1);
+        discarding = undefined;
+      }
+      // Limit each append as well as retained state; a single pipe chunk can be arbitrarily large.
+      if (options.maxHeldChars !== undefined && text.length > options.maxHeldChars) {
+        for (let at = 0; at < text.length; at += options.maxHeldChars) this.write(text.slice(at, at + options.maxHeldChars));
+        return;
+      }
       held += text;
       release();
       clearIdle();
+      if (options.maxHeldChars !== undefined && held.length > options.maxHeldChars) {
+        discarding = openPrivateKeyStart() === -1 ? "line" : "private-key";
+        deliver(discarding === "private-key" ? "[REDACTED:PRIVATE_KEY]" : "[REDACTED:OUTPUT_LIMIT]");
+        held = "";
+        lineContext = "";
+      }
       if (held.length > 0) {
         idleTimer = setTimeout(releaseIdle, MASKED_RELAY_IDLE_MS);
         idleTimer.unref?.();
@@ -139,10 +168,14 @@ export function createMaskedProgressRelay(
       if (ended) return;
       ended = true;
       clearIdle();
-      const rest = held;
+      const keyStart = openPrivateKeyStart();
+      const rest = keyStart === -1 ? held : held.slice(0, keyStart);
       held = "";
       if (rest.length > 0) deliver(maskOnLine(rest));
+      if (keyStart !== -1) deliver("[REDACTED:PRIVATE_KEY]");
       lineContext = "";
+      discardedTail = "";
+      discarding = undefined;
     },
   };
 }

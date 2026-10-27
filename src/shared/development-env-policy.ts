@@ -37,6 +37,10 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_SERVICE_BASE_URL", lifecycle: "active", packaged: "scrub" },
   // The interpreter CI provisioned for the cross-language smoke's harness (§9.7 P5).
   { name: "AVE_SMOKE_PYTHON", lifecycle: "active", packaged: "scrub" },
+  // Official Claude Code release artifacts CI pins for the real publisher-verifier tests; the flag turns a missing fixture into a failure.
+  { name: "AVE_CLAUDE_CODE_RELEASE_BINARY", lifecycle: "active", packaged: "scrub" },
+  { name: "AVE_CLAUDE_CODE_RELEASE_METADATA", lifecycle: "active", packaged: "scrub" },
+  { name: "AVE_REQUIRE_PUBLISHER_FIXTURES", lifecycle: "active", packaged: "scrub" },
   // Explicit local test opt-out; ignored when CI is detected.
   { name: "AVE_SKIP_NATIVE_SANDBOX_TESTS", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_TEST_NODE_EXEC_PATH", lifecycle: "active", packaged: "scrub" },

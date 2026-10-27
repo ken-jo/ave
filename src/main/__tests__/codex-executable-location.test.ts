@@ -22,6 +22,7 @@ import {
   _resetWindowsAclHostForTest,
 } from "../codex-executable-location.js";
 import { getManagedChildProcessCount } from "../managed-child-processes.js";
+import * as pathKindLauncher from "../windows-path-kind-launcher.js";
 import {
   WINDOWS_ACL_HOST_IDLE_MS,
   WindowsAclHostError,
@@ -143,6 +144,24 @@ describe.skipIf(HOST === "win32")("executable location admission", () => {
     const fixture = posixFixture();
     chmodSync(fixture.root, mode);
     await expect(assertCodexExecutableLocation(fixture.executable)).rejects.toThrow("writable by another account");
+  });
+
+  it("limits an explicit group-write exception to native source directories", async () => {
+    const fixture = posixFixture();
+    chmodSync(fixture.root, 0o775);
+    const trust = { groupWritableSourceDirectories: new Set([fixture.root, fixture.executable]) };
+    await expect(assertCodexExecutableLocation(fixture.executable, "native", trust)).resolves.toBeUndefined();
+    await expect(assertCodexExecutableLocation(fixture.executable, "native")).rejects.toThrow("writable by another account");
+    await expect(assertCodexExecutableLocation(fixture.executable, "script", trust)).rejects.toThrow("writable by another account");
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.root, "native", trust)).rejects.toThrow("writable by another account");
+    chmodSync(fixture.executable, 0o775);
+    await expect(assertCodexExecutableLocation(fixture.executable, "native", trust)).rejects.toThrow("writable by another account");
+    chmodSync(fixture.executable, 0o755);
+    chmodSync(fixture.root, 0o777);
+    await expect(assertCodexExecutableLocation(fixture.executable, "native", trust)).rejects.toThrow("writable by another account");
+    chmodSync(fixture.root, 0o775);
+    fixture.metadata.set(fixture.root, { uid: (process.getuid?.() ?? 0) + 1 });
+    await expect(assertCodexExecutableLocation(fixture.executable, "native", trust)).rejects.toThrow("untrusted owner");
   });
 
   it("admits a sticky root-owned ancestor while rejecting a writable regular file", async () => {
@@ -432,6 +451,7 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
     platform: { value: "win32" },
     env: { value: { NODE_ENV: "test", TEMP: process.env.TEMP, TMP: process.env.TMP, SystemRoot: String.raw`C:\Windows` } },
   }));
+  vi.spyOn(pathKindLauncher, "queryWindowsSystemDirectory").mockResolvedValue(String.raw`C:\Windows\System32`);
   const links = new Map<string, string>();
   vi.spyOn(fs, "lstat").mockImplementation(async (path) => pathStats(links.has(String(path))
     ? "link"
@@ -922,7 +942,8 @@ describe("native access-rule admission", () => {
     "C:\\" + "Managed images\\".repeat(33) + "Windows".padStart(14, "W"),
   ])("reserves command-line headroom with system root %s", async (systemRoot) => {
     const fixture = windowsFixture();
-    process.env.SystemRoot = systemRoot;
+    process.env.SystemRoot = String.raw`Z:\untrusted-root`;
+    vi.mocked(pathKindLauncher.queryWindowsSystemDirectory).mockResolvedValue(`${systemRoot}\\System32`);
     await assertCodexExecutableLocation(fixture.candidate);
     const [, { command, args }] = aclRequest.mock.calls[0]!;
     expect(command).toBe(`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
@@ -933,6 +954,17 @@ describe("native access-rule admission", () => {
     // The only variable command-line input is the system root. Request paths and principals stay in stdin.
     await assertCodexExecutableLocation("C:\\Tools\\" + "x".repeat(240) + ".exe", "native");
     expect(aclRequest.mock.calls[1]![1].args).toEqual(args);
+  });
+
+  it("never launches an environment-selected ACL host when the OS directory query fails", async () => {
+    const fixture = windowsFixture();
+    process.env.SystemRoot = String.raw`Z:\untrusted-root`;
+    process.env.WINDIR = String.raw`Y:\untrusted-root`;
+    vi.mocked(pathKindLauncher.queryWindowsSystemDirectory).mockRejectedValue(new Error("OS directory unavailable"));
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native")).rejects.toThrow("OS directory unavailable");
+    expect(aclRequest).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   it("uses one absolute system command with bounded execution and path data outside its code", async () => {

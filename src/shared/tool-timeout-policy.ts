@@ -36,6 +36,15 @@ export const TOOL_TIMEOUT_POLICY = {
   imagePreparationMs: 30_000,
   // A panel request must be acknowledged by its originating visible renderer.
   documentPanelAckMs: 10_000,
+  // Optional document engine download, provenance checks and bounded native conversion.
+  documentEngineInstallMs: 900_000,
+  documentEngineVerificationMs: 120_000,
+  documentEngineDownloadStallMs: 30_000,
+  documentEngineStartupMs: 30_000,
+  documentEngineConversionMs: 60_000,
+  documentEngineShutdownMs: 10_000,
+  // A forwarding client exits after the resident prints its receipt; this bounds delivery of that already-written line.
+  documentEngineReceiptMs: 2_000,
   // terminal_run wait expiry returns a running block without stopping the command; keep the wait below executor ceiling and expose whole seconds.
   terminalRunWaitDefaultMs: 15_000,
   terminalRunWaitMaxMs: 100_000,

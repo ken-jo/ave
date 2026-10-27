@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
@@ -17,6 +17,10 @@ import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
+
+// Startup pinning is a host fact; cover both states instead of inheriting it (win32 is never pinned).
+const startup = vi.hoisted(() => ({ pinned: true }));
+vi.mock("../../shared/powershell-startup-policy.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => startup.pinned }));
 
 const CWD = "/work/project";
 const DIALECTS = ["bash", "powershell"] as const;
@@ -350,6 +354,14 @@ describe("shared runner decisions", () => {
     { command: "custom-helper --future value", expected: "floor" as const },
   ])("keeps the independently declared nonrunner result: $command", ({ command, expected }) => {
     for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), expected);
+  });
+
+  it.each(["echo ready", "env curl -q http://e"])("asks per call for PowerShell only while startup is not pinned: %s", (command) => {
+    startup.pinned = false;
+    try {
+      expectBucket(checkCommand(runnerManager(), "powershell", command), "floor");
+      expectBucket(checkCommand(runnerManager(), "bash", command), "normal");
+    } finally { startup.pinned = true; }
   });
 
   it.each([

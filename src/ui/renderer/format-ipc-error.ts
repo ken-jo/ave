@@ -164,6 +164,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "codex-login-failed": "formatIpcError.codexLoginFailed",
   "subscription-operation-failed": "formatIpcError.subscriptionChatUnavailable",
   "subscription-chat-unavailable": "formatIpcError.subscriptionChatUnavailable",
+  "subscription-runtime-native-required": "formatIpcError.subscriptionRuntimeNativeRequired",
+  "subscription-runtime-unauthenticated": "formatIpcError.subscriptionRuntimeUnauthenticated",
+  "subscription-runtime-release-metadata-unavailable": "formatIpcError.subscriptionRuntimeReleaseMetadataUnavailable",
+  "subscription-model-not-supported": "formatIpcError.subscriptionModelNotSupported",
   "subscription-logout-not-supported": "formatIpcError.subscriptionLogoutNotSupported",
   "subscription-provider-not-supported": "formatIpcError.subscriptionProviderNotSupported",
 
@@ -311,6 +315,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-entry-url": "formatIpcError.invalidEntryUrl",
   "entry-url-outside-install-root": "formatIpcError.entryUrlOutsideInstallRoot",
   "install-failed": "formatIpcError.installFailed",
+  "unsupported-platform": "documentEngine.unsupported",
   "uninstall-failed": "formatIpcError.uninstallFailed",
   // Uninstall refusals from the `ave://` deep link (#1967). Both used to be
   // broadcast as English sentences with no `message` half, so the toast fell

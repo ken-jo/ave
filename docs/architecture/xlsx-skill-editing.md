@@ -71,13 +71,13 @@ writer evidence. Unverified changes do not become agent content events; the
 read-only viewer remains available for an explicit reload.
 
 The replaceable document engine parses admitted workbook bytes through the existing
-bounded table-reader child. The same document adapter handles verified native
-text saves with bounded UTF-8 decoding and per-line diffs; this does not change
-the workbook journal's cell-only format. Engine absence yields
-`engine-unavailable` and leaves the existing viewer usable. Parse, integrity and contract failures remain explicit
-errors. Downloading a conversion engine, managing a warm per-session converter,
-and browser/terminal adapters belong to later work; this contract adds none of
-them.
+bounded table-reader child. The optional [conversion engine](document-observation-engine.md)
+first recalculates a private copy when installed. An absent installation retains
+the cached-value reader and recalculation signal; integrity, confinement, parse
+and contract failures remain explicit errors. The same document adapter handles
+verified native text and structured page-document saves without changing the
+workbook journal's cell-only format. Browser and terminal adapters remain outside
+this contract.
 
 Preview reads, observation acknowledgements and event delivery require a live
 registered app-window main frame in the default session. The host rechecks that
@@ -103,8 +103,8 @@ The current changed cell has an outline and Ave tag; earlier changes retain a
 faint tint. The footer owns sheet dimensions, the recalculation badge and
 truncation notices. Observation errors and resynchronization occupy the strip,
 and idle user-only previews show no live status. File/code previews share this
-presentation for native line changes; page previews share the header/footer
-without synthetic live events.
+presentation for native line changes; page previews show structured element
+changes only after the same verified-save attribution.
 
 ## Edit journal
 
@@ -219,13 +219,17 @@ for other formats. Any true `fullCalcOnLoad`/`forceFullCalc` or explicit false
 `calcCompleted` shows the localized **재계산 필요 / Needs recalculation** badge.
 This is a conservative request signal, not proof that every cached value is
 wrong. Standard in-file attributes travel with a renamed, copied or transferred
-document and can be cleared by a recalculating application. No formula engine is
-bundled.
+document and can be cleared by a recalculating application. The optional engine
+is downloaded separately from the app package.
 
 The workbook requests automatic full recalculation on next open by a compatible
-spreadsheet application. Until recalculation and save, the viewer can display old
-dependent caches and empty new-formula results. A reconciled agent save refreshes
-the badge from the saved file. The ko/en keys live in the actual `chatPreviewRail`
+spreadsheet application. Without the optional engine, the viewer can display old
+dependent caches and empty new-formula results. When the engine is installed,
+recalculation produces a temporary workbook whose bounded parsed values replace
+those caches in the panel. Success clears the panel's recalculation signal only
+for that recalculated result; the source workbook and its calculation attributes
+remain unchanged. A conversion error is visible and does not silently display
+old caches as recalculated. The ko/en keys live in the actual `chatPreviewRail`
 message fragment.
 
 ## Native validation

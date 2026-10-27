@@ -5,8 +5,8 @@ export { windowsPolicyTrustFailure, type WindowsPolicyDescriptor } from "./windo
 
 export class WindowsPolicyReadError extends Error {
   readonly code: string;
-  constructor(path: string, cause: string, code = "untrusted-policy") {
-    super(`untrusted policy file at ${path} (${cause})`);
+  constructor(path: string, reason: string, code = "untrusted-policy", options?: ErrorOptions) {
+    super(`untrusted policy file at ${path} (${reason})`, options);
     this.name = "WindowsPolicyReadError";
     this.code = code;
   }
@@ -24,6 +24,6 @@ export async function readWindowsAdminPolicy(path: string): Promise<Buffer> {
     return Buffer.from(row.contentHex, "hex");
   } catch (error) {
     if (error instanceof WindowsPolicyReadError) throw error;
-    throw new WindowsPolicyReadError(path, "Policy snapshot could not be read");
+    throw new WindowsPolicyReadError(path, "Policy snapshot could not be read", "untrusted-policy", { cause: error });
   }
 }

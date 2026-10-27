@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolExecutionContext } from "../../tools/types.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
@@ -46,9 +48,47 @@ beforeEach(() => {
     getAppWindows: () => state.registered ? [appWindow] : [],
   } as never);
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("document panel opening", () => {
+  it("prepares the engine before starting the unchanged rendered acknowledgement deadline", async () => {
+    let finish!: () => void;
+    const preparation = new Promise<void>((resolve) => { finish = resolve; });
+    const release = vi.fn();
+    const prepare = vi.spyOn(observations, "acquireDocumentEnginePreparation").mockReturnValueOnce({ ready: preparation, release });
+    const result = openDocumentForSession("/workspace/book.xlsx", context());
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.documentPanelAckMs + 1);
+    expect(sender.send).not.toHaveBeenCalled();
+    finish();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(prepare).toHaveBeenCalledWith("session-one", "/workspace/book.xlsx", expect.any(AbortSignal));
+    expect(await acknowledge({ ...request(), opened: true })).toEqual({ ok: true });
+    expect((await result).isError).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("does not dispatch a panel after cancellation during engine preparation", async () => {
+    let finish!: () => void;
+    const preparation = new Promise<void>((resolve) => { finish = resolve; });
+    const release = vi.fn();
+    vi.spyOn(observations, "acquireDocumentEnginePreparation").mockReturnValueOnce({ ready: preparation, release });
+    const controller = new AbortController();
+    const result = openDocumentForSession("/workspace/book.xlsx", { ...context(), abortSignal: controller.signal });
+    controller.abort();
+    finish();
+    expect((await result).isError).toBe(true);
+    expect(sender.send).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+  it("releases a failed engine preparation without dispatching a panel", async () => {
+    const failure = new Error("Engine readiness failed.");
+    const release = vi.fn();
+    vi.spyOn(observations, "acquireDocumentEnginePreparation").mockReturnValueOnce({ ready: Promise.reject(failure), release });
+    await expect(openDocumentForSession("/workspace/book.xlsx", context())).rejects.toBe(failure);
+    expect(sender.send).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
   it("waits for the host-verified rendered baseline before completing an agent table open", async () => {
     let rendered!: (ready: boolean) => void;
     const baselineReady = new Promise<boolean>((resolve) => { rendered = resolve; });
@@ -106,8 +146,14 @@ describe("document panel opening", () => {
   });
   it("returns a file link without sending a panel request in link mode", async () => {
     state.mode = "link";
-    const result = await openDocumentForSession("/workspace/a b.xlsx", context());
-    expect(JSON.parse(result.output)).toMatchObject({ mode: "link", opened: false, fileLink: "file:///workspace/a%20b.xlsx" });
+    // The file tool passes a canonical absolute path, which carries a drive on Windows.
+    const document = resolve("/workspace/a b.xlsx");
+    const output = JSON.parse((await openDocumentForSession(document, context())).output);
+    expect(output).toMatchObject({ mode: "link", opened: false, path: document });
+    expect(output.fileLink).toMatch(process.platform === "win32"
+      ? /^file:\/\/\/[A-Za-z]:\/workspace\/a%20b\.xlsx$/
+      : /^file:\/\/\/workspace\/a%20b\.xlsx$/);
+    expect(fileURLToPath(output.fileLink)).toBe(document);
     expect(sender.send).not.toHaveBeenCalled();
   });
   it("refuses an expired acknowledgement even before the overdue timer runs", async () => {

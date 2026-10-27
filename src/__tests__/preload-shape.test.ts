@@ -151,6 +151,12 @@ describe("preload contextBridge world shape lock", () => {
             "redeemDrop",
             "saveClipboardImage",
           ],
+          "documentEngine": [
+            "cancel",
+            "install",
+            "status",
+            "uninstall",
+          ],
           "env": [
             "debugStream",
             "enableDevConsole",
@@ -227,12 +233,14 @@ describe("preload contextBridge world shape lock", () => {
             "set",
           ],
           "preview": [
-            "acknowledgeDocumentObservation",
             "acknowledgeDocumentOpen",
-            "onDocumentObservation",
+            "acknowledgeObservation",
+            "onAgentObservation",
             "onDocumentOpen",
+            "onObservationPreview",
             "readDocument",
             "readFile",
+            "requestObservationPreview",
           ],
           "ui": [
             "onDynamicMenuAction",
@@ -378,6 +386,12 @@ describe("preload contextBridge world shape lock", () => {
           "dismissWorkProposal": "function",
           "dlp": [
             "getStats",
+          ],
+          "documentEngine": [
+            "cancel",
+            "install",
+            "status",
+            "uninstall",
           ],
           "downloadAppUpdate": "function",
           "e2ePluginBundleSnapshot": "function",

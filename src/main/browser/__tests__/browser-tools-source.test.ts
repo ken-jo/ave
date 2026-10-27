@@ -41,6 +41,8 @@ const ALLOWED_CDP_METHODS = new Set([
   "Page.getLayoutMetrics",
   "Page.frameNavigated",
   "Page.frameDetached",
+  "Page.frameRequestedNavigation",
+  "Page.frameStartedNavigating",
   "DOM.documentUpdated",
 ]);
 

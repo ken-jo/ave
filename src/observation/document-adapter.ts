@@ -15,10 +15,9 @@ import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { MAX_TEXT_FILE_BYTES } from "../tools/file-read-core.js";
 import type { DocumentEditJournalRecord } from "../shared/document-edit-journal.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
-import { readDocumentResponse } from "../tools/preview-document-protocol.js";
 import { ObservationDaemon } from "./daemon.js";
 import { DocumentJournalReader } from "./journal-reader.js";
-import { readObservedTextDocument } from "./text-document.js";
+import { observedSelectionIndex, readObservedDocument } from "./observed-document.js";
 
 export interface DocumentViewRegistration {
   id: string;
@@ -391,7 +390,7 @@ export class DocumentObservationAdapter {
       const address = cellAddress(record.cell);
       for (const id of edit.views) {
         const view = this.views.get(id);
-        if (!view || !this.current(view) || view.blocked || view.renderedDocument.format === "text"
+        if (!view || !this.current(view) || view.blocked || !("sheet" in view.renderedDocument)
           || view.renderedDocument.sheet.name !== record.sheet) continue;
         this.daemon.publish(id, { kind: "element", element: { kind: "cell", sheet: record.sheet, ...address },
           before: record.before, after: record.after, advisory: true });
@@ -445,12 +444,8 @@ export class DocumentObservationAdapter {
       try {
         const baseline = view.renderedDocument;
         const parsed = await this.engine!.parse(settled.bytes,
-          baseline.format, baseline.format === "text" ? 0 : baseline.sheet.index, signal);
-        document = baseline.format === "text" ? readObservedTextDocument(parsed) : readDocumentResponse(parsed);
-        if (document.format !== baseline.format || (document.format !== "text" && baseline.format !== "text"
-          && document.sheet.index !== baseline.sheet.index)) {
-          throw new Error("Observation engine returned a different document selection.");
-        }
+          baseline.format, observedSelectionIndex(baseline), signal, { sessionId: view.registration.sessionId });
+        document = readObservedDocument(parsed, baseline);
         break;
       } catch (error) {
         signal.throwIfAborted();
@@ -497,7 +492,22 @@ export class DocumentObservationAdapter {
       }
       return;
     }
-    if (view.renderedDocument.format === "text" || after.format === "text") throw new Error("Observation document kind changed.");
+    if ("page" in view.renderedDocument && "page" in after) {
+      const keyOf = (element: NonNullable<typeof after.elements>[number]["element"]): string =>
+        element.kind === "paragraph" ? `paragraph:${element.paragraph}:${element.run ?? ""}` : `shape:${element.slide}:${element.shapeId}`;
+      const before = new Map((view.renderedDocument.elements ?? []).map((item) => [keyOf(item.element), item]));
+      const next = new Map((after.elements ?? []).map((item) => [keyOf(item.element), item]));
+      for (const key of new Set([...before.keys(), ...next.keys()])) {
+        const previous = before.get(key);
+        const current = next.get(key);
+        if (previous?.text === current?.text) continue;
+        this.daemon.publish(view.registration.id, { kind: "element", element: (current ?? previous)!.element,
+          before: (previous?.text ?? "").slice(0, OBSERVATION_LIMITS.maxValueChars),
+          after: (current?.text ?? "").slice(0, OBSERVATION_LIMITS.maxValueChars), advisory: false });
+      }
+      return;
+    }
+    if (!("sheet" in view.renderedDocument) || !("sheet" in after)) throw new Error("Observation document kind changed.");
     const before = view.renderedDocument.sheet;
     const sheet = after.sheet;
     const emit = (row: number, column: number, previous: string, next: string): void => {

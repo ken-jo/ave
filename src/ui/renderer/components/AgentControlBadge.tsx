@@ -29,14 +29,15 @@ export function AgentControlBadge({ mode, onPause, onResume }: {
   };
   return (
     <div
-      className="flex shrink-0 items-center gap-2 border-b border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-1.5 text-[11px]"
+      className="flex min-w-0 flex-1 items-center gap-1 text-[11px]"
       role="status"
       data-testid="agent-browser-control-badge"
       title={t(paused ? "agentBrowser.pausedHint" : "agentBrowser.controllingHint")}
     >
       <Bot className="h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate font-medium">{t(paused ? "agentBrowser.paused" : "agentBrowser.controlling")}</span>
-      {failed && <span role="alert">{t("agentBrowser.controlFailed")}</span>}
+      {failed && <span role="alert" title={t("agentBrowser.controlFailed")}
+        className="min-w-0 truncate text-destructive">{t("agentBrowser.controlFailed")}</span>}
       <Button
         type="button"
         size="sm"

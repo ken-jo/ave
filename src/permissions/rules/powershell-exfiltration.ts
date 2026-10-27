@@ -19,12 +19,55 @@ import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
 
 class SharedPowerShellContext extends PowerShellAnalysisContext {
-  readonly floor = new ShellFloorContext();
+  readonly floor = new ShellFloorContext("powershell");
 }
 
 function sharedWork(context: PowerShellAnalysisContext): ShellFloorContext {
   if (!(context instanceof SharedPowerShellContext)) throw new Error("Missing shell analysis context");
   return context.floor;
+}
+
+const VISIBLE_SENDER = /\s*(?:[\w.]+\\)?(?:iwr|irm|invoke-webrequest|invoke-restmethod)(?=\s)/iy;
+
+// A sender at a statement or pipeline-stage start of the direct program, optionally module-qualified. Text in quotes or
+// nested bodies is not simulated here; inspectParsed binds a nested body's literal -InFile operand.
+function directVisibleSender(visible: string): boolean {
+  let depth = 0, quote: string | null = null, start = true;
+  for (let index = 0; index < visible.length; index += 1) {
+    const char = visible[index]!;
+    if (quote !== null) {
+      if (char === "`" && quote === '"') index += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (start && depth === 0) {
+      VISIBLE_SENDER.lastIndex = index;
+      if (VISIBLE_SENDER.test(visible)) return true;
+    }
+    start = false;
+    if (char === "`") index += 1;
+    else if (char === "'" || char === '"') quote = char;
+    else if (char === "{" || char === "(") depth += 1;
+    else if (char === "}" || char === ")") depth = Math.max(0, depth - 1);
+    else if (char === ";" || char === "|" || char === "\n" || char === "\r") start = true;
+  }
+  return false;
+}
+
+// Publish visible upload evidence before syntax or structural refusal can discard a frame.
+// This adds a floor only; it never proves a computed command's launch identity.
+function retainVisibleUpload(command: string, context: PowerShellAnalysisContext): void {
+  const visible = normalizeDashes(command.slice(0, POWERSHELL_ANALYSIS_LIMITS.inputChars));
+  let sender = directVisibleSender(visible);
+  // Literal fragments can identify a sender for a floor without proving its launch.
+  for (const expression of visible.matchAll(/&\s*\((\s*(?:'[^']*'|"[^"$`]*")\s*(?:\+\s*(?:'[^']*'|"[^"$`]*")\s*)*)\)/g)) {
+    const name = [...expression[1]!.matchAll(/'([^']*)'|"([^"$`]*)"/g)].map(part => part[1] ?? part[2]).join("");
+    sender ||= HTTP_CMDLETS.has(canonicalName(name));
+  }
+  // PowerShell binds any prefix of -InFile on these cmdlets (common -Information* lose), even -I.
+  if (sender && /(?:^|[\s"'])-i(?:n(?:f(?:i(?:le?)?)?)?)?(?::|\s)/i.test(visible) && /https?:\/\//i.test(visible)) {
+    sharedWork(context).retained.exfiltration ??= "PowerShell upload of a file (visible -InFile)";
+  }
 }
 
 // Lexer
@@ -471,6 +514,8 @@ interface StaticStage {
 
 interface StaticProgram {
   stages: StaticStage[];
+  /** An HTTP upload in a nested body; its stage is not part of the direct program. */
+  nestedUpload: string | null;
   dynamic: boolean;
   literalEvaluation: StaticStage | null;
   encodedReason: string | null;
@@ -489,10 +534,14 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
   // They remain visible to the lexer, but never supply positive argv proof.
   let dynamic = analysis.facts.get("unproven-comment") === true;
   let maximumDepth = 1;
-  const pending: { pipeline: PsPipeline; depth: number; direct: boolean; pipelineId: number }[] = [];
-  for (let index = pipelines.length - 1; index >= 0; index -= 1) pending.push({ pipeline: pipelines[index]!, depth: 1, direct: true, pipelineId: index });
+  let nestedUpload: string | null = null;
+  // `inline`: every enclosing body is a control-statement body; `switchBody`: the pipelines are switch clauses.
+  const pending: { pipeline: PsPipeline; depth: number; direct: boolean; inline: boolean; switchBody: boolean; pipelineId: number }[] = [];
+  for (let index = pipelines.length - 1; index >= 0; index -= 1) {
+    pending.push({ pipeline: pipelines[index]!, depth: 1, direct: true, inline: true, switchBody: false, pipelineId: index });
+  }
   while (pending.length > 0) {
-    const { pipeline, depth, direct, pipelineId } = pending.pop()!;
+    const { pipeline, depth, direct, inline, switchBody, pipelineId } = pending.pop()!;
     maximumDepth = Math.max(maximumDepth, depth);
     analysis.visits.staticNodes += 1;
     if (pipeline.assign.length > 0 || pipeline.compound || pipeline.key !== undefined || pipeline.container !== undefined) dynamic = true;
@@ -503,22 +552,32 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
       analysis.visits.staticTokens += command.tokens.length;
       const argv = command.tokens.map(literalWordValue);
       analysis.visits.staticArguments += Math.max(0, argv.length - 1);
+      const statement = stageIndex === 0 ? controlStatement(command, switchBody) : undefined;
       for (const token of command.tokens) {
         // Nested/group spans include descendant source; charge only work actually
         // performed here so the counter cannot double-count overlapping ranges.
         analysis.visits.staticChars += token.kind === "word" && token.nested.length === 0 ? token.raw.length : 1;
         if (token.kind === "group") {
           dynamic = true;
-          for (let index = token.body.length - 1; index >= 0; index -= 1) pending.push({ pipeline: token.body[index]!, depth: depth + 1, direct: false, pipelineId });
+          const body = statement !== undefined && token.open === "{";
+          for (let index = token.body.length - 1; index >= 0; index -= 1) {
+            pending.push({ pipeline: token.body[index]!, depth: depth + 1, direct: false, inline: inline && body,
+              switchBody: body && statement === "switch", pipelineId });
+          }
         } else if (token.nested.length > 0) {
           dynamic = true;
           for (let bodyIndex = token.nested.length - 1; bodyIndex >= 0; bodyIndex -= 1) {
             const body = token.nested[bodyIndex]!;
-            for (let index = body.length - 1; index >= 0; index -= 1) pending.push({ pipeline: body[index]!, depth: depth + 1, direct: false, pipelineId });
+            for (let index = body.length - 1; index >= 0; index -= 1) {
+              pending.push({ pipeline: body[index]!, depth: depth + 1, direct: false, inline: false, switchBody: false, pipelineId });
+            }
           }
         }
       }
       if (argv.some((value) => value === undefined) || argv.length === 0) dynamic = true;
+      if (!direct && inline && argv[0] !== undefined && HTTP_CMDLETS.has(canonicalName(argv[0])) && inFileValue(argv) !== undefined) {
+        nestedUpload ??= `PowerShell upload sink (${canonicalName(argv[0])} -InFile)`;
+      }
       if (direct && argv.length > 0) {
         if (ruleArgv(command) === null) dynamic = true;
         const raw = command.tokens.map((token) => token.raw);
@@ -536,7 +595,20 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
   if (literalEvaluation !== null) dynamic = true;
   if (stages.length > 1 && stages.some((stage) => stage.proof.kind === "static-complete" && stage.proof.changesState)) dynamic = true;
   const encodedReason = encodedPowerShellExecutionReason(stages.flatMap((stage) => stage.argv), stages.flatMap((stage) => stage.raw));
-  return { stages, dynamic, literalEvaluation, encodedReason };
+  return { stages, nestedUpload, dynamic, literalEvaluation, encodedReason };
+}
+
+// Control statements run their `{}` bodies inline in the same scope. Script blocks (`& {}`, `. {}`, ForEach-Object and
+// Where-Object blocks, any scriptblock argument or value) open a scope or depend on runtime, so their bodies are declined.
+const CONTROL_KEYWORDS = new Set(["if", "elseif", "else", "switch", "foreach", "for", "while", "do", "until", "try", "catch", "finally"]);
+
+/** The control keyword heading this statement, `"clause"` for a switch clause, or undefined for any other command. */
+function controlStatement(command: PsCommand, switchBody: boolean): string | undefined {
+  if (switchBody) return "clause";
+  const head = command.tokens[0];
+  if (head?.kind !== "word" || head.quoted || head.nested.length > 0) return undefined;
+  const keyword = head.text.toLowerCase();
+  return CONTROL_KEYWORDS.has(keyword) ? keyword : undefined;
 }
 
 function parameterValue(argv: readonly (string | undefined)[], name: string): string | undefined {
@@ -549,6 +621,18 @@ function parameterValue(argv: readonly (string | undefined)[], name: string): st
       const inline = argv[index]!.slice(argv[index]!.indexOf(":") + 1);
       return inline.length > 0 ? inline : argv[index + 1];
     }
+  }
+  return undefined;
+}
+
+// Invoke-WebRequest/Invoke-RestMethod bind every prefix of -InFile (-I through -InFile); ambiguity fails closed.
+const IN_FILE_PREFIX = /^-i(?:n(?:f(?:i(?:le?)?)?)?)?(?::|$)/;
+function inFileValue(argv: readonly (string | undefined)[]): string | undefined {
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === undefined || !IN_FILE_PREFIX.test(optionName(token))) continue;
+    const separator = token.indexOf(":");
+    return separator >= 0 && separator + 1 < token.length ? token.slice(separator + 1) : argv[index + 1];
   }
   return undefined;
 }
@@ -603,7 +687,7 @@ function visiblePowerShellExfiltration(stage: StaticStage, fedByPipeline: boolea
   if (bare === "ftp" && visibleArgs.some((value) => value !== undefined && /^-s:/i.test(value))) return "ftp scripted file transfer";
   if (bare === "tftp" && visibleArgs.some((value) => value !== undefined && /^put$/i.test(value))) return "tftp file upload";
   if (HTTP_CMDLETS.has(name)) {
-    if (parameterValue(argv, "infile") !== undefined) return `PowerShell upload sink (${name} -InFile)`;
+    if (inFileValue(argv) !== undefined) return `PowerShell upload sink (${name} -InFile)`;
     if (fedByPipeline && (parameterValue(argv, "body") !== undefined || parameterValue(argv, "method") !== undefined)) return `PowerShell upload sink (${name} pipeline)`;
   }
   if (name === "start-bitstransfer" && optionName(parameterValue(argv, "transfertype") ?? "") === "upload") return "PowerShell upload sink (start-bitstransfer)";
@@ -679,6 +763,7 @@ export type PowerShellCommandInput = ShellCommandInput | ParsedPowerShellCommand
 export function parsePowerShellCommand(command: string, resolver?: VerifiedArgvResolver): ParsedPowerShellCommand {
   const context = new SharedPowerShellContext();
   if (resolver !== undefined) context.facts.set("verified-argv-resolver", resolver);
+  retainVisibleUpload(command, context);
   let syntax: LexedPowerShell;
   let analysisLimited = false;
   try {
@@ -756,11 +841,13 @@ export function proveLiteralPowerShell(input: PowerShellCommandInput): { proven:
 }
 
 function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined): ShellFloorSignals {
-  if (parsed.analysisLimited) return shellFloorBudgetSignals();
+  const retained = sharedWork(parsed.context).retained;
+  if (parsed.analysisLimited) return { ...shellFloorBudgetSignals(), ...retained,
+    ...(retained.sensitive !== null || retained.exfiltration !== null ? { outcome: "visible-floor" as const } : {}) };
   const { pipelines, reason, readable } = parsed.syntax;
   const work = sharedWork(parsed.context);
   if (pipelines === null) {
-    let sensitive: string | null = null, exfiltration: string | null = null;
+    let sensitive: string | null = retained.sensitive, exfiltration: string | null = retained.exfiltration;
     for (const command of readable ?? []) {
       const argv = command.tokens.map(literalWordValue);
       if (argv.length === 0 || argv.some((value) => value === undefined)) continue;
@@ -777,22 +864,25 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
     return { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: `PowerShell syntax is not statically provable (${reason ?? "unreadable"})` };
   }
   const program = staticProgramFor(parsed);
-  let sensitive: string | null = null, exfiltration: string | null = null;
+  let sensitive: string | null = retained.sensitive, exfiltration: string | null = retained.exfiltration;
   let pipelineId = -1;
   let pipelineReadsPath = false;
   for (let index = 0; index < program.stages.length; index += 1) {
     const stage = program.stages[index]!;
     if (stage.pipelineId !== pipelineId) { pipelineId = stage.pipelineId; pipelineReadsPath = false; }
     const skipped = new Set(stage.proof.kind === "literal-evaluation" ? stage.proof.payloadIndexes : []);
+    const unresolvedPath = work.unresolvedPath;
     sensitive ??= visibleSensitive(stage, cwd, work, skipped);
     const native = inspectLiteralShellArgvFacts(stage.argv, cwd, work, skipped);
     sensitive ??= native.sensitive;
     exfiltration ??= native.exfiltration ?? visiblePowerShellExfiltration(stage, stage.fedByPipeline, skipped);
     if (stage.fedByPipeline && pipelineReadsPath && native.network) exfiltration ??= "PowerShell pipeline sends file data to a network command";
     pipelineReadsPath ||= native.readsPath;
+    if (stage.proof.kind === "static-complete" && stage.proof.dataOnly) work.unresolvedPath = unresolvedPath;
   }
-  return finalizeSignals(sensitive, exfiltration, program.dynamic || program.encodedReason !== null,
-    program.literalEvaluation !== null && program.encodedReason === null);
+  exfiltration ??= program.nestedUpload;
+  return finalizeSignals(sensitive, exfiltration, program.dynamic || program.encodedReason !== null || work.unresolvedPath,
+    !work.unresolvedPath && program.literalEvaluation !== null && program.encodedReason === null);
 }
 
 function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
@@ -810,6 +900,7 @@ export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: str
 export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string) {
   const command = typeof input === "string" ? input : input.command;
   const context = new SharedPowerShellContext();
+  retainVisibleUpload(command, context);
   let syntax: LexedPowerShell, limited = false;
   try {
     context.enter(command);
@@ -823,4 +914,52 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
   const parsed: ParsedPowerShellCommand = { command, syntax, analysisLimited: limited || context.limited, facts: context.facts, context };
   const result = applyStartupPolicy(inspectParsed(parsed, cwd));
   return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: context.floor.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
+}
+
+// Recursive traversal
+
+const POWERSHELL_KEYWORDS = new Set(["begin", "break", "catch", "continue", "data", "do", "dynamicparam", "else", "elseif", "end", "exit",
+  "filter", "finally", "for", "foreach", "function", "if", "param", "process", "return", "switch", "throw", "trap", "try", "until", "while", "workflow"]);
+const RECURSE_PARAMETER = /^-(?:r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?|de(?:p(?:th?)?)?)(?::|$)/;
+const CHILD_ITEM_RECURSE_ALIAS = /^-s(?::|$)/;
+const NATIVE_RECURSE_SWITCH: Readonly<Record<string, RegExp>> = { robocopy: /^\/(?:s|e|mir)$/i, xcopy: /^\/[se]$/i, "findstr.exe": /^\/s$/i };
+const ARCHIVE_WALKERS = new Set(["tar", "unzip", "7z"]);
+
+function commandMayTraverse(pipeline: PsPipeline, stageIndex: number): boolean {
+  let tokens = pipeline.stages[stageIndex]!.tokens;
+  if (stageIndex === 0 && (pipeline.assign.length > 0 || pipeline.key !== undefined)) {
+    const operator = tokens.findIndex((token) => token.kind === "word" && !token.quoted && /^[+\-*/]?=$/.test(token.text));
+    tokens = tokens.slice(operator >= 0 ? operator + 1 : 1);
+  }
+  const head = tokens[0];
+  // Expression-mode elements are values; their nested bodies are walked separately.
+  if (head === undefined || head.kind === "group" || head.quoted || /^[$@\[\d(-]/.test(head.text)) return false;
+  const argv = tokens.map(literalWordValue);
+  if (argv[0] === undefined) return true;
+  const name = canonicalName(argv[0]);
+  if (POWERSHELL_KEYWORDS.has(name)) return false;
+  const policy = POWERSHELL_COMMAND_POLICIES[name];
+  if (policy === undefined || policy.effects.includes("launcher") || ARCHIVE_WALKERS.has(name)) return true;
+  const options = argv.slice(1);
+  if (name === "get-childitem" && options.some((value) => value === undefined || CHILD_ITEM_RECURSE_ALIAS.test(optionName(value)))) return true;
+  const native = NATIVE_RECURSE_SWITCH[name];
+  return options.some((value) => value !== undefined && (RECURSE_PARAMETER.test(optionName(value)) || native?.test(value) === true));
+}
+
+/** True unless every PowerShell command element is known not to walk a tree; unparsed input counts as walking. */
+export function mayTraversePowerShellRecursively(input: PowerShellCommandInput): boolean {
+  const parsed = asPowerShellCommand(input);
+  if (parsed.analysisLimited || parsed.syntax.pipelines === null) return true;
+  const pending = [...parsed.syntax.pipelines];
+  while (pending.length > 0) {
+    const pipeline = pending.pop()!;
+    for (let stageIndex = 0; stageIndex < pipeline.stages.length; stageIndex += 1) {
+      if (commandMayTraverse(pipeline, stageIndex)) return true;
+      for (const token of pipeline.stages[stageIndex]!.tokens) {
+        if (token.kind === "group") pending.push(...token.body);
+        else for (const body of token.nested) pending.push(...body);
+      }
+    }
+  }
+  return false;
 }

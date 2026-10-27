@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE } from "../shell-option-tables.js";
 
 import {
@@ -821,12 +822,12 @@ describe("shell-path-policy", () => {
     withRoot((root) => {
       for (const command of [
         "find . -type f",
-        "find / -name x",
+        `find ${hostFilesystemPath("/")} -name x`,
         "grep -r needle ./src",
-        "grep -r foo /usr",
+        `grep -r foo ${hostFilesystemPath("/usr")}`,
         "ls -laR ./src",
-        "rg needle /usr",
-        "ls /",
+        `rg needle ${hostFilesystemPath("/usr")}`,
+        `ls ${hostFilesystemPath("/")}`,
       ]) {
         expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
       }
@@ -1272,9 +1273,9 @@ describe("shell-path-policy", () => {
   // Data-slot exemptions must never exempt actual protected or outside file operands.
   it("distinguishes known outside assignments from unresolved path values", () => {
     withRoot((root) => {
-      expect(validateShellCommandPathPolicy(`D="/usr/local/bin"; cp ./pmars "$D/pmars"`, root, root, []))
+      expect(validateShellCommandPathPolicy(`D="${hostFilesystemPath("/usr/local/bin")}"; cp ./pmars "$D/pmars"`, root, root, []))
         .toContain("Sandbox:");
-      expect(validateShellCommandPathPolicy(`A=/etc; B=svc; cat $A/$B/conf.cfg`, root, root, [], true))
+      expect(validateShellCommandPathPolicy(`A=${hostFilesystemPath("/etc")}; B=svc; cat $A/$B/conf.cfg`, root, root, [], true))
         .toContain("Sandbox:");
       // A substitution embedded in a path leaves a dynamic path; only non-path data slots are exempt.
       expect(validateShellCommandPathPolicy(`curl -s https://example.test/a -o /var/$(basename "$f")`, root, root, []))
@@ -1285,16 +1286,16 @@ describe("shell-path-policy", () => {
   it("still refuses an out-of-boundary operand carried by an exempted verb", () => {
     withRoot((root) => {
       // echo's ARGUMENTS are data, but its redirect target is not.
-      expect(validateShellCommandPathPolicy(`echo pwned > /etc/passwd`, root, root, []))
+      expect(validateShellCommandPathPolicy(`echo pwned > ${hostFilesystemPath("/etc/passwd")}`, root, root, []))
         .toContain("Sandbox:");
       // A printf argument is data; its redirect is a file write.
       expect(validateShellCommandPathPolicy(`printf '%s' value > /etc/shadow`, root, root, []))
         .toContain("Sensitive path:");
       // awk's PROGRAM is exempt; its input file is not.
-      expect(validateShellCommandPathPolicy(`awk '{print $1}' /etc/passwd`, root, root, [], true))
+      expect(validateShellCommandPathPolicy(`awk '{print $1}' ${hostFilesystemPath("/etc/passwd")}`, root, root, [], true))
         .toContain("Sandbox:");
       // `-f` moves awk's program to a FILE, so the first positional is a path again.
-      expect(validateShellCommandPathPolicy(`awk -f ./prog.awk /etc/passwd`, root, root, [], true))
+      expect(validateShellCommandPathPolicy(`awk -f ./prog.awk ${hostFilesystemPath("/etc/passwd")}`, root, root, [], true))
         .toContain("Sandbox:");
     });
   });
@@ -1422,7 +1423,7 @@ describe("shell-path-policy", () => {
           .toBeNull();
         expect(validateShellCommandPathPolicy("for f in a; do echo /etc/shadow; done", root, root, []))
           .toBeNull();
-        expect(validateShellCommandPathPolicy("tr a b > /etc/passwd", root, root, []))
+        expect(validateShellCommandPathPolicy(`tr a b > ${hostFilesystemPath("/etc/passwd")}`, root, root, []))
           .toContain("Sandbox:");
       });
     });
@@ -1434,18 +1435,18 @@ describe("shell-path-policy", () => {
           .toContain("Sensitive path:");
         expect(validateShellCommandPathPolicy("sed '1R /etc/shadow' notes.txt", root, root, []))
           .toContain("Sensitive path:");
-        expect(validateShellCommandPathPolicy("sed -e '/x/W /etc/cron.d/x' notes.txt", root, root, []))
+        expect(validateShellCommandPathPolicy(`sed -e '/x/W ${hostFilesystemPath("/etc/cron.d/x")}' notes.txt`, root, root, []))
           .toContain("Sandbox:");
-        expect(validateShellCommandPathPolicy("sed 's/a/b/w /etc/cron.d/x' notes.txt", root, root, []))
+        expect(validateShellCommandPathPolicy(`sed 's/a/b/w ${hostFilesystemPath("/etc/cron.d/x")}' notes.txt`, root, root, []))
           .toContain("Sandbox:");
       });
     });
 
     it("checks a bare path handed to a code slot, which the command executes", () => {
       withRoot((root) => {
-        expect(validateShellCommandPathPolicy("sh -c /etc/evil.sh", root, root, []))
+        expect(validateShellCommandPathPolicy(`sh -c ${hostFilesystemPath("/etc/evil.sh")}`, root, root, []))
           .toContain("Sandbox:");
-        expect(validateShellCommandPathPolicy("bash --command=/etc/evil.sh", root, root, []))
+        expect(validateShellCommandPathPolicy(`bash --command=${hostFilesystemPath("/etc/evil.sh")}`, root, root, []))
           .toContain("Sandbox:");
         expect(validateShellCommandPathPolicy("node --eval=/etc/passwd", root, root, []))
           .toBeNull();
@@ -1460,7 +1461,7 @@ describe("shell-path-policy", () => {
           .toBeNull();
         expect(validateShellCommandPathPolicy("grep --regexp=/etc/passwd notes.txt", root, root, [], true))
           .toBeNull();
-        expect(validateShellCommandPathPolicy("grep needle /etc/passwd", root, root, [], true))
+        expect(validateShellCommandPathPolicy(`grep needle ${hostFilesystemPath("/etc/passwd")}`, root, root, [], true))
           .toContain("Sandbox:");
         expect(validateShellCommandPathPolicy("grep needle notes.txt", root, root, []))
           .toBeNull();
@@ -1785,20 +1786,23 @@ describe("shell-path-policy", () => {
       });
 
       it.each([
-        "env -C /tmp sh -c 'cat .ssh/id_rsa'",
-        "uv run env -C /tmp sh -c 'cat .ssh/id_rsa'",
-        "uv run uv run env -C /tmp sh -c 'cat .ssh/id_rsa'",
-      ])("passes projected wrapper cwd into relative nested shell paths: %s", (command) => {
+        "",
+        "uv run ",
+        "uv run uv run ",
+      ])("passes projected wrapper cwd into relative nested shell paths: %s", (wrapper) => {
         withRoot((root) => {
-          expect(validateShellCommandPathPolicy(command, root, root, ["/tmp"], true))
-            .toContain("Sensitive path:");
+          withRoot((wrapperCwd) => {
+            const command = `${wrapper}env -C '${wrapperCwd.replaceAll("\\", "/")}' sh -c 'cat .ssh/id_rsa'`;
+            expect(validateShellCommandPathPolicy(command, root, root, [wrapperCwd], true))
+              .toContain("Sensitive path:");
+          });
         });
       });
 
       it.each([
-        "env -C /tmp env -C . sh -c 'touch ave-review-probe'",
-        "uv run env -C /tmp env -C . sh -c 'touch ave-review-probe'",
-        "uv run uv run env -C /tmp env -C . sh -c 'touch ave-review-probe'",
+        `env -C ${hostFilesystemPath("/tmp")} env -C . sh -c 'touch ave-review-probe'`,
+        `uv run env -C ${hostFilesystemPath("/tmp")} env -C . sh -c 'touch ave-review-probe'`,
+        `uv run uv run env -C ${hostFilesystemPath("/tmp")} env -C . sh -c 'touch ave-review-probe'`,
       ])("applies ordered wrapper cwd transitions: %s", (command) => {
         withRoot((root) => {
           expect(validateShellCommandPathPolicy(command, root, root, []))
@@ -1839,9 +1843,9 @@ describe("shell-path-policy", () => {
       });
 
       it.each([
-        "env -C /etc cat passwd",
-        "uv run env -C /etc cat passwd",
-        "uv run uv run env -C /etc cat passwd",
+        `env -C ${hostFilesystemPath("/etc")} cat passwd`,
+        `uv run env -C ${hostFilesystemPath("/etc")} cat passwd`,
+        `uv run uv run env -C ${hostFilesystemPath("/etc")} cat passwd`,
       ])("retains nested wrapper cwd path effects: %s", (command) => {
         withRoot((root) => {
           expect(validateShellCommandPathPolicy(command, root, root, []))
@@ -1853,16 +1857,16 @@ describe("shell-path-policy", () => {
     it("reads a shell -c payload as a command instead of exempting it", () => {
       withRoot((root) => {
         // Re-enter parseable shell payloads and apply write containment.
-        expect(validateShellCommandPathPolicy("sh -c 'echo hi > /etc/x'", root, root, []))
+        expect(validateShellCommandPathPolicy(`sh -c 'echo hi > ${hostFilesystemPath("/etc/x")}'`, root, root, []))
           .toContain("Sandbox:");
         // Nested protected paths remain denied regardless of effect.
         expect(validateShellCommandPathPolicy(`bash -c "cat /etc/shadow"`, root, root, []))
           .toContain("Sensitive path:");
         // Nested reads retain the same wide-read policy as bare commands.
-        expect(validateShellCommandPathPolicy("sh -c 'cat /etc/hosts'", root, root, []))
+        expect(validateShellCommandPathPolicy(`sh -c 'cat ${hostFilesystemPath("/etc/hosts")}'`, root, root, []))
           .toBeNull();
         // Fenced nested reads prove the payload was parsed rather than exempted as code.
-        expect(validateShellCommandPathPolicy("sh -c 'cat /etc/passwd'", root, root, [], true))
+        expect(validateShellCommandPathPolicy(`sh -c 'cat ${hostFilesystemPath("/etc/passwd")}'`, root, root, [], true))
           .toContain("Sandbox:");
         expect(validateShellCommandPathPolicy("sh -c 'cat ./notes.txt'", root, root, []))
           .toBeNull();
@@ -1913,11 +1917,11 @@ describe("shell-path-policy", () => {
       withRoot((root) => {
         // Clustered and attached -c forms execute the same payload; fenced reads make missed parsing observable.
         for (const command of [
-          "sh -c 'cat /etc/passwd'",
-          "bash -lc 'cat /etc/passwd'",
-          "sh -c'cat /etc/passwd'",
-          `sh -c"cat /etc/passwd"`,
-          "for f in a; do sh -c 'cat /etc/passwd'; done",
+          `sh -c 'cat ${hostFilesystemPath("/etc/passwd")}'`,
+          `bash -lc 'cat ${hostFilesystemPath("/etc/passwd")}'`,
+          `sh -c'cat ${hostFilesystemPath("/etc/passwd")}'`,
+          `sh -c"cat ${hostFilesystemPath("/etc/passwd")}"`,
+          `for f in a; do sh -c 'cat ${hostFilesystemPath("/etc/passwd")}'; done`,
         ]) {
           expect(validateShellCommandPathPolicy(command, root, root, [], true))
             .toContain("Sandbox:");
@@ -1957,41 +1961,41 @@ describe("shell-path-policy", () => {
     /** `null` = admitted; a string = the fragment the refusal must contain. */
     type Verdict = string | null;
     const ROWS: readonly { label: string; command: string; wide: Verdict; fenced: Verdict }[] = [
-      { label: "ls /", command: "ls /", wide: null, fenced: "Sandbox:" },
-      { label: "find / -name x", command: "find / -name x", wide: null, fenced: "recursive" },
-      { label: "grep -r foo /usr", command: "grep -r foo /usr", wide: null, fenced: "recursive" },
-      { label: "cat /etc/hosts", command: "cat /etc/hosts", wide: null, fenced: "Sandbox:" },
-      { label: "stat /etc/hosts", command: "stat /etc/hosts", wide: null, fenced: "Sandbox:" },
-      { label: "du /usr", command: "du /usr", wide: null, fenced: "Sandbox:" },
-      { label: "head /etc/hosts", command: "head /etc/hosts", wide: null, fenced: "Sandbox:" },
-      { label: "wc -l /etc/hosts", command: "wc -l /etc/hosts", wide: null, fenced: "Sandbox:" },
+      { label: "ls /", command: `ls ${hostFilesystemPath("/")}`, wide: null, fenced: "Sandbox:" },
+      { label: "find / -name x", command: `find ${hostFilesystemPath("/")} -name x`, wide: null, fenced: "recursive" },
+      { label: "grep -r foo /usr", command: `grep -r foo ${hostFilesystemPath("/usr")}`, wide: null, fenced: "recursive" },
+      { label: "cat /etc/hosts", command: `cat ${hostFilesystemPath("/etc/hosts")}`, wide: null, fenced: "Sandbox:" },
+      { label: "stat /etc/hosts", command: `stat ${hostFilesystemPath("/etc/hosts")}`, wide: null, fenced: "Sandbox:" },
+      { label: "du /usr", command: `du ${hostFilesystemPath("/usr")}`, wide: null, fenced: "Sandbox:" },
+      { label: "head /etc/hosts", command: `head ${hostFilesystemPath("/etc/hosts")}`, wide: null, fenced: "Sandbox:" },
+      { label: "wc -l /etc/hosts", command: `wc -l ${hostFilesystemPath("/etc/hosts")}`, wide: null, fenced: "Sandbox:" },
       // Nested payloads receive the same policy as bare commands.
-      { label: "sh -c reading outside", command: "sh -c 'cat /etc/hosts'", wide: null, fenced: "Sandbox:" },
+      { label: "sh -c reading outside", command: `sh -c 'cat ${hostFilesystemPath("/etc/hosts")}'`, wide: null, fenced: "Sandbox:" },
       // An input redirect source is a read, so a read leaf reaches one outside.
-      { label: "input redirect into a read leaf", command: "wc -l < /etc/hosts", wide: null, fenced: "Sandbox:" },
+      { label: "input redirect into a read leaf", command: `wc -l < ${hostFilesystemPath("/etc/hosts")}`, wide: null, fenced: "Sandbox:" },
       // Fenced reads reject the redirect first; wide reads still cannot resolve streamed program operands.
-      { label: "input redirect into a write leaf", command: "xargs rm < /etc/list", wide: "Unsupported stream or string execution wrapper", fenced: "/etc/list" },
+      { label: "input redirect into a write leaf", command: `xargs rm < ${hostFilesystemPath("/etc/list")}`, wide: "Unsupported stream or string execution wrapper", fenced: "/etc/list" },
 
       // Protected paths remain denied in both read modes.
       { label: "cat ~/.ssh/id_rsa", command: "cat ~/.ssh/id_rsa", wide: "Sensitive path:", fenced: "Sensitive path:" },
 
       // The redirect target is a write; wide reads on the left do not exempt it.
-      { label: "read piped into an outside write target", command: "cat /etc/hosts > /tmp/out", wide: "/tmp/out", fenced: "/tmp/out" },
-      { label: "tee", command: "tee /etc/x", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "dd", command: "dd if=/dev/zero of=/etc/x", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "sed -i", command: "sed -i s/a/b/ /etc/x", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "sed s///w", command: "sed 's/a/b/w /etc/x' in", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "find -delete", command: "find / -delete", wide: "recursive", fenced: "recursive" },
-      { label: "find -exec", command: "find / -exec rm {} ;", wide: "recursive", fenced: "recursive" },
-      { label: "sh -c writing outside", command: "sh -c 'echo hi > /etc/x'", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "mkdir", command: "mkdir /etc/x", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "chmod", command: "chmod 777 /etc/x", wide: "Sandbox:", fenced: "Sandbox:" },
-      { label: "cp into outside", command: "cp ./a /etc/x", wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "read piped into an outside write target", command: `cat ${hostFilesystemPath("/etc/hosts")} > ${hostFilesystemPath("/tmp/out")}`, wide: "/tmp/out", fenced: "/tmp/out" },
+      { label: "tee", command: `tee ${hostFilesystemPath("/etc/x")}`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "dd", command: `dd if=${hostFilesystemPath("/dev/zero")} of=${hostFilesystemPath("/etc/x")}`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "sed -i", command: `sed -i s/a/b/ ${hostFilesystemPath("/etc/x")}`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "sed s///w", command: `sed 's/a/b/w ${hostFilesystemPath("/etc/x")}' in`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "find -delete", command: `find ${hostFilesystemPath("/")} -delete`, wide: "recursive", fenced: "recursive" },
+      { label: "find -exec", command: `find ${hostFilesystemPath("/")} -exec rm {} ;`, wide: "recursive", fenced: "recursive" },
+      { label: "sh -c writing outside", command: `sh -c 'echo hi > ${hostFilesystemPath("/etc/x")}'`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "mkdir", command: `mkdir ${hostFilesystemPath("/etc/x")}`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "chmod", command: `chmod 777 ${hostFilesystemPath("/etc/x")}`, wide: "Sandbox:", fenced: "Sandbox:" },
+      { label: "cp into outside", command: `cp ./a ${hostFilesystemPath("/etc/x")}`, wide: "Sandbox:", fenced: "Sandbox:" },
       // Every operand of a write verb is confined, including sources.
-      { label: "cp from outside", command: "cp /etc/hosts /tmp/x", wide: "/etc/hosts", fenced: "/etc/hosts" },
+      { label: "cp from outside", command: `cp ${hostFilesystemPath("/etc/hosts")} ${hostFilesystemPath("/tmp/x")}`, wide: "/etc/hosts", fenced: "/etc/hosts" },
 
       // Judge compound commands per leaf.
-      { label: "read leaf then write leaf", command: "ls /; rm -rf /opt/x", wide: "/opt/x", fenced: "Sandbox:" },
+      { label: "read leaf then write leaf", command: `ls ${hostFilesystemPath("/")}; rm -rf ${hostFilesystemPath("/opt/x")}`, wide: "/opt/x", fenced: "Sandbox:" },
     ];
 
     it.each(ROWS)("$label — reads wide", ({ command, wide }) => {
@@ -2015,7 +2019,7 @@ describe("shell-path-policy", () => {
         const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-"))).replaceAll("\\", "/");
         roots.push(grant);
         // Grant the write destination; the wide-read source needs no directory grant.
-        expect(validateShellCommandPathPolicy(`cat /etc/hosts > ${shellQuote(grant)}/out`, root, root, [grant]))
+        expect(validateShellCommandPathPolicy(`cat ${hostFilesystemPath("/etc/hosts")} > ${shellQuote(grant)}/out`, root, root, [grant]))
           .toBeNull();
       });
     });
@@ -2163,7 +2167,7 @@ describe("shell-path-policy", () => {
     it("re-enters the command line `e` runs, instead of exempting it", () => {
       withRoot((root) => {
         // sed e COMMAND executes a parseable line; inspect its operands with normal read and protected-path rules.
-        expect(validateShellCommandPathPolicy(`sed '1e cat /tmp/outside/x.txt' notes.txt`, root, root, [], true))
+        expect(validateShellCommandPathPolicy(`sed '1e cat ${hostFilesystemPath("/tmp/outside/x.txt")}' notes.txt`, root, root, [], true))
           .toContain("Sandbox:");
         expect(validateShellCommandPathPolicy(`sed '1e cat /etc/shadow' notes.txt`, root, root, []))
           .toContain("Sensitive path");

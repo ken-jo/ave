@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +27,7 @@ function namespace(directory: string): FeatureNamespaceHandle {
     get dir(): string {
       return directory;
     },
+    createFile: refuseNamespaceFileCreation,
     async readJson<T>(_name: string, fallback: T): Promise<T> {
       return fallback;
     },

@@ -123,6 +123,7 @@ import { PROMPTS_UPDATED } from "../../ipc/domains/prompts.js";
 const SERVICE_KEYS: (string | symbol)[] = [
   "pythonRuntime",
   "pythonPath",
+  "singleHopNetworkFetch",
   "pluginRuntime",
   "pluginMarketplace",
   "settingsService",

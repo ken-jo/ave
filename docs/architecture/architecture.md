@@ -80,45 +80,147 @@ the host observes and renders, with no document publication API.
 
 One main-process observation daemon owns bounded, session-bound adapter
 lifetimes. Its source interface is deliberately separate from its document
-rendering engine. Only the document adapter ships here; browser and terminal
-sources may implement the same interface later. User document, browser and
-terminal activity is outside the observation contract. Events and snapshots
-stay in local memory and private process directories: they are not transcript
-content, telemetry, remote-surface events or provider input.
+rendering engine. Document, browser and terminal adapters share that daemon.
+User document, browser and terminal activity is outside the observation
+contract. Browser events and terminal history stay in memory and create no
+observation files. Document journals retain their existing private process
+directories. Neither source becomes transcript content, telemetry,
+remote-surface events or provider input.
+
+The [shared schema](../../src/shared/agent-observation.ts) defines canonical
+event and acknowledgement shapes; the [daemon](../../src/observation/daemon.ts)
+owns delivery. [Browser control](#browser-control-and-tab-lifetime) and the
+[permission policy](permission-policy-design.md#shared-browser-control-and-effects)
+own command authority and its invalidation.
 
 Every event has `source: "document" | "browser" | "terminal"`,
 `actor: "agent"`, host-derived `sessionId`, `target: { id, path }`, monotonically
 increasing target-local `seq`, `kind`, `before`, `after`, and `ts` (epoch
 milliseconds). Document kinds are `element`, `snapshot`, and `status`.
-An element names a cell by sheet name and absolute row/column, or a text line
-by one-based line number, and carries bounded display strings in `before`/`after`.
+An element names a cell by sheet name and absolute row/column, a text line
+by one-based line number, a paragraph/run by zero-based indices, or a slide
+shape by zero-based slide index and shape ID. It carries bounded display
+strings in `before`/`after`.
 Journal cells are explicitly advisory until reconciliation; native line diffs
-come from a verified save. A snapshot replaces the bounded rendered table and
-its recalculation signal, or the bounded text document. A status carries a
-stable localized code without document contents. Element addresses leave room
-for paragraph and shape adapters without implementing them. The daemon, not a
-journal or renderer, supplies actor, session, target identity, sequence and
-timestamp.
+and structured document diffs come from a verified save. A snapshot replaces
+the bounded rendered table and its recalculation signal, text document, or page
+document. A status carries a stable localized code without document contents.
+The daemon, not a journal, engine or renderer, supplies actor, session, target
+identity, sequence and timestamp.
 
-The adapter contract starts an exact target, accepts a rendered snapshot and
+Browser events reuse that envelope and the private observation channel. An
+`action` has `before: null` and bounded metadata in `after`: action, main-issued
+tab handle, optional embedded renderer slot, URL, title, and an optional element
+description or download state. Browser actions cover navigation, clicks,
+typing, tab open/close/switch, downloads, hover, drag, selection, scroll, upload
+and supported keys. A browser session has one opaque target identity with
+`target.path: "browser"` and required host-derived `target.hostSessionId`.
+Document targets retain their existing shape. The hosting identity accompanies
+actions and statuses so initial errors or resynchronization can reach the right
+panel. The URL is metadata, never a path or authority supplied by a renderer.
+Browser statuses report observation errors, delivery resynchronization or
+session clearing. These are command receipts, so the
+browser adapter needs no document parser or additional rendering engine.
+
+Browser attribution starts only inside the host's model-turn context and an
+already authorized tool invocation. Page effects require the exact actor's
+active control lease and original live guest; authorized tab switching and
+closing may refer to the agent-owned tab's durable identity. A completed close
+can describe the original guest after destruction. Failed or cancelled
+commands, guest replacement and recognized human takeover supply no successful
+action event. Navigation metadata comes from command completion, not general
+page navigation or title listeners. User page events are never an observation
+source, including in the tab the agent uses. UI/plugin tool origins and
+renderer-supplied session metadata cannot create agent provenance. A live
+sub-agent routes delivery through its nearest hosted ancestor while events
+retain the actual acting session. That validated host binding survives the end
+of the child run; session end or loss of window/frame ownership releases it.
+The existing native input correlation limit still applies: a human click
+indistinguishable from an armed agent click cannot
+be separately identified. Observation does not strengthen that source proof.
+
+The browser observer retains no typed or selected values, supported-key
+operands, cookies, browser storage, arbitrary page text, snapshots or
+screenshots. The live preview below is transient display, not retention. Permitted page metadata is limited to the title and bounded
+role/name fields from references already available to the agent; it authorizes
+no other page-content extraction.
+Typing targets omit names as well as values, and credential
+field descriptions are redacted. URL metadata omits embedded credentials, query strings
+and fragments before entering delivery or retention buffers. Observation
+does not copy ordinary browser history or download destinations.
+
+Download admission uses the existing native Save-admitted callback and only an
+active command receipt for the exact guest, actor and current control lease.
+Recognized takeover, caller cancellation and unrelated guests cannot supply
+that receipt. The item's URL chain must also match the approved navigation URL
+or resolved clicked-link destination from that command. This expected URL is
+ephemeral attribution evidence, not retained event data. Click-initiated
+downloads also require the native item's user-gesture flag; explicit navigation
+and tab opening need no such flag. Unproved button or script downloads and
+downloads arriving after the command are excluded. Only state transitions are
+retained: started, completed, cancelled or interrupted.
+Filenames, destination paths and file contents are omitted. The original
+admitted item may complete after the command. Completion listeners end with
+the item, session, owning frame/window or observation runtime. Listener-capacity
+overload emits resynchronization without interrupting the native download or
+throwing through its Save callback. Observation adds no download approval or
+automatic open behavior.
+
+A live preview shows the agent's tab where that tab is open in another panel:
+the second slot of the same web surface, beneath its activity strip. It is bound
+to the exact main-issued tab handle and observation target of the latest agent
+action for that renderer tab, and never falls back to another tab. Main admits
+only a tab that the acting session leases or owns, or whose owner's direct
+parent it is (the same ownership rule that admits tab switch and close events; a
+grandparent or sibling session is refused), that is not paused by the user, and
+on which that session ran a command within the last 30 seconds. Recognized user
+input, address-bar navigation and Stop pause an agent-owned tab; the agent's own
+cross-origin navigation does not. User takeover, user navigation, idleness,
+session end and window or frame loss stop it. It reuses the guest's existing in-
+process debugger session through Chromium's screencast: it never attaches a
+debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
+every third compositor frame, and at most four forwarded per second with one
+unrendered frame in flight. Main acknowledges every Chromium frame on receipt,
+independently of renderer delivery. The screencast is re-armed on each main-
+frame commit and after two seconds without a frame while Chromium reports the
+page visible; a hidden page is not re-armed until it is visible again. Only a
+frame within 1.5 seconds of a commit is decoded: a uniform one keeps the
+previous frame, marked as updating; later uniform frames render. A forwarded
+frame the renderer never reports painted stops blocking delivery after two
+seconds. Closing the page session rejects pending preview commands, including a
+stop in progress, at once with a closed error. A transient empty URL during a
+cross-site commit is not a close. Frames use a separate private push channel
+beside the observation stream and never enter the daemon, its queues, event
+history, transcripts or files. The renderer keeps only the newest frame for a
+preview element while that element is shown. A mounted panel that is hidden, has
+no size, is outside the viewport or sits in a hidden document stops the preview
+and drops its frame. A hidden guest paints no frames, so its preview keeps the
+last real frame marked as updating. The agent's typing tools already refuse
+password, card and one-time code fields, so the preview adds no secret-input
+display path.
+
+The document adapter starts an exact target, accepts a rendered snapshot and
 agent mutation evidence, reconciles a settled save, and disposes all watches,
 timers and pending work. A replaceable `DocumentObservationEngine` accepts
-already admitted bytes, a format and selection index, and returns a bounded
-table or text document under cancellation. Table decoding delegates to the
-existing isolated parser; text decoding retains the existing UTF-8 preview's
-2,000,000-byte and 5,000-line ceilings and rejects binary content. There is no
-converter download, warm conversion service or new document serializer. Engine
-absence produces the explicit `engine-unavailable` status and leaves the existing viewer usable;
-parse, integrity and contract errors remain errors rather than selecting that
-fallback. Future engines must retain bounded input/output, verification,
-confinement and per-session lifecycle ownership.
+already admitted bytes, a format and selection index, and a host-derived session
+context. It returns a bounded table, text or page document under cancellation
+and releases its session-owned resources when observation ends. The optional
+[document conversion engine](document-observation-engine.md) renders page
+documents and recalculates temporary workbook copies. Its installation,
+verification, offline confinement and warm session queue are separate from
+source attribution and the event transport. Engine absence deterministically
+selects the existing bounded readers; a format needing the engine reports
+`engine-unavailable`. Parse, integrity, confinement and contract errors remain
+errors rather than selecting that fallback. Text decoding retains the existing
+UTF-8 preview's 2,000,000-byte and 5,000-line ceilings and rejects binary content.
 
 Full default text/code reads can bind observation through the same private
 preview read contract and rendered acknowledgement as tables. Selected line
 windows, inline snippets and images retain ordinary viewing without observation.
 The initial content and digest come from the same admitted bytes. Page documents
-retain their existing readers without synthetic live events; adding a shared
-viewer header does not add a page observation engine or content capture.
+use the same admission and acknowledgement path; paragraph/run and slide-shape
+diffs come from bounded structured representations of verified before/after
+bytes. Rendering a page does not itself create an activity event.
 Observed text reads retain only the newest request owner for each actual frame
 and canonical path. A late replaced read cannot register or release the newer
 view. There are at most 16 current request-owner keys; cancellation still waits
@@ -140,8 +242,8 @@ renderer metadata and UI/plugin tool origins cannot create that context.
 Watching a parent directory only filters the exact basename so replacement
 renames remain observable; it never reads sibling contents.
 
-For an agent table open, the existing tab-selection receipt and a host-accepted
-initial rendered-grid acknowledgement must both arrive before `open_document`
+For an agent document open, the existing tab-selection receipt and a host-accepted
+initial rendered-view acknowledgement must both arrive before `open_document`
 completes. Either may arrive first; a still-live matching rendered baseline can
 satisfy readiness immediately. The original document-open deadline, frame,
 session and cancellation guards remain in force. This prevents an immediate
@@ -149,6 +251,14 @@ following edit from outrunning baseline admission. Pending agent-open marks
 without a parsed view expire within the existing reader startup, parse and busy
 retry budgets. Files without a rendered baseline are never watched or read by
 the observer merely because a tool named them.
+
+Optional engine preparation verifies the installed payload and starts its
+session runtime through the bounded conversion queue under the tool's
+cancellation signal. The session instance's readiness probe and required importer
+registration complete before the panel request's acknowledgement window starts. Preparation
+reads no source document bytes and creates no observation target or filesystem
+watch. Native conversion and the existing bounded output reader retain their
+own cancellable process budgets.
 
 Filesystem notifications are wakeups, not writer identity. Native mutations
 provide their exact intended post-image; the skill provides a tool-bound
@@ -161,7 +271,7 @@ requires reload. Mere temporal overlap with an agent tool is insufficient.
 Unattributed or conflicting saves must not be recorded as agent changes.
 The adapter debounces notifications for 80 ms, requires two equal descriptor
 size/mtime observations 40 ms apart, retries a transient rename for at most
-eight settle attempts, and computes the cell or line diff against the last
+eight settle attempts, and computes the element diff against the last
 acknowledged rendered snapshot. A prior user save therefore cannot be folded
 into an attributed agent delta.
 
@@ -172,6 +282,9 @@ directory to one admitted tool call, turn and session. The skill appends UTF-8
 JSON Lines with version `1`: `begin` has `editId`, canonical `target`, and
 `beforeHash`; `cell` has `editId`, `sheet`, A1 `cell`, `before`, and `after`;
 `commit` has `editId` and `afterHash`. Hashes are lowercase SHA-256 hex.
+The same `begin`/`commit` pair can reconcile an admitted table or page target;
+provisional `cell` records apply only to table views. Page paragraph/run and
+shape changes come from the verified saved package, never from journal text.
 The journal is capped at 2 MiB per invocation, 16 KiB per line, 500 cell
 records per edit, and 2,000 display characters per value. The reader reads at
 most 64 KiB per poll, retains an incomplete final line until its newline,
@@ -188,12 +301,21 @@ a reload rather than keeping a draft as file truth. The skill retains its
 existing size ceiling, refusal rules, backup and atomic replacement; the host
 has no edit IPC, staging publisher, workbook transaction or write token.
 
-Each daemon has at most 16 active document views, 256 queued events and
-1 MiB of queued element data per view. It sends batches of at most 32 events
-with at most 64 unacknowledged events. Repeated pending elements coalesce by
-address; overload produces a resynchronization status and a fresh verified
-snapshot, never an unbounded replay. Snapshot payloads retain the existing
-4 MiB preview cap. Renderer acknowledgements advance the rendered baseline
+Each daemon has at most 16 active targets across document views, browser
+sessions and terminal subscriptions, 256 queued events and 1 MiB of queued
+metadata per target. A document open at that shared limit answers `busy` and
+leaves no view owner behind. It sends
+batches of at most 32 events with at most 64 unacknowledged events per target.
+Repeated pending document elements coalesce by address; document overload produces a
+resynchronization status and a fresh verified snapshot, never an unbounded
+replay. Snapshot payloads retain the existing 4 MiB preview cap. Browser
+metadata is bounded to 2,048 characters per URL and
+256 characters per display string. The browser renderer retains at most 64
+events per session to support the current strip, within the same 16-session
+limit. This adds no activity-history interface. Delivery overload reports
+resynchronization instead of replaying an unbounded history. Browser events
+are acknowledged after bounded local consumption and need no document
+baseline. Document renderer acknowledgements advance the rendered baseline
 only for the matching snapshot sequence; a delivered snapshot is not assumed
 rendered. Releasing a view, changing its session, navigating or destroying
 its frame, closing or hiding the panel, ending a journal invocation or
@@ -201,17 +323,129 @@ shutting down disposes the corresponding capabilities and bounded buffers. A
 closed or hidden panel may stay mounted for a retained side chat or browser
 tab; its document views keep their sheet, scroll and page position but hold no
 subscription, and showing the panel again reads a fresh baseline. No
-observation survives a host restart.
+observation survives a host restart. Ending or clearing a browser session
+releases its receipt, download listeners and delivery buffers and clears its
+renderer history through a content-free, daemon-sequenced terminal status.
+Clear-delivery failure still releases all host buffers and listeners;
+session-end and shutdown cleanup report collected failures as an
+`AggregateError`. Ending a root conversation also clears its descendants
+through the existing session-permission lifetime boundary. Browser
+observations stay only in memory; they are not persisted with ordinary browser
+bookmarks or history.
+
+The terminal adapter admits shell-tool runs and individual commands in the
+Agent terminal lane only from the host's authorized model-turn invocation
+context. Tool arguments, renderer metadata, terminal lane and shell markers
+cannot create that authority. Terminal admission binds the approved command,
+verified directory, session incarnation and exact authenticated command block
+immediately before the host presses Enter. Startup, prompts and user commands
+are never observed, including commands a user types into the Agent lane. Any
+accepted user input revokes that command's capture and egress binding before
+the bytes reach the shell; pending output is discarded. A mismatched command
+or directory is a contract error, not a reason to observe another block.
+User output must never enter an agent block, so admission has two further
+conditions. First, the operating system must show the shell alone on its
+terminal before Enter: no child, and no other process with that terminal as
+its own, such as an orphaned background job whose parent exited. On macOS the
+last check before Enter also refuses any other process holding the terminal
+device open, such as one that left the session with `setsid`. The sandboxed
+Linux shell is checked through its sandbox process tree and terminal session.
+That tree check already refuses an orphan, because the sandbox's init must have
+exactly one child. As a second check, the last check before Enter refuses any
+other sandbox process that holds the shell's terminal open, matched by device
+identity through `/proc/<pid>/fd`. The exempt processes are the shell's own,
+identified by their place in the verified chain: the launcher chain from the
+spawned process, the outer launcher's bridges, the pty relay and the shell.
+Exemption is by pid, so after the scan each exempt pid must still name the
+process the snapshot found (same start time, parent and program); a reused or
+vanished pid refuses. Any other process with an unreadable descriptor table
+also refuses.
+Otherwise `terminal_run` refuses with `shell-busy` and nothing is typed.
+Every write that reaches the terminal from its view counts as user input.
+The one exemption is a write that is exactly one emulator reply to a query
+the terminal's own programs sent in their output: device attributes, status,
+cursor position, mode reports, colour queries, and focus reports while focus
+reporting is on. The reply must match its exact form, answer one outstanding
+query, and arrive within 2 seconds of that query, as its own write (xterm.js
+sends each reply separately). At most 16 queries are outstanding. A reply shape
+alone proves nothing, because the user can type or paste one, and the line
+editor runs any keys inside it; a late, unsolicited or batched reply therefore
+counts as user input.
+Second, once the user has typed into an Agent-lane terminal incarnation, a
+process they started may have left the terminal while keeping its egress
+credentials, or may later reopen the terminal by path; no process-table
+reading can rule that out. Later agent commands in that incarnation are
+admitted with `outputAvailability: "withheld-user-input"`. Their entries keep
+the command, directory, exit state and duration. They capture no output and
+bind no egress. The panel states why.
+
+Terminal events use the same envelope with `source: "terminal"`. A `snapshot`
+replaces the session's bounded `commands` list; `status` carries
+`observation-error` or `resync-required`. Each command includes its host-issued
+identity, turn/tool identity, command line, directory, start time, duration,
+running/completed/failed/cancelled/interrupted state, known exit code or `null`,
+bounded output tail and truncation flag, chosen sandbox mode and egress
+decisions. Terminal commands also name their tab and session incarnation.
+Commands, directories, output and decision details pass through the existing
+credential-redaction rules before retention or delivery. Split output cannot
+bypass masking; raw pending fragments are bounded independently of the
+redacted display tail. Internal observation contract failures remain visible.
+The shared shapes and limits live in
+[`agent-observation.ts`](../../src/shared/agent-observation.ts). A terminal
+target identifies one conversation's read-only subscription; its `path` is the
+non-filesystem label `terminal-activity`. Snapshots and statuses have `before: null`.
+Output removes control-string payloads and applies bounded current-line carriage
+return and backspace rewrites before masking. Broker-side omissions also set the
+truncation flag, even when the supplied suffix fits the local tail.
+
+`TERMINAL_OBSERVATION_LIMITS` bounds retention to 16 sessions, 32 commands per
+session, 4,096 output characters and 16 decisions per command, with at most
+8,192 pending output characters and an 80 ms delivery coalescing interval.
+Completed history is evicted before active work; exhausted active capacity
+fails explicitly. A lease may follow its already admitted child or terminal
+block beyond the initial tool wait or turn, but cannot admit another command.
+Completion follows the actual process or authenticated block exit, not the
+tool's foreground-to-background handoff. Closing/replacing a terminal,
+deleting its conversation or shutting down releases the corresponding leases
+and buffers. There is no persisted terminal observation history.
+Releasing a panel revokes delivery and its queued snapshots; bounded same-session
+command history remains available on reopening until eviction or conversation
+deletion. User-input revocation leaves an `interrupted` entry containing only
+previously redacted output, with an unknown exit code and no later updates.
+
+Shell egress decisions bind the private invocation token to that command.
+A terminal token belongs to its whole shell, including earlier background
+descendants: decisions captured during an admitted command are explicitly
+marked `terminal-session`, not claimed as per-process command causation.
+User-input revocation removes that binding before human activity can be
+captured, and a terminal token is never bound for an incarnation that has
+received user input. The brokered shell transport currently supplies output only on
+completion or an existing task read; its commands declare
+`outputAvailability: "on-completion"`. Observation neither invents a live
+stream nor adds polling that consumes the task's read cursor.
+A checked shell execution whose result is released only after repository
+revalidation keeps the same quarantine in observation. Its command is admitted
+as `on-completion` with held output: output is masked and bounded but enters
+no snapshot until the validated result is released. A refused result discards
+it, and the entry keeps only command metadata and exit state.
 
 Private observation push and acknowledgement IPC require the same registered
 app-window main-frame identity as preview reads: a live registered window,
 its actual main frame and default session, rechecked at delivery. Webviews,
 plugin partitions, subframes and unregistered contents are refused regardless
-of URL. Acknowledgements name only a host-issued read-only target identity
-and sequence; no request accepts a document path, script or write payload.
+of URL. The existing acknowledgement channel also accepts
+`{ action: "subscribe-terminal", sessionId }`, checked against the caller's
+current conversation/window binding. It returns a host-issued read-only target
+identity; the initial and subsequent snapshots use the existing observation
+push channel. Rendered/release acknowledgements name that identity, session
+and sequence. Renderers ignore older sequences for that target/session;
+acknowledgements cannot exceed the latest sequence actually delivered by the
+daemon, and repeated older acknowledgements do not move its baseline backward.
+No request accepts a document path, script or write payload.
 The panel offers no edit affordance or save action. Agent editing retains
 the ordinary tool approval path; observation grants no permission and prompts
-for no user modification confirmation.
+for no user modification confirmation. Observation adds no confirmation to
+any user action.
 
 File/code, table and page viewers share one compact header: format icon, bold
 basename, muted monospaced parent path and right-aligned icon-only actions.
@@ -220,14 +454,37 @@ it truncates with ellipsis while its title exposes the complete path. Open in
 the default application, copy and applicable reload actions have localized
 accessible labels. There is no separate path box, file-kind badge or source row.
 
-A single live-strip slot beneath that header appears only for authenticated
-agent observation activity or its error/resynchronization state. It reports
-editing or edited, the latest cell/line change summary and recency. The current
+A single live strip beneath the relevant viewer chrome appears only for
+authenticated agent observation activity or its error/resynchronization state.
+For documents it reports editing or edited, the latest element change summary
+and recency. The current
 element has an outline and a small Ave tag; earlier changes retain a faint tint.
 These marks use one theme color with light and dark variants. A compact footer
 owns format, selected sheet/page or line count, recalculation status and
 truncation notices. Idle user-only previews have no live strip. Localized
 observation errors occupy that same slot rather than creating additional status rows.
+Browser panels use the same compact activity treatment for the latest agent
+action, safe URL, element description or download state and recency. User-only
+browsing has no observation strip. Closing or switching tabs is an agent event
+only when the admitted agent command performs it; user chrome does not emit
+activity.
+Browser control state and Stop/Resume stay in a persistent toolbar of fixed
+height. A compact observation slot of fixed height is reserved from mount and
+remains transparent until authenticated activity or errors render the strip.
+Control changes and the first observation keep the guest viewport in place
+during native input; user-only previews show no agent label or stripe.
+
+The side panel's terminal observation strip uses the same agent theme color
+and shows the current command with elapsed time. A compact read-only command
+list exposes directory, output tail, exit state, duration, sandbox mode and
+the scope of egress decisions. An empty user-only session shows neither strip
+nor command list. Session changes, panel unmount, and closing or hiding a
+panel that stays mounted (a retained side-chat or browser tab) release the
+subscription. A hidden strip stays mounted, so expanded rows and list scroll
+survive; showing the panel again subscribes afresh and the next snapshot
+replaces the list. The renderer accepts only its current target/session and acknowledges a
+snapshot after rendering it. Stale or other-source events cannot enter that
+list, and localized observation errors occupy the same strip.
 
 The default-application icon reuses the existing attachment opener. Successful
 preview reads supply bounded, frame-bound read receipts instead of adding paths
@@ -846,6 +1103,13 @@ and Codex subscription requests to this contract. It owns the model-visible
 request projection; transport adapters retain their wire formats, credentials,
 and native session state. Subscription credentials never become API keys, and
 an unavailable connection never silently selects another authentication route.
+
+The [installed CLI subscription runtime](claude-code-subscription-runtime.md)
+defines its model selection, billing disclosure and isolated authentication.
+It admits only publisher-signed releases at or above a single-sourced minimum
+version; a signed release older than the previous install but above that
+minimum is accepted by design, because the provider's stable channel trails
+its latest release and publishes no revocation list.
 
 API requests retain the existing SDK transport and configured reasoning/output
 controls. Subscription requests retain their active native profile and governed
