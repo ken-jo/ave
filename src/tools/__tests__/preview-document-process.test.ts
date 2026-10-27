@@ -140,7 +140,7 @@ describe("isolated table parsing", () => {
   it("returns only the bounded display model from a real split child bundle", async () => {
     const document = await parseTableDocumentIsolated(Buffer.from("a,b\n1,2"), "csv", 0);
     expect(document.sheet.rows).toEqual([["a", "b"], ["1", "2"]]);
-    expect(Object.keys(document)).toEqual(["format", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"]);
+    expect(Object.keys(document)).toEqual(["format", "needsRecalculation", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"]);
     expect(getManagedChildProcessCount()).toBe(0);
   });
 

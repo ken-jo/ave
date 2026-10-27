@@ -327,10 +327,13 @@ function warnOnShortenedScalar(
 export interface SkillStoreOptions {
   // Override user-skills directory.
   userDir?: string;
+  // Read-only packaged directory skills; user and installed skills take precedence.
+  bundledDir?: string;
 }
 
 export class SkillStore {
   private readonly userDir: string;
+  private readonly bundledDir: string | undefined;
   private pluginSkills = new Map<string, LoadedSkill>();
   private agentPluginSkills = new Map<string, LoadedSkill>();
   private agentPluginResources = new Map<string, ReadonlyMap<string, Buffer>>();
@@ -339,6 +342,7 @@ export class SkillStore {
 
   constructor(opts: SkillStoreOptions = {}) {
     this.userDir = opts.userDir ?? userSkillsDir();
+    this.bundledDir = opts.bundledDir;
   }
 
   // Replace the installed skill packages; the installed-content service calls this after each load.
@@ -441,6 +445,11 @@ export class SkillStore {
       const skill = await this.loadPackageSkill(name, dir);
       if (skill) byName.set(name, skill);
     }
+    if (this.bundledDir) {
+      for (const skill of await this.scanDir(this.bundledDir)) {
+        if (basename(skill.filePath) === "SKILL.md" && !byName.has(skill.name)) byName.set(skill.name, skill);
+      }
+    }
     return [...byName.values(), ...this.pluginSkills.values(), ...this.agentPluginSkills.values()];
   }
 
@@ -469,6 +478,13 @@ export class SkillStore {
         });
       } catch (err) {
         log.warn(`skill catalog: package ${name} unreadable: %s`, (err as Error).message);
+      }
+    }
+    if (this.bundledDir) {
+      for (const skill of this.scanCatalogDirSync(this.bundledDir)) {
+        if (basename(skill.filePath) === "SKILL.md" && !byName.has(skill.name)) {
+          byName.set(skill.name, { name: skill.name, description: skill.description, triggers: skill.triggers });
+        }
       }
     }
     return [
@@ -534,7 +550,10 @@ export class SkillStore {
     }
     if (loaded[0]) return loaded[0];
     const packageDir = this.packageDirs.get(name);
-    return packageDir ? this.loadPackageSkill(name, packageDir) : null;
+    if (packageDir) return this.loadPackageSkill(name, packageDir);
+    return this.bundledDir
+      ? (await this.scanDir(this.bundledDir)).find((skill) => skill.name === name && basename(skill.filePath) === "SKILL.md") ?? null
+      : null;
   }
 
   // Resolve a plugin Skill only from an already-admitted immutable generation.
@@ -643,6 +662,14 @@ export class SkillStore {
         if ((await realpath(dir)) === canonicalDir) return true;
       } catch {
         // A package directory that is gone owns nothing.
+      }
+    }
+    if (this.bundledDir) {
+      try {
+        const rootRel = relative(await realpath(this.bundledDir), canonicalDir);
+        if (rootRel !== "" && !escapesRoot(rootRel) && rootRel.split(sep).length === 1) return true;
+      } catch {
+        // Absent packaged resources own no bundles.
       }
     }
     let canonicalRoot: string;

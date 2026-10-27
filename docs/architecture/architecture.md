@@ -72,6 +72,8 @@ The [page preview contract](page-document-preview.md) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
 The [agent document tools](agent-document-tools.md) reuse that parser with bounded
 model-context selections and policy-checked, session-bound panel requests.
+The [XLSX editing skill](xlsx-skill-editing.md) uses only the sandbox shell;
+the existing viewer exposes its in-file recalculation request.
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and

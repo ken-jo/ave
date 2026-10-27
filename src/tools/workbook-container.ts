@@ -420,6 +420,7 @@ export function prepareWorkbookContainer(
   format: "xlsx" | "xls" | "ods",
   limits: Readonly<PreviewDocumentLimits>,
   sheetIndex: number,
+  onCalculationState?: (needsRecalculation: boolean) => void,
 ): Buffer {
   if (format === "xls") {
     if (!CFB_MAGIC.every((byte, index) => bytes[index] === byte)) refuse("Document is not a compound binary workbook");
@@ -453,6 +454,16 @@ export function prepareWorkbookContainer(
   for (const key of decoded) {
     const part = xmlParts.get(key);
     if (part) scanXml(part, () => {});
+  }
+  if (format === "xlsx") {
+    let needsRecalculation = false;
+    scanXml(requiredPart(parts, "xl/workbook.xml"), (tag) => {
+      if (tag.closing || tag.localName !== "calcPr") return;
+      const enabled = (name: string): boolean => ["1", "true"].includes(tag.attributes.get(name) ?? "");
+      if (enabled("fullcalconload") || enabled("forcefullcalc")
+        || ["0", "false"].includes(tag.attributes.get("calccompleted") ?? "")) needsRecalculation = true;
+    });
+    onCalculationState?.(needsRecalculation);
   }
   return verdict.canonicalBytes;
 }

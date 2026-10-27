@@ -374,7 +374,9 @@
         "from": "resources/skills",
         "to": "skills",
         "filter": [
-          "*.md"
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
       },
       {
