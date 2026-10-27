@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
-import { detectHostMxcPrerequisites, probeHostMxcPowerShellStart } from "../../permissions/mxc-windows.js";
+import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
@@ -18,9 +18,9 @@ import { parseTableDocument } from "../table-document-reader.js";
 
 const quotePowerShell = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
-// This suite deliberately has no platform or capability skips: an unavailable native substrate is a failed prerequisite.
+// Unsupported host tiers carry a per-test skip reason; integrity, probe and execution failures remain failures.
 describe("native governed XLSX command", () => {
-  it("passes the real shell policy and confines the shipped runtime command", async () => {
+  it("passes the real shell policy and confines the shipped runtime command", async (testContext) => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-xlsx-sandbox-")));
     const path = join(directory, "budget.xlsx");
     const request = join(directory, "edits.json");
@@ -35,10 +35,7 @@ describe("native governed XLSX command", () => {
     writeFileSync(request, JSON.stringify({ sheet: 0, edits: [{ cell: "B1", value: 84 }] }));
     try {
       if (process.platform === "win32") {
-        const prerequisite = await detectHostMxcPrerequisites();
-        if (prerequisite.state !== "available") throw new Error(`Native container prerequisite: ${prerequisite.reason}: ${prerequisite.detail}`);
-        const started = await probeHostMxcPowerShellStart();
-        if (started.state !== "available") throw new Error(`Native container start: ${started.reason}: ${started.detail}`);
+        const started = await requireMxcCapability(testContext.skip);
         await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
         const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
           mxc: { state: "available" }, windowsBuild: started.windowsBuild, srtWinReady: false });
