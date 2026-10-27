@@ -438,8 +438,8 @@ describe("pre-push fast source tier", () => {
 // Select catalog consumers by changed key namespace instead of the shared translation import graph.
 describe("pre-push message catalog selection", () => {
   const MESSAGES = "src/i18n/messages";
-  const tracked = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "src", "test"], { encoding: "utf8" })
-    .split("\0").filter(Boolean);
+  const tracked = execFileSync("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "src", "test"], { encoding: "utf8" })
+    .split("\0").filter((path) => path !== "" && existsSync(resolve(root, path)));
   const texts = new Map<string, string>();
   const readTracked = (path: string) => {
     if (!texts.has(path)) texts.set(path, readFileSync(resolve(root, path), "utf8"));

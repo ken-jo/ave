@@ -38,6 +38,7 @@ export function createBootHostFixture(overrides: Partial<BootHost> = {}): BootHo
 export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilities> = {}): DesktopHostCapabilities {
   const unavailable = (): never => { throw new Error("test-desktop-capability-unused"); };
   return {
+    hasSingleInstanceLock: () => false,
     getAppWindows: () => [],
     openOAuthLogin: unavailable,
     getFocusedWindow: () => null,

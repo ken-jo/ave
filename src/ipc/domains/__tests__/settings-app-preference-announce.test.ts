@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { subscribeAppPreferenceChange } from "../../../plugins/config-change-bus.js";
 import { _resetAppPreferencePublisher } from "../../../boot/steps/plugin-runtime/app-preference.js";
@@ -63,6 +65,7 @@ function makeDeps(options: { initialFlow: WebViewPreferredFlow }) {
 }
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   handlers.clear();
   vi.clearAllMocks();
   // Reset the publisher's remembered baseline between tests.

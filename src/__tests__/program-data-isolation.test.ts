@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { getAdminPolicyPath } from "../permissions/policy-store.js";
@@ -10,6 +10,7 @@ import { readWindowsAdminPolicy } from "../shared/windows-admin-policy.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 import { setProcessPlatform } from "./support/process-platform.js";
 import * as policyHome from "../shared/policy-home.js";
+import { configureHostResources } from "../main/host-resources.js";
 
 const scratch = useTempDirs("program-data-guard-");
 const link = useScratchLinks();
@@ -67,6 +68,7 @@ describe.runIf(process.platform === "win32")("machine policy isolation", () => {
 
   it("refuses restored machine policy before native sandbox initialization", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../permissions/asrt-sandbox.js");

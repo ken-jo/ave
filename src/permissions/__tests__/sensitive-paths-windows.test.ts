@@ -1,3 +1,8 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+import { vi } from "vitest";
+
 import "../../__tests__/support/trusted-powershell.js";
 // Credential-store paths match case-insensitively even when scanned on a POSIX host; both host and sandbox projections must deny them.
 import { describe, expect, it } from "vitest";

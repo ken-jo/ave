@@ -1,3 +1,7 @@
+vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 /** Exercise service marshalling through real child and host components, including bytes that cannot survive UTF-8. */
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";

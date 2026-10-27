@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -15,7 +16,10 @@ import { wireReviewerAgent } from "../reviewer-wiring.js";
 let directory: string;
 let audit: AuditLogger | undefined;
 
-beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "reviewer-model-audit-")); });
+beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  directory = mkdtempSync(join(tmpdir(), "reviewer-model-audit-"));
+});
 afterEach(async () => {
   await audit?.close();
   audit = undefined;

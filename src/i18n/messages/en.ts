@@ -1,6 +1,12 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "homePrivacy.configurationPreservedTitle": "Configuration copy preserved",
+  "homePrivacy.configurationPreserved": "{file}: a root configuration file changed after migration. Review the copy at {path}.",
+  "homePrivacy.configurationUntrustedTitle": "Ave cannot trust its configuration",
+  "homePrivacy.configurationUntrusted": "Ave stopped because its configuration boundary could not be verified.\n\nPath: {path}\nCause: {reason}\n\nRestore this account's ownership of the home and config directories. Remove other accounts' write and delete access to the home and all access to config. Restore the migration marker from a trusted backup if it is missing or damaged, then restart Ave.",
+  "homePrivacy.boundaryRepairedTitle": "Private storage repaired",
+  "homePrivacy.boundaryRepaired": "Credentials may have been readable. Sign out and sign in again.",
   "providerSettingsError.title": "Unable to load provider settings",
   "providerSettingsError.detail": "The settings file contains an invalid field.\n\nFile: {path}\nField: {field}\n\nCorrect this field and restart Ave. The file has not been changed.",
   "oauthWindow.title": "Sign in",

@@ -1,3 +1,7 @@
+vi.mock("../shared/windows-path-facts.js", async original => (await import("../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../shared/windows-configuration-handles.js", async original => (await import("../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 /** Use scratch HOME and verify run cleanup never removes live owners or escapes test-tmp. */
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";

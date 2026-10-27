@@ -649,6 +649,7 @@ jobs:
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
           src/permissions/__tests__/policy-home.test.ts
+          src/shared/__tests__/windows-configuration-handles.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/executor.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
@@ -682,7 +683,11 @@ jobs:
           src/permissions/__tests__/windows-stamp-targets.test.ts
           src/permissions/__tests__/filesystem-policy-boundary.test.ts
           src/shared/__tests__/windows-read-deny-evidence.test.ts
+          src/shared/__tests__/ave-home-configuration-owners.test.ts
+          src/shared/__tests__/ave-home-configuration-authority.test.ts
           src/shared/__tests__/windows-path-facts.test.ts
+          src/shared/__tests__/windows-native-host.test.ts
+          src/shared/__tests__/windows-home-boundary-parity.test.ts
           src/shared/__tests__/windows-system-path.test.ts
           src/tools/__tests__/file-read-core.test.ts
           src/tools/__tests__/preview-document-process.test.ts
@@ -701,6 +706,11 @@ jobs:
           src/permissions/__tests__/mxc-windows.test.ts
           src/lib/__tests__/atomic-file.test.ts
           src/shared/__tests__/ave-home.test.ts
+          src/shared/__tests__/ave-home-boundaries.windows.test.ts
+          src/shared/__tests__/ave-home-configuration-read.windows.test.ts
+          src/shared/__tests__/windows-configuration-stat.windows.test.ts
+          src/shared/__tests__/ave-home-configuration.test.ts
+          src/main/storage/__tests__/feature-namespace.test.ts
           src/lib/__tests__/with-file-lock.test.ts
           src/data/__tests__/secret-document-store.test.ts
           src/plugins/__tests__/registry-atomicity.test.ts
