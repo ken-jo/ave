@@ -34,6 +34,7 @@ class FakeSession implements ScreencastTransport {
   methods() { return this.sent.map((entry) => entry.method); }
   count(method: string) { return this.sent.filter((entry) => entry.method === method).length; }
   get listening() { return this.listeners.size; }
+  get closing() { return this.closers.size; }
 }
 
 let session: FakeSession;
@@ -186,6 +187,32 @@ describe("agent browser screencast", () => {
     expect(session.listening).toBe(0);
     await expect(screencast.stop()).resolves.toBeUndefined();
     expect(session.count("Page.stopScreencast")).toBe(0);
+  });
+
+  it("settles a stop whose command never answers with a clear closed error when the session closes", async () => {
+    session.hang.add("Page.stopScreencast");
+    screencast.start();
+    let outcome: unknown = "pending";
+    screencast.stop().then(() => { outcome = "resolved"; }, (error: unknown) => { outcome = error; });
+    expect(session.open.get("Page.stopScreencast")).toHaveLength(1);
+    session.close("target closed");
+    await flush();
+    expect(outcome).toBeInstanceOf(ScreencastClosedError);
+    expect((outcome as Error).message).toBe("Browser preview session closed (target closed).");
+    expect(session.closing).toBe(0);
+  });
+
+  it("does not re-arm a hidden page and resumes the watchdog once it is visible again", async () => {
+    screencast.start();
+    session.emit("Page.screencastVisibilityChanged", { visible: false });
+    expect(callbacks.updating).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(OBSERVATION_LIMITS.previewSilenceMs * 5);
+    expect(session.count("Page.stopScreencast")).toBe(0);
+    expect(session.count("Page.startScreencast")).toBe(1);
+    session.emit("Page.screencastVisibilityChanged", { visible: true });
+    await vi.advanceTimersByTimeAsync(OBSERVATION_LIMITS.previewSilenceMs);
+    expect(session.count("Page.stopScreencast")).toBe(1);
+    expect(session.count("Page.startScreencast")).toBe(2);
   });
 
   it("reports a protocol failure as an error rather than a close", async () => {

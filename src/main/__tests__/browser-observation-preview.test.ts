@@ -20,7 +20,13 @@ const frame = { url: "file:///app/index.html", detached: false, isDestroyed: () 
 const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, isDestroyed: () => false,
   getType: () => "window", session: state.defaultSession, send: vi.fn() });
 const event = { sender, senderFrame: frame } as unknown as IpcMainInvokeEvent;
-const deps = { getAppWindows: () => [{ id: 1, isDestroyed: () => false, webContents: sender }], getMainWindow: () => null,
+// A second registered app window with its own main frame.
+const otherFrame = { url: "file:///app/index.html", detached: false, isDestroyed: () => false };
+const otherSender = Object.assign(new EventEmitter(), { id: 2, mainFrame: otherFrame, isDestroyed: () => false,
+  getType: () => "window", session: state.defaultSession, send: vi.fn() });
+const otherEvent = { sender: otherSender, senderFrame: otherFrame } as unknown as IpcMainInvokeEvent;
+const deps = { getAppWindows: () => [{ id: 1, isDestroyed: () => false, webContents: sender },
+  { id: 2, isDestroyed: () => false, webContents: otherSender }], getMainWindow: () => null,
   getSubAgentRunner: () => ({ liveOriginSessionId: () => undefined }) } as never;
 
 interface Started { guest: BrowserGuest; callbacks: ScreencastCallbacks; rendered: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }
@@ -105,6 +111,34 @@ describe("agent browser live preview", () => {
       expect(runtime.previewRequest(event, raw)).toEqual({ ok: false, error: "bad-request" });
     }
     expect(started).toEqual([]);
+  });
+
+  it("refuses another registered window's main frame for this window's preview", async () => {
+    const observed = await agentClick();
+    const request = { action: "start", targetId: observed.target.id, sessionId: identity.sessionId, tabId: "tab-1", frame: 0 };
+    expect(runtime.previewRequest(otherEvent, request)).toEqual({ ok: false, error: "unauthorized" });
+    expect(started).toEqual([]);
+    expect(runtime.previewRequest(event, request)).toEqual({ ok: true });
+    expect(runtime.previewRequest(otherEvent, { ...request, action: "stop" })).toEqual({ ok: false, error: "unauthorized" });
+    expect(started[0]!.stop).not.toHaveBeenCalled();
+    expect(otherSender.send).not.toHaveBeenCalled();
+  });
+
+  it("records tab operations and keeps the preview under one ownership rule after the agent's cross-origin navigation", async () => {
+    const observed = await agentClick();
+    // The agent's own navigation to a new origin clears original-origin provenance.
+    tab.opener = "user"; tab.agentOrigin = null;
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-switch", async () => 1));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events().at(-1)).toMatchObject({ kind: "action", after: { action: "tab-switch", tabId: "tab-1" } });
+    expect(request("start", observed.target.id)).toEqual({ ok: true });
+    // A user pause excludes both alike.
+    tab.controlMode = "human-paused";
+    const before = events().length;
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-switch", async () => 1));
+    await vi.advanceTimersByTimeAsync(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
+    expect(events()).toHaveLength(before);
+    expect(started[0]!.stop).toHaveBeenCalledOnce();
   });
 
   it("refuses user tabs: unowned, another session's and user-paused tabs never preview", async () => {

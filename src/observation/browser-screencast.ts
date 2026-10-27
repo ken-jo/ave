@@ -42,7 +42,8 @@ const START_PARAMS = Object.freeze({
  */
 export class BrowserScreencast {
   private readonly pending = new Set<(error: Error) => void>();
-  private readonly stops: (() => void)[] = [];
+  private stopEvents: (() => void) | undefined;
+  private stopCloseListener: (() => void) | undefined;
   private armed = false;
   private finished = false;
   private closedReason: string | undefined;
@@ -56,6 +57,7 @@ export class BrowserScreencast {
   private lastSentAt = -Infinity;
   private committedAt = -Infinity;
   private hasShownFrame = false;
+  private pageHidden = false;
   private frameNumber = 0;
 
   constructor(private readonly transport: ScreencastTransport, private readonly callbacks: ScreencastCallbacks) {}
@@ -63,8 +65,8 @@ export class BrowserScreencast {
   start(): void {
     if (this.armed || this.finished) throw new Error("Browser preview screencast already started.");
     this.armed = true;
-    this.stops.push(this.transport.onEvent((method, params) => this.onEvent(method, params)));
-    this.stops.push(this.transport.onClose((reason) => this.close(reason)));
+    this.stopEvents = this.transport.onEvent((method, params) => this.onEvent(method, params));
+    this.stopCloseListener = this.transport.onClose((reason) => this.close(reason));
     this.track(this.command("Page.startScreencast", START_PARAMS));
     this.watch();
   }
@@ -83,19 +85,24 @@ export class BrowserScreencast {
     this.flush();
   }
 
-  /** Stops forwarding at once; the stop command still uses the same session unless it already closed. */
+  /**
+   * Stops forwarding at once and sends the stop command on the same session. The close listener stays until that
+   * command settles, so a session that closes meanwhile rejects it with a closed error instead of leaving it pending.
+   */
   stop(): Promise<void> {
     if (this.finished) return Promise.resolve();
-    this.finish();
-    if (this.closedReason !== undefined) return Promise.resolve();
-    return this.command("Page.stopScreencast").then(() => undefined, (error: unknown) => {
-      if (!(error instanceof ScreencastClosedError)) throw error;
-    });
+    this.finish(false);
+    if (this.closedReason !== undefined) { this.releaseClose(); return Promise.resolve(); }
+    return this.command("Page.stopScreencast").then(() => undefined).finally(() => this.releaseClose());
   }
 
   private onEvent(method: string, params: Record<string, unknown>): void {
     if (method === "Page.screencastVisibilityChanged") {
-      if (this.armed && params.visible === false) this.callbacks.updating();
+      if (!this.armed || typeof params.visible !== "boolean") return;
+      // A hidden page paints nothing; silence is expected, so the watchdog waits until the page is visible again.
+      this.pageHidden = !params.visible;
+      if (this.pageHidden) this.callbacks.updating();
+      this.watch();
       return;
     }
     if (method !== "Page.screencastFrame") return;
@@ -141,9 +148,11 @@ export class BrowserScreencast {
 
   private watch(): void {
     if (this.watchdog) clearTimeout(this.watchdog);
+    this.watchdog = undefined;
+    if (this.pageHidden) return;
     this.watchdog = setTimeout(() => {
       this.watchdog = undefined;
-      if (!this.armed) return;
+      if (!this.armed || this.pageHidden) return;
       this.rearm();
       this.watch();
     }, OBSERVATION_LIMITS.previewSilenceMs);
@@ -189,16 +198,22 @@ export class BrowserScreencast {
     const error = new ScreencastClosedError(reason);
     for (const reject of [...this.pending]) reject(error);
     this.pending.clear();
+    this.releaseClose();
     this.fail(error);
+  }
+
+  private releaseClose(): void {
+    this.stopCloseListener?.();
+    this.stopCloseListener = undefined;
   }
 
   private fail(error: Error): void {
     if (this.finished) return;
-    this.finish();
+    this.finish(true);
     this.callbacks.ended(error);
   }
 
-  private finish(): void {
+  private finish(releaseClose: boolean): void {
     this.finished = true;
     this.armed = false;
     this.queued = undefined;
@@ -206,6 +221,9 @@ export class BrowserScreencast {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.watchdog = undefined;
     this.flushTimer = undefined;
-    for (const stop of this.stops.splice(0)) stop();
+    this.stopEvents?.();
+    this.stopEvents = undefined;
+    // A failure ends everything; a normal stop keeps listening for close until its command settles.
+    if (releaseClose) this.releaseClose();
   }
 }

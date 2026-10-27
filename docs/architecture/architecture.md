@@ -169,30 +169,33 @@ A live preview shows the agent's tab where that tab is open in another panel:
 the second slot of the same web surface, beneath its activity strip. It is bound
 to the exact main-issued tab handle and observation target of the latest agent
 action for that renderer tab, and never falls back to another tab. Main admits
-only a tab that the acting session leases or owns, that is not paused by the
-user, and on which that session ran a command within the last 30 seconds.
-Recognized user input, address-bar navigation and Stop pause an agent-owned tab;
-the agent's own cross-origin navigation does not. User takeover, user
-navigation, idleness, session end and window or frame loss stop it. It reuses
-the guest's existing in-process debugger session through Chromium's screencast:
-it never attaches a debugger and opens no remote debugging port. Frames are
-JPEG, at most 640x400, every third compositor frame, and at most four forwarded
-per second with one unrendered frame in flight. Main acknowledges every Chromium
-frame on receipt, independently of renderer delivery. The screencast is re-armed
-on each main-frame commit and after two seconds without a frame. Only a frame
-within 1.5 seconds of a commit is decoded: a uniform one keeps the previous
-frame, marked as updating; later uniform frames render. A forwarded frame the
-renderer never reports painted stops blocking delivery after two seconds.
-Closing the page session rejects pending preview commands at once with a closed
-error. A transient empty URL during a cross-site commit is not a close. Frames
-use a separate private push channel beside the observation stream and never
-enter the daemon, its queues, event history, transcripts or files. The renderer
-keeps only the newest frame for a preview element while that element is shown. A
-mounted panel that is hidden, has no size, is outside the viewport or sits in a
-hidden document stops the preview and drops its frame. A hidden guest paints no
-frames, so its preview keeps the last real frame marked as updating. The agent's
-typing tools already refuse password, card and one-time code fields, so the
-preview adds no secret-input display path.
+only a tab that the acting session leases or owns (the same ownership rule that
+admits tab switch and close events), that is not paused by the user, and on
+which that session ran a command within the last 30 seconds. Recognized user
+input, address-bar navigation and Stop pause an agent-owned tab; the agent's own
+cross-origin navigation does not. User takeover, user navigation, idleness,
+session end and window or frame loss stop it. It reuses the guest's existing in-
+process debugger session through Chromium's screencast: it never attaches a
+debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
+every third compositor frame, and at most four forwarded per second with one
+unrendered frame in flight. Main acknowledges every Chromium frame on receipt,
+independently of renderer delivery. The screencast is re-armed on each main-
+frame commit and after two seconds without a frame while Chromium reports the
+page visible; a hidden page is not re-armed until it is visible again. Only a
+frame within 1.5 seconds of a commit is decoded: a uniform one keeps the
+previous frame, marked as updating; later uniform frames render. A forwarded
+frame the renderer never reports painted stops blocking delivery after two
+seconds. Closing the page session rejects pending preview commands, including a
+stop in progress, at once with a closed error. A transient empty URL during a
+cross-site commit is not a close. Frames use a separate private push channel
+beside the observation stream and never enter the daemon, its queues, event
+history, transcripts or files. The renderer keeps only the newest frame for a
+preview element while that element is shown. A mounted panel that is hidden, has
+no size, is outside the viewport or sits in a hidden document stops the preview
+and drops its frame. A hidden guest paints no frames, so its preview keeps the
+last real frame marked as updating. The agent's typing tools already refuse
+password, card and one-time code fields, so the preview adds no secret-input
+display path.
 
 The document adapter starts an exact target, accepts a rendered snapshot and
 agent mutation evidence, reconciles a settled save, and disposes all watches,

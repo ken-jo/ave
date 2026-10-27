@@ -10,7 +10,7 @@ import {
   type ObservationAck, type ObservationIdentity,
 } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
-import { setAgentBrowserObservationSink, type AgentBrowserCommandReceipt, type AgentBrowserObservationSink } from "../tools/agent-browser-observation.js";
+import { agentDrivesTab, setAgentBrowserObservationSink, type AgentBrowserCommandReceipt, type AgentBrowserObservationSink } from "../tools/agent-browser-observation.js";
 import { browserTabRegistry, type BrowserGuest, type BrowserTabRecord } from "./browser/browser-tab-registry.js";
 import { ScreencastClosedError } from "../observation/browser-screencast.js";
 import { createLogger } from "../lib/logger.js";
@@ -260,12 +260,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
 
   private previewAllowed(view: BrowserView, tab: BrowserTabRecord<BrowserGuest>, guest: BrowserGuest): boolean {
     if (this.disposed || tab.guest !== guest || guest.isDestroyed() || tab.windowId !== view.windowId) return false;
-    // Any recognized user input, address-bar navigation or Stop pauses an agent-owned tab. The agent's own
-    // cross-origin navigation clears the tab's original-origin provenance but is not user browsing.
-    if (tab.controlMode === "human-paused") return false;
-    const leased = tab.lease?.actor.sessionId === view.sessionId;
-    const owned = tab.owner?.sessionId === view.sessionId;
-    if (!leased && !owned) return false;
+    if (!agentDrivesTab(tab, view.sessionId)) return false;
     const activity = this.activity.get(tab.handle);
     if (!activity || activity.sessionId !== view.sessionId) return false;
     return activity.active > 0 || Date.now() - activity.endedAt < OBSERVATION_LIMITS.previewIdleMs;
@@ -276,7 +271,10 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     this.previews.delete(preview.view.id);
     if (notify) this.sendPreview(preview.view, { targetId: preview.view.id, sessionId: preview.view.sessionId,
       tabId: preview.tab.handle, kind: "state", state: notify });
-    preview.handle.stop().then(undefined, (error: unknown) => logger.error({ err: error }, "Browser preview stop failed."));
+    preview.handle.stop().then(undefined, (error: unknown) => {
+      // The page session closing while the stop was pending already ended the screencast.
+      if (!(error instanceof ScreencastClosedError)) logger.error({ err: error }, "Browser preview stop failed.");
+    });
   }
 
   private sendPreview(view: BrowserView, message: BrowserObservationPreviewMessage): void {
