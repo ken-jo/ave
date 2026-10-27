@@ -1,6 +1,6 @@
 import { closeSync, fstatSync, lstatSync, openSync, type BigIntStats } from "node:fs";
 import type { WindowsPathFacts } from "./windows-path-facts.js";
-import { assertWindowsNativeHost } from "./windows-native-host.js";
+import { runWindowsNative } from "./windows-native-host.js";
 
 type ConfigurationFacts = Pick<WindowsPathFacts, "volumeSerialNumber" | "fileIndex" | "changeTime" | "directory" | "fileSystemName">;
 export interface WindowsConfigurationHandleEntry {
@@ -23,7 +23,7 @@ export interface WindowsConfigurationHandles {
   close(): void;
 }
 
-function matchesFacts(stat: BigIntStats, entry: WindowsConfigurationHandleEntry): boolean {
+export function matchesWindowsConfigurationFacts(stat: BigIntStats, entry: WindowsConfigurationHandleEntry): boolean {
   const { facts } = entry;
   // The 64-bit runtime index is unique only on the certified filesystem and volume.
   return facts.fileSystemName === "NTFS" && facts.volumeSerialNumber !== null && facts.fileIndex !== null
@@ -39,7 +39,6 @@ export function openWindowsConfigurationHandles(entries: readonly WindowsConfigu
   handles: WindowsConfigurationHandles | undefined;
   fileOpened: boolean;
 } {
-  assertWindowsNativeHost();
   const descriptors: number[] = [];
   let fileOpened = false;
   const close = (): void => { for (const descriptor of descriptors.splice(0)) closeSync(descriptor); };
@@ -47,7 +46,7 @@ export function openWindowsConfigurationHandles(entries: readonly WindowsConfigu
     try {
       return entries.every((entry, index) => {
         const stat = fstatSync(descriptors[index]!, { bigint: true });
-        if (!matchesFacts(stat, entry)) return false;
+        if (!matchesWindowsConfigurationFacts(stat, entry)) return false;
         if (!entry.facts.directory) return true;
         // A followed junction can reach the old object. Its directory entry must match too.
         const named = lstatSync(entry.path, { bigint: true });
@@ -55,13 +54,15 @@ export function openWindowsConfigurationHandles(entries: readonly WindowsConfigu
       });
     } catch { return false; }
   };
-  try {
-    for (const entry of entries) {
-      descriptors.push(openSync(entry.path, "r"));
-      if (!entry.facts.directory) fileOpened = true;
-    }
-    if (matches()) return { handles: { descriptors, matches, close }, fileOpened };
-  } catch { /* Missing or unstatable handles require native verification. */ }
-  close();
-  return { handles: undefined, fileOpened };
+  return runWindowsNative(() => {
+    try {
+      for (const entry of entries) {
+        descriptors.push(openSync(entry.path, "r"));
+        if (!entry.facts.directory) fileOpened = true;
+      }
+      if (matches()) return { handles: { descriptors, matches, close }, fileOpened };
+    } catch { /* Missing or unstatable handles require native verification. */ }
+    close();
+    return { handles: undefined, fileOpened };
+  });
 }

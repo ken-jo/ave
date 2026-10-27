@@ -1,12 +1,14 @@
 /** Give each test file its own home within the per-run root, removed at teardown. */
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, afterEach, expect } from "vitest";
+import { getBuiltinModule } from "node:process";
+import { afterAll, afterEach, beforeEach, expect } from "vitest";
 import { installWindowsNativeTripwire } from "./support/windows-native-tripwire.js";
 
 // Capture the real host before suite code can replace process.platform.
-const host = process.platform;
-const tripwire = installWindowsNativeTripwire(host, () => expect.getState().testPath);
+const HOST_TYPE = getBuiltinModule("node:os").type();
+const host = HOST_TYPE === "Windows_NT" ? "win32" : HOST_TYPE === "Darwin" ? "darwin" : "linux";
+let tripwire = await installWindowsNativeTripwire(host, () => expect.getState().testPath);
 const reportNativeViolation = (): void => {
   // Native readers deliberately catch I/O errors. A caught violation must still
   // fail the suite with the original actionable diagnostic.
@@ -14,6 +16,10 @@ const reportNativeViolation = (): void => {
   if (error) throw error;
 };
 afterEach(reportNativeViolation);
+beforeEach(async () => {
+  tripwire.restore();
+  tripwire = await installWindowsNativeTripwire(host, () => expect.getState().testPath);
+});
 afterAll(() => {
   tripwire.restore();
   reportNativeViolation();

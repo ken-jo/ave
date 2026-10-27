@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { assertWindowsNativeHost } from "./windows-native-host.js";
+import { runWindowsNative } from "./windows-native-host.js";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -186,11 +186,10 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
         } catch {
           @{ reason=$_.Exception.InnerException.Message } | ConvertTo-Json -Compress
         }`;
-      assertWindowsNativeHost();
-      const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+      const output = runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
         "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),
       ], { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
-        AVE_DACL_REQUEST: JSON.stringify({ path: home }) }) });
+        AVE_DACL_REQUEST: JSON.stringify({ path: home }) }) }));
       const result = JSON.parse(output) as { committed?: unknown; reason?: unknown };
       if (typeof result.reason === "string") throw new Error(result.reason);
       if (typeof result.committed !== "boolean") throw new Error("Invalid boundary verification result");
@@ -381,10 +380,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   });
 }
 
-function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoot?: string): WindowsDirectoryDacl[] {
-  if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
-    return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
-  }
+export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string) {
   const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
     $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
@@ -435,12 +431,21 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
       ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
     } finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }`;
   const bootstrap = "$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))";
-  assertWindowsNativeHost();
-  const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+  return { file: win32SystemBinary("WindowsPowerShell/v1.0/powershell"), args: [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
   // A one-shot process cannot separate cold startup from its directory operation.
-  ], { input: script, encoding: "utf-8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) });
+  ], options: { input: script, encoding: "utf-8" as const, windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs, env: windowsPowerShellEnv({ ...process.env,
+    AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) } };
+}
+
+function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoot?: string): WindowsDirectoryDacl[] {
+  if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
+    return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
+  }
+  const output = runWindowsNative(() => {
+    const { file, args, options } = windowsDirectoryProtectionRequest(paths, claimableRuntimeRoot);
+    return execFileSync(file, args, options);
+  });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length !== paths.length) {
     throw new Error("Directory DACL read-back returned an invalid result set");
@@ -468,12 +473,11 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent();
     $elevated=([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
     [HomeDirectoryDacl]::AcknowledgeRepair($request.home,$request.name,$identity.User,$elevated);`;
-  assertWindowsNativeHost();
-  execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+  runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
     Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")], {
     input: script, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ home, name }) }),
-  });
+  }));
 }
 
 let bootHomePrivacy: AveHomePrivacy | undefined;

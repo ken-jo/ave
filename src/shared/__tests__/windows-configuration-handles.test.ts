@@ -2,7 +2,7 @@ import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
-import { openWindowsConfigurationHandles, type WindowsConfigurationHandleEntry } from "../windows-configuration-handles.js";
+import { matchesWindowsConfigurationFacts, openWindowsConfigurationHandles, type WindowsConfigurationHandleEntry } from "../windows-configuration-handles.js";
 
 const temporary = useTempDirs("configuration-facts-");
 
@@ -19,19 +19,15 @@ describe("configuration handle filesystem admission", () => {
   it.each(["ReFS", "exFAT", null, undefined])("refuses warm handles for filesystem %s despite matching runtime IDs", fileSystemName => {
     const path = join(temporary(), "configuration.json");
     writeFileSync(path, "{}");
-    const opened = openWindowsConfigurationHandles([entry(path, fileSystemName)]);
-    expect(opened.handles).toBeUndefined();
-    expect(opened.fileOpened).toBe(true);
+    expect(matchesWindowsConfigurationFacts(lstatSync(path, { bigint: true }), entry(path, fileSystemName))).toBe(false);
   });
 
   it("requires the certified volume serial to match the retained handle", () => {
     const path = join(temporary(), "configuration.json");
     writeFileSync(path, "{}");
     const certified = entry(path, "NTFS");
-    const opened = openWindowsConfigurationHandles([{ ...certified,
-      facts: { ...certified.facts, volumeSerialNumber: `0x${(BigInt(certified.facts.volumeSerialNumber!) + 1n).toString(16)}` } }]);
-    expect(opened.handles).toBeUndefined();
-    expect(opened.fileOpened).toBe(true);
+    expect(matchesWindowsConfigurationFacts(lstatSync(path, { bigint: true }), { ...certified,
+      facts: { ...certified.facts, volumeSerialNumber: `0x${(BigInt(certified.facts.volumeSerialNumber!) + 1n).toString(16)}` } })).toBe(false);
   });
 
   it("requires every retained directory to have a certified filesystem", () => {
@@ -39,16 +35,15 @@ describe("configuration handle filesystem admission", () => {
     mkdirSync(directory);
     const path = join(directory, "configuration.json");
     writeFileSync(path, "{}");
-    const opened = openWindowsConfigurationHandles([entry(directory, null), entry(path, "NTFS")]);
-    expect(opened.handles).toBeUndefined();
-    expect(opened.fileOpened).toBe(true);
+    const entries = [entry(directory, null), entry(path, "NTFS")];
+    expect(entries.every(value => matchesWindowsConfigurationFacts(lstatSync(value.path, { bigint: true }), value))).toBe(false);
   });
 
-  it("does not observe a file whose open fails", () => {
+  it.runIf(process.platform === "win32")("does not observe a file whose open fails", () => {
     const path = join(temporary(), "configuration.json");
     writeFileSync(path, "{}");
     const certified = entry(path, "NTFS");
-    const opened = openWindowsConfigurationHandles([{ ...certified, path: `${path}.missing` }]);
-    expect(opened).toEqual({ handles: undefined, fileOpened: false });
+    expect(openWindowsConfigurationHandles([{ ...certified, path: `${path}.missing` }]))
+      .toEqual({ handles: undefined, fileOpened: false });
   });
 });

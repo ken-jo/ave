@@ -1,13 +1,11 @@
 import { execFileSync } from "node:child_process";
-import * as childProcess from "node:child_process";
 import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
-import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
-import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -121,14 +119,9 @@ describe("Windows path facts admission and evaluation", () => {
   });
 });
 
-// The decoder is platform-independent: stub the helper and its output so every shard runs these.
+// Decode wire output without invoking native code.
 describe("Windows path facts decoder", () => {
-  const PINNED = "/fixture/target";
-  const decode = (rows: unknown[]): readonly WindowsPathFacts[] => {
-    const helper = vi.spyOn(pathKindLauncher, "resolveWindowsPathKindHelper").mockReturnValue("ave-path-kind.exe");
-    const output = vi.spyOn(childProcess, "execFileSync").mockReturnValue(JSON.stringify(rows));
-    try { return pinWindowsPaths([PINNED]); } finally { output.mockRestore(); helper.mockRestore(); }
-  };
+  const decode = (rows: unknown[]): readonly WindowsPathFacts[] => decodeWindowsPathFacts(JSON.stringify(rows), 1, "--pin");
 
   it("decodes a hex changeTime for targets and ancestors", () => {
     const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };

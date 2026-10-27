@@ -16,7 +16,7 @@ describe("native Windows tripwire", () => {
   it.each(["linux", "darwin"] as const)("blocks real native entry points on a captured %s host", async host => {
     const facts = await vi.importActual<typeof pathFacts>("../../shared/windows-path-facts.js");
     const handles = await vi.importActual<typeof configurationHandles>("../../shared/windows-configuration-handles.js");
-    const tripwire = installWindowsNativeTripwire(host, () => expect.getState().testPath);
+    let tripwire = await installWindowsNativeTripwire(host, () => expect.getState().testPath);
     const path = join(tmpdir(), "native-tripwire-missing");
     try {
       for (const read of [facts.pinWindowsPaths, facts.readWindowsDacls]) {
@@ -35,6 +35,8 @@ describe("native Windows tripwire", () => {
       vi.restoreAllMocks();
       vi.resetModules();
       const reloaded = await vi.importActual<typeof pathFacts>("../../shared/windows-path-facts.js");
+      tripwire.restore();
+      tripwire = await installWindowsNativeTripwire(host, () => expect.getState().testPath);
       expect(() => reloaded.pinWindowsPaths([path])).toThrow(/simulated-win32-drive\.ts/);
       expect(tripwire.takeViolation()?.message).toContain(`host ${host}`);
     } finally { tripwire.restore(); }
@@ -43,21 +45,36 @@ describe("native Windows tripwire", () => {
   it("passes through unchanged on a captured Windows host", async () => {
     const os = await vi.importActual<typeof import("node:os")>("node:os");
     const platform = os.platform;
-    const tripwire = installWindowsNativeTripwire("win32", () => expect.getState().testPath);
+    const tripwire = await installWindowsNativeTripwire("win32", () => expect.getState().testPath);
     try {
       expect(os.platform).toBe(platform);
       expect(tripwire.takeViolation()).toBeUndefined();
     } finally { tripwire.restore(); }
   });
 
-  it("lets the per-file simulated factories bypass native access", () => {
-    const tripwire = installWindowsNativeTripwire("linux", () => expect.getState().testPath);
+  it("lets the per-file simulated factories bypass native access", async () => {
+    const tripwire = await installWindowsNativeTripwire("linux", () => expect.getState().testPath);
     try {
       const path = join(tmpdir(), "native-tripwire-missing");
       expect(pathFacts.pinWindowsPaths([path])[0]!.exists).toBe(false);
       expect(pathFacts.readWindowsDacls([path])[0]!.exists).toBe(false);
-      expect(configurationHandles.openWindowsConfigurationHandles([])).toEqual({ handles: undefined, fileOpened: false });
+      const { simulatedConfigurationHandles } = await import("./simulated-win32-drive.js");
+      const provider = vi.fn(() => ({ handles: undefined, fileOpened: false }));
+      const simulated = simulatedConfigurationHandles({ ...configurationHandles, openWindowsConfigurationHandles: provider }, "win32");
+      expect(simulated.openWindowsConfigurationHandles([])).toEqual({ handles: undefined, fileOpened: false });
+      expect(provider).toHaveBeenCalledOnce();
       expect(tripwire.takeViolation()).toBeUndefined();
     } finally { tripwire.restore(); }
+  });
+
+  it("reports a caught native violation without stack traces", async () => {
+    const nativeHost = await import("../../shared/windows-native-host.js");
+    const limit = Error.stackTraceLimit;
+    const tripwire = await installWindowsNativeTripwire("darwin", () => "example.test.ts");
+    try {
+      Error.stackTraceLimit = 0;
+      try { nativeHost.runWindowsNative(() => undefined); } catch { /* Exercise caught failures. */ }
+      expect(tripwire.takeViolation()?.message).toMatch(/example\.test\.ts.*host darwin.*simulated-win32-drive\.ts/);
+    } finally { Error.stackTraceLimit = limit; tripwire.restore(); }
   });
 });

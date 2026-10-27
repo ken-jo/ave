@@ -10,6 +10,7 @@ import { withAveHomeConfigurationMigration } from "./ave-home-configuration-acce
 import { isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 import { admitWindowsReparse, pinWindowsPaths, readWindowsDacls, windowsObjectKey } from "./windows-path-facts.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
+import { runWindowsNative } from "./windows-native-host.js";
 
 const CONFIGURATION_FILES = ["settings.json", "policy.json", "ave-secrets.json"] as const;
 
@@ -235,10 +236,10 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     if ($request.cleanup) { $result = [HomeDirectoryDacl]::CleanupConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated) }
     else { $result = [HomeDirectoryDacl]::MigrateConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated, [string[]]$request.hashes) }
     ConvertTo-Json -InputObject @($result) -Compress`;
-  const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+  const output = runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),
   ], { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ home, directory: AVE_HOME_CONFIGURATION_DIRECTORY, names: CONFIGURATION_FILES, hashes, cleanup }) }) });
+    AVE_DACL_REQUEST: JSON.stringify({ home, directory: AVE_HOME_CONFIGURATION_DIRECTORY, names: CONFIGURATION_FILES, hashes, cleanup }) }) }));
   return JSON.parse(output);
 }
 
