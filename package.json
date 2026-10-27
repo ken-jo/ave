@@ -38,7 +38,7 @@
   },
   "main": "dist/src/main/main.js",
   "scripts": {
-    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/hooks/install.mjs",
+    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/fetch-mxc.mjs --current && node scripts/hooks/install.mjs",
     "build:main": "node scripts/build-main-esbuild.mjs",
     "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
     "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",

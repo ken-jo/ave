@@ -23,12 +23,20 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+// postinstall stages the launcher for the host arch on Windows only, so a dev checkout runs MXC tests like CI.
+export function currentMxcArch(platform = process.platform, arch = process.arch) {
+  if (platform !== "win32") return null;
+  if (!Object.hasOwn(WXC_EXEC_SHA256, arch)) throw new Error(`fetch-mxc: no pinned launcher for win32-${arch}`);
+  return arch;
+}
+
 function parseArgs(argv) {
   let arch;
   let tarball;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--arch") arch = argv[++i];
+    else if (arg === "--current") arch = currentMxcArch() ?? "";
     else if (arg === "--tarball") tarball = argv[++i];
     else throw new Error(`fetch-mxc: unknown argument ${arg}`);
   }
@@ -78,6 +86,7 @@ export async function stageMxcLauncher({ arch, tarball, projectRoot = PROJECT_RO
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  if (process.argv.includes("--current") && currentMxcArch() === null) process.exit(0);
   const staged = await stageMxcLauncher(parseArgs(process.argv.slice(2)));
   process.stdout.write(`fetch-mxc: ${path.relative(PROJECT_ROOT, staged)} (mxc-sdk ${MXC_PACKAGE_VERSION})\n`);
 }
