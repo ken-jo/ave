@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as childProcess from "node:child_process";
@@ -37,14 +37,21 @@ beforeEach(() => {
   vi.clearAllMocks();
   setProcessPlatform("linux");
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "verified-permission-flow-")));
+  mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
+  mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
+  writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(cwd, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = false\n");
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
   auditLogger = new AuditLogger(join(cwd, "audit"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("allow");
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(false);
-  vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: "/usr/bin/bash" });
-  vi.mocked(childProcess.execFileSync).mockImplementation(() => { throw new Error("Native probes are outside this permission fixture"); });
+  vi.mocked(resolveVerifiedExecutable).mockImplementation((candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
+  vi.mocked(childProcess.execFileSync).mockImplementation((executable, args) => {
+    if (executable === "/usr/bin/git" && args?.includes("--version")) return "git version 2.54.0\n";
+    throw new Error("Unexpected native probe in permission fixture");
+  });
   vi.mocked(shellResolver.resolveShell).mockReturnValue({ cmd: "/bin/bash", shellArgs: (command) => ["-c", command] });
   vi.mocked(shellResolver.shellEnvForChild).mockImplementation((_, environment) => ({ ...environment, LD_PRELOAD: "/untrusted-loader", DYLD_INSERT_LIBRARIES: "/untrusted-loader" }));
   vi.mocked(shellResolver.getBashCapabilities).mockReturnValue({ unicodeEscapes: true, prefixAssignmentRhs: "sequential" });
@@ -60,7 +67,7 @@ afterEach(async () => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(command = COMMAND) {
   const wc = { send: vi.fn(), isDestroyed: () => false };
   gate = new ApprovalGate(wc as never, undefined, 3000);
   const registry = new ToolRegistry();
@@ -68,17 +75,23 @@ function fixture() {
   const execute = vi.spyOn(tool, "execute").mockImplementation(async (_input, context) => {
     expect(context.verifiedShellCommand).toBeDefined();
     const prepared = preparedShellCommand(context.preparedShellInvocation!);
-    expect(prepared.argv.at(-1)).toBe("'/usr/bin/bash' '--noprofile' '--norc' '-p' '-c' 'printf ready'");
+    if (command === COMMAND) expect(prepared.argv.at(-1)).toBe("'/usr/bin/bash' '--noprofile' '--norc' '-p' '-c' 'printf ready'");
+    else {
+      expect(prepared.argv.at(-1)).toContain("'/usr/bin/git'");
+      expect(prepared.argv.at(-1)).toContain(`'--git-dir=${join(cwd, ".git")}'`);
+      expect(prepared.argv.at(-1)).toContain(`'--work-tree=${cwd}'`);
+      expect(prepared.environment).toMatchObject({ GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd, GIT_REFERENCE_BACKEND: "files", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" });
+    }
     expect(prepared.environment).not.toHaveProperty("LD_PRELOAD");
     expect(prepared.environment).not.toHaveProperty("DYLD_INSERT_LIBRARIES");
-    expect(_input).toMatchObject({ command: COMMAND });
+    expect(_input).toMatchObject({ command });
     return { output: "bound native output", isError: false };
   });
   registry.register(tool);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
   let serial = 0;
-  const run = (headless: boolean, command = COMMAND) => runWithToolExecutionCwd(cwd, () => executor.executeAll(
-    [{ id: `native-flow-${++serial}`, name: "bash", input: { command } }],
+  const run = (headless: boolean, inputCommand = command) => runWithToolExecutionCwd(cwd, () => executor.executeAll(
+    [{ id: `native-flow-${++serial}`, name: "bash", input: { command: inputCommand } }],
     { sessionId: "native-flow", permissionContext: userPermissionContext({ headless }) },
   ));
   return { wc, execute, run };
@@ -126,11 +139,53 @@ it("refuses a startup-proven recipe headlessly under a broad grant", async () =>
 it.each([
   ["git log", "Bash(git log *)"],
   ["git show --no-patch HEAD", "Bash(git show *)"],
-  ["git diff --cached --name-only", "Bash(git diff *)"],
+  ["git diff --raw HEAD main", "Bash(git diff *)"],
   ["git diff --name-only 'HEAD~1' HEAD", "Bash(git diff *)"],
   ["git rev-parse --verify HEAD", "Bash(git rev-parse *)"],
   ["git branch --list", "Bash(git branch *)"],
-])("keeps %s unproven through the canonical executor despite stored grants", async (command, broadRule) => {
+])("executes checked %s headlessly only after its exact grant", async (command, broadRule) => {
+  const f = fixture(command);
+  manager.setRules([withCurrentShellRuleVersion({ pattern: broadRule, action: "allow" })]);
+  const [blocked] = await f.run(true);
+  expect(blocked!.is_error).toBe(true);
+  expect(f.execute).not.toHaveBeenCalled();
+  manager.setRules([withCurrentShellRuleVersion({ pattern: `Bash(${command})`, action: "allow" })]);
+  const [allowed] = await f.run(true);
+  expect(allowed!.is_error).not.toBe(true);
+  expect(f.execute).toHaveBeenCalledOnce();
+  expect(f.wc.send).not.toHaveBeenCalled();
+});
+
+it("offers the original checked repository command for persistent approval", async () => {
+  const command = "git log 'HEAD'";
+  const f = fixture(command);
+  const pending = f.run(false);
+  await vi.waitFor(() => expect(f.wc.send.mock.calls.some(([channel]) => channel === IPC_APPROVAL_REQUEST)).toBe(true));
+  const [, card] = f.wc.send.mock.calls.find(([channel]) => channel === IPC_APPROVAL_REQUEST)!;
+  expect(card.shellRule).toMatchObject({ exactRule: "Bash(git log 'HEAD')", persistentAllowed: true });
+  expect(card).not.toHaveProperty("verifiedShellCommand");
+  const snapshot = gate.getRequestSnapshot(card.id)!;
+  expect(snapshot.verifiedShellCommand).toBeDefined();
+  expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always" }, {
+    decision: "allow", scope: "persistent", displayedVerdictAtApproval: snapshot.verdictAtApproval,
+  }, manager)).toMatchObject({ ok: true });
+  gate.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+  await pending;
+  const [next] = await f.run(true);
+  expect(next!.is_error).not.toBe(true);
+  expect(f.execute).toHaveBeenCalledOnce();
+});
+
+it.each([
+  ["git status", "Bash(git status *)"],
+  ["git show HEAD", "Bash(git show *)"],
+  ["git diff --name-only", "Bash(git diff *)"],
+  ["git diff --cached --name-only", "Bash(git diff *)"],
+  ["git diff --staged --name-only", "Bash(git diff *)"],
+  ["git diff --staged --raw", "Bash(git diff *)"],
+  ["git diff --cached --stat", "Bash(git diff *)"],
+  ["git log --show-signature", "Bash(git log *)"],
+])("keeps unsupported %s unproven through the canonical executor despite stored grants", async (command, broadRule) => {
   const f = fixture();
   const backend = vi.fn(() => { throw new Error("The reviewer backend must not run for an unproven command"); });
   manager.setReviewer({ classifier: { classify: backend }, cache: new VerdictCache(join(cwd, "verdicts.jsonl")), deferredQueue: new DeferredQueue(join(cwd, "deferred.jsonl")) });
@@ -147,7 +202,19 @@ it.each([
   expect(f.wc.send).not.toHaveBeenCalled();
   expect(verifiedCommands.prepareVerifiedShellCommand).toHaveBeenCalledWith({ command, dialect: "bash", cwd });
   expect(verifiedCommands.prepareVerifiedShellCommand).toHaveReturnedWith(undefined);
-  expect(resolveVerifiedExecutable).not.toHaveBeenCalled();
-  expect(childProcess.execFileSync).not.toHaveBeenCalled();
   expect(childProcess.spawn).not.toHaveBeenCalled();
+});
+
+it("rejects unsafe repository inputs despite persisted exact and broad grants", async () => {
+  const f = fixture("git log");
+  writeFileSync(join(cwd, ".git", "config"), "[include]\n\tpath = outside-config\n");
+  manager.setRules([
+    withCurrentShellRuleVersion({ pattern: "Bash(git log)", action: "allow" }),
+    withCurrentShellRuleVersion({ pattern: "Bash(git *)", action: "allow" }),
+  ]);
+  const [result] = await f.run(true);
+  expect(result!.is_error).toBe(true);
+  expect(f.execute).not.toHaveBeenCalled();
+  expect(f.wc.send).not.toHaveBeenCalled();
+  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveReturnedWith(undefined);
 });

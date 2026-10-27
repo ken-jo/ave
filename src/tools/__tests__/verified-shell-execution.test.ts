@@ -38,20 +38,30 @@ afterEach(() => {
 });
 
 // Supported-host transport simulation: no native command or installation proof runs in these fixtures.
-function fixture(sandboxed = false) {
+function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'printf ready'") {
   setProcessPlatform("linux");
   const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "verified-shell-execution-")));
   roots.push(cwd);
+  mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
+  mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
+  writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(cwd, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = false\n");
   const executable = join(cwd, "proved-image");
   const shadowDirectory = join(cwd, "shadow");
   mkdirSync(shadowDirectory);
   writeFileSync(executable, "controlled image", { mode: 0o755 });
   writeFileSync(join(shadowDirectory, "bash"), "shadow image", { mode: 0o755 });
-  vi.spyOn(childProcess, "execFileSync").mockImplementation(() => { throw new Error("Native probes are outside this controlled transport fixture"); });
+  writeFileSync(join(shadowDirectory, "git"), "shadow image", { mode: 0o755 });
+  vi.spyOn(childProcess, "execFileSync").mockImplementation((image, args) => {
+    if (image === executable && args?.includes("--version")) return "git version 2.54.0\n";
+    throw new Error("Unexpected native probe in controlled transport fixture");
+  });
   vi.spyOn(childProcess, "spawn").mockImplementation(() => { throw new Error("Native spawn is outside this controlled transport fixture"); });
   vi.spyOn(shellResolver, "resolveShell").mockReturnValue({ cmd: "controlled-shell", shellArgs: (command) => ["-c", command] });
   vi.spyOn(shellResolver, "shellEnvForChild").mockImplementation((_, environment) => ({ ...environment,
     LD_PRELOAD: "/untrusted-loader", DYLD_INSERT_LIBRARIES: "/untrusted-loader",
+    Git_Config_Count: "1", GIT_CONFIG_KEY_0: "core.fsmonitor", GIT_CONFIG_VALUE_0: "untrusted-helper",
+    GIT_EXEC_PATH: "/untrusted-exec", GIT_TRACE: "/untrusted-trace", GIT_PROXY_COMMAND: "untrusted-transport",
   }));
   vi.spyOn(shellResolver, "shellPathForHostPath").mockImplementation((_, path) => path);
   vi.spyOn(shellResolver, "getBashCapabilities").mockReturnValue({ unicodeEscapes: true, prefixAssignmentRhs: "incoming" });
@@ -61,7 +71,6 @@ function fixture(sandboxed = false) {
   });
   vi.stubEnv("PATH", `${shadowDirectory}${delimiter}${process.env.PATH ?? ""}`);
   vi.mocked(installation.resolveVerifiedExecutable).mockReturnValue({ executable });
-  const command = "bash --noprofile --norc -p -c 'printf ready'";
   const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect: "bash", cwd });
   expect(verifiedShellCommand).toBeDefined();
   const plan = buildHostShellExecutionPlan({ platform: process.platform, requestedSandbox: sandboxed,
@@ -100,6 +109,37 @@ it("uses the compiled command when rebuilding foreground argv with a host prelud
   expect(argv[0]).toBe("-c");
   expect(argv.at(-1)).toMatch(/^printf 'prelude\|'; /);
   expect(argv.at(-1)).not.toContain("; bash --noprofile");
+});
+
+it("binds checked repository roots and reapplies transport controls after a sandbox overlay", () => {
+  const { cwd, executable, shadowDirectory, identity, handle } = fixture(true, "git log 'HEAD'");
+  const prepared = preparedShellCommand(handle);
+  expect(identity.command).toBe("git log 'HEAD'");
+  expect(matchesPreparedShellInvocation(handle, identity)).toBe(true);
+  expect(() => prepareShellInvocation({ ...identity, command: "git log HEAD" })).toThrow(/does not match/);
+  expect(() => prepareShellInvocation({ ...identity, verifiedShellCommand: Object.freeze({}) as VerifiedShellCommand })).toThrow(/does not match/);
+  expect(prepared.argv.at(-1)).toContain(`'${executable}'`);
+  expect(prepared.argv.at(-1)).toContain(`'--git-dir=${join(cwd, ".git")}'`);
+  expect(prepared.argv.at(-1)).toContain(`'--work-tree=${cwd}'`);
+  expect(prepared.argv.at(-1)).toContain("'--no-lazy-fetch'");
+  expect(prepared.argv.at(-1)).toContain("'log'");
+  expect(prepared.argv.at(-1)).toContain("'HEAD'");
+  const overlaid = preparedSandboxEnvironment(handle, {
+    ...process.env, GIT_DIR: "/untrusted-repository", GIT_WORK_TREE: "/untrusted-worktree",
+    Git_Config_Count: "1", GIT_CONFIG_KEY_0: "core.fsmonitor", GIT_CONFIG_VALUE_0: "untrusted-helper",
+    GIT_EXEC_PATH: "/untrusted-exec", GIT_TRACE: "/untrusted-trace", GIT_PROXY_COMMAND: "untrusted-transport",
+    LD_PRELOAD: "/untrusted-loader", DYLD_INSERT_LIBRARIES: "/untrusted-loader",
+  });
+  expect(overlaid).toMatchObject({ GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd,
+    GIT_REFERENCE_BACKEND: "files", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_TRACE: "0" });
+  for (const key of ["Git_Config_Count", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]) {
+    expect(overlaid).not.toHaveProperty(key);
+    expect(prepared.environment).not.toHaveProperty(key);
+  }
+  bindPreparedShellExecutableReadPaths(handle);
+  expect(preparedShellExecutableReadPaths(handle)).toContain(executable);
+  expect(preparedShellExecutableReadPaths(handle)).not.toContain(join(shadowDirectory, "git"));
+  expect(preparedSandboxBootstrap(handle)).toContain(executable);
 });
 
 it("refuses a supplied proof for a changed command, directory, dialect or unissued handle", () => {
@@ -159,12 +199,13 @@ function completedChild(output: string) {
   return child as ReturnType<typeof childProcess.spawn>;
 }
 
-it("keeps raw source at the second shell parser gate and binds its workload command and final environment", async () => {
-  const { executable, identity } = fixture();
+it.each(["bash --noprofile --norc -p -c 'printf ready'", "git log 'HEAD'"])("keeps raw %s at the second shell parser gate and binds its final workload", async (command) => {
+  const { cwd, executable, identity } = fixture(false, command);
   const verifiedShellCommand = prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
   expect(verifiedShellCommand).toBeDefined();
-  const parsed = { errors: [], redirections: [], unsupported: [], commands: [{ name: "bash", text: identity.command,
-    arguments: ["bash", "--noprofile", "--norc", "-p", "-c", "printf ready"].map((value) => ({ kind: "literal", text: value, value })) }] };
+  const argv = command.startsWith("git ") ? ["git", "log", "HEAD"] : ["bash", "--noprofile", "--norc", "-p", "-c", "printf ready"];
+  const parsed = { errors: [], redirections: [], unsupported: [], commands: [{ name: argv[0], text: identity.command,
+    arguments: argv.map((value) => ({ kind: "literal", text: value, value })) }] };
   const received: string[] = [];
   const spawned = vi.spyOn(childProcess, "spawn");
   spawned.mockImplementationOnce(() => {
@@ -178,11 +219,19 @@ it("keeps raw source at the second shell parser gate and binds its workload comm
   });
   expect(result.isError, result.output).toBe(false);
   expect(result.output).toBe("bound workload");
-  expect(received.join("")).toBe("bash --noprofile --norc -p -c 'printf ready'");
+  expect(received.join("")).toBe(command);
   expect(spawned).toHaveBeenCalledTimes(2);
   expect((spawned.mock.calls[1]![1] as string[]).at(-1)).toContain(`& '${executable}'`);
   expect(spawned.mock.calls[1]![2]?.env).not.toHaveProperty("LD_PRELOAD");
   expect(spawned.mock.calls[1]![2]?.env).not.toHaveProperty("DYLD_INSERT_LIBRARIES");
+  if (command.startsWith("git ")) {
+    expect((spawned.mock.calls[1]![1] as string[]).at(-1)).toContain(`'--git-dir=${join(cwd, ".git")}'`);
+    expect(spawned.mock.calls[1]![2]?.env).toMatchObject({ GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd,
+      GIT_REFERENCE_BACKEND: "files", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_TRACE: "0" });
+    for (const key of ["Git_Config_Count", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND"]) {
+      expect(spawned.mock.calls[1]![2]?.env).not.toHaveProperty(key);
+    }
+  }
 });
 
 it("rejects a mismatched supplied proof before starting the second shell parser", async () => {

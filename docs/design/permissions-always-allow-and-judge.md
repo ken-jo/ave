@@ -114,23 +114,39 @@ suffix. A bare optional-value option preserves the next word's option or operand
 role, so a later unknown flag remains unproven.
 
 `make` remains outside the positive command catalogue: assignments, evaluation
-options and build files can select executable code. Every direct or
-wrapper-delegated Git form also remains unproven on every platform and
-repository. Foreground requires per-call approval; headless denies;
-no stored exact/broad rule, saved grant or mode
-repairs the missing proof. The classifier issues no Git capability and launches
-no Git version/configuration probe.
+options and build files can select executable code. Direct native Git has a
+small checked repository-read grammar: no-patch `log`/`show`, two-revision
+name/raw `diff`, closed `rev-parse` queries and verification, and closed
+`branch --list` forms. A protected fixed-installation Git 2.x executable from
+2.54 onward, matching host handle, complete argv grammar and bounded repository
+input checks are all required. Registered Git installations are macOS/Linux only;
+Windows remains unproven. Unknown versions, PATH-derived installations,
+wrappers, mutation, remote operations, `status`, cached/staged diffs and worktree
+diffs remain unproven, with no exact-rule upgrade. Cached/staged reads can refresh
+a shared split-index file's mtime despite disabled optional locks; check-time
+validation cannot exclude a later split-index swap.
 
-Repository configuration/includes, mailmap/order-file settings, gitfiles,
-worktree/common-directory routing, object alternates and reference storage can
-select inputs outside the original command. Those implicit reads are not an
-accepted permission residual. Future admission must atomically bind authorized
-config bytes and all metadata, worktree, object and ref roots to actual child
-opens. A pre-read or pathname recheck leaves a replacement window and cannot
-supply that proof. The
-[canonical repository-input contract](../architecture/permission-policy-design.md#shell-credential-and-sink-classification)
-owns the refusal boundary; separately governed host Git services remain under
-their existing controls.
+The [canonical checked repository-read contract](../architecture/permission-policy-design.md#checked-repository-reads)
+owns metadata/configuration refusals, the forced execution recipe and the
+accepted residual. At check time the real authorized cwd must contain an
+ordinary `.git` directory with no linked/reparse/special metadata, common-dir
+routing, root `.git/worktrees` administration or alternates. A main checkout with
+linked-worktree administration also refuses. Configuration includes,
+mailmap/order-file routing, `core.worktree`, all extensions and unsupported
+syntax refuse. The host pins
+absolute repository/worktree roots and the `files` reference backend, strips
+inherited selectors, and forces execution, output, write and transport controls.
+
+Owner decision 2026-10-27 accepts disclosure of other local repository content
+caused by deliberate concurrent same-user metadata mutation after those checks,
+including object symlinks, alternates, config includes and reference-storage
+changes. Inputs are checked, not atomically sealed. The acceptance covers
+confidentiality only; helper execution, file writes and transport must remain
+excluded by the closed grammar and forced recipe. An unsafe repository at check
+time still refuses. Visible floors retain precedence; a checked command follows
+the normal sandbox route, while unsandboxed automatic execution, including
+headless, requires the current-format exact raw-word rule. Separately governed
+host Git services remain under their existing controls.
 
 Verified launcher admission is limited to the canonical host Bash/PowerShell
 tools. A sealed in-process handle binds the original raw command, dialect and
@@ -256,7 +272,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - A dynamic root is an ordinary ask.
 - Known limits of the floor (accepted, round 6):
   - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
-  - The floor checks paths, not the content of repository history or raw objects. Every Git form remains unproven; retained exact or prefix rules cannot authorize it.
+  - The floor checks paths, not the content of repository history or raw objects. Only the [checked repository-read grammar](../architecture/permission-policy-design.md#checked-repository-reads) can supply native Git proof; retained exact or prefix rules cannot repair a refused form or repository input.
   - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
   - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
 - The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
@@ -264,7 +280,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - `/proc/*/environ`, `/proc/*/mem` and `/proc/*/fd/**`, together with their `task/*` and `map_files` forms; `cmdline` and `status` stay readable.
   - Chromium-family `Cookies`, `Login Data`, `Web Data` and `Local State` under `~/Library/Application Support`, `~/.config` and Windows `User Data`, which covers Chrome, Edge, Brave, Arc and Chromium.
   - Firefox `logins.json`, `key4.db` and `cookies.sqlite` under `Firefox/Profiles` and `.mozilla/firefox`.
-- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain unproven with every other Git form. Retained narrowing and destructive floors still apply independently.
+- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain outside the checked repository-read grammar and unproven. Retained narrowing and destructive floors still apply independently.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.

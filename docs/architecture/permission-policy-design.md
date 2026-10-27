@@ -111,8 +111,8 @@ messages, templates and pathspec files retain path checks. Unsupported option
 arity is refused rather than used to infer later operand roles. Classification
 preserves the original command bytes. Redirection targets retain their direct
 path checks; substitutions make the request unproven. These operand roles do
-not supply execution proof: every Git form remains unproven under the repository
-input boundary below.
+not supply execution proof: commit remains outside the checked repository-read
+grammar below.
 
 Literal dollars and percent markers remain exact filename bytes when the parser
 classifies them as literal text. Active parameter, environment and command
@@ -403,34 +403,88 @@ state changes refuse. The closed Bash launcher recipe below is a separate
 literal-evaluation form, not general wrapper delegation. An absolute path alone
 or startup-suppression flags alone supply no authority.
 
-Every direct or wrapper-delegated Git form is unproven on every platform and
-repository, including literal status, log, show, diff, rev-parse and
-branch-listing commands. Foreground execution requires per-call approval;
-headless execution denies. Stored exact
-or broad rules, saved grants and modes cannot upgrade these requests. The
-classifier issues no Git proof and performs no Git version or configuration
-probe. A verified executable and closed literal argv cannot prove the inputs
-the repository operation will open.
+### Checked Repository Reads
 
-Repository configuration and conditional includes can select files absent from
-the visible command. Mailmap and diff-order settings can cause additional reads.
-Gitfiles, worktree/common-directory routing, object alternates and reference
-storage can select different metadata, object and ref roots from the cwd.
-These implicit outside reads are not an accepted permission residual. Binding
-only cwd, clearing environment selectors or checking a path at execution time
-does not seal the identities of Git's later opens.
+A direct native Git command can receive `static-complete` only through the
+canonical host-tool handle above, a protected fixed-installation executable
+proof and a supported version probe. The supported version range is Git 2.x
+from 2.54 onward; an unknown version, a different major version or a PATH-derived
+installation is unproven. Fixed Git installations are registered only on macOS
+and Linux; Windows Git admission remains unproven. The original raw words,
+quoting and program spelling remain the rule identity. The shared executable
+verifier, Bash literal-evaluation recipe and unproven runtime recipes retain
+their existing contracts.
 
-Future admission requires a sealed execution proof that binds the authorized
-configuration bytes and every reached metadata, worktree, object and ref root
-to the actual child opens. Reading configuration in advance and then
-rechecking pathname identities leaves a replacement window between validation
-and use; includes or routing entries can change during that window. No atomic
-binding of this complete input graph is established, so all repositories retain
-refusal. Visible path, credential and sink floors still run independently.
-Commit-message operands retain their literal data roles without supplying
-execution proof. This is an admission boundary for the original outer parse.
-Opaque exact-approved evaluator payloads retain their existing semantics and
-are not inspected to discover a Git invocation or mint Git proof.
+The positive grammar consumes every argument of one literal simple outer
+command. Its scope is no-patch `log`/`show` with closed built-in formats,
+name/raw `diff` between two revisions, closed `rev-parse` queries and
+verification, and closed `branch --list` forms. It does not admit arbitrary
+revision syntax, format strings, options or path operands. `status`, cached/staged
+diffs, worktree diffs, patch output, mutation, remote operations, wrappers,
+environment assignments, compounds, pipes and redirects remain unproven. Worktree comparison
+is excluded because attributes and clean filters lack a complete no-execution,
+no-write proof. Cached/staged diff reads can refresh a shared split-index file's
+mtime even with optional locks disabled. A check-time index inspection cannot
+exclude a later split-index swap, so index comparisons remain unproven.
+Unsupported input offers no exact-rule upgrade: foreground asks per call and
+headless denies.
+
+Before issuing a plan, the host inspects the authorized real cwd without
+launching Git against repository configuration. That exact directory must contain
+a real `.git` directory; ancestor discovery, gitfiles, linked worktrees, bare
+repositories and external metadata are not admitted. A bounded non-following
+walk covers the entire metadata tree and rejects symlinks, multiply linked
+regular files, reparse points and special entries. Any `commondir` metadata
+entry at any depth, root `.git/worktrees` administration even when empty,
+`objects/info/alternates` and `objects/info/http-alternates` refuse. A main
+checkout with linked-worktree administration therefore also refuses. These
+metadata-path refusals match case-insensitively. The walk is limited to 4,096
+entries and 32 levels; unreadable or over-limit evidence refuses.
+The [repository-input inspector](../../src/permissions/rules/git-repository-inputs.ts)
+owns these limits and the accepted configuration syntax. Configuration reads
+are limited to 64 KiB per regular file; escapes, continuations, quoted values,
+non-ASCII spelling, ambiguous or unsupported syntax refuse. Parsing rejects every
+`include` and `includeIf` section, mailmap settings, `diff.orderFile`,
+`core.worktree` and every `extensions` setting. The initial reference backend is
+`files` only.
+
+The host binds absolute `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`
+and `GIT_CEILING_DIRECTORIES` values to that checked cwd and metadata. It removes
+all case-insensitive inherited `GIT_*` selectors and loader/runtime selectors
+before installing its owned environment. System and global configuration are
+disabled, and `GIT_REFERENCE_BACKEND=files` overrides later reference-storage
+configuration. The forced argv/environment recipe disables optional locks,
+lazy fetching, replacement objects, pager, prompts, credentials, transport,
+tracing, hooks, filesystem monitors, external diff/text conversion and signature
+verification. It forces built-in formats and refname sorting, disables mailmap
+use explicitly and overrides diff ordering with the platform null device.
+The [owned argv/environment recipe](../../src/permissions/rules/git-readonly-argv.ts)
+owns the exact accepted options and forced values. Caller options cannot undo
+these controls. Command-line overrides and owned environment selectors retain
+precedence over repository configuration; the grammar excludes operations that
+would invoke a configured filter or transport.
+
+Owner decision 2026-10-27 accepts a deliberate concurrent same-user mutation
+after the host checks that causes disclosure of other local repository content.
+Examples include replacing object storage with a symlink, adding alternates or
+configuration includes, or changing reference-storage metadata. The checks do
+not atomically bind configuration bytes or every later metadata/object/ref open;
+there is no snapshot or race-free confidentiality guarantee. This acceptance is
+limited to confidentiality: the positive grammar and forced recipe must continue
+to exclude helper execution, file writes and transport after such a mutation.
+It does not authorize an unsafe repository already present at check time.
+
+Visible path, credential and sink floors still win. A checked plan follows the
+normal sandboxed route, including headless; unsandboxed automatic execution
+still requires a current-format exact raw-word rule and denies headless without
+one. This rule authorizes the unsandboxed route only after the checked proof
+succeeds; it cannot turn a refused command into a checked one. Broad rules,
+saved grants, modes and judges cannot substitute for that rule. Separately
+governed host services retain their own controls. Opaque
+exact-approved evaluator payloads retain their existing semantics and are not
+inspected to discover Git or mint this proof.
+
+### Implicit Configuration And Launcher Startup
 
 Implicit configuration is part of the argument-grammar proof. A program that
 can load user or system settings which execute a helper, add arguments, upload

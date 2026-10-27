@@ -6,7 +6,7 @@ import * as childProcess from "node:child_process";
 import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { PermissionManager } from "../permission-manager.js";
-import { prepareVerifiedShellCommand, verifiedShellExecution } from "../verified-shell-command.js";
+import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution } from "../verified-shell-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
@@ -20,7 +20,7 @@ const CHILD_ENTRY_POINTS = ["exec", "execSync", "execFile", "execFileSync", "spa
 const READ_COMMANDS = [
   "git log", "git log --oneline -n 3", "git log --max-count=0", "git log --max-count 2 HEAD", "git log 'HEAD'", "git log main...HEAD",
   "git show --no-patch", "git show --no-patch HEAD", "git show --no-patch 'HEAD~1'",
-  "git diff --cached --name-only", "git diff --staged --raw HEAD", "git diff main HEAD --name-status", "git diff 'HEAD~1' HEAD --raw",
+  "git diff main HEAD --name-only", "git diff main HEAD --raw", "git diff main HEAD --name-status", "git diff 'HEAD~1' HEAD --raw",
   "git rev-parse --show-toplevel", "git rev-parse --show-prefix", "git rev-parse --git-dir", "git rev-parse --absolute-git-dir",
   "git rev-parse --is-inside-work-tree", "git rev-parse --is-bare-repository", "git rev-parse --verify HEAD", "git rev-parse --verify --quiet refs/heads/main",
   "git branch --list", "git branch -a --list", "git branch --list --all", "git branch --list -r", "git branch --remotes --list",
@@ -40,8 +40,7 @@ beforeEach(() => {
     GIT_COMMITTER_NAME: "Boundary Author", GIT_COMMITTER_EMAIL: "author@example.invalid",
   });
   vi.stubEnv("AVE_HOME", join(root, "state"));
-  // Counterfactual installation trust must not authorize a repository read.
-  // Native calibration below uses the host engine directly and makes no installation-trust assertion.
+  // Installation trust is mocked; native engine controls are a separate assertion.
   vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: "/verified/system/git" });
   vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.54.0\n");
 });
@@ -202,7 +201,7 @@ describe("implicit repository file reads", () => {
   });
 });
 
-it("refuses repository read forms without consulting installations or starting a libexec helper", () => {
+it("admits checked reads without starting an available libexec helper", () => {
   const cwd = repository("workspace");
   const libexec = join(root, "outside-libexec");
   mkdirSync(libexec);
@@ -217,5 +216,31 @@ it("refuses repository read forms without consulting installations or starting a
   rmSync(marker);
   vi.stubEnv("GIT_EXEC_PATH", libexec);
   vi.stubEnv("BOUNDARY_HELPER_MARKER", marker);
-  assertRefused(cwd, READ_COMMANDS, marker);
+  const nativePath = nativeChildProcess.execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8", env: environment }).trim();
+  vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: nativePath });
+  for (const dialect of ["bash", "powershell"] as const) {
+    for (const command of READ_COMMANDS) {
+      const identity = { command, dialect, cwd };
+      const handle = prepareVerifiedShellCommand(identity);
+      expect(handle, command).toBeDefined();
+      const execution = verifiedShellExecution(handle, identity);
+      expect(execution?.executable).toBe(nativePath);
+      const childEnvironment = verifiedShellEnvironment(handle, identity, {
+        ...Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+        GIT_EXEC_PATH: libexec, BOUNDARY_HELPER_MARKER: marker,
+      });
+      expect(childEnvironment.GIT_EXEC_PATH).toBeUndefined();
+      expect(childEnvironment.GIT_REFERENCE_BACKEND).toBe("files");
+      expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).not.toBeNull();
+      if (dialect === "bash") {
+        const result = nativeChildProcess.spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", execution!.command], {
+          cwd, encoding: "utf8", env: childEnvironment, timeout: 10_000,
+        });
+        expect(result.error).toBeUndefined();
+        // This fixture has one commit, so its parent cannot resolve.
+        expect(result.status, result.stderr).toBe(command.includes("HEAD~1") ? 128 : 0);
+      }
+      expect(existsSync(marker)).toBe(false);
+    }
+  }
 });
