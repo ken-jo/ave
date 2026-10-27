@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,9 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
+import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
+import { mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
+import { t } from "../../i18n/index.js";
 
 let dir: string;
 let manager: PermissionManager;
@@ -116,12 +120,13 @@ describe("shell confinement and escape rules", () => {
   });
 
   it.each([
-    { route: "an ASRT plan confining the filesystem", expected: "allow" as const,
+    { route: "an ASRT plan confining the filesystem", expected: { decision: "allow", layer: 3, reason: t("be_permissionManager.shellSandboxedReason") },
       plan: () => buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { kind: "asrt", confidence: "verified", platform: "linux", reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } } }) },
     // The MXC itest decides whether container reads through links are confined; until then this asks.
-    { route: "the MXC container route", expected: "ask" as const,
+    { route: "the MXC container route", expected: { decision: "ask", layer: 2, forceModal: true, reason: t("be_permissionManager.mxcRecursiveTraversalReason") },
       plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" }) },
-    { route: "the approved-host route", expected: "ask" as const,
+    // An unconfined host shell keeps the ordinary exact-rule ask, which a Bash(<command>) allow can satisfy.
+    { route: "the approved-host route", expected: { decision: "ask", layer: 6, forceModal: undefined, reason: t("be_permissionManager.shellUnsandboxedReason") },
       plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: windowsProxyOnlyCapability() }) },
   ])("decides recursive link traversal without a visible sensitive path from $route", ({ plan, expected }) => {
     const clean = join(dir, "clean");
@@ -135,8 +140,44 @@ describe("shell confinement and escape rules", () => {
       hostShellExecutionPlan,
       shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed },
     });
-    expect(result.decision).toBe(expected);
-    if (expected === "allow") expect(result.layer).toBe(3);
+    expect(result).toEqual(expected);
+  });
+
+  describe("PowerShell on the MXC route", () => {
+    const checkPowerShell = (command: string) => {
+      const hostShellExecutionPlan = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" });
+      return manager.checkDetailed("powershell", "builtin", "shell", null, {
+        ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: dir },
+        hostShellExecutionPlan,
+        shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed },
+      });
+    };
+    // An unpinned PowerShell startup asks before any sandbox lane; the gate is observable where startup is pinned.
+    const pinned = isPowerShellStartupPinned();
+    const startupAsk = { decision: "ask", layer: 2, forceModal: true, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
+
+    it("asks before a recursive traversal and keeps the confined allow otherwise", () => {
+      expect(checkPowerShell("Get-ChildItem -Recurse src")).toEqual(pinned
+        ? { decision: "ask", layer: 2, forceModal: true, reason: t("be_permissionManager.mxcRecursiveTraversalReason") } : startupAsk);
+      expect(checkPowerShell("Get-ChildItem src")).toEqual(pinned ? { decision: "allow", layer: 3, reason: t("be_permissionManager.shellSandboxedReason") } : startupAsk);
+    });
+
+    it.each([
+      "Get-ChildItem -Recurse src", "gci -r src", "ls -Rec src", "dir -recurs src", "Get-ChildItem src -s",
+      "Get-ChildItem src -Depth 2", "gci src -de 1", "Get-ChildItem src -Recurse:$true",
+      "Get-ChildItem -r src | Select-String term", "Select-String term -Path (Get-ChildItem -Recurse src)",
+      "if ($true) { gci -Recurse src }", "$files = gci -r src; Select-String term $files",
+      "Remove-Item -Recurse build", "Copy-Item src out -Recurse", "robocopy src out /E", "tree src", "rg term",
+      "iex 'Get-ChildItem'", "& $cmd src", "Get-ChildItem @options", "Get-ChildItem 'unterminated",
+    ])("treats %s as traversal", command => {
+      expect(mayTraversePowerShellRecursively(command)).toBe(true);
+      expect(checkPowerShell(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    });
+
+    it.each(["Get-ChildItem src", "Get-ChildItem -Directory src", "Get-Content notes.txt", "Select-String term notes.txt",
+      "$a = 1; Write-Output $a", "foreach ($n in 1..3) { Write-Output $n }"])("treats %s as flat", command => {
+      expect(mayTraversePowerShellRecursively(command)).toBe(false);
+    });
   });
 
   it("keeps ordinary commands and wildcard allows unchanged on the MXC route", () => {

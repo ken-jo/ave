@@ -23,7 +23,7 @@ import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation 
 import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
-import { inspectPowerShellCommand, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, mayTraversePowerShellRecursively, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
@@ -442,7 +442,6 @@ export function isIssuedShellAllowRuleDecision(
 // issuer (owner 2026-10-25: such a shell — the Windows Plan B among them — runs headless only on that rule). A `{ decision: "allow", layer: 3 }`
 // lookalike is not in this map and lets nothing run headless.
 const issuedPlainShellExactRuleDecisions = new WeakMap<PermissionCheckResult, PermissionManager>();
-const MXC_RECURSIVE_TRAVERSAL_REASON = "Recursive traversal in a Windows container is not yet proven confined through links";
 
 export function isIssuedPlainShellExactRuleDecision(result: PermissionCheckResult | undefined, issuer: PermissionManager | undefined): boolean {
   return result !== undefined && issuer !== undefined && issuedPlainShellExactRuleDecisions.get(result) === issuer;
@@ -1496,9 +1495,10 @@ export class PermissionManager {
     // Actual confinement, not a remembered approval, opens the automatic shell lane.
     if (ruleSubject && shellExecution.runsSandboxed) {
       // The MXC link-traversal itest decides whether container reads through links are confined.
-      if (context.hostShellExecutionPlan?.substrate === "mxc"
-        && shellShape !== undefined && (!shellShape.ok || shellShape.commands.some((command) => mayTraverseRecursively(command.argv)))) {
-        return { decision: "ask", reason: MXC_RECURSIVE_TRAVERSAL_REASON, layer: 2, forceModal: true };
+      if (context.hostShellExecutionPlan?.substrate === "mxc" && (ruleSubject.dialect === "powershell"
+        ? mayTraversePowerShellRecursively(parsedPowerShellSubject!)
+        : shellShape === undefined || !shellShape.ok || shellShape.commands.some((command) => mayTraverseRecursively(command.argv)))) {
+        return { decision: "ask", reason: t("be_permissionManager.mxcRecursiveTraversalReason"), layer: 2, forceModal: true };
       }
       return { decision: "allow", reason: t("be_permissionManager.shellSandboxedReason"), layer: 3 };
     }

@@ -1,4 +1,4 @@
-import { posix, sep, win32 } from "node:path";
+import { isAbsolute, normalize, parse, resolve, sep, win32 } from "node:path";
 import { existsSync } from "node:fs";
 
 export type ShellPathDialect = "native" | "powershell" | "bash";
@@ -45,8 +45,9 @@ function windowsVolumeRoot(path: string): string {
 
 export function modelShellPath(path: string, model: ShellPathModel): NativeShellPath {
   if (sep !== "\\") {
-    const absolute = posix.isAbsolute(path) ? path : posix.resolve(model.location ?? "/", path);
-    return { nativePath: absolute, normalizedPath: posix.normalize(absolute), volumeRoot: posix.parse(absolute).root, floorPaths: [] };
+    // Host path operations, so a simulated drive keeps its win32 spelling.
+    const absolute = isAbsolute(path) ? path : resolve(model.location ?? "/", path);
+    return { nativePath: absolute, normalizedPath: normalize(absolute), volumeRoot: parse(absolute).root, floorPaths: [] };
   }
   // Normalize the accepted device spelling before applying native root rules.
   const native = path.replace(/^\\\?\\(?=[A-Za-z]:[\\/])/, "\\\\?\\");

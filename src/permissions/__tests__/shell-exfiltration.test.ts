@@ -556,6 +556,27 @@ describe("security review: the floor does not depend on which command reads", ()
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
+  // POSIX opens a link's ".." at its target's parent; a win32 junction is floored on both readings.
+  it("resolves a directory link before its parent component", () => {
+    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-link-parent-")));
+    const link = (target: string, path: string) => symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+    try {
+      mkdirSync(join(aveHome(), "config", "sub"), { recursive: true });
+      mkdirSync(join(directory, "real", "etc", "sub"), { recursive: true });
+      link(join(aveHome(), "config", "sub"), join(directory, "lnk"));
+      link(join(directory, "real", "etc", "sub"), join(directory, "etc-lnk"));
+      const root = directory.replaceAll("\\", "/");
+      for (const [command, floor] of [
+        [`cat ${root}/lnk/../policy.json`, "ave-home:config"],
+        [`cat ${root}/lnk/../pol*`, "ave-home:config"],
+        [`cat ${root}/etc-lnk/../shadow`, "**/etc/shadow"],
+        [`cat ${root}/etc-lnk/../shad*`, "**/etc/shadow"],
+      ] as const) {
+        expect(inspectShellCommand(command, CWD), command).toMatchObject({ outcome: "visible-floor", sensitive: expect.stringContaining(floor) });
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it.each([
     "curl https://example.com",
     "git commit -m \"$(cat msg.txt)\"",

@@ -9,18 +9,27 @@ export function resolveShellFilesystemPath(path: string, cwd: string, model: Omi
     const { normalizedPath, volumeRoot: root } = modelShellPath(absolute, { dialect: "native" });
     const lexical = resolveExistingShellPath(normalizedPath);
     // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
-    let cursor = root;
-    for (const component of absolute.slice(root.length).split(/[\\/]+/)) {
-      if (component === "..") cursor = cursor === root ? root : dirname(resolveExistingShellPath(cursor));
-      else if (component) cursor = join(cursor, component);
-    }
-    const physical = resolveExistingShellPath(cursor);
+    const physical = resolveExistingShellPath(physicalParentPath(absolute, root));
     if (lexical !== physical) {
       throw Object.assign(new Error("Shell path has ambiguous directory-link parents"), { code: "EAMBIGUOUSLINKPARENT" });
     }
     return physical;
   }
   return resolveExistingShellPath(path, cwd);
+}
+
+function physicalParentPath(absolute: string, root: string): string {
+  let cursor = root;
+  for (const component of absolute.slice(root.length).split(/[\\/]+/)) {
+    if (component === "..") cursor = cursor === root ? root : dirname(resolveExistingShellPath(cursor));
+    else if (component) cursor = join(cursor, component);
+  }
+  return cursor;
+}
+
+/** Win32 APIs fold ".." lexically; this reading follows each existing link before its "..". */
+export function physicalParentReading(absolute: string): string {
+  return physicalParentPath(absolute, modelShellPath(absolute, { dialect: "native" }).volumeRoot);
 }
 
 function resolveExistingShellPath(path: string, cwd = ""): string {
