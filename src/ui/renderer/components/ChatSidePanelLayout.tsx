@@ -100,6 +100,7 @@ export function TargetRows({
 export function ListDetailWorkspace({
   api,
   sessionId,
+  visible,
   query,
   setQuery,
   placeholder,
@@ -111,6 +112,7 @@ export function ListDetailWorkspace({
 }: {
   api: AveApi;
   sessionId?: string;
+  visible: boolean;
   query: string;
   setQuery: (query: string) => void;
   placeholder: string;
@@ -144,7 +146,7 @@ export function ListDetailWorkspace({
         bottom={
           <div className={selectedTarget && previewFillsPanel(selectedTarget) ? "flex min-h-full flex-col p-3" : "min-h-0 p-3"}>
             {selectedTarget ? (
-              <PreviewDetail api={api} sessionId={sessionId} target={selectedTarget} />
+              <PreviewDetail api={api} sessionId={sessionId} target={selectedTarget} visible={visible} />
             ) : (
               <div className="text-xs text-muted-foreground">{emptyText}</div>
             )}

@@ -297,16 +297,20 @@ are acknowledged after bounded local consumption and need no document
 baseline. Document renderer acknowledgements advance the rendered baseline
 only for the matching snapshot sequence; a delivered snapshot is not assumed
 rendered. Releasing a view, changing its session, navigating or destroying
-its frame, closing the panel, ending a journal invocation or shutting down
-disposes the corresponding capabilities and bounded buffers. No observation
-survives a host restart. Ending or clearing a browser session releases its
-receipt, download listeners and delivery buffers and clears its renderer
-history through a content-free, daemon-sequenced terminal status. Clear-delivery
-failure still releases all host buffers and listeners; session-end and shutdown
-cleanup report collected failures as an `AggregateError`. Ending a root
-conversation also clears its descendants through the existing
-session-permission lifetime boundary. Browser observations stay only
-in memory; they are not persisted with ordinary browser bookmarks or history.
+its frame, closing or hiding the panel, ending a journal invocation or
+shutting down disposes the corresponding capabilities and bounded buffers. A
+closed or hidden panel may stay mounted for a retained side chat or browser
+tab; its document views keep their sheet, scroll and page position but hold no
+subscription, and showing the panel again reads a fresh baseline. No
+observation survives a host restart. Ending or clearing a browser session
+releases its receipt, download listeners and delivery buffers and clears its
+renderer history through a content-free, daemon-sequenced terminal status.
+Clear-delivery failure still releases all host buffers and listeners;
+session-end and shutdown cleanup report collected failures as an
+`AggregateError`. Ending a root conversation also clears its descendants
+through the existing session-permission lifetime boundary. Browser
+observations stay only in memory; they are not persisted with ordinary browser
+bookmarks or history.
 
 Private observation push and acknowledgement IPC require the same registered
 app-window main-frame identity as preview reads: a live registered window,

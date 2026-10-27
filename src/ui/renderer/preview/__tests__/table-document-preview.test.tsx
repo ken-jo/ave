@@ -192,7 +192,7 @@ describe("file preview routing", () => {
     if (!response.ok) throw new Error("Expected workbook fixture");
     response.path = "/w/canonical-book.xlsx";
     readDocument.mockResolvedValueOnce(response);
-    render(<PreviewBody api={{} as never} sessionId="reader-session" target={fileTarget("/w/book.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} sessionId="reader-session" target={fileTarget("/w/book.xlsx")} />);
     fireEvent.click(await screen.findByRole("button", { name: "기본 앱으로 열기" }));
     expect(window.ave.attach.openExternal).toHaveBeenCalledWith("/w/canonical-book.xlsx");
     expect(screen.getByTestId("preview-document-path").title).toBe("/w/canonical-book.xlsx");
@@ -202,7 +202,7 @@ describe("file preview routing", () => {
 
   it("binds page reads to the viewer session and opens only the returned canonical path", async () => {
     readDocument.mockResolvedValueOnce(pageResult("/w/canonical-slides.pptx", 0));
-    render(<PreviewBody api={{} as never} sessionId="page-session" target={fileTarget("/w/slides.pptx")} />);
+    render(<PreviewBody observe api={{} as never} sessionId="page-session" target={fileTarget("/w/slides.pptx")} />);
     fireEvent.click(await screen.findByRole("button", { name: "기본 앱으로 열기" }));
     expect(window.ave.attach.openExternal).toHaveBeenCalledWith("/w/canonical-slides.pptx");
     expect(readDocument).toHaveBeenCalledWith("/w/slides.pptx", 0, "page-session");
@@ -213,14 +213,14 @@ describe("file preview routing", () => {
     const result = workbookResult(0);
     if (result.ok && "sheet" in result.document) result.document.needsRecalculation = true;
     readDocument.mockResolvedValueOnce(result);
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />);
     const badge = await screen.findByTestId("chat-side-panel-table-recalculation");
     expect(badge.textContent).toMatch(/^(Needs recalculation|재계산 필요)$/);
     expect(badge.getAttribute("title")).toMatch(/stale|이전 값/);
   });
 
   it("omits the recalculation badge for an ordinary workbook", async () => {
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />);
     await screen.findByTestId("chat-side-panel-table-preview");
     expect(screen.queryByTestId("chat-side-panel-table-recalculation")).toBeNull();
   });
@@ -229,7 +229,7 @@ describe("file preview routing", () => {
     const path = "/w/slides.pptx";
     readDocument.mockResolvedValueOnce({ ok: false, error: "superseded", message: "private supersession detail" })
       .mockResolvedValueOnce(pageResult(path, 0));
-    render(<PreviewBody api={{} as never} target={fileTarget(path)} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget(path)} />);
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).toMatch(/replaced|취소/);
     expect(error.textContent).not.toContain("private supersession detail");
@@ -242,11 +242,11 @@ describe("file preview routing", () => {
 
   it("opens another page document at its first page after navigation", async () => {
     readDocument.mockImplementation(async (path: string, index: number) => pageResult(path, index, path.endsWith("short.pptx") ? 1 : 2));
-    const view = render(<PreviewBody api={{} as never} target={fileTarget("/w/slides.pptx")} />);
+    const view = render(<PreviewBody observe api={{} as never} target={fileTarget("/w/slides.pptx")} />);
     await screen.findByText("Outline 1");
     fireEvent.click(screen.getByRole("button", { name: /Next|다음/ }));
     await screen.findByText("Outline 2");
-    view.rerender(<PreviewBody api={{} as never} target={fileTarget("/w/short.pptx")} />);
+    view.rerender(<PreviewBody observe api={{} as never} target={fileTarget("/w/short.pptx")} />);
     await screen.findByText("Outline 1");
     expect(readDocument).toHaveBeenLastCalledWith("/w/short.pptx", 0);
     expect(screen.getByRole("button", { name: /Next|다음/ }).hasAttribute("disabled")).toBe(true);
@@ -261,7 +261,7 @@ describe("file preview routing", () => {
     response.document.page.width = png.readUInt32BE(16);
     response.document.page.height = png.readUInt32BE(20);
     readDocument.mockResolvedValueOnce(response);
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/pages.pdf")} />);
     fireEvent.error(await screen.findByTestId("chat-side-panel-pdf-page"));
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).not.toContain("chatPreviewRail.");
@@ -276,7 +276,7 @@ describe("file preview routing", () => {
       page: { index: 0, paragraphs: ["Visible PDF text"], textTruncated: true, png: png.toString("base64"),
         width: png.readUInt32BE(16), height: png.readUInt32BE(20) },
     } } satisfies PreviewReadDocumentResult);
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/pages.pdf")} />);
     const image = await screen.findByTestId("chat-side-panel-pdf-page");
     expect(image.getAttribute("src")).toMatch(/^data:image\/png;base64,iVBORw0KGgo/);
     expect(image.getAttribute("alt")).toMatch(/1/);
@@ -294,7 +294,7 @@ describe("file preview routing", () => {
     if (!response.ok || !("page" in response.document)) throw new Error("Expected a page fixture");
     response.document.page.paragraphs = [];
     readDocument.mockResolvedValueOnce(response);
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/slides.pptx")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/slides.pptx")} />);
     const preview = await screen.findByTestId("chat-side-panel-page-text");
     expect(preview.textContent).toMatch(/no extractable text|추출할 수 있는 텍스트가 없는/);
     const panel = screen.getByTestId("chat-side-panel-page-preview");
@@ -312,7 +312,7 @@ describe("file preview routing", () => {
     ["renderer-unavailable", /renderer|렌더러/],
   ] as const)("localizes a %s page refusal with a retry", async (code, text) => {
     readDocument.mockResolvedValueOnce({ ok: false, error: code, message: "raw child detail" });
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/pages.pdf")} />);
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).toMatch(text);
     expect(error.textContent).not.toContain("raw child detail");
@@ -321,7 +321,7 @@ describe("file preview routing", () => {
   });
 
   it("reads a workbook through readDocument, never readFile, and shows tabs, banner and grid", async () => {
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />);
     await screen.findByTestId("chat-side-panel-table-preview");
     expect(readDocument).toHaveBeenCalledWith("/w/book.xlsx", 0);
     expect(readFile).not.toHaveBeenCalled();
@@ -346,7 +346,7 @@ describe("file preview routing", () => {
 
   it("shows the refusal message for a rejected document", async () => {
     readDocument.mockResolvedValueOnce({ ok: false, error: "archive-too-large", message: "x" });
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/bomb.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/bomb.xlsx")} />);
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).not.toBe("");
     expect(error.textContent).not.toContain("chatPreviewRail.");
@@ -357,7 +357,7 @@ describe("file preview routing", () => {
     if (!response.ok) throw new Error("Expected a document fixture");
     response.document.format = "csv";
     readDocument.mockResolvedValueOnce(response);
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/records.csv")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/records.csv")} />);
     const summary = await screen.findByTestId("chat-side-panel-table-preview");
     expect(summary.textContent).toMatch(/At least|최소/);
     expect((await screen.findByTestId("chat-side-panel-table-truncated")).textContent)
@@ -366,7 +366,7 @@ describe("file preview routing", () => {
 
   it("localizes a resource refusal without exposing child diagnostics", async () => {
     readDocument.mockResolvedValueOnce({ ok: false, error: "parse-limit", message: "private parser diagnostic" });
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/cyclic.xls")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/cyclic.xls")} />);
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).toMatch(/time or memory|시간이나 메모리/);
     expect(error.textContent).not.toContain("private parser diagnostic");
@@ -375,7 +375,7 @@ describe("file preview routing", () => {
   it("retries a busy preview and displays the next successful result", async () => {
     vi.useFakeTimers();
     readDocument.mockResolvedValueOnce({ ok: false, error: "busy", message: "private busy detail" });
-    await act(async () => { render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    await act(async () => { render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
     expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
     expect(readDocument).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
@@ -387,7 +387,7 @@ describe("file preview routing", () => {
   it("shows busy only after all bounded retries are exhausted", async () => {
     vi.useFakeTimers();
     readDocument.mockResolvedValue({ ok: false, error: "busy", message: "private busy detail" });
-    await act(async () => { render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    await act(async () => { render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
     expect(readDocument).toHaveBeenCalledTimes(1);
     for (const [index, delay] of [250, 500, 1_000].entries()) {
       expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
@@ -407,7 +407,7 @@ describe("file preview routing", () => {
     vi.useFakeTimers();
     readDocument.mockResolvedValue({ ok: false, error: "busy", message: "busy" });
     let view!: ReturnType<typeof render>;
-    await act(async () => { view = render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    await act(async () => { view = render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
     await act(async () => { view.unmount(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(readDocument).toHaveBeenCalledTimes(1);
@@ -417,8 +417,8 @@ describe("file preview routing", () => {
     vi.useFakeTimers();
     readDocument.mockResolvedValueOnce({ ok: false, error: "busy", message: "busy" });
     let view!: ReturnType<typeof render>;
-    await act(async () => { view = render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
-    await act(async () => { view.rerender(<PreviewBody api={{} as never} target={fileTarget("/w/next.xlsx")} />); });
+    await act(async () => { view = render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    await act(async () => { view.rerender(<PreviewBody observe api={{} as never} target={fileTarget("/w/next.xlsx")} />); });
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(readDocument).toHaveBeenCalledTimes(2);
     expect(readDocument).toHaveBeenLastCalledWith("/w/next.xlsx", 0);
@@ -427,13 +427,13 @@ describe("file preview routing", () => {
 
   it("ignores a superseded response without showing an error", async () => {
     readDocument.mockResolvedValueOnce({ ok: false, error: "superseded", message: "superseded detail" });
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/book.xlsx")} />);
     await waitFor(() => expect(readDocument).toHaveResolved());
     expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
   });
 
   it("keeps markdown on the text readFile path", async () => {
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/notes.md")} />);
+    render(<PreviewBody observe api={{} as never} target={fileTarget("/w/notes.md")} />);
     await waitFor(() => expect(readFile).toHaveBeenCalledWith("/w/notes.md"));
     expect(readDocument).not.toHaveBeenCalled();
   });
@@ -469,7 +469,7 @@ async function emitObservations(...events: DocumentObservationEvent[]): Promise<
 
 async function openObservedWorkbook() {
   readDocument.mockResolvedValueOnce(observedWorkbook());
-  const view = render(<PreviewBody api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
+  const view = render(<PreviewBody observe api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
   await screen.findByTestId("chat-side-panel-table-grid");
   return view;
 }
@@ -505,7 +505,7 @@ describe("agent document live view", () => {
     const response = observedWorkbook();
     response.path = "/w/canonical.xlsx";
     readDocument.mockResolvedValueOnce(response);
-    render(<PreviewBody api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/alias.xlsx")} />);
+    render(<PreviewBody observe api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/alias.xlsx")} />);
     await screen.findByTestId("chat-side-panel-table-grid");
     const event = observedCell(1, 1, "84");
     await emitObservations({ ...event, target: { ...event.target, path: "/w/canonical.xlsx" } });
@@ -605,7 +605,7 @@ describe("agent document live view", () => {
 
   it("releases a view and removes its event listener when its session changes", async () => {
     const view = await openObservedWorkbook();
-    view.rerender(<PreviewBody api={{} as never} sessionId="other-session" target={fileTarget("/w/book.xlsx")} />);
+    view.rerender(<PreviewBody observe api={{} as never} sessionId="other-session" target={fileTarget("/w/book.xlsx")} />);
     await waitFor(() => expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 0, "other-session"));
     expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release",
       targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
@@ -618,7 +618,7 @@ describe("agent document live view", () => {
   it("releases a late read binding after the panel unmounts", async () => {
     let finish!: (result: PreviewReadDocumentResult) => void;
     readDocument.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-    const view = render(<PreviewBody api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
+    const view = render(<PreviewBody observe api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
     view.unmount();
     await act(async () => { finish(observedWorkbook()); });
     expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release",
@@ -637,5 +637,94 @@ describe("agent document live view", () => {
     expect(previewKo["chatPreviewRail.documentObservationReconciling"]).toBe("에이전트 편집 중");
     expect(previewEn["chatPreviewRail.documentObservationFallback"])
       .toBe("Live rendering is unavailable. Showing the document preview.");
+  });
+});
+
+describe("hidden panel keeps previews mounted", () => {
+  const targets = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"];
+
+  function bindEveryRead(missing?: (sheetIndex: number) => boolean): void {
+    let reads = 0;
+    readDocument.mockImplementation(async (_path: string, sheetIndex: number) => {
+      if (missing?.(sheetIndex)) return { ok: false, error: "sheet-not-found" };
+      const result = workbookResult(sheetIndex);
+      if (!result.ok) throw new Error("Expected workbook fixture");
+      result.observation = { targetId: targets[reads++]!, sessionId: OBSERVATION_SESSION, seq: 0 };
+      return result;
+    });
+  }
+
+  function workbookBody(observe: boolean) {
+    return <PreviewBody observe={observe} api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />;
+  }
+
+  async function openSecondSheetThenHide() {
+    const view = render(workbookBody(true));
+    await screen.findByTestId("chat-side-panel-table-grid");
+    fireEvent.click(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!);
+    await screen.findByText("<b>not markup</b>");
+    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+      targetId: targets[1], sessionId: OBSERVATION_SESSION, seq: 0 }));
+    const grid = screen.getByTestId("chat-side-panel-table-grid");
+    view.rerender(workbookBody(false));
+    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+      targetId: targets[1], sessionId: OBSERVATION_SESSION, seq: 0 });
+    expect(observationHandlers.size).toBe(0);
+    expect(grid.isConnected).toBe(true);
+    expect(readDocument).toHaveBeenCalledTimes(2);
+    return { view, grid };
+  }
+
+  it("keeps the selected sheet across a hide and show and re-reads it as a fresh baseline", async () => {
+    bindEveryRead();
+    const { view, grid } = await openSecondSheetThenHide();
+    expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!.getAttribute("aria-selected")).toBe("true");
+    view.rerender(workbookBody(true));
+    expect(screen.queryByTestId("chat-side-panel-table-loading")).toBeNull();
+    expect(grid.isConnected).toBe(true);
+    expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 1, OBSERVATION_SESSION);
+    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+      targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
+    expect(readDocument).toHaveBeenCalledTimes(3);
+    expect(observationHandlers.size).toBe(1);
+    expect(screen.getByText("<b>not markup</b>")).toBeTruthy();
+    expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeNull();
+  });
+
+  it("says so and shows the first sheet when the selected sheet is gone on reopen", async () => {
+    let hidden = false;
+    bindEveryRead((sheetIndex) => hidden && sheetIndex === 1);
+    const { view } = await openSecondSheetThenHide();
+    hidden = true;
+    view.rerender(workbookBody(true));
+    await waitFor(() => expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 0, OBSERVATION_SESSION));
+    await screen.findByText("North");
+    expect(screen.getByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeTruthy();
+    expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[0]!.getAttribute("aria-selected")).toBe("true");
+    await waitFor(() => expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+      targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
+    expect(observationHandlers.size).toBe(1);
+    // Choosing a sheet again clears the notice.
+    hidden = false;
+    fireEvent.click(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!);
+    await screen.findByText("<b>not markup</b>");
+    expect(screen.queryByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeNull();
+  });
+
+  it("keeps a page preview mounted on its page without re-reading across a hide and show", async () => {
+    readDocument.mockImplementation(async (path: string, index: number) => pageResult(path, index));
+    const body = (observe: boolean) => <PreviewBody observe={observe} api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/slides.pptx")} />;
+    const view = render(body(true));
+    await screen.findByText("Outline 1");
+    fireEvent.click(screen.getByRole("button", { name: /Next|다음/ }));
+    const page = await screen.findByText("Outline 2");
+    const reads = readDocument.mock.calls.length;
+    view.rerender(body(false));
+    view.rerender(body(true));
+    expect(page.isConnected).toBe(true);
+    expect(screen.getByText("Outline 2")).toBe(page);
+    expect(readDocument).toHaveBeenCalledTimes(reads);
   });
 });
