@@ -668,8 +668,10 @@ jobs:
           src/main/host-api/__tests__/mapped-drive-root.test.ts
           src/main/__tests__/codex-user-runtime.test.ts
           src/main/__tests__/claude-code-executable.test.ts
+          src/main/__tests__/claude-code-authenticity.test.ts
           src/main/__tests__/claude-code-runtime.test.ts
-          src/main/__tests__/subscription-package-artifact.test.ts
+          src/main/__tests__/claude-code-policy.test.ts
+          src/main/__tests__/windows-path-kind-launcher.test.ts
           src/main/__tests__/subscription-runtime-service.test.ts
           src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
           src/__tests__/support/native-executable.test.ts
@@ -831,6 +833,23 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
+      # Publisher verification is proven against the real codesign and a real
+      # official Anthropic release, pinned by version and SHA-256. The binary
+      # is read as data by the test and never executed.
+      - name: Fetch the pinned Claude Code release for publisher verification
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        env:
+          CLAUDE_CODE_RELEASE: "2.1.311"
+          CLAUDE_CODE_DARWIN_ARM64_SHA256: "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161"
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/claude-code-release"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --proto '=https' --retry 3 --output "$dir/claude" \
+            "https://downloads.claude.ai/claude-code-releases/$CLAUDE_CODE_RELEASE/darwin-arm64/claude"
+          echo "$CLAUDE_CODE_DARWIN_ARM64_SHA256  $dir/claude" | shasum -a 256 -c -
+          echo "AVE_CLAUDE_CODE_RELEASE_BINARY=$dir/claude" >> "$GITHUB_ENV"
       # The Python smoke's interpreter (§9.7 P5) here is not actions/setup-python:
       # on macOS that action runs `sudo installer -pkg … -target /` into
       # /Library/Frameworks, outside the job's workspace. With
@@ -849,6 +868,7 @@ jobs:
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
+          AVE_REQUIRE_PUBLISHER_FIXTURES: "1"
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
@@ -878,6 +898,7 @@ jobs:
           src/audit/__tests__/hmac-chain.test.ts
           src/audit/__tests__/rationale-audit-adapter.test.ts
           src/data/__tests__/secret-document-store.test.ts
+          src/main/__tests__/claude-code-authenticity-native.test.ts
 
   linux-confinement-tests:
     name: Linux confinement path tests
@@ -981,6 +1002,27 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           python-version: "3.12"
+      # Release-manifest verification is proven with the real /usr/bin/gpg
+      # against Anthropic's official signed manifest, pinned by SHA-256. The
+      # key is not hash-pinned: the code under test pins its fingerprint.
+      - name: Fetch the pinned Claude Code release metadata for publisher verification
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        env:
+          CLAUDE_CODE_RELEASE: "2.1.311"
+          CLAUDE_CODE_MANIFEST_SHA256: "d456e7293d621e6e09dd73b1d2a112bef62dae08d1ee44c1065356e64da65c0d"
+          CLAUDE_CODE_MANIFEST_SIGNATURE_SHA256: "7cb5c28b0f3fba12a6af07aa38bf1abfc11ef843356c78ed95fc8b5b9f963b8b"
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/claude-code-release-metadata"
+          mkdir -p "$dir"
+          fetch() { curl --fail --silent --show-error --proto '=https' --retry 3 --output "$dir/$1" "https://downloads.claude.ai/$2"; }
+          fetch claude-code.asc keys/claude-code.asc
+          fetch manifest.json "claude-code-releases/$CLAUDE_CODE_RELEASE/manifest.json"
+          fetch manifest.json.sig "claude-code-releases/$CLAUDE_CODE_RELEASE/manifest.json.sig"
+          printf '%s  %s\n' "$CLAUDE_CODE_MANIFEST_SHA256" "$dir/manifest.json" \
+            "$CLAUDE_CODE_MANIFEST_SIGNATURE_SHA256" "$dir/manifest.json.sig" | sha256sum -c -
+          echo "AVE_CLAUDE_CODE_RELEASE_METADATA=$dir" >> "$GITHUB_ENV"
       # With the flag set, a case that cannot initialise the sandbox FAILS
       # instead of returning green, so a green job is a measurement.
       # Terminal egress cases use the same local HTTPS route fixture as the macOS job.
@@ -989,6 +1031,7 @@ jobs:
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
+          AVE_REQUIRE_PUBLISHER_FIXTURES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
@@ -1010,3 +1053,4 @@ jobs:
           src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
           src/permissions/__tests__/sandbox-git-controls.integration.test.ts
           src/permissions/__tests__/egress-terminal-background.integration.test.ts
+          src/main/__tests__/claude-code-authenticity-native.test.ts

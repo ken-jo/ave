@@ -161,7 +161,9 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-runtime-not-configured": "subscriptionProvidersSection.errorRuntimeNotConfigured",
   "subscription-runtime-unavailable": "subscriptionProvidersSection.errorRuntimeUnavailable",
   "subscription-runtime-unsafe-location": "subscriptionProvidersSection.errorRuntimeUnsafeLocation",
-  "subscription-runtime-unsafe-npm-location": "subscriptionProvidersSection.errorRuntimeUnsafeNpmLocation",
+  "subscription-runtime-native-required": "formatIpcError.subscriptionRuntimeNativeRequired",
+  "subscription-runtime-unauthenticated": "formatIpcError.subscriptionRuntimeUnauthenticated",
+  "subscription-runtime-release-metadata-unavailable": "formatIpcError.subscriptionRuntimeReleaseMetadataUnavailable",
   "subscription-runtime-version-unsupported": "subscriptionProvidersSection.errorRuntimeVersionUnsupported",
   "subscription-runtime-incompatible": "subscriptionProvidersSection.errorRuntimeIncompatible",
   "subscription-login-in-progress": "subscriptionProvidersSection.errorLoginInProgress",
@@ -169,6 +171,7 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-verification-url-unavailable": "subscriptionProvidersSection.errorVerificationUrlUnavailable",
   "subscription-logout-not-supported": "subscriptionProvidersSection.errorLogoutNotSupported",
   "subscription-chat-unavailable": "subscriptionProvidersSection.errorChatUnavailable",
+  "subscription-model-not-supported": "formatIpcError.subscriptionModelNotSupported",
   "subscription-operation-failed": "subscriptionProvidersSection.errorOperationFailed",
 };
 
@@ -240,13 +243,15 @@ export function SubscriptionAuthControls({
     : null;
   const cliMissing = discovered && needsRuntimeSelection;
   const cliNeedsUpdate = discovered && discoveredCliNeedsUpdate(status?.errorCode);
+  const cliNeedsNativeInstall = discovered && status?.errorCode === "subscription-runtime-native-required";
+  const cliUnauthenticated = discovered && status?.errorCode === "subscription-runtime-unauthenticated";
   const cliFound = discovered && hasRuntimeSelection && !cliNeedsUpdate && runtime !== "unavailable";
   const showGuidance = Boolean(descriptor.installGuidance)
-    && (cliMissing || cliNeedsUpdate || (!discovered && needsRuntimeSelection));
+    && (cliMissing || cliNeedsUpdate || cliNeedsNativeInstall || cliUnauthenticated || (!discovered && needsRuntimeSelection));
   const checking = provider.refreshPending === true || provider.busyAction === "refresh";
   // A found CLI that could not be used for another reason (a probe that failed to run, an auth status it could not read)
   // gets the same way back.
-  const cliUnavailable = discovered && runtime === "unavailable" && !cliNeedsUpdate;
+  const cliUnavailable = discovered && runtime === "unavailable" && !cliNeedsUpdate && !cliNeedsNativeInstall && !cliUnauthenticated;
   const checkAgainButton = actions.refreshStatus ? (
     <Button
       type="button"
@@ -389,7 +394,7 @@ export function SubscriptionAuthControls({
       {showGuidance && descriptor.installGuidance ? (
         <div
           className="space-y-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground"
-          data-testid={`subscription-provider:${descriptor.id}:${cliNeedsUpdate ? "update-guidance" : "install-guidance"}`}
+          data-testid={`subscription-provider:${descriptor.id}:${cliNeedsNativeInstall ? "native-install-guidance" : cliUnauthenticated ? "publisher-verification-guidance" : cliNeedsUpdate ? "update-guidance" : "install-guidance"}`}
         >
           <p className="font-medium text-foreground">
             {cliNeedsUpdate
@@ -409,6 +414,12 @@ export function SubscriptionAuthControls({
                   minimumVersion: descriptor.minimumVersion,
                 })}
             </p>
+          ) : null}
+          {cliNeedsNativeInstall ? (
+            <div className="space-y-1" data-testid={`subscription-provider:${descriptor.id}:migration-commands`}>
+              <code className="block select-all break-all rounded bg-background px-2 py-1 font-mono text-foreground">claude install</code>
+              <code className="block select-all break-all rounded bg-background px-2 py-1 font-mono text-foreground">npm uninstall -g @anthropic-ai/claude-code</code>
+            </div>
           ) : null}
           <dl className="space-y-1">
             {descriptor.installGuidance.commands.map((entry) => (
@@ -651,9 +662,18 @@ export function SignInMethodChoice({
             <RadioGroupItem
               value={method}
               id={optionId(method)}
+              aria-label={label}
+              aria-describedby={`${optionId(method)}-billing`}
               data-testid={`llm-tab:sign-in-method:${rowId}:${method}`}
             />
-            <Label htmlFor={optionId(method)} className="cursor-pointer text-sm font-normal">{label}</Label>
+            <Label htmlFor={optionId(method)} className="cursor-pointer text-sm font-normal">
+              <span className="block">{label}</span>
+              <span id={`${optionId(method)}-billing`} className="block text-xs text-muted-foreground">
+                {method === "api"
+                  ? t("modelBilling.apiKey")
+                  : t("modelBilling.subscription", { plan: planName })}
+              </span>
+            </Label>
           </div>
         ))}
       </RadioGroup>
