@@ -47,8 +47,23 @@ function snapshot(document: PreviewPageDocument, seq: number): DocumentObservati
 }
 
 describe("read-only page observation rendering", () => {
+  it("releases its binding while the panel is hidden, keeps the page, and re-reads a fresh baseline when shown", async () => {
+    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
+    await screen.findByText("Old paragraph");
+    expect(handlers.size).toBe(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    view.rerender(<PageDocumentPreview path={PATH} sessionId={SESSION} observe={false} />);
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(expect.objectContaining({ action: "release", targetId: TARGET })));
+    expect(handlers.size).toBe(0);
+    expect(screen.getByText("Old paragraph")).toBeTruthy();
+    expect(read).toHaveBeenCalledTimes(1);
+    view.rerender(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(handlers.size).toBe(1));
+  });
+
   it("keeps an idle user view free of activity and acknowledges the committed outline", async () => {
-    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
     expect(acknowledge).toHaveBeenCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 0 });
@@ -57,7 +72,7 @@ describe("read-only page observation rendering", () => {
   });
 
   it("shows verified paragraph/run changes through the existing binding and preserves source highlighting", async () => {
-    render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
     const after = { ...OUTLINE, elements: OUTLINE.elements!.map((entry) => ({ ...entry, text: "New paragraph" })),
       page: { ...OUTLINE.page, paragraphs: ["New paragraph"] } };
@@ -71,7 +86,7 @@ describe("read-only page observation rendering", () => {
     const rendered: PreviewPageDocument = { ...OUTLINE, page: { ...OUTLINE.page, png: "first", width: 10, height: 10 } };
     read.mockResolvedValueOnce({ ok: true, path: PATH, document: rendered,
       observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } });
-    render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     fireEvent.load(await screen.findByTestId("chat-side-panel-pdf-page"));
     expect(acknowledge).toHaveBeenLastCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 0 });
     await emitDocumentObservations(handlers, snapshot({ ...rendered, page: { ...rendered.page, png: "second" } }, 1));
@@ -81,7 +96,7 @@ describe("read-only page observation rendering", () => {
   });
 
   it("rejects unrelated and stale events and releases the exact binding on unmount", async () => {
-    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
     await emitDocumentObservations(handlers, { ...elementEvent(), sessionId: "other-session" },
       { ...elementEvent(), target: { id: TARGET, path: "/workspace/other.docx" } },
@@ -99,7 +114,7 @@ describe("read-only page observation rendering", () => {
     read.mockResolvedValueOnce({ ok: true, path: PATH, document: { ...OUTLINE,
       page: { ...OUTLINE.page, png: "broken image", width: 10, height: 10 } },
       observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } });
-    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     fireEvent.error(await screen.findByTestId("chat-side-panel-pdf-page"));
     expect(handlers.size).toBe(0);
     expect(acknowledge).toHaveBeenCalledExactlyOnceWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 });
@@ -110,7 +125,7 @@ describe("read-only page observation rendering", () => {
 
   it("ends observation after a terminal render acknowledgement failure", async () => {
     acknowledge.mockResolvedValueOnce({ ok: false, error: "unauthorized" });
-    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
     await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 }));
     expect(handlers.size).toBe(0);
@@ -120,14 +135,14 @@ describe("read-only page observation rendering", () => {
   });
 
   it("clears source markers on revocation and shows conversion failures as localized errors", async () => {
-    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    const view = render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Old paragraph");
     await emitDocumentObservations(handlers, elementEvent(), { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH },
       seq: 2, ts: 1_700_000_000_000, kind: "status", before: null, after: { code: "reload-required" } });
     expect(view.container.querySelector("[data-observation-current]")).toBeNull();
     view.unmount();
     read.mockResolvedValueOnce({ ok: false, error: "engine-confinement-unavailable", message: "private raw diagnostic" });
-    render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     expect(await screen.findByTestId("chat-side-panel-file-error")).toHaveTextContent("Secure isolation");
     expect(screen.queryByText("private raw diagnostic")).toBeNull();
   });
@@ -139,7 +154,7 @@ describe("read-only page observation rendering", () => {
     ] };
     read.mockResolvedValueOnce({ ok: true, path: PATH, document: slides,
       observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } });
-    render(<PageDocumentPreview path={PATH} sessionId={SESSION} />);
+    render(<PageDocumentPreview path={PATH} sessionId={SESSION} observe />);
     await screen.findByText("Title");
     const event = elementEvent();
     if (event.kind !== "element") throw new Error("Invalid element fixture");

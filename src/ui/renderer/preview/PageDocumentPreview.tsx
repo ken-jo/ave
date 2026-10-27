@@ -26,8 +26,13 @@ function sameTextContainer(left: PageElementAddress, right: PageElementAddress):
     : addressKey(left) === addressKey(right);
 }
 
-export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal }: {
-  path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean;
+/**
+ * `observe` is false while the hosting panel is hidden. A session-bound view then holds no subscription or host
+ * binding but stays mounted on its page; observing again re-reads that page as a fresh baseline. A view without a
+ * session never observes, so the flag does not touch it.
+ */
+export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe }: {
+  path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean;
 }) {
   const { t } = useTranslation();
   const [index, setIndex] = useState(0);
@@ -38,8 +43,17 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
   const generation = useRef(0);
   const lastAcknowledgement = useRef("");
   const releaseObservation = useRef<(() => void) | undefined>(undefined);
+  const active = sessionId === undefined || observe;
+  const resumed = useRef(false);
 
   useEffect(() => {
+    if (!active) {
+      // The previous run's cleanup already released its binding; the page stays without agent marks.
+      resumed.current = true;
+      setState((previous) => previous.phase === "ok"
+        ? { ...previous, observation: undefined, changes: [], status: undefined, latest: undefined } : previous);
+      return;
+    }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let binding: DocumentObservationBinding | undefined;
@@ -49,9 +63,14 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
     let observationReleased = false;
     const requestGeneration = ++generation.current;
     const api = window.ave.preview;
+    // Showing a hidden panel again keeps the current page on screen while it reads the fresh baseline.
+    const refresh = resumed.current;
+    resumed.current = false;
     setOpenFailed(false);
-    setRenderedImage(null);
-    setState({ phase: "loading" });
+    if (!refresh) {
+      setRenderedImage(null);
+      setState({ phase: "loading" });
+    }
     const release = (value: DocumentObservationBinding): void => {
       if (releasedTargets.has(value.targetId)) return;
       releasedTargets.add(value.targetId);
@@ -125,7 +144,7 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
       releaseBoundObservation();
       if (releaseObservation.current === releaseBoundObservation) releaseObservation.current = undefined;
     };
-  }, [path, sessionId, index, retryGeneration]);
+  }, [path, sessionId, index, retryGeneration, active]);
 
   useLayoutEffect(() => {
     if (state.phase !== "ok" || !state.observation

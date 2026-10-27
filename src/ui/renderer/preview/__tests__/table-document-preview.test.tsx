@@ -713,7 +713,7 @@ describe("hidden panel keeps previews mounted", () => {
     expect(screen.queryByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeNull();
   });
 
-  it("keeps a page preview mounted on its page without re-reading across a hide and show", async () => {
+  it("keeps a page preview mounted on its page across a hide and show, re-reading that page as a fresh baseline", async () => {
     readDocument.mockImplementation(async (path: string, index: number) => pageResult(path, index));
     const body = (observe: boolean) => <PreviewBody observe={observe} api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/slides.pptx")} />;
     const view = render(body(true));
@@ -722,9 +722,13 @@ describe("hidden panel keeps previews mounted", () => {
     const page = await screen.findByText("Outline 2");
     const reads = readDocument.mock.calls.length;
     view.rerender(body(false));
+    expect(readDocument).toHaveBeenCalledTimes(reads);
     view.rerender(body(true));
     expect(page.isConnected).toBe(true);
     expect(screen.getByText("Outline 2")).toBe(page);
-    expect(readDocument).toHaveBeenCalledTimes(reads);
+    // The page viewer observes agent edits, so showing it again reads the same page for a fresh baseline.
+    await waitFor(() => expect(readDocument).toHaveBeenCalledTimes(reads + 1));
+    expect(readDocument.mock.calls.at(-1)).toEqual(["/w/slides.pptx", 1, OBSERVATION_SESSION]);
+    expect(screen.getByText("Outline 2").isConnected).toBe(true);
   });
 });
