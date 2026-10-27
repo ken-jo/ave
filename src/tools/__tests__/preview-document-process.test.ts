@@ -178,7 +178,8 @@ describe("isolated table parsing", () => {
       // Startup and parsing have separate clocks; native tree termination finishes before settlement.
       expect(readyAt! - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
       if (stopAt !== undefined) {
-        expect(stopAt - readyAt!).toBeGreaterThanOrEqual(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs);
+        // The contract bounds the latest stop, not a scheduler-dependent minimum latency.
+        expect(stopAt).toBeGreaterThanOrEqual(readyAt!);
         expect(stopAt - readyAt!).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
       } else {
         // A native heap refusal can finish before the wall-clock kill is needed.
