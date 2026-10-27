@@ -62,7 +62,7 @@ describe("conditional revocation policy", () => {
     }
     expect(snapshot.conditionalRevocations).toEqual([entry]);
     const { formatVersion: _format, conditionalRevocations: _conditional, ...legacy } = snapshot;
-    expect(effectiveRevocations(legacy, "0.15.0")).toEqual([]);
+    expect(effectiveRevocations(legacy, "0.14.0")).toEqual([]);
   });
 });
 

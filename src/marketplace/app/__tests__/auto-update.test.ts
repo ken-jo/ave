@@ -22,7 +22,7 @@ const HOOK = {
 };
 
 function authority(capabilities: string[]) {
-  return { capabilities, requires: { minAppVersion: "0.15.0", hostProtocol: "4" } };
+  return { capabilities, requires: { minAppVersion: "0.14.0", hostProtocol: "4" } };
 }
 
 function pluginFiles(options: { capabilities?: string[]; hook?: boolean } = {}): Record<string, string> {
@@ -30,7 +30,7 @@ function pluginFiles(options: { capabilities?: string[]; hook?: boolean } = {}):
   const extension = { displayName: "alpha", entry: "dist/index.js", ...auth, ...(options.hook ? { hooks: [{ id: "audit", path: "dist/hooks/audit.json" }] } : {}) };
   return {
     "plugins/alpha/plugin.json": `${JSON.stringify({ name: "alpha", version: "1.0.0", description: "alpha", extensions: { "ai.agent-connector.ave": extension } }, null, 2)}\n`,
-    "plugins/alpha/ave-package.json": `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.15.0", hostProtocol: "4", payload: { authority: auth, artifact: RELEASE } })}\n`,
+    "plugins/alpha/ave-package.json": `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "4", payload: { authority: auth, artifact: RELEASE } })}\n`,
     ...(options.hook ? HOOK : {}),
   };
 }

@@ -34,7 +34,7 @@
       },
       "llmKeySource": "host",
       "requires": {
-        "minAppVersion": "0.15.0",
+        "minAppVersion": "0.14.0",
         "hostProtocol": "4"
       },
       "startupTimeoutMs": 30000,

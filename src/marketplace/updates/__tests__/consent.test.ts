@@ -90,7 +90,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
     ["authority.requires.capabilities", plugin({ requires: { capabilities: ["calendar", "mail"] } })],
     ["authority.dependencies", plugin({ authority: { dependencies: ["calendar"] } })],
     ["authority.sandbox", plugin({ authority: { sandbox: { filesystem: "none" } } })],
-    ["minAppVersion", plugin({ requires: { minAppVersion: "0.15.0" } })],
+    ["minAppVersion", plugin({ requires: { minAppVersion: "0.14.0" } })],
     ["hostProtocol", plugin({ requires: { hostProtocol: "4" } })],
     ["entryForm", plugin({ process: true })],
     ["contributionKinds", plugin({ skill: true })],
@@ -110,7 +110,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
 
   const agentBase = agent();
   const agentRows: Array<[string, ConsentFingerprint]> = [
-    ["minAppVersion", agent({ minAppVersion: "0.15.0" })],
+    ["minAppVersion", agent({ minAppVersion: "0.14.0" })],
     ["hostProtocol", agent({ hostProtocol: "4" })],
     ["componentKinds", agent({ components: components({ prompts: [{ name: "draft", kind: "template", digest: "c".repeat(64) }] }) })],
     ["mcpServer:notes", agent({ files: [AGENT_FILES[0]!, file("server.js", "server v2"), AGENT_FILES[2]!] })],
@@ -130,7 +130,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
   const provider = (json: Record<string, unknown>, minAppVersion = "0.13.0") => contentConsent("provider", minAppVersion, [file("provider.json", JSON.stringify(json))]);
   const providerBase = provider({ providerId: "acme", baseUrl: "https://api.acme.example" });
   it.each([
-    ["minAppVersion", provider({ providerId: "acme", baseUrl: "https://api.acme.example" }, "0.15.0")],
+    ["minAppVersion", provider({ providerId: "acme", baseUrl: "https://api.acme.example" }, "0.14.0")],
     ["providerId", provider({ providerId: "acme-2", baseUrl: "https://api.acme.example" })],
     ["baseUrl", provider({ providerId: "acme", baseUrl: "https://evil.example" })],
   ] as Array<[string, ConsentFingerprint]>)("provider %s", (field, changed) => {
@@ -138,7 +138,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
   });
 
   it.each([
-    ["minAppVersion", contentConsent("messaging-connection", "0.15.0", [file("connection.json", "{\"connectionId\":\"chat\"}")])],
+    ["minAppVersion", contentConsent("messaging-connection", "0.14.0", [file("connection.json", "{\"connectionId\":\"chat\"}")])],
     ["connection", contentConsent("messaging-connection", "0.13.0", [file("connection.json", "{\"connectionId\":\"chat\",\"endpoint\":\"x\"}")])],
   ] as Array<[string, ConsentFingerprint]>)("messaging-connection %s", (field, changed) => {
     const before = contentConsent("messaging-connection", "0.13.0", [file("connection.json", "{\"connectionId\":\"chat\"}")]);
@@ -146,7 +146,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
   });
 
   it.each(["skill", "agent", "theme", "font", "language"] as const)("%s minAppVersion", (kind) => {
-    expect(changedFields(contentConsent(kind, "0.13.0", []), contentConsent(kind, "0.15.0", []))).toEqual(["minAppVersion"]);
+    expect(changedFields(contentConsent(kind, "0.13.0", []), contentConsent(kind, "0.14.0", []))).toEqual(["minAppVersion"]);
     expect(changedFields(contentConsent(kind, "0.13.0", [file("SKILL.md", "a")]), contentConsent(kind, "0.13.0", [file("SKILL.md", "b")]))).toEqual([]);
   });
 

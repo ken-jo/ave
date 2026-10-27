@@ -8,7 +8,7 @@
       "displayName": "Adversarial Fixture",
       "entry": "entry.mjs",
       "requires": {
-        "minAppVersion": "0.15.0",
+        "minAppVersion": "0.14.0",
         "hostProtocol": "4"
       },
       "capabilities": ["external-auth-consumer"],

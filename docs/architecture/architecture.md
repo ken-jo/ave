@@ -1071,8 +1071,10 @@ Key boundaries:
   exact path and timing-safe state validation are mandatory. Wrong or missing
   state receives a 4xx without consuming the waiter, and rejection logs omit
   query values. A matching provider error is returned as validated error fields.
-  Plugins must use PKCE S256 together with that state. Protocol 4 replaces 3 at
-  app 0.15.0; older packages fail before activation. The [protocol contract](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)
+  Plugins must use PKCE S256 together with that state. Protocol 4 is unreleased;
+  this development build rejects older contracts before activation through
+  protocol negotiation. Released hosts and published packages still use protocol 3.
+  The [protocol contract](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)
   and [author guide](../guides/plugin-development.md#loopback-oauth-with-pkce) own
   the wire and migration details.
 - The complete extension-author TypeScript contract and its JSDoc are Host-owned in

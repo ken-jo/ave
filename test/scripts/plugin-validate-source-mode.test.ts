@@ -41,7 +41,7 @@ beforeAll(() => {
         "ai.agent-connector.ave": {
           displayName: "Descendant Plugin",
           entry: "entry.mjs",
-          requires: { minAppVersion: "0.15.0", hostProtocol: "4" },
+          requires: { minAppVersion: "0.14.0", hostProtocol: "4" },
           tools: [],
         },
       },
@@ -75,7 +75,7 @@ export const createPlugin = async () => {
         "ai.agent-connector.ave": {
           displayName: "Logging Plugin",
           entry: "entry.mjs",
-          requires: { minAppVersion: "0.15.0", hostProtocol: "4" },
+          requires: { minAppVersion: "0.14.0", hostProtocol: "4" },
           tools: [
             {
               name: "speak",

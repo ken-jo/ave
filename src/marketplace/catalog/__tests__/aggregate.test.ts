@@ -12,7 +12,7 @@ const AT = "2026-09-23T00:00:00Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 
 const context = (patch: Partial<VersionChoiceContext> = {}): VersionChoiceContext => ({
-  appVersion: "0.15.0",
+  appVersion: "0.14.0",
   platform: "darwin",
   canaryOptIn: false,
   installationId: INSTALLATION,
@@ -66,7 +66,7 @@ describe("chooseVersion (design §6.1)", () => {
   });
 
   it.each([
-    ["minAppVersion above the app", { minAppVersion: "0.16.0" }, "min_app_version"],
+    ["minAppVersion above the app", { minAppVersion: "0.15.0" }, "min_app_version"],
     ["yanked", { yanked: { reason: "broken", at: AT } }, "yanked"],
     ["another platform", { platforms: ["win32", "linux"] as IndexVersion["platforms"] }, "platform"],
   ])("drops a version for %s", (_label, patch, reason) => {

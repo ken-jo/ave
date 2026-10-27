@@ -10,6 +10,7 @@ import type { OutOfProcessPluginSpec } from "../isolation/out-of-process-plugin.
 import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
 import {
   HOST_PROTOCOL_FIRST_APP_VERSION,
+  HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
   isServedHostProtocolVersion,
 } from "../isolation/host-api-wire.js";
@@ -510,7 +511,7 @@ async function checkManifest(
       failed(
         "manifest.host-protocol",
         declared === undefined
-          ? "declares no host protocol; this validator serves protocol(s) " + Object.keys(HOST_PROTOCOL_FIRST_APP_VERSION).join(", ")
+          ? "declares no host protocol; this validator serves protocol(s) " + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
           : `declares host protocol "${declared}", which this validator does not serve`,
         protocolPath,
       ),
@@ -521,11 +522,14 @@ async function checkManifest(
     const minAppVersion = manifest.requires?.minAppVersion;
     const versionPath = extensionPointer("requires", "minAppVersion");
     rows.push(
-      minAppVersion !== undefined && compareSemver(minAppVersion, floor) >= 0
-        ? passed("manifest.min-app-version", `${minAppVersion} ≥ ${floor}`, versionPath)
+      minAppVersion !== undefined && (floor === undefined || compareSemver(minAppVersion, floor) >= 0)
+        ? passed("manifest.min-app-version", floor === undefined
+            ? `host protocol ${declared} availability is negotiated; no published app floor is recorded`
+            : `${minAppVersion} ≥ ${floor}`, versionPath)
         : failed(
             "manifest.min-app-version",
-            `host protocol ${declared} was first served by app ${floor}; minAppVersion ` +
+            (floor === undefined ? `host protocol ${declared} requires an explicit minAppVersion; `
+              : `host protocol ${declared} was first served by app ${floor}; `) + "minAppVersion " +
               `${minAppVersion === undefined ? "is absent" : `"${minAppVersion}" is lower`}`,
             versionPath,
           ),

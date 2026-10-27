@@ -221,15 +221,25 @@ describe("the manifest step", () => {
     expect(reportExitCode(rows)).toBe(1);
   });
 
-  it("fails a minAppVersion below the first app that served the protocol", async () => {
+  it("uses the served protocol without inventing a first app release", async () => {
     const dir = editedPlugin("local-indexer", (extension) => {
       extension.requires = { minAppVersion: "0.11.0", hostProtocol: "4" };
     });
     const rows = await validatePluginDirectory(dir, SOURCE_MODE);
     expect(row(rows, "manifest.min-app-version")).toMatchObject({
-      ok: false,
+      ok: true,
+      message: "host protocol 4 availability is negotiated; no published app floor is recorded",
       path: "#/extensions/ai.agent-connector.ave/requires/minAppVersion",
     });
+    expect(reportExitCode(rows)).toBe(0);
+  });
+
+  it("still requires an explicit minimum app declaration for an unreleased protocol", async () => {
+    const dir = editedPlugin("local-indexer", extension => {
+      extension.requires = { hostProtocol: "4" };
+    });
+    const rows = await validatePluginDirectory(dir, SOURCE_MODE);
+    expect(row(rows, "manifest.min-app-version")).toMatchObject({ ok: false });
     expect(reportExitCode(rows)).toBe(1);
   });
 

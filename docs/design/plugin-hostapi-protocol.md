@@ -5,19 +5,27 @@ record are generic stand-ins for plugins that are no longer part of this project
 
 The code packages described here are called extensions in user-facing copy.
 
-**Current contract.** This build serves host protocol `"4"` only
-(`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts`),
-with app boundary **0.15.0**. Protocol 3 introduced the `ave/*` wire in 0.14.0;
-protocol 4 keeps that wire and requires host-generated state on every plugin
-loopback OAuth callback (§3.3.1). Its schema and generated client are
-`schemas/plugin-host-protocol/4/protocol.schema.json` and
-`schemas/plugin-host-protocol/4/protocol-client.ts`; golden fixtures live under
-`src/plugins/isolation/__tests__/fixtures/host-protocol/4/`. Extensions declare
-`extensions["ai.agent-connector.ave"].requires.hostProtocol: "4"` and
-`requires.minAppVersion: "0.15.0"`, and re-vendor the contract from the matching
-app release tag. Older contracts, including protocol 3, are refused before
-activation. Historical schema copies remain frozen. Version numbers in the
-historical plans below describe those steps, not the current served contract.
+**Released contract.** Released hosts serve protocol `"3"`, introduced by
+0.14.0 on the `ave/*` wire. Published plugins continue to declare
+`requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`.
+
+**Unreleased contract.** This development build serves protocol `"4"` only
+(`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts`).
+It requires host-generated state on plugin loopback OAuth callbacks (§3.3.1).
+The app release version is selected by release preparation, independently of the
+protocol major. No first published app version is recorded for protocol 4;
+`requires.hostProtocol` negotiation determines support, and released protocol-3
+hosts reject protocol-4 packages before activation regardless of `minAppVersion`.
+Its schema/client and wire fixtures live under `schemas/plugin-host-protocol/4/`
+and `src/plugins/isolation/__tests__/fixtures/host-protocol/4/`.
+
+The existing unreleased-candidate convention (§6.1) stores the new schema under
+`web/public/schemas/plugin-host-protocol/4/v0.14.1/`, with
+`publishedTag: null`. That version segment identifies the open schema candidate,
+not an announcement that 0.14.1 has shipped protocol 4. Historical protocol-3
+schema copies remain unchanged. Publish protocol-4 plugin replacements only with
+the coordinated app release; use its actual release tag and minimum version.
+Numbers in the historical plans below describe those steps, not this candidate.
 
 Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lease step
 (§9.1, §4.1, §9.5) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
@@ -746,8 +754,11 @@ This changes an existing method's required behavior: a plugin-generated state
 that protocol 3 accepted now fails. Under §3.2 and §3.3 this is **protocol 4**,
 not an optional capability on 3. A capability list names methods and does not
 select different state semantics for the same method. No state-free branch or
-compatibility shim is served. The 2026-10-27 owner decision authorizes preparing
-this boundary now; it does not declare replacement plugin packages published.
+compatibility shim is served. An unreleased protocol has no numeric app-version
+floor; negotiation of `requires.hostProtocol` is authoritative. Candidate schema
+version segments do not imply released support. Release preparation records the
+first published app version when the protocol ships.
+The 2026-10-27 owner decision authorizes preparing this boundary now; it does not declare replacement plugin packages published.
 The replacement testing and publication gates in §9.3 and §9.5 still apply before
 an app release is published: test candidates against the boundary commit, vendor
 the contract from its app release tag, and publish replacement plugin packages

@@ -22,7 +22,7 @@ const BUNDLES = {
 let scratch: string;
 let vendor: string;
 
-function helloWorld(name: string, minAppVersion: string): string {
+function helloWorld(name: string, minAppVersion: string | undefined): string {
   const dir = join(scratch, name);
   mkdirSync(dir);
   writeFileSync(
@@ -120,7 +120,7 @@ describe("the vendored validator bundles", () => {
   });
 
   it("validates a hello-world plugin under plain node, with only the report on stdout", () => {
-    const result = runBundle(helloWorld("hello-world", "0.15.0"));
+    const result = runBundle(helloWorld("hello-world", "0.14.0"));
     expect(result.status).toBe(0);
     const rows = reportRows(result.stdout);
     expect(rows.find((row) => row.check === "tools.call:hello_world")?.ok).toBe(true);
@@ -128,8 +128,8 @@ describe("the vendored validator bundles", () => {
     expect(result.stdout).not.toContain(PLUGIN_LOG_TEXT);
   }, 60_000);
 
-  it("fails a broken plugin and names the failing check", () => {
-    const result = runBundle(helloWorld("hello-broken", "0.11.0"));
+  it("rejects a missing minimum declaration without inventing a release floor", () => {
+    const result = runBundle(helloWorld("hello-broken", undefined));
     expect(result.status).toBe(1);
     const failing = reportRows(result.stdout).filter((row) => row.ok === false);
     expect(failing.map((row) => row.check)).toEqual(["manifest.min-app-version"]);

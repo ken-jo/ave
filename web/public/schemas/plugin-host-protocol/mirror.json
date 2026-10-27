@@ -16,9 +16,9 @@
     },
     {
       "protocol": "4",
-      "appVersion": "0.15.0",
-      "sha256": "ecc8a5e35102950d7f2aa188e82ad75d30fd55b95f6210026b4eea43c493baab",
-      "generatedFrom": "46d211d09d12f6e623e28e21ec7dd0e12cf2ce2c",
+      "appVersion": "0.14.1",
+      "sha256": "9b9a3bfdf0aa6522e9de844fe933e1fbb9dc270debfe42cf37f9232f30981139",
+      "generatedFrom": "6892aff0dfd646f37e860df7a2a3fe7462310c4c",
       "publishedTag": null
     }
   ],
