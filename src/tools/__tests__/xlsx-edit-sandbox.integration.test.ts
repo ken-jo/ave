@@ -65,7 +65,7 @@ describe("native governed XLSX command", () => {
           let finished: Promise<void> | undefined;
           const lease = {
             poll: () => {},
-            // Like the real reader: a HOME whose command made no edit (e.g. the AST parser's) has no journal.
+            // Mirrors DocumentJournalReader.poll (src/observation/journal-reader.ts:43-44): a never-created journal is no records.
             finish: () => {
               finished ??= (async () => {
                 const journal = join(homePath, "document-observation", "journal.jsonl");
