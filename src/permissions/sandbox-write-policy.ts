@@ -640,7 +640,7 @@ function addNestedGitControlPaths(
 
 // Sensitive/application literal denies include absent paths. Linux Git controls alone use existing entries plus a recoverable post-command quarantine sweep. Store locations come from their writers so changing a layout also changes this boundary. Existing sensitive-write protection is unioned separately. Its paths are inspected only for routing links; their owning union remains responsible for emitting the corresponding deny entries.
 export function buildMandatorySandboxWritePolicy(
-  writeRoots: readonly string[],
+  writeRoots: readonly FilesystemPathEntry[],
   userDataDir?: string,
   protectedRoutingPaths: readonly string[] = [],
 ): Pick<FilesystemConfig, "denyWrite"> & {
@@ -648,10 +648,11 @@ export function buildMandatorySandboxWritePolicy(
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
-  const rootSnapshots = writeRoots.map(original => ({
-    original,
-    physical: resolvePolicyPath(original, process.cwd()),
-  }));
+  const rootSnapshots = writeRoots.map(entry => {
+    const original = typeof entry === "string" ? entry : entry.path;
+    // A marked literal already carries the admitted identity; discovery must retain that canonical path.
+    return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
+  });
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
       SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),

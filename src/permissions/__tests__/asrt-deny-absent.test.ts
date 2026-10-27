@@ -720,12 +720,35 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const target = join(workspace, "credential");
     const unrelated = join(root, "unrelated");
     for (const grant of [join(workspace, "part*"), join(workspace, "PART~1")]) {
-      const next = buildSandboxConfig({ allowWrite: [grant], denyRead: [target, unrelated], denyWrite: [target, unrelated] });
+      // Supply uncertain coverage through the existing snapshot boundary, without requesting a new native allow ACE.
+      const next = buildSandboxConfig({ denyRead: [target, unrelated], denyWrite: [target, unrelated] }, undefined, { allowWrite: [grant] });
       expect(paths(next.filesystem.denyRead)).toContain(target);
       expect(paths(next.filesystem.denyWrite)).toContain(target);
       expect(paths(next.filesystem.denyRead)).not.toContain(unrelated);
       expect(paths(next.filesystem.denyWrite)).not.toContain(unrelated);
     }
+  });
+
+  it("keeps the requested deny envelope after a write pattern expands to no grants", () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "credential");
+    const unrelated = join(root, "unrelated");
+    const filesystem = { allowWrite: [join(workspace, "part*")], denyRead: [target, unrelated], denyWrite: [target, unrelated] };
+    for (const next of [buildSandboxConfig(filesystem).filesystem, buildPerCommandSandboxCustomConfig(filesystem)!.filesystem!]) {
+      expect(paths(next.allowWrite)).toEqual([]);
+      expect(paths(next.denyRead)).toContain(target);
+      expect(paths(next.denyWrite)).toContain(target);
+      expect(paths(next.denyRead)).not.toContain(unrelated);
+      expect(paths(next.denyWrite)).not.toContain(unrelated);
+    }
+  });
+
+  it("refuses an unresolved short name as a new write grant", () => {
+    const grant = join(root, "workspace", "PART~1");
+    expect(() => buildSandboxConfig({ allowWrite: [grant] })).toThrow(/not a plain drive path/);
+    expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: [grant] })).toThrow(/not a plain drive path/);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
   });
 
   it("keeps absent denies reached by home and environment write grant spellings", () => {

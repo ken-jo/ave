@@ -412,7 +412,10 @@ async function readPolicy(path: string, platform: NodeJS.Platform, access: Polic
   };
 }
 
-export async function loadMarketplacePolicy(path: string = getAdminPolicyPath(), platform: NodeJS.Platform = process.platform): Promise<PolicyLoad> {
+export async function loadMarketplacePolicy(
+  path: string = getAdminPolicyPath(),
+  platform: NodeJS.Platform = process.platform,
+): Promise<PolicyLoad> {
   return (await readPolicy(path, platform)).load;
 }
 

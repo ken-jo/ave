@@ -237,7 +237,7 @@ function readConfigurationDescriptor(descriptor: number, size: number): Buffer {
   return bytes.subarray(0, filled);
 }
 
-function readOpenedFile(path: string): Buffer | undefined {
+function readOpenedFile(path: string, seen: { present: boolean }): Buffer | undefined {
   let descriptor: number | undefined;
   let boundary: WindowsReadBoundary | undefined;
   try {
@@ -247,6 +247,8 @@ function readOpenedFile(path: string): Buffer | undefined {
       if (!admitWindowsReparse(boundary.file, "evidence")) throw new Error("Configuration is not a regular file");
       if (boundary.file.exists === false) return undefined;
       if (boundary.file.directory) throw new Error("Configuration is not a regular file");
+      // A certified read skips the existence probe, so a file that then vanishes must not read as absent.
+      seen.present = true;
     } else if (!before!.isFile()) throw new Error("Configuration is not a regular file");
     descriptor = boundary?.handles?.descriptors.at(-1)
       ?? openSync(path, process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -286,7 +288,7 @@ function readOpenedFile(path: string): Buffer | undefined {
       boundary.handles.close();
       boundary.handles = undefined;
       descriptor = undefined;
-      return readOpenedFile(path);
+      return readOpenedFile(path, seen);
     }
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -304,8 +306,9 @@ export function readAveHomeConfigurationFile(path: string): Buffer | undefined {
       const target = resolveConfigurationFile(path);
       const hasCertificate = process.platform === "win32" && [...windowsReadCertificates.values()].some(boundary => homeKey(boundary.path) === homeKey(target));
       const present = hasCertificate || configurationEntryExists(target);
-      if (present && !hasCertificate) observed = true;
-      const bytes = present ? readOpenedFile(target) : undefined;
+      const seen = { present: present && !hasCertificate };
+      const bytes = present ? readOpenedFile(target, seen) : undefined;
+      if (seen.present) observed = true;
       if (bytes !== undefined) return bytes;
     }
     if (observed || (home !== undefined && aveHomeConfigurationDirectory(home) !== resolve(home))) {

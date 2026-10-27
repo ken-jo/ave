@@ -1,9 +1,11 @@
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+import * as policyHome from "../../shared/policy-home.js";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type SandboxAskCallback, type ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,
@@ -27,6 +29,11 @@ const DESTINATION = { host: "203.0.113.10", port: 443, network: "public" as cons
 const sockets: Socket[] = [];
 const servers: net.Server[] = [];
 const listeners: Array<{ close(): Promise<void> }> = [];
+const policyFixture = useTempDirs("relay-stamp-floor-");
+
+beforeEach(() => {
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture()]);
+});
 
 afterEach(async () => {
   vi.restoreAllMocks();

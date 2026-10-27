@@ -1,3 +1,4 @@
+import { checkAdminPolicyPath } from "./ave-home-test-guard.js";
 import { admitWindowsReparse, readWindowsDacls, windowsPolicyDescriptor, windowsPolicyTrustFailure } from "./windows-path-facts.js";
 
 export { windowsPolicyTrustFailure, type WindowsPolicyDescriptor } from "./windows-path-facts.js";
@@ -12,6 +13,7 @@ export class WindowsPolicyReadError extends Error {
 }
 
 export async function readWindowsAdminPolicy(path: string): Promise<Buffer> {
+  checkAdminPolicyPath(path);
   try {
     const row = readWindowsDacls([path], { parent: true, content: true })[0]!;
     if (!admitWindowsReparse(row, "evidence")) throw new WindowsPolicyReadError(path, "Reparse point refused");

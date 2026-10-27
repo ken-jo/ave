@@ -2,14 +2,14 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadPolicy, getAdminPolicyPath } from "../policy-store.js";
 import { buildSandboxConfig } from "../asrt-sandbox.js";
-import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
+import { FilePolicySource, loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
 import { readPolicyServiceBase } from "../../marketplace/service/client.js";
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
 import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl } from "../../shared/ave-home.js";
@@ -17,7 +17,9 @@ import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { createServiceClient } from "../../boot/steps/service-endpoint.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import * as pathFacts from "../../shared/windows-path-facts.js";
 
 describe.skipIf(process.platform !== "win32")("Windows administrative policy trust", () => {
   let root: string;
@@ -48,6 +50,13 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     setFixtureOwner(admin);
   }
 
+  it("keeps production policy readers free of injectable reader parameters", () => {
+    expectTypeOf<Parameters<typeof readPolicyServiceBase>>().toEqualTypeOf<[policyPath: string]>();
+    expectTypeOf<Parameters<typeof readModelCatalogRefreshPolicy>>().toEqualTypeOf<[policyPath: string]>();
+    expectTypeOf<Parameters<typeof loadMarketplacePolicy>>().toEqualTypeOf<[path?: string, platform?: NodeJS.Platform]>();
+    expectTypeOf<Parameters<typeof createServiceClient>>().toEqualTypeOf<[fetchImpl: typeof fetch, stagingBase?: string]>();
+  });
+
   it("omits machine-owned roots from the Windows deny-write set", () => {
     const machine = process.env.ProgramData!;
     vi.stubEnv("ProgramFiles", join(root, "programs"));
@@ -73,7 +82,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     });
     const denyRead = config.filesystem.denyRead.map((entry) => typeof entry === "string" ? entry : entry.path);
     const denyWrite = config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path);
-    expect(config.filesystem.allowWrite).toContain(workspace);
+    expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(workspace);
     expect(denyWrite).toContain(join(workspace, ".git", "config"));
     expect(denyWrite).toContain(join(workspace, ".git", "hooks"));
     expect(denyRead).toContain(locked);
@@ -87,7 +96,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const child = join(blocked, "child");
     await mkdir(child, { recursive: true });
     const config = buildSandboxConfig({ allowedDomains: [], allowWrite: [child], denyWrite: [blocked] });
-    expect(config.filesystem.allowWrite).toContain(child);
+    expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(child);
     expect(config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path)).toContain(blocked);
   });
 
@@ -103,9 +112,13 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
       .toThrow(`Windows write grant ${pattern} contains machine root ${process.env.ProgramData!}`);
   });
 
-  it("does not read the extended-length prefix as a wildcard", () => {
+  it("refuses an extended-length grant before treating its prefix as a wildcard", () => {
     const grant = `\\\\?\\${join(root, "work")}`;
-    expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [grant] })).not.toThrow();
+    const pin = vi.spyOn(pathFacts, "pinWindowsPaths");
+    try {
+      expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [grant] })).toThrow(/literal local absolute path/);
+      expect(pin).not.toHaveBeenCalled();
+    } finally { pin.mockRestore(); }
   });
 
   it("refuses a recursive write pattern rooted at a machine root", () => {
@@ -194,7 +207,18 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const policy = await loadMarketplacePolicy(admin);
     expect(policy).toMatchObject({ ok: false });
     expect(policy).toHaveProperty("error", expect.stringContaining(`untrusted policy file at ${admin}`));
+    const source = await FilePolicySource.open(admin);
+    expect(source.load).toMatchObject({ ok: false, error: expect.stringContaining(`untrusted policy file at ${admin}`) });
+    expect(source.digest).toBe("unreadable:untrusted-policy");
+  });
+
+  it("rejects a user-owned service endpoint policy through the default reader", async () => {
+    await writeUserPolicy('{"service":{"baseUrl":"https://service.example"}}');
     await expect(readPolicyServiceBase(admin)).rejects.toThrow(`untrusted policy file at ${admin}`);
+  });
+
+  it("disables refresh for a user-owned policy without a refresh restriction", async () => {
+    await writeUserPolicy('{"marketplaces":{}}');
     expect(await readModelCatalogRefreshPolicy(admin)).toBe("off");
   });
 

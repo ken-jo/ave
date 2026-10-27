@@ -1,16 +1,24 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+import { mkdirSync } from "node:fs";
 import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
-import { useTempPaths } from "../../__tests__/test-helpers.js";
+import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";
+import * as policyHome from "../../shared/policy-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { assertExtensionStartAllowed, initializeAsrtSandbox, isAsrtSandboxActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapWorkerCommand, wrapTerminalCommand, grantWindowsWorkerFilesystemAccess } from "../asrt-sandbox.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import { readAsrtWindowsStatus } from "../asrt-windows-support.js";
 
 const runtime = vi.hoisted(() => ({ initialize: vi.fn(), wrap: vi.fn() }));
+
+// Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
+vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
+vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
     initialize: runtime.initialize,
@@ -29,6 +37,15 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
 const ORIGINAL_PLATFORM = process.platform;
 const OWNER_SID = "S-1-5-21-100-200-300-1001";
 const home = useTempPaths("ave-home-confinement-", ".ave");
+const policyFixture = useTempDirs("confinement-stamp-floor-");
+
+beforeEach(() => {
+  const profile = ORIGINAL_PLATFORM === "win32" ? join(policyFixture(), "alice") : "C:\\Users\\alice";
+  if (ORIGINAL_PLATFORM === "win32") mkdirSync(profile);
+  vi.stubEnv("HOME", profile);
+  vi.stubEnv("USERPROFILE", profile);
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+});
 
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -36,6 +53,8 @@ afterEach(async () => {
   __resetSandboxRequestedAtBootForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("private-directory confinement gate", () => {

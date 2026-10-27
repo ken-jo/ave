@@ -49,6 +49,11 @@ import { configureHostResources } from "../../../main/host-resources.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 
 
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
+
 function previewIdOf(view: SourcePreviewResultView): string {
   if (view.type === "confirm") throw new Error(`preview asked for ${view.warnings.map((item) => item.warning).join(", ")}`);
   return view.previewId;

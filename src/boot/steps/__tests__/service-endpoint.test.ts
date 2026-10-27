@@ -1,5 +1,5 @@
 /** Staging may allow loopback moves and must keep its accepted-move record separate from production. */
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelemetrySettings } from "../../../data/settings-store.js";
 import { AVE_SERVICE_BASE_URL } from "../../../marketplace/service/client.js";
 import { consentedTelemetryEndpoint, createServiceClient } from "../service-endpoint.js";
+
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
+
+vi.mock("../../../permissions/policy-store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../permissions/policy-store.js")>()),
+  getAdminPolicyPath: () => join(process.env.AVE_HOME!, "policy.json"),
+}));
 
 const STAGING = "http://127.0.0.1:8791";
 const MOVED = "https://ave-staging.example";
@@ -25,6 +35,7 @@ describe("createServiceClient", () => {
   let previousHome: string | undefined;
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "ave-service-home-"));
+    writeFileSync(join(home, "policy.json"), "{}");
     previousHome = process.env.AVE_HOME;
     process.env.AVE_HOME = home;
   });

@@ -529,6 +529,9 @@ jobs:
       # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      # Seven native-process suites start together on this 4-vCPU runner; at
+      # 4 workers their cold PowerShell and helper starts stall each other.
+      AVE_VITEST_MAX_WORKERS: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -674,6 +677,10 @@ jobs:
           src/lib/__tests__/admin-policy-file.test.ts
           src/permissions/__tests__/policy-store-windows.test.ts
           src/shared/__tests__/windows-admin-policy.test.ts
+          src/__tests__/program-data-isolation.test.ts
+          src/permissions/__tests__/asrt-stamp-targets.test.ts
+          src/permissions/__tests__/windows-stamp-targets.test.ts
+          src/permissions/__tests__/filesystem-policy-boundary.test.ts
           src/shared/__tests__/windows-read-deny-evidence.test.ts
           src/shared/__tests__/ave-home-configuration-owners.test.ts
           src/shared/__tests__/ave-home-configuration-authority.test.ts

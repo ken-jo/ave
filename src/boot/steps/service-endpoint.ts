@@ -24,7 +24,10 @@ export function consentedTelemetryEndpoint(
   };
 }
 
-export function createServiceClient(fetchImpl: typeof fetch, stagingBase = readDevelopmentEnvVar("AVE_SERVICE_BASE_URL")): ServiceClient {
+export function createServiceClient(
+  fetchImpl: typeof fetch,
+  stagingBase = readDevelopmentEnvVar("AVE_SERVICE_BASE_URL"),
+): ServiceClient {
   return new ServiceClient({
     fetchImpl,
     buildBase: stagingBase ?? AVE_SERVICE_BASE_URL,

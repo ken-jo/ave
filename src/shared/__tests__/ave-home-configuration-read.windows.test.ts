@@ -230,6 +230,37 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     } finally { stat.mockImplementation(execute); }
   });
 
+  it.each(["migrated", "legacy"])("refuses a certified %s file that disappears during a warm read", (layout) => {
+    const home = paths();
+    setFixtureOwner(dirname(home));
+    vi.stubEnv("AVE_HOME", home);
+    expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
+    const path = join(home, "settings.json");
+    writeFileSync(path, "{}");
+    if (layout === "migrated") migrateAveHomeConfiguration(home);
+    else rmdirSync(join(home, "config"));
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe("{}");
+    const file = layout === "migrated" ? join(home, "config", "settings.json") : path;
+    const inode = lstatSync(file, { bigint: true }).ino;
+    const stat = vi.mocked(fs.fstatSync);
+    const execute = stat.getMockImplementation()!;
+    // The first matching stat validates the certified handle; the second is the read of that handle.
+    let matched = 0, moved = false;
+    stat.mockImplementation((...args) => {
+      const result = Reflect.apply(execute, undefined, args);
+      if (!moved && BigInt(result.ino) === inode && ++matched === 2) {
+        moved = true;
+        renameSync(file, `${file}.gone`);
+        throw new Error("Fixture file vanished");
+      }
+      return result;
+    });
+    try {
+      expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+      expect(moved).toBe(true);
+    } finally { stat.mockImplementation(execute); }
+  });
+
   it.each(["junction", "directory"])("refuses an intermediate ancestor substituted with a %s", (kind) => {
     const { home, path } = fixture();
     readAveHomeConfigurationFile(path);

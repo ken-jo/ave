@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+import * as policyHome from "../../shared/policy-home.js";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import type { ApprovalDecision, ApprovalRequestInput } from "../approval-gate.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
@@ -19,6 +21,11 @@ const sockets = new Set<Socket>();
 const invocations: EgressInvocation[] = [];
 const listeners: Array<{ close(): Promise<void> }> = [];
 const servers: net.Server[] = [];
+const policyFixture = useTempDirs("egress-stamp-floor-");
+
+beforeEach(() => {
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture()]);
+});
 
 afterEach(async () => {
   for (const socket of sockets) socket.destroy();
@@ -30,6 +37,7 @@ afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
   for (const grant of await listEgressGrants()) await revokeEgressGrant(grant);
+  vi.restoreAllMocks();
 });
 
 function track(socket: Socket): Socket {

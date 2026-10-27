@@ -435,7 +435,8 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
   const bootstrap = "$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))";
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
-  ], { input: script, encoding: "utf-8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, env: windowsPowerShellEnv({ ...process.env,
+  // A one-shot process cannot separate cold startup from its directory operation.
+  ], { input: script, encoding: "utf-8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs, env: windowsPowerShellEnv({ ...process.env,
     AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length !== paths.length) {

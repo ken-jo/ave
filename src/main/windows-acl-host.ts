@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
-
-// This module has no runtime imports. Test fixtures load it from inside a mocked `node:child_process` factory, which must not cycle back through it.
+// Keep runtime imports independent of child-process code: spawn fixtures load this module inside their factory.
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 // The host exits after this long without a request; the next one starts a fresh host.
 export const WINDOWS_ACL_HOST_IDLE_MS = 30_000;
@@ -59,12 +59,19 @@ export class WindowsAclHostError extends Error {
 interface PendingRequest {
   readonly resolve: (line: string) => void;
   readonly reject: (error: unknown) => void;
-  readonly timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
+  readonly timeoutMs: number;
+  readonly line: string;
   readonly maxBytes: number;
   readonly chunks: Buffer[];
   readonly endMarker: string;
   reply?: string;
   bytes: number;
+}
+
+interface HostStartup {
+  readonly timer: NodeJS.Timeout;
+  buffered: string;
 }
 
 const MAX_ERROR_OUTPUT_CHARS = 1024;
@@ -86,6 +93,7 @@ export class WindowsAclHost implements WindowsAclTransport {
   private child: ChildProcess | undefined;
   private launchKey: string | undefined;
   private pending: PendingRequest | undefined;
+  private startup: HostStartup | undefined;
   private idleTimer: NodeJS.Timeout | undefined;
   // Hosts this instance has started; tests read it to tell reuse from a fresh start.
   starts = 0;
@@ -106,14 +114,6 @@ export class WindowsAclHost implements WindowsAclTransport {
       this.clearIdleTimer();
       const key = JSON.stringify(launch);
       if (this.child && this.launchKey !== key) this.discard();
-      let started: ChildProcess;
-      try {
-        started = this.child ?? this.start(launch, key);
-      } catch (error) {
-        reject(error);
-        return;
-      }
-      const child = started;
       this.pending = {
         resolve,
         reject,
@@ -121,15 +121,18 @@ export class WindowsAclHost implements WindowsAclTransport {
         chunks: [],
         endMarker: `END ${request.id}`,
         bytes: 0,
-        timer: setTimeout(() => this.fail(child, new WindowsAclHostError("Windows ACL host timed out")), limits.timeoutMs),
+        timeoutMs: limits.timeoutMs,
+        line: `${asciiJson({ id: request.id, paths: request.paths, capSids: request.capSids, skipPackage: request.skipPackage, setOwner: request.setOwner })}\n`,
       };
-      const line = `${asciiJson({ id: request.id, paths: request.paths, capSids: request.capSids, skipPackage: request.skipPackage, setOwner: request.setOwner })}\n`;
       try {
-        child.stdin!.write(line, (error) => {
-          if (error) this.fail(child, error);
-        });
+        if (this.child) this.writeRequest(this.child);
+        else this.start(launch, key);
       } catch (error) {
-        this.fail(child, error);
+        if (this.child) this.fail(this.child, error);
+        else {
+          this.pending = undefined;
+          reject(error);
+        }
       }
     });
   }
@@ -144,6 +147,10 @@ export class WindowsAclHost implements WindowsAclTransport {
     this.child = child;
     this.launchKey = key;
     this.starts += 1;
+    this.startup = {
+      buffered: "",
+      timer: setTimeout(() => this.fail(child, new WindowsAclHostError("Windows ACL host startup timed out")), TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs),
+    };
     // Listeners stay attached after a failure so late events of a killed host are absorbed.
     child.on("error", (error) => this.fail(child, error));
     child.on("exit", (code, signal) => this.fail(child, new WindowsAclHostError(`Windows ACL host exited (${code ?? signal})`)));
@@ -158,6 +165,22 @@ export class WindowsAclHost implements WindowsAclTransport {
 
   private receive(child: ChildProcess, chunk: Buffer): void {
     if (child !== this.child) return;
+    const startup = this.startup;
+    if (startup) {
+      // Only an exact ASCII READY line is allowed, including when the pipe splits it.
+      const buffered = startup.buffered + chunk.toString("latin1");
+      if (!["READY\n", "READY\r\n"].some((line) => line.startsWith(buffered))) {
+        this.fail(child, new WindowsAclHostError("Windows ACL host handshake is invalid"));
+        return;
+      }
+      startup.buffered = buffered;
+      if (buffered.endsWith("\n")) {
+        clearTimeout(startup.timer);
+        this.startup = undefined;
+        this.writeRequest(child);
+      }
+      return;
+    }
     const pending = this.pending;
     if (!pending) {
       this.fail(child, new WindowsAclHostError("Windows ACL host wrote outside a request"));
@@ -199,6 +222,21 @@ export class WindowsAclHost implements WindowsAclTransport {
     pending.chunks.push(buffered);
   }
 
+  private writeRequest(child: ChildProcess): void {
+    const pending = this.pending!;
+    try {
+      child.stdin!.write(pending.line, (error) => {
+        if (error) this.fail(child, error);
+      });
+      // Arm only after the write; synchronous fixture replies may already have settled it.
+      if (this.pending === pending) {
+        pending.timer = setTimeout(() => this.fail(child, new WindowsAclHostError("Windows ACL host request timed out")), pending.timeoutMs);
+      }
+    } catch (error) {
+      this.fail(child, error);
+    }
+  }
+
   private complete(pending: PendingRequest): void {
     this.pending = undefined;
     clearTimeout(pending.timer);
@@ -211,6 +249,8 @@ export class WindowsAclHost implements WindowsAclTransport {
     if (child !== this.child) return;
     this.child = undefined;
     this.launchKey = undefined;
+    if (this.startup) clearTimeout(this.startup.timer);
+    this.startup = undefined;
     this.clearIdleTimer();
     try { child.kill(); } catch { /* An exited host has nothing left to kill. */ }
     const pending = this.pending;

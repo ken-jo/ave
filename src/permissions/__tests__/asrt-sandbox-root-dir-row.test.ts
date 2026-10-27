@@ -1,5 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../shared/policy-home.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/policy-home.js")>();
+  const os = await import("node:os");
+  return { ...actual, policyHomeAnchors: () => [os.homedir()] };
+});
+
+// This suite checks a table projection; native handle refusal is covered on a Windows host.
+vi.mock("../windows-stamp-targets.js", async original => {
+  const actual = await original<typeof import("../windows-stamp-targets.js")>();
+  const nativeWindows = process.platform === "win32";
+  return { ...actual, pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) =>
+    nativeWindows ? actual.pinWindowsFilesystemConfig(filesystem) : filesystem };
+});
+
 // A POSIX-rooted directory row. The shipped table has none today; this proves a future one keeps its exact spelling, so the Windows boundary still drops it.
 const ROOT_DIR_SEGMENTS = vi.hoisted(() => ["etc", "ave-root-dir-probe"] as const);
 const ROOT_DIR_ROW = "/" + ROOT_DIR_SEGMENTS.join("/");
@@ -38,7 +52,7 @@ describe("asrt-sandbox — POSIX-rooted directory rows on Windows", () => {
   it("never hands the row to srt-win", () => {
     setProcessPlatform("win32");
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
-    const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(String);
+    const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(entry => typeof entry === "string" ? entry : entry.path);
     expect(denies.filter((path) => path.startsWith(ROOT_DIR_ROW))).toEqual([]);
   });
 

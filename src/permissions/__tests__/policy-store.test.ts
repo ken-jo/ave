@@ -8,6 +8,7 @@ import { mkdir, open } from "node:fs/promises";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { tmpdir } from "node:os";
 import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
@@ -559,7 +560,7 @@ describe("policy-store", () => {
       const original = process.platform;
       const origPD = process.env.ProgramData;
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-      process.env.ProgramData = "C:\\ProgramData";
+      process.env.ProgramData = join(tmpdir(), "ProgramData");
       try {
         const p = getAdminPolicyPath();
         expect(p).toContain("Ave");

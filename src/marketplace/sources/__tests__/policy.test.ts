@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utime
 import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import {
@@ -15,6 +15,11 @@ import {
   type MarketplacePolicy,
   type PolicyFileAccess,
 } from "../policy.js";
+
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
 
 let dir: string;
 let path: string;
@@ -62,29 +67,29 @@ const DESIGN_EXAMPLE = {
 
 describe("loadMarketplacePolicy", () => {
   it("means no restrictions when the file is missing or has no marketplaces section", async () => {
-    expect(await loadMarketplacePolicy(join(dir, "absent.json"))).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: join(dir, "absent.json") });
-    expect(await loadMarketplacePolicy(join(dir, "absent", "nested", "policy.json"))).toMatchObject({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
+    expect(await loadMarketplacePolicy(join(dir, "absent.json"), process.platform)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: join(dir, "absent.json") });
+    expect(await loadMarketplacePolicy(join(dir, "absent", "nested", "policy.json"), process.platform)).toMatchObject({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
     writeFileSync(path, JSON.stringify({ version: 1, requireExplicitApproval: true, managed: false, updatedAt: "x" }));
-    expect(await loadMarketplacePolicy(path)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path });
+    expect(await loadMarketplacePolicy(path, process.platform)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path });
   });
 
   it("treats an ENOTDIR policy path as unreadable rather than unrestricted", async () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
-    expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
-    expect(await loadMarketplacePolicy(join(parent, "nested", "policy.json"))).toMatchObject({ ok: false });
+    expect(await loadMarketplacePolicy(join(parent, "policy.json"), process.platform)).toMatchObject({ ok: false });
+    expect(await loadMarketplacePolicy(join(parent, "nested", "policy.json"), process.platform)).toMatchObject({ ok: false });
   });
 
   it("treats a dangling policy symlink as unreadable rather than unrestricted", async ({ skip }) => {
     requireSymlinkCapability(dir, "file", skip);
     symlinkSync(join(dir, "missing-target.json"), path, "file");
-    expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
+    expect(await loadMarketplacePolicy(path, process.platform)).toMatchObject({ ok: false });
   });
 
   it.skipIf(!canCreateSymlinks(process.platform === "win32" ? "junction" : "dir"))("treats a dangling policy parent as unreadable", async () => {
     const parent = join(dir, "linked-parent");
     symlinkSync(join(dir, "missing-parent"), parent, process.platform === "win32" ? "junction" : "dir");
-    expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
+    expect(await loadMarketplacePolicy(join(parent, "policy.json"), process.platform)).toMatchObject({ ok: false });
   });
 
   it("reads the design example and keeps a key listed in both lists as required only", async () => {
@@ -185,14 +190,14 @@ describe("loadMarketplacePolicy", () => {
 
   it("fails closed on duplicate keys and unparseable JSON", async () => {
     writeFileSync(path, '{"version":1,"marketplaces":{"block":[],"block":["host:x.example"]}}');
-    const duplicate = await loadMarketplacePolicy(path);
+    const duplicate = await loadMarketplacePolicy(path, process.platform);
     expect(duplicate.ok).toBe(false);
     writeFileSync(path, "{ not json");
-    expect((await loadMarketplacePolicy(path)).ok).toBe(false);
+    expect((await loadMarketplacePolicy(path, process.platform)).ok).toBe(false);
   });
 
   it("fails closed when the file cannot be read", async () => {
-    const result = await loadMarketplacePolicy(dir);
+    const result = await loadMarketplacePolicy(dir, process.platform);
     expect(result.ok).toBe(false);
   });
 });

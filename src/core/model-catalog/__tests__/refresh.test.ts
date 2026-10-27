@@ -21,6 +21,11 @@ import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.j
 import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
 import { withFileLock } from "../../../lib/with-file-lock.js";
 
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
+
 const lookupMock = vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]);
 vi.mock("node:dns", () => ({ promises: { lookup: () => lookupMock() } }));
 

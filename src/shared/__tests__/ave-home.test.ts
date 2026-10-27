@@ -8,6 +8,7 @@ import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
 import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
+import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
 import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
@@ -422,6 +423,7 @@ describe("ensureAveHomePrivate", () => {
     vi.mocked(execFileSync).mockReturnValue(JSON.stringify(paths.map(path => ({ path }))));
     readWindowsDirectoryDacls(paths, true, runtimeRoot);
     const [, , options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
+    expect(options).toMatchObject({ timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
     const request = JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!);
     const script = (options as { input: string }).input;
     expect(request).toEqual({ paths, claimableRuntimeRoot: runtimeRoot, readOnlyRights: 0x1200a9 });

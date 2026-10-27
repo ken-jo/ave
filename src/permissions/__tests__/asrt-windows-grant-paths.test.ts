@@ -162,7 +162,9 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       grant.release();
     }
     expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid, read: paths, write: paths }));
-    expect(pin.mock.calls.filter(([requests]) => requests.some(path => paths.includes(path)))).toEqual([[paths], [paths], [paths]]);
+    const targetRequests = pin.mock.calls.filter(([requests]) => requests.some(path => paths.includes(path)));
+    expect(targetRequests.filter(([requests]) => requests.length === paths.length).length).toBeGreaterThanOrEqual(3);
+    expect(targetRequests.slice(-2)).toEqual([[paths], [paths]]);
     expect(runtime.revokeWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid }));
     expect(revokedIds).toEqual(ids);
     expect(held.size).toBe(0);
@@ -354,11 +356,15 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
 
   it.each(["relative", "C:\\", "C:\\single", "\\\\host\\share\\folder", "\\\\?\\C:\\fixture\\folder", "\\\\.\\C:\\fixture\\folder"])("refuses unsupported grant grammar %s", async path => {
     await initializeAsrtSandbox({});
+    const pin = vi.spyOn(facts, "pinWindowsPaths");
+    const dacl = vi.spyOn(facts, "readWindowsDacls");
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [path] })).rejects.toThrow(/literal|absolute|root|component/);
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(pin).not.toHaveBeenCalled();
+    expect(dacl).not.toHaveBeenCalled();
   });
 
-  it.each(["before", "during"])("revokes when the target is replaced %s the native write", async when => {
+  it.each(["before", "during"])("refuses replacement %s the native write and compensates attempted grants", async when => {
     await initializeAsrtSandbox({});
     const swap = () => { renameSync(target, join(fixture, "original")); mkdirSync(target); };
     if (when === "during") vi.mocked(runtime.grantWindowsAcl).mockImplementation(swap);
@@ -372,7 +378,10 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       });
     }
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] })).rejects.toThrow(target);
-    expect(runtime.revokeWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid: process.pid + 1 }));
+    if (when === "before") {
+      expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+      expect(runtime.revokeWindowsAcl).not.toHaveBeenCalled();
+    } else expect(runtime.revokeWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid: process.pid + 1 }));
   });
 
   it("keeps junction deny evidence unproven and refuses an overlapping grant", async () => {
