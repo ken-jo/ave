@@ -1,3 +1,4 @@
+import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { prepareVerifiedShellCommand } from "../verified-shell-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { CLASSIFIER_WIDENING_FIXTURES } from "./fixtures/classifier-widening.js";
 
+vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));
@@ -20,6 +22,7 @@ let manager: PermissionManager;
 beforeEach(() => {
   setProcessPlatform("linux");
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "widening-battery-")));
+  stabilizeFixtureAncestorStats(cwd);
   mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
   mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
   writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");

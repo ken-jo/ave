@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,6 +23,7 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/verified-shell-command.js", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
@@ -37,6 +39,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   setProcessPlatform("linux");
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "verified-permission-flow-")));
+  stabilizeFixtureAncestorStats(cwd);
   mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
   mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
   writeFileSync(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -7,12 +8,15 @@ import { join } from "node:path";
 import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../rules/git-readonly-argv.js";
 import { inspectGitRepository } from "../rules/git-repository-inputs.js";
 
+vi.mock("node:fs", { spy: true });
+
 let root: string;
 let cwd: string;
 let environment: Record<string, string>;
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "git-read-controls-")));
+  stabilizeFixtureAncestorStats(root);
   const home = join(root, "home");
   cwd = join(root, "workspace");
   mkdirSync(home);
@@ -35,7 +39,10 @@ beforeEach(() => {
   succeed(native(["-c", "commit.gpgSign=false", "commit", "-m", "second subject"]));
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  vi.restoreAllMocks();
+  rmSync(root, { recursive: true, force: true });
+});
 
 function native(args: readonly string[], extra: Record<string, string> = {}, input?: string) {
   return spawnSync("git", ["-C", cwd, ...args], {

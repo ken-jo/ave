@@ -1,3 +1,4 @@
+import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExe
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
+vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));
@@ -31,6 +33,7 @@ let serial = 0;
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "repository-read-boundary-")));
+  stabilizeFixtureAncestorStats(root);
   const home = join(root, "home");
   mkdirSync(home);
   environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_|^(?:HOME|XDG_CONFIG_HOME|EMAIL)$/i.test(key)));

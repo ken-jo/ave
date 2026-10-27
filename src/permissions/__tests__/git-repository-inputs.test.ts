@@ -1,3 +1,4 @@
+import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import * as fs from "node:fs";
 import * as childProcess from "node:child_process";
 import { tmpdir } from "node:os";
@@ -23,6 +24,7 @@ beforeEach(() => {
   vi.mocked(fs.readSync).mockImplementation(nativeFs.readSync);
   vi.mocked(fs.lstatSync).mockImplementation(nativeFs.lstatSync);
   root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "git-inputs-")));
+  stabilizeFixtureAncestorStats(root);
   cwd = join(root, "workspace");
   fs.mkdirSync(join(cwd, ".git", "objects", "info"), { recursive: true });
   fs.mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });

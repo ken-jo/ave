@@ -1,3 +1,4 @@
+import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -21,6 +22,7 @@ import {
   preparedShellCwdProbe, preparedShellExecutableReadPaths, type PreparedShellInvocation,
 } from "../prepared-shell-invocation.js";
 
+vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
@@ -47,6 +49,7 @@ function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'pr
   setProcessPlatform("linux");
   const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "verified-shell-execution-")));
   roots.push(cwd);
+  stabilizeFixtureAncestorStats(cwd);
   const profileRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "verified-shell-profiles-")));
   roots.push(profileRoot);
   mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
