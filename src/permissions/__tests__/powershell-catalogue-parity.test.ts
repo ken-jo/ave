@@ -187,7 +187,8 @@ describe("credential and sender catalogue parity", () => {
       expect(decision(command)).toMatchObject(expected);
       const inspected = inspectPowerShellCommand(command, directory);
       expect(inspected).toMatchObject({ sensitive: null, exfiltration: null });
-      expect(inspected.exactLiteralEvaluation === true).toBe(literalEvaluation);
+      // #223 executable-bound startup admission: evaluator exceptions require proven outer startup.
+      expect(inspected.exactLiteralEvaluation === true).toBe(process.platform === "win32" ? false : literalEvaluation);
     });
 
   it.each([

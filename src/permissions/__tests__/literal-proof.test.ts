@@ -13,8 +13,11 @@ import { proveLiteralShell } from "../rules/shell-rule-matcher.js";
 import { inspectPowerShellCommand, proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
 import { isPowerShellLauncher, MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 import { canonicalRuleSpecifier, normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const roots: string[] = [];
+// #223 executable-bound startup admission: win32 outer startup has no exact eligibility.
+const UNPROVEN_STARTUP = process.platform === "win32";
 afterEach(() => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -27,6 +30,40 @@ function projectDirectory(): string {
 }
 
 describe("literal exact-rule proof", () => {
+  it.each([
+    { platform: "linux", admitted: true },
+    { platform: "darwin", admitted: true },
+    { platform: "win32", admitted: false },
+  ] as const)("keeps exact rules bound to proven outer startup on $platform", ({ platform, admitted }) => {
+    const original = process.platform;
+    const cwd = projectDirectory();
+    try {
+      setProcessPlatform(platform);
+      // #223 executable-bound startup admission retains direct evaluators only on proven outer hosts.
+      for (const [command, pattern] of [
+        ["Write-Output ready", "PowerShell(Write-Output ready)"],
+        ["Invoke-Expression 'Get-Date'", "PowerShell(Invoke-Expression 'Get-Date')"],
+      ] as const) {
+        expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBe(admitted ? pattern : null);
+        const manager = new PermissionManager(join(cwd, "permissions.json"));
+        manager.setMode("allow");
+        manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
+        for (const runsSandboxed of [false, true]) {
+          const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed } };
+          expect(manager.checkDetailed("powershell", "builtin", "shell", null, context)).toMatchObject(admitted
+            ? { decision: "allow", layer: 3 } : { decision: "ask", layer: 2, forceModal: true });
+          expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true })).toMatchObject(admitted
+            ? { decision: "allow", layer: 3 } : { decision: "deny", layer: 2 });
+        }
+      }
+      const floorCommand = "Get-Content ~/.ssh/id_rsa";
+      expect(inspectPowerShellCommand(floorCommand, cwd)).toMatchObject({ outcome: "visible-floor" });
+      expect(buildShellRuleApproval("powershell", floorCommand, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+    } finally {
+      setProcessPlatform(original);
+    }
+  });
+
   it.each((["bash", "powershell"] as const).flatMap((dialect) => [
     { dialect, command: "git commit -m 'record fixture changes'", eligible: false },
     { dialect, command: "printf '%s' 'record fixture changes'", eligible: true },
@@ -34,7 +71,8 @@ describe("literal exact-rule proof", () => {
     const cwd = projectDirectory();
     const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true });
     const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
-    expect(approval.exactRule).toBe(eligible ? pattern : null);
+    const exactEligible = eligible && !(dialect === "powershell" && UNPROVEN_STARTUP);
+    expect(approval.exactRule).toBe(exactEligible ? pattern : null);
     const scopes = new ProjectRuleScopes(join(cwd, "rules"));
     await scopes.addRule(cwd, withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const state = await scopes.reload(cwd);
@@ -43,7 +81,7 @@ describe("literal exact-rule proof", () => {
     const result = dialect === "bash"
       ? evaluateShellSubject({ command, cwd, exactAllowOnly: true }, state.rules)
       : evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, state.rules);
-    if (eligible) expect(result.decision).toBe("allow");
+    if (exactEligible) expect(result.decision).toBe("allow");
     else expect(result.decision).not.toBe("allow");
     const different = command.replace("fixture", "different");
     const mismatch = dialect === "bash"
@@ -91,17 +129,18 @@ describe("literal exact-rule proof", () => {
       expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
       expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
       const literal = `printf '%s' 'first${whitespace}second'`;
-      expect(buildShellRuleApproval(dialect, literal, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(`${dialect === "bash" ? "Bash" : "PowerShell"}(${literal})`);
+      expect(buildShellRuleApproval(dialect, literal, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(dialect === "powershell" && UNPROVEN_STARTUP
+        ? null : `${dialect === "bash" ? "Bash" : "PowerShell"}(${literal})`);
     }
   });
 
   it.each(["-Force", "–Force", "—Force"])("preserves cmdlet parameter provenance for %s", (parameter) => {
-    const pattern = canonicalRuleSpecifier(`PowerShell(Get-ChildItem '${parameter}')`);
-    expect(pattern).toBe(`PowerShell(Get-ChildItem '${parameter}')`);
+    const pattern = `PowerShell(Get-ChildItem '${parameter}')`;
+    expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
     const rule = withCurrentShellRuleVersion({ pattern, action: "allow" as const });
-    expect(evaluatePowerShellSubject({ command: `Get-ChildItem '${parameter}'`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).toBe("allow");
+    expect(evaluatePowerShellSubject({ command: `Get-ChildItem '${parameter}'`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).toBe(UNPROVEN_STARTUP ? null : "allow");
     expect(evaluatePowerShellSubject({ command: `Get-ChildItem ${parameter}`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).not.toBe("allow");
-    expect(buildShellRuleApproval("powershell", `Get-ChildItem '${parameter}'`, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(pattern);
+    expect(buildShellRuleApproval("powershell", `Get-ChildItem '${parameter}'`, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(UNPROVEN_STARTUP ? null : pattern);
   });
 
   it("preserves deny alias normalization with quoted parameters", () => {
@@ -149,7 +188,7 @@ describe("literal exact-rule proof", () => {
 
   it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'"])("accepts known visible literal invocation code: %s", (command) => {
     expect(proveLiteralPowerShell(command).proven).toBe(true);
-    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
+    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(UNPROVEN_STARTUP ? null : `PowerShell(${command})`);
   });
 
   it("refuses an invocation outside the known grammar", () => {
@@ -201,17 +240,19 @@ describe("literal exact-rule proof", () => {
     const command = `printf ${Array<string>(20).fill("a").join(" ")}`;
     const pattern = `PowerShell(${command})`;
     expect(proveLiteralPowerShell(command).proven).toBe(true);
-    expect(inspectPowerShellCommand(command, cwd)).toEqual({
-      outcome: "static-complete", sensitive: null, exfiltration: null,
+    expect(inspectPowerShellCommand(command, cwd)).toMatchObject({
+      outcome: UNPROVEN_STARTUP ? "unproven" : "static-complete", sensitive: null, exfiltration: null,
     });
-    expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBe(pattern);
-    expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(true);
+    expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBe(UNPROVEN_STARTUP ? null : pattern);
+    expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(!UNPROVEN_STARTUP);
     const manager = new PermissionManager(join(cwd, "permissions.json"));
     manager.setMode("allow");
     manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
     const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed: false } };
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, context).decision).toBe("allow");
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("allow");
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, context)).toMatchObject(UNPROVEN_STARTUP
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe(UNPROVEN_STARTUP ? "deny" : "allow");
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject(UNPROVEN_STARTUP
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
   });
 });

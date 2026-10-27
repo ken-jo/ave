@@ -220,7 +220,11 @@ afterEach(() => {
 
 
 function requireLaneBehavior(fixture: EncodedCase): void {
-  const { command, dialect, expectedOutcome, exactEligible, forceModal } = fixture;
+  const { command, dialect } = fixture;
+  // #223 executable-bound startup admission: win32 outer startup stays unproven, including literal evaluators.
+  const { expectedOutcome, exactEligible, forceModal } = dialect === "powershell" && process.platform === "win32"
+    && (fixture.expectedOutcome === "static-complete" || fixture.exactEligible)
+    ? EXPECTED_UNPROVEN : fixture;
   const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
   const signals = dialect === "bash"
     ? shellFloors.inspectShellCommand(command, cwd)
@@ -670,10 +674,16 @@ describe.each(["bash", "powershell"] as const)("quoted literal rule persistence 
     const command = "printf %s 'record fixture changes'";
     const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
     const kind = dialect === "bash" ? "Bash" : "PowerShell";
-    expect(card.exactRule).toBe(`${kind}(printf %s 'record fixture changes')`);
-    await manager.addRulePersist({ pattern: card.exactRule!, action: "allow" }, { kind: "user" });
-    expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
-    expect(checkShellPermission(manager, cwd, SESSION_ID, 'printf %s "record fixture changes"', dialect, false)).toMatchObject({ decision: "ask", layer: 6 });
+    const unprovenStartup = dialect === "powershell" && process.platform === "win32";
+    const pattern = `${kind}(printf %s 'record fixture changes')`;
+    // #223 executable-bound startup admission: a stored raw key cannot prove win32 startup.
+    expect(card.exactRule).toBe(unprovenStartup ? null : pattern);
+    await manager.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false)).toMatchObject(unprovenStartup
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, 'printf %s "record fixture changes"', dialect, false)).toMatchObject(unprovenStartup
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "ask", layer: 6 });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision).toBe(unprovenStartup ? "deny" : "allow");
     expect(checkShellPermission(manager, cwd, SESSION_ID, "printf %s 'different message'", dialect, false).decision).toBe("ask");
   });
 
@@ -694,12 +704,20 @@ describe("raw numeric argument identity", () => {
     const bare = `Write-Output ${value}`;
     const quotedCard = buildShellRuleApproval("powershell", quoted, cwd, { allow: true, deny: true }, SESSION_ID);
     const bareCard = buildShellRuleApproval("powershell", bare, cwd, { allow: true, deny: true }, SESSION_ID);
-    expect(quotedCard.exactRule).toBe(`PowerShell(Write-Output '${value}')`);
-    expect(bareCard.exactRule).toBe(`PowerShell(Write-Output ${value})`);
-    for (const [approved, other, pattern] of [[quoted, bare, quotedCard.exactRule], [bare, quoted, bareCard.exactRule]] as const) {
+    // #223 executable-bound startup admission: raw identities survive without win32 exact eligibility.
+    const unprovenStartup = process.platform === "win32";
+    const quotedPattern = `PowerShell(Write-Output '${value}')`;
+    const barePattern = `PowerShell(Write-Output ${value})`;
+    expect(quotedPattern).not.toBe(barePattern);
+    expect(quotedCard.exactRule).toBe(unprovenStartup ? null : quotedPattern);
+    expect(bareCard.exactRule).toBe(unprovenStartup ? null : barePattern);
+    for (const [approved, other, pattern] of [[quoted, bare, quotedPattern], [bare, quoted, barePattern]] as const) {
       manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: pattern!, action: "allow" })]);
-      expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false)).toMatchObject({ decision: "allow", layer: 3 });
-      expect(checkShellPermission(manager, cwd, SESSION_ID, other, "powershell", false)).toMatchObject({ decision: "ask", layer: 6 });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false)).toMatchObject(unprovenStartup
+        ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, other, "powershell", false)).toMatchObject(unprovenStartup
+        ? { decision: "ask", layer: 2, forceModal: true } : { decision: "ask", layer: 6 });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false, true).decision).toBe(unprovenStartup ? "deny" : "allow");
     }
   });
 });

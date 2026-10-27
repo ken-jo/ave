@@ -110,7 +110,11 @@ describe.each(["bash", "powershell"] as const)("literal lane bounds (%s)", (dial
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 6 });
         for (const spy of spies) expect(spy).not.toHaveBeenCalled();
       } else {
-        expect(result).toMatchObject({ decision: "allow", layer: 3 });
+        // #223 executable-bound startup admission: within-cap argv cannot prove win32 startup.
+        expect(result).toMatchObject(dialect === "powershell" && process.platform === "win32"
+          ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision)
+          .toBe(dialect === "powershell" && process.platform === "win32" ? "deny" : "allow");
         expect(spies[dialect === "bash" ? 0 : 1]).toHaveBeenCalled();
       }
     } finally {
