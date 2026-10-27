@@ -2146,7 +2146,10 @@ answers an egress ask; an answer from any other surface leaves it pending. Sessi
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
-row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
+row. DNS, route-lookup, and connection failures return 502; timeouts return
+504. They keep the connection closed and write an attributed `egress-failure`
+row with the failure kind and response status, without a denial decision.
+Policy refusals remain 403. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
 or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
 at This session (a terminal: This tab). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again
