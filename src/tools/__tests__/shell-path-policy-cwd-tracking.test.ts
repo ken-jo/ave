@@ -1,13 +1,11 @@
 // Resolve operands against each possible execution directory, including changes made by cd.
 import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 
 // A shallower allowed directory makes traversal escape only after cd.
-// Windows hosts resolve the fixture POSIX roots onto the process drive, as in shell-path-policy.test.ts.
-const hostFilesystemPath = (path: string): string => process.platform === "win32" ? resolve(path).replaceAll("\\", "/") : path;
 const ROOT = hostFilesystemPath("/private/tmp/ave-cwd-tracking");
 const CWD = `${ROOT}/src/deep/nested`;
 const TMP = hostFilesystemPath("/tmp");

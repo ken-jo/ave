@@ -5,12 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { buildPolicyDenialGuidance } from "../invocation-runner.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool } from "../base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
+
+// A readable system file outside the allowed directories, named natively on each host.
+const HOSTS_FILE = process.platform === "win32" ? `${process.env.SystemRoot!.replaceAll("\\", "/")}/System32/drivers/etc/hosts` : "/etc/hosts";
 
 describe("buildPolicyDenialGuidance", () => {
   it("names the judged operand and the rule that judged it", () => {
@@ -204,7 +208,7 @@ describe("policy denials carry their guidance through to the tool result", () =>
 
   it("tells the model that the filesystem root can never be authorized", async () => {
     // Root writes reach directory policy; root reads only reach the sensitive-path deny-list.
-    const result = await runUnattended("chmod u+w /");
+    const result = await runUnattended(`chmod u+w ${hostFilesystemPath("/")}`);
     expect(result.isError).toBe(true);
     expect(result.ran).toBe(false);
     expect(result.content).toContain("[디렉토리 정책 차단]");
@@ -212,14 +216,14 @@ describe("policy denials carry their guidance through to the tool result", () =>
   });
 
   it("says, on a write refusal, that reading outside those directories is still allowed", async () => {
-    const result = await runUnattended("chmod u+w /var/tmp/ave-denial-guidance-outside/x");
+    const result = await runUnattended(`chmod u+w ${hostFilesystemPath("/var/tmp/ave-denial-guidance-outside/x")}`);
     expect(result.isError).toBe(true);
     // Clarify that directory grants bound writes and execution, preserving permitted wide reads.
     expect(result.content).toContain("쓰기와 명령 실행에만 적용됩니다");
   });
 
   it("lets the read the same guidance describes actually run", async () => {
-    const result = await runUnattended("cat /etc/hosts");
+    const result = await runUnattended(`cat ${HOSTS_FILE}`);
     expect(result.isError).toBe(false);
     expect(result.ran).toBe(true);
   });

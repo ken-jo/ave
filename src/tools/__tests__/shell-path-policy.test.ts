@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE } from "../shell-option-tables.js";
 
 import {
@@ -33,9 +34,6 @@ function validateShellCommandPathPolicy(
 
 // Command fixtures use separators that retain their meaning in Bash.
 const join = (...parts: string[]): string => nativeJoin(...parts).replaceAll("\\", "/");
-
-// Filesystem-boundary fixtures name native paths explicitly; rooted shell namespaces are separate operands.
-const hostFilesystemPath = (path: string): string => process.platform === "win32" ? resolve(path).replaceAll("\\", "/") : path;
 
 describe("shell-path-policy", () => {
   const roots: string[] = [];
