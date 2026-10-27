@@ -32,6 +32,7 @@ import {
   type ModelProviderNetworkAccess,
 } from "./marketplace-provider-fetch.js";
 import { secretKeyFor } from "./provider-factory.js";
+import { trimmedString } from "../../shared/trimmed-string.js";
 import { errorMessageWithCauseCode } from "../../shared/error-message.js";
 import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../shared/llm-model-list.js";
 import type { LlmRouteCatalogAddress } from "../../shared/context-budget.js";
@@ -452,12 +453,6 @@ function modelListRows(payload: unknown): unknown[] {
   return rows;
 }
 
-function optionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
 function optionalNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return value >= 0 ? value : undefined;
@@ -466,7 +461,7 @@ function optionalNumber(value: unknown): number | undefined {
 function optionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const entries = value
-    .map(optionalString)
+    .map(trimmedString)
     .filter((entry): entry is string => Boolean(entry));
   return entries.length > 0 ? [...new Set(entries)] : undefined;
 }
@@ -481,7 +476,7 @@ function pricingValue(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     return String(value);
   }
-  return optionalString(value);
+  return trimmedString(value);
 }
 
 function pricingFromRecord(value: unknown): LlmModelListPricing | undefined {
@@ -527,9 +522,9 @@ function modelEntryTags(
   pricing: LlmModelListPricing | undefined,
 ): LlmModelListEntry["tags"] | undefined {
   const lowerId = id.toLocaleLowerCase();
-  const provider = optionalString(record?.provider)?.toLocaleLowerCase()
-    ?? optionalString(record?.owned_by)?.toLocaleLowerCase()
-    ?? optionalString(optionalRecord(record?.top_provider)?.name)?.toLocaleLowerCase()
+  const provider = trimmedString(record?.provider)?.toLocaleLowerCase()
+    ?? trimmedString(record?.owned_by)?.toLocaleLowerCase()
+    ?? trimmedString(optionalRecord(record?.top_provider)?.name)?.toLocaleLowerCase()
     ?? "";
   const free = lowerId === "openrouter/free" || lowerId.endsWith(":free") || hasFreePricing(pricing);
   const router = lowerId === "openrouter/auto"
@@ -559,10 +554,10 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   const topProvider = optionalRecord(record.top_provider);
   const limits = optionalRecord(record.limits);
   const pricing = pricingFromRecord(record.pricing);
-  const name = optionalString(record.display_name) ?? optionalString(record.displayName) ?? optionalString(record.name);
-  const provider = optionalString(record.provider) ?? optionalString(record.publisher);
-  const ownedBy = optionalString(record.owned_by);
-  const description = optionalString(record.description) ?? optionalString(record.summary);
+  const name = trimmedString(record.display_name) ?? trimmedString(record.displayName) ?? trimmedString(record.name);
+  const provider = trimmedString(record.provider) ?? trimmedString(record.publisher);
+  const ownedBy = trimmedString(record.owned_by);
+  const description = trimmedString(record.description) ?? trimmedString(record.summary);
   // Accept catalog prompt-limit aliases; absent limits defer to the next source.
   const contextLength = optionalNumber(record.context_length)
     ?? optionalNumber(record.contextLength)

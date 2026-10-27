@@ -31,6 +31,8 @@
       "entry": [
         // Standalone Node command emitted by build:main and invoked by the native launcher.
         "src/headless.ts",
+        // Bundled separately and launched by the governed shell runtime.
+        "src/skills/xlsx-edit-cli.ts",
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
         "src/tools/preview-document-child-main.ts",
@@ -151,6 +153,8 @@
     "lsof",
     "mountvol",
     "mkfifo",
+    // Ephemeral certificates for the native HTTPS route fixture; not a shipped runtime dependency.
+    "openssl",
     "pgrep",
     "plutil",
     "powershell.exe",

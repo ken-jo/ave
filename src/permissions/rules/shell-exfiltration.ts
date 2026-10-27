@@ -5,6 +5,7 @@ import { analyzeShell, type ShellCommand, type ShellRedirect, type ShellStatemen
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { literalRuleWord } from "./rule-specifier.js";
+import { verifiedArgvProof } from "./verified-argv-authority.js";
 import { proveStaticArgv } from "./shell-argument-grammar.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import { SHELL_FLOOR_BUDGET_REASON, ShellFloorContext, ShellFloorLimitError, isShellFloorLiteralData, shellFloorBudgetSignals, shellFloorFallbackInputExceeded, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
@@ -388,7 +389,7 @@ function inspectCommand(command: ShellCommand, cwd: string | undefined, context:
   if (argv.some((word) => word === undefined)) pass.unproven = DYNAMIC_REASON;
   for (const assignment of command.assignments) { inspectWord(assignment.value, cwd, context, pass); for (const element of assignment.elements ?? []) inspectWord(element, cwd, context, pass); pass.unproven ??= DYNAMIC_REASON; }
   for (const redirect of command.redirects) inspectRedirect(redirect, cwd, context, pass);
-  const proof = proveStaticArgv(argv, "bash", raw, context.visits);
+  const proof = verifiedArgvProof(command) ?? proveStaticArgv(argv, "bash", raw, context.visits);
   const evaluation = literalNativeBoundary(argv, context);
   const eligibleLiteralEvaluation = pass.unproven === undefined && command.assignments.length === 0 && command.redirects.length === 0;
   const payload = proof.kind === "literal-evaluation" ? new Set(proof.payloadIndexes) : undefined;

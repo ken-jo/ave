@@ -165,8 +165,8 @@ describe("independent home anchors", () => {
 
   beforeEach(() => {
     scratch = mkdtempSync(join(tmpdir(), "ave-home-anchors-"));
-    // Keep the fixture's drive when the temporary root and working directory are on different volumes.
-    home = scratch.replace(/\\/g, "/");
+    // Keep the temporary drive explicit while exercising POSIX policy on a native host.
+    home = platform === "win32" ? scratch.replace(/\\/g, "/") : scratch;
     shellHome = home + "/shell";
     passwd = home + "/account";
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
@@ -263,8 +263,6 @@ describe("independent home anchors", () => {
   });
 
   it("checks the passwd tilde anchor through operands and scanners", () => {
-    // Physical link probes use the host filesystem's path dialect.
-    Object.defineProperty(process, "platform", { value: platform, configurable: true });
     mkdirSync(join(passwd, ".ssh"), { recursive: true });
     symlinkSync(join(passwd, ".ssh"), join(passwd, "alias"), platform === "win32" ? "junction" : "dir");
     expect(findShellPathPolicyViolation("cat ~/alias/key", scratch, home, [home, shellHome, passwd], false, {

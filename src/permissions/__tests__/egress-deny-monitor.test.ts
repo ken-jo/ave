@@ -1,6 +1,6 @@
 // The violation store re-notifies its whole retained tail; audit each refusal once with invocation attribution.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxViolationStore } from "@anthropic-ai/sandbox-runtime";
@@ -17,8 +17,8 @@ import {
   type EgressInvocation,
   type EgressInvocationOwner,
 } from "../egress-invocations.js";
-import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
-import { emitSandboxAudit, readRecentSandboxEgressDenials } from "../../audit/sandbox-audit-sink.js";
+import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../audit/sandbox-audit.js";
+import { emitSandboxAudit, readRecentSandboxEgressDenials, flushSandboxAudit, sandboxAuditSinkPath } from "../../audit/sandbox-audit-sink.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 
@@ -41,20 +41,23 @@ async function monitored(): Promise<{
   store: SandboxViolationStore;
   rows: SandboxEgressDenyAuditEntry[];
   decisions: SandboxEgressDecisionAuditEntry[];
+  failures: SandboxEgressFailureAuditEntry[];
   stop: () => void;
 }> {
   const store = new SandboxViolationStore();
   const rows: SandboxEgressDenyAuditEntry[] = [];
   const decisions: SandboxEgressDecisionAuditEntry[] = [];
+  const failures: SandboxEgressFailureAuditEntry[] = [];
   const stop = await startEgressDenyMonitor({
     subscribe: async (listener) => store.subscribe(listener),
     emit: async (entry) => {
       if (entry.entryKind === "egress-deny") rows.push(entry);
-      else decisions.push(entry);
+      else if (entry.entryKind === "egress-decision") decisions.push(entry);
+      else failures.push(entry);
     },
     capability: () => ({ kind: "asrt", confidence: "verified" }),
   });
-  return { store, rows, decisions, stop };
+  return { store, rows, decisions, failures, stop };
 }
 
 function deny(store: SandboxViolationStore, line: string, key: string | undefined): void {
@@ -133,6 +136,27 @@ describe("unparsed and hostile deny lines", () => {
 });
 
 describe("startEgressDenyMonitor", () => {
+  it.each(["dns", "connect", "timeout", "routing"] as const)("records %s failures once without a denial decision", async (kind) => {
+    const { store, rows, decisions, failures, stop } = await monitored();
+    const terminal = invocation({ kind: "terminal", tabId: "transport-tab" });
+    noteCallbackDecision(terminal.token, "service.example", 443);
+    deny(store, `fail network-outbound service.example:443 (${kind}: unavailable)`, terminal.token);
+    // Re-notifying the retained tail must not duplicate the failure.
+    deny(store, "deny file-read-data /etc/hosts", terminal.token);
+    expect(failures).toMatchObject([{
+      entryKind: "egress-failure",
+      invocation: { kind: "terminal", tabId: "transport-tab" },
+      destination: { host: "service.example", port: 443 },
+      failure: { kind, httpStatus: kind === "timeout" ? 504 : 502, reason: "unavailable" },
+    }]);
+    expect(rows).toEqual([]);
+    expect(decisions).toEqual([]);
+    // A later policy denial must not consume the failed attempt's callback marker.
+    deny(store, "deny network-outbound service.example:443 (domain not allowed)", terminal.token);
+    expect(decisions).toMatchObject([{ decision: "deny", basis: "sandbox" }]);
+    stop();
+  });
+
   it("records a strict-allowlist deny of a Bash call under that call's toolUseId", async () => {
     const { store, rows } = await monitored();
     const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_01FIXTURE", context: TEST_SHELL_EGRESS_CONTEXT });
@@ -211,6 +235,28 @@ describe("startEgressDenyMonitor", () => {
     deny(store, "deny file-read-data /Users/example/.ssh/id_ed25519", shell.token);
     deny(store, "deny network-outbound late.example:443 (domain not allowed)", shell.token);
     expect(rows.map((row) => row.deny.host)).toEqual(["early.example", "late.example"]);
+  });
+
+  it("retains transport failure audits separately from persisted denials", async () => {
+    const home = mkdtempSync(join(tmpdir(), "egress-failure-audit-"));
+    vi.stubEnv("AVE_HOME", home);
+    const store = new SandboxViolationStore();
+    const stop = await startEgressDenyMonitor({
+      subscribe: async (listener) => store.subscribe(listener),
+      emit: emitSandboxAudit,
+      capability: () => ({ kind: "asrt", confidence: "verified" }),
+    });
+    try {
+      deny(store, "fail network-outbound service.example:443 (dns: unavailable)", undefined);
+      await flushSandboxAudit();
+      const text = readFileSync(sandboxAuditSinkPath(), "utf8");
+      expect(JSON.parse(text.trim())).toMatchObject({ entryKind: "egress-failure", invocation: { kind: "unattributed" }, failure: { kind: "dns", httpStatus: 502 } });
+      expect(text).not.toContain('"decision":"deny"');
+      expect(await readRecentSandboxEgressDenials()).toEqual([]);
+    } finally {
+      stop();
+      await cleanupTmpDir(home);
+    }
   });
 
   it("keeps the proxy running when the audit sink fails", async () => {

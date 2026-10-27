@@ -7,6 +7,7 @@ import { utcDateKey } from "../shared/local-date.js";
 import type {
   SandboxAuditEntry,
   SandboxEgressDecisionAuditEntry,
+  SandboxEgressFailureAuditEntry,
   SandboxEgressDenyAuditEntry,
   SandboxEgressGrantMigrationAuditEntry,
   SandboxEgressRouteAuditEntry,
@@ -24,6 +25,7 @@ export async function emitSandboxAudit(
     | SandboxAuditEntry
     | SandboxEgressDenyAuditEntry
     | SandboxEgressDecisionAuditEntry
+    | SandboxEgressFailureAuditEntry
     | SandboxEgressRouteAuditEntry
     | SandboxEgressGrantMigrationAuditEntry,
 ): Promise<void> {

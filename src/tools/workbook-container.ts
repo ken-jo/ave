@@ -6,6 +6,13 @@ export const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as con
 const ODS_MIMETYPE = "application/vnd.oasis.opendocument.spreadsheet";
 const WORKBOOK_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
 const WORKSHEET_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+const SPREADSHEET_MAIN_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+  "http://purl.oclc.org/ooxml/spreadsheetml/main",
+]);
+const XML_ATTRIBUTE_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&", lt: "<", gt: ">", apos: "'", quot: '"',
+};
 const OFFICE_DOCUMENT_RELATIONSHIP_TYPES = new Set([
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
   "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument",
@@ -58,6 +65,7 @@ interface XmlTag {
   closing: boolean;
   selfClosing: boolean;
   attributes: ReadonlyMap<string, string>;
+  qualifiedAttributes?: ReadonlyMap<string, string>;
 }
 
 interface PackageRelationship {
@@ -93,7 +101,7 @@ function spaceEnd(xml: string, start: number): number {
 }
 
 /** Scans tags without expanding entities or allocating any document objects. */
-function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
+function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void, retainQualifiedAttributes = false): void {
   let xml: string;
   try {
     xml = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -134,6 +142,7 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
     const name = xml.slice(nameStart, position);
     const localName = name.slice(name.lastIndexOf(":") + 1);
     let attributes: Map<string, string> | undefined;
+    let qualifiedAttributes: Map<string, string> | undefined;
     for (;;) {
       const spaceStart = position;
       position = spaceEnd(xml, position);
@@ -157,6 +166,7 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
       const effectiveName = key.slice(key.lastIndexOf(":") + 1).toLowerCase();
       if (attributes.has(effectiveName)) refuse("Duplicate XML attribute name");
       attributes.set(effectiveName, value);
+      if (retainQualifiedAttributes) (qualifiedAttributes ??= new Map()).set(key, value);
     }
     const selfClosing = xml.charCodeAt(position) === 0x2f;
     if (selfClosing) position = spaceEnd(xml, position + 1);
@@ -164,10 +174,70 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
     if (closing) {
       if (selfClosing || attributes || stack.pop() !== name) refuse("Unbalanced XML tags");
     } else if (!selfClosing) stack.push(name);
-    onTag({ name, localName, closing, selfClosing, attributes: attributes ?? NO_ATTRIBUTES });
+    onTag({ name, localName, closing, selfClosing, attributes: attributes ?? NO_ATTRIBUTES, qualifiedAttributes });
     offset = position + 1;
   }
   if (stack.length > 0) refuse("Unclosed XML tags");
+}
+
+/** Normalize CDATA attributes without resolving custom or recursively encoded entities. */
+function normalizeXmlAttribute(value: string): string | undefined {
+  let valid = true;
+  // Literal whitespace normalizes before references: a referenced newline stays a newline.
+  const normalized = value.replace(/\r\n|[\t\r\n]/g, " ").replace(
+    /&(#(?:x[0-9a-fA-F]+|[0-9]+)|amp|lt|gt|apos|quot);|&/g,
+    (reference: string, entity: string | undefined): string => {
+      if (entity === undefined) { valid = false; return reference; }
+      if (!entity.startsWith("#")) return XML_ATTRIBUTE_ENTITIES[entity]!;
+      const code = entity.startsWith("#x") ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+      if (code === 0x09 || code === 0x0a || code === 0x0d || (code >= 0x20 && code <= 0xd7ff)
+        || (code >= 0xe000 && code <= 0xfffd) || (code >= 0x10000 && code <= 0x10ffff)) {
+        return String.fromCodePoint(code);
+      }
+      valid = false;
+      return reference;
+    },
+  );
+  return valid ? normalized : undefined;
+}
+
+function workbookNeedsRecalculation(bytes: Buffer): boolean {
+  let depth = 0;
+  let rootSeen = false;
+  let spreadsheetRoot = false;
+  let workbookNamespace: string | undefined;
+  let rootAttributes: ReadonlyMap<string, string> = NO_ATTRIBUTES;
+  let needsRecalculation = false;
+  const namespaceOf = (tag: XmlTag, attributes: ReadonlyMap<string, string>): string | undefined => {
+    const names = tag.name.split(":");
+    if (names.length > 2) return undefined;
+    const key = names.length === 1 ? "xmlns" : `xmlns:${names[0]}`;
+    const value = attributes.get(key) ?? rootAttributes.get(key);
+    return value === undefined ? undefined : normalizeXmlAttribute(value);
+  };
+  scanXml(bytes, (tag) => {
+    if (tag.closing) { depth -= 1; return; }
+    const attributes = tag.qualifiedAttributes ?? NO_ATTRIBUTES;
+    if (depth === 0) {
+      rootAttributes = attributes;
+      workbookNamespace = namespaceOf(tag, attributes);
+      spreadsheetRoot = !rootSeen && tag.localName === "workbook"
+        && SPREADSHEET_MAIN_NAMESPACES.has(workbookNamespace ?? "");
+      rootSeen = true;
+    } else if (depth === 1 && spreadsheetRoot && tag.localName === "calcPr"
+      && namespaceOf(tag, attributes) === workbookNamespace) {
+      const booleanValue = (name: string): string | undefined => {
+        const raw = attributes.get(name);
+        // Schema booleans collapse XML whitespace, including character references.
+        return raw === undefined ? undefined : normalizeXmlAttribute(raw)?.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+      };
+      if (["1", "true"].includes(booleanValue("fullCalcOnLoad") ?? "")
+        || ["1", "true"].includes(booleanValue("forceFullCalc") ?? "")
+        || ["0", "false"].includes(booleanValue("calcCompleted") ?? "")) needsRecalculation = true;
+    }
+    if (!tag.selfClosing) depth += 1;
+  }, true);
+  return needsRecalculation;
 }
 
 /** Native byte search over every XML part, read for this request or not. */
@@ -420,6 +490,7 @@ export function prepareWorkbookContainer(
   format: "xlsx" | "xls" | "ods",
   limits: Readonly<PreviewDocumentLimits>,
   sheetIndex: number,
+  onCalculationState?: (needsRecalculation: boolean) => void,
 ): Buffer {
   if (format === "xls") {
     if (!CFB_MAGIC.every((byte, index) => bytes[index] === byte)) refuse("Document is not a compound binary workbook");
@@ -453,6 +524,10 @@ export function prepareWorkbookContainer(
   for (const key of decoded) {
     const part = xmlParts.get(key);
     if (part) scanXml(part, () => {});
+  }
+  if (format === "xlsx") {
+    const needsRecalculation = workbookNeedsRecalculation(requiredPart(parts, "xl/workbook.xml"));
+    onCalculationState?.(needsRecalculation);
   }
   return verdict.canonicalBytes;
 }

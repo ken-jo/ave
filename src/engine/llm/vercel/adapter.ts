@@ -8,6 +8,7 @@
  * consumer — splitting them into separate files was a filing label, not a
  * machinery boundary.
  */
+import { reasoningEffortForBudget } from "../../../shared/reasoning-effort.js";
 import { customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
 import {
   streamText,
@@ -402,9 +403,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const outputTokenLimit = requestedOutputTokenLimit === undefined || ceiling === undefined
         ? requestedOutputTokenLimit
         : Math.min(requestedOutputTokenLimit, ceiling);
-      // How much reasoning we are willing to pay for. Both families read this
-      // value: the OpenAI family as a coarse effort level, the self-hosted class
-      // as an exact token budget further down.
+      // Bound numeric controls independently of the selected qualitative rung.
       const budget = params.requestedThinkingBudgetTokens === undefined
         ? params.thinkingBudgetTokens ?? 10_000
         : normalizeLlmThinkingBudgetTokens(params.requestedThinkingBudgetTokens, outputTokenLimit);
@@ -418,7 +417,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         model: params.model,
         enableThinking: params.enableThinking === true,
         budgetTokens: budget,
-        ...(params.reasoningEffort !== undefined ? { requestedEffort: params.reasoningEffort } : {}),
+        requestedEffort: params.reasoningEffort ?? reasoningEffortForBudget(params.requestedThinkingBudgetTokens ?? params.thinkingBudgetTokens ?? 10_000),
         baseUrl,
         catalogModel: params.catalogModel,
         ...(capabilities.reasoning !== undefined ? { reasoning: capabilities.reasoning } : {}),

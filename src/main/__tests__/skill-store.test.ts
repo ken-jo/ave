@@ -162,6 +162,7 @@ describe("SkillStore — C2 traversal & allowlist", () => {
         "email-polish",
         "meeting-minutes",
         "report-writing",
+        "xlsx-edit",
       ].sort(),
     );
     for (const skill of all) {

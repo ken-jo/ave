@@ -31,7 +31,8 @@
     "resources/skills/decision-record.md",
     "resources/skills/email-polish.md",
     "resources/skills/meeting-minutes.md",
-    "resources/skills/report-writing.md"
+    "resources/skills/report-writing.md",
+    "resources/skills/xlsx-edit/SKILL.md"
   ],
   "referencedOnly": [
     "docs/README.md",

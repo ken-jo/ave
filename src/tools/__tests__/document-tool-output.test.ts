@@ -7,7 +7,7 @@ import { OpenDocumentInputSchema, ReadDocumentInputSchema } from "../document-to
 import { formatDocumentToolOutput } from "../document-tool-output.js";
 
 function table(rows: string[][], firstRow = 0, firstColumn = 0): PreviewTableDocument {
-  return { format: "xlsx", sheetNames: ["Sheet"], totalSheets: 1, sheetsTruncated: false,
+  return { format: "xlsx", needsRecalculation: false, sheetNames: ["Sheet"], totalSheets: 1, sheetsTruncated: false,
     sheet: { index: 0, name: "Sheet", rows, firstRow, firstColumn, totalRows: rows.length,
       totalColumns: rows[0]?.length ?? 0, rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [] } };
 }

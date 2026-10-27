@@ -144,6 +144,8 @@ export interface PreviewTableSheet {
 
 export interface PreviewTableDocument {
   format: PreviewDocumentFormat;
+  /** Workbook requests recalculation; displayed formula caches may be stale. */
+  needsRecalculation: boolean;
   /** Sheet tab names, at most `maxSheets` (CSV/TSV: one entry). */
   sheetNames: string[];
   /** Sheets in the source workbook, before the tab cap. */

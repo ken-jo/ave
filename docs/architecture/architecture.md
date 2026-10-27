@@ -72,6 +72,8 @@ The [page preview contract](page-document-preview.md) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
 The [agent document tools](agent-document-tools.md) reuse that parser with bounded
 model-context selections and policy-checked, session-bound panel requests.
+The [XLSX editing skill](xlsx-skill-editing.md) uses only the sandbox shell;
+the existing viewer exposes its in-file recalculation request.
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and
@@ -2144,7 +2146,10 @@ answers an egress ask; an answer from any other surface leaves it pending. Sessi
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
-row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
+row. DNS, route-lookup, and connection failures return 502; timeouts return
+504. They keep the connection closed and write an attributed `egress-failure`
+row with the failure kind and response status, without a denial decision.
+Policy refusals remain 403. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
 or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
 at This session (a terminal: This tab). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again

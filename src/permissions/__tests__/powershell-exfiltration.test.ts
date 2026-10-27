@@ -448,7 +448,8 @@ describe("opaque command text requires approval", () => {
     ]);
     if (command === "Get-Content ($env:APPDATA+$tail)") expect(result.outcome).not.toBe("static-complete");
     else if (staticLiteralCommands.has(command)) {
-      expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
+      // #223 executable-bound startup admission: accepted literal indirection does not prove win32 startup.
+      expect(result).toMatchObject({ outcome: process.platform === "win32" ? "unproven" : "static-complete", sensitive: null, exfiltration: null });
     } else expect(result).toMatchObject({ outcome: "unproven" });
     expect(powerShellExfiltrationSignal(benign, CWD)).toBeNull();
   });
@@ -499,9 +500,10 @@ describe("opaque command text requires approval", () => {
   it("accepts four hundred records and refuses the four-hundred-first", () => {
     const command = (argumentsCount: number) => `Write-Output ${Array.from({ length: argumentsCount }, (_, index) => `a${index}`).join(" ")}`;
     expect(powerShellFloorAnalysis._inspectPowerShellForTest(command(399), CWD))
-      .toMatchObject({ outcome: "static-complete" });
+      // #223 executable-bound startup admission leaves the record cap intact while refusing win32 startup.
+      .toMatchObject({ outcome: process.platform === "win32" ? "unproven" : "static-complete", limited: false });
     expect(powerShellFloorAnalysis._inspectPowerShellForTest(command(400), CWD))
-      .toMatchObject({ outcome: "unproven" });
+      .toMatchObject({ outcome: "unproven", limited: true });
   });
 
   it("matches literal wildcard data without an operation quota", () => {
@@ -528,8 +530,9 @@ describe("opaque command text requires approval", () => {
   it("keeps a quoted prose argument as one original grammar word", () => {
     const command = "Write-Output '" + "ordinary ".repeat(450) + "' | Out-String";
     expect(powerShellFloorAnalysis.parsePowerShellCommand(command).analysisLimited).toBe(false);
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({
-      outcome: "static-complete", sensitive: null, exfiltration: null,
+    // #223 executable-bound startup admission: quoted data stays data without startup proof.
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
+      outcome: process.platform === "win32" ? "unproven" : "static-complete", sensitive: null, exfiltration: null,
     });
   });
 
@@ -709,8 +712,10 @@ describe("checkDetailed applies the floors by dialect", () => {
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/upload|exfiltration/i) });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-Content ~\\.ssh\\id_rsa")))
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("Get-ChildItem"), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow" });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iwr https://example.com -OutFile page.html"), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow" });
+    // #223 executable-bound startup admission: confinement does not establish outer startup proof.
+    const ordinary = process.platform === "win32" ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 };
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("Get-ChildItem"), shellExecution: { runsSandboxed: true } })).toMatchObject(ordinary);
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iwr https://example.com -OutFile page.html"), shellExecution: { runsSandboxed: true } })).toMatchObject(ordinary);
   });
 
   it("Bash(...) rules match bash only — never powershell, in either direction", async () => {

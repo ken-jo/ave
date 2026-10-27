@@ -6,7 +6,11 @@ type Listener = (...args: unknown[]) => void;
 const electronMock = vi.hoisted(() => {
   let nextId = 1;
   class FakeBrowserWindow {
-    readonly id = nextId++;
+    private readonly windowId = nextId++;
+    get id() {
+      if (this.destroyed) throw new TypeError("Object has been destroyed");
+      return this.windowId;
+    }
     readonly listeners = new Map<string, Listener[]>();
     readonly contentsListeners = new Map<string, Listener[]>();
     destroyed = false;
@@ -18,7 +22,7 @@ const electronMock = vi.hoisted(() => {
     readonly restore = vi.fn();
     readonly loadFile = vi.fn(async () => undefined);
     readonly loadURL = vi.fn(async () => undefined);
-    readonly webContents = {
+    private readonly contents = {
       id: this.id * 100,
       isDestroyed: () => this.destroyed,
       setWindowOpenHandler: vi.fn(),
@@ -26,6 +30,10 @@ const electronMock = vi.hoisted(() => {
       once: (name: string, fn: Listener) => this.pushContents(name, fn),
       send: vi.fn(),
     };
+    get webContents() {
+      if (this.destroyed) throw new TypeError("Object has been destroyed");
+      return this.contents;
+    }
     constructor(readonly options: unknown) {}
     private pushContents(name: string, fn: Listener) {
       this.contentsListeners.set(name, [...(this.contentsListeners.get(name) ?? []), fn]);
@@ -80,6 +88,7 @@ vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
 const terminalOwners = new Map<string, number | null>();
 
 const appState = await import("../app-state.js");
+const approvalSurfaces = await import("../../permissions/approval-surface-registry.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
 const { openNewMainWindow, showOrCreatePrimaryMainWindow } = await import("../app-tray.js");
 const { promptSurfaceResolver } = await import("../../boot/host-runtime.js");
@@ -142,12 +151,56 @@ describe("main windows", () => {
   it("closes the terminals of a window that closes for real, and only that window's", () => {
     killTerminalsOwnedBy.mockClear();
     const first = open();
+    const firstId = first.id;
     const second = open();
     expect(first.close()).toBe(true);
-    expect(killTerminalsOwnedBy.mock.calls).toEqual([[first.id]]);
+    expect(killTerminalsOwnedBy.mock.calls).toEqual([[firstId]]);
     // The last window hides to the tray: it is not gone, nor are its shells.
     expect(second.close()).toBe(false);
-    expect(killTerminalsOwnedBy.mock.calls).toEqual([[first.id]]);
+    expect(killTerminalsOwnedBy.mock.calls).toEqual([[firstId]]);
+  });
+
+  it("releases the captured owner and restores focus when destroyed windows emit closed", () => {
+    appState.setTray(null);
+    const first = open();
+    const second = open();
+    const third = open();
+    const secondId = second.id;
+    const firstSurface = first.webContents;
+    const secondSurface = second.webContents;
+    const update = vi.spyOn(approvalSurfaces, "updateApprovalSurface");
+    try {
+      approvalSurfaces.updateApprovalSurface({ kind: "attach", sessionId: "closing-owner", surface: secondSurface as never });
+      approvalSurfaces.updateApprovalSurface({ kind: "attach", sessionId: "remaining-owner", surface: firstSurface as never });
+      first.emit("focus");
+      second.emit("focus");
+      second.destroyed = true;
+      expect(() => second.webContents).toThrow(TypeError);
+      expect(() => second.id).toThrow(TypeError);
+      expect(() => second.emit("closed")).not.toThrow();
+      expect(update).toHaveBeenCalledWith({ kind: "release-owner", surface: secondSurface });
+      expect(killTerminalsOwnedBy).toHaveBeenCalledWith(secondId);
+      expect(getAppWindows()).toEqual([first, third]);
+      expect(appState.getMainWindow()).toBe(first);
+      expect(appState.getPrimaryMainWindow()).toBe(first);
+      // Prove revocation independently of the surface's destroyed check.
+      second.destroyed = false;
+      expect(approvalSurfaces.approvalSurfaceRegistry.resolve("closing-owner")).toBeNull();
+      expect(approvalSurfaces.approvalSurfaceRegistry.resolve("remaining-owner")).toBe(firstSurface);
+      second.destroyed = true;
+      second.emit("focus");
+      expect(appState.getMainWindow()).toBe(first);
+      expect(first.close()).toBe(true);
+      expect(appState.getPrimaryMainWindow()).toBeNull();
+      expect(appState.getMainWindow()).toBe(third);
+      expect(third.close()).toBe(true);
+      expect(appState.getMainWindow()).toBeNull();
+      expect(open()).toBe(appState.getPrimaryMainWindow());
+    } finally {
+      update.mockRestore();
+      approvalSurfaces.updateApprovalSurface({ kind: "release", sessionId: "closing-owner" });
+      approvalSurfaces.updateApprovalSurface({ kind: "release", sessionId: "remaining-owner" });
+    }
   });
 
   it("never reloads or re-roles the other windows when the primary closes", async () => {
@@ -244,6 +297,7 @@ describe("main windows", () => {
     const second = open();
     // Bound to nothing at construction: the first window closing must not strand it.
     const gate = new ApprovalGate(promptSurface());
+    const firstSurface = first.webContents;
 
     expect(first.close()).toBe(true);
     const request = {
@@ -261,7 +315,7 @@ describe("main windows", () => {
       "ave:approval:request",
       expect.objectContaining({ id: "req-after-close" }),
     );
-    expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+    expect(firstSurface.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
     gate.disposeAll();
     await decision.catch(() => undefined);
   });

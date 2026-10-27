@@ -719,6 +719,8 @@ jobs:
           src/permissions/__tests__/egress-runtime-proxy.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts
           src/tools/__tests__/shell-windows-mxc.test.ts
+          src/tools/__tests__/host-script-policy.test.ts
+          src/tools/__tests__/xlsx-edit-skill.test.ts
           src/permissions/__tests__/mxc-windows.test.ts
           src/lib/__tests__/atomic-file.test.ts
           src/shared/__tests__/ave-home.test.ts
@@ -754,6 +756,17 @@ jobs:
           src/tools/__tests__/shell-tools.test.ts
           src/workload/__tests__/runtime.test.ts
           test/scripts/smoke-windows-nsis-installer.test.ts
+
+      - name: Run native workbook confinement
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node scripts/fetch-mxc.mjs --arch x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   macos-permission-tests:
     name: macOS permission path tests
@@ -841,11 +854,9 @@ jobs:
       # the backend; this job needs no backend install.
       # `AVE_REQUIRE_SANDBOX_CASES=1` makes confinement jobs fail if the sandbox
       # cannot initialize, instead of passing without taking a measurement.
-      # terminal-egress-native.test.ts also needs the runner to reach
-      # https://example.com (a real public host: a local server cannot stand in
-      # for one behind the sandbox's proxy). Without that route its
-      # precondition case fails with one "network unreachable: …" assertion and
-      # its cases are skipped; that failure is the runner's network, not Ave.
+      # Terminal egress cases route a public destination through a local HTTPS
+      # fixture using the trusted upstream setting. The real sandbox and CONNECT
+      # approval path remain active without requiring external DNS or traffic.
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -857,6 +868,8 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/tools/__tests__/host-script-policy.test.ts
+          src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts
           src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
           src/permissions/__tests__/sandbox-git-controls.integration.test.ts
@@ -983,8 +996,7 @@ jobs:
           python-version: "3.12"
       # With the flag set, a case that cannot initialise the sandbox FAILS
       # instead of returning green, so a green job is a measurement.
-      # terminal-egress-native.test.ts needs https://example.com: without a
-      # route it fails once with "network unreachable: …" (see the macOS job).
+      # Terminal egress cases use the same local HTTPS route fixture as the macOS job.
       - name: Run Linux confinement regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1000,6 +1012,8 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/tools/__tests__/host-script-policy.test.ts
+          src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts

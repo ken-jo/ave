@@ -176,6 +176,7 @@ export interface ExecutionStageContext {
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
+  verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
   invocationRuntimeAllowedDirectories: string[];
   supportsA2AParentDelivery: boolean | undefined;
@@ -226,6 +227,7 @@ export async function executeAuthorizedToolInvocation(
     executionRouteGrant,
     finalizeExecutionRouteGrant,
     preparedShellInvocation,
+    verifiedShellCommand,
     hostShellRequiresExplicitApproval,
     invocationRuntimeAllowedDirectories,
     supportsA2AParentDelivery,
@@ -763,6 +765,7 @@ export async function executeAuthorizedToolInvocation(
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
+    ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
     metadata: {
       // Absent when the invocation has no conversation behind it. Tools that

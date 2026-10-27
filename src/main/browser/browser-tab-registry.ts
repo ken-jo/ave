@@ -402,10 +402,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   guestDestroyed(guestId: number): void {
+    const guest = this.attached.get(guestId)?.guest;
     this.attached.delete(guestId);
     this.injectedTouches.delete(guestId);
+    if (!guest) return;
     for (const tab of this.tabs.values()) {
-      if (tab.guest?.id !== guestId) continue;
+      if (tab.guest !== guest) continue;
       tab.guest = null;
       this.invalidateActions(tab, "the tab's page was closed");
       tab.lease = null;
@@ -1176,8 +1178,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         try {
           const native = this.nativeTabs.get(target.handle);
           if (!native) { settle({ ok: false, error: "native-operation-failed" }); return; }
+          const guestId = target.guest?.id;
           native.close();
-          if (target.guest?.isDestroyed()) this.guestDestroyed(target.guest.id);
+          if (guestId !== undefined && target.guest?.isDestroyed()) this.guestDestroyed(guestId);
         } catch { settle({ ok: false, error: "native-operation-failed" }); }
         return;
       }

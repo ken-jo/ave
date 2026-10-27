@@ -21,6 +21,7 @@ import {
 import { assertHeadlessBundleBoundary, HEADLESS_CHILD_ENTRY_POINTS } from "./lib/headless-bundle-boundary.mjs";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
+import { buildSkillScripts } from "./build-skill-scripts.mjs";
 import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +31,7 @@ const outfile = resolve(outdir, "main.js");
 const chunksDir = resolve(outdir, "chunks");
 const manifestPath = resolve(outdir, "bundle-manifest.json");
 const watchMode = process.argv.includes("--watch");
+await buildSkillScripts();
 
 const buildOptions = {
   // esbuild uses the caller's cwd for the module-label comments it emits. Pin

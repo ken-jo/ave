@@ -12,6 +12,7 @@ import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import { inspectLiteralShellArgvFacts, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
+import type { VerifiedArgvResolver } from "./verified-argv-authority.js";
 import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.js";
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
@@ -494,6 +495,11 @@ interface StaticProgram {
 function optionName(text: string): string { return normalizeDashes(text).toLowerCase(); }
 
 function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAnalysisContext): StaticProgram {
+  const only = pipelines.length === 1 ? pipelines[0] : undefined;
+  const verified = only !== undefined && only.stages.length === 1 && only.assign.length === 0
+    && !only.compound && only.key === undefined && only.container === undefined
+    && analysis.facts.get("unproven-comment") !== true
+    ? analysis.facts.get("verified-argv-resolver") as VerifiedArgvResolver | undefined : undefined;
   const stages: StaticStage[] = [];
   // Comments may carry directives processed before the startup prelude.
   // They remain visible to the lexer, but never supply positive argv proof.
@@ -534,7 +540,7 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
         const raw = command.tokens.map((token) => token.raw);
         const stage: StaticStage = { command, argv, visible: command.tokens.map((token) => token.kind === "word" ? token.text : undefined), raw,
           name: argv[0] === undefined ? undefined : canonicalName(argv[0]), fedByPipeline: stageIndex > 0, pipelineId,
-          proof: proveStaticArgv(argv, "powershell", raw, analysis.visits) };
+          proof: verified?.(argv, raw) ?? proveStaticArgv(argv, "powershell", raw, analysis.visits) };
         if (stage.proof.kind === "unproven") dynamic = true;
         stages.push(stage);
       }
@@ -686,8 +692,9 @@ export interface ParsedPowerShellCommand {
 }
 export type PowerShellCommandInput = ShellCommandInput | ParsedPowerShellCommand;
 
-export function parsePowerShellCommand(command: string): ParsedPowerShellCommand {
+export function parsePowerShellCommand(command: string, resolver?: VerifiedArgvResolver): ParsedPowerShellCommand {
   const context = new SharedPowerShellContext();
+  if (resolver !== undefined) context.facts.set("verified-argv-resolver", resolver);
   retainVisibleUpload(command, context);
   let syntax: LexedPowerShell;
   let analysisLimited = false;

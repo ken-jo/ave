@@ -1,3 +1,4 @@
+import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
@@ -339,6 +340,7 @@ export async function runToolInvocation(
     let source: ToolSource = "builtin";
     let trust: TrustLevel = "high";
     let preparedShellInvocation: PreparedShellInvocation | undefined;
+    let verifiedShellCommand: VerifiedShellCommand | undefined;
     let hostShellExecutionPlanAudit: HostShellExecutionPlanAuditProjection | undefined;
     let executionRouteAudit: ExecutionPlanAuditProjection | undefined;
     let executionRoutePlan: ExecutionPlan | undefined;
@@ -1770,6 +1772,13 @@ export async function runToolInvocation(
       emitGrantAudit("always");
     };
 
+    if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
+      && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
+      && !brokeredHostShellRouteSelected() && typeof finalInput.command === "string") {
+      verifiedShellCommand = prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
+        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) });
+    }
+
     // A broker capability names a Linux guest namespace. Host shell discovery,
     // environment snapshots, and temporary-home preparation describe the
     // controller process instead, so they cannot qualify or reject this route.
@@ -1784,7 +1793,7 @@ export async function runToolInvocation(
         preparedShellInvocation = prepareShellInvocation({
           command: finalInput.command, requestedCwd: finalInput.cwd as string | undefined,
           executionCwd, resolvedCwd: resolveHostShellWorkingDirectory(executionCwd, finalInput.cwd as string | undefined),
-          toolUseId: toolUse.id, plan: hostShellExecutionPlan,
+          toolUseId: toolUse.id, plan: hostShellExecutionPlan, verifiedShellCommand,
         }, abortSignal);
       } catch (error) {
         const msg = `Shell preparation failed: ${errorMessage(error)}`;
@@ -2216,6 +2225,7 @@ export async function runToolInvocation(
       hostShellExecutionPlanAudit,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
+      verifiedShellCommand,
       finalInput,
       invocationAllowedScope,
       sensitivePathPattern,
@@ -2339,6 +2349,7 @@ export async function runToolInvocation(
       executionRouteGrant,
       finalizeExecutionRouteGrant,
       preparedShellInvocation,
+      verifiedShellCommand,
       invocationRuntimeAllowedDirectories,
       supportsA2AParentDelivery,
       spawnDepth,

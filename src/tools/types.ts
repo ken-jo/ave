@@ -75,6 +75,8 @@ export interface ToolExecutionContext {
    * after authorization and never originates in model input, plugin arguments, renderer payloads, or persisted state. */
   executionRouteGrant?: ExecutionGrant;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
+  /** Host-issued native image and environment proof for this exact shell invocation. */
+  verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   /** Opaque one-shot approval proof for a requested-sandbox plain-shell fallback. It is minted only after allow-once and is consumed by bash/PowerShell. */
   hostShellExecutionPermit?: HostShellExecutionPermit;
   /** Per-invocation bookkeeping the executor threads to tools. `sessionId` is declared OPTIONAL on purpose: an invocation can be raised with no conversation behind it, and tools that cannot function unattributed
