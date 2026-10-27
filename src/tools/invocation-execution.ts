@@ -7,6 +7,8 @@ import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
 import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-ledger.js";
 import { runWithToolExecutionCwd } from "./execution-context.js";
+import { runWithAgentObservationInvocation } from "./agent-observation-context.js";
+import { preparedShellCommand } from "./prepared-shell-invocation.js";
 import { isCanonicalWebFetchTool } from "./web-fetch.js";
 import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
@@ -949,7 +951,9 @@ export async function executeAuthorizedToolInvocation(
             () => {
               assertHandlerAdmission(signal);
               handlerAdmissionBlocked = false;
-              return tool.execute(finalInput, ctx);
+              return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },
+                () => tool.execute(finalInput, ctx),
+                preparedShellInvocation ? preparedShellCommand(preparedShellInvocation).homePath : undefined, signal);
             },
             () => {
               effectAuthorizationRequired ??= issueAuthorizationRequiredControl({

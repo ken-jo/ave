@@ -737,7 +737,8 @@ export const CHANNELS = {
     // bounded sheet or page, never source bytes. The index selects a sheet
     // for table formats or a page for presentations/PDF. INTERNAL.
     readDocument: "ave:preview:read-document",
-    editXlsx: "ave:preview:edit-xlsx",
+    observationEvents: "ave:preview:observation-events",
+    observationAck: "ave:preview:observation-ack",
     documentOpenRequest: "ave:preview:document-open-request",
     documentOpenAck: "ave:preview:document-open-ack",
   },

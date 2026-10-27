@@ -7,34 +7,21 @@
  * React text node (react-data-grid's default `renderValue`), so a cell that
  * looks like markup or a formula is shown verbatim.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DataGrid, type Column, type DataGridHandle } from "react-data-grid";
 import type { PreviewTableSheet } from "../../../shared/preview-document.js";
+import { cn } from "../../../lib/utils.js";
+import { columnLetters } from "./table-coordinates.js";
 
-import { useTranslation } from "../../../i18n/react.js";
-import { XLSX_EDIT_LIMITS } from "../../../shared/xlsx-panel-edit.js";
-
-export type TableCellDraft = {
+export interface ObservedTableCell {
   row: number;
   column: number;
-  type: "text" | "number" | "boolean" | "empty";
-  text: string;
-  formula: boolean;
-};
+  value: string;
+  advisory: boolean;
+  seq: number;
+}
 
 type GridRow = readonly string[];
-
-/** 0-based column index → spreadsheet letters (0 → A, 25 → Z, 26 → AA). */
-export function columnLetters(index: number): string {
-  let n = index + 1;
-  let out = "";
-  while (n > 0) {
-    const rem = (n - 1) % 26;
-    out = String.fromCharCode(65 + rem) + out;
-    n = Math.floor((n - 1) / 26);
-  }
-  return out;
-}
 
 const ROW_NUMBER_KEY = "__row";
 const ROW_HEIGHT = 24;
@@ -80,93 +67,15 @@ export function horizontalScrollbarBlockPx(element: HTMLElement): number {
   return Math.max(0, Math.round(element.offsetHeight - element.clientHeight - borders));
 }
 
-/** Preserve raw newline spellings outside the interval changed by the normalized textarea. */
-function applyCellTextChange(raw: string, next: string): string {
-  const normalized = raw.replace(/\r\n?/g, "\n");
-  let prefix = 0;
-  while (prefix < normalized.length && prefix < next.length && normalized[prefix] === next[prefix]) prefix += 1;
-  let suffix = 0;
-  while (suffix < normalized.length - prefix && suffix < next.length - prefix
-    && normalized[normalized.length - suffix - 1] === next[next.length - suffix - 1]) suffix += 1;
-  const rawOffsets = [0];
-  for (let index = 0; index < raw.length; index += 1) {
-    if (raw[index] === "\r" && raw[index + 1] === "\n") index += 1;
-    rawOffsets.push(index + 1);
-  }
-  let before = raw.slice(0, rawOffsets[prefix]);
-  const inserted = next.slice(prefix, next.length - suffix);
-  const after = raw.slice(rawOffsets[normalized.length - suffix]);
-  // An edit joining a bare CR to LF must still represent two separate newlines.
-  if (before.endsWith("\r") && (inserted + after).startsWith("\n")) {
-    before = before.replace(/\r+$/, (ending) => "\n".repeat(ending.length));
-  }
-  return before + inserted + after;
-}
-
-function CellValueEditor({ draft, locked, onChange, onSave, onCancel }: {
-  draft: TableCellDraft;
-  locked: boolean;
-  onChange: (draft: TableCellDraft) => void;
-  onSave: () => void;
-  onCancel: () => void;
-}) {
-  const { t } = useTranslation();
-  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
-  useEffect(() => { inputRef.current?.focus(); }, [draft.row, draft.column, draft.type]);
-  return <div className="flex h-full min-w-0 items-center gap-0.5" data-testid="xlsx-cell-editor"
-    onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
-    onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
-      event.stopPropagation();
-      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-      if (event.key === "Escape" && !locked) { event.preventDefault(); onCancel(); }
-      if (event.key === "Enter" && !locked) { event.preventDefault(); onSave(); }
-    }}>
-    <select aria-label={t("chatPreviewRail.xlsxValueType")} title={t("chatPreviewRail.xlsxValueType")}
-      value={draft.type} disabled={locked} className="h-full w-12 min-w-0 shrink-0 border bg-background text-[10px]"
-      ref={(element) => { if (draft.type === "empty") inputRef.current = element; }}
-      onChange={(event) => onChange({ ...draft, type: event.target.value as TableCellDraft["type"],
-        text: event.target.value === "boolean" ? "false" : draft.text })}>
-      <option value="text">{t("chatPreviewRail.xlsxTypeText")}</option>
-      <option value="number">{t("chatPreviewRail.xlsxTypeNumber")}</option>
-      <option value="boolean">{t("chatPreviewRail.xlsxTypeBoolean")}</option>
-      <option value="empty">{t("chatPreviewRail.xlsxTypeEmpty")}</option>
-    </select>
-    {draft.type === "boolean" ? <select aria-label={t("chatPreviewRail.xlsxValue")} value={draft.text}
-      ref={(element) => { inputRef.current = element; }} disabled={locked}
-      className="h-full min-w-0 flex-1 border bg-background text-xs"
-      onChange={(event) => onChange({ ...draft, text: event.target.value })}>
-      <option value="true">true</option><option value="false">false</option>
-    </select> : draft.type === "text" ? <textarea aria-label={t("chatPreviewRail.xlsxValue")} value={draft.text}
-      ref={(element) => { inputRef.current = element; }} disabled={locked} maxLength={XLSX_EDIT_LIMITS.maxValueChars} rows={1}
-      className="h-full min-w-0 flex-1 resize-none border bg-background px-1 text-xs"
-      onChange={(event) => {
-        const text = applyCellTextChange(draft.text, event.target.value);
-        if (text.length <= XLSX_EDIT_LIMITS.maxValueChars) onChange({ ...draft, text });
-      }} /> : draft.type === "number" ? <input
-      aria-label={t("chatPreviewRail.xlsxValue")} value={draft.text}
-      ref={(element) => { inputRef.current = element; }} disabled={locked} inputMode="decimal"
-      className="h-full min-w-0 flex-1 border bg-background px-1 text-xs"
-      onChange={(event) => onChange({ ...draft, text: event.target.value })} /> : null}
-  </div>;
-}
-
-export function TableDocumentGrid({ sheet, label, onEditCell, draft, editLocked = false, onDraftChange, onSave, onCancel }: {
+/** Render observed changes as text; the grid never accepts document edits. */
+export function TableDocumentGrid({ sheet, label, changes = [], onRendered }: {
   sheet: PreviewTableSheet;
   label: string;
-  onEditCell?: (row: number, column: number) => void;
-  draft?: TableCellDraft | null;
-  editLocked?: boolean;
-  onDraftChange?: (draft: TableCellDraft) => void;
-  onSave?: () => void;
-  onCancel?: () => void;
+  changes?: readonly ObservedTableCell[];
+  onRendered?: () => void;
 }) {
-  const activateCell = (row: number, key: string | undefined) => {
-    if (!onEditCell || key === undefined || key === ROW_NUMBER_KEY || row < 0) return;
-    const column = Number(key);
-    if (Number.isInteger(column) && column >= 0 && column < (sheet.rows[row]?.length ?? 0)) {
-      onEditCell(sheet.firstRow + row, sheet.firstColumn + column);
-    }
-  };
+  const changesByCell = useMemo(() => new Map(changes.map((cell) => [`${cell.row}:${cell.column}`, cell])), [changes]);
+  const currentSeq = changes.reduce((latest, cell) => Math.max(latest, cell.seq), -1);
   const columns = useMemo<readonly Column<GridRow>[]>(() => {
     const width = sheet.rows[0]?.length ?? 0;
     const rowNumberWidth = Math.max(36, String(sheet.firstRow + sheet.rows.length).length * 8 + 16);
@@ -185,15 +94,24 @@ export function TableDocumentGrid({ sheet, label, onEditCell, draft, editLocked 
         key: String(c),
         name: columnLetters(sheet.firstColumn + c),
         resizable: true,
-        minWidth: draft?.column === sheet.firstColumn + c ? 104 : 48,
+        minWidth: 48,
         width: 120,
-        renderCell: ({ row, rowIdx }) => draft && draft.row === sheet.firstRow + rowIdx
-          && draft.column === sheet.firstColumn + c && onDraftChange && onSave && onCancel
-          ? <CellValueEditor draft={draft} locked={editLocked} onChange={onDraftChange} onSave={onSave} onCancel={onCancel} />
-          : row[c],
+        renderCell: ({ row, rowIdx }) => {
+          const rowNumber = sheet.firstRow + rowIdx;
+          const columnNumber = sheet.firstColumn + c;
+          const change = changesByCell.get(`${rowNumber}:${columnNumber}`);
+          return change ? <span key={change.seq}
+            className={cn("relative block min-h-full bg-agent/(--opacity-subtle) px-0.5 text-foreground",
+              change.seq === currentSeq && "ave-observed-current bg-agent/(--opacity-soft)")}
+            data-testid="document-cell-change" data-row={rowNumber} data-column={columnNumber}
+            data-advisory={change.advisory ? "true" : "false"} data-current={change.seq === currentSeq ? "true" : "false"}>
+            <span data-testid="document-cell-value">{change.value}</span>
+            {change.seq === currentSeq ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-[9px] leading-3 text-background">Ave</span> : null}
+          </span> : row[c];
+        },
       })),
     ];
-  }, [sheet, draft, editLocked, onDraftChange, onSave, onCancel]);
+  }, [sheet, changesByCell, currentSeq]);
 
   // A classic horizontal scrollbar appears or goes away as the grid's width or
   // its column widths change; either changes the grid's content-box height, so
@@ -211,6 +129,8 @@ export function TableDocumentGrid({ sheet, label, onEditCell, draft, editLocked 
     return () => observer.disconnect();
   }, []);
 
+  useLayoutEffect(() => { onRendered?.(); }, [sheet, changes, onRendered]);
+
   return (
     <DataGrid<GridRow>
       ref={gridRef}
@@ -219,17 +139,6 @@ export function TableDocumentGrid({ sheet, label, onEditCell, draft, editLocked 
       data-testid="chat-side-panel-table-grid"
       columns={columns}
       rows={sheet.rows}
-      onCellDoubleClick={({ rowIdx, column }, event) => {
-        if (!onEditCell) return;
-        event.preventGridDefault();
-        activateCell(rowIdx, column.key);
-      }}
-      onCellKeyDown={({ rowIdx, column }, event) => {
-        if (!onEditCell || event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229) return;
-        event.preventDefault();
-        event.preventGridDefault();
-        activateCell(rowIdx, column?.key);
-      }}
       rowHeight={ROW_HEIGHT}
       headerRowHeight={HEADER_ROW_HEIGHT}
       style={{ ...tableGridBlockStyle(sheet.rows.length, horizontalScrollbarPx), inlineSize: "100%" }}

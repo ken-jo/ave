@@ -40,7 +40,6 @@ import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
-import { appOwnedSandboxActionRoot } from "../shared/sandbox-private-paths.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
@@ -559,7 +558,6 @@ function sensitiveSearchAnchors(canonicalize: (path: string) => string = canonic
     paths.push(pathResolve(home, ...segments));
   }
   paths.push("/proc");
-  paths.push(appOwnedSandboxActionRoot());
   return paths.map((path) => caseFoldForMatch(canonicalize(path)));
 }
 
@@ -666,7 +664,6 @@ export function createSensitivePathMatcher(effect: PathEffect = "write", spend?:
   type ApplicationPath = { entry: SensitiveEntry; base: string };
   interface ApplicationNode { children: Map<string, ApplicationNode>; directories: ApplicationPath[] }
   let roots: { session?: string; keys: readonly string[] } | undefined;
-  let actionRoots: readonly string[] | undefined;
   let applicationPaths: ApplicationPath[] | undefined;
   let applicationExact: Map<string, ApplicationPath[]> | undefined;
   let applicationRotations: Map<string, ApplicationPath[]> | undefined;
@@ -691,12 +688,6 @@ export function createSensitivePathMatcher(effect: PathEffect = "write", spend?:
     const candidates = policyMatchPaths(absPath);
     const normalizedPath = candidates[0]!;
     const eligible = candidatesFor(normalizedPath);
-    const currentActionRoots = actionRoots ??= [canonicalize(appOwnedSandboxActionRoot()), pathResolve(appOwnedSandboxActionRoot())]
-      .map(path => caseFoldForMatch(path).replace(/\/+$/u, ""));
-    if (candidates.some(candidate => currentActionRoots.some(root => {
-      const folded = caseFoldForMatch(candidate);
-      return folded === root || folded.startsWith(`${root}/`);
-    }))) return "sandbox-action-data";
     if (effect === "write") {
       for (const path of hostScriptWriteDenyPaths()) {
         const bases = [canonicalizePathForMatch(path), pathResolve(path)].map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));

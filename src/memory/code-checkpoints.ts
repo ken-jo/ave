@@ -14,6 +14,7 @@ import type { TurnChangeReview, TurnReviewError, TurnReviewResult } from "../sha
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
+import { observeAgentDocumentMutation } from "../tools/agent-observation-context.js";
 import type { ToolExecutionContext } from "../tools/types.js";
 import { createLogger } from "../lib/logger.js";
 import { countTurnReviewLines, createTurnReviewHunks } from "./turn-review-diff.js";
@@ -444,6 +445,13 @@ export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
 
 /** Called only after native file-tool authorization and immediately before mutation. */
 export async function checkpointFileMutation<T>(
+  effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
+  run: () => Promise<T>,
+): Promise<T> {
+  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run));
+}
+
+async function checkpointMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
   run: () => Promise<T>,
 ): Promise<T> {

@@ -2,23 +2,45 @@
 
 The table viewer accepts CSV, TSV, XLSX, XLS and ODS files and displays a bounded grid of strings. [The shared preview contract](../../src/shared/preview-document.ts) owns supported formats, result types, error codes and every resource ceiling.
 
-XLSX workbooks requesting recalculation show a localized badge because cached formula results may be stale. The [XLSX editing contract](xlsx-skill-editing.md) owns the calculation signal, preservation limits, sandbox execution and shared publication rules for skill and panel edits.
+XLSX workbooks requesting recalculation show a localized badge because cached formula results may be stale. The [XLSX editing contract](xlsx-skill-editing.md) owns the calculation signal, preservation limits and approved sandbox-shell editing. The panel remains read-only while showing live agent changes under the [observation contract](architecture.md#agent-activity-observation).
 
 ## Read authority
 
-`ave:preview:read-document` is a private, host-renderer IPC channel. [The preview handler](../../src/ipc/domains/preview.ts) uses the same registered app-window main-frame guard as `readFile`, `editXlsx` and `documentOpenAck`. The sender must be a live `WebContents` of type `window`, belong to a live app window registered through `IpcDeps.getAppWindows()` with `getMainWindow()` as the compatibility fallback, use the default session, and supply the actual `sender.mainFrame` as `senderFrame`. Reads recheck that live identity and registration after asynchronous work; edit publication rechecks them before replacing the workbook. Source-URL validation is supplemental: a matching URL cannot make an embedded webview, subframe, unregistered window or plugin partition an app-window principal. Navigating a webview to a `.js` URL grants no preview-read, token or save authority.
+`ave:preview:read-document` is a private, host-renderer IPC channel. [The preview handler](../../src/ipc/domains/preview.ts) uses the same registered app-window main-frame guard as `readFile`, `documentOpenAck` and observation acknowledgements. The sender must be a live `WebContents` of type `window`, belong to a live app window registered through `IpcDeps.getAppWindows()` with `getMainWindow()` as the compatibility fallback, use the default session, and supply the actual `sender.mainFrame` as `senderFrame`. Reads recheck that live identity and registration after asynchronous work; observation delivery rechecks it before sending events. Source-URL validation is supplemental: a matching URL cannot make an embedded webview, subframe, unregistered window or plugin partition an app-window principal. Navigating a webview to a `.js` URL grants no preview-read or observation authority.
 
 The handler uses `assertReadableFilePath` from [the file-read core](../../src/tools/file-read-core.ts). Preview reads always check allowed roots. Native agent file reads instead use the invocation's existing file access policy, which can allow reads outside those roots when directory fencing is disabled. This renderer guard does not change agent policy. The channel grants no additional filesystem authority and is unavailable through public transports.
 
 The main process checks the requested sheet index and extension, then acquires a request lease before [opening the admitted path once](../../src/tools/preview-document-input.ts). Regular-file status and size come from that descriptor. Reading stops at its checked size plus one byte; growth, shrinkage or a changed modification time refuses the read, and the descriptor closes on every outcome. A superseded read checks cancellation before allocating and after each filesystem operation; it waits for an operation already in progress to return. Child deadlines do not cover filesystem reads. Replacing the pathname after opening cannot redirect that read. Each request supplies a zero-based, non-negative sheet index; any other value returns `invalid-index` at the IPC boundary and again in the parse lease. CSV and TSV accept only index zero; workbook indexes must address the retained `sheetNames` list, so sheets beyond the tab limit cannot be selected. Successful reads use the existing audit logger with a redacted path. The renderer receives a parsed table result, never source document bytes or a parser handle.
 
-## Editing authority
+## Agent live view
 
-A successful XLSX preview opened by the user can additionally receive a host-issued opaque `editToken` bound to the latest read of that registered app window's main frame, canonical file, selected sheet and revision. The host retains the exact parsed source bytes and descriptor identity; the parser child never creates or receives the token. The token directly admits scalar cell actions for that bound workbook through the private panel API, with no general filesystem authority. Other formats remain read-only.
+The grid has no direct cell editor or save operation. Editing remains in the agent's ordinary governed tools, skills and shell; the host has no document write API. Viewing a file never grants editing authority or asks the user to approve a modification.
 
-Panel editing has no enable step or confirmation prompt. Actions remain subject to current file-read scope, protected read floors, sensitive write denies for both source and backup, and available confinement. The existing private `ave:preview:edit-xlsx` channel accepts only the [shared edit request](../../src/shared/xlsx-panel-edit.ts): `cell`, `save` or `release`, a token, cell coordinates and a scalar where required. It cannot accept a path, script, environment or replacement workbook from the renderer. It is excluded from `PUBLIC_CHANNELS`, unavailable through public transports and not exposed through a tool bridge. The [XLSX editing contract](xlsx-skill-editing.md#panel-authority-and-execution) owns token lifecycle, the trusted renderer interaction boundary, separate agent shell approval, protected action-directory capabilities and exact-file host publication.
+Table, file/code and page previews share a single-line header with a format icon,
+bold file name, muted monospaced parent path and accessible icon-only open, copy
+and applicable reload actions. The parent path is relative to the workspace when
+known and truncates with ellipsis; the full path remains in its title. The old
+separate path box, kind badge, source subtitle and action rows are absent.
+The default-application action reuses the attachment opener with a host-owned
+receipt for the successfully read canonical target. It rechecks the registered
+frame and current file-read scope; a renderer cannot authorize another path.
 
-The panel edits existing cells with raw typed values returned by the pinned editor; formatted or clipped display strings do not initialize drafts. It offers literal text, number, boolean and empty values, with an explicit hint before overwriting a formula. It has no formula authoring or structural editing. Enter saves directly outside composition with visible saving/saved states, Escape cancels and blur does not save. Successful edits refresh the preview with a fresh token. Observed source identity or byte changes invalidate the token and require reload; manual reload obtains a fresh revision token without approval state. Changing file or sheet, leaving the frame or releasing the preview also retires its token. The [shared edit contract](../../src/shared/xlsx-panel-edit.ts) owns edit errors and limits separately from read/parse failures below.
+The live strip beneath the header is hidden until authenticated agent observation
+activity arrives. It shows editing or edited, the latest cell change and recency;
+observation errors, engine absence and resynchronization use that same slot.
+Changed cells use the shared light/dark agent color. The current target is outlined
+with a small Ave tag, while earlier changes keep a faint tint. The compact footer
+shows format, selected sheet and dimensions, plus the recalculation badge and all
+applicable truncation notices. Other than its sheet tabs, the table remains a
+read-only grid.
+
+A successful preview read can register a bounded rendered baseline for its host-verified session. A user-only preview creates no filesystem watch. Successful session-bound agent panel opens and exact agent mutation evidence admit observed targets. If the agent edits a file the user already has open, that exact file can become an agent target. The observer never enumerates a workspace or records user-only document activity.
+
+The document adapter combines exact-file save notifications with the skill's append-only edit journal. Journal cell events highlight provisional values before publication; the saved-file snapshot replaces that overlay and refreshes the recalculation badge. It diffs against the last acknowledged rendered snapshot, with debounce and settling for atomic replacement. Neither a watch event nor temporal overlap with an agent call proves who wrote the file: attribution also requires host-bound invocation evidence and matching before/after digests. Unverified changes are not streamed as agent content.
+
+Private observation push and acknowledgement channels reuse registered app-window main-frame checks and session ownership. Acknowledgements carry only a read-only target identity and sequence; there is no path, script or document-write payload. The renderer acknowledges snapshots after rendering and releases the binding on document, sheet or session change and unmount. The [observation contract](architecture.md#agent-activity-observation) owns event schemas, journal containment and caps, lifecycle, back-pressure and agent-only local privacy.
+
+The replaceable observation engine uses the same bounded table-reader child as manual previews. The same document adapter also accepts verified native text saves and emits line diffs for full text/code previews; selected line windows, snippets and images are outside that live scope. Page previews share the compact presentation but retain their existing reader without fabricated live activity. If the observation engine is absent, the explicit `engine-unavailable` state leaves the existing viewer and reload action available. Parser or protocol failures stay errors. Conversion services and browser/terminal adapters are outside this implementation.
 
 ## Parsing process and budgets
 

@@ -7,7 +7,7 @@
  * lazily-loaded virtualized grid. Every cap the reader applied is stated to the
  * user — nothing is cut silently.
  */
-import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
@@ -16,8 +16,11 @@ import {
   type PreviewDocumentError,
   type PreviewTableDocument,
 } from "../../../shared/preview-document.js";
-import type { XlsxCellValue, XlsxPanelEditError, XlsxPanelEditRequest } from "../../../shared/xlsx-panel-edit.js";
-import type { TableCellDraft } from "./table-document-grid.js";
+import type { DocumentObservationBinding, DocumentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
+import type { ObservedTableCell } from "./table-document-grid.js";
+import { columnLetters } from "./table-coordinates.js";
+import { PreviewDocumentHeader, PreviewDocumentLiveStrip, PreviewDocumentFooter, previewFormatLabel } from "./preview-document-chrome.js";
+import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
 
 const LazyTableDocumentGrid = lazy(() =>
   import(/* webpackChunkName: "table-document-grid" */ "./table-document-grid.js").then((mod) => ({
@@ -66,7 +69,9 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
 
 type LoadState =
   | { phase: "loading" }
-  | { phase: "ok"; document: PreviewTableDocument; editToken?: string }
+  | { phase: "ok"; path: string; document: PreviewTableDocument; observation?: DocumentObservationBinding;
+    seq: number; changes: ObservedTableCell[]; status?: DocumentObservationStatus;
+    latest?: { row: number; column: number; before: string; after: string; ts: number; advisory: boolean } }
   | { phase: "error"; code: Exclude<PreviewDocumentError, "superseded"> };
 
 function TruncationNotices({ document }: { document: PreviewTableDocument }) {
@@ -98,60 +103,99 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
   return (
     <div
       role="status"
-      className="space-y-0.5 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-2 py-1.5 text-[11px] text-foreground"
+      className="text-[10px] text-warning"
       data-testid="chat-side-panel-table-truncated"
     >
-      {notices.map((notice) => <div key={notice}>{notice}</div>)}
+      {notices.join(" · ")}
     </div>
   );
 }
 
-const XLSX_ERROR_KEYS: Record<XlsxPanelEditError, string> = {
-  "invalid-request": "chatPreviewRail.xlsxErrorInvalidRequest",
-  unauthorized: "chatPreviewRail.xlsxErrorUnauthorized",
-  expired: "chatPreviewRail.xlsxErrorExpired",
-  "stale-file": "chatPreviewRail.xlsxErrorStaleFile",
-  "edit-unavailable": "chatPreviewRail.xlsxErrorUnavailable",
-  "unsupported-cell": "chatPreviewRail.xlsxErrorUnsupportedCell",
-  "backup-exists": "chatPreviewRail.xlsxErrorBackupExists",
-  "edit-failed": "chatPreviewRail.xlsxErrorFailed",
-  busy: "chatPreviewRail.xlsxErrorBusy",
-};
-
 /** Callers key this by path so a new file starts on its first sheet. */
-export function TableDocumentPreview({ path }: { path: string }) {
+export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal }: { path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean }) {
   const { t } = useTranslation();
   const [sheetIndex, setSheetIndex] = useState(0);
   const [state, setState] = useState<LoadState>({ phase: "loading" });
   const [revision, setRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
-  const [draft, setDraft] = useState<TableCellDraft | null>(null);
-  const [operation, setOperation] = useState<"cell" | "save" | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [editError, setEditError] = useState<XlsxPanelEditError | "invalid-value" | null>(null);
+  const [openFailed, setOpenFailed] = useState(false);
   const generation = useRef(0);
-  const operationActive = useRef(false);
+  const lastAcknowledgement = useRef("");
 
   useEffect(() => {
     let cancelled = false;
-    let token: string | undefined;
+    let binding: DocumentObservationBinding | undefined;
+    let lastSeq = 0;
+    let observedPath = path;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     generation.current += 1;
-    operationActive.current = false;
-    setOperation(null);
-    setDraft(null);
+    setOpenFailed(false);
     setRefreshFailed(false);
     setRefreshing(true);
     setState((previous) => previous.phase === "ok" && previous.document.sheet.index === sheetIndex && revision > 0
-      ? previous : { phase: "loading" });
-    const release = (value: string) => {
-      void window.ave.preview.editXlsx({ action: "release", token: value }).catch(() => {});
+      ? { ...previous, changes: [], observation: undefined, status: undefined }
+      : { phase: "loading" });
+    const api = window.ave.preview;
+    const release = (value: DocumentObservationBinding) => {
+      void api.acknowledgeDocumentObservation({ action: "release", targetId: value.targetId,
+        sessionId: value.sessionId, seq: lastSeq }).catch(() => {});
     };
+    const handleObservations = (events: DocumentObservationEvent[]): void => {
+      if (cancelled || !binding || binding.sessionId !== sessionId) return;
+      for (const event of events) {
+        if (event.source !== "document" || event.actor !== "agent" || event.sessionId !== binding.sessionId
+          || event.target.id !== binding.targetId || event.target.path !== observedPath
+          || !Number.isSafeInteger(event.seq) || event.seq <= lastSeq) continue;
+        lastSeq = event.seq;
+        setState((previous) => {
+          if (previous.phase !== "ok" || previous.observation?.targetId !== binding?.targetId) return previous;
+          if (event.kind === "snapshot") {
+            if (!("sheet" in event.after) || event.after.sheet.index !== sheetIndex || event.after.format !== previous.document.format) {
+              return { ...previous, seq: event.seq, changes: [], status: "observation-error" };
+            }
+            const { sheet } = event.after;
+            const changes = previous.changes.flatMap((change) => {
+              const value = sheet.rows[change.row - sheet.firstRow]?.[change.column - sheet.firstColumn];
+              const before = previous.document.sheet.rows[change.row - previous.document.sheet.firstRow]?.[change.column - previous.document.sheet.firstColumn];
+              return value === undefined || (change.advisory && value === before) ? [] : [{ ...change, value, advisory: false }];
+            });
+            let latest = previous.latest;
+            if (latest) {
+              const value = sheet.rows[latest.row - sheet.firstRow]?.[latest.column - sheet.firstColumn];
+              const before = previous.document.sheet.rows[latest.row - previous.document.sheet.firstRow]?.[latest.column - previous.document.sheet.firstColumn] ?? "";
+              latest = value === undefined || (latest.advisory && value === before) ? undefined
+                : { ...latest, before: latest.advisory ? before : latest.before, after: value, advisory: false };
+            }
+            return { ...previous, document: event.after, seq: event.seq, changes, latest, status: "live" };
+          }
+          if (event.kind === "status") {
+            const interrupted = event.after.code !== "live" && event.after.code !== "reconciling";
+            return { ...previous, seq: event.seq, status: event.after.code,
+              changes: interrupted ? [] : previous.changes };
+          }
+          const { sheet } = previous.document;
+          if (event.element.kind !== "cell" || event.element.sheet !== sheet.name
+            || event.element.row < sheet.firstRow || event.element.column < sheet.firstColumn
+            || event.element.row >= sheet.firstRow + sheet.rows.length
+            || event.element.column >= sheet.firstColumn + (sheet.rows[0]?.length ?? 0)) {
+            return { ...previous, seq: event.seq };
+          }
+          const changed = { row: event.element.row, column: event.element.column,
+            value: event.after, advisory: event.advisory, seq: event.seq };
+          return { ...previous, seq: event.seq, status: event.advisory ? "reconciling" : "live",
+            latest: { row: changed.row, column: changed.column, before: event.before, after: event.after, ts: event.ts, advisory: event.advisory },
+            changes: [...previous.changes.filter((cell) => cell.row !== changed.row || cell.column !== changed.column), changed] };
+        });
+      }
+    };
+    const stopObserving = api.onDocumentObservation(handleObservations);
     const read = (attempt: number): void => {
-      void window.ave.preview.readDocument(path, sheetIndex).then((result) => {
+      const resultPromise = sessionId === undefined
+        ? api.readDocument(path, sheetIndex) : api.readDocument(path, sheetIndex, sessionId);
+      void resultPromise.then((result) => {
         if (cancelled) {
-          if (result.ok && result.editToken) release(result.editToken);
+          if (result.ok && result.observation) release(result.observation);
           return;
         }
         if (!result.ok && result.error === "busy") {
@@ -162,29 +206,23 @@ export function TableDocumentPreview({ path }: { path: string }) {
           }
         }
         if (result.ok) {
-          token = result.editToken;
+          observedPath = result.path;
+          binding = result.observation?.sessionId === sessionId ? result.observation : undefined;
+          lastSeq = binding?.seq ?? 0;
           setState("sheet" in result.document
-            ? { phase: "ok", document: result.document, editToken: token }
+            ? { phase: "ok", path: result.path, document: result.document, observation: binding, seq: lastSeq, changes: [] }
             : { phase: "error", code: "unsupported-format" });
         } else if (result.error !== "superseded") {
           if (revision > 0) setRefreshFailed(true);
-          setState((previous) => {
-            if (previous.phase === "ok" && revision > 0) {
-              return { ...previous, editToken: undefined };
-            }
-            return { phase: "error", code: result.error as Exclude<PreviewDocumentError, "superseded"> };
-          });
+          setState((previous) => previous.phase === "ok" && revision > 0
+            ? previous : { phase: "error", code: result.error as Exclude<PreviewDocumentError, "superseded"> });
         }
         setRefreshing(false);
       }).catch(() => {
         if (!cancelled) {
           if (revision > 0) setRefreshFailed(true);
-          setState((previous) => {
-            if (previous.phase === "ok" && revision > 0) {
-              return { ...previous, editToken: undefined };
-            }
-            return { phase: "error", code: "read-failed" };
-          });
+          setState((previous) => previous.phase === "ok" && revision > 0
+            ? previous : { phase: "error", code: "read-failed" });
           setRefreshing(false);
         }
       });
@@ -194,167 +232,84 @@ export function TableDocumentPreview({ path }: { path: string }) {
       cancelled = true;
       generation.current += 1;
       clearTimeout(retryTimer);
-      if (token) release(token);
+      stopObserving();
+      if (binding) release(binding);
     };
-  }, [path, sheetIndex, revision]);
+  }, [path, sessionId, sheetIndex, revision]);
 
-  const requestEdit = async (request: XlsxPanelEditRequest) => {
-    if (operationActive.current) return null;
-    operationActive.current = true;
+  const acknowledgeRendered = useCallback(() => {
+    if (state.phase !== "ok" || !state.observation) return;
+    const { observation, seq } = state;
+    const key = observation.targetId + ":" + seq;
+    if (lastAcknowledgement.current === key) return;
+    lastAcknowledgement.current = key;
     const current = generation.current;
-    setOperation(request.action === "release" ? null : request.action);
-    setEditError(null);
-    try {
-      const result = await window.ave.preview.editXlsx(request);
-      if (current !== generation.current) return null;
-      if (!result.ok) {
-        setEditError(result.error);
-        if (["expired", "stale-file", "unauthorized"].includes(result.error)) {
-          setDraft(null);
-          setState((previous) => previous.phase === "ok" ? { ...previous, editToken: undefined } : previous);
-        }
+    void window.ave.preview.acknowledgeDocumentObservation({ action: "rendered",
+      targetId: observation.targetId, sessionId: observation.sessionId, seq }).then((result) => {
+      if (!result.ok && current === generation.current) {
+        setState((previous) => previous.phase === "ok"
+          ? { ...previous, changes: [], status: "observation-error" } : previous);
       }
-      return result;
-    } catch {
-      if (current === generation.current) setEditError("edit-failed");
-      return null;
-    } finally {
-      if (current === generation.current) {
-        operationActive.current = false;
-        setOperation(null);
-      }
-    }
-  };
-  const token = state.phase === "ok" ? state.editToken : undefined;
-  const beginCell = async (row: number, column: number) => {
-    if (!token || refreshing || operationActive.current) return;
-    setSaved(false);
-    const result = await requestEdit({ action: "cell", token, row, column });
-    if (result?.ok && result.action === "cell") setDraft({ row, column, formula: result.formula,
-      type: result.value === null ? "empty" : typeof result.value === "boolean" ? "boolean"
-        : typeof result.value === "number" ? "number" : "text",
-      text: result.value === null ? "" : String(result.value) });
-  };
-  const saveCell = async () => {
-    if (!draft || !token || operationActive.current || refreshing) return;
-    let value: XlsxCellValue = draft.text;
-    if (draft.type === "empty") value = null;
-    else if (draft.type === "boolean") value = draft.text === "true";
-    else if (draft.type === "number") {
-      value = Number(draft.text);
-      if (!draft.text.trim() || !Number.isFinite(value)) { setEditError("invalid-value"); return; }
-    }
-    const result = await requestEdit({ action: "save", token, row: draft.row, column: draft.column, value });
-    if (result?.ok) {
-      setDraft(null);
-      setSaved(true);
-      setRevision((previous) => previous + 1);
-    }
-  };
-  const cancelDraft = () => { setDraft(null); setEditError(null); };
-  const reload = () => {
-    setDraft(null); setEditError(null); setSaved(false);
-    setRevision((previous) => previous + 1);
-  };
-  const locked = operation !== null || refreshing;
+    }).catch(() => {
+      if (current === generation.current) setState((previous) => previous.phase === "ok"
+        ? { ...previous, changes: [], status: "observation-error" } : previous);
+    });
+  }, [state]);
 
-  if (state.phase === "error") {
-    return (
-      <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
-        {t(tableErrorKey(state.code), { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}
-      </div>
-    );
-  }
+  useLayoutEffect(() => {
+    if (state.phase === "ok" && state.document.sheet.rows.length === 0) acknowledgeRendered();
+  }, [state, acknowledgeRendered]);
 
-  const loading = (
-    <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-loading">
-      {t("chatPreviewRail.tableLoading")}
-    </div>
-  );
-  if (state.phase === "loading") return loading;
+  const header = <PreviewDocumentHeader path={state.phase === "ok" ? state.path : path} workspaceRoot={workspaceRoot}
+    canOpenExternal={Boolean(canOpenExternal) || (state.phase === "ok" && previewSupportsExternalOpen(state.path))}
+    onOpenError={() => setOpenFailed(true)}
+    onReload={() => setRevision((previous) => previous + 1)} refreshing={refreshing} />;
+  if (state.phase === "error") return <div className="space-y-2">{header}
+    <PreviewDocumentLiveStrip error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />
+    <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
+      {t(tableErrorKey(state.code), { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}
+    </div></div>;
+  const loading = <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-loading">
+    {t("chatPreviewRail.tableLoading")}
+  </div>;
+  if (state.phase === "loading") return <div className="space-y-2">{header}
+    <PreviewDocumentLiveStrip error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />{loading}</div>;
 
-  const { document } = state;
-  const { sheet } = document;
-  const prefixOnly = (document.format === "csv" || document.format === "tsv") && sheet.rowsTruncated;
+  const { document: table, changes, status, latest } = state;
+  const { sheet } = table;
+  const prefixOnly = (table.format === "csv" || table.format === "tsv") && sheet.rowsTruncated;
+  const latestAddress = latest ? `${columnLetters(latest.column)}${latest.row + 1}` : "";
+  const summary = latest ? `${latestAddress}: ${latest.before || t("chatPreviewRail.documentObservationBlank")} → ${latest.after || t("chatPreviewRail.documentObservationBlank")}` : undefined;
   return (
-    // Flex column down to the grid: the grid takes the height the panel has
-    // left and is the only scroll container (see PreviewDetail).
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2" data-testid="chat-side-panel-table-preview">
-      {document.sheetNames.length > 1 ? (
-        <div
-          role="tablist"
-          aria-label={t("chatPreviewRail.tableSheetsLabel")}
-          className="flex min-w-0 shrink-0 gap-1 overflow-x-auto pb-1"
-        >
-          {document.sheetNames.map((name, index) => (
-            <button
-              key={`${index}:${name}`}
-              type="button"
-              role="tab"
-              aria-selected={index === sheet.index}
-              disabled={locked || draft !== null}
-              onClick={() => { setEditError(null); setSaved(false); setSheetIndex(index); }}
-              className={
-                index === sheet.index
-                  ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground"
-                  : "shrink-0 rounded-md border border-transparent px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground"
-              }
-              data-testid="chat-side-panel-table-sheet-tab"
-            >
-              {name}
-            </button>
+      {header}
+      <PreviewDocumentLiveStrip status={status} summary={summary} ts={latest?.ts}
+        error={openFailed ? t("chatPreviewRail.openDefaultAppError")
+          : refreshFailed ? t("chatPreviewRail.documentObservationRefreshFailed") : undefined} />
+      {table.sheetNames.length > 1 ? (
+        <div role="tablist" aria-label={t("chatPreviewRail.tableSheetsLabel")}
+          className="flex min-w-0 shrink-0 gap-1 overflow-x-auto pb-1">
+          {table.sheetNames.map((name, index) => (
+            <button key={`${index}:${name}`} type="button" role="tab" aria-selected={index === sheet.index}
+              disabled={refreshing} onClick={() => setSheetIndex(index)}
+              className={index === sheet.index
+                ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground"
+                : "shrink-0 rounded-md border border-transparent px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground"}
+              data-testid="chat-side-panel-table-sheet-tab">{name}</button>
           ))}
         </div>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase">
-          {document.format}
-        </Badge>
-        {document.needsRecalculation ? (
-          <Badge variant="outline" role="status" title={t("chatPreviewRail.tableRecalculationHint")}
-            data-testid="chat-side-panel-table-recalculation">
-            {t("chatPreviewRail.tableNeedsRecalculation")}
-          </Badge>
-        ) : null}
-        <span className="text-[11px] text-muted-foreground">
-          {t(prefixOnly ? "chatPreviewRail.tablePrefixSummary" : "chatPreviewRail.tableSummary", {
-            rows: sheet.totalRows, columns: sheet.totalColumns,
-          })}
-        </span>
-      </div>
-      {document.format === "xlsx" ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 text-[11px]" data-testid="xlsx-edit-controls">
-          {token ? <span>{t("chatPreviewRail.xlsxEditHint")}</span> : null}
-          {operation ? <span role="status">{t(operation === "save" ? "chatPreviewRail.xlsxSaving" : "chatPreviewRail.xlsxPreparing")}</span> : null}
-          {refreshing ? <span role="status">{t("chatPreviewRail.xlsxReloading")}</span> : null}
-          {saved ? <span role="status" data-testid="xlsx-saved">{t("chatPreviewRail.xlsxSaved")}</span> : null}
-          {editError ? <span role="alert" className="text-destructive">{t(editError === "invalid-value"
-            ? "chatPreviewRail.xlsxErrorInvalidValue" : XLSX_ERROR_KEYS[editError])}</span> : null}
-          {refreshFailed ? <span role="alert" className="text-destructive">{t("chatPreviewRail.xlsxRefreshFailed")}</span> : null}
-          {editError || refreshFailed ? <button type="button" disabled={locked} onClick={reload}
-            className="rounded border px-2 py-1">{t("chatPreviewRail.xlsxReload")}</button> : null}
-        </div>
-      ) : null}
-      {draft ? <div className="flex shrink-0 flex-wrap items-center gap-2 text-[11px]" data-testid="xlsx-edit-actions">
-        <span>{t("chatPreviewRail.xlsxCellLabel", { row: draft.row + 1, column: draft.column + 1 })}</span>
-        {draft.formula ? <span role="note">{t("chatPreviewRail.xlsxFormulaOverwriteHint")}</span> : null}
-        <button type="button" disabled={locked} onClick={() => void saveCell()} className="rounded border px-2 py-1">
-          {t("chatPreviewRail.xlsxSave")}</button>
-        <button type="button" disabled={locked} onClick={cancelDraft} className="rounded border px-2 py-1">
-          {t("chatPreviewRail.xlsxCancel")}</button>
-      </div> : null}
-      <TruncationNotices document={document} />
-      {sheet.rows.length === 0 ? (
-        <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-empty">
-          {t("chatPreviewRail.tableEmpty")}
-        </div>
-      ) : (
-        <Suspense fallback={loading}>
-          <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })}
-            onEditCell={document.format === "xlsx" && token && !locked ? (row, column) => { void beginCell(row, column); } : undefined}
-            draft={draft} editLocked={locked} onDraftChange={setDraft} onSave={() => void saveCell()} onCancel={cancelDraft} />
-        </Suspense>
-      )}
+      {sheet.rows.length === 0 ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-empty">
+        {t("chatPreviewRail.tableEmpty")}
+      </div> : <Suspense fallback={loading}>
+        <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })} changes={changes} onRendered={acknowledgeRendered} />
+      </Suspense>}
+      <PreviewDocumentFooter>
+        <span>{previewFormatLabel(path)} · {sheet.name} · {t(prefixOnly ? "chatPreviewRail.tablePrefixSummary" : "chatPreviewRail.tableSummary", { rows: sheet.totalRows, columns: sheet.totalColumns })}</span>
+        {table.needsRecalculation ? <Badge variant="outline" role="status" title={t("chatPreviewRail.tableRecalculationHint")}
+          className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-table-recalculation">{t("chatPreviewRail.tableNeedsRecalculation")}</Badge> : null}
+        <TruncationNotices document={table} />
+      </PreviewDocumentFooter>
     </div>
   );
 }

@@ -139,15 +139,6 @@ afterEach(() => {
 });
 
 describe("egress ask callback — attribution", () => {
-  it("refuses document network requests without consulting grants, rules or approvals", async () => {
-    owners.set("document", { kind: "user-document", action: "workbook" });
-    networkRule = vi.fn(async () => ({ decision: "allow" as const, pattern: "*", scope: "user" as const }));
-    const result = await callback()({ host: "api.fixture.example", port: 443 }, listener("document"));
-    expect(result).toEqual({ allow: false, reason: "document actions cannot access the network" });
-    expect(asked).toEqual([]);
-    expect(networkRule).not.toHaveBeenCalled();
-    expect(audit).toMatchObject([{ invocation: { kind: "user-document", action: "workbook" }, decision: "deny", basis: "policy" }]);
-  });
   it("offers strong scopes only to the host-owned shell lane on a shared host", async () => {
     const platform = process.platform;
     setProcessPlatform("win32");

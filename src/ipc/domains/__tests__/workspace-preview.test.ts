@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { PLUGIN_SHELL_FRAME_URL } from "../../../__tests__/test-helpers.js";
 
@@ -104,7 +105,7 @@ const deps = {
 
 function frameEvent(url: string) {
   const frame = { url, processId: 1, routingId: 0, detached: false, isDestroyed: () => false };
-  const sender = { id: 1, mainFrame: frame, session: defaultSession, getType: () => "window", isDestroyed: () => false };
+  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, session: defaultSession, getType: () => "window", isDestroyed: () => false });
   appWindows.push({ isDestroyed: () => false, webContents: sender });
   return { sender, senderFrame: frame };
 }

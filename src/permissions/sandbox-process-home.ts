@@ -11,6 +11,7 @@ import { basename, dirname, join, win32 } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
+import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 
 const log = createLogger("sandbox-process-home");
 const SANDBOX_HOME_PREFIX = "ave-sandbox-home-";
@@ -51,6 +52,7 @@ export function sandboxProcessProfileEnvironment(
       // Windows only, and it DOES take effect here: ASRT deletes the `TMPDIR` it generates on this platform ("serves no purpose on Windows and breaks msys2 tools") and sets no replacement, so the profile's own value is what the child sees. Node reads TEMP then TMP; both, so a child that consults either lands in the same place.
       TEMP: win32.join(homePath, "tmp"),
       TMP: win32.join(homePath, "tmp"),
+      AVE_DOCUMENT_JOURNAL: win32.join(homePath, "document-observation", "journal.jsonl"),
     };
     const drive = win32.parse(homePath).root.slice(0, 2);
     if (/^[A-Za-z]:$/.test(drive)) {
@@ -66,6 +68,7 @@ export function sandboxProcessProfileEnvironment(
 
   return {
     HOME: homePath,
+    AVE_DOCUMENT_JOURNAL: join(homePath, "document-observation", "journal.jsonl"),
     XDG_CONFIG_HOME: join(homePath, "config"),
     XDG_DATA_HOME: join(homePath, "data"),
     XDG_CACHE_HOME: join(homePath, "cache"),
@@ -116,6 +119,8 @@ export function createSandboxProcessHome(
 
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));
     createProfileDirectories(env);
+    mkdirSync(dirname(env.AVE_DOCUMENT_JOURNAL!), { mode: 0o700 });
+    registerAgentObservationHome(homePath);
   } catch (err) {
     if (
       dirname(createdPath) === parentRoot &&
@@ -161,6 +166,7 @@ export function createSandboxProcessHome(
     env,
     cleanup(): void {
       if (cleaned) return;
+      drainAgentObservationHome(homePath);
       if (
         dirname(homePath) !== parentRoot ||
         !basename(homePath).startsWith(SANDBOX_HOME_PREFIX)

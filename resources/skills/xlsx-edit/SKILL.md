@@ -9,8 +9,12 @@ compatibility: Host-provided JavaScript runtime and bundled script through the s
 Use this skill for requested changes to existing `.xlsx` cells. Read the workbook
 with `read_document` first and identify its zero-based sheet index and A1 cell
 addresses. CSV/TSV use ordinary text editing. Other workbook formats, new cells,
-formatting changes, row/column operations and direct panel editing are outside
-this skill.
+formatting changes and row/column operations are outside this skill. The panel
+is a read-only view of agent edits.
+
+In an interactive session, call `open_document` before editing so the live panel
+has a rendered baseline. Respect link mode and an unavailable panel; report when
+the live view is unavailable. Opening the panel grants no write permission.
 
 Run the host's `edit-xlsx.cjs` through the sandbox shell. Read
 `javascriptRuntime` and `bundledScriptsDirectory` from the environment's
@@ -60,7 +64,25 @@ when no final backup was published. Smaller files do not get automatic recovery
 copies. Shell edits are outside the host's checkpoint/rewind history.
 
 Success writes JSON to stdout with `editedCells`, `needsRecalculation: true` and
-`backup` (an absolute path or null). A nonzero exit reports a refusal on stderr.
+`backup` (an absolute path or null). Exit 1 reports a refusal on stderr. Exit 2
+starts with `XLSX edit saved with observation error:`: the workbook was saved,
+but its final observation record failed. Re-read that file; do not retry the
+same changes merely to repair display progress.
+
+When the shell supplies `AVE_DOCUMENT_JOURNAL`, the script automatically appends
+a source-digest `begin`, one bounded advisory `cell` record per replacement, and
+a published-output-digest `commit`. It writes only to the supplied fixed
+`<HOME>/document-observation/journal.jsonl` in that invocation's isolated action
+directory. Do not override that environment value or write journal entries by
+hand. It adds no permission: workbook and request paths retain the ordinary
+shell approval and confinement rules. Without a configured journal, standalone
+editing still uses the same writer, backup and atomic save.
+
+The journal holds at most 2 MiB, with at most 16 KiB per line, 500 cell records
+per edit and 2,000 display characters per value. Control-heavy strings may be
+shortened further to fit the line cap; the saved cell keeps the full requested
+value. A configured journal error before publication refuses the edit. A
+completion error after atomic replacement cannot undo the saved file.
 
 The writer patches only target cells and calculation properties. It preserves
 cell styles and every unrelated uncompressed package part, including drawings,
@@ -79,8 +101,9 @@ All successful edits request a full automatic recalculation on next open. Formul
 overwrites are allowed. This script does not calculate formulas: dependent caches
 can remain stale and new formulas have no cached result. The viewer shows
 **재계산 필요 / Needs recalculation** from the workbook's calculation flags until
-a spreadsheet application recalculates and saves it. Close and reopen an already
-open preview after an edit; it does not watch shell writes. Re-read with
-`read_document`, check the requested literal values, and report the edit count,
+a spreadsheet application recalculates and saves it. An agent-bound live panel
+shows provisional cell changes, then reconciles against the saved workbook and
+refreshes that badge. If live observation is unavailable or asks for a reload,
+reload the existing viewer. Re-read with `read_document`, check the requested literal values, and report the edit count,
 backup path when present, and pending recalculation. Never present cached formula
 results as newly calculated.

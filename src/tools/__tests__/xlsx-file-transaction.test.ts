@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
-import { createWorkbookFileSnapshot, publishWorkbookEdit, readWorkbookSnapshot } from "../../skills/xlsx-file-transaction.js";
+import { publishWorkbookEdit, readWorkbookSnapshot } from "../../skills/xlsx-file-transaction.js";
 import { parseTableDocument } from "../table-document-reader.js";
 
 let directory: string;
@@ -40,15 +40,6 @@ describe("workbook file transaction", () => {
     expect(document.sheet.rows[0]).toEqual(["Revenue", "84"]);
     expect(document.needsRecalculation).toBe(true);
     expect(temporaryNames()).toEqual([]);
-  });
-
-  it("binds a descriptor-verified asynchronous reader snapshot without changing its public shape", async () => {
-    const { path, before, output } = await workbook();
-    const snapshot = createWorkbookFileSnapshot(path, before, lstatSync(path, { bigint: true }),
-      lstatSync(realpathSync(dirname(path)), { bigint: true }));
-    expect(Object.keys(snapshot).sort()).toEqual(["data", "identity"]);
-    expect(publishWorkbookEdit(path, snapshot, output, 1).editedCells).toBe(1);
-    expect(readFileSync(path).equals(output)).toBe(true);
   });
 
   it("refuses a stale identity before creating a recovery copy", async () => {
@@ -160,32 +151,6 @@ describe("workbook file transaction", () => {
     expect(temporaryNames()).toEqual([]);
   });
 
-  it.each([1, 2, 3])("rechecks host authority at publication boundary %i", async (boundary) => {
-    const { path, before, output } = await workbook();
-    const snapshot = readWorkbookSnapshot(path);
-    let checks = 0;
-    expect(() => publishWorkbookEdit(path, snapshot, output, 1, { assertCurrent() {
-      checks += 1;
-      if (checks === boundary) throw new Error("Authority expired");
-    } })).toThrow("Authority expired");
-    expect(checks).toBe(boundary);
-    expect(readFileSync(path).equals(before)).toBe(true);
-    expect(temporaryNames()).toEqual([]);
-  });
-
-  it("rechecks host authority before a recovery copy becomes visible", async () => {
-    const { path, before, output } = await workbook(true);
-    const snapshot = readWorkbookSnapshot(path);
-    let checks = 0;
-    expect(() => publishWorkbookEdit(path, snapshot, output, 1, { assertCurrent() {
-      checks += 1;
-      if (checks === 2) throw new Error("Authority expired");
-    } })).toThrow("Authority expired");
-    expect(existsSync(`${path}.ave-bak`)).toBe(false);
-    expect(readFileSync(path).equals(before)).toBe(true);
-    expect(temporaryNames()).toEqual([]);
-  });
-
   it("keeps recovery publication bound to the canonical parent when a supplied alias changes", async () => {
     const { path, before, output } = await workbook(true);
     const alias = `${directory}-alias`;
@@ -194,11 +159,11 @@ describe("workbook file transaction", () => {
     symlinkSync(directory, alias, "junction");
     const requested = join(alias, "book.xlsx");
     const snapshot = readWorkbookSnapshot(requested);
-    let checks = 0;
+    let replaced = false;
     try {
-      expect(() => publishWorkbookEdit(requested, snapshot, output, 1, { assertCurrent() {
-        checks += 1;
-        if (checks === 2) { unlinkSync(alias); symlinkSync(other, alias, "junction"); }
+      expect(() => publishWorkbookEdit(requested, snapshot, output, 1, { write(descriptor, bytes, offset, length) {
+        if (!replaced) { replaced = true; unlinkSync(alias); symlinkSync(other, alias, "junction"); }
+        return writeSync(descriptor, bytes, offset, length);
       } })).toThrow("Workbook changed");
       expect(existsSync(`${path}.ave-bak`)).toBe(false);
       expect(existsSync(join(other, "book.xlsx.ave-bak"))).toBe(false);

@@ -1,4 +1,5 @@
 import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type {
@@ -569,7 +570,7 @@ async function runTurnInSpan(
         }
       : undefined;
     // Bind async context to the effective session ID so delegates read isolated session activations.
-    const runQuery = () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
+    const runQuery = () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
         self,
         systemPrompt,
@@ -595,7 +596,7 @@ async function runTurnInSpan(
           ...(onStopHook ? { onStopHook } : {}),
         },
       ),
-    );
+    ));
     if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
     result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
       ? await runQuery()

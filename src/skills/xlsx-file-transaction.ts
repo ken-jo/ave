@@ -2,13 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { replaceStagedFile } from "../lib/atomic-file.js";
-import { XLSX_EDIT_LIMITS } from "../shared/xlsx-panel-edit.js";
+import { XLSX_EDIT_LIMITS } from "../shared/xlsx-edit.js";
 
 export interface WorkbookFileSnapshot { data: Buffer; identity: fs.BigIntStats }
 export interface WorkbookEditIo {
   write?: (descriptor: number, bytes: Buffer, offset: number, length: number) => number;
-  /** Host callers revalidate their bound authority here; shell callers retain their existing admission. */
-  assertCurrent?: () => void;
 }
 export interface WorkbookEditResult { editedCells: number; needsRecalculation: true; backup: string | null }
 
@@ -34,8 +32,7 @@ function checkParent(path: string, location: WorkbookLocation): void {
   } catch { stale(); }
 }
 
-/** Trusted readers supply bytes checked against the given descriptor and parent identities; retain this object unchanged. */
-export function createWorkbookFileSnapshot(path: string, data: Buffer, identity: fs.BigIntStats,
+function createWorkbookFileSnapshot(path: string, data: Buffer, identity: fs.BigIntStats,
   parentIdentity: fs.BigIntStats): WorkbookFileSnapshot {
   path = resolve(path);
   requireCondition(extname(path).toLowerCase() === ".xlsx", "Only .xlsx files can be edited.");
@@ -118,7 +115,6 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   requireCondition(Buffer.isBuffer(output) && output.length > 0 && output.length <= XLSX_EDIT_LIMITS.maxFileBytes,
     "Edited workbook exceeds the file limit.");
   requireCondition(Number.isSafeInteger(editedCells) && editedCells > 0 && editedCells <= 500, "Invalid edit count.");
-  io.assertCurrent?.();
   checkSource(path, snapshot, location);
   const requestedPath = path;
   const backupPath = `${path}.ave-bak`;
@@ -130,12 +126,10 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
     try {
       try { writeAndSync(staged.descriptor, snapshot.data, io); } finally { fs.closeSync(staged.descriptor); }
       verifyStagedBytes(staged.path, snapshot.data, "Backup verification failed.");
-      io.assertCurrent?.();
       checkSource(requestedPath, snapshot, location);
       fs.linkSync(staged.path, `${location.path}.ave-bak`);
     } finally { fs.unlinkSync(staged.path); }
   }
-  io.assertCurrent?.();
   checkSource(requestedPath, snapshot, location);
   const staged = temporaryFile(path);
   try {
@@ -143,7 +137,6 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
     verifyStagedBytes(staged.path, output, "Output verification failed.");
     fs.chmodSync(staged.path, Number(snapshot.identity.mode & 0o7777n));
     replaceStagedFile(staged.path, path, undefined, () => {
-      io.assertCurrent?.();
       checkSource(requestedPath, snapshot, location);
     });
   } finally { if (fs.existsSync(staged.path)) fs.unlinkSync(staged.path); }

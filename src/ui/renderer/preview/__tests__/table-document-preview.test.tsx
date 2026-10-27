@@ -5,8 +5,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewBody } from "../../components/ChatSidePanelPreview.js";
 import { resolveFilePreviewRoute } from "../preview-renderers.js";
-import { columnLetters, horizontalScrollbarBlockPx, tableGridBlockStyle } from "../table-document-grid.js";
+import { horizontalScrollbarBlockPx, tableGridBlockStyle } from "../table-document-grid.js";
+import { columnLetters } from "../table-coordinates.js";
 import { tableErrorKey } from "../table-document-preview.js";
+import type { DocumentObservationEvent } from "../../../../shared/agent-observation.js";
+import { en as previewEn, ko as previewKo } from "../../../../i18n/messages/generated/chatPreviewRail.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import type { PreviewReadDocumentResult, PreviewTableDocument } from "../../../../shared/preview-document.js";
 
@@ -153,27 +156,59 @@ function pageResult(path: string, index: number, totalPages = 2): PreviewReadDoc
 
 let readFile: ReturnType<typeof vi.fn>;
 let readDocument: ReturnType<typeof vi.fn>;
-let editXlsx: ReturnType<typeof vi.fn>;
+let acknowledgeDocumentObservation: ReturnType<typeof vi.fn>;
+let onDocumentObservation: ReturnType<typeof vi.fn>;
+let observationHandlers: Set<(events: DocumentObservationEvent[]) => void>;
 let previousAve: unknown;
 
 beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
   previousAve = (window as unknown as { ave?: unknown }).ave;
   readFile = vi.fn(async () => ({ ok: true, content: "# hi", path: "/w/notes.md", truncated: false }));
   readDocument = vi.fn(async (_path: string, sheetIndex: number) => workbookResult(sheetIndex));
-  editXlsx = vi.fn(async (request) => ({ ok: true, action: request.action }));
+  acknowledgeDocumentObservation = vi.fn(async () => ({ ok: true }));
+  observationHandlers = new Set();
+  onDocumentObservation = vi.fn((handler: (events: DocumentObservationEvent[]) => void) => {
+    observationHandlers.add(handler);
+    return () => observationHandlers.delete(handler);
+  });
   (window as unknown as { ave: unknown }).ave = {
-    preview: { readFile, readDocument, editXlsx },
-    attach: { openExternal: vi.fn() },
+    preview: { readFile, readDocument, onDocumentObservation, acknowledgeDocumentObservation },
+    attach: { openExternal: vi.fn(async () => ({ ok: true })) },
   };
 });
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
   (window as unknown as { ave?: unknown }).ave = previousAve;
 });
 
 describe("file preview routing", () => {
+  it("opens the host-returned workbook path after a successful read without a picker grant", async () => {
+    const response = workbookResult(0);
+    if (!response.ok) throw new Error("Expected workbook fixture");
+    response.path = "/w/canonical-book.xlsx";
+    readDocument.mockResolvedValueOnce(response);
+    render(<PreviewBody api={{} as never} sessionId="reader-session" target={fileTarget("/w/book.xlsx")} />);
+    fireEvent.click(await screen.findByRole("button", { name: "기본 앱으로 열기" }));
+    expect(window.ave.attach.openExternal).toHaveBeenCalledWith("/w/canonical-book.xlsx");
+    expect(screen.getByTestId("preview-document-path").title).toBe("/w/canonical-book.xlsx");
+    expect(readDocument).toHaveBeenCalledWith("/w/book.xlsx", 0, "reader-session");
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("binds page reads to the viewer session and opens only the returned canonical path", async () => {
+    readDocument.mockResolvedValueOnce(pageResult("/w/canonical-slides.pptx", 0));
+    render(<PreviewBody api={{} as never} sessionId="page-session" target={fileTarget("/w/slides.pptx")} />);
+    fireEvent.click(await screen.findByRole("button", { name: "기본 앱으로 열기" }));
+    expect(window.ave.attach.openExternal).toHaveBeenCalledWith("/w/canonical-slides.pptx");
+    expect(readDocument).toHaveBeenCalledWith("/w/slides.pptx", 0, "page-session");
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
   it("renders a recalculation badge for stale workbook caches", async () => {
     const result = workbookResult(0);
     if (result.ok && "sheet" in result.document) result.document.needsRecalculation = true;
@@ -198,7 +233,7 @@ describe("file preview routing", () => {
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).toMatch(/replaced|취소/);
     expect(error.textContent).not.toContain("private supersession detail");
-    fireEvent.click(screen.getByRole("button", { name: /Retry|다시 시도/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Reload|다시 불러오기/ }));
     await screen.findByText("Outline 1");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(readDocument).toHaveBeenCalledTimes(2);
@@ -231,7 +266,7 @@ describe("file preview routing", () => {
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).not.toContain("chatPreviewRail.");
     expect(screen.queryByTestId("chat-side-panel-pdf-page")).toBeNull();
-    expect(screen.getByRole("button", { name: /Retry|다시 시도/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Reload|다시 불러오기/ })).toBeTruthy();
   });
 
   it("shows a PDF page image, its text and truncation notices without the outline caveat", async () => {
@@ -282,7 +317,7 @@ describe("file preview routing", () => {
     expect(error.textContent).toMatch(text);
     expect(error.textContent).not.toContain("raw child detail");
     expect(error.textContent).not.toMatch(/pagePreview\.|chatPreviewRail\./);
-    expect(screen.getByRole("button", { name: /Retry|다시 시도/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Reload|다시 불러오기/ })).toBeTruthy();
   });
 
   it("reads a workbook through readDocument, never readFile, and shows tabs, banner and grid", async () => {
@@ -404,246 +439,203 @@ describe("file preview routing", () => {
   });
 });
 
-function editableWorkbook(token = "a".repeat(64)): PreviewReadDocumentResult {
+const OBSERVATION_SESSION = "agent-document-session";
+const OBSERVATION_TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+function observedWorkbook(): Extract<PreviewReadDocumentResult, { ok: true }> {
   const result = workbookResult(0);
   if (!result.ok || !("sheet" in result.document)) throw new Error("Expected workbook fixture");
-  result.editToken = token;
+  result.observation = { targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 };
   result.document.sheet.firstRow = 10_000;
   return result;
 }
 
-async function openCell(value: string | number | boolean | null = 12, formula = false) {
-  readDocument.mockResolvedValueOnce(editableWorkbook());
-  editXlsx.mockImplementation(async (request) => request.action === "cell"
-    ? { ok: true, action: "cell", value, formula } : { ok: true, action: request.action });
-  render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-  const cell = await screen.findByText("120");
-  fireEvent.doubleClick(cell);
-  return screen.findByTestId("xlsx-cell-editor");
+function observedCell(seq: number, column: number, after: string): DocumentObservationEvent {
+  return { source: "document", actor: "agent", sessionId: OBSERVATION_SESSION,
+    target: { id: OBSERVATION_TARGET, path: "/w/book.xlsx" }, seq, ts: 1_700_000_000_000,
+    kind: "element", element: { kind: "cell", sheet: "Sales", row: 10_001, column },
+    before: column === 0 ? "North" : "120", after, advisory: true };
 }
 
-describe("workbook cell editing", () => {
-  let widthSpy: ReturnType<typeof vi.spyOn>;
-  let heightSpy: ReturnType<typeof vi.spyOn>;
-  beforeEach(() => {
-    widthSpy = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(600);
-    heightSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(300);
-  });
-  afterEach(() => { widthSpy.mockRestore(); heightSpy.mockRestore(); });
-  it("keeps previews without a host edit identity read only", async () => {
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-    fireEvent.doubleClick(await screen.findByText("120"));
-    expect(screen.queryByTestId("xlsx-enable-editing")).toBeNull();
-    expect(screen.queryByTestId("xlsx-cell-editor")).toBeNull();
-    expect(editXlsx).not.toHaveBeenCalled();
-  });
+function observedStatus(seq: number, code: "engine-unavailable" | "reload-required" | "observation-error"): DocumentObservationEvent {
+  return { source: "document", actor: "agent", sessionId: OBSERVATION_SESSION,
+    target: { id: OBSERVATION_TARGET, path: "/w/book.xlsx" }, seq, ts: 1_700_000_000_000,
+    kind: "status", before: null, after: { code } };
+}
 
-  it("loads the raw scalar inline, saves exact coordinates on Enter, then rereads the badge", async () => {
-    const editor = await openCell();
-    expect(editor.closest('[role="gridcell"]')).not.toBeNull();
-    expect(editXlsx).toHaveBeenCalledWith({ action: "cell", token: "a".repeat(64), row: 10_001, column: 1 });
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ }) as HTMLInputElement;
-    expect(input.value).toBe("12");
-    expect((screen.getByRole("combobox", { name: /Value type|값 유형/ }) as HTMLSelectElement).value).toBe("number");
-    const refreshed = editableWorkbook("b".repeat(64));
-    if (refreshed.ok && "sheet" in refreshed.document) {
-      refreshed.document.sheet.rows = [["Region", "Total"], ["North", "84"]];
-      refreshed.document.needsRecalculation = true;
-    }
-    readDocument.mockResolvedValueOnce(refreshed);
-    fireEvent.change(input, { target: { value: "84" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await screen.findByTestId("xlsx-saved");
-    await screen.findByText("84");
-    expect(editXlsx).toHaveBeenCalledWith({ action: "save", token: "a".repeat(64), row: 10_001, column: 1, value: 84 });
-    expect(readDocument).toHaveBeenCalledTimes(2);
-    expect(editXlsx).toHaveBeenCalledWith({ action: "release", token: "a".repeat(64) });
-    expect(editXlsx.mock.calls.map(([request]) => request.action)).not.toContain("enable");
-    expect(screen.getByTestId("chat-side-panel-table-recalculation")).toBeTruthy();
-    expect(screen.queryByTestId("xlsx-enable-editing")).toBeNull();
-    fireEvent.doubleClick(screen.getByText("84"));
-    await screen.findByTestId("xlsx-cell-editor");
-    expect(editXlsx).toHaveBeenCalledWith({ action: "cell", token: "b".repeat(64), row: 10_001, column: 1 });
-  });
+async function emitObservations(...events: DocumentObservationEvent[]): Promise<void> {
+  await act(async () => { observationHandlers.forEach((handler) => handler(events)); });
+}
 
-  it("activates the selected cell with Enter and refuses non-finite numbers", async () => {
-    await openCell();
-    fireEvent.click(screen.getByRole("button", { name: /^(Cancel|취소)$/ }));
-    const cell = screen.getByText("120");
-    fireEvent.mouseDown(cell);
-    fireEvent.click(cell);
+async function openObservedWorkbook() {
+  readDocument.mockResolvedValueOnce(observedWorkbook());
+  const view = render(<PreviewBody api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
+  await screen.findByTestId("chat-side-panel-table-grid");
+  return view;
+}
+
+describe("agent document live view", () => {
+  it("keeps cells read-only after double-click and Enter", async () => {
+    await openObservedWorkbook();
+    const cell = screen.getByRole("gridcell", { name: "120" });
+    fireEvent.doubleClick(cell);
     fireEvent.keyDown(cell, { key: "Enter" });
-    const input = await screen.findByRole("textbox", { name: /Cell value|셀 값/ });
-    fireEvent.change(input, { target: { value: "Infinity" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect((await screen.findByRole("alert")).textContent).toMatch(/finite|유한/);
-    expect(editXlsx.mock.calls.filter(([request]) => request.action === "save")).toEqual([]);
-  });
-
-  it.each(["invalid-request", "unauthorized", "expired", "stale-file", "edit-unavailable", "unsupported-cell", "backup-exists", "edit-failed", "busy"] as const)(
-    "localizes %s editing refusals", async (error) => {
-      readDocument.mockResolvedValueOnce(editableWorkbook());
-      editXlsx.mockResolvedValueOnce({ ok: false, error, message: "private diagnostic" });
-      render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-      fireEvent.doubleClick(await screen.findByText("120"));
-      const alert = await screen.findByRole("alert");
-      expect(alert.textContent).not.toContain("chatPreviewRail.");
-      expect(alert.textContent).not.toContain("private diagnostic");
-      expect(alert.textContent!.length).toBeGreaterThan(5);
-      expect(screen.queryByTestId("xlsx-cell-editor")).toBeNull();
-    },
-  );
-
-  it("does not save on blur, composition Enter, or Escape", async () => {
-    await openCell("=literal text", true);
-    expect(screen.getByRole("note").textContent).toMatch(/formula|수식/);
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ });
-    fireEvent.change(input, { target: { value: "changed" } });
-    fireEvent.blur(input);
-    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
-    expect(screen.queryByTestId("xlsx-cell-editor")).not.toBeNull();
-    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByTestId("xlsx-cell-editor")).toBeNull();
-    expect(editXlsx.mock.calls.filter(([request]) => request.action === "save")).toEqual([]);
+    expect(screen.queryByTestId("xlsx-edit-controls")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(Save|저장)$/ })).toBeNull();
+    expect(readDocument).toHaveBeenCalledWith("/w/book.xlsx", 0, OBSERVATION_SESSION);
+    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "rendered",
+      targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
   });
 
-  it.each([
-    [true, "boolean", "false", false],
-    [null, "empty", "", null],
-    ["=plain text", "text", "=another text", "=another text"],
-  ] as const)("preserves %s scalar types in write requests", async (original, type, text, expected) => {
-    await openCell(original);
-    expect((screen.getByRole("combobox", { name: /Value type|값 유형/ }) as HTMLSelectElement).value).toBe(type);
-    if (type === "boolean") fireEvent.change(screen.getByRole("combobox", { name: /Cell value|셀 값/ }), { target: { value: text } });
-    else if (type === "text") fireEvent.change(screen.getByRole("textbox", { name: /Cell value|셀 값/ }), { target: { value: text } });
-    fireEvent.click(screen.getByRole("button", { name: /^(Save|저장)$/ }));
-    await waitFor(() => expect(editXlsx).toHaveBeenCalledWith({ action: "save", token: "a".repeat(64), row: 10_001, column: 1, value: expected }));
+  it("acknowledges after the displayed cells commit", async () => {
+    const displayedAtAck: string[] = [];
+    acknowledgeDocumentObservation.mockImplementation(async () => {
+      displayedAtAck.push(screen.getByTestId("chat-side-panel-table-grid").textContent ?? "");
+      return { ok: true };
+    });
+    await openObservedWorkbook();
+    expect(displayedAtAck[0]).toContain("North");
+    await emitObservations(observedCell(1, 0, "South"));
+    expect(displayedAtAck.at(-1)).toContain("South");
   });
 
-  it("keeps embedded line breaks when a raw text scalar is edited", async () => {
-    await openCell("line one\nline two");
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ }) as HTMLTextAreaElement;
-    expect(input.tagName).toBe("TEXTAREA");
-    expect(input.value).toBe("line one\nline two");
-    fireEvent.change(input, { target: { value: "line one!\nline two" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(editXlsx).toHaveBeenCalledWith({
-      action: "save", token: "a".repeat(64), row: 10_001, column: 1, value: "line one!\nline two",
-    }));
+  it("matches updates to the canonical read path when the opened path is an alias", async () => {
+    const response = observedWorkbook();
+    response.path = "/w/canonical.xlsx";
+    readDocument.mockResolvedValueOnce(response);
+    render(<PreviewBody api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/alias.xlsx")} />);
+    await screen.findByTestId("chat-side-panel-table-grid");
+    const event = observedCell(1, 1, "84");
+    await emitObservations({ ...event, target: { ...event.target, path: "/w/canonical.xlsx" } });
+    expect(screen.getByTestId("document-cell-value").textContent).toBe("84");
   });
 
-  it.each([
-    ["line one\rline two", "line one!\nline two", "line one!\rline two"],
-    ["line one\rline two", "line one\nline two!", "line one\rline two!"],
-    ["line one\r\nline two", "line one!\nline two", "line one!\r\nline two"],
-    ["line one\r\nline two", "line one\nline two!", "line one\r\nline two!"],
-    ["left\r\nright", "leftright", "leftright"],
-    ["left\rright", "left / right", "left / right"],
-    ["leftright", "left\nright", "left\nright"],
-    ["left\rright", "left\n\nright", "left\n\nright"],
-    ["left\rx\nright", "left\n\nright", "left\n\nright"],
-    ["\r\r", "\n\n\n", "\n\n\n"],
-    ["first\rsecond\r\nthird\nfourth", "first\nsecond!\nthird\nfourth", "first\rsecond!\r\nthird\nfourth"],
-  ])("preserves untouched raw newline spellings through text changes %j", async (raw, visible, expected) => {
-    await openCell(raw);
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ }) as HTMLTextAreaElement;
-    expect(input.value).toBe(raw.replace(/\r\n?/g, "\n"));
-    fireEvent.change(input, { target: { value: visible } });
-    expect(input.value).toBe(visible);
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(editXlsx).toHaveBeenCalledWith({
-      action: "save", token: "a".repeat(64), row: 10_001, column: 1, value: expected,
-    }));
+  it("streams two cell changes before a save and replaces advisory values with the actual snapshot", async () => {
+    await openObservedWorkbook();
+    await emitObservations(observedCell(1, 0, "South"));
+    expect(screen.getByTestId("chat-side-panel-table-grid").textContent).toContain("South");
+    expect(screen.getByTestId("document-cell-change").dataset.row).toBe("10001");
+    expect(screen.getByTestId("document-cell-change").dataset.advisory).toBe("true");
+    await emitObservations(observedCell(2, 1, "84"));
+    expect(screen.getAllByTestId("document-cell-value").map((cell) => cell.textContent)).toEqual(["South", "84"]);
+    expect(readDocument).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("chat-side-panel-table-recalculation")).toBeNull();
+    expect(acknowledgeDocumentObservation).toHaveBeenLastCalledWith({ action: "rendered",
+      targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 2 });
+    const result = observedWorkbook();
+    if (!("sheet" in result.document)) throw new Error("Expected table fixture");
+    result.document.sheet.rows = [["Region", "Total"], ["East", "84"]];
+    result.document.needsRecalculation = true;
+    await emitObservations({ source: "document", actor: "agent", sessionId: OBSERVATION_SESSION,
+      target: { id: OBSERVATION_TARGET, path: "/w/book.xlsx" }, seq: 3, ts: 1_700_000_000_001,
+      kind: "snapshot", before: null, after: result.document });
+    const grid = screen.getByTestId("chat-side-panel-table-grid");
+    expect(grid.textContent).toContain("East");
+    expect(grid.textContent).not.toContain("South");
+    expect(screen.getAllByTestId("document-cell-change").every((cell) => cell.dataset.advisory === "false")).toBe(true);
+    expect(screen.getByTestId("chat-side-panel-table-recalculation").textContent).toBe("재계산 필요");
+    expect(acknowledgeDocumentObservation).toHaveBeenLastCalledWith({ action: "rendered",
+      targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 3 });
   });
 
-  it("keeps the complete descriptor text instead of the bounded display string", async () => {
-    const text = "x".repeat(12_000);
-    await openCell(text);
-    expect((screen.getByRole("textbox", { name: /Cell value|셀 값/ }) as HTMLInputElement).value).toBe(text);
+  it("rejects events from another session, target, path or actor and old sequences", async () => {
+    await openObservedWorkbook();
+    const change = observedCell(1, 1, "84");
+    await emitObservations({ ...change, sessionId: "other-session" },
+      { ...change, target: { ...change.target, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } },
+      { ...change, target: { ...change.target, path: "/w/other.xlsx" } },
+      { ...change, actor: "user" } as never);
+    expect(screen.getByTestId("chat-side-panel-table-grid").textContent).toContain("120");
+    expect(screen.queryByTestId("document-cell-change")).toBeNull();
+    await emitObservations(change);
+    await emitObservations(observedCell(1, 1, "95"));
+    expect(screen.getByTestId("document-cell-value").textContent).toBe("84");
   });
 
-  it("refuses absent cells without creating a draft", async () => {
-    await openCell();
-    fireEvent.click(screen.getByRole("button", { name: /^(Cancel|취소)$/ }));
-    editXlsx.mockResolvedValueOnce({ ok: false, error: "unsupported-cell" });
-    fireEvent.doubleClick(screen.getByText("North"));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/existing|기존/);
-    expect(screen.queryByTestId("xlsx-cell-editor")).toBeNull();
+  it("removes a journal-only summary when the saved cell did not change", async () => {
+    await openObservedWorkbook();
+    await emitObservations(observedCell(1, 1, "draft"));
+    expect(screen.getByTestId("document-observation-summary").textContent).toBe("B10002: 120 → draft");
+    const result = observedWorkbook();
+    if (!("sheet" in result.document)) throw new Error("Expected table fixture");
+    await emitObservations({ source: "document", actor: "agent", sessionId: OBSERVATION_SESSION,
+      target: { id: OBSERVATION_TARGET, path: "/w/book.xlsx" }, seq: 2, ts: 1_700_000_000_001,
+      kind: "snapshot", before: null, after: result.document });
+    expect(screen.queryByTestId("document-observation-summary")).toBeNull();
+    expect(screen.queryByTestId("document-cell-change")).toBeNull();
+    expect(screen.getByRole("gridcell", { name: "120" })).toBeTruthy();
+    expect(screen.getByTestId("document-observation-status").textContent).toBe("에이전트가 수정함");
   });
 
-  it("retains a draft when another cell is refused and locks sheet switching until cancellation", async () => {
-    await openCell();
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ });
-    fireEvent.change(input, { target: { value: "84" } });
-    expect(screen.getAllByRole("tab").every((tab) => tab.hasAttribute("disabled"))).toBe(true);
-    editXlsx.mockResolvedValueOnce({ ok: false, error: "unsupported-cell" });
-    fireEvent.doubleClick(screen.getByText("North"));
-    await screen.findByRole("alert");
-    expect((screen.getByRole("textbox", { name: /Cell value|셀 값/ }) as HTMLInputElement).value).toBe("84");
-    fireEvent.click(screen.getByRole("button", { name: /^(Cancel|취소)$/ }));
-    expect(screen.getAllByRole("tab").every((tab) => !tab.hasAttribute("disabled"))).toBe(true);
+  it("corrects the summary as well as the grid when the saved value differs from the journal", async () => {
+    await openObservedWorkbook();
+    await emitObservations(observedCell(1, 1, "draft"));
+    const result = observedWorkbook();
+    if (!("sheet" in result.document)) throw new Error("Expected table fixture");
+    result.document.sheet.rows[1][1] = "14";
+    await emitObservations({ source: "document", actor: "agent", sessionId: OBSERVATION_SESSION,
+      target: { id: OBSERVATION_TARGET, path: "/w/book.xlsx" }, seq: 2, ts: 1_700_000_000_001,
+      kind: "snapshot", before: null, after: result.document });
+    expect(screen.getByTestId("document-observation-summary").textContent).toBe("B10002: 120 → 14");
+    expect(screen.getByTestId("document-cell-value").textContent).toBe("14");
+    expect(screen.getByTestId("chat-side-panel-table-preview").textContent).not.toContain("draft");
   });
 
-  it("keeps failed-save drafts and does not expose host diagnostics", async () => {
-    await openCell();
-    editXlsx.mockResolvedValueOnce({ ok: false, error: "edit-failed", message: "private host path" });
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ });
-    fireEvent.change(input, { target: { value: "84" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).not.toContain("private host path");
-    expect((input as HTMLInputElement).value).toBe("84");
+  it("clears advisory changes for an unverifiable revision and offers reload", async () => {
+    await openObservedWorkbook();
+    await emitObservations(observedCell(1, 1, "84"));
+    await emitObservations(observedStatus(2, "reload-required"));
+    expect(screen.queryByTestId("document-cell-change")).toBeNull();
+    expect(screen.getByTestId("chat-side-panel-table-grid").textContent).toContain("120");
+    expect(screen.getByRole("alert").textContent).toBe("변경 주체를 안전하게 확인할 수 없습니다. 파일을 다시 불러오세요.");
+    expect(screen.getByRole("button", { name: "다시 불러오기" })).toBeTruthy();
+  });
+
+  it("uses the existing document preview deterministically when the live engine is absent", async () => {
+    await openObservedWorkbook();
+    await emitObservations(observedStatus(1, "engine-unavailable"));
+    expect(screen.getByTestId("document-observation-status").textContent)
+      .toBe("실시간 렌더링을 사용할 수 없어 기존 문서 미리보기를 표시합니다.");
+    expect(screen.getByTestId("chat-side-panel-table-grid").textContent).toContain("120");
+    expect(screen.queryByRole("textbox")).toBeNull();
     expect(readDocument).toHaveBeenCalledTimes(1);
   });
 
-  it("clears stale authority and uses the refreshed token directly after reload", async () => {
-    await openCell();
-    editXlsx.mockResolvedValueOnce({ ok: false, error: "stale-file" });
-    fireEvent.keyDown(screen.getByRole("textbox", { name: /Cell value|셀 값/ }), { key: "Enter" });
-    expect((await screen.findByRole("alert")).textContent).toMatch(/changed|변경/);
-    expect(screen.queryByTestId("xlsx-cell-editor")).toBeNull();
-    readDocument.mockResolvedValueOnce(editableWorkbook("c".repeat(64)));
-    fireEvent.click(screen.getByRole("button", { name: /^(Reload|다시 불러오기)$/ }));
-    await waitFor(() => expect(readDocument).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getAllByRole("tab").every((tab) => !tab.hasAttribute("disabled"))).toBe(true));
-    fireEvent.doubleClick(await screen.findByText("120"));
-    await screen.findByTestId("xlsx-cell-editor");
-    expect(editXlsx).toHaveBeenCalledWith({ action: "cell", token: "c".repeat(64), row: 10_001, column: 1 });
-    expect(editXlsx).toHaveBeenCalledWith({ action: "release", token: "a".repeat(64) });
+  it("releases a view and removes its event listener when its session changes", async () => {
+    const view = await openObservedWorkbook();
+    view.rerender(<PreviewBody api={{} as never} sessionId="other-session" target={fileTarget("/w/book.xlsx")} />);
+    await waitFor(() => expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 0, "other-session"));
+    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+      targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
+    await emitObservations(observedCell(1, 1, "84"));
+    expect(screen.getByTestId("chat-side-panel-table-grid").textContent).toContain("120");
+    view.unmount();
+    expect(observationHandlers.size).toBe(0);
   });
 
-  it("shows saving and prevents duplicate writes or sheet changes", async () => {
-    await openCell();
-    let resolveSave!: (value: unknown) => void;
-    editXlsx.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
-    const input = screen.getByRole("textbox", { name: /Cell value|셀 값/ });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByRole("button", { name: /^(Save|저장)$/ }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getAllByRole("tab").every((tab) => tab.hasAttribute("disabled"))).toBe(true);
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(editXlsx.mock.calls.filter(([request]) => request.action === "save")).toHaveLength(1);
-    await act(async () => resolveSave({ ok: false, error: "edit-failed" }));
+  it("releases a late read binding after the panel unmounts", async () => {
+    let finish!: (result: PreviewReadDocumentResult) => void;
+    readDocument.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = render(<PreviewBody api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
+    view.unmount();
+    await act(async () => { finish(observedWorkbook()); });
+    expect(acknowledgeDocumentObservation).toHaveBeenCalledWith({ action: "release",
+      targetId: OBSERVATION_TARGET, sessionId: OBSERVATION_SESSION, seq: 0 });
+    expect(observationHandlers.size).toBe(0);
   });
 
-  it("reports a failed post-save refresh separately from the successful write", async () => {
-    await openCell();
-    readDocument.mockResolvedValueOnce({ ok: false, error: "read-failed", message: "private detail" });
-    fireEvent.keyDown(screen.getByRole("textbox", { name: /Cell value|셀 값/ }), { key: "Enter" });
-    expect((await screen.findByRole("alert")).textContent).toMatch(/reload|다시/);
-    expect(screen.getByTestId("xlsx-saved")).toBeTruthy();
-    expect(screen.getByText("120")).toBeTruthy();
-    expect(screen.queryByTestId("xlsx-enable-editing")).toBeNull();
-  });
-
-  it("releases its token on navigation and ignores a late cell descriptor", async () => {
-    readDocument.mockResolvedValueOnce(editableWorkbook());
-    const view = render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-    let resolveCell!: (value: unknown) => void;
-    editXlsx.mockImplementationOnce(() => new Promise((resolve) => { resolveCell = resolve; }));
-    fireEvent.doubleClick(await screen.findByText("120"));
-    view.rerender(<PreviewBody api={{} as never} target={fileTarget("/w/next.xlsx")} />);
-    await act(async () => resolveCell({ ok: true, action: "cell", value: 12, formula: false }));
-    expect(screen.queryByTestId("xlsx-cell-editor")).toBeNull();
-    expect(editXlsx).toHaveBeenCalledWith({ action: "release", token: "a".repeat(64) });
+  it("keeps journal-looking markup inert and localizes both live-view catalogs", async () => {
+    await openObservedWorkbook();
+    await emitObservations(observedCell(1, 1, "<img src=x onerror=alert(1)>"));
+    expect(screen.getByTestId("document-cell-value").textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(screen.getByTestId("chat-side-panel-table-grid").querySelector("img")).toBeNull();
+    expect(previewEn["chatPreviewRail.documentObservationLive"]).toBe("Agent edited");
+    expect(previewKo["chatPreviewRail.documentObservationLive"]).toBe("에이전트가 수정함");
+    expect(previewEn["chatPreviewRail.documentObservationReconciling"]).toBe("Agent editing");
+    expect(previewKo["chatPreviewRail.documentObservationReconciling"]).toBe("에이전트 편집 중");
+    expect(previewEn["chatPreviewRail.documentObservationFallback"])
+      .toBe("Live rendering is unavailable. Showing the document preview.");
   });
 });

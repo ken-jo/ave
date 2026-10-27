@@ -17,10 +17,7 @@ import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey,
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
-import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
-import { appOwnedSandboxActionRoot, sandboxPrivateBase } from "../shared/sandbox-private-paths.js";
-import { isSandboxActionDirectory } from "./sandbox-action-directory.js";
-export { appOwnedSandboxActionRoot } from "../shared/sandbox-private-paths.js";
+import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
@@ -232,8 +229,6 @@ export interface WrapOptions {
 
 // What every wrap must carry: the invocation's egress token (`egress-invocations.ts`), passed to ASRT as `commandId`. ASRT records the proxy denies of the wrapped process under it and puts it in the proxy username, so a deny can be attributed to the tool call, terminal tab or worker that opened the connection. Without it ASRT keys on the command text, which two invocations can share and which the violation store compares on its first 100 characters only, so it is required, not defaulted.
 export interface AttributedWrapOptions extends WrapOptions {
-  /** A live host-owned action directory; ordinary tool and worker actors cannot claim this exception. */
-  readonly actionDirectory?: string;
   readonly commandId: string;
 }
 
@@ -472,7 +467,7 @@ function pinnedWriteRootDenies(writeRoots: readonly string[]): string[] {
 // Canonicalize macOS private-root denies and spell the last character as a glob class so late deny emission preserves own-directory re-allows under broader grants. Literal denies would override them; other private directories stay denied. Linux keeps literal masks because grants bind back inside them.
 function asrtReadDenyPaths(denyRead: readonly string[], exactRoots: readonly string[]): string[] {
   if (process.platform !== "darwin") return [...denyRead];
-  const roots = new Set(exactRoots);
+  const roots = new Set(exactRoots.flatMap((path) => [path, normalizePathForSandbox(path)]));
   return denyRead.map((path) => (roots.has(path) ? exactSeatbeltDenyGlob(path) : path));
 }
 
@@ -615,7 +610,6 @@ export function buildPerCommandSandboxCustomConfig(
   onGitControlSnapshot?: (snapshot: SandboxGitControlSnapshot) => void,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
-  actionDirectory?: string,
 ): Partial<SandboxRuntimeConfig> | undefined {
   // Restate Windows denies even without overrides: the session snapshot may no longer exist.
   if (process.platform === "win32") {
@@ -685,8 +679,7 @@ export function buildPerCommandSandboxCustomConfig(
       readDenyEvidence,
     );
   }
-  const sensitiveDenyWrite = actionDirectory === undefined ? getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir)
-    : getOwnedSandboxActionWriteDenyPaths(actionDirectory);
+  const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
   const mandatory = buildMandatorySandboxWritePolicy(
     admittedWindowsPolicies.get(grants)?.allowWrite ?? grants.allowWrite,
     _baseTrustedSettings?.userDataDir,
@@ -967,7 +960,11 @@ export function getBuiltinShellReadPolicy(
   const privateRoots = appOwnedSandboxPrivateRoots();
   const ownHome = sandboxHome === undefined ? undefined : canonicalizePathForMatch(sandboxHome);
   void hostHome;
-  const sessionDenyCovering = readDenyCovering(sessions.denyRead);
+  // Refusing saved-session access restates private roots too. Those roots still
+  // allow this invocation's own HOME; an explicit protected deny keeps priority.
+  const protectedDenies = new Set(getProtectedReadDenyPaths());
+  const sessionDenyCovering = readDenyCovering(sessions.denyRead.filter((denied) =>
+    !privateRoots.includes(denied) || protectedDenies.has(denied)));
   const privateRootCovering = readDenyCovering(privateRoots);
   const allowRead = [...readPaths, ...sessions.allowRead].filter((path) => {
     const resolved = canonicalizePathForMatch(path);
@@ -1469,7 +1466,6 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, "Library", "LaunchAgents") + (process.platform === "win32" ? sep : ""),
   ]);
   const writePersistence = [
-    appOwnedSandboxActionRoot(),
     ...hostScriptWriteDenyPaths(),
     ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
     ...homeWritePersistence,
@@ -1489,13 +1485,6 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     }
   }
   return out;
-}
-
-/** A live host action grants only its own child; ordinary principals retain the whole-root deny. */
-export function getOwnedSandboxActionWriteDenyPaths(directory: string): string[] {
-  if (!isSandboxActionDirectory(directory)) throw new Error("Sandbox action directory is unauthorized");
-  const root = caseFoldForMatch(canonicalizePathForMatch(appOwnedSandboxActionRoot()));
-  return getDefaultSensitiveWriteDenyPaths().filter(path => caseFoldForMatch(canonicalizePathForMatch(path)) !== root);
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
@@ -1850,8 +1839,6 @@ export async function initializeAsrtSandbox(
       "initializeAsrtSandbox: already active — refusing to re-initialize",
     );
   }
-  // Existing confined principals must inherit this deny before any action data can be created.
-  ensureSandboxPrivateRoot(appOwnedSandboxActionRoot());
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
@@ -1910,18 +1897,6 @@ export async function wrapToolCommand(
   options: AttributedWrapOptions,
 ): Promise<SandboxWrapResult> {
   const invocation = egressInvocationOwner(options.commandId);
-  if (options.actionDirectory !== undefined && (invocation?.kind !== "user-document"
-    || !isSandboxActionDirectory(options.actionDirectory))) throw new Error("Sandbox action directory is unauthorized");
-  if (options.actionDirectory !== undefined) {
-    const root = canonicalizePathForMatch(appOwnedSandboxActionRoot());
-    const ownDirectory = canonicalizePathForMatch(options.actionDirectory);
-    const grants = [...(options.filesystem?.allowWrite ?? []), ...(options.filesystem?.allowRead ?? [])]
-      .map(path => canonicalizePathForMatch(path));
-    if (!options.filesystem?.allowWrite?.includes(options.actionDirectory) || grants.some(path =>
-      (isGrantPathWithin(root, path) || isGrantPathWithin(path, root)) && !isGrantPathWithin(ownDirectory, path))) {
-      throw new Error("Sandbox action grants exceed their directory");
-    }
-  }
   // Self-enforcing gate. Do not depend on the caller to check isAsrtSandboxActive first — a wrap with no initialized SandboxManager is a bug, so throw rather than silently wrapping against an uninitialized singleton.
   if (!isAsrtSandboxActive()) {
     throw new Error("wrapToolCommand: ASRT sandbox is not active (initialize at boot first)");
@@ -1941,7 +1916,7 @@ export async function wrapToolCommand(
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
   const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
     : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession), options.actionDirectory);
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
@@ -1965,6 +1940,11 @@ export function appOwnedSandboxTempRoot(): string {
   return join(sandboxPrivateBase(), "tmp");
 }
 
+// The directory the sandbox private roots live in: `<AVE_HOME>/sandbox`. Under the test runner with no `AVE_HOME` of its own, it is the per-run directory `vitest.globalSetup.ts` makes instead. These roots hold every confined process's HOME and temp directory, and the boot sweep empties them, so a test resolving them to the developer's real `~/.ave` would put its directories where a running app's boot deletes them — and a test that swept would delete the running app's. A test process without that directory is refused rather than defaulted to the real one. The app's seam answers nothing (`ave-home-test-guard.ts`); only the test runner's guard does.
+function sandboxPrivateBase(): string {
+  return testSandboxPrivateBase() ?? join(aveHome(), "sandbox");
+}
+
 // Where every confined process's throwaway sandbox HOME is created on macOS and Linux (`sandbox-process-home.ts`), one `mkdtemp` directory each. App-owned, beside the temp root, rather than under the host's temp directory: there, nothing denied reading it, so any confined process could list the host temp directory and read another one's HOME. Under this root the read floor denies it (getDefaultSensitiveReadDenyPaths) and each wrap re-allows its own HOME alone.
 export function appOwnedSandboxHomeRoot(): string {
   return join(sandboxPrivateBase(), "home");
@@ -1975,10 +1955,10 @@ export function appOwnedTerminalHandoffRoot(): string {
   return join(sandboxPrivateBase(), "handoff");
 }
 
-// Action data is private on every platform; existing process HOME/temp roots retain their platform scopes.
+// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
 export function appOwnedSandboxPrivateRoots(): string[] {
-  if (process.platform === "win32") return [appOwnedSandboxActionRoot()];
-  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot(), appOwnedSandboxActionRoot()];
+  if (process.platform === "win32") return [];
+  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
 }
 
 // Create a sandbox private root `0o700` if it is absent, and refuse one that is not a real directory. Its ancestors may be links (`AVE_HOME` may be one); the root itself is the host's, and every directory a wrap grants is made inside it, so a link here would put them somewhere the read floor does not name.

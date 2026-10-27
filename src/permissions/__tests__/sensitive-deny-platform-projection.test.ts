@@ -132,7 +132,6 @@ const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ave/routine/`,
   `${FIXTURE_HOME}/.ave/plugins/auth-partitions.json`,
   USER_DATA,
-  `${FIXTURE_AVE_HOME}/sandbox/actions`,
   `${FIXTURE_HOME}/.zshenv`,
   `${FIXTURE_HOME}/.zprofile`,
   `${FIXTURE_HOME}/.zshrc`,

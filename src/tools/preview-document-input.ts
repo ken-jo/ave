@@ -1,7 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { dirname } from "node:path";
-import { createWorkbookFileSnapshot, type WorkbookFileSnapshot } from "../skills/xlsx-file-transaction.js";
+import { lstat, open } from "node:fs/promises";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 
@@ -12,19 +10,6 @@ export async function readPreviewDocumentInput(
   maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
 ): Promise<Buffer> {
   return (await readOpenedDocument(path, signal, maxBytes)).data;
-}
-
-/** Captures the exact bytes parsed by the viewer and pins their publication parent. */
-export async function readPreviewDocumentSnapshot(path: string, signal?: AbortSignal): Promise<WorkbookFileSnapshot> {
-  const parent = await realpath(dirname(path));
-  const before = await lstat(parent, { bigint: true });
-  const { data, identity } = await readOpenedDocument(path, signal, PREVIEW_DOCUMENT_LIMITS.maxFileBytes);
-  const after = await lstat(parent, { bigint: true });
-  signal?.throwIfAborted();
-  if (await realpath(dirname(path)) !== parent || before.dev !== after.dev || before.ino !== after.ino) {
-    throw new TableDocumentError("read-failed", "Document parent changed while reading.");
-  }
-  return createWorkbookFileSnapshot(path, data, identity, before);
 }
 
 async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number) {

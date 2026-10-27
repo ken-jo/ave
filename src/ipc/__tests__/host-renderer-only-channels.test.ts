@@ -257,7 +257,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
-  ["preview", CHANNELS.preview.editXlsx, [{ action: "save", token: "a".repeat(64), row: 0, column: 1, value: 84 }]],
+  ["preview", CHANNELS.preview.observationAck, [{ action: "rendered", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", seq: 0 }]],
   ["preview", CHANNELS.preview.documentOpenAck, [{ requestId: "request", sessionId: "session", opened: true }]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
@@ -362,8 +362,8 @@ describe("host-renderer-only IPC channels", () => {
     "%s %s refuses a file-backed webview and an app-window subframe",
     async (_domain, channel, args) => {
       const webview = registeredHostEvent();
-      Object.assign(webview.senderFrame!, { url: "file:///plugins/example/view.js" });
-      Object.assign(webview.sender, { getType: () => "webview" });
+      Object.assign(webview.senderFrame!, { url: "file:///plugins/plugin-ui-shell.js" });
+      Object.assign(webview.sender, { getType: () => "webview", session: {} });
       expect(await invoke(channel, webview, args)).toMatchObject({ ok: false, error: "unauthorized" });
       const subframe = registeredHostEvent();
       Object.assign(subframe, { senderFrame: { ...subframe.senderFrame, routingId: 1 } });
@@ -409,20 +409,43 @@ describe("side-chat child transcript sender refusal", () => {
   });
 });
 
-describe("workbook editing sender refusal", () => {
-  const request = { action: "save", token: "a".repeat(64), row: 0, column: 1, value: 84 };
+describe("document observation sender refusal", () => {
+  const request = { action: "rendered", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", seq: 0 };
 
-  it("returns unauthorized to a plugin shell before consuming a workbook identity", async () => {
-    expect(await invoke(CHANNELS.preview.editXlsx, pluginShellFrameEvent(), [request]))
+  it("returns unauthorized to a plugin shell before consuming an observation identity", async () => {
+    expect(await invoke(CHANNELS.preview.observationAck, pluginShellFrameEvent(), [request]))
       .toEqual({ ok: false, error: "unauthorized" });
-    expect(guardRowsFor(CHANNELS.preview.editXlsx)).toHaveLength(1);
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toHaveLength(1);
   });
 
-  it("admits the host sender before refusing an unissued workbook identity", async () => {
+  it("admits the host main frame before refusing an unissued observation identity", async () => {
     const event = registeredHostEvent();
-    expect(await invoke(CHANNELS.preview.editXlsx, event, [request]))
-      .toEqual({ ok: false, error: "expired" });
-    expect(guardRowsFor(CHANNELS.preview.editXlsx)).toEqual([]);
+    expect(await invoke(CHANNELS.preview.observationAck, event, [request]))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toEqual([]);
+    expect((await import("electron")).dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it.each(["path", "script", "value"])("rejects an extra %s field before looking up an observation", async (field) => {
+    const event = registeredHostEvent();
+    expect(await invoke(CHANNELS.preview.observationAck, event, [{ ...request, [field]: "untrusted" }]))
+      .toEqual({ ok: false, error: "bad-request" });
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toEqual([]);
+  });
+
+  it("refuses a webview after navigation between the shell assets", async () => {
+    const event = registeredHostEvent();
+    Object.assign(event.sender, { getType: () => "webview", session: {} });
+    for (const extension of ["html", "js"]) {
+      Object.assign(event.senderFrame!, { url: `file:///plugins/plugin-ui-shell.${extension}` });
+      expect(await invoke(CHANNELS.preview.observationAck, event, [request]))
+        .toEqual({ ok: false, error: "unauthorized" });
+    }
+    expect(guardRowsFor(CHANNELS.preview.observationAck)).toHaveLength(2);
+  });
+
+  it("never registers a handler for the outbound observation stream", () => {
+    expect(handleMap.has(CHANNELS.preview.observationEvents)).toBe(false);
   });
 });
 

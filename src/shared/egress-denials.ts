@@ -5,7 +5,6 @@
 export type EgressDenialSource =
   | { kind: "shell"; toolName: "bash" | "powershell"; toolUseId: string | null }
   | { kind: "terminal"; tabId: string }
-  | { kind: "user-document"; action: "workbook" }
   | {
       kind: "worker";
       role: "plugin-child" | "worker" | "hook" | "mcp-server";

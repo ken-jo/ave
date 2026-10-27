@@ -1,30 +1,30 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
+import { promises as fs } from "node:fs";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewReadDocumentResult } from "../../../shared/preview-document.js";
 import { buildPreviewDocumentRuntime } from "../../../__tests__/support/preview-document-runtime.js";
 import { cyclicWorkbook } from "../../../__tests__/support/table-document-fixtures.js";
-import type { XlsxPanelEditResult } from "../../../shared/xlsx-panel-edit.js";
-import * as sandboxPolicy from "../../../permissions/asrt-sandbox.js";
 import * as documentInput from "../../../tools/preview-document-input.js";
 import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
 import * as managedChildren from "../../../main/managed-child-processes.js";
-import * as bundledScript from "../../../main/bundled-script-execution.js";
-import * as workbookTransaction from "../../../skills/xlsx-file-transaction.js";
-import { editWorkbookFile, inspectWorkbookCell } from "../../../skills/xlsx-edit.js";
 import { validateHostRendererSender } from "../../gated.js";
+import { setSessionContentsLookup } from "../../../main/app-state.js";
+import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
+import type { DocumentObservationEvent } from "../../../shared/agent-observation.js";
 
-const { handlers, additionalDirectories, childRuntime, defaultSession, messageBox } = vi.hoisted(() => ({
+const { handlers, additionalDirectories, childRuntime, defaultSession, messageBox, openPath } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   additionalDirectories: { value: [] as string[] },
   childRuntime: { mainDir: "" },
   defaultSession: {},
   messageBox: vi.fn(),
+  openPath: vi.fn(async () => ""),
 }));
 
 vi.mock("../../../main/main-paths.js", async (importOriginal) => ({
@@ -35,6 +35,8 @@ vi.mock("../../../main/main-paths.js", async (importOriginal) => ({
 vi.mock("electron", () => ({
   session: { defaultSession },
   dialog: { showMessageBox: messageBox },
+  nativeImage: {},
+  shell: { openPath },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -48,7 +50,8 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
   }),
 }));
 
-import { registerPreviewHandlers } from "../preview.js";
+import { registerPreviewHandlers, type PreviewReadFileResult } from "../preview.js";
+import { registerAttachHandlers } from "../attach.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
 const auditLog = vi.fn();
@@ -64,14 +67,14 @@ let outside: string;
 function documentEvent(url: string, senderId = 1, routingId = 0) {
   const frame = { url, processId: senderId, routingId, detached: false, isDestroyed: (): boolean => false };
   const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, isDestroyed: (): boolean => false,
-    getType: (): string => "window", session: defaultSession });
+    getType: (): string => "window", session: defaultSession, send: vi.fn() });
   appWindows.push({ isDestroyed: () => false, webContents: sender });
   return { sender, senderFrame: frame };
 }
 
-async function readFromSender(event: ReturnType<typeof documentEvent>, path: unknown, sheetIndex: unknown = 0) {
+async function readFromSender(event: ReturnType<typeof documentEvent>, path: unknown, sheetIndex: unknown = 0, sessionId?: string) {
   const handler = handlers.get(CHANNELS.preview.readDocument)!;
-  return (await handler(event, path, sheetIndex)) as PreviewReadDocumentResult;
+  return (await handler(event, path, sheetIndex, sessionId)) as PreviewReadDocumentResult;
 }
 
 async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 0, senderId = 1, routingId = 0) {
@@ -109,8 +112,11 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  registerPreviewHandlers(deps);
+  registerAttachHandlers(deps);
   appWindows.length = 0;
   messageBox.mockReset();
+  openPath.mockClear();
   additionalDirectories.value = [root];
   auditLog.mockClear();
 });
@@ -124,8 +130,8 @@ describe("preview:read-document handler", () => {
     const cleared = vi.spyOn(globalThis, "clearInterval");
     const watchTimers = (): ReturnType<typeof setInterval>[] => intervals.mock.calls.flatMap(([, delay], index) =>
       delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs ? [intervals.mock.results[index]!.value] : []);
+    const event = documentEvent(OK_FRAME);
     try {
-      const event = documentEvent(OK_FRAME);
       const pending = readFromSender(event, join(root, "data", outcome === "abort" ? "cyclic.xls" : "people.csv"));
       if (outcome === "abort") {
         await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
@@ -135,9 +141,15 @@ describe("preview:read-document handler", () => {
       if (outcome === "abort") expect(result).toMatchObject({ ok: false, error: "superseded" });
       else expect(result).toMatchObject({ ok: true });
       const timers = watchTimers();
-      expect(timers).toHaveLength(1);
+      expect(timers).toHaveLength(outcome === "completion" ? 2 : 1);
       expect(cleared).toHaveBeenCalledWith(timers[0]);
+      if (outcome === "completion") {
+        expect(cleared).not.toHaveBeenCalledWith(timers[1]);
+        event.sender.emit("destroyed");
+        expect(cleared).toHaveBeenCalledWith(timers[1]);
+      }
     } finally {
+      event.sender.emit("destroyed");
       for (const timer of watchTimers()) clearTimer(timer);
     }
   });
@@ -190,9 +202,12 @@ describe("preview:read-document handler", () => {
     expect(event.sender.eventNames()).toEqual([]);
   });
 
-  it.each(["people.csv", "broken.csv", "missing.csv"])("removes owner listeners after reading %s", async (name) => {
+  it.each(["people.csv", "broken.csv", "missing.csv"])("retains only a successful read's action receipt lifetime for %s", async (name) => {
     const event = documentEvent(OK_FRAME);
-    await readFromSender(event, join(root, "data", name));
+    const result = await readFromSender(event, join(root, "data", name));
+    expect(event.sender.eventNames().sort()).toEqual(result.ok
+      ? ["destroyed", "did-frame-navigate", "did-start-navigation", "render-process-gone"] : []);
+    event.sender.emit("destroyed");
     expect(event.sender.eventNames()).toEqual([]);
   });
 
@@ -251,15 +266,10 @@ describe("preview:read-document handler", () => {
 
   it("supersedes an older parse for the same frame before loading the latest sheet", async () => {
     const read = documentInput.readPreviewDocumentInput;
-    const snapshot = documentInput.readPreviewDocumentSnapshot;
     const childrenAtRead: number[] = [];
     const inputReads = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation((...args) => {
       childrenAtRead.push(getManagedChildProcessCount());
       return read(...args);
-    });
-    const snapshotReads = vi.spyOn(documentInput, "readPreviewDocumentSnapshot").mockImplementation((...args) => {
-      childrenAtRead.push(getManagedChildProcessCount());
-      return snapshot(...args);
     });
     const previous = readDocument(OK_FRAME, join(root, "data", "cyclic.xls"));
     await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
@@ -267,15 +277,13 @@ describe("preview:read-document handler", () => {
     const [oldResult, newResult] = await Promise.all([previous, latest]);
     expect(oldResult).toMatchObject({ ok: false, error: "superseded" });
     expect(newResult).toMatchObject({ ok: true, document: { sheet: { name: "Notes" } } });
-    expect(inputReads).toHaveBeenCalledTimes(1);
-    expect(snapshotReads).toHaveBeenCalledTimes(1);
+    expect(inputReads).toHaveBeenCalledTimes(2);
     expect(childrenAtRead).toEqual([0, 0]);
     expect(getManagedChildProcessCount()).toBe(0);
   });
 
   it("keeps only the latest same-frame request while an older read unwinds", async () => {
     const read = documentInput.readPreviewDocumentInput;
-    const snapshots = vi.spyOn(documentInput, "readPreviewDocumentSnapshot");
     let entered!: () => void;
     let resume!: () => void;
     const reading = new Promise<void>((resolve) => { entered = resolve; });
@@ -294,16 +302,14 @@ describe("preview:read-document handler", () => {
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(spy).toHaveBeenCalledTimes(1);
-      expect(snapshots).not.toHaveBeenCalled();
     } finally {
       resume();
       results = await Promise.all([previous, ...replacements]);
     }
     expect(results.slice(0, -1).every((result) => !result.ok && result.error === "superseded")).toBe(true);
     expect(results.at(-1)).toMatchObject({ ok: true, document: { sheet: { name: "Notes" } } });
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(snapshots).toHaveBeenCalledTimes(1);
-    expect(snapshots).toHaveBeenCalledWith(join(root, "data", "book.xlsx"), expect.any(AbortSignal));
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenLastCalledWith(join(root, "data", "book.xlsx"), expect.any(AbortSignal));
   });
 
   it("reports another frame as busy without reading or superseding its owner", async () => {
@@ -407,237 +413,316 @@ describe("preview:read-document handler", () => {
   });
 });
 
-async function editFromSender(event: ReturnType<typeof documentEvent>, request: unknown): Promise<XlsxPanelEditResult> {
-  return await handlers.get(CHANNELS.preview.editXlsx)!(event, request) as XlsxPanelEditResult;
-}
+describe("read-only observation sender boundary", () => {
+  const ack = (event: unknown, targetId: string, extra = {}) => handlers.get(CHANNELS.preview.observationAck)!(event,
+    { action: "rendered", targetId, sessionId: "session-one", seq: 0, ...extra });
 
-function installWorkbookRuntime() {
-  vi.spyOn(bundledScript, "assertWorkbookScriptAvailable").mockImplementation(() => {});
-  vi.spyOn(bundledScript, "runWorkbookScript").mockImplementation(async (directory, operation) => {
-    const path = join(directory, "workbook.xlsx");
-    const request: unknown = JSON.parse(readFileSync(join(directory, "request.json"), "utf8"));
-    const result = operation === "inspect" ? inspectWorkbookCell(readFileSync(path), request)
-      : await editWorkbookFile(path, request);
-    return { stdout: JSON.stringify(result) };
-  });
-}
+  async function registerSessionOwner(event: ReturnType<typeof documentEvent>) {
+    // The session lookup still requires the actual main-window registration.
+    const state = await import("../../../main/app-state.js");
+    state.registerMainWindow({ id: event.sender.id, webContents: event.sender, isDestroyed: () => false } as never, "primary");
+    setSessionContentsLookup((sessionId) => sessionId === "session-one" ? event.sender as never : null);
+  }
 
-async function readEditToken(event: ReturnType<typeof documentEvent>): Promise<string> {
-  const result = await readFromSender(event, join(root, "data", "book.xlsx"));
-  if (!result.ok) throw new Error(`Expected a workbook preview, got ${result.error}`);
-  expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
-  expect(result.editToken).toMatch(/^[a-f0-9]{64}$/);
-  return result.editToken!;
-}
+  async function observedPreview(event: ReturnType<typeof documentEvent>) {
+    await registerSessionOwner(event);
+    const result = await readFromSender(event, join(root, "data", "book.xlsx"), 0, "session-one");
+    if (!result.ok || !result.observation) throw new Error("Expected an observation baseline");
+    return result.observation;
+  }
 
-describe("preview:edit-xlsx boundary", () => {
-  it.each(["plugin-ui-shell.html", "plugin-ui-shell.js"])("rejects a navigated plugin webview at %s for reads and saves", async (asset) => {
-    const owner = documentEvent(OK_FRAME);
-    const plugin = documentEvent(`file:///app/${asset}`, 42);
-    Object.assign(plugin.sender, { getType: () => "webview", session: {} });
-    appWindows.splice(appWindows.findIndex(window => window.webContents === plugin.sender), 1);
-    const before = readFileSync(join(root, "data", "book.xlsx"));
-    try {
-      const token = await readEditToken(owner);
-      if (asset.endsWith(".js")) expect(validateHostRendererSender(plugin as never)).toBe(true);
-      expect(await readFromSender(plugin, join(root, "data", "book.xlsx")))
-        .toMatchObject({ ok: false, error: "unauthorized" });
-      expect(await handlers.get(CHANNELS.preview.readFile)!(plugin, join(root, "notes.txt")))
-        .toMatchObject({ ok: false, error: "unauthorized" });
-      expect(await editFromSender(plugin, { action: "save", token, row: 1, column: 1, value: 84 }))
-        .toEqual({ ok: false, error: "unauthorized" });
-      expect(readFileSync(join(root, "data", "book.xlsx"))).toEqual(before);
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { owner.sender.emit("destroyed"); }
+  afterEach(async () => {
+    const state = await import("../../../main/app-state.js");
+    for (const window of state.getMainWindows()) state.unregisterMainWindow(window);
+    setSessionContentsLookup(null);
   });
 
-  it("rejects an app subframe for both token issuance and use", async () => {
+  it("binds a full text preview to exactly its displayed bytes, frame and session", async () => {
     const event = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(event);
-      const subframe = { ...event, senderFrame: { ...event.senderFrame, routingId: 2 } };
-      expect(await readFromSender(subframe, join(root, "data", "book.xlsx")))
-        .toMatchObject({ ok: false, error: "unauthorized" });
-      expect(await editFromSender(subframe, { action: "save", token, row: 1, column: 1, value: 84 }))
-        .toEqual({ ok: false, error: "unauthorized" });
-    } finally { event.sender.emit("destroyed"); }
+    await registerSessionOwner(event);
+    const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
+    expect(result).toMatchObject({ ok: true, content: "plain", lineCount: 1,
+      document: { format: "text", content: "plain", lines: ["plain"], totalLines: 1, truncated: false },
+      observation: { sessionId: "session-one", seq: 0 } });
+    expect(await ack(event, result.observation!.targetId)).toEqual({ ok: true });
+    expect(await ack(event, result.observation!.targetId, { path: join(root, "other.txt") })).toEqual({ ok: false, error: "bad-request" });
+    expect(await ack(event, result.observation!.targetId, { sessionId: "different-session" })).toEqual({ ok: false, error: "unauthorized" });
+    expect(messageBox).not.toHaveBeenCalled();
+    event.sender.emit("destroyed");
   });
 
-  it("refuses parsed content and edit tokens if the app window is unregistered during reading", async () => {
+  it.each(["text", "table"])("opens a successfully read %s file for its actual app frame without widening attachment reads", async (kind) => {
     const event = documentEvent(OK_FRAME);
-    const readSnapshot = documentInput.readPreviewDocumentSnapshot;
-    vi.spyOn(documentInput, "readPreviewDocumentSnapshot").mockImplementationOnce(async (...args) => {
-      const snapshot = await readSnapshot(...args);
+    await registerSessionOwner(event);
+    const result = kind === "text"
+      ? await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult
+      : await readFromSender(event, join(root, "data", "book.xlsx"), 0, "session-one");
+    expect(result.ok).toBe(true);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: true });
+    expect(openPath).toHaveBeenCalledExactlyOnceWith(result.path);
+    expect(await handlers.get(CHANNELS.attach.readImage)!(event, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    const other = documentEvent(OK_FRAME, 42);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(other, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    expect(openPath).toHaveBeenCalledTimes(1);
+    expect(messageBox).not.toHaveBeenCalled();
+    event.sender.emit("destroyed"); other.sender.emit("destroyed");
+  });
+
+  it("refuses arbitrary paths and revokes a preview opener receipt when its session or scope is lost", async () => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, join(root, "unread.txt"))).toEqual({ ok: false, error: "path_not_authorized" });
+    setSessionContentsLookup(null);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    setSessionContentsLookup(() => event.sender as never);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" });
+    additionalDirectories.value = [];
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    expect(openPath).not.toHaveBeenCalled();
+    event.sender.emit("destroyed");
+  });
+
+  it.each(["did-frame-navigate", "did-start-navigation", "destroyed"])("revokes preview opener receipts on %s", async (lifecycle) => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
+    if (lifecycle === "did-start-navigation") event.sender.emit(lifecycle, {}, OK_FRAME, false, true, event.sender.id, event.senderFrame.routingId);
+    else event.sender.emit(lifecycle, {}, OK_FRAME, 200, "OK", true, event.sender.id, event.senderFrame.routingId);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    expect(openPath).not.toHaveBeenCalled();
+    event.sender.emit("destroyed");
+  });
+
+  it("rechecks app-window identity after resolving the default-app target", async () => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
+    const realpath = fs.realpath;
+    vi.spyOn(fs, "realpath").mockImplementationOnce(async (...args) => {
+      const target = await realpath(...args);
       appWindows.length = 0;
-      return snapshot;
+      return target;
     });
-    expect(await readFromSender(event, join(root, "data", "book.xlsx")))
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "unauthorized" });
+    expect(openPath).not.toHaveBeenCalled();
+    event.sender.emit("destroyed");
+  });
+
+  it.each(["command", "tool", "js", "wsf", "desktop", "html", "svg", "lnk", "exe"])("never turns a preview of .%s into executable opener authority", async (extension) => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const path = join(root, `not-passive.${extension}`);
+    writeFileSync(path, "inert source display");
+    const result = await handlers.get(CHANNELS.preview.readFile)!(event, path, { sessionId: "session-one" }) as PreviewReadFileResult;
+    expect(result.ok).toBe(true);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "path_not_authorized" });
+    expect(openPath).not.toHaveBeenCalled();
+    event.sender.emit("destroyed");
+  });
+
+  it("keeps at most sixteen frame-bound preview opener receipts", async () => {
+    const event = documentEvent(OK_FRAME);
+    const results: PreviewReadFileResult[] = [];
+    for (let index = 0; index < 17; index += 1) {
+      const path = join(root, `preview-open-${index}.ts`);
+      writeFileSync(path, "const value = 1;");
+      results.push(await handlers.get(CHANNELS.preview.readFile)!(event, path) as PreviewReadFileResult);
+    }
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[0].path)).toEqual({ ok: false, error: "path_not_authorized" });
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(event, results[16].path)).toEqual({ ok: true });
+    expect(openPath).toHaveBeenCalledExactlyOnceWith(results[16].path);
+    event.sender.emit("destroyed");
+  });
+
+  it.each(["latest-first", "stale-first"])("keeps the latest text baseline alive across overlapping reloads (%s)", async (order) => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const path = join(root, "text-reload-race.ts");
+    writeFileSync(path, "const value = 1;\n");
+    const read = documentInput.readPreviewDocumentInput;
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    let startedFirst!: () => void;
+    let startedSecond!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { startedFirst = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { startedSecond = resolve; });
+    const firstGate = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    const secondGate = new Promise<void>((resolve) => { resolveSecond = resolve; });
+    vi.spyOn(documentInput, "readPreviewDocumentInput")
+      .mockImplementationOnce(async (...args) => { const bytes = await read(...args); startedFirst(); await firstGate; return bytes; })
+      .mockImplementationOnce(async (...args) => { const bytes = await read(...args); startedSecond(); await secondGate; return bytes; });
+    const handler = handlers.get(CHANNELS.preview.readFile)!;
+    const first = handler(event, path, { sessionId: "session-one" }) as Promise<PreviewReadFileResult>;
+    await firstStarted;
+    const second = handler(event, path, { sessionId: "session-one" }) as Promise<PreviewReadFileResult>;
+    try {
+      await secondStarted;
+      if (order === "stale-first") {
+        resolveFirst();
+        expect(await first).toMatchObject({ ok: false, error: "read-failed", message: "Preview read was superseded." });
+      }
+      resolveSecond();
+      const latest = await second;
+      expect(latest).toMatchObject({ ok: true, observation: { sessionId: "session-one", seq: 0 } });
+      expect(await ack(event, latest.observation!.targetId)).toEqual({ ok: true });
+      resolveFirst();
+      const stale = await first;
+      expect(stale).toMatchObject({ ok: false, error: "read-failed", message: "Preview read was superseded." });
+      expect(stale.observation).toBeUndefined();
+      expect(await ack(event, latest.observation!.targetId)).toEqual({ ok: true });
+      const identity = { sessionId: "session-one", turnId: "text-turn", toolUseId: "text-write" };
+      await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity, () =>
+        observeAgentDocumentMutation([{ path, content: "const value = 42;\n" }], async () => { writeFileSync(path, "const value = 42;\n"); })));
+      const events = (): DocumentObservationEvent[] => event.sender.send.mock.calls
+        .filter(([channel]) => channel === CHANNELS.preview.observationEvents).flatMap(([, batch]) => batch as DocumentObservationEvent[]);
+      await vi.waitFor(() => expect(events().find((entry) => entry.kind === "element")).toMatchObject({
+        actor: "agent", target: { id: latest.observation!.targetId }, before: "const value = 1;", after: "const value = 42;",
+        element: { kind: "line", line: 1 }, advisory: false,
+      }));
+      expect(events().find((entry) => entry.kind === "snapshot")).toMatchObject({ after: { format: "text", lines: ["const value = 42;"] } });
+    } finally {
+      resolveFirst(); resolveSecond();
+      await Promise.allSettled([first, second]);
+      event.sender.emit("destroyed");
+    }
+  });
+
+  it("cancels a pending observed text read on main-frame navigation", async () => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const read = documentInput.readPreviewDocumentInput;
+    let resolveRead!: () => void;
+    let started!: () => void;
+    const readStarted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { resolveRead = resolve; });
+    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+      const bytes = await read(...args); started(); await gate; return bytes;
+    });
+    const pending = handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as Promise<PreviewReadFileResult>;
+    try {
+      await readStarted;
+      event.sender.emit("did-frame-navigate", {}, OK_FRAME, 200, "OK", true, event.sender.id, event.senderFrame.routingId);
+      resolveRead();
+      const result = await pending;
+      expect(result).toMatchObject({ ok: false, error: "read-failed", message: "Preview read was superseded." });
+      expect(result.observation).toBeUndefined();
+      expect(event.sender.listenerCount("did-frame-navigate")).toBe(0);
+    } finally { resolveRead(); await pending; event.sender.emit("destroyed"); }
+  });
+
+  it("bounds observed text request ownership and releases it after completion", async () => {
+    const event = documentEvent(OK_FRAME);
+    event.sender.setMaxListeners(0);
+    const read = documentInput.readPreviewDocumentInput;
+    let resolveReads!: () => void;
+    const gate = new Promise<void>((resolve) => { resolveReads = resolve; });
+    const input = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation(async (...args) => {
+      const bytes = await read(...args); await gate; return bytes;
+    });
+    const handler = handlers.get(CHANNELS.preview.readFile)!;
+    const pending = Array.from({ length: 16 }, (_, index) => {
+      const path = join(root, `bounded-text-${index}.txt`);
+      writeFileSync(path, "plain");
+      return handler(event, path, { sessionId: "session-one" }) as Promise<PreviewReadFileResult>;
+    });
+    try {
+      expect(await handler(event, join(root, "notes.txt"), { sessionId: "session-one" }))
+        .toMatchObject({ ok: false, error: "read-failed", message: "Preview request limit exceeded." });
+      await vi.waitFor(() => expect(input).toHaveBeenCalledTimes(16));
+      resolveReads();
+      expect((await Promise.all(pending)).every((result) => result.ok)).toBe(true);
+      expect(await handler(event, join(root, "notes.txt"), { sessionId: "session-one" })).toMatchObject({ ok: true, content: "plain" });
+    } finally { resolveReads(); await Promise.allSettled(pending); event.sender.emit("destroyed"); }
+  });
+
+  it("does not observe text windows, missing sessions, or a different session owner", async () => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    for (const options of [undefined, { offset: 0, limit: 1, sessionId: "session-one" }, { sessionId: "different-session" }]) {
+      const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), options) as PreviewReadFileResult;
+      expect(result.ok).toBe(true);
+      expect(result.observation).toBeUndefined();
+      expect(result.document).toBeUndefined();
+    }
+    event.sender.emit("destroyed");
+  });
+
+  it("refuses text observation for subframes or an app window lost during the read", async () => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    const subframe = { ...event, senderFrame: { ...event.senderFrame, routingId: 2 } };
+    expect(await handlers.get(CHANNELS.preview.readFile)!(subframe, join(root, "notes.txt"), { sessionId: "session-one" }))
+      .toMatchObject({ ok: false, error: "unauthorized" });
+    const read = documentInput.readPreviewDocumentInput;
+    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+      const bytes = await read(...args);
+      appWindows.length = 0;
+      return bytes;
+    });
+    expect(await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }))
       .toMatchObject({ ok: false, error: "unauthorized" });
     event.sender.emit("destroyed");
   });
 
-  it("saves from a registered app main frame with no confirmation", async () => {
-    installWorkbookRuntime();
-    const event = documentEvent(OK_FRAME);
-    const path = join(root, "data", "direct.xlsx");
-    writeFileSync(path, readFileSync(join(root, "data", "book.xlsx")));
-    try {
-      const preview = await readFromSender(event, path);
-      if (!preview.ok || !preview.editToken) throw new Error("Expected a registered workbook identity");
-      expect(await editFromSender(event, { action: "save", token: preview.editToken, row: 1, column: 1, value: 84 }))
-        .toEqual({ ok: true, action: "save" });
-      expect(XLSX.read(readFileSync(path), { type: "buffer" }).Sheets.Sales!.B2!.v).toBe(84);
-      expect(messageBox).not.toHaveBeenCalled();
-    } finally { event.sender.emit("destroyed"); }
-  });
-
-  it("rechecks app registration in the shared publisher before any source write", async () => {
-    installWorkbookRuntime();
-    const event = documentEvent(OK_FRAME);
-    const path = join(root, "data", "book.xlsx");
-    const before = readFileSync(path);
-    const publish = workbookTransaction.publishWorkbookEdit;
-    const publication = vi.spyOn(workbookTransaction, "publishWorkbookEdit").mockImplementationOnce((...args) => {
-      appWindows.length = 0;
-      return publish(...args);
-    });
-    try {
-      const token = await readEditToken(event);
-      expect(await editFromSender(event, { action: "save", token, row: 1, column: 1, value: 84 }))
-        .toEqual({ ok: false, error: "expired" });
-      expect(publication).toHaveBeenCalledTimes(1);
-      expect(readFileSync(path)).toEqual(before);
-      expect(existsSync(`${path}.ave-bak`)).toBe(false);
-      expect(messageBox).not.toHaveBeenCalled();
-    } finally { event.sender.emit("destroyed"); }
-  });
-
-  it.each(["source", "directory", "backup"] as const)("keeps a readable workbook uneditable when the write deny floor covers its %s", async (target) => {
-    const path = join(root, "data", "book.xlsx");
-    const denied = target === "directory" ? join(root, "data") : target === "backup" ? `${path}.ave-bak` : path;
-    const floor = vi.spyOn(sandboxPolicy, "getDefaultSensitiveWriteDenyPaths").mockReturnValue([denied]);
-    const event = documentEvent(OK_FRAME);
-    try {
-      const result = await readFromSender(event, path);
-      if (!result.ok) throw new Error(`Expected a readable workbook, got ${result.error}`);
-      expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
-      expect(floor).toHaveBeenCalled();
-      expect(result.editToken).toBeUndefined();
-      expect(event.sender.eventNames()).toEqual([]);
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
-  });
-
-  it.each(["source", "directory", "backup"] as const)("keeps a readable workbook uneditable when the protected read floor covers its %s", async (target) => {
-    const path = join(root, "data", "book.xlsx");
-    const denied = target === "directory" ? join(root, "data") : target === "backup" ? `${path}.ave-bak` : path;
-    const floor = vi.spyOn(sandboxPolicy, "getProtectedReadDenyFloor").mockReturnValue([denied]);
-    const event = documentEvent(OK_FRAME);
-    try {
-      const result = await readFromSender(event, path);
-      if (!result.ok) throw new Error(`Expected a readable workbook, got ${result.error}`);
-      expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
-      expect(floor).toHaveBeenCalled();
-      expect(result.editToken).toBeUndefined();
-      expect(event.sender.eventNames()).toEqual([]);
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
-  });
-
-  it.each([
-    { path: "/outside/other.xlsx" },
-    { script: "arbitrary-script.cjs" },
-    { sheet: 1 },
-  ])("rejects extra target or executable fields %j on a real preview token", async (extra) => {
-    const event = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(event);
-      expect(await editFromSender(event, { action: "save", token, row: 1, column: 1, value: 84, ...extra }))
-        .toEqual({ ok: false, error: "invalid-request" });
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
-  });
-
-  it.each([[2, 0], [1, 1]])("rejects a real token used by sender %s frame %s", async (senderId, routingId) => {
+  it.each(["plugin-ui-shell.html", "plugin-ui-shell.js"])("refuses a navigated webview at %s for reads and observation", async (asset) => {
     const owner = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(owner);
-      const foreign = documentEvent(OK_FRAME, senderId, routingId);
-      expect(await editFromSender(foreign, { action: "cell", row: 0, column: 1, token }))
-        .toEqual({ ok: false, error: "expired" });
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { owner.sender.emit("destroyed"); }
-  });
-
-  it("rejects an untrusted frame before consuming a real preview token", async () => {
-    const owner = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(owner);
-      expect(await editFromSender(documentEvent(EVIL_FRAME), { action: "cell", row: 0, column: 1, token }))
-        .toEqual({ ok: false, error: "unauthorized" });
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { owner.sender.emit("destroyed"); }
-  });
-
-  it.each([
-    { senderFrame: { url: OK_FRAME, processId: 1, routingId: 0 } },
-    { sender: { id: 1 }, senderFrame: { url: OK_FRAME } },
-  ])("rejects incomplete edit sender identities %j", async (event) => {
-    expect(await handlers.get(CHANNELS.preview.editXlsx)!(event, { action: "cell", row: 0, column: 1, token: "a".repeat(64) }))
+    const binding = await observedPreview(owner);
+    const plugin = documentEvent(`file:///app/${asset}`, 42);
+    Object.assign(plugin.sender, { getType: () => "webview", session: {} });
+    if (asset.endsWith(".js")) expect(validateHostRendererSender(plugin as never)).toBe(true);
+    expect(await readFromSender(plugin, join(root, "data", "book.xlsx"), 0, "session-one"))
+      .toMatchObject({ ok: false, error: "unauthorized" });
+    expect(await handlers.get(CHANNELS.preview.readFile)!(plugin, join(root, "notes.txt"), { sessionId: "session-one" }))
+      .toMatchObject({ ok: false, error: "unauthorized" });
+    expect(await ack(plugin, binding.targetId)).toEqual({ ok: false, error: "unauthorized" });
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(plugin, join(root, "notes.txt")))
       .toEqual({ ok: false, error: "unauthorized" });
-    expect(getManagedChildProcessCount()).toBe(0);
+    owner.sender.emit("destroyed");
   });
 
-  it("invalidates the previous token when the same frame reads the next sheet", async () => {
+  it("refuses subframes and accepts the actual app main frame without a modification confirmation", async () => {
     const event = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(event);
-      const next = await readFromSender(event, join(root, "data", "book.xlsx"), 1);
-      if (!next.ok) throw new Error("Expected the replacement workbook preview");
-      expect(next.document).toMatchObject({ sheet: { name: "Notes", rows: [["note"]] } });
-      expect(next.editToken).toMatch(/^[a-f0-9]{64}$/);
-      expect(next.editToken).not.toBe(token);
-      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
-        .toEqual({ ok: false, error: "expired" });
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
+    const binding = await observedPreview(event);
+    const subframe = { ...event, senderFrame: { ...event.senderFrame, routingId: 2 } };
+    expect(await readFromSender(subframe, join(root, "data", "book.xlsx"), 0, "session-one"))
+      .toMatchObject({ ok: false, error: "unauthorized" });
+    expect(await ack(subframe, binding.targetId)).toEqual({ ok: false, error: "unauthorized" });
+    expect(await handlers.get(CHANNELS.attach.openExternal)!(subframe, join(root, "notes.txt")))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(await ack(event, binding.targetId)).toEqual({ ok: true });
+    expect(messageBox).not.toHaveBeenCalled();
+    event.sender.emit("destroyed");
   });
 
-  it("invalidates the previous token even when the replacement read is refused", async () => {
+  it("rejects arbitrary paths and scripts in the read-only acknowledgement", async () => {
     const event = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(event);
-      expect(await readFromSender(event, join(outside, "secret.csv")))
-        .toMatchObject({ ok: false, error: "path-not-allowed" });
-      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
-        .toEqual({ ok: false, error: "expired" });
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
+    const binding = await observedPreview(event);
+    expect(await ack(event, binding.targetId, { path: join(outside, "secret.csv") })).toEqual({ ok: false, error: "bad-request" });
+    expect(await ack(event, binding.targetId, { script: "other.cjs" })).toEqual({ ok: false, error: "bad-request" });
+    expect(handlers.has("ave:preview:edit-xlsx")).toBe(false);
+    event.sender.emit("destroyed");
   });
 
-  it("invalidates a workbook token when its frame switches to a text preview", async () => {
+  it("refuses an app window unregistered during a read", async () => {
     const event = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(event);
-      const text = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"));
-      expect(text).toMatchObject({ ok: true, content: "plain" });
-      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
-        .toEqual({ ok: false, error: "expired" });
-      expect(event.sender.eventNames()).toEqual([]);
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
+    const read = documentInput.readPreviewDocumentInput;
+    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+      const bytes = await read(...args);
+      appWindows.length = 0;
+      return bytes;
+    });
+    expect(await readFromSender(event, join(root, "data", "book.xlsx")))
+      .toMatchObject({ ok: false, error: "unauthorized" });
   });
 
-  it("invalidates a completed preview token on committed owner-frame navigation", async () => {
+  it("revokes a baseline when its main-frame registration disappears", async () => {
     const event = documentEvent(OK_FRAME);
-    try {
-      const token = await readEditToken(event);
-      expect(event.sender.listenerCount("did-frame-navigate")).toBe(1);
-      event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 1, 0);
-      expect(await editFromSender(event, { action: "cell", row: 0, column: 1, token }))
-        .toEqual({ ok: false, error: "expired" });
-      expect(event.sender.eventNames()).toEqual([]);
-      expect(getManagedChildProcessCount()).toBe(0);
-    } finally { event.sender.emit("destroyed"); }
+    const binding = await observedPreview(event);
+    appWindows.length = 0;
+    expect(await ack(event, binding.targetId)).toEqual({ ok: false, error: "unauthorized" });
+    event.sender.emit("destroyed");
   });
 });

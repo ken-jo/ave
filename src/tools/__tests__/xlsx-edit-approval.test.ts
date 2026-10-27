@@ -12,10 +12,7 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { hostScriptInvocationReadPaths, hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
-import { wrapToolCommand } from "../../permissions/asrt-sandbox.js";
-import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { createSandboxActionDirectory } from "../../permissions/sandbox-action-directory.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
 import { ToolExecutor } from "../executor.js";
 import { createFileTools } from "../file-tools.js";
@@ -104,17 +101,7 @@ describe("agent workbook editing authority", () => {
     expect(XLSX.read(readFileSync(workbookPath), { type: "buffer" }).Sheets.Budget!.B1!.v).toBe(12);
   });
 
-  it("does not let an agent shell claim a live panel action directory", async () => {
-    const staging = createSandboxActionDirectory();
-    const agent = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: "workbook-agent-save",
-      context: { sessionId: "workbook-agent-session", workspaceRoot: directory, approvalSurface: "interactive" } });
-    try {
-      await expect(wrapToolCommand("true", { commandId: agent.token, actionDirectory: staging.path,
-        filesystem: { allowWrite: [staging.path] } })).rejects.toThrow("Sandbox action directory is unauthorized");
-    } finally { agent.release(); staging.cleanup(); }
-  });
-
-  it("keeps the panel editor out of model-facing tool registration", () => {
+  it("keeps document observation out of model-facing tool registration", () => {
     const registry = new ToolRegistry();
     registry.registerBatch([new BashTool(), new PowerShellTool(), ...createFileTools()]);
     registerBuiltinTools(registry, {
@@ -125,19 +112,19 @@ describe("agent workbook editing authority", () => {
     const names = registry.getToolSchemas().map(tool => tool.name);
     expect(names).toEqual(expect.arrayContaining(["bash", "powershell", "read_file", "write_file"]));
     expect(names.filter(name => /xlsx|workbook|edit-xlsx/.test(name))).toEqual([]);
-    expect(registry.findByName(CHANNELS.preview.editXlsx)).toBeUndefined();
+    expect(registry.findByName(CHANNELS.preview.observationAck)).toBeUndefined();
   });
 
-  it.each(["local-api", "cli", "plugin-frame"] as const)("refuses panel edits from the %s external origin", async (origin) => {
-    expect(PUBLIC_CHANNELS as readonly string[]).not.toContain(CHANNELS.preview.editXlsx);
-    expect(EXTERNAL_MUTATION_CHANNELS as readonly string[]).not.toContain(CHANNELS.preview.editXlsx);
-    expect(isPublicChannel(CHANNELS.preview.editXlsx)).toBe(false);
+  it.each(["local-api", "cli", "plugin-frame"] as const)("refuses document observation from the %s external origin", async (origin) => {
+    expect(PUBLIC_CHANNELS as readonly string[]).not.toContain(CHANNELS.preview.observationAck);
+    expect(EXTERNAL_MUTATION_CHANNELS as readonly string[]).not.toContain(CHANNELS.preview.observationAck);
+    expect(isPublicChannel(CHANNELS.preview.observationAck)).toBe(false);
     const approve = vi.fn(async () => true);
     const execute = vi.fn();
     const api = createLocalApi({ ipc: {} as never,
       conversationCommandPort: { execute } as never, externalMutationApprover: approve });
-    expect(await api.dispatch({ channel: CHANNELS.preview.editXlsx, origin,
-      args: { action: "save", token: "a".repeat(64), row: 0, column: 1, value: 84 } }))
+    expect(await api.dispatch({ channel: CHANNELS.preview.observationAck, origin,
+      args: { action: "rendered", targetId: "workbook-view", sessionId: "workbook-agent-session", seq: 0 } }))
       .toEqual({ ok: false, error: LOCAL_API_CHANNEL_NOT_PUBLIC });
     expect(approve).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();

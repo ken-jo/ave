@@ -1,5 +1,5 @@
-import { useEffect, useState, type ComponentType } from "react";
-import ReactMarkdown from "react-markdown";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import { useTranslation } from "../../../i18n/react.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { wrapRenderHtmlInlineFrameDocument } from "../../../shared/render-html-preview.js";
@@ -52,7 +52,7 @@ export function resolveFilePreviewRoute(path: string): FilePreviewRoute {
 export interface PreviewRenderer {
   kind: PreviewRenderKind;
   match: (descriptor: PreviewContentDescriptor) => boolean;
-  Component: ComponentType<{ descriptor: PreviewContentDescriptor }>;
+  Component: ComponentType<{ descriptor: PreviewContentDescriptor; onRendered?: () => void }>;
 }
 
 function extensionOf(descriptor: PreviewContentDescriptor): string {
@@ -71,14 +71,27 @@ function TextRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) 
 }
 
 let mermaidIdCounter = 0;
+let mermaidModule: Promise<typeof import("mermaid")> | undefined;
 // mermaid.initialize mutates a module-global config; calling it on every render
 // is redundant work. Run it exactly once per loaded mermaid module.
 let mermaidInitialized = false;
 
-function MermaidBlock({ code }: { code: string }) {
+interface DiagramReadiness { ready(): void; dispose(): void }
+
+function MermaidBlock({ code, onRendered, onPending }: { code: string; onRendered?: () => void; onPending?: () => DiagramReadiness }) {
   const { t } = useTranslation();
   const [svgDoc, setSvgDoc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const complete = useRef<(() => void) | undefined>(undefined);
+  const rendered = useRef(false);
+
+  useLayoutEffect(() => {
+    let disposed = false;
+    const receipt = onPending?.();
+    complete.current = () => { if (!disposed) { receipt?.ready(); onRendered?.(); } };
+    if (rendered.current) complete.current();
+    return () => { disposed = true; receipt?.dispose(); };
+  }, [onPending, onRendered]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +99,7 @@ function MermaidBlock({ code }: { code: string }) {
     setFailed(false);
     void (async () => {
       try {
-        const mermaid = (await import(/* webpackChunkName: "mermaid" */ "mermaid")).default;
+        const mermaid = (await (mermaidModule ??= import(/* webpackChunkName: "mermaid" */ "mermaid"))).default;
         if (!mermaidInitialized) {
           mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
           mermaidInitialized = true;
@@ -105,6 +118,8 @@ function MermaidBlock({ code }: { code: string }) {
       cancelled = true;
     };
   }, [code]);
+
+  useLayoutEffect(() => { if (failed) { rendered.current = true; complete.current?.(); } }, [failed]);
 
   if (failed) {
     // Never blank: fall back to the raw fenced source (§6.10.6).
@@ -127,20 +142,38 @@ function MermaidBlock({ code }: { code: string }) {
       sandbox=""
       referrerPolicy="no-referrer"
       srcDoc={svgDoc}
+      onLoad={() => { rendered.current = true; complete.current?.(); }}
       className="block max-h-(--preview-block-max-height) min-h-40 w-full rounded-md border-0 bg-background"
     />
   );
 }
 
-function MarkdownRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) {
-  return (
-    <div className="markdown-body max-h-(--preview-block-max-height) overflow-auto rounded-md border bg-background p-3 text-sm [overflow-wrap:anywhere]" data-testid="chat-side-panel-markdown">
-      <ReactMarkdown
-        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-        components={{
+function MarkdownRenderer({ descriptor, onRendered }: { descriptor: PreviewContentDescriptor; onRendered?: () => void }) {
+  const onRenderedRef = useRef(onRendered);
+  useLayoutEffect(() => { onRenderedRef.current = onRendered; }, [onRendered]);
+  const generation = useMemo(() => ({ pending: new Map<symbol, boolean>(), committed: false }), [descriptor.text]);
+  const handlePendingDiagram = useCallback((): DiagramReadiness => {
+    const id = Symbol();
+    generation.pending.set(id, false);
+    return {
+      ready: () => {
+        if (!generation.pending.has(id)) return;
+        generation.pending.set(id, true);
+        if (generation.committed && [...generation.pending.values()].every(Boolean)) onRenderedRef.current?.();
+      },
+      dispose: () => { generation.pending.delete(id); },
+    };
+  }, [generation]);
+  useLayoutEffect(() => {
+    generation.committed = true;
+    if ([...generation.pending.values()].every(Boolean)) onRenderedRef.current?.();
+  return () => { generation.committed = false; };
+  }, [generation, onRendered]);
+  const components = useMemo<Components>(() => ({
           code({ className, children, ...props }) {
             if (className === "language-mermaid") {
-              return <MermaidBlock code={String(children).replace(/\n$/, "")} />;
+              const code = String(children).replace(/\n$/, "");
+              return <MermaidBlock key={code} code={code} onPending={handlePendingDiagram} />;
             }
             return (
               <code className={className} {...props}>
@@ -160,7 +193,12 @@ function MarkdownRenderer({ descriptor }: { descriptor: PreviewContentDescriptor
               </a>
             );
           },
-        }}
+  }), [handlePendingDiagram]);
+  return (
+    <div className="markdown-body max-h-(--preview-block-max-height) overflow-auto rounded-md border bg-background p-3 text-sm [overflow-wrap:anywhere]" data-testid="chat-side-panel-markdown">
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        components={components}
       >
         {descriptor.text}
       </ReactMarkdown>
@@ -189,7 +227,7 @@ const mermaidRenderer: PreviewRenderer = {
     const ext = extensionOf(descriptor);
     return ext === "mmd" || ext === "mermaid";
   },
-  Component: ({ descriptor }) => <MermaidBlock code={descriptor.text} />,
+  Component: ({ descriptor, onRendered }) => <MermaidBlock key={descriptor.text} code={descriptor.text} onRendered={onRendered} />,
 };
 
 // Ordered — first match wins; `text` is always last (always-true fallback).
@@ -200,7 +238,7 @@ export function resolvePreviewRenderer(descriptor: PreviewContentDescriptor): Pr
 }
 
 /** Render `descriptor` with the resolved renderer. Single PreviewBody call site. */
-export function PreviewContent({ descriptor }: { descriptor: PreviewContentDescriptor }) {
+export function PreviewContent({ descriptor, onRendered }: { descriptor: PreviewContentDescriptor; onRendered?: () => void }) {
   const renderer = resolvePreviewRenderer(descriptor);
-  return <renderer.Component descriptor={descriptor} />;
+  return <renderer.Component descriptor={descriptor} onRendered={onRendered} />;
 }

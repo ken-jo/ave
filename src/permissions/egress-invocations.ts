@@ -40,13 +40,7 @@ export interface WorkerEgressOwner {
   readonly instanceId?: string;
 }
 
-/** A host-owned document action has no network authority or interactive network grants. */
-interface UserDocumentEgressOwner {
-  readonly kind: "user-document";
-  readonly action: "workbook";
-}
-
-export type EgressInvocationOwner = ShellEgressOwner | TerminalEgressOwner | WorkerEgressOwner | UserDocumentEgressOwner;
+export type EgressInvocationOwner = ShellEgressOwner | TerminalEgressOwner | WorkerEgressOwner;
 
 export interface EgressInvocationOptions {
   // Ends a pending egress ask for this invocation (the call was cancelled).
