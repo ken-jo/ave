@@ -9,8 +9,13 @@ const state = vi.hoisted(() => ({
   visible: true,
   allowed: true,
   audit: vi.fn(),
+  defaultSession: {},
+  registered: true,
 }));
-vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, handler: (event: unknown, payload: unknown) => unknown) => state.handlers.set(channel, handler) } }));
+vi.mock("electron", () => ({
+  session: { defaultSession: state.defaultSession },
+  ipcMain: { handle: (channel: string, handler: (event: unknown, payload: unknown) => unknown) => state.handlers.set(channel, handler) },
+}));
 vi.mock("../app-state.js", () => ({
   findSessionMainWindowContents: (sessionId: string) => sessionId === "session-one" ? state.holder : null,
   mainWindowForContents: () => ({ isVisible: () => state.visible, isMinimized: () => false }),
@@ -23,20 +28,37 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const context = (): ToolExecutionContext => ({ cwd: "/workspace", extraAllowedDirectories: [], metadata: { sessionId: "session-one" } });
-const frame = { url: "file:///app/index.html" };
-const sender = Object.assign(new EventEmitter(), { id: 12, mainFrame: frame, isDestroyed: () => false, send: vi.fn() });
+const frame = { url: "file:///app/index.html", detached: false, isDestroyed: () => false };
+const sender = Object.assign(new EventEmitter(), { id: 12, mainFrame: frame, session: state.defaultSession,
+  getType: () => "window", isDestroyed: () => false, send: vi.fn() });
+const appWindow = { isDestroyed: () => false, webContents: sender };
 const acknowledge = (payload: unknown, source: unknown = sender, sourceFrame: unknown = frame) => state.handlers.get(CHANNELS.preview.documentOpenAck)!({ sender: source, senderFrame: sourceFrame }, payload);
 const request = () => sender.send.mock.calls.at(-1)![1] as { requestId: string; sessionId: string; path: string };
 
 beforeEach(() => {
   vi.useFakeTimers();
-  state.mode = "direct"; state.holder = sender; state.visible = true; state.allowed = true;
+  state.mode = "direct"; state.holder = sender; state.visible = true; state.allowed = true; state.registered = true;
   sender.removeAllListeners(); sender.send.mockReset(); state.audit.mockReset();
-  registerDocumentOpenHandlers({ settingsService: { get: () => ({ openMode: state.mode }) }, auditLogger: { log: state.audit } } as never);
+  registerDocumentOpenHandlers({ settingsService: { get: () => ({ openMode: state.mode }) }, auditLogger: { log: state.audit },
+    getMainWindow: () => state.registered ? appWindow : null,
+    getAppWindows: () => state.registered ? [appWindow] : [],
+  } as never);
 });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("document panel opening", () => {
+  it.each(["webview", "subframe", "foreign-session", "unregistered"])("refuses an acknowledgement from %s despite its file URL", async (kind) => {
+    const result = openDocumentForSession("/workspace/book.xlsx", context());
+    const pending = request();
+    const sourceFrame = kind === "subframe" ? { ...frame } : frame;
+    const source = kind === "webview" ? { ...sender, getType: () => "webview" }
+      : kind === "foreign-session" ? { ...sender, session: {} } : sender;
+    if (kind === "unregistered") state.registered = false;
+    expect(await acknowledge({ ...pending, opened: true }, source, sourceFrame)).toEqual({ ok: false, error: "unauthorized" });
+    state.registered = true;
+    expect(await acknowledge({ ...pending, opened: true })).toEqual({ ok: true });
+    expect((await result).isError).toBe(false);
+  });
   it("waits for the originating session's guarded acknowledgement", async () => {
     let settled = false;
     const result = openDocumentForSession("/workspace/book.xlsx", context()).then((value) => { settled = true; return value; });

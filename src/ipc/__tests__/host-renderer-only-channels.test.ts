@@ -37,8 +37,9 @@ const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
 const handleMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 
-const { searchWorkspaceFiles } = vi.hoisted(() => ({
+const { searchWorkspaceFiles, defaultSession } = vi.hoisted(() => ({
   searchWorkspaceFiles: vi.fn(async () => ({ matches: [], truncated: false })),
+  defaultSession: { setSpellCheckerEnabled: vi.fn() },
 }));
 
 vi.mock("../domains/workspace-file-search.js", async (importOriginal) => ({
@@ -81,7 +82,7 @@ vi.mock("electron", () => {
     nativeTheme: { shouldUseDarkColors: false, on: vi.fn() },
     clipboard: { readImage: vi.fn(() => ({ isEmpty: () => true })) },
     webContents: { fromId: vi.fn(() => null), getAllWebContents: () => [] },
-    session: { fromPartition: vi.fn(() => ({ webRequest: { onBeforeRequest: vi.fn() }, protocol: { handle: vi.fn() } })) },
+    session: { defaultSession, fromPartition: vi.fn(() => ({ webRequest: { onBeforeRequest: vi.fn() }, protocol: { handle: vi.fn() } })) },
     net: { fetch: vi.fn() },
   };
 });
@@ -105,10 +106,22 @@ const auditLogger = {
  * reaches handler bodies, so their dependencies stay inert. Workspace search
  * returns the deterministic result above to keep this sender matrix scoped.
  */
+const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
+
+function registeredHostEvent(): IpcMainInvokeEvent {
+  const event = hostFrameEvent();
+  Object.assign(event.senderFrame!, { processId: 1, routingId: 0, detached: false, isDestroyed: () => false });
+  Object.assign(event.sender, { id: 1, mainFrame: event.senderFrame, session: defaultSession,
+    getType: () => "window", isDestroyed: () => false });
+  appWindows.push({ isDestroyed: () => false, webContents: event.sender });
+  return event;
+}
+
 function makeDeps(): never {
   return {
     auditLogger,
     getMainWindow: () => null,
+    getAppWindows: () => appWindows,
     conversationLoop: {
       getSessionId: () => "test-session",
       permissionManager: undefined,
@@ -269,6 +282,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
 
 beforeEach(async () => {
   handleMap.clear();
+  appWindows.length = 0;
   auditRows.length = 0;
   vi.clearAllMocks();
   // The dev domain refuses everything when packaged, which would hide its
@@ -344,6 +358,19 @@ beforeEach(async () => {
 });
 
 describe("host-renderer-only IPC channels", () => {
+  it.each(HOST_ONLY_CHANNELS.filter(([domain]) => domain === "preview"))(
+    "%s %s refuses a file-backed webview and an app-window subframe",
+    async (_domain, channel, args) => {
+      const webview = registeredHostEvent();
+      Object.assign(webview.senderFrame!, { url: "file:///plugins/example/view.js" });
+      Object.assign(webview.sender, { getType: () => "webview" });
+      expect(await invoke(channel, webview, args)).toMatchObject({ ok: false, error: "unauthorized" });
+      const subframe = registeredHostEvent();
+      Object.assign(subframe, { senderFrame: { ...subframe.senderFrame, routingId: 1 } });
+      expect(await invoke(channel, subframe, args)).toMatchObject({ ok: false, error: "unauthorized" });
+      expect(guardRowsFor(channel)).toHaveLength(2);
+    },
+  );
   it.each(HOST_ONLY_CHANNELS)("%s %s refuses a plugin shell frame", async (_domain, channel, args) => {
     await invoke(channel, pluginShellFrameEvent(), args);
     expect(guardRowsFor(channel).length).toBeGreaterThan(0);
@@ -352,8 +379,8 @@ describe("host-renderer-only IPC channels", () => {
     }
   });
 
-  it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
-    const event = hostFrameEvent();
+  it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (domain, channel, args) => {
+    const event = domain === "preview" ? registeredHostEvent() : hostFrameEvent();
     if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
     await invoke(channel, event, args);
     expect(guardRowsFor(channel)).toEqual([]);
@@ -392,9 +419,7 @@ describe("workbook editing sender refusal", () => {
   });
 
   it("admits the host sender before refusing an unissued workbook identity", async () => {
-    const event = hostFrameEvent();
-    Object.assign(event.sender, { id: 1 });
-    Object.assign(event.senderFrame!, { processId: 1, routingId: 1 });
+    const event = registeredHostEvent();
     expect(await invoke(CHANNELS.preview.editXlsx, event, [request]))
       .toEqual({ ok: false, error: "expired" });
     expect(guardRowsFor(CHANNELS.preview.editXlsx)).toEqual([]);

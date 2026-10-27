@@ -1,10 +1,14 @@
 import { test, expect } from "@playwright/test";
+import type { WebContents } from "electron";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { buildE2eBaseSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
+import { CHANNELS } from "../../../src/contract/app-contract.js";
+import { pluginPartitionName } from "../../../src/shared/plugin-partition.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
@@ -183,6 +187,106 @@ test("workbook panel edits raw values inline and reloads external changes", asyn
     const screenshot = test.info().outputPath("workbook-panel-reloaded.png");
     await ctx.page.screenshot({ path: screenshot });
     await test.info().attach("workbook-panel-reloaded", { path: screenshot, contentType: "image/png" });
+  } finally {
+    await teardownSeededElectron(ctx, { terminate: true });
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("plugin webview asset navigation cannot reach workbook preview or save IPC", async () => {
+  test.setTimeout(120_000);
+  expect(builtMainExists()).toBe(true);
+  mkdirSync(join(process.cwd(), ".cache"), { recursive: true });
+  const directory = mkdtempSync(join(process.cwd(), ".cache", "xlsx-frame-ipc-"));
+  const workbookPath = join(directory, "frame-values.xlsx");
+  const hostPath = join(directory, "webview-host.html");
+  const preloadPath = join(directory, "ipc-probe-preload.cjs");
+  writeFileSync(workbookPath, offsetWorkbook("xlsx"));
+  writeFileSync(hostPath, "<!doctype html><html><body></body></html>");
+  // The test-owned preload models a renderer that can invoke raw host channels.
+  writeFileSync(preloadPath, `const { contextBridge, ipcRenderer } = require("electron");
+contextBridge.exposeInMainWorld("workbookIpcProbe", {
+  invoke: (channel, args) => ipcRenderer.invoke(channel, ...args)
+});`);
+  const originalBytes = readFileSync(workbookPath);
+  const settings = buildE2eBaseSettings(true, "en");
+  const ctx = await launchSeededElectron({
+    sessionTitle: "Workbook frame isolation", historyRows: [],
+    settings: { ...settings,
+      features: { ...(settings.features as Record<string, unknown>), osToolSandbox: true },
+      permissions: { additionalDirectories: [directory] } },
+  });
+  try {
+    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ ...settings,
+      features: { ...(settings.features as Record<string, unknown>), osToolSandbox: true },
+      permissions: { additionalDirectories: [directory] } }));
+    const preview = await ctx.page.evaluate((path) => window.ave.preview.readDocument(path, 0), workbookPath);
+    if (!preview.ok) throw new Error(`Expected a host preview, got ${preview.error}`);
+    expect(preview.editToken).toMatch(/^[a-f0-9]{64}$/);
+    const htmlUrl = pathToFileURL(join(process.cwd(), "dist/src/plugin-ui-shell.html")).href;
+    const scriptUrl = pathToFileURL(join(process.cwd(), "dist/src/plugin-ui-shell.js")).href;
+    const partition = pluginPartitionName(basename(directory));
+    const proof = await ctx.app.evaluate(async ({ BrowserWindow, session }, input) => {
+      const pluginSession = session.fromPartition(input.partition);
+      const preloadId = pluginSession.registerPreloadScript({ type: "frame", filePath: input.preloadPath });
+      const host = new BrowserWindow({ show: false,
+        webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await host.loadFile(input.hostPath);
+        const attached = new Promise<WebContents>((resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("Guest shell did not load")), 15_000);
+          host.webContents.once("did-attach-webview", (_event, guest) => {
+            guest.once("did-finish-load", () => { clearTimeout(deadline); resolve(guest); });
+            guest.once("did-fail-load", (_event, code, description, _url, mainFrame) => {
+              if (mainFrame) { clearTimeout(deadline); reject(new Error(`Guest shell load failed: ${code} ${description}`)); }
+            });
+          });
+        });
+        await host.webContents.executeJavaScript(`(() => {
+          const guest = document.createElement('webview');
+          guest.setAttribute('partition', ${JSON.stringify(input.partition)});
+          guest.setAttribute('src', ${JSON.stringify(input.htmlUrl)});
+          document.body.appendChild(guest);
+        })()`);
+        const guest = await attached;
+        const invoke = (channel: string, ...args: unknown[]) => guest.executeJavaScript(
+          `window.workbookIpcProbe.invoke(${JSON.stringify(channel)}, ${JSON.stringify(args)})`);
+        const rawSave = { action: "save", token: input.token, row: 10_001, column: 1, value: 84 };
+        const html = { url: guest.getURL(), type: guest.getType(),
+          read: await invoke(input.readChannel, input.workbookPath, 0), save: await invoke(input.editChannel, rawSave) };
+        const navigated = new Promise<void>((resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("Guest script navigation did not finish")), 15_000);
+          guest.once("did-finish-load", () => { clearTimeout(deadline); resolve(); });
+          guest.once("did-fail-load", (_event, code, description, _url, mainFrame) => {
+            if (mainFrame) { clearTimeout(deadline); reject(new Error(`Guest script load failed: ${code} ${description}`)); }
+          });
+        });
+        await guest.executeJavaScript(`setTimeout(() => location.assign(${JSON.stringify(input.scriptUrl)}), 0); true`);
+        await navigated;
+        const script = { url: guest.getURL(), type: guest.getType(),
+          read: await invoke(input.readChannel, input.workbookPath, 0), save: await invoke(input.editChannel, rawSave),
+          readFile: await invoke(input.readFileChannel, input.workbookPath) };
+        return { html, script, partition: input.partition, guestUsesPluginSession: guest.session === pluginSession,
+          guestUsesDefaultSession: guest.session === session.defaultSession, guestFrameIsMain: guest.mainFrame.parent === null,
+          hostType: host.webContents.getType(), hostUsesDefaultSession: host.webContents.session === session.defaultSession };
+      } finally {
+        clearTimeout(deadline);
+        if (!host.isDestroyed()) host.destroy();
+        pluginSession.unregisterPreloadScript(preloadId);
+      }
+    }, { hostPath, preloadPath, htmlUrl, scriptUrl, partition, workbookPath, token: preview.editToken!,
+      readChannel: CHANNELS.preview.readDocument, readFileChannel: CHANNELS.preview.readFile, editChannel: CHANNELS.preview.editXlsx });
+    expect(proof.html).toMatchObject({ url: htmlUrl, type: "webview", read: { ok: false, error: "unauthorized" }, save: { ok: false, error: "unauthorized" } });
+    expect(proof.script).toMatchObject({ url: scriptUrl, type: "webview", read: { ok: false, error: "unauthorized" },
+      save: { ok: false, error: "unauthorized" }, readFile: { ok: false, error: "unauthorized" } });
+    expect(proof).toMatchObject({ guestUsesPluginSession: true, guestUsesDefaultSession: false, guestFrameIsMain: true,
+      hostType: "window", hostUsesDefaultSession: true });
+    expect(readFileSync(workbookPath).equals(originalBytes)).toBe(true);
+    const evidence = test.info().outputPath("workbook-plugin-frame-ipc.json");
+    writeFileSync(evidence, JSON.stringify(proof, null, 2));
+    await test.info().attach("workbook-plugin-frame-ipc", { path: evidence, contentType: "application/json" });
   } finally {
     await teardownSeededElectron(ctx, { terminate: true });
     rmSync(directory, { recursive: true, force: true });

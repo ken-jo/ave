@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -14,11 +14,17 @@ import * as sandboxPolicy from "../../../permissions/asrt-sandbox.js";
 import * as documentInput from "../../../tools/preview-document-input.js";
 import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
 import * as managedChildren from "../../../main/managed-child-processes.js";
+import * as bundledScript from "../../../main/bundled-script-execution.js";
+import * as workbookTransaction from "../../../skills/xlsx-file-transaction.js";
+import { editWorkbookFile, inspectWorkbookCell } from "../../../skills/xlsx-edit.js";
+import { validateHostRendererSender } from "../../gated.js";
 
-const { handlers, additionalDirectories, childRuntime } = vi.hoisted(() => ({
+const { handlers, additionalDirectories, childRuntime, defaultSession, messageBox } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   additionalDirectories: { value: [] as string[] },
   childRuntime: { mainDir: "" },
+  defaultSession: {},
+  messageBox: vi.fn(),
 }));
 
 vi.mock("../../../main/main-paths.js", async (importOriginal) => ({
@@ -27,6 +33,8 @@ vi.mock("../../../main/main-paths.js", async (importOriginal) => ({
 }));
 
 vi.mock("electron", () => ({
+  session: { defaultSession },
+  dialog: { showMessageBox: messageBox },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -44,7 +52,8 @@ import { registerPreviewHandlers } from "../preview.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
 const auditLog = vi.fn();
-const deps = { auditLogger: { log: auditLog } } as never;
+const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
+const deps = { auditLogger: { log: auditLog }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
@@ -54,7 +63,9 @@ let outside: string;
 
 function documentEvent(url: string, senderId = 1, routingId = 0) {
   const frame = { url, processId: senderId, routingId, detached: false, isDestroyed: (): boolean => false };
-  const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, isDestroyed: (): boolean => false });
+  const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, isDestroyed: (): boolean => false,
+    getType: (): string => "window", session: defaultSession });
+  appWindows.push({ isDestroyed: () => false, webContents: sender });
   return { sender, senderFrame: frame };
 }
 
@@ -98,6 +109,8 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  appWindows.length = 0;
+  messageBox.mockReset();
   additionalDirectories.value = [root];
   auditLog.mockClear();
 });
@@ -307,11 +320,11 @@ describe("preview:read-document handler", () => {
     expect(newResult).toMatchObject({ ok: true });
   });
 
-  it("fails clearly if an admitted frame lacks its runtime identity", async () => {
+  it("rejects a frame without its registered native identity", async () => {
     const read = vi.spyOn(documentInput, "readPreviewDocumentInput");
     const handler = handlers.get(CHANNELS.preview.readDocument)!;
     expect(await handler({ senderFrame: { url: OK_FRAME } }, join(root, "data", "people.csv"), 0))
-      .toMatchObject({ ok: false, error: "read-failed" });
+      .toMatchObject({ ok: false, error: "unauthorized" });
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -398,6 +411,17 @@ async function editFromSender(event: ReturnType<typeof documentEvent>, request: 
   return await handlers.get(CHANNELS.preview.editXlsx)!(event, request) as XlsxPanelEditResult;
 }
 
+function installWorkbookRuntime() {
+  vi.spyOn(bundledScript, "assertWorkbookScriptAvailable").mockImplementation(() => {});
+  vi.spyOn(bundledScript, "runWorkbookScript").mockImplementation(async (directory, operation) => {
+    const path = join(directory, "workbook.xlsx");
+    const request: unknown = JSON.parse(readFileSync(join(directory, "request.json"), "utf8"));
+    const result = operation === "inspect" ? inspectWorkbookCell(readFileSync(path), request)
+      : await editWorkbookFile(path, request);
+    return { stdout: JSON.stringify(result) };
+  });
+}
+
 async function readEditToken(event: ReturnType<typeof documentEvent>): Promise<string> {
   const result = await readFromSender(event, join(root, "data", "book.xlsx"));
   if (!result.ok) throw new Error(`Expected a workbook preview, got ${result.error}`);
@@ -407,6 +431,87 @@ async function readEditToken(event: ReturnType<typeof documentEvent>): Promise<s
 }
 
 describe("preview:edit-xlsx boundary", () => {
+  it.each(["plugin-ui-shell.html", "plugin-ui-shell.js"])("rejects a navigated plugin webview at %s for reads and saves", async (asset) => {
+    const owner = documentEvent(OK_FRAME);
+    const plugin = documentEvent(`file:///app/${asset}`, 42);
+    Object.assign(plugin.sender, { getType: () => "webview", session: {} });
+    appWindows.splice(appWindows.findIndex(window => window.webContents === plugin.sender), 1);
+    const before = readFileSync(join(root, "data", "book.xlsx"));
+    try {
+      const token = await readEditToken(owner);
+      if (asset.endsWith(".js")) expect(validateHostRendererSender(plugin as never)).toBe(true);
+      expect(await readFromSender(plugin, join(root, "data", "book.xlsx")))
+        .toMatchObject({ ok: false, error: "unauthorized" });
+      expect(await handlers.get(CHANNELS.preview.readFile)!(plugin, join(root, "notes.txt")))
+        .toMatchObject({ ok: false, error: "unauthorized" });
+      expect(await editFromSender(plugin, { action: "save", token, row: 1, column: 1, value: 84 }))
+        .toEqual({ ok: false, error: "unauthorized" });
+      expect(readFileSync(join(root, "data", "book.xlsx"))).toEqual(before);
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { owner.sender.emit("destroyed"); }
+  });
+
+  it("rejects an app subframe for both token issuance and use", async () => {
+    const event = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(event);
+      const subframe = { ...event, senderFrame: { ...event.senderFrame, routingId: 2 } };
+      expect(await readFromSender(subframe, join(root, "data", "book.xlsx")))
+        .toMatchObject({ ok: false, error: "unauthorized" });
+      expect(await editFromSender(subframe, { action: "save", token, row: 1, column: 1, value: 84 }))
+        .toEqual({ ok: false, error: "unauthorized" });
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it("refuses parsed content and edit tokens if the app window is unregistered during reading", async () => {
+    const event = documentEvent(OK_FRAME);
+    const readSnapshot = documentInput.readPreviewDocumentSnapshot;
+    vi.spyOn(documentInput, "readPreviewDocumentSnapshot").mockImplementationOnce(async (...args) => {
+      const snapshot = await readSnapshot(...args);
+      appWindows.length = 0;
+      return snapshot;
+    });
+    expect(await readFromSender(event, join(root, "data", "book.xlsx")))
+      .toMatchObject({ ok: false, error: "unauthorized" });
+    event.sender.emit("destroyed");
+  });
+
+  it("saves from a registered app main frame with no confirmation", async () => {
+    installWorkbookRuntime();
+    const event = documentEvent(OK_FRAME);
+    const path = join(root, "data", "direct.xlsx");
+    writeFileSync(path, readFileSync(join(root, "data", "book.xlsx")));
+    try {
+      const preview = await readFromSender(event, path);
+      if (!preview.ok || !preview.editToken) throw new Error("Expected a registered workbook identity");
+      expect(await editFromSender(event, { action: "save", token: preview.editToken, row: 1, column: 1, value: 84 }))
+        .toEqual({ ok: true, action: "save" });
+      expect(XLSX.read(readFileSync(path), { type: "buffer" }).Sheets.Sales!.B2!.v).toBe(84);
+      expect(messageBox).not.toHaveBeenCalled();
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it("rechecks app registration in the shared publisher before any source write", async () => {
+    installWorkbookRuntime();
+    const event = documentEvent(OK_FRAME);
+    const path = join(root, "data", "book.xlsx");
+    const before = readFileSync(path);
+    const publish = workbookTransaction.publishWorkbookEdit;
+    const publication = vi.spyOn(workbookTransaction, "publishWorkbookEdit").mockImplementationOnce((...args) => {
+      appWindows.length = 0;
+      return publish(...args);
+    });
+    try {
+      const token = await readEditToken(event);
+      expect(await editFromSender(event, { action: "save", token, row: 1, column: 1, value: 84 }))
+        .toEqual({ ok: false, error: "expired" });
+      expect(publication).toHaveBeenCalledTimes(1);
+      expect(readFileSync(path)).toEqual(before);
+      expect(existsSync(`${path}.ave-bak`)).toBe(false);
+      expect(messageBox).not.toHaveBeenCalled();
+    } finally { event.sender.emit("destroyed"); }
+  });
+
   it.each(["source", "directory", "backup"] as const)("keeps a readable workbook uneditable when the write deny floor covers its %s", async (target) => {
     const path = join(root, "data", "book.xlsx");
     const denied = target === "directory" ? join(root, "data") : target === "backup" ? `${path}.ave-bak` : path;

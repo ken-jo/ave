@@ -11,13 +11,14 @@
  * readTextFileWindow; this IPC does not widen either caller's read authority.
  *
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
- * reach it (fail-closed). Frame-guarded via validateHostRendererSender.
+ * reach it (fail-closed). Restricted to registered app-window main frames.
  */
 import { ipcMain, type WebContents, type WebFrameMain } from "electron";
 import { registerDocumentOpenHandlers } from "../../main/document-open.js";
 import { promises as fs } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
+import { auditUnauthorized } from "../gated.js";
+import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
@@ -117,7 +118,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
   const edits = new XlsxPanelEditService();
 
   ipcMain.handle(CHANNELS.preview.editXlsx, async (e, request: unknown): Promise<XlsxPanelEditResult> => {
-    if (!validateHostRendererSender(e)) {
+    if (!validateAppWindowMainFrameSender(e, deps)) {
       auditUnauthorized(auditLogger, CHANNELS.preview.editXlsx, e);
       return { ok: false, error: "unauthorized" };
     }
@@ -137,7 +138,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
   ipcMain.handle(
     CHANNELS.preview.readFile,
     async (e, rawPath: string, rawWindow?: unknown): Promise<PreviewReadFileResult> => {
-      if (!validateHostRendererSender(e)) {
+      if (!validateAppWindowMainFrameSender(e, deps)) {
         auditUnauthorized(auditLogger, CHANNELS.preview.readFile, e);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
@@ -206,7 +207,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
           return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
         }
-        if (!validateHostRendererSender(e)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+        if (!validateAppWindowMainFrameSender(e, deps)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
         // Audit the preview read the same way a `read_file` tool call is audited
         // — a file left the sandbox boundary for display. The path is redacted
         // (username stripped) via the shared DLP filter, consistent with the
@@ -242,7 +243,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
   ipcMain.handle(
     CHANNELS.preview.readDocument,
     async (e, rawPath: unknown, sheetIndex: unknown): Promise<PreviewReadDocumentResult> => {
-      if (!validateHostRendererSender(e)) {
+      if (!validateAppWindowMainFrameSender(e, deps)) {
         auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
         return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
       }
@@ -283,11 +284,18 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           try {
             if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
             slot.signal.throwIfAborted();
+            if (!validateAppWindowMainFrameSender(e, deps)) {
+              return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+            }
             const snapshot = format === "xlsx" && (await fs.lstat(resolved)).nlink === 1
               ? await readPreviewDocumentSnapshot(resolved, slot.signal) : undefined;
             const bytes = snapshot?.data ?? await readPreviewDocumentInput(resolved, slot.signal);
             inputBytes = bytes.length;
             const document = await slot.parse(bytes, format, sheetIndex);
+            if (!validateAppWindowMainFrameSender(e, deps)) {
+              auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+              return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+            }
             auditLogger.log({
               timestamp: new Date().toISOString(),
               sessionId: "preview-read",
@@ -300,7 +308,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
               }),
             });
             const isCurrent = (): boolean => {
-              if (!validateHostRendererSender(e) || e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) return false;
+              if (!validateAppWindowMainFrameSender(e, deps)) return false;
               const scope = currentReadScope();
               const allowed = assertReadableFilePath(resolved, scope.cwd, scope.extraAllowed);
               const writeFloor = getDefaultSensitiveWriteDenyPaths();

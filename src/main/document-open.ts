@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types.js";
 import type { IpcDeps } from "../ipc/types.js";
 import { CHANNELS } from "../contract/app-contract.js";
-import { validateHostRendererSender, auditUnauthorized } from "../ipc/gated.js";
+import { auditUnauthorized } from "../ipc/gated.js";
+import { validateAppWindowMainFrameSender } from "../ipc/app-window-sender.js";
 import { findSessionMainWindowContents, mainWindowForContents } from "./app-state.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
@@ -39,7 +40,7 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
   settings = deps.settingsService;
   setDocumentPanelOpener(openDocumentForSession);
   ipcMain.handle(CHANNELS.preview.documentOpenAck, (event, raw: unknown) => {
-    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+    if (!validateAppWindowMainFrameSender(event, deps)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.preview.documentOpenAck, event);
       return { ok: false, error: "unauthorized" };
     }
