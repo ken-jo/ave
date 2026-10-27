@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
-import type { DocumentObservationEvent } from "../shared/agent-observation.js";
+import type { AgentObservationEvent, DocumentObservationEvent, TerminalObservationEvent } from "../shared/agent-observation.js";
 import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -130,6 +130,27 @@ describe("preload — plugin webview asset URLs", () => {
     expect(handler).toHaveBeenCalledWith(events);
     unsubscribe();
     expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, listener);
+  });
+
+  it("multiplexes terminal snapshots on the existing channel without delivering them to document viewers", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const documents = vi.fn();
+    const all = vi.fn();
+    preview.onDocumentObservation(documents);
+    const stop = preview.onAgentObservation(all);
+    const listeners = mockOn.mock.calls.filter(([channel]) => channel === CHANNELS.preview.observationEvents)
+      .map(([, listener]) => listener as (event: unknown, events: AgentObservationEvent[]) => void);
+    const terminal: TerminalObservationEvent = { source: "terminal", actor: "agent", sessionId: "terminal-session",
+      target: { id: "11111111-1111-4111-8111-111111111111", path: "terminal-activity" }, seq: 1, ts: 1000,
+      kind: "snapshot", before: null, after: { commands: [] } };
+    for (const listener of listeners) listener({}, [terminal]);
+    expect(documents).not.toHaveBeenCalled();
+    expect(all).toHaveBeenCalledExactlyOnceWith([terminal]);
+    stop();
+    expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.preview.observationEvents, listeners[1]);
+    const request = { action: "subscribe-terminal" as const, sessionId: "terminal-session" };
+    await preview.acknowledgeAgentObservation(request);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.observationAck, request);
   });
 
   afterEach(() => {

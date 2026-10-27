@@ -12,6 +12,12 @@ import { t } from "../../../i18n/index.js";
 import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
 import type { SandboxGitControlSnapshot } from "../../../permissions/sandbox-write-policy.js";
 import { egressInvocationAbortSignal, egressInvocationOwner } from "../../../permissions/egress-invocations.js";
+import { setAgentTerminalObservationSink, type AgentTerminalObservationInput } from "../../../tools/agent-terminal-observation.js";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
+import { runWithInvocationOrigin } from "../../../plugins/runtime/origin-chain.js";
+import { ObservationDaemon } from "../../../observation/daemon.js";
+import { TerminalObservationAdapter } from "../../../observation/terminal-adapter.js";
+import type { TerminalObservedCommand, TerminalObservationEvent } from "../../../shared/agent-observation.js";
 
 let gateActive = true;
 const nativePlatform = process.platform;
@@ -291,6 +297,7 @@ beforeEach(() => {
   setTerminalEmitter(emit);
 });
 afterEach(() => {
+  setAgentTerminalObservationSink(undefined);
   __resetTerminalsForTest();
   rmSync(homeParent, { recursive: true, force: true });
   if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
@@ -1133,6 +1140,257 @@ describe("pty-manager typing an approved agent command", () => {
     };
     return { pty, mark, prompt, shell, report };
   }
+
+  function observationSink() {
+    const controller = new AbortController();
+    const lease = { signal: controller.signal, write: vi.fn(), finish: vi.fn(), bindEgress: vi.fn(), revoke: vi.fn() };
+    const start = vi.fn((_identity: unknown, _input: AgentTerminalObservationInput) => lease);
+    setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
+    return { start, lease, controller };
+  }
+
+  function agentType(line = "echo approved") {
+    const identity = { sessionId: "conversation", turnId: "turn", toolUseId: "command" };
+    return runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+      () => typeTerminalCommand(TAB, 3, line, "/w")));
+  }
+
+  it("never observes user commands typed in either terminal lane", async () => {
+    const { start } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    writeTerminal(TAB, "echo human\r");
+    pty.emitData(`${mark("C;cmdline_url=echo%20human")}private user output\n${mark("D;0")}`);
+    const manual = await spawnLane({ tabId: TAB, lane: "manual", ownerWindowId: 3 });
+    expect(manual.ok).toBe(true);
+    if (!manual.ok) throw new Error("Missing manual terminal");
+    expect(writeLane(manual.session, "echo manual\r")).toEqual({ ok: true });
+    lastPty!.emitData("private manual output\n");
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("does not infer authority from authenticated markers or direct host typing", async () => {
+    const { start } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: true });
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}output\n${mark("D;0")}`);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("does not observe UI-origin calls nested inside model context", async () => {
+    const { start } = observationSink();
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await expect(runWithInvocationOrigin("ui", undefined, () => agentType())).resolves.toMatchObject({ ok: true });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("binds observation before Enter and continues the exact block after the tool wait ends", async () => {
+    const { start, lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    const respond = pty.respond;
+    pty.respond = (data) => {
+      respond?.(data);
+      if (data === "\r") {
+        expect(start).toHaveBeenCalledTimes(1);
+        pty.emitData(`${mark("C;cmdline_url=echo%20approved")}first\n`);
+      }
+    };
+    await expect(agentType()).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(start).toHaveBeenCalledWith({ sessionId: "conversation", turnId: "turn", toolUseId: "command" },
+      expect.objectContaining({ kind: "terminal", command: "echo approved", cwd: "/w", tabId: TAB,
+        sandbox: { mode: "isolated", detail: "asrt" } }));
+    const token = lease.bindEgress.mock.calls[0]![0] as string;
+    expect(egressInvocationOwner(token)).toEqual({ kind: "terminal", tabId: TAB });
+    expect(lease.bindEgress).toHaveBeenCalledWith(token, "terminal-session");
+    expect(lease.write).toHaveBeenCalledWith("first\n");
+    expect(lease.finish).not.toHaveBeenCalled();
+    pty.emitData("second");
+    expect(lease.write).toHaveBeenCalledTimes(1);
+    pty.emitData(` line\n${mark("D;2")}unrelated prompt text`);
+    expect(lease.write.mock.calls.map(([text]) => text).join("")).toBe("first\nsecond line\n");
+    expect(lease.finish).toHaveBeenCalledExactlyOnceWith(2, undefined);
+    pty.emitData(`${mark("C;cmdline_url=echo%20human")}human\n${mark("D;0")}`);
+    expect(lease.write).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes before accepted human input can echo into the agent block", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}agent output\npartial`);
+    pty.respond = () => {
+      expect(lease.revoke).toHaveBeenCalledTimes(1);
+      pty.emitData("user-private input\n");
+    };
+    expect(writeTerminal(TAB, "private user value")).toEqual({ ok: true });
+    pty.emitData(`${mark("D;0")}`);
+    expect(lease.write.mock.calls.map(([text]) => text).join("")).toBe("agent output\n");
+    expect(lease.finish).not.toHaveBeenCalled();
+  });
+
+  it("keeps terminal emulator replies outside human-input revocation", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(mark("C;cmdline_url=echo%20approved"));
+    expect(writeTerminal(TAB, "\u001b[?1;2c")).toEqual({ ok: true });
+    pty.emitData(`continued\n${mark("D;0")}`);
+    expect(lease.revoke).not.toHaveBeenCalled();
+    expect(lease.write).toHaveBeenCalledWith("continued\n");
+    expect(lease.finish).toHaveBeenCalledWith(0, undefined);
+  });
+
+  it("fails clearly without recording contents for a mismatched authenticated block", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    expect(() => pty.emitData(`${mark("C;cmdline_url=echo%20different")}private\n`))
+      .toThrow("Terminal observation command does not match its admitted block.");
+    expect(lease.revoke).toHaveBeenCalledTimes(1);
+    expect(lease.write).not.toHaveBeenCalled();
+  });
+
+  it("fails clearly when an admitted block changes its reported directory", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    expect(() => pty.emitData(`${mark("P;Cwd=/other")}${mark("C;cmdline_url=echo%20approved")}private\n`))
+      .toThrow("Terminal observation command does not match its admitted block.");
+    expect(lease.revoke).toHaveBeenCalledTimes(1);
+    expect(lease.write).not.toHaveBeenCalled();
+  });
+
+  it("preserves ordered command output after terminal scrollback retention truncates", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(mark("C;cmdline_url=echo%20approved"));
+    const first = `${"x".repeat(150_000)}continuing-line`;
+    pty.emitData(first);
+    pty.emitData(`\nvisible tail\n${mark("D;0")}`);
+    const output = lease.write.mock.calls.map(([text]) => text).join("");
+    expect(output).toBe(`${first}\nvisible tail\n`);
+    expect(getTerminalBlockTracker(TAB)!.get(1)!.truncated).toBe(true);
+  });
+
+  it("keeps private-key framing through the actual adapter when one chunk exceeds terminal history", async () => {
+    const daemon = new ObservationDaemon();
+    const adapter = new TerminalObservationAdapter(daemon);
+    const events: TerminalObservationEvent[] = [];
+    setAgentTerminalObservationSink({ start: (identity, input) => adapter.start(identity, input),
+      egress: (token, decision) => adapter.recordEgress(token, decision), releaseSessions: (ended) => adapter.releaseSessions(ended) });
+    try {
+      const { pty, mark, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      await agentType();
+      const output = `${"x".repeat(9_000)}\n-----BEGIN PRIVATE KEY-----\n${"PRIVATEBODY\n".repeat(20_000)}-----END PRIVATE KEY-----\nvisible tail\n`;
+      pty.emitData(`${mark("C;cmdline_url=echo%20approved")}${output}${mark("D;0")}`);
+      adapter.registerView("view", "conversation", () => true, (batch) => {
+        events.push(...batch);
+        adapter.acknowledge("view", batch.at(-1)!.seq);
+      });
+      let command: TerminalObservedCommand | undefined;
+      await vi.waitFor(() => {
+        const snapshot = events.findLast((event) => event.kind === "snapshot");
+        command = snapshot?.kind === "snapshot" ? snapshot.after.commands[0] : undefined;
+        expect(command?.status).toBe("completed");
+      });
+      expect(command?.outputTail).toContain("visible tail");
+      expect(JSON.stringify(events)).not.toContain("PRIVATEBODY");
+      expect(command?.outputTail.length).toBeLessThanOrEqual(4_096);
+      expect(getTerminalBlockTracker(TAB)!.get(1)!.truncated).toBe(true);
+    } finally { daemon.dispose(); }
+  });
+
+  it("reuses nonce-redacted snapshots even when a nonce is split across PTY chunks", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    const nonce = mark("A").split(";").at(-1)!.slice(0, -1);
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}${nonce.slice(0, 16)}`);
+    expect(lease.write).not.toHaveBeenCalled();
+    pty.emitData(`${nonce.slice(16)}\n${mark("D;0")}`);
+    const output = lease.write.mock.calls.map(([text]) => text).join("");
+    expect(output).toBe("[terminal-nonce]\n");
+    expect(output).not.toContain(nonce);
+  });
+
+  it("reports unknown command termination on shell exit and stops capture on tab closure", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}last line`);
+    pty.emitExit(9);
+    expect(lease.write).toHaveBeenCalledWith("last line");
+    expect(lease.finish).toHaveBeenCalledExactlyOnceWith(null, "interrupted");
+    killTerminal(TAB);
+    pty.emitData("late output\n");
+    expect(lease.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends command observation at process exit while sandbox cleanup is still pending", async () => {
+    let complete!: (outcome: SandboxCleanupOutcome) => void;
+    const cleanupCompleted = new Promise<SandboxCleanupOutcome>((resolve) => { complete = resolve; });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["wrapped-shell"], env: {}, cleanupCompleted });
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}last partial line`);
+    pty.emitExit(3);
+    expect(lease.write).toHaveBeenCalledExactlyOnceWith("last partial line");
+    expect(lease.finish).toHaveBeenCalledExactlyOnceWith(null, "interrupted");
+    complete({ notice: "cleanup finished later" });
+    await Promise.resolve();
+    expect(lease.write).toHaveBeenCalledTimes(1);
+    expect(lease.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops an active command observation immediately when its tab closes", async () => {
+    const { lease } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}visible\npending`);
+    killTerminal(TAB);
+    expect(lease.finish).toHaveBeenCalledExactlyOnceWith(null, "interrupted");
+    pty.emitData("late output\n");
+    pty.emitExit(0);
+    expect(lease.write).toHaveBeenCalledExactlyOnceWith("visible\n");
+    expect(lease.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not admit observation when editor verification refuses the command", async () => {
+    const { start } = observationSink();
+    const { pty, prompt, shell } = await zshTerminal(3);
+    pty.emitData(prompt());
+    shell.reports = () => "different text";
+    await expect(agentType()).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("drops producer buffers immediately when the observation owner ends its lease", async () => {
+    const { lease, controller } = observationSink();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    pty.emitData(`${mark("C;cmdline_url=echo%20approved")}pending private output`);
+    controller.abort();
+    pty.emitData(` should never be sent\n${mark("D;0")}`);
+    expect(lease.write).not.toHaveBeenCalled();
+    expect(lease.finish).not.toHaveBeenCalled();
+    expect(lease.revoke).not.toHaveBeenCalled();
+  });
 
   it("does not submit a matching echo when the editor buffer has lost its first character", async () => {
     const { pty, prompt, shell } = await zshTerminal(3);

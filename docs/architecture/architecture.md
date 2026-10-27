@@ -80,11 +80,12 @@ the host observes and renders, with no document publication API.
 
 One main-process observation daemon owns bounded, session-bound adapter
 lifetimes. Its source interface is deliberately separate from its document
-rendering engine. Only the document adapter ships here; browser and terminal
-sources may implement the same interface later. User document, browser and
-terminal activity is outside the observation contract. Events and snapshots
-stay in local memory and private process directories: they are not transcript
-content, telemetry, remote-surface events or provider input.
+rendering engine. Document and terminal adapters share that daemon; browser
+observation is not implemented. User document, browser and terminal activity
+is outside the observation contract. Events and snapshots remain local:
+terminal history exists only in memory, and document journals use private
+process directories. Neither becomes transcript content, telemetry,
+remote-surface events or provider input.
 
 Every event has `source: "document" | "browser" | "terminal"`,
 `actor: "agent"`, host-derived `sessionId`, `target: { id, path }`, monotonically
@@ -100,7 +101,7 @@ for paragraph and shape adapters without implementing them. The daemon, not a
 journal or renderer, supplies actor, session, target identity, sequence and
 timestamp.
 
-The adapter contract starts an exact target, accepts a rendered snapshot and
+The document adapter starts an exact target, accepts a rendered snapshot and
 agent mutation evidence, reconciles a settled save, and disposes all watches,
 timers and pending work. A replaceable `DocumentObservationEngine` accepts
 already admitted bytes, a format and selection index, and returns a bounded
@@ -188,7 +189,7 @@ a reload rather than keeping a draft as file truth. The skill retains its
 existing size ceiling, refusal rules, backup and atomic replacement; the host
 has no edit IPC, staging publisher, workbook transaction or write token.
 
-Each daemon has at most 16 active document views, 256 queued events and
+Each daemon has at most 16 active observation views, 256 queued events and
 1 MiB of queued element data per view. It sends batches of at most 32 events
 with at most 64 unacknowledged events. Repeated pending elements coalesce by
 address; overload produces a resynchronization status and a fresh verified
@@ -200,15 +201,78 @@ its frame, closing the panel, ending a journal invocation or shutting down
 disposes the corresponding capabilities and bounded buffers. No observation
 survives a host restart.
 
+The terminal adapter admits shell-tool runs and individual commands in the
+Agent terminal lane only from the host's authorized model-turn invocation
+context. Tool arguments, renderer metadata, terminal lane and shell markers
+cannot create that authority. Terminal admission binds the approved command,
+verified directory, session incarnation and exact authenticated command block
+immediately before the host presses Enter. Startup, prompts and user commands
+are never observed, including commands a user types into the Agent lane. Any
+accepted user input revokes that command's capture and egress binding before
+the bytes reach the shell; pending output is discarded. A mismatched command
+or directory is a contract error, not a reason to observe another block.
+
+Terminal events use the same envelope with `source: "terminal"`. A `snapshot`
+replaces the session's bounded `commands` list; `status` carries
+`observation-error` or `resync-required`. Each command includes its host-issued
+identity, turn/tool identity, command line, directory, start time, duration,
+running/completed/failed/cancelled/interrupted state, known exit code or `null`,
+bounded output tail and truncation flag, chosen sandbox mode and egress
+decisions. Terminal commands also name their tab and session incarnation.
+Commands, directories, output and decision details pass through the existing
+credential-redaction rules before retention or delivery. Split output cannot
+bypass masking; raw pending fragments are bounded independently of the
+redacted display tail. Internal observation contract failures remain visible.
+The shared shapes and limits live in
+[`agent-observation.ts`](../../src/shared/agent-observation.ts). A terminal
+target identifies one conversation's read-only subscription; its `path` is the
+non-filesystem label `terminal-activity`. Snapshots and statuses have `before: null`.
+Output removes control-string payloads and applies bounded current-line carriage
+return and backspace rewrites before masking. Broker-side omissions also set the
+truncation flag, even when the supplied suffix fits the local tail.
+
+`TERMINAL_OBSERVATION_LIMITS` bounds retention to 16 sessions, 32 commands per
+session, 4,096 output characters and 16 decisions per command, with at most
+8,192 pending output characters and an 80 ms delivery coalescing interval.
+Completed history is evicted before active work; exhausted active capacity
+fails explicitly. A lease may follow its already admitted child or terminal
+block beyond the initial tool wait or turn, but cannot admit another command.
+Completion follows the actual process or authenticated block exit, not the
+tool's foreground-to-background handoff. Closing/replacing a terminal,
+deleting its conversation or shutting down releases the corresponding leases
+and buffers. There is no persisted terminal observation history.
+Releasing a panel revokes delivery and its queued snapshots; bounded same-session
+command history remains available on reopening until eviction or conversation
+deletion. User-input revocation leaves an `interrupted` entry containing only
+previously redacted output, with an unknown exit code and no later updates.
+
+Shell egress decisions bind the private invocation token to that command.
+A terminal token belongs to its whole shell, including earlier background
+descendants: decisions captured during an admitted command are explicitly
+marked `terminal-session`, not claimed as per-process command causation.
+User-input revocation removes that binding before human activity can be
+captured. The brokered shell transport currently supplies output only on
+completion or an existing task read; its commands declare
+`outputAvailability: "on-completion"`. Observation neither invents a live
+stream nor adds polling that consumes the task's read cursor.
+
 Private observation push and acknowledgement IPC require the same registered
 app-window main-frame identity as preview reads: a live registered window,
 its actual main frame and default session, rechecked at delivery. Webviews,
 plugin partitions, subframes and unregistered contents are refused regardless
-of URL. Acknowledgements name only a host-issued read-only target identity
-and sequence; no request accepts a document path, script or write payload.
+of URL. The existing acknowledgement channel also accepts
+`{ action: "subscribe-terminal", sessionId }`, checked against the caller's
+current conversation/window binding. It returns a host-issued read-only target
+identity; the initial and subsequent snapshots use the existing observation
+push channel. Rendered/release acknowledgements name that identity, session
+and sequence. Renderers ignore older sequences for that target/session;
+acknowledgements cannot exceed the latest sequence actually delivered by the
+daemon, and repeated older acknowledgements do not move its baseline backward.
+No request accepts a document path, script or write payload.
 The panel offers no edit affordance or save action. Agent editing retains
 the ordinary tool approval path; observation grants no permission and prompts
-for no user modification confirmation.
+for no user modification confirmation. Observation adds no confirmation to
+any user action.
 
 File/code, table and page viewers share one compact header: format icon, bold
 basename, muted monospaced parent path and right-aligned icon-only actions.
@@ -225,6 +289,15 @@ These marks use one theme color with light and dark variants. A compact footer
 owns format, selected sheet/page or line count, recalculation status and
 truncation notices. Idle user-only previews have no live strip. Localized
 observation errors occupy that same slot rather than creating additional status rows.
+
+The side panel's terminal observation strip uses the same agent theme color
+and shows the current command with elapsed time. A compact read-only command
+list exposes directory, output tail, exit state, duration, sandbox mode and
+the scope of egress decisions. An empty user-only session shows neither strip
+nor command list. Session changes and panel unmount release the subscription;
+the renderer accepts only its current target/session and acknowledges a
+snapshot after rendering it. Stale or other-source events cannot enter that
+list, and localized observation errors occupy the same strip.
 
 The default-application icon reuses the existing attachment opener. Successful
 preview reads supply bounded, frame-bound read receipts instead of adding paths

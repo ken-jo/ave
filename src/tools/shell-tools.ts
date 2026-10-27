@@ -5,6 +5,7 @@ import type {
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { SHELL_TASK_OUTPUT_PREVIEW_CHARS } from "../shared/shell-tasks.js";
 import { createLogger } from "../lib/logger.js";
+import { beginAgentTerminalObservation, type AgentTerminalObservationInput, type AgentTerminalObservationLease } from "./agent-terminal-observation.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
@@ -146,6 +147,18 @@ interface ShellCompletion {
   signal: NodeJS.Signals | null;
 }
 
+function shellObservationSandbox(plan: HostShellExecutionPlan, disposable: boolean): AgentTerminalObservationInput["sandbox"] {
+  return disposable ? { mode: "disposable", detail: "disposable-container" }
+    : plan.mode === "asrt" ? { mode: "isolated", detail: "filesystem/process confinement" }
+      : { mode: "unconfined", detail: plan.executionRequest === "host" ? "explicit-host" : plan.fallbackReason };
+}
+
+function startShellObservation(command: string, cwd: string, sandbox: AgentTerminalObservationInput["sandbox"], token?: string) {
+  const observation = beginAgentTerminalObservation({ kind: "shell", command, cwd, sandbox });
+  if (token !== undefined) observation?.bindEgress(token);
+  return observation;
+}
+
 function consumeShellExecutionRoute(input: {
   context: ToolExecutionContext;
   legacyPlan: HostShellExecutionPlan;
@@ -248,6 +261,7 @@ interface OutputCollectorOptions {
   /** Display-only live output; the formatted result stays bounded. */
   readonly progress?: ToolOutputProgressSink;
   readonly retainForHandoff?: boolean;
+  readonly observation?: AgentTerminalObservationLease;
 }
 
 function createOutputCollector(child: PipedChild, options: OutputCollectorOptions = {}) {
@@ -266,6 +280,13 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
   let handoffTruncated = false;
   const handoffStdoutDecoder = new StringDecoder("utf8");
   const handoffStderrDecoder = new StringDecoder("utf8");
+  const observationDecoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+  let observationFinished = false;
+  const observe = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+    if (observationFinished || !options.observation) return;
+    const text = observationDecoders[stream].write(chunk);
+    if (text.length > 0) options.observation.write(text);
+  };
   const retainHandoffOutput = (decoded: string): void => {
     if (!options.retainForHandoff) return;
     const remaining = MAX_OUTPUT_CHARS - handoffOutput.length;
@@ -306,11 +327,13 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
     if (retained < chunk.length) truncated = true;
   };
   const collectStderrBytes = (chunk: Buffer): void => {
+    observe("stderr", chunk);
     collect(chunk);
     if (chunk.length > 0) live?.write("stderr", chunk);
   };
   return {
     collect(chunk: Buffer): void {
+      observe("stdout", chunk);
       if (backgroundOutput) { backgroundOutput(handoffStdoutDecoder.write(chunk)); return; }
       if (finalized) return;
       retainHandoffOutput(handoffStdoutDecoder.write(chunk));
@@ -320,6 +343,7 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
     collectStderr(chunk: Buffer): void {
       if (backgroundOutput) {
         const filtered = probeFilter === undefined ? chunk : probeFilter.push(chunk);
+        observe("stderr", filtered);
         backgroundOutput(handoffStderrDecoder.write(filtered));
         return;
       }
@@ -342,11 +366,23 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
     },
     finishBackground(): void {
       if (backgroundOutput) {
-        if (probeFilter) backgroundOutput(handoffStderrDecoder.write(probeFilter.flush()));
+        if (probeFilter) {
+          const rest = probeFilter.flush();
+          observe("stderr", rest);
+          backgroundOutput(handoffStderrDecoder.write(rest));
+        }
         backgroundOutput(handoffStdoutDecoder.end());
         backgroundOutput(handoffStderrDecoder.end());
       }
       backgroundOutput = undefined;
+    },
+    finishObservation(code: number | null, status?: Parameters<AgentTerminalObservationLease["finish"]>[1]): void {
+      if (observationFinished) return;
+      observationFinished = true;
+      if (!options.observation) return;
+      const rest = observationDecoders.stdout.end() + observationDecoders.stderr.end();
+      if (rest.length > 0) options.observation.write(rest);
+      options.observation.finish(code, status);
     },
     abandonCapture(): void { capture?.abandon?.(); },
     handoffSnapshot(): { output: string; truncated: boolean } {
@@ -477,6 +513,7 @@ interface BackgroundShellEntry {
   stopTracking: () => void;
   terminate: () => void;
   waiters: Set<() => void>;
+  observation?: AgentTerminalObservationLease;
 }
 
 interface BackgroundShellReadResult {
@@ -512,6 +549,7 @@ interface BrokerBackgroundShellEntry {
   workloadStatus?: WorkloadBrokerSuccessResults["shell.kill"]["status"];
   completion?: string;
   isError?: boolean;
+  observation?: AgentTerminalObservationLease;
 }
 
 type BrokerSessionCleanupState = "pending" | "complete" | "cleanup-unproven";
@@ -556,6 +594,7 @@ export interface BackgroundShellManager {
     captureOutput?: boolean;
     initialOutput?: string;
     initialOutputTruncated?: boolean;
+    observation?: AgentTerminalObservationLease;
   }): string;
   registerBroker(input: {
     sessionId: string;
@@ -564,6 +603,7 @@ export interface BackgroundShellManager {
     capability: BrokeredWorkloadCapability;
     parent: WorkloadBackgroundParent;
     offset: number;
+    observation?: AgentTerminalObservationLease;
   }): string;
   isBrokerShell(sessionId: string, shellId: string): boolean;
   readBroker(
@@ -910,6 +950,7 @@ function createManager(): BackgroundShellManager {
     for (const entry of [...brokerShells.values()]) {
       if (entry.sessionId !== sessionId) continue;
       brokerShells.delete(entry.shellId);
+      entry.observation?.revoke();
       disposed += 1;
       let cleanup = brokerCleanup.get(sessionId);
       if (cleanup === undefined) {
@@ -932,6 +973,7 @@ function createManager(): BackgroundShellManager {
   };
 
   const append = (entry: BackgroundShellEntry, chunk: string): void => {
+    entry.observation?.write(chunk);
     if (entry.outputTruncated) return;
     const remaining = MAX_OUTPUT_CHARS - entry.output.length;
     if (remaining <= 0) {
@@ -999,11 +1041,12 @@ function createManager(): BackgroundShellManager {
       entry.workloadStatus = result.status;
       entry.completion = workloadCompletionSentence(result);
       entry.isError = workloadTerminalIsError(result);
+      entry.observation?.finish(result.exitCode, result.cancelled ? "cancelled" : workloadTerminalIsError(result) ? "failed" : "completed");
     }
   };
 
   return {
-    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false }): string {
+    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false, observation }): string {
       // Keep the registry lean within a long-lived session: drop this session's
       // already-finished shells whose output has been fully read before adding a
       // new one. Never-read terminal shells are preserved (the model may still
@@ -1057,11 +1100,13 @@ function createManager(): BackgroundShellManager {
         stopTracking,
         terminate,
         waiters: new Set(),
+        observation,
       };
       shells.set(shellId, entry);
 
-      const onStdout = (c: Buffer): void => append(entry, c.toString("utf-8"));
-      const onStderr = (c: Buffer): void => append(entry, c.toString("utf-8"));
+      const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+      const onStdout = (c: Buffer): void => append(entry, decoders.stdout.write(c));
+      const onStderr = (c: Buffer): void => append(entry, decoders.stderr.write(c));
       if (captureOutput) {
         child.stdout?.on("data", onStdout);
         child.stderr?.on("data", onStderr);
@@ -1073,11 +1118,13 @@ function createManager(): BackgroundShellManager {
         else terminationRequested = true;
       });
       child.on("close", (code, signal: NodeJS.Signals | null = null) => {
+        if (captureOutput) append(entry, decoders.stdout.end() + decoders.stderr.end());
         entry.exitCode = code;
         entry.signal = signal;
         if (entry.status === "running") {
           entry.status = signal === null ? "exited" : "killed";
         }
+        observation?.finish(code, entry.status === "killed" ? "cancelled" : entry.status === "failed" || code !== 0 ? "failed" : "completed");
         notify(entry);
       });
       child.on("error", (err) => {
@@ -1085,12 +1132,13 @@ function createManager(): BackgroundShellManager {
           entry.status = "failed";
           append(entry, `\n[spawn error] ${err.message}\n`);
         }
+        observation?.finish(null, "failed");
         notify(entry);
       });
       return shellId;
     },
 
-    registerBroker({ sessionId, command, executionId, capability, parent, offset }): string {
+    registerBroker({ sessionId, command, executionId, capability, parent, offset, observation }): string {
       for (const entry of [...brokerShells.values()]) {
         if (
           entry.sessionId === sessionId &&
@@ -1114,6 +1162,7 @@ function createManager(): BackgroundShellManager {
         signal: null,
         truncated: false,
         capturedChars: 0,
+        observation,
       });
       return shellId;
     },
@@ -1160,6 +1209,7 @@ function createManager(): BackgroundShellManager {
         ) {
           return brokerFailureResult(new Error("workload-broker:background-binding-mismatch"));
         }
+        entry.observation?.write(result.output, { truncated: result.truncated });
         applyBrokerTerminal(entry, result);
         output += captureBrokerBackgroundOutput(entry, result.output);
       }
@@ -1192,6 +1242,7 @@ function createManager(): BackgroundShellManager {
       if (result.executionId !== entry.executionId || unreadOutput === null) {
         return brokerFailureResult(new Error("workload-broker:background-binding-mismatch"));
       }
+      entry.observation?.write(unreadOutput, { truncated: result.truncated });
       applyBrokerTerminal(entry, result);
       return brokerBackgroundSnapshot(
         entry,
@@ -1270,6 +1321,7 @@ function createManager(): BackgroundShellManager {
       for (const entry of [...shells.values()]) {
         if (entry.sessionId !== sessionId) continue;
         entry.terminate();
+        entry.observation?.revoke();
         shells.delete(entry.shellId);
         notify(entry);
         disposed += 1;
@@ -1336,7 +1388,9 @@ function createManager(): BackgroundShellManager {
     _resetForTest(): void {
       for (const entry of [...shells.values()]) {
         entry.stopTracking();
+        entry.observation?.revoke();
       }
+      for (const entry of brokerShells.values()) entry.observation?.revoke();
       const entries = [...shells.values()];
       shells.clear();
       localCleanup.clear();
@@ -1759,7 +1813,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       input.run_in_background === true &&
       (!hostShellPlan.requiresExplicitUserApproval || disposableExecution)
     ) {
-      const result = spawnBackground(input.command, resolvedCwd, sessionIdFromContext(ctx), prepared);
+      const result = spawnBackground(input.command, resolvedCwd, sessionIdFromContext(ctx), prepared, shellObservationSandbox(hostShellPlan, disposableExecution));
       return disposableExecution ? withDisposableExecutionMetadata(result) : result;
     }
 
@@ -1767,6 +1821,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
       captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
       sessionIdFromContext(ctx), !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
+      shellObservationSandbox(hostShellPlan, disposableExecution),
     );
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
@@ -1926,6 +1981,10 @@ async function runBrokeredBash(
       `workload-broker:timeout-limit: brokered execution accepts at most ${WORKLOAD_BROKER_LIMITS.maximumTimeoutMs / 1000} seconds; retry with a smaller timeoutSeconds`,
     ));
   }
+  const observation = beginAgentTerminalObservation({ kind: "shell", command: input.command, cwd: resolvedCwd,
+    sandbox: { mode: "disposable", detail: "disposable-container" }, outputAvailability: "on-completion" });
+  let completed = false;
+  try {
   const result = await authority.runtime.executeBrokeredWorkloadRequest(
     authority.capability,
     "shell.run",
@@ -1938,6 +1997,9 @@ async function runBrokeredBash(
     ctx.abortSignal,
   );
   if (!("status" in result)) return withBrokerTransportMetadata(result);
+  observation?.write(result.output);
+  observation?.finish(result.exitCode, result.cancelled ? "cancelled" : workloadTerminalIsError(result) ? "failed" : "completed");
+  completed = true;
   const captured = await captureBrokerForegroundOutput(result.output, ctx);
   const completion = workloadCompletionSentence(result);
   const output = completion === undefined
@@ -1962,6 +2024,7 @@ async function runBrokeredBash(
         : { outputArtifact: captured.outputArtifact }),
     },
   };
+  } finally { if (!completed) observation?.finish(null, ctx.abortSignal?.aborted ? "cancelled" : "failed"); }
 }
 
 async function startBrokeredBash(
@@ -1995,6 +2058,10 @@ async function startBrokeredBash(
       new Error("workload-broker:background-capability-lifetime-insufficient"),
     );
   }
+  const observation = beginAgentTerminalObservation({ kind: "shell", command: input.command, cwd: resolvedCwd,
+    sandbox: { mode: "disposable", detail: "disposable-container" }, outputAvailability: "on-completion" });
+  let registered = false;
+  try {
   const result = await authority.runtime.executeBrokeredWorkloadRequest(
     authority.capability,
     "shell.start",
@@ -2021,7 +2088,9 @@ async function startBrokeredBash(
     capability: authority.capability,
     parent: authority.runtime.issueWorkloadBackgroundParent(result),
     offset: result.offset,
+    observation,
   });
+  registered = true;
   return {
     output: JSON.stringify({
       backgrounded: true,
@@ -2041,6 +2110,7 @@ async function startBrokeredBash(
       isolation: "disposable-container",
     },
   };
+  } finally { if (!registered) observation?.finish(null, ctx.abortSignal?.aborted ? "cancelled" : "failed"); }
 }
 
 /**
@@ -2050,7 +2120,8 @@ async function startBrokeredBash(
  * environment as {@link spawnWithTimeout}; `timeoutSeconds` does not apply — a
  * background shell runs until it exits, bash_kill, session end, or app quit.
  */
-function spawnBackground(command: string, cwd: string, sessionId: string, prepared: PreparedShellInvocation): SpawnResult {
+function spawnBackground(command: string, cwd: string, sessionId: string, prepared: PreparedShellInvocation,
+  sandbox: AgentTerminalObservationInput["sandbox"]): SpawnResult {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
   const { shell, argv, environment: env } = preparedShellCommand(prepared);
@@ -2062,15 +2133,19 @@ function spawnBackground(command: string, cwd: string, sessionId: string, prepar
     };
   }
   assertManagedChildProcessAdmissionOpen("tool:bash:background");
-  const child = process.platform === "win32"
-    ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env })
-    : spawn(shell.cmd, [...argv], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-      shell: false,
-      detached: true,
-    });
+  const observation = startShellObservation(command, cwd, sandbox);
+  let child: ChildProcess;
+  try {
+    child = process.platform === "win32"
+      ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env })
+      : spawn(shell.cmd, [...argv], {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env,
+        shell: false,
+        detached: true,
+      });
+  } catch (error) { observation?.finish(null, "failed"); throw error; }
   const cleanup = transferPreparedShellInvocation(prepared);
   child.once("close", cleanup);
   const shellId = backgroundShellManager.register({
@@ -2079,6 +2154,7 @@ function spawnBackground(command: string, cwd: string, sessionId: string, prepar
     child,
     startedAt: new Date().toISOString(),
     killProcessGroup: process.platform !== "win32",
+    observation,
   });
   return {
     output: JSON.stringify({
@@ -2260,6 +2336,10 @@ export async function spawnWithSandbox(
   // keys ASRT set/changed. So the Windows proxy set is propagated (the "spread")
   // while mac/linux gains nothing extra, and host secrets stay stripped on both.
   const childEnv = preparedSandboxEnvironment(prepared, wrapped.env);
+  let observation: AgentTerminalObservationLease | undefined;
+  try { observation = startShellObservation(command, resolvedCwd,
+    { mode: "isolated", detail: "filesystem/process confinement" }, egress.token); }
+  catch (error) { void cleanupAsrtSandboxAfterCommand(); egress.release(); throw error; }
 
   return await new Promise<SpawnResult>((resolveResult) => {
     // CRITICAL: shell:false — the wrapper argv is the literal program+args; a
@@ -2277,6 +2357,7 @@ export async function spawnWithSandbox(
         env: childEnv,
       });
     } catch (err) {
+      observation?.finish(null, "failed");
       void cleanupAsrtSandboxAfterCommand();
       egress.release();
       void annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true).then(annotated => {
@@ -2299,6 +2380,7 @@ export async function spawnWithSandbox(
       captureFactory: outputCaptureFactory,
       cwdProbe: preparedShellCwdProbe(prepared).probe,
       progress,
+      observation,
     });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
@@ -2328,6 +2410,7 @@ export async function spawnWithSandbox(
       const { output: formatted, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )), command, lifecycleCleaned);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       if (lifetime.timedOut) {
         resolveResult({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
@@ -2357,6 +2440,7 @@ export async function spawnWithSandbox(
         // remains alive. The later `close` event owns ASRT/HOME finalization.
         cleanupAfterTermination();
         const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned);
+        outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult({
           output: annotated.output,
@@ -2380,6 +2464,7 @@ async function spawnWithTimeout(
   spawnAuthorization?: HostShellSpawnAuthorization,
   sessionId?: string,
   backgroundable = false,
+  sandbox: AgentTerminalObservationInput["sandbox"] = { mode: "unconfined", detail: "host" },
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -2390,7 +2475,9 @@ async function spawnWithTimeout(
   const launch = (): Promise<SpawnResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:bash");
-    const child = spawn(shell.cmd, [...argv], {
+    const observation = startShellObservation(command, cwd, sandbox);
+    let child: PipedChild;
+    try { child = spawn(shell.cmd, [...argv], {
       windowsHide: true,
       detached: process.platform !== "win32",
       cwd,
@@ -2399,7 +2486,8 @@ async function spawnWithTimeout(
       // the child's environment. Only generic shell/locale vars pass through.
       env: { ...environment },
       shell: false,
-    }) as PipedChild;
+    }) as PipedChild; }
+    catch (error) { observation?.finish(null, "failed"); throw error; }
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     child.once("close", () => {
@@ -2408,7 +2496,8 @@ async function spawnWithTimeout(
     });
     const stopTracking = trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
-    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress, retainForHandoff: backgroundable });
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress,
+      retainForHandoff: backgroundable, observation });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
@@ -2464,11 +2553,13 @@ async function spawnWithTimeout(
       lifetime.dispose();
       foregroundShellTasks.delete(taskId);
       if (backgrounded) outputCollector.finishBackground();
+      if (backgrounded) outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
       if (settled) return;
       settled = true;
       const rejected = control?.rejected === true;
       control?.dispose();
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
       const formatted = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       ));
@@ -2499,6 +2590,7 @@ async function spawnWithTimeout(
         lifetime.dispose();
         control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
+        outputCollector.finishObservation(null, "failed");
         resolve({
           output: `spawn failed: ${err.message}`,
           isError: true,
@@ -3101,6 +3193,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     const plainResult = await spawnPowerShell(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
       captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
+      shellObservationSandbox(hostShellPlan, disposableExecution),
     );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
     if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) return plainResult;
@@ -3471,6 +3564,10 @@ async function spawnPowerShellWithSandbox(
   const childEnv = buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
     XDG_CONFIG_HOME: powerShellLaunch.env.XDG_CONFIG_HOME!, PSModulePath: powerShellLaunch.env.PSModulePath!,
   });
+  let observation: AgentTerminalObservationLease | undefined;
+  try { observation = startShellObservation(command, cwd,
+    { mode: "isolated", detail: "filesystem/process confinement" }, egress.token); }
+  catch (error) { void cleanupAsrtSandboxAfterCommand(); egress.release(); sandboxHome.cleanup(); throw error; }
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
@@ -3486,6 +3583,7 @@ async function spawnPowerShellWithSandbox(
         env: childEnv,
       });
     } catch (err) {
+      observation?.finish(null, "failed");
       void cleanupAsrtSandboxAfterCommand();
       egress.release();
       sandboxHome.cleanup();
@@ -3504,7 +3602,7 @@ async function spawnPowerShellWithSandbox(
     // ended invocation's listener port while anything in that group lives.
     if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
-    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress, observation });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
@@ -3532,6 +3630,7 @@ async function spawnPowerShellWithSandbox(
       const { output, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )), command, lifecycleCleaned);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       resolveResult({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
@@ -3556,6 +3655,7 @@ async function spawnPowerShellWithSandbox(
           err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`
             : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned);
+        outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult({
           output: annotated.output,
@@ -3668,6 +3768,10 @@ async function spawnPowerShellInMxc(
     egress.release();
     return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
   }
+  let observation: AgentTerminalObservationLease | undefined;
+  try { observation = parserResponse === undefined ? startShellObservation(command, cwd,
+    { mode: "isolated", detail: "filesystem/process confinement" }, egress.token) : undefined; }
+  catch (error) { void launch.release(); sandboxHome.cleanup(); egress.release(); throw error; }
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
@@ -3685,6 +3789,7 @@ async function spawnPowerShellInMxc(
         env: buildSafeChildEnv({}),
       });
     } catch (err) {
+      observation?.finish(null, "failed");
       void launch.release();
       sandboxHome.cleanup();
       egress.release();
@@ -3697,7 +3802,7 @@ async function spawnPowerShellInMxc(
     }
     trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
 
-    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress, observation });
     child.stdout.on("data", parserResponse === undefined ? outputCollector.collect : parserResponse.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
@@ -3727,6 +3832,7 @@ async function spawnPowerShellInMxc(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )));
       await cleanupAfterTermination();
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
       resolveResult({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
@@ -3751,6 +3857,7 @@ async function spawnPowerShellInMxc(
         if (settled) return;
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);
+        outputCollector.finishObservation(null, "failed");
         resolveResult({
           output: `PowerShell spawn failed: ${err.message}`,
           isError: true,
@@ -3769,6 +3876,7 @@ async function spawnPowerShell(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   spawnAuthorization?: HostShellSpawnAuthorization,
+  sandbox: AgentTerminalObservationInput["sandbox"] = { mode: "unconfined", detail: "host" },
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   const executable = resolvePowerShellExecutable();
@@ -3776,7 +3884,9 @@ async function spawnPowerShell(
   const launch = (): Promise<ToolExecutionResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:powershell");
-    const child = spawnManagedPowerShell(
+    const observation = startShellObservation(command, cwd, sandbox);
+    let child: PipedChild;
+    try { child = spawnManagedPowerShell(
       executable, (prelude ?? "") + command,
       {
         windowsHide: true,
@@ -3786,11 +3896,12 @@ async function spawnPowerShell(
         env: buildHostShellChildEnv(),
         shell: false,
       },
-    ) as PipedChild;
+    ) as PipedChild; }
+    catch (error) { observation?.finish(null, "failed"); throw error; }
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
-    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress, observation });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
@@ -3806,6 +3917,7 @@ async function spawnPowerShell(
       const rejected = control?.rejected === true;
       control?.dispose();
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
       const output = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       ));
@@ -3827,6 +3939,7 @@ async function spawnPowerShell(
         settled = true;
         control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
+        outputCollector.finishObservation(null, "failed");
         resolve({
           output: err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`

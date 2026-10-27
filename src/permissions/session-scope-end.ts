@@ -3,14 +3,17 @@
 import type { PermissionManager } from "./permission-manager.js";
 import { approvalConversationRoot, dropSessionApprovals } from "./user-approval-store.js";
 import { releaseEgressSessions } from "./egress-runtime.js";
+import { releaseAgentTerminalObservationSessions } from "../tools/agent-terminal-observation.js";
 
 export function endSessionScopedPermissions(sessionId: string, permissionManager: PermissionManager | undefined): void {
   const root = approvalConversationRoot(sessionId);
   if (root !== sessionId) {
+    releaseAgentTerminalObservationSessions((held) => held === sessionId);
     releaseEgressSessions((held) => held === sessionId);
     return;
   }
   permissionManager?.endSession(root);
   dropSessionApprovals(root);
+  releaseAgentTerminalObservationSessions((held) => held === root || approvalConversationRoot(held) === root);
   releaseEgressSessions((held) => held === root || approvalConversationRoot(held) === root);
 }

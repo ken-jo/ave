@@ -1078,6 +1078,13 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "Unsupported preview document format." })),
         onDocumentObservation: vi.fn(() => () => {}),
         acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })),
+        onAgentObservation: vi.fn(() => () => {}),
+        acknowledgeAgentObservation: vi.fn(async (request: import("../../src/shared/agent-observation.js").TerminalObservationRequest) => ({
+          ok: true,
+          ...(request.action === "subscribe-terminal" ? { observation: {
+            targetId: "b0000000-0000-4000-8000-000000000001", sessionId: request.sessionId, seq: 0,
+          } } : {}),
+        })),
       },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot, roots })),

@@ -21,6 +21,8 @@ import { readPermissionSettings } from "../permissions/permission-settings-store
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { protectedReadDenyCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
 import { setAgentObservationSink, type ObservedFileEffect } from "../tools/agent-observation-context.js";
+import { TerminalObservationRuntime } from "./terminal-observation.js";
+import type { TerminalObservationResponse } from "../shared/agent-observation.js";
 
 interface ViewOwner {
   id: string;
@@ -41,6 +43,7 @@ function invocationKey(identity: ObservationIdentity): string {
 export class DocumentObservationRuntime {
   private readonly adapter: DocumentObservationAdapter;
   private readonly daemon = new ObservationDaemon();
+  private readonly terminalObservation: TerminalObservationRuntime;
   private readonly views = new Map<string, ViewOwner>();
   private readonly journals = new Map<string, JournalObservationLease[]>();
   private readonly readyWaiters = new Set<{ sessionId: string; path: string; finish: (ready: boolean) => void }>();
@@ -49,6 +52,7 @@ export class DocumentObservationRuntime {
 
   constructor(private readonly deps: IpcDeps, engine: DocumentObservationEngine | null = createTableObservationEngine()) {
     this.adapter = new DocumentObservationAdapter(engine, this.daemon);
+    this.terminalObservation = new TerminalObservationRuntime(deps, this.daemon);
     setAgentObservationSink({
       openJournal: (identity, path) => {
         const lease = this.adapter.openJournal(identity, path);
@@ -135,8 +139,10 @@ export class DocumentObservationRuntime {
     return { targetId: id, sessionId, seq: 0 };
   }
 
-  acknowledge(event: IpcMainInvokeEvent, raw: unknown): { ok: boolean; error?: string } {
+  acknowledge(event: IpcMainInvokeEvent, raw: unknown): TerminalObservationResponse {
     if (!validateAppWindowMainFrameSender(event, this.deps)) return { ok: false, error: "unauthorized" };
+    const terminal = this.terminalObservation.acknowledge(event, raw);
+    if (terminal) return terminal;
     if (!isDocumentObservationAck(raw)) return { ok: false, error: "bad-request" };
     const view = this.views.get(raw.targetId);
     if (!view || !this.isCurrent(view) || view.event.sender !== event.sender
@@ -222,6 +228,7 @@ export class DocumentObservationRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.terminalObservation.dispose();
     setAgentObservationSink(undefined);
     for (const id of this.views.keys()) this.release(id);
     for (const leases of this.journals.values()) for (const lease of leases) lease.dispose();

@@ -31,6 +31,7 @@ import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-ta
 import type { WorkspaceChanges, FileWorkspaceReveal } from "../preview/workspace-changes.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
+import { TerminalObservationContent } from "./TerminalObservationContent.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
 import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
@@ -1230,6 +1231,7 @@ export function ChatSidePanel({
         className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
       >
         {tabStripContent}
+        <TerminalObservationContent sessionId={sessionId} />
 
         <div className="relative min-h-0 flex-1 overflow-hidden" data-active-tab-kind={activeTab?.kind} data-active-tab-mode={activeTab?.mode}>
           {activeTab == null ? (

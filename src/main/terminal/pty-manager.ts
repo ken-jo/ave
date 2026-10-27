@@ -1,5 +1,6 @@
 /** Separate host-user and confined-agent PTYs, owned by one logical tab. */
 import { randomBytes } from "node:crypto";
+import { beginAgentTerminalObservation, type AgentTerminalObservationLease } from "../../tools/agent-terminal-observation.js";
 import { accessSync, constants, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
@@ -112,12 +113,65 @@ interface TerminalSession {
   disposeExit: () => void;
   /** Aborted when the tab closes or its shell ends: denies the tab's pending egress asks at once instead of leaving their banners to time out. */
   egressAbort?: AbortController;
+  /** Private lifetime token: observations disclose decisions, never proxy authority. */
+  egressToken?: string;
+  observation?: TerminalCommandObservation;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
   exited: boolean;
   /** Settles when the shell has exited and the session is dropped. */
   gone: Promise<void>;
   markGone: () => void;
+}
+
+interface TerminalCommandObservation {
+  readonly lease: AgentTerminalObservationLease;
+  readonly blockId: number;
+  readonly command: string;
+  readonly cwd: string;
+  readonly inputGeneration: number;
+  subscription?: { flush(): void; dispose(): void };
+  stop(): void;
+}
+
+function revokeTerminalObservation(session: TerminalSession): void {
+  const observation = session.observation;
+  observation?.stop();
+  observation?.lease.revoke();
+}
+
+function stopTerminalObservation(session: TerminalSession, options?: { flushPending: boolean }): void {
+  const observation = session.observation;
+  if (options?.flushPending) observation?.subscription?.flush();
+  observation?.stop();
+  observation?.lease.finish(null, "interrupted");
+}
+
+/** Read only the host-bound authenticated block; neither lane nor timing attributes output. */
+function terminalObservationBlock(session: TerminalSession) {
+  const observation = session.observation;
+  if (!observation) return null;
+  if (session.blocks.userInputGeneration() !== observation.inputGeneration) {
+    revokeTerminalObservation(session);
+    return null;
+  }
+  const block = session.blocks.get(observation.blockId);
+  if (!block) return null;
+  if (block.source !== "osc133" || block.command !== observation.command
+    || block.cwd === null || canonicalizePathForMatch(block.cwd) !== observation.cwd) {
+    revokeTerminalObservation(session);
+    throw new Error("Terminal observation command does not match its admitted block.");
+  }
+  return block;
+}
+
+function refreshTerminalObservation(session: TerminalSession): void {
+  const observation = session.observation;
+  const block = terminalObservationBlock(session);
+  if (observation && block?.status === "done") {
+    observation.stop();
+    observation.lease.finish(block.exitCode, block.exitCode === null ? "interrupted" : undefined);
+  }
 }
 
 interface TerminalSpawnInFlight {
@@ -589,6 +643,7 @@ async function spawnNewTerminal(
       disposeData: () => {},
       disposeExit: () => {},
       egressAbort,
+      egressToken: egress.token,
       forceKillTimer: null,
       closing: false,
       exited: false,
@@ -600,6 +655,7 @@ async function spawnNewTerminal(
     const dataSub = pty.onData((chunk) => {
       // The view and the replay ring get the tracker's display text: the same bytes with the marker nonce removed (and an incomplete OSC held until it completes).
       const display = session.blocks.recordOutput(chunk);
+      refreshTerminalObservation(session);
       if (!display) return;
       pushRing(session, display);
       // Initialization can outlive a renderer mount. Publish its accumulated output only at registration, so
@@ -613,6 +669,7 @@ async function spawnNewTerminal(
       // A trampoline that exits before it runs the shell fails the spawn: the spawn's own catch cleans up, once, so this handler must not.
       if (pendingSession === session) return;
       session.exited = true;
+      stopTerminalObservation(session, { flushPending: true });
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
       // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) + drop the session so a later spawn for the same tab starts fresh.
       cleanupWrap();
@@ -625,6 +682,8 @@ async function spawnNewTerminal(
         }
         // Keep a final cleanup notice in the open block before readers see exit.
         session.blocks.recordExit();
+        refreshTerminalObservation(session);
+        stopTerminalObservation(session);
         _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
         cleanupSandboxHome();
         session.disposeData();
@@ -852,7 +911,9 @@ export function writeTerminal(ref: TerminalSessionRef, data: string): TerminalMu
   const session = sessions.get(terminalLaneKey(ref));
   if (!session || session.exited || session.closing || !sameTerminalSession(session.info, ref)) return { ok: false, error: "stale-terminal-session" };
   if (typeof data !== "string" || Buffer.byteLength(data, "utf-8") > MAX_INPUT_BYTES) return { ok: false, error: "invalid-params" };
+  const generation = session.blocks.userInputGeneration();
   session.blocks.recordInput(data);
+  if (session.blocks.userInputGeneration() !== generation) revokeTerminalObservation(session);
   session.pty.write(data);
   return { ok: true };
 }
@@ -1022,6 +1083,28 @@ export async function typeAgentTerminalCommand(
       isLive: () => live() === session && session !== undefined,
       write: (data) => { if (!signal?.aborted && live() === session) session?.pty.write(data); },
       verify: () => verifyAgentTerminalShell(ref, ownerWindowId, expectedCwd),
+      onBeforeEnter: (blockId) => {
+        if (!session || live() !== session || signal?.aborted) throw new Error("Terminal observation session is unavailable.");
+        if (session.observation) throw new Error("Terminal observation command is still active.");
+        const lease = beginAgentTerminalObservation({ kind: "terminal", command: line, cwd: expectedCwd,
+          tabId: ref.tabId, terminalSessionId: ref.terminalSessionId,
+          sandbox: { mode: "isolated", detail: session.info.substrate } });
+        if (!lease) return;
+        const stop = (): void => {
+          if (session.observation === observation) session.observation = undefined;
+          observation.subscription?.dispose();
+          lease.signal.removeEventListener("abort", stop);
+        };
+        const observation: TerminalCommandObservation = { lease, blockId, command: line.trim(), cwd: canonicalizePathForMatch(expectedCwd),
+          inputGeneration: session.blocks.userInputGeneration(), stop };
+        session.observation = observation;
+        lease.signal.addEventListener("abort", stop, { once: true });
+        if (lease.signal.aborted) { stop(); return; }
+        observation.subscription = session.blocks.subscribeBlockOutput(blockId, (text) => {
+          if (session.observation === observation && terminalObservationBlock(session)) lease.write(text);
+        });
+        if (session.egressToken) lease.bindEgress(session.egressToken, "terminal-session");
+      },
       missing: `no contained agent terminal with tabId ${JSON.stringify(tabId)} in this window`,
       ...(signal ? { signal } : {}),
     },
@@ -1038,6 +1121,8 @@ export interface PromptTypingTarget {
   /** Whether it is still open (and still the caller's). */
   isLive(): boolean;
   write(data: string): void;
+  /** Runs after the final editor proof, before Enter can synchronously produce output. */
+  onBeforeEnter?(firstBlockId: number): void;
   /** The operating-system check of its shell ({@link verifyAgentTerminalShell}). */
   verify(): Promise<VerifyTerminalShellResult>;
   /** The message when there is no such terminal. */
@@ -1131,6 +1216,7 @@ export async function typeLineAtPrompt(
     return notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent");
   }
   const firstBlockId = blocks.nextBlockId();
+  target.onBeforeEnter?.(firstBlockId);
   target.write("\r");
   onTyped();
   return { ok: true, firstBlockId };
@@ -1348,6 +1434,7 @@ function killTerminalLane(key: string): void {
   const session = sessions.get(key);
   if (!session || session.closing) return;
   session.closing = true;
+  stopTerminalObservation(session);
   // The tab is closing: its banners go now, not when the shell has exited.
   session.egressAbort?.abort(new Error("terminal tab closed"));
   session.disposeData();
@@ -1395,6 +1482,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
   const sessionsToKill = [...sessions.entries()].filter(([, session]) => !session.exited);
   for (const [tabId, session] of sessionsToKill) {
     session.closing = true;
+    stopTerminalObservation(session);
     session.egressAbort?.abort();
     session.disposeData();
     if (session.forceKillTimer !== null) {
@@ -1464,6 +1552,7 @@ export function __reserveTerminalTabForTest(tabId: string, ownerWindowId: number
 /** Test-only: reset module state between tests. */
 export function __resetTerminalsForTest(): void {
   for (const session of sessions.values()) {
+    stopTerminalObservation(session);
     if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
     session.disposeData();
     session.disposeExit();

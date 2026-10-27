@@ -763,3 +763,163 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(seen.length).toBe(6);
   });
 });
+
+describe("TerminalBlockTracker selected command output", () => {
+  it("streams only the selected future authenticated block and excludes prompts and later commands", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const seen: string[] = [];
+    const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+    tracker.recordOutput("startup text\n");
+    tracker.recordOutput(cycle("make", "built\n", 0));
+    tracker.recordOutput(cycle("user-command", "user-private\n", 0));
+    expect(seen.join("")).toBe("built\n");
+    subscription.dispose();
+  });
+
+  it("does not stream heuristic blocks as authenticated command output", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const seen: string[] = [];
+    const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+    tracker.recordOutput("echo human");
+    tracker.recordInput("\r");
+    tracker.recordOutput("private human output\n");
+    tracker.recordExit();
+    expect(seen).toEqual([]);
+    subscription.dispose();
+  });
+
+  it("redacts a private marker nonce at every chunk split and after stripped escape carriers", () => {
+    for (let split = 1; split < NONCE.length; split++) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      const seen: string[] = [];
+      const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+      tracker.recordOutput(cycle("print", "", 0).replace(mark("D;0"), ""));
+      tracker.recordOutput(`${NONCE.slice(0, split)}${ESC}[31m`);
+      tracker.recordOutput(`${NONCE.slice(split)}${ESC}[0m\n${mark("D;0")}`);
+      expect(seen.join("")).toBe("[terminal-nonce]\n");
+      expect(seen.every((text) => !text.includes(NONCE))).toBe(true);
+      subscription.dispose();
+    }
+  });
+
+  it("preserves ordered output framing after scrollback truncation with bounded delivery chunks", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const seen: string[] = [];
+    const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+    const output = `${"prefix\n".repeat(2_000)}-----BEGIN PRIVATE KEY-----\n${"body\n".repeat(40_000)}-----END PRIVATE KEY-----\ntail\n`;
+    tracker.recordOutput(cycle("print", output, 0));
+    expect(tracker.get(1)!.truncated).toBe(true);
+    expect(seen.join("")).toBe(output);
+    expect(seen.every((text) => text.length <= 8_256)).toBe(true);
+    subscription.dispose();
+  });
+
+  it("drops held nonce framing on disposal and never replays it into another subscription", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const first: string[] = [];
+    const subscription = tracker.subscribeBlockOutput(1, (text) => first.push(text));
+    tracker.recordOutput(cycle("print", NONCE.slice(0, 16), 0).replace(mark("D;0"), ""));
+    expect(first).toEqual([]);
+    subscription.dispose();
+    tracker.recordOutput(`${NONCE.slice(16)}\n${mark("D;0")}`);
+    const second: string[] = [];
+    const next = tracker.subscribeBlockOutput(2, (text) => second.push(text));
+    tracker.recordOutput(cycle("next", "visible\n", 0));
+    expect(first).toEqual([]);
+    expect(second.join("")).toBe("visible\n");
+    next.dispose();
+  });
+
+  it("flushes a final short line only for its exact live block and refuses duplicate or stale subscriptions", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const seen: string[] = [];
+    const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+    expect(() => tracker.subscribeBlockOutput(1, () => {})).toThrow("Terminal output subscription does not name an available next block.");
+    subscription.flush();
+    expect(seen).toEqual([]);
+    tracker.recordOutput(cycle("print", "short", 0).replace(mark("D;0"), ""));
+    expect(seen).toEqual([]);
+    subscription.flush();
+    expect(seen.join("")).toBe("short");
+    tracker.recordOutput(mark("D;0"));
+    subscription.dispose();
+    expect(() => tracker.subscribeBlockOutput(1, () => {})).toThrow("Terminal output subscription does not name an available next block.");
+    tracker.recordExit();
+    expect(() => tracker.subscribeBlockOutput(2, () => {})).toThrow("Terminal output subscription does not name an available next block.");
+  });
+});
+
+describe("TerminalBlockTracker control-string boundaries", () => {
+  it.each([
+    ["seven-bit device control", `${ESC}P`],
+    ["seven-bit start of string", `${ESC}X`],
+    ["seven-bit privacy message", `${ESC}^`],
+    ["seven-bit application command", `${ESC}_`],
+    ["C1 device control", "\u0090"],
+    ["C1 start of string", "\u0098"],
+    ["C1 privacy message", "\u009e"],
+    ["C1 application command", "\u009f"],
+  ])("keeps %s payload hidden through BEL until either ST spelling, across all chunk boundaries", (_name, start) => {
+    for (const end of [`${ESC}\\`, "\u009c"]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      const seen: string[] = [];
+      const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+      tracker.recordOutput(cycle("print", "", 0).replace(mark("D;0"), ""));
+      const carrier = `${start}hidden-before${BEL}hidden-after${mark("D;9")}`;
+      for (const character of carrier) tracker.recordOutput(character);
+      expect(tracker.get(1)).toMatchObject({ status: "running", output: "" });
+      expect(seen).toEqual([]);
+      for (const character of end) tracker.recordOutput(character);
+      tracker.recordOutput(`visible\n${mark("D;0")}`);
+      expect(tracker.get(1)).toMatchObject({ status: "done", exitCode: 0, output: "visible\n" });
+      expect(seen.join("")).toBe("visible\n");
+      subscription.dispose();
+    }
+  });
+
+  it.each([
+    ["seven-bit operating-system command", `${ESC}]`],
+    ["C1 operating-system command", "\u009d"],
+  ])("ends %s at BEL or either ST without publishing its carrier", (_name, start) => {
+    for (const end of [BEL, `${ESC}\\`, "\u009c"]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      const seen: string[] = [];
+      const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+      tracker.recordOutput(cycle("print", "", 0).replace(mark("D;0"), ""));
+      const carrier = `${start}title;hidden payload${end}`;
+      let display = "";
+      for (const character of carrier) display += tracker.recordOutput(character);
+      expect(display).toBe(carrier);
+      tracker.recordOutput(`visible\n${mark("D;0")}`);
+      expect(tracker.get(1)!.output).toBe("visible\n");
+      expect(seen.join("")).toBe("visible\n");
+      subscription.dispose();
+    }
+  });
+
+  it("recognizes a control-string start interrupting an unfinished escape without leaking its payload", () => {
+    for (const start of [`${ESC}P`, "\u0090"]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      const seen: string[] = [];
+      const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+      tracker.recordOutput(cycle("print", "", 0).replace(mark("D;0"), ""));
+      for (const character of `${ESC}[123;${start}hidden${BEL}still-hidden\u009cvisible\n${mark("D;0")}`) {
+        tracker.recordOutput(character);
+      }
+      expect(tracker.get(1)!.output).toBe("visible\n");
+      expect(seen.join("")).toBe("visible\n");
+      subscription.dispose();
+    }
+  });
+
+  it("recognizes split C1 control-sequence and standalone string terminator controls", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const seen: string[] = [];
+    const subscription = tracker.subscribeBlockOutput(1, (text) => seen.push(text));
+    tracker.recordOutput(cycle("print", "", 0).replace(mark("D;0"), ""));
+    for (const character of `\u009b31mvisible\u009b0m\u009c\n${mark("D;0")}`) tracker.recordOutput(character);
+    expect(tracker.get(1)!.output).toBe("visible\n");
+    expect(seen.join("")).toBe("visible\n");
+    subscription.dispose();
+  });
+});

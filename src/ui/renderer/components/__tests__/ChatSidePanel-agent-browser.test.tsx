@@ -2,13 +2,14 @@
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AveApi } from "../../types.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
+import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import { UrlDocumentViewer } from "../ChatSidePanelPreview.js";
@@ -50,6 +51,11 @@ function makeApi() {
 }
 
 let store: WorkspaceTabsStore | null = null;
+let previousWindowAve: unknown;
+beforeEach(() => {
+  previousWindowAve = window.ave;
+  (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
+});
 
 function Harness({ api }: { api: AveApi }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -81,6 +87,7 @@ function Harness({ api }: { api: AveApi }) {
 }
 
 afterEach(() => {
+  (window as unknown as { ave: unknown }).ave = previousWindowAve;
   store = null;
   clearActiveSurface();
   __resetBrowserTabBridgeForTest();

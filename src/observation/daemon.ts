@@ -148,7 +148,11 @@ export class ObservationDaemon {
       target.inFlight.push(...events);
       target.sent = events.at(-1)!.seq;
       try { target.onEvents(events); }
-      catch { this.release(target.target.id); return; }
+      catch (error) {
+        const current = target.isCurrent();
+        this.release(target.target.id);
+        if (current) throw error;
+      }
       this.schedule(target);
     }, 0);
     target.timer.unref?.();

@@ -22,6 +22,7 @@ import {
 import type { EgressAskOrigin, EgressGrantNetwork, EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
+import { observeAgentTerminalEgressDecision } from "../tools/agent-terminal-observation.js";
 
 // What the person is asked about: for a shell tool call on its card, for a terminal in its tab.
 export type EgressApprovalRequest = EgressShellApprovalRequest | EgressTerminalApprovalRequest;
@@ -399,6 +400,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (decision.provisional === true) return true;
     // The proxy logs this refusal; the deny monitor must not write a second decision row for it.
     if (!decision.allow) noteCallbackDecision(context?.attributionKey, host, port);
+    observeAgentTerminalEgressDecision(context?.attributionKey, {
+      host: String(host), port: isValidEgressPort(port) ? port : null, decision: decision.allow ? "allow" : "deny",
+      basis: decision.basis, scope: decision.scope, reason: decision.reason,
+    });
     try {
       deps.audit({
         timestamp: now().toISOString(),

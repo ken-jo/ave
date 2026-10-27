@@ -136,6 +136,7 @@ interface StringEscape {
   state: "string";
   // Only an OSC payload is kept; the others are skipped.
   osc: boolean;
+  introducer: string;
   payload: string;
   // Past {@link MAX_OSC_PAYLOAD_CHARS}: discarded at its terminator.
   overflow: boolean;
@@ -238,6 +239,7 @@ export class TerminalBlockTracker {
   private currentEditLineReport: { readonly generation: number; readonly line: string } | null = null;
   // Called after authenticated markers, user input, and exit (see {@link subscribe}).
   private readonly listeners = new Set<() => void>();
+  private blockOutput: { blockId: number; pending: string; onOutput: (text: string) => void } | undefined;
 
   private readonly nonce: string;
   private readonly now: () => number;
@@ -347,6 +349,38 @@ export class TerminalBlockTracker {
     };
   }
 
+  /** Stream one host-selected future block before scrollback retention can drop its framing. */
+  subscribeBlockOutput(blockId: number, onOutput: (text: string) => void): { flush(): void; dispose(): void } {
+    if (this.blockOutput || blockId !== this.nextId || this.exited) {
+      throw new Error("Terminal output subscription does not name an available next block.");
+    }
+    const subscription = { blockId, pending: "", onOutput };
+    this.blockOutput = subscription;
+    return {
+      flush: () => {
+        if (this.blockOutput === subscription) this.publishBlockOutput("", true);
+      },
+      dispose: () => {
+        subscription.pending = "";
+        if (this.blockOutput === subscription) this.blockOutput = undefined;
+      },
+    };
+  }
+
+  private publishBlockOutput(text: string, final = false): void {
+    const subscription = this.blockOutput;
+    if (!subscription || this.open?.id !== subscription.blockId || this.open.source !== "osc133") return;
+    const pending = subscription.pending + text;
+    let cut = final ? pending.length : Math.max(pending.lastIndexOf("\n") + 1, pending.length - this.nonce.length + 1, 0);
+    // Keep any nonce straddling the delivery cut whole; carry stays below two nonce lengths.
+    for (let at = pending.indexOf(this.nonce); at !== -1 && at < cut; at = pending.indexOf(this.nonce, at + this.nonce.length)) {
+      if (at + this.nonce.length > cut) { cut = at; break; }
+    }
+    const delivered = this.redactNonce(pending.slice(0, cut));
+    subscription.pending = pending.slice(cut);
+    if (delivered) subscription.onOutput(delivered);
+  }
+
   private notify(): void {
     for (const listener of [...this.listeners]) listener();
   }
@@ -365,24 +399,41 @@ export class TerminalBlockTracker {
     for (let i = 0; i < chunk.length; i++) {
       const ch = chunk[i] ?? "";
       const esc = this.esc;
+      // C1 controls and a fresh ESC interrupt other escape sequences, but remain payload inside control strings.
+      if (esc.state !== "string") {
+        if (ch === "\u001b") {
+          if (esc.state === "esc") this.display += "\u001b";
+          this.esc = { state: "esc" };
+          continue;
+        }
+        if (ch === "\u009d" || "\u0090\u0098\u009e\u009f".includes(ch)) {
+          if (esc.state === "esc") this.display += "\u001b";
+          const osc = ch === "\u009d";
+          if (!osc) this.display += ch;
+          this.esc = { state: "string", osc, introducer: ch, payload: "", overflow: false, hidden: false, sawEsc: false };
+          continue;
+        }
+        if (ch === "\u009b" || ch === "\u009c") {
+          if (esc.state === "esc") this.display += "\u001b";
+          this.display += ch;
+          this.esc = ch === "\u009b" ? { state: "csi" } : { state: "text" };
+          continue;
+        }
+      }
       switch (esc.state) {
         case "text":
-          if (ch === "\u001b") {
-            this.esc = { state: "esc" };
-          } else {
-            text += ch;
-            this.display += ch;
-          }
+          text += ch;
+          this.display += ch;
           break;
         case "esc":
           if (ch === "]") {
             // Held: the display gets it once it is known not to be a marker.
-            this.esc = { state: "string", osc: true, payload: "", overflow: false, hidden: false, sawEsc: false };
+            this.esc = { state: "string", osc: true, introducer: "\u001b]", payload: "", overflow: false, hidden: false, sawEsc: false };
             break;
           }
           this.display += `\u001b${ch}`;
           if (ch === "P" || ch === "_" || ch === "^" || ch === "X") {
-            this.esc = { state: "string", osc: false, payload: "", overflow: false, hidden: false, sawEsc: false };
+            this.esc = { state: "string", osc: false, introducer: `\u001b${ch}`, payload: "", overflow: false, hidden: false, sawEsc: false };
           } else if (ch === "[") {
             this.esc = { state: "csi" };
           } else if (ch === "(" || ch === ")" || ch === "*" || ch === "+" || ch === "#" || ch === "%") {
@@ -402,7 +453,7 @@ export class TerminalBlockTracker {
           this.esc = { state: "text" };
           break;
         case "string": {
-          // Terminated by BEL or ST (ESC \). An ESC not followed by `\` is payload, as before.
+          // OSC accepts BEL or ST. DCS/SOS/PM/APC accept only ST; their BEL remains hidden payload.
           if (esc.sawEsc) {
             esc.sawEsc = false;
             if (ch === "\\") {
@@ -411,8 +462,8 @@ export class TerminalBlockTracker {
             }
             this.addToString(esc, "\u001b");
           }
-          if (ch === "\u0007") {
-            this.finishString(esc, "\u0007", flush);
+          if (ch === "\u009c" || ch === "\u0007" && esc.osc) {
+            this.finishString(esc, ch, flush);
           } else if (ch === "\u001b") {
             esc.sawEsc = true;
           } else {
@@ -438,7 +489,7 @@ export class TerminalBlockTracker {
       // it is unaffected. Only editor reports stay private: their final nonce cannot be known without retaining the whole payload.
       esc.overflow = true;
       esc.hidden = esc.payload.startsWith("133;E;") || esc.payload === "133;E";
-      if (!esc.hidden) this.display += `\u001b]${esc.payload}${ch}`;
+      if (!esc.hidden) this.display += `${esc.introducer}${esc.payload}${ch}`;
       esc.payload = "";
       return;
     }
@@ -453,7 +504,7 @@ export class TerminalBlockTracker {
     }
     const marker = this.handleOsc(esc.payload, flush);
     if (marker === null) {
-      this.display += `\u001b]${esc.payload}${terminator}`;
+      this.display += `${esc.introducer}${esc.payload}${terminator}`;
     } else if (marker !== "P" && marker !== "E") {
       // The view only needs the letter (PtyTerminalView re-lists on A/C/D).
       this.display += `\u001b]133;${marker}\u0007`;
@@ -639,7 +690,16 @@ export class TerminalBlockTracker {
     if (!text) return;
     switch (this.phase) {
       case "output":
-        if (this.open) this.open.output.append(text);
+        if (this.open) {
+          this.open.output.append(text);
+          if (this.blockOutput?.blockId === this.open.id) {
+            // The parser already removed escape sequences. Keep only display controls before secret masking.
+            const plain = text.replace(/[\u0000-\u0007\u000b\u000c\u000e-\u001f\u007f]/gu, "");
+            for (let offset = 0; offset < plain.length; offset += MAX_OPEN_LINE_CHARS) {
+              this.publishBlockOutput(plain.slice(offset, offset + MAX_OPEN_LINE_CHARS));
+            }
+          }
+        }
         else this.idle.append(text);
         break;
       case "input":
@@ -676,6 +736,7 @@ export class TerminalBlockTracker {
   private closeOpen(exitCode: number | null): void {
     const open = this.open;
     if (!open) return;
+    this.publishBlockOutput("", true);
     this.open = null;
     this.done.push({
       ...this.snapshotOpen(open),
