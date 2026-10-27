@@ -81,16 +81,18 @@ const LITERAL_COMMAND = literalCommand(1_500);
 const NPM_COMMAND = npmCommand(1_500);
 const SHORT_PIPELINE = pipelineCommand(1_800);
 const LONG_PIPELINE = pipelineCommand(6_500);
+// #223 executable-bound startup admission supersedes historical pipeline allows on win32.
+const PIPELINE_EXPECTED = process.platform === "win32" ? "ask" : "allow";
 const TIMING_CASES: readonly TimingCase[] = [
-  ...[false, true].flatMap((runsSandboxed) => [
+  ...[false, true].flatMap((runsSandboxed): TimingCase[] => [
     { name: "commit-short-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: COMMIT_COMMAND, rules: [COMMIT_COMMAND], expected: "ask" as const },
     { name: "quoted-literal-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: LITERAL_COMMAND, rules: [LITERAL_COMMAND], expected: "allow" as const },
     { name: "npm-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: NPM_COMMAND, rules: [NPM_COMMAND], expected: "ask" as const },
-    { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: "allow" as const },
+    { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: PIPELINE_EXPECTED },
   ]),
   { name: "heredoc-quoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, true), rules: [], expected: "allow" },
   { name: "heredoc-unquoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, false), rules: [], expected: "allow" },
-  { name: "pipeline-6500", dialect: "powershell", runsSandboxed: true, length: 6_500, ...LONG_PIPELINE, expected: "allow" },
+  { name: "pipeline-6500", dialect: "powershell", runsSandboxed: true, length: 6_500, ...LONG_PIPELINE, expected: PIPELINE_EXPECTED },
 ];
 
 describe("ordinary complete manager timing", () => {

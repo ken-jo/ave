@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -244,30 +245,37 @@ describe("execution router", () => {
   });
 
   it("does not call a sandbox plan workspace-confined unless all confinement dimensions are explicit", () => {
-    resetSandbox();
-    setShellSandboxRequestedAtBoot(true);
-    setActiveSandboxCapability({
-      kind: "asrt",
-      confidence: "verified",
-      platform: process.platform,
-      reason: "legacy fixture without declared confinement",
-    });
-    const legacyPlan = getHostShellExecutionPlan();
-    expect(legacyPlan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "active-sandbox-not-shell-contained" });
-    expect(executionRouteForHostShellPlan(legacyPlan)).toBeNull();
+    // Exercise incomplete confinement independently of the host-specific partial route.
+    const platform = process.platform;
+    try {
+      setProcessPlatform("linux");
+      resetSandbox();
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability({
+        kind: "asrt",
+        confidence: "verified",
+        platform: "linux",
+        reason: "legacy fixture without declared confinement",
+      });
+      const legacyPlan = getHostShellExecutionPlan();
+      expect(legacyPlan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "active-sandbox-not-shell-contained" });
+      expect(executionRouteForHostShellPlan(legacyPlan)).toBeNull();
 
-    expect(buildHostShellExecutionRouteProjection({
-      legacyPlan,
-      toolName: "bash",
-      command: "printf ok",
-      cwd: "/workspace",
-      timeoutSeconds: 120,
-      background: false,
-    })).toMatchObject({
-      decision: "blocked",
-      route: null,
-      fallback: "active-sandbox-not-shell-contained",
-    });
+      expect(buildHostShellExecutionRouteProjection({
+        legacyPlan,
+        toolName: "bash",
+        command: "printf ok",
+        cwd: "/workspace",
+        timeoutSeconds: 120,
+        background: false,
+      })).toMatchObject({
+        decision: "blocked",
+        route: null,
+        fallback: "active-sandbox-not-shell-contained",
+      });
+    } finally {
+      setProcessPlatform(platform);
+    }
   });
 
   it("requires analysis instead of automatically falling through to host for uncertain effects", () => {
