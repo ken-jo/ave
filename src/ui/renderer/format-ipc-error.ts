@@ -315,6 +315,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-entry-url": "formatIpcError.invalidEntryUrl",
   "entry-url-outside-install-root": "formatIpcError.entryUrlOutsideInstallRoot",
   "install-failed": "formatIpcError.installFailed",
+  "unsupported-platform": "documentEngine.unsupported",
   "uninstall-failed": "formatIpcError.uninstallFailed",
   // Uninstall refusals from the `ave://` deep link (#1967). Both used to be
   // broadcast as English sentences with no `message` half, so the toast fell
