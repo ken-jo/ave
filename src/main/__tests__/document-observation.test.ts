@@ -10,6 +10,8 @@ import type { PreviewTableDocument } from "../../shared/preview-document.js";
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
+import type { ObservationDaemon } from "../../observation/daemon.js";
+import { OBSERVATION_LIMITS, type TerminalObservationEvent } from "../../shared/agent-observation.js";
 
 const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, root: "", registered: true }));
 vi.mock("electron", () => ({ session: { defaultSession: state.defaultSession } }));
@@ -56,6 +58,34 @@ beforeEach(() => {
 afterEach(async () => { runtime.dispose(); await cleanupTmpDir(state.root); });
 
 describe("document observation desktop ownership", () => {
+  it("releases prepared runtimes after the final opening lease when no rendered view exists", async () => {
+    runtime.dispose();
+    const releaseSession = vi.fn();
+    const prepare = vi.fn().mockResolvedValue(undefined);
+    runtime = new DocumentObservationRuntime(deps, { ...engine, prepare, releaseSession });
+    const first = runtime.acquireEnginePreparation("session-one", path, new AbortController().signal)!;
+    const second = runtime.acquireEnginePreparation("session-one", path, new AbortController().signal)!;
+    await Promise.all([first.ready, second.ready]);
+    first.release();
+    expect(releaseSession).not.toHaveBeenCalled();
+    second.release();
+    expect(releaseSession).toHaveBeenCalledExactlyOnceWith("session-one");
+    expect(events()).toEqual([]);
+  });
+
+  it("keeps a prepared runtime owned by the rendered view after opening completes", async () => {
+    runtime.dispose();
+    const releaseSession = vi.fn();
+    runtime = new DocumentObservationRuntime(deps, { ...engine, prepare: async () => {}, releaseSession });
+    const preparation = runtime.acquireEnginePreparation("session-one", path, new AbortController().signal)!;
+    await preparation.ready;
+    const binding = baseline();
+    preparation.release();
+    expect(releaseSession).not.toHaveBeenCalled();
+    runtime.release(binding.targetId);
+    expect(releaseSession).toHaveBeenCalledExactlyOnceWith("session-one");
+  });
+
   function textBaseline(engineAvailable = true) {
     runtime.dispose();
     runtime = new DocumentObservationRuntime(deps, engineAvailable ? {
@@ -234,6 +264,26 @@ describe("document observation desktop ownership", () => {
     await saving;
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(events()).toEqual([]);
+  });
+
+  it("answers busy at the limit it shares with terminal and browser targets, leaving no view owner behind", () => {
+    // The runtime's one daemon also holds terminal and browser targets; fill it with non-document ones.
+    const daemon = (runtime as unknown as { daemon: ObservationDaemon }).daemon;
+    const others = Array.from({ length: OBSERVATION_LIMITS.maxViews }, (_, index) => `terminal-target-${index}`);
+    for (const id of others) daemon.registerTarget<TerminalObservationEvent>({ id, path: "terminal-activity" }, "session-one", () => true, () => {}, "terminal");
+    const listeners = () => ["destroyed", "render-process-gone", "did-frame-navigate"].map((name) => sender.listenerCount(name));
+    const before = listeners();
+    const open = () => runtime.registerView(event, "session-one", path, Buffer.from("old"), table("old"));
+    expect(open).toThrow(expect.objectContaining({ code: "busy" }));
+    // Admission refused after the precheck (a target taken in between) rolls back the same way.
+    vi.spyOn(daemon, "hasCapacity").mockReturnValueOnce(true);
+    expect(open).toThrow(expect.objectContaining({ code: "busy" }));
+    expect(listeners()).toEqual(before);
+    expect((runtime as unknown as { views: Map<string, unknown> }).views.size).toBe(0);
+    // Room freed by another source admits the document view.
+    daemon.release(others[0]!);
+    expect(open()).toMatchObject({ sessionId: "session-one", seq: 0 });
+    expect(listeners()).toEqual(before.map((count) => count + 1));
   });
 
   it("keeps a deterministic existing-viewer fallback when the engine is absent", async () => {

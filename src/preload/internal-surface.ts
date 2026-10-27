@@ -2,8 +2,9 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
+import { buildDocumentEngineApiSurface } from "./document-engine-api-surface.js";
 import type {
-  ObservationAck, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
+  ObservationRequest, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
 } from "../shared/agent-observation.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
@@ -227,7 +228,7 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.on(CHANNELS.preview.observationEvents, listener);
       return () => ipcRenderer.removeListener(CHANNELS.preview.observationEvents, listener);
     },
-    acknowledgeObservation: (ack: ObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
+    acknowledgeObservation: (request: ObservationRequest) => ipcRenderer.invoke(CHANNELS.preview.observationAck, request),
     onObservationPreview: (handler: (message: BrowserObservationPreviewMessage) => void) => {
       const listener = (_event: unknown, message: BrowserObservationPreviewMessage) => handler(message);
       ipcRenderer.on(CHANNELS.preview.observationPreviewFrames, listener);
@@ -235,6 +236,7 @@ export function buildAveNamespaceExtras() {
     },
     requestObservationPreview: (request: BrowserObservationPreviewRequest) => ipcRenderer.invoke(CHANNELS.preview.observationPreview, request),
   },
+  documentEngine: buildDocumentEngineApiSurface(),
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),
     pickRoot: (opts?: { ackToken?: string }) =>

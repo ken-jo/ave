@@ -6,9 +6,10 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import type { PowerShellArgument, PowerShellValueArgument } from "../powershell-ast.js";
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -382,14 +383,21 @@ describe("bash tool", () => {
 
     it("rejects redirection targets outside the sandbox before spawning the shell", async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-bash-redirection-"));
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+        throw new Error("Unexpected shell spawn");
+      });
+      syncBuiltinESMExports();
       try {
         const result = await new BashTool().execute(
           { command: "printf x>/private/tmp/ave-outside-redirection", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(root),
         );
         expect(result.isError).toBe(true);
-        expect(result.output).toContain("Sandbox:");
+        expect(result.output).toContain(process.platform === "win32" ? "namespace is unresolved" : "Sandbox:");
+        expect(spawnSpy).not.toHaveBeenCalled();
       } finally {
+        spawnSpy.mockRestore();
+        syncBuiltinESMExports();
         await cleanupTmpDir(root);
       }
     });

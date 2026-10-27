@@ -1,4 +1,7 @@
-import type { PreviewDocumentFormat, PreviewTableDocument } from "./preview-document.js";
+import type { PreviewTableDocument } from "./preview-document.js";
+import type { PreviewAnyFormat, PreviewDocumentFor, PreviewPageDocument, PreviewDocumentElement } from "./preview-page-document.js";
+import type { EgressGrantScope } from "./egress-grant-scopes.js";
+import type { EgressDecisionBasis } from "../audit/sandbox-audit.js";
 
 export type ObservationSource = "document" | "browser" | "terminal";
 export interface ObservationTarget { id: string; path: string; hostSessionId?: string }
@@ -25,10 +28,10 @@ export interface PreviewObservedTextDocument {
   totalLines: number;
   truncated: boolean;
 }
-export type ObservedDocument = PreviewTableDocument | PreviewObservedTextDocument;
+export type ObservedDocument = PreviewTableDocument | PreviewObservedTextDocument | PreviewPageDocument;
 export type DocumentObservationEvent =
   | DocumentEventBase & { kind: "element"; element: { kind: "cell"; sheet: string; row: number; column: number }
-    | { kind: "line"; line: number };
+    | { kind: "line"; line: number } | PreviewDocumentElement["element"];
     before: string; after: string; advisory: boolean }
   | DocumentEventBase & { kind: "snapshot"; before: null; after: ObservedDocument }
   | DocumentEventBase & { kind: "status"; before: null; after: { code: DocumentObservationStatus } };
@@ -49,7 +52,48 @@ export type BrowserObservationEvent = { target: ObservationTarget & { hostSessio
   | ObservationEventEnvelope & { source: "browser"; kind: "action"; before: null; after: BrowserObservationDetail }
   | ObservationEventEnvelope & { source: "browser"; kind: "status"; before: null;
     after: { code: "resync-required" | "observation-error" | "session-cleared" } });
-export type AgentObservationEvent = DocumentObservationEvent | BrowserObservationEvent;
+
+export interface TerminalObservationDecision {
+  kind: "egress";
+  host: string;
+  port: number | null;
+  decision: "allow" | "deny";
+  basis: EgressDecisionBasis;
+  scope: EgressGrantScope | null;
+  reason: string | null;
+  attribution: "command" | "terminal-session";
+  ts: number;
+}
+
+export type TerminalOutputAvailability = "streaming" | "on-completion" | "withheld-user-input";
+
+export interface TerminalObservedCommand {
+  id: string;
+  toolUseId: string;
+  turnId: string;
+  kind: "shell" | "terminal";
+  command: string;
+  cwd: string;
+  tabId?: string;
+  terminalSessionId?: string;
+  startedAt: number;
+  finishedAt: number | null;
+  durationMs: number;
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  exitCode: number | null;
+  outputTail: string;
+  outputTruncated: boolean;
+  sandbox: { mode: "isolated" | "unconfined" | "disposable"; detail: string };
+  /** `withheld-user-input`: the user has typed into this agent terminal, so output and network use there cannot be attributed to the agent and are not observed. */
+  outputAvailability: TerminalOutputAvailability;
+  decisions: TerminalObservationDecision[];
+}
+
+interface TerminalEventBase extends ObservationEventEnvelope { source: "terminal" }
+export type TerminalObservationEvent =
+  | TerminalEventBase & { kind: "snapshot"; before: null; after: { commands: TerminalObservedCommand[] } }
+  | TerminalEventBase & { kind: "status"; before: null; after: { code: "resync-required" | "observation-error" } };
+export type AgentObservationEvent = DocumentObservationEvent | BrowserObservationEvent | TerminalObservationEvent;
 
 /**
  * Transient live preview of an agent-driven tab. Frames never enter the daemon, its queues, event history or any file;
@@ -88,6 +132,33 @@ export interface ObservationAck {
   sessionId: string;
   seq: number;
 }
+
+/** The terminal observation subscription travels on the same acknowledgement channel and returns the host-issued read-only target. */
+export interface TerminalObservationSubscription { action: "subscribe-terminal"; sessionId: string }
+export type ObservationRequest = ObservationAck | TerminalObservationSubscription;
+export interface ObservationResponse {
+  ok: boolean;
+  error?: string;
+  observation?: ObservationBinding;
+}
+
+export function isTerminalObservationSubscription(value: unknown): value is TerminalObservationSubscription {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 2 && record.action === "subscribe-terminal"
+    && typeof record.sessionId === "string" && record.sessionId.length > 0 && record.sessionId.length <= 256;
+}
+
+export const TERMINAL_OBSERVATION_LIMITS = Object.freeze({
+  maxSessions: 16,
+  maxCommands: 32,
+  maxOutputChars: 4096,
+  maxCommandChars: 4096,
+  maxCwdChars: 2048,
+  maxDecisions: 16,
+  maxPendingChars: 8192,
+  flushMs: 80,
+});
 
 export function isObservationAck(value: unknown): value is ObservationAck {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -135,5 +206,15 @@ export const OBSERVATION_LIMITS = Object.freeze({
 
 export interface DocumentObservationEngine {
   readonly id: string;
-  parse(bytes: Buffer, format: PreviewDocumentFormat | "text", sheetIndex: number, signal: AbortSignal): Promise<ObservedDocument>;
+  prepare?(format: PreviewAnyFormat, signal: AbortSignal, context?: DocumentObservationEngineContext): Promise<void>;
+  parse(bytes: Buffer, format: PreviewAnyFormat | "text", selectionIndex: number, signal: AbortSignal,
+    context?: DocumentObservationEngineContext): Promise<ObservedDocument>;
+  releaseSession?(sessionId: string): void | Promise<void>;
+  dispose?(): void | Promise<void>;
+}
+
+/** Host-owned parse admission can be retained across conversion and output decoding. */
+export interface DocumentObservationEngineContext {
+  sessionId: string;
+  parse?: <F extends PreviewAnyFormat>(bytes: Buffer, format: F, selectionIndex: number, signal: AbortSignal) => Promise<PreviewDocumentFor<F>>;
 }

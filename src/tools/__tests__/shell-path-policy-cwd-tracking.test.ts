@@ -2,12 +2,14 @@
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 
+import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 
 // A shallower allowed directory makes traversal escape only after cd.
-const ROOT = "/private/tmp/ave-cwd-tracking";
+const ROOT = hostFilesystemPath("/private/tmp/ave-cwd-tracking");
 const CWD = `${ROOT}/src/deep/nested`;
-const EXTRAS = ["/tmp"];
+const TMP = hostFilesystemPath("/tmp");
+const EXTRAS = [TMP];
 
 // Reads are unfenced by default but retain the sensitive-path deny-list; test cwd tracking with writes and fenced reads.
 function check(command: string, blockReads = false) {
@@ -16,28 +18,28 @@ function check(command: string, blockReads = false) {
 
 describe("shell path policy — working directory tracking", () => {
   it("blocks a WRITE climbing out of a shallow allowed directory reached by cd", () => {
-    const violation = check("cd /tmp && cp ./staged ../../etc/evil");
+    const violation = check(`cd ${TMP} && cp ./staged ../../etc/evil`);
     expect(violation).not.toBeNull();
     expect(violation!.kind).toBe("sandbox-boundary");
   });
 
   it("blocks the same climb with a READ verb once reads are re-fenced", () => {
-    const violation = check("cd /tmp && cat ../../etc/passwd", true);
+    const violation = check(`cd ${TMP} && cat ../../etc/passwd`, true);
     expect(violation).not.toBeNull();
     expect(violation!.kind).toBe("sandbox-boundary");
   });
 
   it.each([
-    ["cd /tmp && mv ./staged ../etc/evil", "one level up"],
-    ["cd /tmp; cp ./staged ./x/../../etc/evil", "climb hidden mid-path"],
-    ["cd /tmp && head -1 ../../../etc/shadow", "a sensitive file above"],
+    [`cd ${TMP} && mv ./staged ../etc/evil`, "one level up"],
+    [`cd ${TMP}; cp ./staged ./x/../../etc/evil`, "climb hidden mid-path"],
+    [`cd ${TMP} && head -1 ../../../etc/shadow`, "a sensitive file above"],
   ])("blocks %s (%s)", (command) => {
     expect(check(command)).not.toBeNull();
   });
 
   it.each([
-    ["cd /tmp && cat ../etc/passwd", "one level up"],
-    ["cd /tmp; cat ./x/../../etc/passwd", "climb hidden mid-path"],
+    [`cd ${TMP} && cat ../etc/passwd`, "one level up"],
+    [`cd ${TMP}; cat ./x/../../etc/passwd`, "climb hidden mid-path"],
   ])("blocks read %s (%s) when reads are re-fenced", (command) => {
     expect(check(command, true)).not.toBeNull();
   });
@@ -50,14 +52,14 @@ describe("shell path policy — working directory tracking", () => {
 
   // Wide reads remain allowed by directory policy but must still respect protected paths.
   it("admits a read that climbs out, under the shipped policy", () => {
-    expect(check("cd /tmp && cat ../../etc/passwd")).toBeNull();
+    expect(check(`cd ${TMP} && cat ../../etc/passwd`)).toBeNull();
     expect(check("cat ../../../../../etc/passwd")).toBeNull();
   });
 
   it.each([
-    ["cd /tmp && cat notes.txt"],
+    [`cd ${TMP} && cat notes.txt`],
     ["cd .. && ls"],
-    ["cd /tmp"],
+    [`cd ${TMP}`],
     ["ls -la"],
     ["cat notes.txt"],
   ])("allows %s", (command) => {
@@ -92,7 +94,7 @@ describe("shell path policy — working directory tracking", () => {
     });
 
     it("does not mistake -L/-P for the destination", () => {
-      expect(check("cd -P /tmp && cat notes.txt")).toBeNull();
+      expect(check(`cd -P ${TMP} && cat notes.txt`)).toBeNull();
     });
   });
 });

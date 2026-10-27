@@ -4,6 +4,7 @@ import { analyzeShell, literalWord, staticShellWord, type ShellCommand, type She
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
 import { resolveShellFilesystemPath } from "./shell-filesystem-path.js";
+import { modelShellPath } from "./shell-native-path.js";
 import { analyzeShellTestExpression, parseProvenShellInteger, type ShellTestExpression } from "./shell-test-expression.js";
 
 export interface ShellCommandEvent {
@@ -301,7 +302,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const target = staticShellWord(transition.path);
         if (target === undefined) decline("unresolved wrapper working directory", transition.path);
         checkPath(target, transition.path.source.raw, commandState, "write");
-        try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!); }
+        try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!, { dialect: "bash" }); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
           decline("cannot resolve wrapper working directory", transition.path);
@@ -484,10 +485,12 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       const target = args[0] === "-" ? commandState.variables.get("OLDPWD") : args[0] ?? commandState.variables.get("HOME");
       if (target === undefined) decline("unresolved working-directory destination", effective.words[1]);
       const label = targetWord?.source.raw ?? head;
-      const next = pathResolve(state.cwd!, target);
+      const modeledTarget = modelShellPath(target, { dialect: "bash", location: state.cwd ?? undefined }).nativePath;
+      if (modeledTarget === undefined) decline("working-directory namespace is unresolved", targetWord);
+      const next = pathResolve(modeledTarget);
       let destination = next;
       if (physical) {
-        try { destination = resolveShellFilesystemPath(target, state.cwd!); }
+        try { destination = resolveShellFilesystemPath(target, state.cwd!, { dialect: "bash" }); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
           decline("cannot resolve working-directory destination", targetWord);
@@ -497,7 +500,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       checkPath(destination, label, state, "write");
       let observedDirectory = false;
       try {
-        const original = isAbsolute(target) ? target : `${state.cwd!}/${target}`;
+        const original = process.platform === "win32" ? modeledTarget : isAbsolute(target) ? target : `${state.cwd!}/${target}`;
         observedDirectory = statSync(original).isDirectory();
         accessSync(original, constants.X_OK);
         accessSync(destination, constants.X_OK);

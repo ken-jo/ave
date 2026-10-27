@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 // Exercises the real pinned transport and loopback receiver; DNS, TLS termination, storage, approvals, and LLM work are simulated. Certificate
 // validation is not exercised; runtime gate wiring is covered separately.
 import { randomUUID } from "node:crypto";
@@ -93,6 +94,7 @@ function memoryNamespace() {
     handle: {
       dir: "memory",
       childDir: async (name: string) => name,
+      createFile: refuseNamespaceFileCreation,
       readJson: async <T>(name: string, fallback: T): Promise<T> =>
         structuredClone((files.has(name) ? files.get(name) : fallback) as T),
       writeJson: async <T>(name: string, value: T): Promise<void> => {

@@ -28,7 +28,7 @@ import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import type { SubAgentSpawn } from "../../subagents/types.js";
 import type { AveApi } from "../../types.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { approvalRequest, approvalSurfaceStub, deferred, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../../shared/test-ids.js";
 import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
@@ -116,6 +116,8 @@ beforeEach(() => {
   senderFrame = { url: "file:///index.html" };
   previousAveHome = process.env.AVE_HOME;
   previousAveDescriptor = Object.getOwnPropertyDescriptor(window, "ave");
+  // The side panel's terminal observation strip subscribes through the preload bridge; the host side is not under test here.
+  Object.defineProperty(window, "ave", { value: makeMockAveNamespace().ns, configurable: true, writable: true });
   scratchHome = mkdtempSync(join(tmpdir(), "ave-child-transcript-"));
   process.env.AVE_HOME = scratchHome;
 });
@@ -328,7 +330,7 @@ describe("side-chat child transcript across host and renderer", () => {
         return pending.promise;
       });
       if (eventKind === "approval") {
-        Object.defineProperty(window, "ave", { value: { approval: api.approval }, configurable: true, writable: true });
+        Object.defineProperty(window, "ave", { value: { preview: makeMockAveNamespace().ns.preview, approval: api.approval }, configurable: true, writable: true });
         render(<ApprovalPanel api={api} onSurface={(next) => { live.surface = next; }} />);
       } else {
         render(<Panel api={api} openStoredSession={false} surface={surface} />);

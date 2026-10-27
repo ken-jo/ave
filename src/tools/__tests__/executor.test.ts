@@ -2,6 +2,7 @@ import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__
 // Sensitive targets must reach the approval hard block and deny before dialog dispatch or tool execution.
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
@@ -3374,7 +3375,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
     const results = await executor.executeAll(
       // Use a root write; root reads are not confined.
-      [{ id: "tu-l1-shell-root", name: "bash", input: { command: "chmod u+w /", timeoutSeconds: 1 } }],
+      [{ id: "tu-l1-shell-root", name: "bash", input: { command: `chmod u+w ${hostFilesystemPath("/")}`, timeoutSeconds: 1 } }],
       { sessionId: "sess-l1-shell-root", permissionContext: userPermissionContext() },
     );
 

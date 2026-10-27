@@ -653,6 +653,29 @@ jobs:
           src/permissions/__tests__/asrt-deny-absent-native.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
+          src/permissions/__tests__/shell-exfiltration.test.ts
+          src/permissions/__tests__/shell-native-path-floors.test.ts
+          src/shared/__tests__/shell-native-path.test.ts
+          src/permissions/__tests__/powershell-exfiltration.test.ts
+          src/permissions/__tests__/encoded-bypass-battery.test.ts
+          src/permissions/__tests__/literal-proof.test.ts
+          src/permissions/__tests__/literal-rule-identity.test.ts
+          src/permissions/__tests__/permission-lane-budgets.test.ts
+          src/permissions/__tests__/permission-nested-semantics.test.ts
+          src/permissions/__tests__/permission-ordinary-performance.test.ts
+          src/permissions/__tests__/permission-static-evaluation.test.ts
+          src/permissions/__tests__/permission-visible-literal-regressions.test.ts
+          src/permissions/__tests__/powershell-catalogue-parity.test.ts
+          src/permissions/__tests__/powershell-data-roles.test.ts
+          src/permissions/__tests__/powershell-dispatch-upload.test.ts
+          src/permissions/__tests__/powershell-network-rules.test.ts
+          src/permissions/__tests__/rules-store-and-decision.test.ts
+          src/permissions/__tests__/shell-sandbox-rules.test.ts
+          src/permissions/__tests__/egress-ask.test.ts
+          src/permissions/__tests__/execution-router.test.ts
+          src/permissions/__tests__/scoped-rules.test.ts
+          src/permissions/judge/__tests__/judge-dispatch.test.ts
+          src/main/__tests__/document-open.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
           src/permissions/__tests__/policy-home.test.ts
           src/shared/__tests__/windows-configuration-handles.test.ts
@@ -681,6 +704,7 @@ jobs:
           src/main/__tests__/subscription-runtime-service.test.ts
           src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
           src/__tests__/support/native-executable.test.ts
+          src/__tests__/support/fixture-owner.test.ts
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
           src/lib/__tests__/admin-policy-file.test.ts

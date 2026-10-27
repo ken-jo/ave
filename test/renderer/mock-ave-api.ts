@@ -406,6 +406,12 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       task: vi.fn(async () => ({ ok: false, error: "a2a-remote-disabled" })),
       action: vi.fn(async () => ({ ok: false, error: "a2a-remote-disabled" })),
     },
+    documentEngine: {
+      status: vi.fn(async () => ({ ok: true, state: { phase: "absent", version: "26.8.1", downloadBytes: 300_000_000, downloadedBytes: 0, installedBytes: 900_000_000 } })),
+      install: vi.fn(async () => ({ ok: true })),
+      cancel: vi.fn(async () => ({ ok: true })),
+      uninstall: vi.fn(async () => ({ ok: true })),
+    } as unknown as Mock,
     tour: {
       getState: vi.fn(async () => ({
         ok: true,
@@ -1073,11 +1079,22 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
       },
       // File-preview + project-folder browser surfaces (workspace rail). Default stubs so any
       // renderApp-based test that opens the file-browser tab renders without a real preload bridge.
+      documentEngine: {
+        status: vi.fn(async () => ({ ok: true, state: { phase: "absent", version: "26.8.1", downloadBytes: 300_000_000, downloadedBytes: 0, installedBytes: 900_000_000 } })),
+        install: vi.fn(async () => ({ ok: true })),
+        cancel: vi.fn(async () => ({ ok: true })),
+        uninstall: vi.fn(async () => ({ ok: true })),
+      },
       preview: {
         readFile: vi.fn(async (path: string) => ({ ok: true, content: "", path, truncated: false })),
         readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "Unsupported preview document format." })),
         onAgentObservation: vi.fn(() => () => {}),
-        acknowledgeObservation: vi.fn(async () => ({ ok: true })),
+        acknowledgeObservation: vi.fn(async (request: import("../../src/shared/agent-observation.js").ObservationRequest) => ({
+          ok: true,
+          ...(request.action === "subscribe-terminal" ? { observation: {
+            targetId: "b0000000-0000-4000-8000-000000000001", sessionId: request.sessionId, seq: 0,
+          } } : {}),
+        })),
         onObservationPreview: vi.fn(() => () => {}),
         requestObservationPreview: vi.fn(async () => ({ ok: true })),
       },

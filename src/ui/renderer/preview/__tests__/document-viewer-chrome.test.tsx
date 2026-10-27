@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewDetail } from "../../components/ChatSidePanelPreview.js";
 import { PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } from "../preview-document-chrome.js";
 import type { AgentObservationEvent, DocumentObservationEvent, PreviewObservedTextDocument } from "../../../../shared/agent-observation.js";
+import { emitObservations } from "../../../../__tests__/support/document-observation-events.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import { en, ko } from "../../../../i18n/messages/generated/chatPreviewRail.js";
 
@@ -41,9 +42,6 @@ function lineEvent(seq: number, line: number, before: string, after: string): Do
   return { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH },
     seq, ts: 1_700_000_000_000, kind: "element", element: { kind: "line", line }, before, after, advisory: false };
 }
-async function emit(...events: AgentObservationEvent[]): Promise<void> {
-  await act(async () => { handlers.forEach((handler) => handler(events)); });
-}
 async function openText() {
   const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={FILE} />);
   await screen.findByTestId("document-text-lines");
@@ -78,7 +76,7 @@ describe("shared document viewer chrome", () => {
 
   it("ignores browser events even when a document target identity is reused in the batch", async () => {
     await openText();
-    await emit({ source: "browser", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH, hostSessionId: SESSION },
+    await emitObservations(handlers, { source: "browser", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH, hostSessionId: SESSION },
       seq: 1, ts: 1_000, kind: "status", before: null, after: { code: "observation-error" } });
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
     expect(screen.queryByTestId("browser-preview-live-strip")).toBeNull();
@@ -132,7 +130,7 @@ describe("shared document viewer chrome", () => {
 
   it.each(["refusal", "rejection"] as const)("localizes a default-app %s in the shared slot without agent attribution", async (outcome) => {
     await openText();
-    await emit(lineEvent(1, 1, "const total = 1;", "const total = 12;"));
+    await emitObservations(handlers, lineEvent(1, 1, "const total = 1;", "const total = 12;"));
     const open = vi.mocked(window.ave.attach.openExternal);
     if (outcome === "refusal") open.mockResolvedValueOnce({ ok: false, error: "raw private failure detail" });
     else open.mockRejectedValueOnce(new Error("raw private failure detail"));
@@ -156,7 +154,7 @@ describe("shared document viewer chrome", () => {
     expect(screen.queryByTestId("document-text-lines")).toBeNull();
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
     expect(acknowledge).toHaveBeenCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 0 });
-    await emit({ ...lineEvent(1, 2, "Original paragraph", "Updated paragraph"), target: { id: TARGET, path } });
+    await emitObservations(handlers, { ...lineEvent(1, 2, "Original paragraph", "Updated paragraph"), target: { id: TARGET, path } });
     expect(screen.queryByTestId("chat-side-panel-markdown")).toBeNull();
     expect(screen.getByTestId("document-line-value").textContent).toBe("Updated paragraph");
     expect(screen.getByTestId("document-preview-live-strip").textContent).toContain("에이전트가 수정함");
@@ -219,7 +217,7 @@ describe("shared document viewer chrome", () => {
 
   it("highlights changed lines and keeps the latest target distinct after the verified snapshot", async () => {
     await openText();
-    await emit(lineEvent(1, 1, "const total = 1;", "const total = 12;"),
+    await emitObservations(handlers, lineEvent(1, 1, "const total = 1;", "const total = 12;"),
       lineEvent(2, 2, "export { total };", "export default total;"),
       { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH }, seq: 3,
         ts: 1_700_000_000_001, kind: "snapshot", before: null, after: { ...DOCUMENT,
@@ -236,11 +234,11 @@ describe("shared document viewer chrome", () => {
   it("refuses unrelated, user and stale line events and releases the exact binding", async () => {
     const view = await openText();
     const event = lineEvent(1, 1, "const total = 1;", "wrong content");
-    await emit({ ...event, sessionId: "other" }, { ...event, target: { id: TARGET, path: "/workspace/other.ts" } },
+    await emitObservations(handlers, { ...event, sessionId: "other" }, { ...event, target: { id: TARGET, path: "/workspace/other.ts" } },
       { ...event, actor: "user" } as never);
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
-    await emit(lineEvent(2, 1, "const total = 1;", "const total = 12;"));
-    await emit(event);
+    await emitObservations(handlers, lineEvent(2, 1, "const total = 1;", "const total = 12;"));
+    await emitObservations(handlers, event);
     expect(screen.getByTestId("document-observation-summary").textContent).toBe("1곳 · 1–1줄");
     view.unmount();
     expect(handlers.size).toBe(0);
@@ -249,7 +247,7 @@ describe("shared document viewer chrome", () => {
 
   it("places resynchronization errors in the live-strip slot", async () => {
     await openText();
-    await emit({ source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH }, seq: 1,
+    await emitObservations(handlers, { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH }, seq: 1,
       ts: 1_700_000_000_001, kind: "status", before: null, after: { code: "resync-required" } });
     expect(screen.getByTestId("document-preview-live-strip").getAttribute("role")).toBe("alert");
     expect(screen.getByRole("alert").textContent).toBe("실시간 업데이트를 다시 맞춰야 합니다. 파일을 다시 불러오세요.");

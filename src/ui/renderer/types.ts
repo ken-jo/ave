@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../../shared/shell-tasks.js";
 import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
@@ -720,6 +721,7 @@ export type AveApi = {
       | { ok: false; error: string; message: string }
     >;
   };
+  documentEngine: DocumentEngineApi;
   /** Open an http(s) URL in the system browser. Main-side rejects any other scheme. */
   openExternalUrl: (url: string) => Promise<{
     ok: boolean;
@@ -2044,7 +2046,7 @@ export interface AvePreviewApi {
    */
   readDocument: (path: string, sheetIndex: number, sessionId?: string) => Promise<PreviewReadDocumentResult>;
   onAgentObservation: (handler: (events: import("../../shared/agent-observation.js").AgentObservationEvent[]) => void) => () => void;
-  acknowledgeObservation: (ack: import("../../shared/agent-observation.js").ObservationAck) => Promise<{ ok: boolean; error?: string }>;
+  acknowledgeObservation: (request: import("../../shared/agent-observation.js").ObservationRequest) => Promise<import("../../shared/agent-observation.js").ObservationResponse>;
   onObservationPreview: (handler: (message: import("../../shared/agent-observation.js").BrowserObservationPreviewMessage) => void) => () => void;
   requestObservationPreview: (request: import("../../shared/agent-observation.js").BrowserObservationPreviewRequest) => Promise<{ ok: boolean; error?: string }>;
 }
@@ -2189,6 +2191,7 @@ declare global {
       ui: AveUiApi;
       attach: AveAttachApi;
       preview: AvePreviewApi;
+      documentEngine: DocumentEngineApi;
       workspace: AveWorkspaceApi;
       env: {
         isDev: boolean;

@@ -703,14 +703,14 @@ function documentRouteFailure(failure: ToolExecutionResult): ToolExecutionResult
 export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
   readonly name = "read_document";
   readonly description =
-    "Read CSV, TSV, XLSX, XLS, ODS, PDF or PPTX using bounded document extraction. " +
+    "Read CSV, TSV, XLSX, XLS, ODS, PDF, PPTX, DOCX or ODT using bounded document extraction. " +
     "Select sheet (zero-based sheet and absolute row/column offsets; default 20 rows by 10 columns, " +
     "maximum 100 rows, 50 columns and 500 cells), page (one-based page, zero-based textOffset), " +
     "or info (ten sheet labels per call). Text results fit 6000 characters, 16 KiB and 1800 estimated tokens; " +
     "follow remainingWindows or nextTextOffset for more. Formulas are cached display values. " +
     "Page includeImage defaults false; true adds the existing rendered PNG as visual model context, " +
     "at most 2 MiB per call in a separate image budget. Image input consumes additional model context " +
-    "and provider-dependent image tokens; omit it for text-only reading. PPTX is an outline without a rendered image. " +
+    "and provider-dependent image tokens; omit it for text-only reading. PPTX, DOCX and ODT use text outlines without rendered images. " +
     "PDF text also requires the page renderer; no OCR or document editing. Does not open the side panel.";
   readonly inputSchema = ReadDocumentInputSchema;
   override readonly category: ToolCategory = "read";
@@ -794,7 +794,8 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
 export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
   readonly name = "open_document";
   readonly description =
-    "Present a local CSV, TSV, XLSX, XLS, ODS, PDF or PPTX to the user. " +
+    "Present a local CSV, TSV, XLSX, XLS, ODS, PDF, PPTX, DOCX, ODT, HWP or HWPX to the user. " +
+    "HWP and HWPX require the optional document engine and compatible import runtime, and are not supported on macOS yet. " +
     "The user's document setting chooses direct side-panel opening or a clickable file link. " +
     "Uses ordinary read permissions without an additional prompt. Does not feed document contents to the model. " +
     "Requires the originating foreground session; unavailable headless or for isolated guest paths.";

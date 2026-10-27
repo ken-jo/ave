@@ -10,6 +10,7 @@ import {
 } from "../table-document-reader.js";
 import { verifyZipInflateLimits } from "../zip-inflate-guard.js";
 import { offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
+import { recalculatedOdsFixture } from "../../__tests__/support/ods-document-fixtures.js";
 
 function limits(overrides: Partial<TableDocumentLimits>): TableDocumentLimits {
   return { ...PREVIEW_DOCUMENT_LIMITS, ...overrides };
@@ -399,5 +400,15 @@ describe("zip-bomb guard", () => {
   it("passes a real workbook", async () => {
     const verdict = verifyZipInflateLimits(workbook({ A: [["x"]] }, "xlsx"), PREVIEW_DOCUMENT_LIMITS);
     expect(verdict.ok).toBe(true);
+  });
+});
+
+
+describe("recalculated spreadsheet namespace attributes", () => {
+  it("reads cached ODS values while retaining the source format", async () => {
+    const document = await parseTableDocument(recalculatedOdsFixture(), "ods", 0);
+    expect(document.format).toBe("ods");
+    expect(document.sheet.rows).toEqual([["2", "5", "7"]]);
+    expect(document.needsRecalculation).toBe(false);
   });
 });

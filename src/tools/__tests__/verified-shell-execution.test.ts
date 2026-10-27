@@ -13,6 +13,11 @@ import * as shellResolver from "../../lib/shell-resolver.js";
 import * as sandboxHomeOwner from "../../permissions/sandbox-process-home.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { BashTool, listShellTasks, PowerShellTool } from "../shell-tools.js";
+import { setAgentTerminalObservationSink } from "../agent-terminal-observation.js";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
+import { ObservationDaemon } from "../../observation/daemon.js";
+import { TerminalObservationAdapter } from "../../observation/terminal-adapter.js";
+import type { TerminalObservationEvent } from "../../shared/agent-observation.js";
 import { inspectGitRepository } from "../../permissions/rules/git-repository-inputs.js";
 import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../../permissions/rules/git-readonly-argv.js";
 import * as installation from "../../shared/verified-executable.js";
@@ -425,4 +430,64 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   }
   expect(progress.write).not.toHaveBeenCalled();
   expect(capture).not.toHaveBeenCalled();
+});
+
+it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].flatMap((sandboxed) =>
+  [false, true].map((changed) => ({ dialect, sandboxed, changed })))))(
+  "quarantines agent observation of checked $dialect output with sandboxed=$sandboxed and changed=$changed", async ({ dialect, sandboxed, changed }) => {
+  const command = "git log HEAD";
+  const { cwd, identity } = fixture(sandboxed, command);
+  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
+  expect(verifiedShellCommand).toBeDefined();
+  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
+  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
+  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  const daemon = new ObservationDaemon();
+  const adapter = new TerminalObservationAdapter(daemon);
+  const delivered: TerminalObservationEvent[] = [];
+  adapter.registerView("view", "checked-observation", () => true, (batch) => { delivered.push(...batch); adapter.acknowledge("view", batch.at(-1)!.seq); });
+  setAgentTerminalObservationSink({ start: (owner, input) => adapter.start(owner, input),
+    egress: (token, decision) => adapter.recordEgress(token, decision), releaseSessions: (ended) => adapter.releaseSessions(ended) });
+  const snapshotsAtClose: string[] = [];
+  let started = false;
+  vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
+    if (dialect === "powershell" && !started && (invocation as string[]).at(-1)?.includes("Parser")) {
+      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
+        arguments: ["git", "log", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+    }
+    started = true;
+    return completedChild("checked private log\n", () => {
+      if (changed) writeFileSync(join(cwd, ".git", "config"), "[core]\n bare = true\n");
+      snapshotsAtClose.push(JSON.stringify(delivered));
+    });
+  });
+  const owner = { sessionId: "checked-observation", turnId: "checked-turn", toolUseId: "checked-tool" };
+  const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
+  try {
+    const result = await runWithAgentObservationTurn(owner, () => runWithAgentObservationInvocation(owner, () => tool.execute({ command, timeoutSeconds: 5 }, {
+      cwd, extraAllowedDirectories: [], metadata: {}, hostShellExecutionPlan: identity.plan, verifiedShellCommand,
+    })));
+    await vi.waitFor(() => {
+      const last = delivered.findLast((event) => event.kind === "snapshot");
+      expect(last?.kind === "snapshot" ? last.after.commands[0]?.status : undefined).toBe("completed");
+    });
+    // Nothing reached any snapshot while the result was pending revalidation.
+    expect(snapshotsAtClose.join("")).not.toContain("checked private log");
+    const last = delivered.findLast((event) => event.kind === "snapshot");
+    const observed = last?.kind === "snapshot" ? last.after.commands[0] : undefined;
+    expect(observed).toMatchObject({ command, outputAvailability: "on-completion" });
+    if (changed) {
+      expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
+      expect(JSON.stringify(delivered)).not.toContain("checked private log");
+    } else {
+      expect(result.output).toContain("checked private log");
+      await vi.waitFor(() => {
+        const latest = delivered.findLast((event) => event.kind === "snapshot");
+        expect(latest?.kind === "snapshot" ? latest.after.commands[0]?.outputTail : undefined).toBe("checked private log\n");
+      });
+    }
+  } finally {
+    setAgentTerminalObservationSink(undefined);
+    daemon.dispose();
+  }
 });

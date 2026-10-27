@@ -620,6 +620,12 @@ export const CHANNELS = {
     listPending: "ave:onboarding:proposals:list-pending",
     answer: "ave:onboarding:proposals:answer",
   },
+  documentEngine: {
+    status: "ave:document-engine:status",
+    install: "ave:document-engine:install",
+    cancel: "ave:document-engine:cancel",
+    uninstall: "ave:document-engine:uninstall",
+  },
   prompts: {
     listSummaries: "ave:prompts:list-summaries",
     list: "ave:prompts:list",

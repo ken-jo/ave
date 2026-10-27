@@ -23,7 +23,7 @@ import {
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { readWindowsDirectoryDacls } from "../../shared/ave-home.js";
-import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { createLocalAppDataFixtureRoot, setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { configureHostResources } from "../host-resources.js";
 
 // Mocked access rules answer at the request level. The real case empties the seam, so the product's own ACL host runs.
@@ -302,25 +302,34 @@ it.runIf(process.platform === "win32")("replaces inherited foreign access when c
 }, 45_000);
 
 it.runIf(process.platform === "win32")("admits a private runtime directory claimed from Administrators", async (context) => {
-  if (!readWindowsDirectoryDacls([tmpdir()])[0].elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
+  const branch = (outcome: string) => console.info(`Administrators-claim admission: ${outcome}`);
+  if (!readWindowsDirectoryDacls([tmpdir()])[0].elevated) {
+    const reason = "An elevated token is required to create the Administrators-owned private directory fixture";
+    branch(`skipped (${reason})`);
+    context.skip(reason);
+  }
   const fixture = realHostFixture();
   await fixture.prime();
-  const base = tmpdir();
-  const parent = realpathSync(mkdtempSync(join(base, "ave-owner-admit-")));
+  // Admission walks every ancestor, so the fixture lives under the real profile rather than a runner temp tree.
+  const parent = createLocalAppDataFixtureRoot();
   roots.push(parent); setFixtureOwner(parent);
   const trust = { capSidPath: join(parent, "absent-cap-fixture") };
   const refusal = await assertCodexLocations([{ path: parent, kind: "directory", routeKind: "native" }], trust)
     .then(() => "", (error: unknown) => String(error));
-  if (refusal.includes("untrusted owner")) {
-    const chain: string[] = [];
-    for (let path = parent; dirname(path) !== path; path = dirname(path)) chain.push(path);
-    const owners = readWindowsDirectoryDacls(chain).map(({ path, ownerSid }) => `${path}=${ownerSid}`);
-    context.skip(`An ancestor of ${base} is not admissible: ${owners.join(", ")}`);
+  if (refusal) {
+    const chain = [parent];
+    while (dirname(chain.at(-1)!) !== chain.at(-1)) chain.push(dirname(chain.at(-1)!));
+    const owners = readWindowsDirectoryDacls(chain).map(({ path, ownerSid }) => `${path}=${ownerSid}`).join(", ");
+    branch(`refused (${refusal}; owners ${owners})`);
+    expect.fail(`Admission of ${parent} or an ancestor was refused: ${refusal}; owners ${owners}`);
   }
   const directory = realpathSync(mkdtempSync(join(parent, "runtime-"))); setFixtureOwner(directory);
   setOwner(directory, "S-1-5-32-544");
   await claimPrivateOwnership([directory]);
-  await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }], trust)).resolves.toBeUndefined();
+  const admission = await assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }], trust)
+    .then(() => "", (error: unknown) => String(error));
+  branch(admission ? `refused (${admission})` : `admitted (${directory})`);
+  expect(admission).toBe("");
 }, 45_000);
 
 it.runIf(process.platform === "win32")("keeps a directory the account already owns without asking for WRITE_OWNER", async () => {

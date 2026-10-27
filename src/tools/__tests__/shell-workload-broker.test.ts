@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { posix } from "node:path";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
+import { setAgentTerminalObservationSink } from "../agent-terminal-observation.js";
 
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -186,6 +188,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setAgentTerminalObservationSink(undefined);
   backgroundShellManager._resetForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -198,6 +201,71 @@ const itPosixGuest = it.skipIf(process.platform === "win32");
 const guestResolvedCwd = (guestPath: string) => posix.resolve(guestPath);
 
 describe("brokered workload shell execution", () => {
+  it("observes foreground output on completion without introducing a second transport request", async () => {
+    const command = "emit-observed-output";
+    const binding = issueBrokerShellGrant({ command, cwd: "/app" });
+    const write = vi.fn();
+    const finish = vi.fn();
+    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
+    setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
+    const identity = { sessionId: SESSION_ID, turnId: "observed-turn", toolUseId: "tool-use-test" };
+    broker.execute.mockResolvedValueOnce(successfulRun("observed broker output\n"));
+    const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+      () => new BashTool().execute({ command, timeoutSeconds: 10 }, context(binding))));
+    expect(result.isError).toBe(false);
+    expect(start).toHaveBeenCalledExactlyOnceWith(identity, expect.objectContaining({
+      kind: "shell", command, cwd: "/app", outputAvailability: "on-completion", sandbox: { mode: "disposable", detail: "disposable-container" },
+    }));
+    expect(write).toHaveBeenCalledExactlyOnceWith("observed broker output\n");
+    expect(finish).toHaveBeenCalledExactlyOnceWith(0, "completed");
+    expect(broker.execute).toHaveBeenCalledOnce();
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps background observation running until a broker read proves completion and forwards truncation=%s", async (truncated) => {
+    const command = "observe-background";
+    const binding = issueBrokerShellGrant({ command, cwd: "/app", background: true });
+    const write = vi.fn();
+    const finish = vi.fn();
+    const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
+    setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
+    const identity = { sessionId: SESSION_ID, turnId: "observed-turn", toolUseId: "tool-use-test" };
+    broker.execute.mockResolvedValueOnce({ output: "", isError: false, executionId: "exec_observed", offset: 0, status: "running" });
+    const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+      () => new BashTool().execute({ command, timeoutSeconds: 10, run_in_background: true }, context(binding))));
+    const shellId = result.metadata?.shellId as string;
+    expect(result.metadata?.backgrounded).toBe(true);
+    expect(finish).not.toHaveBeenCalled();
+    expect(broker.execute).toHaveBeenCalledOnce();
+    broker.execute.mockResolvedValueOnce({ ...successfulRun("finished\n"), executionId: "exec_observed", offset: 0,
+      nextOffset: 9, truncated, running: false });
+    const read = await backgroundShellManager.readBroker(SESSION_ID, shellId, 0,
+      { kind: "tool", authority: {} } as never);
+    expect(read).toMatchObject({ output: "finished\n", status: "exited" });
+    expect(write).toHaveBeenCalledExactlyOnceWith("finished\n", { truncated });
+    expect(finish).toHaveBeenCalledExactlyOnceWith(0, "completed");
+    expect(broker.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("forwards an upstream output gap when stopping a brokered command", async () => {
+    const command = "observe-stopped-background";
+    const binding = issueBrokerShellGrant({ command, cwd: "/app", background: true });
+    const write = vi.fn();
+    const finish = vi.fn();
+    setAgentTerminalObservationSink({ start: () => ({ signal: new AbortController().signal, write, finish,
+      bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }), egress: vi.fn(), releaseSessions: vi.fn() });
+    const identity = { sessionId: SESSION_ID, turnId: "stopped-turn", toolUseId: "tool-use-test" };
+    broker.execute.mockResolvedValueOnce({ output: "", isError: false, executionId: "exec_stopped", offset: 0, status: "running" });
+    const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+      () => new BashTool().execute({ command, timeoutSeconds: 10, run_in_background: true }, context(binding))));
+    broker.execute.mockResolvedValueOnce({ ...successfulRun("tail\n"), executionId: "exec_stopped", nextOffset: 5, truncated: true });
+    await backgroundShellManager.killBroker(SESSION_ID, result.metadata?.shellId as string,
+      { kind: "tool", authority: {} } as never);
+    expect(write).toHaveBeenCalledExactlyOnceWith("tail\n", { truncated: true });
+    expect(finish).toHaveBeenCalledExactlyOnceWith(0, "completed");
+    expect(broker.execute).toHaveBeenCalledTimes(2);
+  });
+
   it.each([undefined, "subdir"])("resolves cwd %s inside the guest workload, independent of the host cwd", async (cwd) => {
     const command = "pwd";
     const expectedCwd = cwd === undefined ? "/app" : "/app/subdir";

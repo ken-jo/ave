@@ -107,16 +107,16 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
         blocks: tracker,
         isLive: () => !tracker.hasExited(),
         write: (data) => pty.write(data),
-        verify: async () => {
-          let reading = await readTerminalForeground(pty.pid);
+        verify: async (options) => {
+          let reading = await readTerminalForeground(pty.pid, options);
           // Permit one real reread when the process-table command fails; semantic refusals and persistent unreadability still fail closed.
           if (!reread && !reading.ok && reading.reason ===
-            "the terminal's process could not be read (Command failed: /bin/ps -axo ppid=)") {
+            "the terminal's process could not be read (Command failed: /bin/ps -axo pid=,ppid=,tty=,comm=)") {
             expect(tracker.nextBlockId()).toBe(nextBlockId);
             expect(tracker.hasExited()).toBe(false);
             reread = true;
             process.stderr.write("[terminal typing fixture] rereading the failed process table\n");
-            reading = await readTerminalForeground(pty.pid);
+            reading = await readTerminalForeground(pty.pid, options);
             expect(tracker.nextBlockId()).toBe(nextBlockId);
             expect(tracker.hasExited()).toBe(false);
           }
@@ -367,6 +367,61 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
         expect(foregroundVerdict(during, shell.pty.pid, basename(path!), shell.home), JSON.stringify(during)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
         gate.release();
         await ranCommand(shell, running);
+      } finally { gate.close(); }
+    }, 30_000);
+
+    it("counts an OSC-shaped write as the user's input, because the line editor runs the keys inside it", async () => {
+      const shell = await startShell(path!);
+      shell.press("\u001b]1;x\rprintf 'RAN_%s\\n' HIDDEN\r\u0007");
+      await until(() => shell.output().includes("RAN_HIDDEN"));
+      expect(shell.tracker.userInputGeneration()).toBeGreaterThan(0);
+    }, 30_000);
+
+    it("refuses to press Enter while an orphaned background job still holds the terminal", async () => {
+      const shell = await startShell(path!);
+      const gate = createGate(shell.home, "release-orphan");
+      try {
+        // The user's job outlives the `sh` that started it: it is no longer the shell's child, but it keeps the terminal and writes to it later.
+        await ranCommand(shell, await shell.type(`sh -c '(read -r released < "$1"; printf "ORPHAN_WROTE\\n") &' sh '${gate.path}'`));
+        await until(() => shell.tracker.promptState() === "ready", 4_000);
+        const reading = await readTerminalForeground(shell.pty.pid);
+        expect(reading, JSON.stringify(reading)).toMatchObject({ ok: false, busy: true });
+        expect(foregroundVerdict(reading, shell.pty.pid, basename(path!), shell.home)).toMatchObject({ ok: false, reason: "shell-busy" });
+        const blocks = shell.tracker.nextBlockId();
+        await expect(shell.type("true")).resolves.toMatchObject({ ok: false, reason: "shell-busy" });
+        expect(shell.tracker.nextBlockId()).toBe(blocks);
+        gate.release();
+        await until(() => shell.output().includes("ORPHAN_WROTE"));
+        // Once it is gone the terminal is the shell's alone again (its late line now sits at the prompt, which typing would refuse as pending input).
+        let after = await readTerminalForeground(shell.pty.pid, { exclusive: true });
+        for (let attempt = 0; attempt < 50 && !after.ok; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          after = await readTerminalForeground(shell.pty.pid, { exclusive: true });
+        }
+        expect(after, JSON.stringify(after)).toMatchObject({ ok: true });
+      } finally { gate.close(); }
+    }, 30_000);
+
+    it.runIf(process.platform === "darwin")("refuses to press Enter while a process that left the terminal's session still holds it open", async () => {
+      const shell = await startShell(path!);
+      const gate = createGate(shell.home, "release-detached");
+      try {
+        // setsid drops the controlling terminal but keeps the inherited descriptors, so only the device's open files show it.
+        const detach = `sh -c '(perl -MPOSIX -e "POSIX::setsid() or die; open(my \\$g, q(<), \\$ARGV[0]) or die; <\\$g>; print qq(DETACHED_WROTE\\n)" "$1") &' sh '${gate.path}'`;
+        await ranCommand(shell, await shell.type(detach));
+        await until(() => shell.tracker.promptState() === "ready", 4_000);
+        let exclusive = await readTerminalForeground(shell.pty.pid, { exclusive: true });
+        for (let attempt = 0; attempt < 50 && exclusive.ok; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          exclusive = await readTerminalForeground(shell.pty.pid, { exclusive: true });
+        }
+        expect(await readTerminalForeground(shell.pty.pid)).toMatchObject({ ok: true });
+        expect(exclusive, JSON.stringify(exclusive)).toMatchObject({ ok: false, busy: true });
+        const blocks = shell.tracker.nextBlockId();
+        await expect(shell.type("true")).resolves.toMatchObject({ ok: false, reason: "shell-busy" });
+        expect(shell.tracker.nextBlockId()).toBe(blocks);
+        gate.release();
+        await until(() => shell.output().includes("DETACHED_WROTE"));
       } finally { gate.close(); }
     }, 30_000);
   });

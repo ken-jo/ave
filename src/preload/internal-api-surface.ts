@@ -36,6 +36,7 @@ import { buildGitRuntimeApiSurface } from "./git-runtime-api-surface.js";
 import { buildInstalledContentApiSurface } from "./installed-content-api-surface.js";
 import { buildTailnetSharingApiSurface } from "./tailnet-sharing-api-surface.js";
 import { buildAwayAuthorityApiSurface } from "./away-authority-api-surface.js";
+import { buildDocumentEngineApiSurface } from "./document-engine-api-surface.js";
 import { classifySubscription } from "../plugins/capabilities.js";
 import type {
   PermissionReviewSuggestionPayload,
@@ -206,6 +207,7 @@ export function buildInternalApiSurface() {
   installedContent: buildInstalledContentApiSurface(),
   telegramConnection: buildTelegramConnectionApiSurface(),
   awayAuthority: buildAwayAuthorityApiSurface(),
+  documentEngine: buildDocumentEngineApiSurface(),
   onSettingsUpdated: (handler: Parameters<AveApi["onSettingsUpdated"]>[0]) => {
     const listener = (_event: unknown, settings: Parameters<typeof handler>[0]) => handler(settings);
     ipcRenderer.on(SETTINGS.updated, listener);

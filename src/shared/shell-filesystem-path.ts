@@ -1,27 +1,35 @@
 import { lstatSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { modelShellPath, type ShellPathModel } from "./shell-native-path.js";
 
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
-export function resolveShellFilesystemPath(path: string, cwd: string): string {
-  if (process.platform === "win32") {
-    // A drive-less rooted path ("\x") names the cwd's drive or share, as path.resolve does, not the host process's drive.
-    const driveless = isAbsolute(path) && parse(path).root.length === 1;
-    const absolute = !isAbsolute(path) ? `${cwd}${sep}${path}` : driveless ? `${parse(cwd).root.replace(/[\\/]$/, "")}${path}` : path;
-    const lexical = resolveExistingShellPath(resolve(cwd, path));
+export function resolveShellFilesystemPath(path: string, cwd: string, model: Omit<ShellPathModel, "location"> = { dialect: "native" }): string {
+  if (sep === "\\") {
+    const absolute = anchorFilesystemPath(path, cwd, model);
+    const { normalizedPath, volumeRoot: root } = modelShellPath(absolute, { dialect: "native" });
+    const lexical = resolveExistingShellPath(normalizedPath);
     // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
-    const { root } = parse(absolute);
-    let cursor = root;
-    for (const component of absolute.slice(root.length).split(/[\\/]+/)) {
-      if (component === "..") cursor = dirname(resolveExistingShellPath(cursor));
-      else if (component) cursor = join(cursor, component);
-    }
-    const physical = resolveExistingShellPath(cursor);
+    const physical = resolveExistingShellPath(physicalParentPath(absolute, root));
     if (lexical !== physical) {
       throw Object.assign(new Error("Shell path has ambiguous directory-link parents"), { code: "EAMBIGUOUSLINKPARENT" });
     }
     return physical;
   }
   return resolveExistingShellPath(path, cwd);
+}
+
+function physicalParentPath(absolute: string, root: string): string {
+  let cursor = root;
+  for (const component of absolute.slice(root.length).split(/[\\/]+/)) {
+    if (component === "..") cursor = cursor === root ? root : dirname(resolveExistingShellPath(cursor));
+    else if (component) cursor = join(cursor, component);
+  }
+  return cursor;
+}
+
+/** Win32 APIs fold ".." lexically; this reading follows each existing link before its "..". */
+export function physicalParentReading(absolute: string): string {
+  return physicalParentPath(absolute, modelShellPath(absolute, { dialect: "native" }).volumeRoot);
 }
 
 function resolveExistingShellPath(path: string, cwd = ""): string {
@@ -58,11 +66,23 @@ export function inspectPhysicalFilesystemPath(
 
 type BasicPhysicalFilesystemPathResolution = Omit<PhysicalFilesystemPathResolution, "routingSymlinkPaths">;
 
+function anchorFilesystemPath(path: string, cwd: string, model: Omit<ShellPathModel, "location"> = { dialect: "native" }): string {
+  if (sep === "\\") {
+    const result = modelShellPath(path, { ...model, location: cwd });
+    if (result.nativePath === undefined) throw Object.assign(new Error("Shell path namespace is unresolved"), { code: "EUNRESOLVEDSHELLPATH" });
+    return result.nativePath;
+  }
+  if (!isAbsolute(path)) return `${cwd}${sep}${path}`;
+  return path;
+}
+
 function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: number): BasicPhysicalFilesystemPathResolution {
   if (maxMissingAncestors < 0 || (!Number.isSafeInteger(maxMissingAncestors) && maxMissingAncestors !== Number.POSITIVE_INFINITY)) {
     throw new RangeError("Missing ancestor limit must be a non-negative integer");
   }
-  const absolute = isAbsolute(path) ? path : `${cwd}${sep}${path}`;
+  const anchored = anchorFilesystemPath(path, cwd);
+  const absolute = sep === "\\"
+    ? modelShellPath(anchored, { dialect: "native" }).normalizedPath : anchored;
   const suffix: string[] = [];
   let cursor = absolute;
   for (;;) {
@@ -95,9 +115,10 @@ function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: n
 
 function inspectRoutingSymlinks(path: string, cwd: string, maxComponents: number): string[] {
   const absolute = isAbsolute(path);
-  const root = absolute ? parse(path).root : cwd;
+  if (absolute) path = anchorFilesystemPath(path, cwd);
+  const root = absolute ? modelShellPath(path, { dialect: "native", location: cwd }).volumeRoot : cwd;
   const remainder = absolute ? path.slice(root.length) : path;
-  const components = remainder.split(process.platform === "win32" ? /[\\/]+/u : /\/+/u).filter(Boolean);
+  const components = remainder.split(sep === "\\" ? /[\\/]+/u : /\/+/u).filter(Boolean);
   if (components.length > maxComponents) {
     throw new Error("Filesystem path exceeds the component limit");
   }
@@ -106,6 +127,8 @@ function inspectRoutingSymlinks(path: string, cwd: string, maxComponents: number
   for (const component of components) {
     if (component === ".") continue;
     if (component === "..") {
+      if (sep === "\\"
+        && physicalParent.length <= modelShellPath(physicalParent, { dialect: "native" }).volumeRoot.length) continue;
       physicalParent = dirname(physicalParent);
       continue;
     }

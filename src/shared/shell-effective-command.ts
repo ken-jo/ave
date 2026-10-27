@@ -35,6 +35,10 @@ const SHELL_EXECUTION_WRAPPERS: ReadonlySet<string> = new Set([
   "command", "env", "timeout", "nice", "ionice", "nohup", "stdbuf", "time", "watch", "xargs",
 ]);
 
+export function isShellExecutionWrapper(verb: string): boolean {
+  return SHELL_EXECUTION_WRAPPERS.has(verb);
+}
+
 /** Wrapper option arity belongs to the same command view all consumers use. */
 export function effectiveShellWords(
   inputWords: readonly ShellWord[],

@@ -1,6 +1,6 @@
 import { isPlainRecord } from "../shared/is-record.js";
 import { crc32 } from "node:zlib";
-import { PAGE_PREVIEW_LIMITS, type PreviewPageDocument } from "../shared/preview-page-document.js";
+import { PAGE_PREVIEW_LIMITS, previewPageFormatOf, type PreviewPageDocument } from "../shared/preview-page-document.js";
 
 function invalid(): never { throw new Error("Invalid page preview response."); }
 
@@ -54,9 +54,38 @@ function validateStaticPng(png: Buffer): void {
   if (!ended) invalid();
 }
 
+function isIndex(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
+
+function validateElements(value: unknown, format: string, selectionIndex: number): void {
+  if (!Array.isArray(value) || value.length > PAGE_PREVIEW_LIMITS.maxParagraphs || format === "pdf") invalid();
+  let characters = 0;
+  const addresses = new Set<string>();
+  for (const entry of value) {
+    if (!isPlainRecord(entry) || Object.keys(entry).length !== 2 || typeof entry.text !== "string"
+      || !isPlainRecord(entry.element)) invalid();
+    characters += entry.text.length;
+    if (characters > PAGE_PREVIEW_LIMITS.maxTextChars) invalid();
+    const element = entry.element;
+    let address: string;
+    if (element.kind === "paragraph") {
+      if (format === "pptx" || !isIndex(element.paragraph)
+        || Object.keys(element).some((key) => !["kind", "paragraph", "run"].includes(key))
+        || (Object.hasOwn(element, "run") && !isIndex(element.run))) invalid();
+      address = `paragraph\0${element.paragraph}\0${element.run ?? ""}`;
+    } else if (element.kind === "shape") {
+      if (format !== "pptx" || Object.keys(element).length !== 3 || !isIndex(element.slide) || element.slide !== selectionIndex
+        || typeof element.shapeId !== "string" || !/^[^\u0000-\u001f\u007f]{1,128}$/.test(element.shapeId)) invalid();
+      address = `shape\0${element.slide}\0${element.shapeId}`;
+    } else return invalid();
+    if (addresses.has(address)) invalid();
+    addresses.add(address);
+  }
+}
+
 export function readPageDocumentResponse(value: unknown): PreviewPageDocument {
-  if (!isPlainRecord(value) || Object.keys(value).length !== 4
-    || (value.format !== "pdf" && value.format !== "pptx")
+  if (!isPlainRecord(value) || ![4, 5].includes(Object.keys(value).length)
+    || Object.keys(value).some((key) => !["format", "totalPages", "pagesTruncated", "page", "elements"].includes(key))
+    || typeof value.format !== "string" || previewPageFormatOf(`input.${value.format}`) !== value.format
     || !Number.isSafeInteger(value.totalPages) || (value.totalPages as number) < 1
     || value.pagesTruncated !== ((value.totalPages as number) > PAGE_PREVIEW_LIMITS.maxPages)
     || !isPlainRecord(value.page) || Object.keys(value.page).length !== 6) invalid();
@@ -68,8 +97,9 @@ export function readPageDocumentResponse(value: unknown): PreviewPageDocument {
     || page.paragraphs.reduce((sum, text: string) => sum + text.length, 0) > PAGE_PREVIEW_LIMITS.maxTextChars
     || typeof page.textTruncated !== "boolean"
     || !Number.isSafeInteger(page.width) || !Number.isSafeInteger(page.height)) invalid();
-  if (value.format === "pptx") {
-    if (page.png !== null || page.width !== 0 || page.height !== 0) invalid();
+  if (Object.hasOwn(value, "elements")) validateElements(value.elements, value.format, page.index as number);
+  if (page.png === null) {
+    if (value.format === "pdf" || page.width !== 0 || page.height !== 0) invalid();
   } else {
     if (typeof page.png !== "string" || page.png.length > Math.ceil(PAGE_PREVIEW_LIMITS.maxPngBytes / 3) * 4
       || !/^iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(page.png)
