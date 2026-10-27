@@ -35,7 +35,11 @@ class Guest extends EventEmitter {
   readonly debugger = new EventEmitter();
   destroyed = false;
   focused = false;
-  constructor(readonly id: number, public url = "https://site.example/", public title = "Site") { super(); }
+  constructor(private readonly guestId: number, public url = "https://site.example/", public title = "Site") { super(); }
+  get id() {
+    if (this.destroyed) throw new TypeError("Object has been destroyed");
+    return this.guestId;
+  }
   isDestroyed() { return this.destroyed; }
   getURL() { return this.url; }
   getTitle() { return this.title; }
@@ -48,7 +52,11 @@ class Window extends EventEmitter {
   minimized = false;
   focused = false;
   readonly setTitle = vi.fn();
-  constructor(readonly id: number, private readonly contents: Guest) { super(); }
+  constructor(private readonly windowId: number, private readonly contents: Guest) { super(); }
+  get id() {
+    if (this.destroyed) throw new TypeError("Object has been destroyed");
+    return this.windowId;
+  }
   get webContents(): Guest {
     if (this.destroyed) throw new Error("Object has been destroyed");
     return this.contents;
@@ -117,11 +125,26 @@ describe("browser workspace desktop composition", () => {
     expect(workspace.observeDownload).toHaveBeenCalledWith(1, item);
     window.emit("hide"); window.emit("minimize");
     expect(workspace.invalidateWindow.mock.calls).toEqual([[1], [1]]);
-    window.close();
+    expect(() => window.close()).not.toThrow();
     expect(workspace.disposeWindow).toHaveBeenCalledWith(1);
     expect(browserWorkspaceGuestWindowId(asGuest(guest))).toBeNull();
     expect(window.listenerCount("hide")).toBe(0);
     expect(workspace.observeGuest.mock.results[0]!.value).toHaveBeenCalledOnce();
+  });
+
+  it("disposes a destroyed guest by its captured identity and permits a replacement", () => {
+    const window = owner();
+    const guest = new Guest(71);
+    observeBrowserWorkspaceGuest(asGuest(guest), asWindow(window));
+    const stopObserving = workspace.observeGuest.mock.results[0]!.value;
+    guest.destroyed = true;
+    expect(() => guest.id).toThrow(TypeError);
+    expect(() => guest.emit("destroyed")).not.toThrow();
+    expect(stopObserving).toHaveBeenCalledOnce();
+    const replacement = new Guest(71);
+    observeBrowserWorkspaceGuest(asGuest(replacement), asWindow(window));
+    expect(workspace.observeGuest).toHaveBeenCalledTimes(2);
+    expect(browserWorkspaceGuestWindowId(asGuest(replacement))).toBe(1);
   });
 
   it("uses a trusted owning-window dialog and rejects a hidden or replaced owner after its await", async () => {
