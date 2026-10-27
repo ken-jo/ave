@@ -32,7 +32,8 @@ const START_PARAMS = Object.freeze({
   quality: OBSERVATION_LIMITS.previewJpegQuality,
   maxWidth: OBSERVATION_LIMITS.previewMaxWidth,
   maxHeight: OBSERVATION_LIMITS.previewMaxHeight,
-  everyNthFrame: 1,
+  // Chromium itself skips compositor frames; forwarding is then capped again at four per second.
+  everyNthFrame: 3,
 });
 
 /**
@@ -51,9 +52,10 @@ export class BrowserScreencast {
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private queued: Omit<ScreencastFrame, "frame"> | undefined;
   private inFlight: number | null = null;
+  private inFlightAt = -Infinity;
   private lastSentAt = -Infinity;
   private committedAt = -Infinity;
-  private hasRealFrame = false;
+  private hasShownFrame = false;
   private frameNumber = 0;
 
   constructor(private readonly transport: ScreencastTransport, private readonly callbacks: ScreencastCallbacks) {}
@@ -107,12 +109,12 @@ export class BrowserScreencast {
     const metadata = params.metadata as { deviceWidth?: unknown; deviceHeight?: unknown } | undefined;
     if (typeof data !== "string" || data.length === 0) { this.fail(new Error("Invalid browser preview frame.")); return; }
     if (data.length > OBSERVATION_LIMITS.previewMaxFrameChars) { this.callbacks.updating(); return; }
-    const blank = this.callbacks.isBlank(data);
-    if (blank && this.hasRealFrame && Date.now() - this.committedAt < OBSERVATION_LIMITS.previewCommitBlankMs) {
+    // Decoding is needed only to protect an earlier frame during a commit; other frames are forwarded unexamined.
+    if (this.hasShownFrame && Date.now() - this.committedAt < OBSERVATION_LIMITS.previewCommitBlankMs && this.callbacks.isBlank(data)) {
       this.callbacks.updating();
       return;
     }
-    if (!blank) this.hasRealFrame = true;
+    this.hasShownFrame = true;
     const size = (value: unknown, limit: number) => typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.min(Math.round(value), limit) : limit;
     this.queued = { data, width: size(metadata?.deviceWidth, 100_000), height: size(metadata?.deviceHeight, 100_000) };
@@ -120,6 +122,8 @@ export class BrowserScreencast {
   }
 
   private flush(): void {
+    // A frame the renderer never reported painted (lost acknowledgement, failed decode) must not stall the preview.
+    if (this.inFlight !== null && Date.now() - this.inFlightAt >= OBSERVATION_LIMITS.previewSilenceMs) this.inFlight = null;
     if (!this.armed || !this.queued || this.inFlight !== null || this.flushTimer) return;
     const wait = this.lastSentAt + OBSERVATION_LIMITS.previewMinFrameIntervalMs - Date.now();
     if (wait > 0) {
@@ -130,7 +134,8 @@ export class BrowserScreencast {
     this.queued = undefined;
     this.frameNumber += 1;
     this.inFlight = this.frameNumber;
-    this.lastSentAt = Date.now();
+    this.inFlightAt = Date.now();
+    this.lastSentAt = this.inFlightAt;
     this.callbacks.frame({ frame: this.frameNumber, ...queued });
   }
 

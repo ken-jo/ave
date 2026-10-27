@@ -55,7 +55,7 @@ describe("agent browser screencast", () => {
   it("starts one bounded JPEG screencast on the existing session", () => {
     screencast.start();
     expect(session.sent).toEqual([{ method: "Page.startScreencast", params: { format: "jpeg", quality: OBSERVATION_LIMITS.previewJpegQuality,
-      maxWidth: OBSERVATION_LIMITS.previewMaxWidth, maxHeight: OBSERVATION_LIMITS.previewMaxHeight, everyNthFrame: 1 } }]);
+      maxWidth: OBSERVATION_LIMITS.previewMaxWidth, maxHeight: OBSERVATION_LIMITS.previewMaxHeight, everyNthFrame: 3 } }]);
     expect(() => screencast.start()).toThrow("already started");
   });
 
@@ -132,6 +132,33 @@ describe("agent browser screencast", () => {
     // A page that really is blank renders after the commit window.
     session.frame(3, "blank-page");
     expect(callbacks.frame).toHaveBeenLastCalledWith(expect.objectContaining({ frame: 2, data: "blank-page" }));
+  });
+
+  it("decodes frames for blank detection only inside a commit window that protects an earlier frame", async () => {
+    const isBlank = vi.fn(() => false);
+    screencast = new BrowserScreencast(session, { ...callbacks, isBlank });
+    screencast.start();
+    for (let id = 1; id <= 20; id++) session.frame(id);
+    expect(isBlank).not.toHaveBeenCalled();
+    screencast.navigationCommitted();
+    session.frame(21);
+    expect(isBlank).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(OBSERVATION_LIMITS.previewCommitBlankMs);
+    session.frame(22);
+    expect(isBlank).toHaveBeenCalledOnce();
+  });
+
+  it("does not stall when the renderer never reports a forwarded frame as painted", async () => {
+    screencast.start();
+    session.frame(1);
+    expect(callbacks.frame).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(OBSERVATION_LIMITS.previewSilenceMs - 100);
+    session.frame(2);
+    expect(callbacks.frame).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    session.frame(3);
+    expect(callbacks.frame).toHaveBeenCalledTimes(2);
+    expect(callbacks.frame).toHaveBeenLastCalledWith(expect.objectContaining({ frame: 2, data: "real-3" }));
   });
 
   it("renders a blank first frame when there is no earlier real frame to keep", () => {
