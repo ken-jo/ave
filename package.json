@@ -374,8 +374,15 @@
         "from": "resources/skills",
         "to": "skills",
         "filter": [
-          "*.md"
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
+      },
+      {
+        "from": "dist/skill-scripts",
+        "to": "skill-scripts",
+        "filter": ["*.cjs", "manifest.json"]
       },
       {
         "from": "resources/prompts",

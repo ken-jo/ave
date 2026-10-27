@@ -20,7 +20,7 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "ave-document-tools-"));
   context = { cwd: directory, extraAllowedDirectories: [], metadata: { sessionId: "document-test" } };
   writeFileSync(join(directory, "book.csv"), "a,b\nc,d\n");
-  parser.parse.mockReset().mockResolvedValue({ format: "csv", sheetNames: ["Sheet1"], totalSheets: 1,
+  parser.parse.mockReset().mockResolvedValue({ format: "csv", needsRecalculation: false, sheetNames: ["Sheet1"], totalSheets: 1,
     sheetsTruncated: false, sheet: { index: 0, name: "Sheet1", rows: [["a", "b"], ["c", "d"]],
       firstRow: 0, firstColumn: 0, totalRows: 2, totalColumns: 2,
       rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [],

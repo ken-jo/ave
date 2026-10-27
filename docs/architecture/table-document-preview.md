@@ -2,6 +2,10 @@
 
 The table viewer accepts CSV, TSV, XLSX, XLS and ODS files and displays a bounded grid of strings. [The shared preview contract](../../src/shared/preview-document.ts) owns supported formats, result types, error codes and every resource ceiling.
 
+XLSX workbooks requesting recalculation show a localized badge because cached
+formula results may be stale. [Skill editing](xlsx-skill-editing.md) owns the
+calculation signal, preservation limits and sandbox editing contract.
+
 ## Read authority
 
 `ave:preview:read-document` is a private, host-renderer IPC channel. [The preview handler](../../src/ipc/domains/preview.ts) validates the sending frame and uses `assertReadableFilePath` from [the file-read core](../../src/tools/file-read-core.ts). Preview reads always check allowed roots. Native agent file reads instead use the invocation's existing file access policy, which can allow reads outside those roots when directory fencing is disabled. The channel grants no additional filesystem authority and is unavailable through public transports.

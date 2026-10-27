@@ -192,6 +192,12 @@ export function TableDocumentPreview({ path }: { path: string }) {
         <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase">
           {document.format}
         </Badge>
+        {document.needsRecalculation ? (
+          <Badge variant="outline" role="status" title={t("chatPreviewRail.tableRecalculationHint")}
+            data-testid="chat-side-panel-table-recalculation">
+            {t("chatPreviewRail.tableNeedsRecalculation")}
+          </Badge>
+        ) : null}
         <span className="text-[11px] text-muted-foreground">
           {t(prefixOnly ? "chatPreviewRail.tablePrefixSummary" : "chatPreviewRail.tableSummary", {
             rows: sheet.totalRows, columns: sheet.totalColumns,

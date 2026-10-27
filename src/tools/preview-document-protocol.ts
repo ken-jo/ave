@@ -33,7 +33,7 @@ export function isDocumentParseError(value: unknown): value is Exclude<ParseErro
     && Object.hasOwn(DOCUMENT_PARSE_MESSAGES, value);
 }
 
-const DOCUMENT_FIELDS = ["format", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"] as const;
+const DOCUMENT_FIELDS = ["format", "needsRecalculation", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"] as const;
 const SHEET_FIELDS = [
   "index", "name", "rows", "firstRow", "firstColumn", "totalRows", "totalColumns",
   "rowsTruncated", "columnsTruncated", "cellsTruncated", "clippedCells",
@@ -59,6 +59,7 @@ function invalidResponse(): never {
 /** Validate in place: copying a large grid would allocate it again in the host. */
 export function readDocumentResponse(value: unknown, window?: PreviewTableWindow): PreviewTableDocument {
   if (!hasExactFields(value, DOCUMENT_FIELDS)
+      || typeof value.needsRecalculation !== "boolean" || (value.format !== "xlsx" && value.needsRecalculation)
       || typeof value.format !== "string" || previewDocumentFormatOf(`document.${value.format}`) !== value.format
       || !Array.isArray(value.sheetNames) || value.sheetNames.length === 0
       || value.sheetNames.length > PREVIEW_DOCUMENT_LIMITS.maxSheets

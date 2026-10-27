@@ -6,7 +6,7 @@ function model(): PreviewTableDocument {
   const width = PREVIEW_DOCUMENT_LIMITS.maxColumns;
   const height = Math.min(PREVIEW_DOCUMENT_LIMITS.maxRows, Math.floor(PREVIEW_DOCUMENT_LIMITS.maxReturnedCells / width));
   return {
-    format: "xlsx", sheetNames: ["S"], totalSheets: 1, sheetsTruncated: false,
+    format: "xlsx", needsRecalculation: false, sheetNames: ["S"], totalSheets: 1, sheetsTruncated: false,
     sheet: {
       index: 0, name: "S", firstRow: 0, firstColumn: 0,
       rows: Array.from({ length: height }, () => Array<string>(width).fill("")),
@@ -17,6 +17,10 @@ function model(): PreviewTableDocument {
 }
 
 describe("bounded document model", () => {
+  it("requires a boolean recalculation field and rejects it on non-XLSX documents", () => {
+    expect(() => readDocumentResponse({ ...model(), needsRecalculation: "true" })).toThrow("preview contract");
+    expect(() => readDocumentResponse({ ...model(), format: "csv", needsRecalculation: true })).toThrow("preview contract");
+  });
   it("validates the largest returned grid without cloning it in the parent", () => {
     const wire = JSON.stringify(model());
     const before = process.memoryUsage();
@@ -57,7 +61,7 @@ describe("bounded document model", () => {
 describe("window response boundaries", () => {
   function windowModel(): PreviewTableDocument {
     return {
-      format: "xlsx", sheetNames: ["S"], totalSheets: 1, sheetsTruncated: false,
+      format: "xlsx", needsRecalculation: false, sheetNames: ["S"], totalSheets: 1, sheetsTruncated: false,
       sheet: {
         index: 0, name: "S", firstRow: 10002, firstColumn: 257,
         sourceRange: { firstRow: 10000, firstColumn: 2, totalsExact: true },

@@ -151,7 +151,7 @@ beforeEach(() => {
   broker.acquire.mockImplementation(async () => broker.current);
   broker.execute.mockReset();
   imagePreparation.prepareImageBytes.mockReset();
-  documentParser.parse.mockReset().mockResolvedValue({ format: "csv", sheetNames: ["Sheet1"], totalSheets: 1,
+  documentParser.parse.mockReset().mockResolvedValue({ format: "csv", needsRecalculation: false, sheetNames: ["Sheet1"], totalSheets: 1,
     sheetsTruncated: false, sheet: { index: 0, name: "Sheet1", rows: [["guest value"]], firstRow: 0, firstColumn: 0,
       sourceRange: { firstRow: 0, firstColumn: 0, totalsExact: true }, totalRows: 1, totalColumns: 1,
       rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [] } });
