@@ -27,6 +27,10 @@ const rendererTestGlobs = [
   `src/ui/renderer/__tests__/${testFileGlob}`,
   `src/ui/renderer/**/__tests__/${testFileGlob}`,
 ];
+const permissionTimingTests = [
+  "src/permissions/__tests__/permission-decision-cost.test.ts",
+  "src/permissions/__tests__/permission-adversarial-performance.test.ts",
+];
 
 // Match the isolation seam by file identity so aliases and links also load the test guard.
 // This configuration never runs in production builds.
@@ -132,6 +136,7 @@ export default defineConfig({
           exclude: [
             ...baseExclude,
             ...rendererTestGlobs,
+            ...permissionTimingTests,
           ],
         },
       },
@@ -147,6 +152,19 @@ export default defineConfig({
           setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "permission-timing",
+          environment: "node",
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+          include: permissionTimingTests,
+          exclude: baseExclude,
+          // Complete other projects before measuring a single file at a time.
+          sequence: { groupOrder: 1 },
+          fileParallelism: false,
         },
       },
     ],

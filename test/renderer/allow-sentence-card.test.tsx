@@ -45,7 +45,7 @@ async function appWithPendingApproval() {
 
 const CHOICE_TESTID: Record<string, string> = {
   "deny-once": "deny-button",
-  "allow-always": "allow-always-button",
+  "allow-always": "allow-session-button",
   "allow-once": "approve-button",
 };
 

@@ -29,7 +29,7 @@ const MANIFEST: PluginManifest = {
   name: "Session Probe",
   version: "1.0.0",
   entry: "plugin.mjs",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   description: "a plugin the protocol session is measured on",
   tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
 };
@@ -175,7 +175,7 @@ function sessionSpec(
   return {
     pluginId: PLUGIN_ID,
     manifest: MANIFEST,
-    hostProtocolVersion: "3",
+    hostProtocolVersion: "4",
     link,
     context: contextFor(hostApi),
     entryPath,

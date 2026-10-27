@@ -60,7 +60,7 @@ const PROCESS_MANIFEST: PluginManifest = {
   version: "1.0.0",
   description: "A process entry used to observe the provenance gate.",
   process: { command: "./bin/plugin" },
-  requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+  requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
   tools: [],
 };
 

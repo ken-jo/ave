@@ -37,15 +37,16 @@ for (const locale of ["en", "ko"] as const) {
       await expect(dock).toBeVisible();
       await expect(dock).toContainText(t("egressApprovalCard.title"));
       await expect(dock.getByTestId("egress-approval-target")).toHaveText("downloads.example.com:443");
-      await expect(dock.getByTestId("egress-approval-allow-once")).toHaveText(t("egressApprovalCard.allowOnce"));
-      await expect(dock.getByTestId("egress-approval-allow-session")).toHaveText(t("egressApprovalCard.allowSession"));
-      await expect(dock.getByTestId("egress-approval-allow-project")).toHaveText(t("egressApprovalCard.allowProject"));
-      await expect(dock.getByTestId("egress-approval-allow-always")).toHaveText(t("egressApprovalCard.allowAlways"));
-      await expect(dock.getByTestId("egress-approval-deny")).toBeFocused();
+      // The shared decision row (owner 2026-10-25, unified approval card): Deny ▾ | Allow for session ▾ | Allow once.
+      await expect(dock.getByTestId(TEST_IDS.denyButton)).toHaveText(t("toolApprovalDialog.decisionDeny"));
+      await expect(dock.getByTestId(TEST_IDS.allowSessionButton)).toHaveText(t("toolApprovalDialog.decisionAllowSession"));
+      await expect(dock.getByTestId(TEST_IDS.approveButton)).toHaveText(t("toolApprovalDialog.allowOnce"));
+      await expect(dock.getByTestId(TEST_IDS.denyButton)).toBeFocused();
+      // Three decisions and their two dropdown triggers.
       await expect(dock.getByTestId("egress-approval-card").locator("button")).toHaveCount(5);
       await expect(dock.locator('input, textarea, [contenteditable="true"]')).toHaveCount(0);
       await mainWindow.screenshot({ path: testInfo.outputPath(`domain-approval-${locale}.png`) });
-      await dock.getByTestId("egress-approval-deny").click();
+      await dock.getByTestId(TEST_IDS.denyButton).click();
       await expect(mainWindow.getByTestId("egress-approval-card")).toHaveCount(0);
     });
   });

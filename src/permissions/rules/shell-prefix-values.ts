@@ -1,7 +1,8 @@
 import { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
+import { canonicalPowerShellName } from "./powershell-command-policy.js";
 
 // Shell executable identities used for hidden-code and floor inspection.
-export const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
+export const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "pwsh-preview", "cmd", "busybox"];
 // Interpreters run code the matcher cannot read. Runners retain their own complete prefixes so an explicit rule can name the intended invocation.
 export const INTERPRETERS = [
   "python", "python2", "python3", "pypy", "pypy3", "ipython", "node", "nodejs", "deno", "bun", "tsx", "ts-node",
@@ -20,15 +21,13 @@ export const WRAPPERS = [
   // A multi-call binary runs whichever applet its first argument names.
   "busybox",
 ];
-// Wrappers that join their arguments into a string a shell runs (`watch 'rm x'`, `parallel 'rm {}' ::: a`, `flock f -c 'rm x'`).
-export const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
 // Runner identities and literal prefixes that can introduce another command.
 export type RunnerCommandPrefix = string | readonly [verb: string, interpreter: string];
-export const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = {
+export const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = Object.freeze(Object.assign(Object.create(null) as Record<string, true | readonly RunnerCommandPrefix[]>, {
   npx: true, bunx: true, pnpx: true, uvx: true, corepack: true,
   pipx: ["run"], yarn: ["dlx", "exec", ["node", "node"]], yarnpkg: ["dlx", "exec", ["node", "node"]],
   pnpm: ["dlx", "exec", "x"], npm: ["exec", "x"], bun: ["x", "exec"], deno: [["run", "deno"], ["eval", "deno"]],
-};
+}));
 export const PACKAGE_RUNNERS = Object.keys(RUNNER_COMMAND_PREFIXES);
 
 export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token: string | undefined): boolean {
@@ -127,12 +126,21 @@ export const BANNED_PREFIX_SUGGESTIONS: readonly (readonly string[])[] = [
   ["zsh", "-lc"],
 ];
 
-export const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
-export const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCase()));
+const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
+const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCase()));
 export const WRAPPER_SET = new Set(WRAPPERS.map((name) => name.toLowerCase()));
 export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 
-// Canonical executable identity, including path and interpreter-version aliases.
+// Checked before parsing commands that could satisfy a reusable allow rule.
+export const MAX_LITERAL_COMMAND_LENGTH = 2_000;
+
+const POWERSHELL_LAUNCHERS = new Set(["pwsh", "pwsh-preview", "powershell", "powershell_ise"]);
+
+export function isPowerShellLauncher(token: string): boolean {
+  return POWERSHELL_LAUNCHERS.has(canonicalPowerShellName(token).replace(/\.exe$/i, ""));
+}
+
+// Canonical executable identity for visible-floor and restriction matching.
 export function programName(token: string): string {
   const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase();
   const name = base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");

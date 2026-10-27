@@ -263,6 +263,8 @@ describe("independent home anchors", () => {
   });
 
   it("checks the passwd tilde anchor through operands and scanners", () => {
+    // Physical link probes use the host filesystem's path dialect.
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
     mkdirSync(join(passwd, ".ssh"), { recursive: true });
     symlinkSync(join(passwd, ".ssh"), join(passwd, "alias"), platform === "win32" ? "junction" : "dir");
     expect(findShellPathPolicyViolation("cat ~/alias/key", scratch, home, [home, shellHome, passwd], false, {

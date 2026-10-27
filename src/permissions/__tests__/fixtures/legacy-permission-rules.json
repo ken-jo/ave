@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "pattern": "Bash(printf 0x10)",
+      "action": "allow"
+    }
+  ],
+  "mode": "default",
+  "updatedAt": "2026-10-26T01:09:28.801Z"
+}

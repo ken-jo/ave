@@ -118,11 +118,11 @@ describe("ToolApprovalContent terminal_run card", () => {
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(terminalRunRequest(), onDecide);
-    const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
+    const remember = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(remember).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project/app");
     fireEvent.click(remember);
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
   });
 });

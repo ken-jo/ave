@@ -147,16 +147,51 @@ describe("isolated table parsing", () => {
   it("kills cyclic sibling pointers and releases the parse slot", async () => {
     const before = getManagedChildProcessCount();
     const started = performance.now();
+    const realSpawn = managedChildren.spawnManaged;
+    const realKill = managedChildren.forceKillManagedChildProcess;
+    let readyAt: number | undefined;
+    let stopAt: number | undefined;
+    let exitAt: number | undefined;
+    let exitCode: number | null | undefined;
+    const spawned = vi.spyOn(managedChildren, "spawnManaged").mockImplementation((...args) => {
+      const child = realSpawn(...args);
+      child.once("close", (code) => { exitAt = performance.now(); exitCode = code; });
+      let prefix = "";
+      child.stdout!.on("data", (bytes: Buffer) => {
+        if (readyAt !== undefined) return;
+        prefix = (prefix + bytes.toString("utf8")).slice(0, DOCUMENT_PARSE_READY.length);
+        if (prefix === DOCUMENT_PARSE_READY) readyAt = performance.now();
+      });
+      return child;
+    });
+    const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess").mockImplementation((child, reason) => {
+      stopAt ??= performance.now();
+      return realKill(child, reason);
+    });
     let pulses = 0;
     const timer = setInterval(() => { pulses += 1; }, 20);
     try {
       await expect(parseTableDocumentIsolated(cyclicWorkbook(), "xls", 0)).rejects.toMatchObject({ code: "parse-limit" });
+      expect(pulses).toBeGreaterThan(10);
+      expect(readyAt).toBeDefined();
+      expect(exitAt).toBeDefined();
+      // Startup and parsing have separate clocks; native tree termination finishes before settlement.
+      expect(readyAt! - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
+      if (stopAt !== undefined) {
+        // The contract bounds the latest stop, not a scheduler-dependent minimum latency.
+        expect(stopAt).toBeGreaterThanOrEqual(readyAt!);
+        expect(stopAt - readyAt!).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
+      } else {
+        // A native heap refusal can finish before the wall-clock kill is needed.
+        expect(exitCode).not.toBe(0);
+        expect(exitAt! - readyAt!).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
+      }
+      expect(getManagedChildProcessCount()).toBe(before);
     } finally {
       clearInterval(timer);
+      spawned.mockRestore();
+      stopped.mockRestore();
     }
-    expect(pulses).toBeGreaterThan(10);
-    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
-    expect(getManagedChildProcessCount()).toBe(before);
     expect((await parseTableDocumentIsolated(Buffer.from("still,responsive"), "csv", 0)).sheet.rows)
       .toEqual([["still", "responsive"]]);
   });

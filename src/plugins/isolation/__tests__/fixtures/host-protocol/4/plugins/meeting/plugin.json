@@ -1,0 +1,88 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "meeting",
+  "version": "0.8.5",
+  "description": "Host protocol golden fixture: the hostApi surface the meeting plugin reaches, beside its own lifecycle and access declarations.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Meeting",
+      "entry": "entry.mjs",
+      "capabilities": [
+        "meeting-recorder",
+        "external-auth-consumer"
+      ],
+      "emittedEvents": [
+        "meeting.started",
+        "meeting.ended",
+        "meeting.transcript.updated",
+        "meeting.summary.created",
+        "meeting.summary.degraded",
+        "meeting.error",
+        "meeting.prep.opened",
+        "meeting.prep.registered"
+      ],
+      "eventSubscriptions": [
+        {
+          "type": "sampleassistant.calendar.sync.requested"
+        },
+        {
+          "type": "sampleassistant.meeting.prep.requested"
+        },
+        {
+          "type": "sampleassistant.meeting.recording.requested"
+        }
+      ],
+      "pluginAccess": {
+        "plugins": [
+          {
+            "pluginId": "sampleassistant",
+            "events": [
+              "sampleassistant.calendar.sync.requested",
+              "sampleassistant.meeting.prep.requested",
+              "sampleassistant.meeting.recording.requested"
+            ]
+          }
+        ]
+      },
+      "hostSecrets": {
+        "read": [
+          "llm.apiKey.openai",
+          "llm.apiKey.azure-foundry"
+        ]
+      },
+      "llmKeySource": "host",
+      "requires": {
+        "minAppVersion": "0.14.0",
+        "hostProtocol": "4"
+      },
+      "startupTimeoutMs": 5000,
+      "configSchema": {
+        "properties": {
+          "summaryLengthTier": {
+            "type": "string",
+            "title": "Summary length",
+            "default": "standard"
+          }
+        }
+      },
+      "tools": [
+        {
+          "name": "exercise_host",
+          "description": "Call each hostApi member this surface uses, once.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "report_host",
+          "description": "Report what the host pushed since, and release what is held.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    }
+  }
+}

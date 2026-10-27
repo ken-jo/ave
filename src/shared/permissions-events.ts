@@ -1,11 +1,14 @@
 /** Shared event payloads for `PERMISSIONS.*` IPC channels. Single source of truth for the wire shapes that cross the main↔renderer boundary on the permissions domain. Keeping these types in one module prevents drift
  * between the emitter (`permission-manager.ts`), the preload bridge (`preload.ts`), and any future renderer typings (`ui/renderer/types.ts`). Issue: #802 (code-reviewer LOW finding; inline duplicates across 3+ sites). */
+import type { ShellRuleVersion } from "./shell-rule-version.js";
 import type { RiskLevel } from "./permission-review-status.js";
 
 
-/** Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
+/** Approval-scope literal. `session`: the root conversation, in memory. `persistent`: this project folder (the request's working directory),
+ * on disk. `global`: every project, on disk (owner decision 2026-10-25, "Always allow everywhere" for exact tool approvals).
+ * Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
-export type UserApprovalScope = "session" | "persistent";
+export type UserApprovalScope = "session" | "persistent" | "global";
 
 export interface ScopedPermissionRuleError {
   filePath: string;
@@ -16,7 +19,7 @@ export interface ScopedPermissionRuleError {
 export type StoredRuleInvalidReason = "wildcard-not-allowlisted";
 
 /** Rule-store row with its host-owned persistence scope. */
-export interface ScopedPermissionRule {
+export interface ScopedPermissionRule extends ShellRuleVersion {
   pattern: string;
   action: "allow" | "deny" | "ask";
   source?: string;
@@ -28,24 +31,43 @@ export interface ScopedPermissionRule {
   invalidReason?: StoredRuleInvalidReason;
 }
 
-/** Where a bash approval card saves its exact `Bash(<command>)` allow rule (owner 2026-10-25, five-choice shell card): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
+/** The shell dialects with a rule language: `Bash(...)` rules match bash, `PowerShell(...)` rules match PowerShell. */
+export type ShellRuleDialect = "bash" | "powershell";
+
+/** Where an approval card saves a rule (owner 2026-10-25, unified approval card): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
 export type ShellRuleSaveScope = "session" | "project" | "always";
 
 export function isShellRuleSaveScope(value: unknown): value is ShellRuleSaveScope {
   return value === "session" || value === "project" || value === "always";
 }
 
-/** A bash card's five choices are Deny, Allow once and the three save scopes; each save stores exactly `exactRule`, which the host derives from the live command and never takes from the renderer. */
+/** What a card sends to save a rule (`userApprovalRecord` `rule`): the action and scope of the choice and, only when the person edited it, the edited rule text. The host validates an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself. */
+export interface ApprovalRuleSave {
+  readonly action: "allow" | "deny";
+  readonly scope: ShellRuleSaveScope;
+  readonly pattern?: string;
+}
+
+/** A shell card's rule context (bash and PowerShell, Plan B and explicit host included). Each save stores `exactRule` (allow) or `denyRule` (Always deny) unless the person edits it; the host derives both from the live command and never takes them from the renderer. */
 export interface ShellRuleApproval {
-  /** The exact `Bash(<command>)` rule the save scopes store, or null when this command cannot be saved as one (compound, irreversible, a floor, or it would disclose a secret). */
+  /** Which rule language the card saves in. */
+  dialect: ShellRuleDialect;
+  /** The exact `Bash(<command>)` / `PowerShell(<command>)` rule the allow saves store, or null when this command cannot be saved as one (compound, irreversible, a floor, or it would disclose a secret). */
   exactRule: string | null;
+  /** The exact rule "Always deny" stores unless edited: this command's literal argv, also for a floor or irreversible command (a deny only narrows). Null when the input is not one literal simple command; the person can still write one with Edit rule. */
+  denyRule: string | null;
+  /** "Always deny" is offered (every shell card except a remote-controller request). */
+  denyAllowed: boolean;
   /** Execution directory the host matches and saves against. */
   projectCwd: string;
   /** Directory a project rule applies to (the repository root when one is found); display only. */
   projectRoot: string;
-  /** "This session" is offered: a saveable rule and a conversation to hold it. */
+  /** The scripts the command hands to PowerShell as `-EncodedCommand`, decoded, for the card to show; absent when there are none. A command with
+   * one never has an exact allow rule (its code is hidden in the command line). */
+  decodedCommands?: readonly string[];
+  /** "Allow for session" is offered: a saveable rule and a conversation to hold it. */
   sessionAllowed: boolean;
-  /** "This project" and "Always" are offered. */
+  /** "Always allow in this project" and "Always allow everywhere" are offered. */
   persistentAllowed: boolean;
 }
 

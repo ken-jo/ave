@@ -5,20 +5,27 @@ record are generic stand-ins for plugins that are no longer part of this project
 
 The code packages described here are called extensions in user-facing copy.
 
-**Current contract.** The app is Ave, and it serves host protocol `"3"` only
-(`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts:56`;
-introduced by `332696eef`). Protocol 3 is the `ave/*` wire described in §3: host
-methods are `ave/host/*`, instance methods `ave/instance/*`, and invocation metadata
-travels in `_meta["ave/invocation"]`. Its schema and generated client are
-`schemas/plugin-host-protocol/3/protocol.schema.json` and
-`schemas/plugin-host-protocol/3/protocol-client.ts`; the golden fixtures live under
-`src/plugins/isolation/__tests__/fixtures/host-protocol/3/`. An extension for app
-0.14.0 or later declares `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
-`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the wire served
-by apps 0.12–0.13) is refused before activation and must be re-vendored from an Ave
-release tag. Where a step or decision below says `hostProtocol: "2"`, `…/2/…` or
-names an `ave-plugin-*` repository, it records that step at its pinned commit and
-is not the current rule.
+**Released contract.** Released hosts serve protocol `"3"`, introduced by
+0.14.0 on the `ave/*` wire. Published plugins continue to declare
+`requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`.
+
+**Unreleased contract.** This development build serves protocol `"4"` only
+(`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts`).
+It requires host-generated state on plugin loopback OAuth callbacks (§3.3.1).
+The app release version is selected by release preparation, independently of the
+protocol major. No first published app version is recorded for protocol 4;
+`requires.hostProtocol` negotiation determines support, and released protocol-3
+hosts reject protocol-4 packages before activation regardless of `minAppVersion`.
+Its schema/client and wire fixtures live under `schemas/plugin-host-protocol/4/`
+and `src/plugins/isolation/__tests__/fixtures/host-protocol/4/`.
+
+The existing unreleased-candidate convention (§6.1) stores the new schema under
+`web/public/schemas/plugin-host-protocol/4/v0.14.1/`, with
+`publishedTag: null`. That version segment identifies the open schema candidate,
+not an announcement that 0.14.1 has shipped protocol 4. Historical protocol-3
+schema copies remain unchanged. Publish protocol-4 plugin replacements only with
+the coordinated app release; use its actual release tag and minimum version.
+Numbers in the historical plans below describe those steps, not this candidate.
 
 Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lease step
 (§9.1, §4.1, §9.5) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
@@ -719,6 +726,44 @@ Rules:
 Additive changes (new optional field, new method, new capability) do not bump the host
 protocol version. Renaming, removing, changing a type, or changing a default does.
 
+### 3.3.1 Host-validated loopback OAuth
+
+`authRedirect.open()` returns `{ handle, redirectUri, state }`. The host mints a
+fresh 256-bit cryptographic random state, encoded as base64url, for each listener.
+A plugin sends that exact value in its authorization request. It must also use
+PKCE with `S256`: public clients require PKCE under
+[RFC 9700 §2.1.1](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1.1),
+and missing or incorrect state validation enables the PKCE downgrade attack in
+[§4.8](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.8).
+
+Only a GET to the exact callback path with one matching state can complete the
+catcher. Duplicate parameters and malformed queries are refused. State comparison
+uses fixed-size SHA-256 digests and a timing-safe comparison, including unequal
+input lengths. Wrong or missing state receives a 4xx and leaves all waiters pending;
+rejection logs contain the owner and a fixed reason, never the query, code or state.
+The first state-validated callback consumes the state, even if the provider
+parameters have no usable code. Replays are refused; subsequent `wait()` calls
+read the cached result until close. The host authenticates correlation; the plugin
+rejects missing codes or conflicting success/error fields before token exchange. A matching callback carrying
+`error` / `error_description` is delivered with those fields and shows the failure
+page; the plugin checks `error` before exchanging any code. Each `wait()` starts its own timeout; expiry closes the catcher and rejects all
+pending waiters. Explicit close does the same. After close, cached results are
+unavailable and the next `open()` mints a new state.
+
+This changes an existing method's required behavior: a plugin-generated state
+that protocol 3 accepted now fails. Under §3.2 and §3.3 this is **protocol 4**,
+not an optional capability on 3. A capability list names methods and does not
+select different state semantics for the same method. No state-free branch or
+compatibility shim is served. An unreleased protocol has no numeric app-version
+floor; negotiation of `requires.hostProtocol` is authoritative. Candidate schema
+version segments do not imply released support. Release preparation records the
+first published app version when the protocol ships.
+The 2026-10-27 owner decision authorizes preparing this boundary now; it does not declare replacement plugin packages published.
+The replacement testing and publication gates in §9.3 and §9.5 still apply before
+an app release is published: test candidates against the boundary commit, vendor
+the contract from its app release tag, and publish replacement plugin packages
+before publishing the app draft. See the [author migration and PKCE example](../guides/plugin-development.md#loopback-oauth-with-pkce).
+
 ### 3.4 Streaming and notifications
 
 Everything that outlives its reply becomes a subscription with a host-allocated id and a
@@ -869,7 +914,7 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `onShutdown` (:1388) | sub | handler-registration, host-terminated | 5 s per handler (`:1384-1386`) | becomes `ave/instance/shutdown` request (§3.4) |
 | `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, socketPath, pid }` cross; the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
 | `openAuthWindow` (:1437) | UI | plain-json → plain-json | host-owned BrowserWindow, cookie host allow-list (`auth-window-service.ts:10-16`) | with `retainCookies` the values stay in the partition; the reply carries names or the final URL only |
-| `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | unchanged |
+| `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | host-issued state required before callback delivery (§3.3.1) |
 | `pickFolders` (:1510) | UI | plain-json | OS dialog, user consent is the dialog | unchanged; the chosen paths do not widen the envelope unless declared (§2.2) |
 | `resolveMappedDriveRoot` (:1530) | req | plain-json | host replaces a `powershell.exe` spawn (blueprint §10) | unchanged |
 | `listAudioInputDevices` (:1536) | req | plain-json | renderer permission state | unchanged |

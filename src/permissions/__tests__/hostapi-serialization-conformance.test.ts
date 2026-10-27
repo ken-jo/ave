@@ -256,7 +256,7 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
   "authRedirect.open": {
     jsonRepresentable: true,
     args: "()",
-    returns: "Promise<{ handle: string, redirectUri: string }> — plain data",
+    returns: "Promise<{ handle: string, redirectUri: string, state: string }> — plain data",
   },
   "authRedirect.wait": {
     jsonRepresentable: true,

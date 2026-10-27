@@ -63,13 +63,25 @@ describe("egress-host approval requests", () => {
       toolName: "bash",
       args: { host: "github.com", port: 443 },
       allowedChoices: ["allow-once", "deny-once"],
-      egressHost: { host: "github.com", port: 443, scopes: ["once", "session", "project", "always"], network: "public" },
+      egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once", "session", "project", "always"], network: "public" },
       sessionId: "session-1",
     });
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "project", nonce: card.nonce, hmac: card.hmac,
     }, wc as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "project" });
+  });
+
+  // Owner 2026-10-25: the card names the host rule "Always deny" stores, and where a project rule would be saved.
+  it("carries the exact host rule and, when This project is offered, the project directory", async () => {
+    const { wc, gate } = makeGate();
+    void createApprovalGateEgressRequester(gate)(egressRequest({ workspaceRoot: "/srv/project" }));
+    expect((await cardSent(wc)).egressHost).toMatchObject({ rule: "Network(github.com:443)", projectCwd: "/srv/project" });
+    const local = makeGate();
+    void createApprovalGateEgressRequester(local.gate)(egressRequest({ destination: { host: "127.0.0.1", port: 8080 }, scopes: ["once", "session"], network: "local", workspaceRoot: "/srv/project" }));
+    const card = await cardSent(local.wc);
+    expect(card.egressHost?.rule).toBeNull();
+    expect(card.egressHost).not.toHaveProperty("projectCwd");
   });
 
   it("denies when the person denies", async () => {
@@ -168,18 +180,18 @@ describe("egress-host approval requests", () => {
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       isReadOnly: false,
-      egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public" },
+      egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "public" },
     };
     await expect(gate.requestAndWait({ ...base, egressHost: undefined })).rejects.toThrow(/needs egressHost/u);
-    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: [], network: "public" } }))
+    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: [], network: "public" } }))
       .rejects.toThrow(/needs egressHost/u);
-    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "lan" as never } }))
+    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "lan" as never } }))
       .rejects.toThrow(/names its network/u);
     await expect(gate.requestAndWait({
-      ...base, egressHost: { host: "127.0.0.1", port: 8080, scopes: ["once", "project"], network: "local" },
+      ...base, egressHost: { host: "127.0.0.1", port: 8080, rule: null, scopes: ["once", "project"], network: "local" },
     })).rejects.toThrow(/never offered a persistent scope/u);
     await expect(gate.requestAndWait({
-      ...base, egressHost: { host: "intranet.corp.test", port: 443, scopes: ["once", "always"], network: "unverified" },
+      ...base, egressHost: { host: "intranet.corp.test", port: 443, rule: "Network(intranet.corp.test:443)", scopes: ["once", "always"], network: "unverified" },
     })).rejects.toThrow(/never offered a persistent scope/u);
     await expect(gate.requestAndWait({ ...base, allowedChoices: ["allow-once", "allow-always", "deny-once"] }))
       .rejects.toThrow(/exactly allow-once and deny-once/u);
@@ -188,16 +200,16 @@ describe("egress-host approval requests", () => {
     await expect(gate.requestAndWait({ ...base, kind: undefined }))
       .rejects.toThrow(/only valid on an egress-host request/u);
     // This tab belongs to a terminal's ask, This session to a shell call's.
-    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "tab"], network: "public" } }))
+    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once", "tab"], network: "public" } }))
       .rejects.toThrow(/only a terminal tab's egress ask offers This tab/u);
     await expect(gate.requestAndWait({
-      ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "session"], network: "public", terminalTabId: TAB },
+      ...base, egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once", "session"], network: "public", terminalTabId: TAB },
     })).rejects.toThrow(/offered This tab, not This session/u);
     await expect(gate.requestAndWait({
-      ...base, egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public", terminalTabId: "browser:0a1b2c3d-1" },
+      ...base, egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "public", terminalTabId: "browser:0a1b2c3d-1" },
     })).rejects.toThrow(/not a terminal tab id/u);
     await expect(gate.requestAndWait({
-      ...base, sessionId: "session-1", egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public", terminalTabId: TAB },
+      ...base, sessionId: "session-1", egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "public", terminalTabId: TAB },
     })).rejects.toThrow(/names no conversation/u);
   });
 });
@@ -221,7 +233,8 @@ describe("a workspace terminal tab's egress ask", () => {
       kind: "egress-host",
       toolName: "terminal",
       args: { host: "github.com", port: 443, tabId: TAB },
-      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab", "always"], network: "public", terminalTabId: TAB },
+      // Host rules are shell-origin: a terminal tab's card names none to save.
+      egressHost: { host: "github.com", port: 443, rule: null, scopes: ["once", "tab", "always"], network: "public", terminalTabId: TAB },
     });
     expect(card.sessionId).toBeUndefined();
     expect(resolver).toHaveBeenCalledWith(undefined, TAB);

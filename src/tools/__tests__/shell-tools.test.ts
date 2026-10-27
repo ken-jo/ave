@@ -3,21 +3,22 @@
 import type { PowerShellArgument, PowerShellValueArgument } from "../powershell-ast.js";
 import { EventEmitter } from "node:events";
 import childProcess, { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { mintOneShotHostShellPermit } from "../../__tests__/support/host-shell-approval.js";
+import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { powerShellLiteral as psLiteral } from "../../__tests__/support/powershell-ast.js";
-import { useTempDirs } from "../../__tests__/test-helpers.js";
-import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { win32SystemBinary } from "../../shared/windows-system-path.js";
+import * as powerShellExecutable from "../../shared/powershell-executable.js";
 import type { ToolExecutionContext } from "../base.js";
 import { ToolRegistry } from "../registry.js";
 import {
@@ -388,7 +389,7 @@ describe("bash tool", () => {
           ctx(root),
         );
         expect(result.isError).toBe(true);
-        expect(result.output).toContain("Sandbox:");
+        expect(result.output).toContain(process.platform === "win32" ? "namespace is unresolved" : "Sandbox:");
         expect(spawnSpy).not.toHaveBeenCalled();
       } finally {
         spawnSpy.mockRestore();
@@ -519,6 +520,19 @@ describe("powershell tool", () => {
   });
 
   describe.skipIf(process.platform !== "win32")("native process resource handling", () => {
+    // Process lifetime tests provide an installation proof; the resolver suite
+    // independently refuses writable or elevated host installations.
+    beforeEach(() => vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({
+      executable: win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"), kind: "windows-powershell",
+    }));
+    afterEach(() => vi.restoreAllMocks());
+    const executeApproved = async (input: { command: string; timeoutSeconds: number }, context: ToolExecutionContext = ctx()) => {
+      const plan = getHostShellExecutionPlan("host");
+      const rawInput = { ...input, executionMode: "host" as const, justification: "Verify an approved native process lifecycle" };
+      const toolUseId = "native-process-lifecycle";
+      const permit = await mintOneShotHostShellPermit({ plan, toolName: "powershell", toolUseId, rawInput, context });
+      return new PowerShellTool().execute(rawInput, { ...context, metadata: { ...context.metadata, toolUseId }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit });
+    };
     it("passes the configured proxy route to the plain native shell without provider secrets", async () => {
       vi.stubEnv("HTTPS_PROXY", "http://proxy.example:8443");
       vi.stubEnv("NO_PROXY", "localhost,.internal.example");
@@ -533,7 +547,7 @@ describe("powershell tool", () => {
     });
 
     it("preserves public cmdlet output and a nonzero exit", async () => {
-      const result = await new PowerShellTool().execute({
+      const result = await executeApproved({
         command: "Write-Output first; Write-Error second -ErrorAction Continue; exit 7", timeoutSeconds: 30,
       }, ctx());
       expect(result.metadata?.returncode).toBe(7);
@@ -545,7 +559,7 @@ describe("powershell tool", () => {
     it("cancels the public cmdlet invocation and closes its native shell", async () => {
       const dir = mkdtempSync(join(tmpdir(), "ave-public-ps-cancel-"));
       const controller = new AbortController();
-      const pending = new PowerShellTool().execute({
+      const pending = executeApproved({
         command: "Write-Output $PID | Set-Content shell.pid; Start-Sleep -Seconds 30", timeoutSeconds: 60,
       }, { ...ctx(dir), abortSignal: controller.signal });
       try {
@@ -574,10 +588,9 @@ describe("powershell tool", () => {
     }, 40_000);
 
     it("reports an expired deadline and accepts a large explicit budget", async () => {
-      const tool = new PowerShellTool();
-      const expired = await tool.execute({ command: "Start-Sleep -Seconds 30", timeoutSeconds: 1 }, ctx());
+      const expired = await executeApproved({ command: "Start-Sleep -Seconds 30", timeoutSeconds: 1 });
       expect(expired.metadata?.timedOut).toBe(true);
-      const completed = await tool.execute({ command: "Write-Output complete", timeoutSeconds: 3_000_000 }, ctx());
+      const completed = await executeApproved({ command: "Write-Output complete", timeoutSeconds: 3_000_000 });
       expect(completed.isError).toBe(false);
       expect(completed.output).toBe("complete");
     }, 20_000);
@@ -819,101 +832,23 @@ describe("powershell tool", () => {
   });
 });
 
-// Prefer pwsh when available and pass the same resolved shell flavor into sandbox wrapping.
-describe("powershell binShell resolution", () => {
-  const ORIGINAL_PLATFORM = process.platform;
-  const ORIGINAL_PATH = process.env["PATH"];
-  const ORIGINAL_PATHEXT = process.env["PATHEXT"];
-  const createTestDir = useTempDirs("ave-pwsh-");
+describe("powershell installation resolution", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
-  afterEach(() => {
-    setProcessPlatform(ORIGINAL_PLATFORM);
-    if (ORIGINAL_PATH === undefined) delete process.env["PATH"];
-    else process.env["PATH"] = ORIGINAL_PATH;
-    if (ORIGINAL_PATHEXT === undefined) delete process.env["PATHEXT"];
-    else process.env["PATHEXT"] = ORIGINAL_PATHEXT;
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
+  it.each([
+    { executable: "/opt/microsoft/powershell/7/pwsh", kind: "pwsh" },
+    { executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, kind: "windows-powershell" },
+  ] as const)("uses only the verified absolute image: $kind", (installation) => {
+    const proof = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue(installation);
+    vi.stubEnv("PATH", "/agent-controlled/bin");
+    expect(resolvePowerShellExecutable()).toBe(installation.executable);
+    expect(proof).toHaveBeenCalledOnce();
   });
 
-  describe("resolvePowerShellExecutable off-win32", () => {
-    it("returns pwsh on darwin/linux regardless of PATH", () => {
-      setProcessPlatform("darwin");
-      process.env["PATH"] = "/usr/bin";
-      expect(resolvePowerShellExecutable()).toBe("pwsh");
-      setProcessPlatform("linux");
-      expect(resolvePowerShellExecutable()).toBe("pwsh");
-    });
-  });
-
-  describe("resolvePowerShellExecutable on win32", () => {
-    it("ignores planted PATH shells and returns an absolute system executable", () => {
-      setProcessPlatform("win32");
-      const dir = createTestDir("ave-planted-shell-");
-      writeFileSync(join(dir, "powershell.exe"), "planted");
-      writeFileSync(join(dir, "pwsh.exe"), "planted");
-      vi.stubEnv("PATH", dir);
-      vi.stubEnv("ProgramFiles", undefined);
-      vi.stubEnv("SystemRoot", "C:\\Windows");
-      try {
-        expect(resolvePowerShellExecutable()).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-      } finally { vi.unstubAllEnvs(); }
-    });
-
-    it("refuses all shell launches without a local absolute system root even with a planted PATH", () => {
-      setProcessPlatform("win32");
-      const dir = createTestDir("ave-planted-shell-");
-      writeFileSync(join(dir, "powershell.exe"), "planted");
-      vi.stubEnv("PATH", dir);
-      for (const name of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(name, undefined);
-      try { expect(() => resolvePowerShellExecutable()).toThrow(/system root/i); }
-      finally { vi.unstubAllEnvs(); }
-    });
-
-    it.runIf(ORIGINAL_PLATFORM === "win32")("prefers the absolute standard shell installation", () => {
-      setProcessPlatform("win32");
-      const dir = createTestDir("ave-pwsh-");
-      const pwshPath = join(dir, "PowerShell", "7", "pwsh.exe");
-      mkdirSync(join(dir, "PowerShell", "7"), { recursive: true });
-      writeFileSync(pwshPath, "");
-      chmodSync(pwshPath, 0o755);
-      vi.stubEnv("ProgramFiles", dir);
-      vi.stubEnv("SystemRoot", "C:\\Windows");
-
-      const resolved = resolvePowerShellExecutable();
-      expect(resolved).toBe(pwshPath);
-    });
-
-    it("uses the absolute system shell when no standard installation is configured", () => {
-      setProcessPlatform("win32");
-      const dir = createTestDir("ave-nopwsh-");
-      process.env["PATH"] = dir;
-      vi.stubEnv("ProgramFiles", undefined);
-      vi.stubEnv("SystemRoot", "C:\\Windows");
-
-      const resolved = resolvePowerShellExecutable();
-      expect(resolved).toBe(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"));
-    });
-
-    it("does not interpret PATHEXT scripts as an installed shell", () => {
-      setProcessPlatform("win32");
-      const dir = createTestDir("ave-pwshext-");
-      writeFileSync(join(dir, "pwsh.cmd"), "");
-      vi.stubEnv("ProgramFiles", undefined);
-      vi.stubEnv("SystemRoot", "C:\\Windows");
-      process.env["PATH"] = dir;
-      process.env["PATHEXT"] = ".CMD";
-
-      expect(resolvePowerShellExecutable()).toBe(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"));
-    });
-
-    it("returns powershell.exe when PATH is empty", () => {
-      setProcessPlatform("win32");
-      process.env["PATH"] = "";
-      vi.stubEnv("ProgramFiles", undefined);
-      vi.stubEnv("SystemRoot", "C:\\Windows");
-      expect(resolvePowerShellExecutable()).toBe(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"));
-    });
+  it("refuses a missing installation proof rather than using PATH", () => {
+    vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue(null);
+    vi.stubEnv("PATH", "/agent-controlled/bin");
+    expect(() => resolvePowerShellExecutable()).toThrow("Trusted PowerShell installation is unavailable");
   });
 });
 

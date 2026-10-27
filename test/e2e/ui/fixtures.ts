@@ -49,7 +49,7 @@ async function seedE2ePlugins(
         description:
           "Minimal plugin used by plugin active/inactive E2E coverage.",
         entry: "dist/hostPlugin.js",
-        requires: { minAppVersion: "0.12.0", hostProtocol: "3" },
+        requires: { minAppVersion: "0.12.0", hostProtocol: "4" },
         tools: [
           {
             name: "e2e_toggle_ping",

@@ -392,7 +392,7 @@ export function mxcRequestArgs(request: MxcContainerRequest): string[] {
 // The container command line for one PowerShell command. `-EncodedCommand` carries the command as UTF-16LE base64, so no quoting of the command's own text can change how the line splits.
 export function powerShellMxcCommandLine(systemRoot: string, command: string): string {
   const encoded = Buffer.from(command, "utf16le").toString("base64");
-  return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+  return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand ${encoded}`;
 }
 
 // Why the Bash tool does not run under MXC, for the tool result.

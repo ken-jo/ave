@@ -161,7 +161,7 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
         : cookies;
     },
     authRedirect: {
-      open: async () => ({ handle: "redirect-1", redirectUri: "http://127.0.0.1:43110/callback" }),
+      open: async () => ({ handle: "redirect-1", redirectUri: "http://127.0.0.1:43110/callback", state: "the-state" }),
       wait: async () => ({ code: "the-auth-code", state: "the-state" }),
       close: async () => undefined,
     },

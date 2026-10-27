@@ -9,6 +9,18 @@ const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const REQUIRED_SECURITY_SUITES = [
+  "src/permissions/__tests__/encoded-bypass-battery.test.ts",
+  "src/permissions/__tests__/literal-proof.test.ts",
+  "src/permissions/__tests__/literal-rule-identity.test.ts",
+  "src/permissions/__tests__/permission-lane-budgets.test.ts",
+  "src/permissions/__tests__/permission-nested-semantics.test.ts",
+  "src/permissions/__tests__/permission-ordinary-performance.test.ts",
+  "src/permissions/__tests__/permission-static-evaluation.test.ts",
+  "src/permissions/__tests__/permission-visible-literal-regressions.test.ts",
+  "src/permissions/__tests__/powershell-catalogue-parity.test.ts",
+  "src/permissions/__tests__/powershell-data-roles.test.ts",
+  "src/permissions/__tests__/powershell-dispatch-upload.test.ts",
+  "src/permissions/__tests__/powershell-network-rules.test.ts",
   "src/permissions/__tests__/shell-exfiltration.test.ts",
   "src/permissions/__tests__/powershell-exfiltration.test.ts",
   "src/permissions/__tests__/rules-store-and-decision.test.ts",

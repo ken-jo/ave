@@ -9,6 +9,7 @@ import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { modelShellPath } from "../shared/shell-native-path.js";
 import { expandShellTildePaths } from "../shared/home-tilde.js";
 import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
@@ -64,7 +65,11 @@ function windowsShellPathViolation(path: string, label: string, effect: PathEffe
     if (part === "." || part === ".." || (index === 0 && /^[a-z]:$/i.test(part))) return part;
     return part.split(":", 1)[0]!.replace(/[. ]+$/, "");
   }).join("/");
-  const sensitive = isSensitivePath(caseFoldForMatch(normalized), effect);
+  const modeled = modelShellPath(normalized, { dialect: "bash" });
+  const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalizePathForMatch(modeled.nativePath));
+  let sensitive = canonical === undefined ? null : isSensitivePath(canonical, effect);
+  const sessionRead = effect === "read" && canonical !== undefined && isConfiguredSessionReadPath(canonical);
+  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isSensitivePath(caseFoldForMatch(candidate), effect);
   if (sensitive) return {
     kind: "sensitive-path",
     reason: `Sensitive path: command operand ${label} matches ${sensitive}`,
@@ -1132,7 +1137,7 @@ function projectCommandPolicyView(
           break;
         }
         wrapperCwds.push({ value, word: transition.path, cwd });
-        try { cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd); }
+        try { cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd, { dialect: "bash" }); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
           unsupported = { reason: "cannot resolve projected wrapper working directory", word: transition.path };
@@ -1286,9 +1291,12 @@ export function findShellPathPolicyViolation(
     if (process.platform === "win32" && /^[A-Za-z]:(?![\\/])/.test(path)) decline("drive-relative command operand is unresolved");
     if (!isAbsolute(path) && cwd === null) decline("working directory is unresolved");
     let absolute: string;
-    try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot); }
+    try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" }); }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error)) throw error;
+      if (error.code === "EUNRESOLVEDSHELLPATH") throw new PathPolicyError({
+        kind: "dynamic-path", reason: `Shell path policy: filesystem namespace is unresolved: ${label}`, candidate: label,
+      });
       throw new PathPolicyError({ kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label });
     }
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);

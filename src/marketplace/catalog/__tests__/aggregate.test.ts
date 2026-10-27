@@ -46,7 +46,7 @@ function versionInBucket(below: boolean, threshold: number): string {
 
 describe("chooseVersion (design §6.1)", () => {
   it("offers only a served host protocol for code plugins", () => {
-    const current = version("1.0.0", { hostProtocol: "3" });
+    const current = version("1.0.0", { hostProtocol: "4" });
     const retired = version("2.0.0", { hostProtocol: "2" });
     const undeclared = version("3.0.0");
     expect(versionExclusions("acme", "plugin", "alpha", retired, [], context())).toEqual(["host_protocol"]);
@@ -77,8 +77,8 @@ describe("chooseVersion (design §6.1)", () => {
   });
 
   it("keeps a process-entry version from a 0.12.x app and from Windows, and offers it on darwin 0.13.0 (§9.7 P4)", () => {
-    const processVersion = version("2.0.0", { minAppVersion: "0.13.0", hostProtocol: "3", platforms: ["darwin", "linux"] });
-    const entryVersion = version("1.0.0", { hostProtocol: "3", platforms: ["darwin", "win32", "linux"] });
+    const processVersion = version("2.0.0", { minAppVersion: "0.13.0", hostProtocol: "4", platforms: ["darwin", "linux"] });
+    const entryVersion = version("1.0.0", { hostProtocol: "4", platforms: ["darwin", "win32", "linux"] });
     const old = context({ appVersion: "0.12.4" });
     const windows = context({ appVersion: "0.13.0", platform: "win32" });
     const mac = context({ appVersion: "0.13.0", platform: "darwin" });

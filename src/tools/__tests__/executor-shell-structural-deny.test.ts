@@ -1,13 +1,28 @@
-// Both shell dialects must reject structural violations before approval or one-shot permit consumption.
-// Parser unavailability also fails closed; absence of approval distinguishes the required ordering.
-import { describe, it, expect, vi } from "vitest";
+// Structural-ordering tests provide trusted startup and an independent native AST.
+// Actual executable admission and unavailable-install refusal have separate coverage.
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
+import * as shellTools from "../shell-tools.js";
+import * as powerShellStartup from "../../shared/powershell-startup-policy.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate } from "../../permissions/approval-gate.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+
+beforeEach(() => {
+  vi.spyOn(powerShellStartup, "isPowerShellStartupPinned").mockReturnValue(true);
+  vi.spyOn(shellTools, "findPowerShellCommandPathViolation").mockImplementation(async (_command, cwd, root, allowed, blockReads) =>
+    shellTools.findPowerShellAstPathViolation({
+      errors: [], redirections: [], unsupported: [],
+      commands: [{ name: "Start-Process", text: "Start-Process calc", arguments: [
+        { kind: "literal", value: "Start-Process", text: "Start-Process" },
+        { kind: "literal", value: "calc", text: "calc" },
+      ] }],
+    }, cwd, root, allowed, blockReads));
+});
+afterEach(() => vi.restoreAllMocks());
 
 const DIALECTS = [
   {
