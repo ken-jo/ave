@@ -585,10 +585,10 @@ export interface StreamTurnParams {
   /** Thinking budget before the primary output ceiling, re-bounded for a fallback. */
   requestedThinkingBudgetTokens?: number;
   /**
-   * A route whose user picks reasoning by name (a subscription runtime's speed menu) asks for this effort instead
-   * of one derived from a token budget. The model's accepted levels still decide what is sent.
+   * Qualitative intent selected before numeric budgets meet output ceilings. Explicit runtime speed choices
+   * use the same field. The model's accepted levels still decide what is sent.
    */
-  reasoningEffort?: "none" | "low" | "medium" | "high";
+  reasoningEffort?: import("../../shared/reasoning-effort.js").ReasoningEffort;
   /**
    * finish_reason=length CONTINUATION. When true, the FINAL message in
    * `messages` is a partial assistant turn the model must CONTINUE verbatim

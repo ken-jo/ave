@@ -74,7 +74,7 @@ it.each(["wire", "record"] as const)("uses the child model's reasoning identity 
     expect(record.output.effective).toBe(32_000);
     expect(body.max_output_tokens).toBe(record.output.effective);
   } else {
-    expect(record.reasoning).toEqual({ kind: "openai-effort", requestedEffort: "none", effort: "medium", source: "model-catalog" });
+    expect(record.reasoning).toEqual({ kind: "openai-effort", requestedEffort: "low", effort: "medium", source: "model-catalog" });
   }
 });
 

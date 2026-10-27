@@ -292,7 +292,7 @@ Implemented.
   generic row's named entry, and an SDK-managed route ignores a dormant endpoint.
   Where the catalog
   knows the model, it decides whether an OpenAI-family route (OpenAI, Azure) sends
-  `reasoning_effort` and at what level. The level Ave's budget maps to is sent if
+  `reasoning_effort` and at what level. The selected rung is sent if
   the model accepts it, else the nearest accepted level below it, else the lowest
   accepted. An adaptive Claude effort is held to the model's accepted levels the same
   way. Where nobody states the levels — the catalog does not know the model, lists no
@@ -311,11 +311,17 @@ Implemented.
   interleaving requires an explicit `interleaved: true` declaration; otherwise
   no beta opt-in is sent. Numeric budgets remain below `max_tokens`, except
   with declared interleaving, where the budget can span the
-  turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
-  and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
-  marks as not reasoning gets no reasoning control, including numeric or adaptive
-  thinking. A reasoning model whose levels the catalog does not list sends no effort:
-  absent levels are unknown, not none, and unknown is not guessed.
+  turn. The shared [rung ladder](../../src/shared/reasoning-effort.ts) defines
+  low, medium, high, xhigh and max intent. Settings retain the original token
+  budget; exact presets recover their rung, while custom budgets choose the
+  closest rung with ties downward. Thinking off remains a separate switch.
+  The round carries that key before output limits bound numeric controls.
+  Qualitative sliders retain all four ordinary rungs regardless of output
+  limits, and show max only when the selected catalog entry accepts it.
+  Numeric sliders remain bounded by output; max corresponds to 64,000 tokens
+  before numeric request limits apply. Unknown internal effort values fail
+  rather than selecting a different rung. A reasoning model whose levels are
+  unknown receives no guessed effort.
   Reported controls select the request protocol. Native reasoning models use
   the response protocol, which accepts effort with tools. A custom endpoint
   retains the chat protocol unless its report explicitly names the response
@@ -375,10 +381,10 @@ What is sent, and why each is justified:
   Sources: `https://openrouter.ai/docs/guides/best-practices/reasoning-tokens`,
   `https://openrouter.ai/docs/api/reference/parameters`,
   `https://openrouter.ai/docs/guides/overview/models` (fetched 2026-10-13).
-- **The level.** The report names a parameter, not the levels. `low`, `medium` and
-  `high` are the levels every effort convention defines; Ave's lowest budget maps to
-  `none`, which a model whose reasoning is mandatory rejects and which contradicts
-  thinking being on, so it is sent as `low`. `max_tokens` budgets are never sent.
+- **The level.** The report names a parameter, not the levels. The selected
+  rung is preserved unless an eligible catalog identity declares accepted
+  levels, in which case the same nearest-accepted-level rule applies.
+  Numeric budgets are never sent through effort controls.
 - **OpenAI-family routes** (OpenAI, Azure) send `reasoningEffort`, which the SDK writes
   as `reasoning.effort` on the Responses wire and `reasoning_effort` on Chat
   Completions; a report decides only when it names that wire's parameter (`reasoning`
