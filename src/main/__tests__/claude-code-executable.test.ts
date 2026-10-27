@@ -71,17 +71,12 @@ async function npmFixture(platform: NodeJS.Platform = process.platform) {
 
 async function caskFixture(prefix: string, cask = "claude-code", platform: NodeJS.Platform = process.platform) {
   const f = await fixture(platform);
-  const linuxPrefix = prefix === "/home/linuxbrew/.linuxbrew";
-  const physicalHome = join(f.root, "logical", "home");
-  const physicalPrefix = linuxPrefix ? join(physicalHome, "linuxbrew", ".linuxbrew") : join(f.root, "prefix");
+  const logicalRoot = join(f.root, "logical");
   const translate = (path: string): string => {
-    if (linuxPrefix && ["/home", dirname(prefix)].includes(path)) return `${physicalHome}${path.slice("/home".length)}`;
-    return path === prefix || path.startsWith(`${prefix}/`) ? `${physicalPrefix}${path.slice(prefix.length)}` : path;
+    const logicalPath = path !== "/" && (path === prefix || path.startsWith(`${prefix}/`) || prefix.startsWith(`${path}/`));
+    return logicalPath ? join(logicalRoot, path.slice(1)) : path;
   };
-  const project = (path: string): string => {
-    const payloadPath = path.replaceAll(physicalPrefix, prefix);
-    return linuxPrefix ? payloadPath.replaceAll(physicalHome, "/home") : payloadPath;
-  };
+  const project = (path: string): string => path.replaceAll(logicalRoot, "");
   const source = `${prefix}/Caskroom/${cask}/2.1.311/claude`;
   const launcher = `${prefix}/bin/claude`;
   writeNativeExecutable(translate(source), nativeExecutableBytes(platform));
@@ -166,6 +161,13 @@ describe("subscription executable admission", () => {
     expect(authenticity.authenticateClaudeCodeExecutable).toHaveBeenCalledWith(proof.executable, f.source, expect.any(String), platform, process.arch);
     await expect(proof.verify()).resolves.toBeUndefined();
     await proof.discard();
+  });
+
+  it.skipIf(process.platform === "win32")("rejects mutation of a cask ancestor outside the admitted prefix", async () => {
+    const f = await caskFixture("/opt/homebrew", "claude-code", "darwin");
+    chmodSync(f.translate("/opt"), 0o777);
+    await expect(pinClaudeCodeExecutable(f.launcher, f.runtime, f.discovery)).rejects.toThrow("writable by another account");
+    expect(authenticity.authenticateClaudeCodeExecutable).not.toHaveBeenCalled();
   });
 
   it.skipIf(process.platform !== "darwin")("rejects world-write, foreign ownership, and mutable payloads inside a default cask layout", async () => {

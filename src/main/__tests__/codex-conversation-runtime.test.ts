@@ -2,7 +2,8 @@ import { RuntimeProcessFixture as FakeAppServerProcess } from "./support/runtime
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../host-resources.js";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
@@ -18,7 +19,10 @@ import {
   type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+beforeEach(() => {
+  vi.stubEnv("SystemRoot", "C:\\Windows");
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+});
 afterEach(() => { vi.unstubAllEnvs(); });
 import { SUBSCRIPTION_TOOL_BRIDGE_CONTRACT } from "../../shared/subscription-runtime.js";
 import { ViewImageTool } from "../../tools/file-tools.js";
