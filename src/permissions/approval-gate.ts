@@ -285,6 +285,8 @@ export type ApprovalRequestInput = Omit<
   ApprovalRequest,
   "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule"
 > & {
+  // Host-only native execution proof; removed before renderer/audit payloads.
+  readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-owned assessment provenance; never inferred from the displayed reason.
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
   readonly reviewerApprovalBasis?: ReviewerApprovalBasis;
@@ -652,6 +654,7 @@ interface PendingEntry {
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
   shellRule?: ShellRuleApproval;
+  verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
   riskCeilingAtApproval?: RiskLevel;
@@ -1462,6 +1465,7 @@ export class ApprovalGate {
       parentAdjudicationEligible,
       reviewerOutcome,
       reviewerApprovalBasis,
+      verifiedShellCommand,
       ...request
     } = req;
     // Strip bindings, controller authority, abort signals and child eligibility/provenance before spreading renderer requests; live host capability must not reach renderer or audit. Audit only allowlisted plan fields and inject origin into every row so absence cannot masquerade as desk provenance.
@@ -1645,7 +1649,7 @@ export class ApprovalGate {
         allow: shellRuleSaveAllowed,
         // A deny only narrows, so "Always deny" stays on one-shot cards too; never for a remote controller.
         deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined,
-      }, req.sessionId)
+      }, req.sessionId, verifiedShellCommand)
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
@@ -2019,6 +2023,7 @@ export class ApprovalGate {
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
         shellRule,
+        verifiedShellCommand,
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
         riskCeilingAtApproval,
@@ -2356,6 +2361,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
+    verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
     egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;
     workingDirectoryIdentity: string | undefined;
     riskCeilingAtApproval: RiskLevel | undefined;
@@ -2376,6 +2382,7 @@ export class ApprovalGate {
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,
+      ...(entry.verifiedShellCommand === undefined ? {} : { verifiedShellCommand: entry.verifiedShellCommand }),
       egress: entry.egressRule === undefined ? undefined : {
         ...entry.egressRule,
         scopes: entry.egressScopes ?? [],

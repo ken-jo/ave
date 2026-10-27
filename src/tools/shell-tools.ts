@@ -56,6 +56,7 @@ export type { PowerShellAstSummary } from "./powershell-ast.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import { preparePowerShellLaunch, retainPowerShellLaunchUntilExit } from "./powershell-launch.js";
 import { createPowerShellParserResponse } from "./powershell-parser-response.js";
+import { verifiedShellEnvironment, verifiedShellExecution, type VerifiedShellCommand, type VerifiedShellIdentity } from "../permissions/verified-shell-command.js";
 import { resolveTrustedPowerShellExecutable } from "../shared/powershell-executable.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../shared/powershell-startup-policy.js";
 import {
@@ -1604,8 +1605,10 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       return brokerFailureResult(error);
     }
     const identity = { command: input.command, requestedCwd: input.cwd, executionCwd: ctx.cwd, resolvedCwd,
-      toolUseId: typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, plan: hostShellPlan };
+      toolUseId: typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, plan: hostShellPlan,
+      verifiedShellCommand: ctx.verifiedShellCommand };
     if (brokeredAuthority !== null) {
+      if (ctx.verifiedShellCommand !== undefined) return brokerFailureResult(new Error("workload-broker:unexpected-native-shell-proof"));
       if (ctx.preparedShellInvocation !== undefined) {
         disposePreparedShellInvocation(ctx.preparedShellInvocation);
         return brokerFailureResult(new Error("workload-broker:unexpected-host-shell-preparation"));
@@ -1617,6 +1620,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       } catch (error) {
         return brokerFailureResult(error);
       }
+    }
+    if (disposableExecution && ctx.verifiedShellCommand !== undefined) {
+      return { output: "Verified shell commands require a native host execution route.", isError: true };
     }
     const cwdViolation = validateShellWorkingDirectory(
       resolvedCwd,
@@ -2964,6 +2970,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     } catch (error) {
       return brokerFailureResult(error);
     }
+    if (disposableExecution && ctx.verifiedShellCommand !== undefined) {
+      return { output: "Verified shell commands require a native host execution route.", isError: true };
+    }
     const cwdViolation = validateShellWorkingDirectory(
       resolvedCwd,
       ctx.cwd,
@@ -2983,6 +2992,13 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       !ctx.hostShellExecutionPermit
     ) {
       return { output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit.", isError: true, metadata: { sandboxed: false, isolation: "none" } };
+    }
+    let verified: VerifiedPowerShellExecution | undefined;
+    if (ctx.verifiedShellCommand !== undefined) {
+      const identity: VerifiedShellIdentity = { command: input.command, dialect: "powershell", cwd: resolvedCwd };
+      const execution = verifiedShellExecution(ctx.verifiedShellCommand, identity);
+      if (execution === undefined) return { output: "PowerShell spawn failed: verified shell command does not match this invocation.", isError: true };
+      verified = { ...execution, identity, handle: ctx.verifiedShellCommand };
     }
     let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
     const authorizeHostSpawn = (): void => {
@@ -3045,6 +3061,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     ) {
       return { output: commandPathViolation.reason, isError: true };
     }
+    if (verified !== undefined && verifiedShellExecution(verified.handle, verified.identity) === undefined) {
+      return { output: "PowerShell spawn failed: verified shell command is no longer available for this invocation.", isError: true };
+    }
     // Explicit host requests and the Windows Plan B select a plain host child.
     // Its opaque permit exists only after an allow-once approval (or, for an
     // explicit host request, a matching allow rule) for this exact
@@ -3082,6 +3101,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
           toolOutputProgressFromMetadata(ctx.metadata),
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+          undefined, verified,
         );
       }
       return await spawnPowerShellWithSandbox(
@@ -3091,12 +3111,13 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
         toolOutputProgressFromMetadata(ctx.metadata),
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+        verified,
       );
     }
 
     const plainResult = await spawnPowerShell(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization, verified,
     );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
     if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) return plainResult;
@@ -3263,10 +3284,21 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   return normalizePowerShellAstSummary(JSON.parse(response.read()));
 }
 
-function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }): ManagedPowerShellChild {
+interface VerifiedPowerShellExecution {
+  readonly command: string;
+  readonly executable: string;
+  readonly identity: VerifiedShellIdentity;
+  readonly handle: VerifiedShellCommand;
+}
+
+function powerShellExecutionEnvironment(verified: VerifiedPowerShellExecution | undefined, base: Record<string, string>): Record<string, string> {
+  return verified === undefined ? base : verifiedShellEnvironment(verified.handle, verified.identity, base);
+}
+
+function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }, verified?: VerifiedPowerShellExecution): ManagedPowerShellChild {
   const launch = preparePowerShellLaunch(command, options.env);
   try {
-    const child = spawn(executable, launch.args, { ...options, env: launch.env }) as ManagedPowerShellChild;
+    const child = spawn(executable, launch.args, { ...options, env: powerShellExecutionEnvironment(verified, launch.env) }) as ManagedPowerShellChild;
     retainPowerShellLaunchUntilExit(launch, child);
     return child;
   } catch (error) { launch.cleanup(); throw error; }
@@ -3355,6 +3387,7 @@ async function spawnPowerShellWithSandbox(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   toolUseId?: string,
+  verified?: VerifiedPowerShellExecution,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
@@ -3372,7 +3405,7 @@ async function spawnPowerShellWithSandbox(
   }
   const isWindows = process.platform === "win32";
   let powerShellLaunch: ReturnType<typeof preparePowerShellLaunch>;
-  try { powerShellLaunch = preparePowerShellLaunch(command, buildSafeChildEnv({ ...sandboxHome.env }), sandboxHome); }
+  try { powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome); }
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
@@ -3381,7 +3414,7 @@ async function spawnPowerShellWithSandbox(
 
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home, sandboxHome.path);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path);
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,
@@ -3446,9 +3479,9 @@ async function spawnPowerShellWithSandbox(
   // allow-listed proxy/CA/SANDBOX_RUNTIME keys ASRT set/changed — so on win32
   // the proxy set is propagated (the "spread") and on mac/linux nothing extra
   // leaks (ASRT changed nothing in process.env). Secrets stay stripped on both.
-  const childEnv = buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
+  const childEnv = powerShellExecutionEnvironment(verified, buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
     XDG_CONFIG_HOME: powerShellLaunch.env.XDG_CONFIG_HOME!, PSModulePath: powerShellLaunch.env.PSModulePath!,
-  });
+  }));
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
@@ -3571,6 +3604,7 @@ async function spawnPowerShellInMxc(
   progress?: ToolOutputProgressSink,
   toolUseId?: string,
   parserResponse?: ReturnType<typeof createPowerShellParserResponse>,
+  verified?: VerifiedPowerShellExecution,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   const systemRoot = windowsSystemRoot();
@@ -3594,10 +3628,10 @@ async function spawnPowerShellInMxc(
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
-  const powerShellLaunch = preparePowerShellLaunch(command, buildSafeChildEnv({ ...sandboxHome.env }), sandboxHome);
+  const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], hostHome, sandboxHome.path);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
   const egress = openEgressInvocation(
     { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
     signal ? { abortSignal: signal } : {},
@@ -3625,7 +3659,7 @@ async function spawnPowerShellInMxc(
         ])],
         floorPierces,
       },
-      env: powerShellLaunch.env,
+      env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
     });
@@ -3746,6 +3780,7 @@ async function spawnPowerShell(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   spawnAuthorization?: HostShellSpawnAuthorization,
+  verified?: VerifiedPowerShellExecution,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   const executable = resolvePowerShellExecutable();
@@ -3754,15 +3789,15 @@ async function spawnPowerShell(
     signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:powershell");
     const child = spawnManagedPowerShell(
-      executable, (prelude ?? "") + command,
+      executable, (prelude ?? "") + (verified?.command ?? command),
       {
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
-        env: buildHostShellChildEnv(),
+        env: powerShellExecutionEnvironment(verified, buildHostShellChildEnv()),
         shell: false,
-      },
+      }, verified,
     ) as PipedChild;
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });

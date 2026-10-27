@@ -113,19 +113,34 @@ be attached as `--option=value` or, for a registered short option, a same-word
 suffix. A bare optional-value option preserves the next word's option or operand
 role, so a later unknown flag remains unproven.
 
-Direct and argv-delegated `make` and Git commands are outside the positive command
-catalogue. `make` variable assignments, evaluation options and build files can
-select executable code. Git configuration and environment can select pagers,
-external diff, text conversion, filters, filesystem-monitor commands and hooks;
-the floor does not inspect or simulate those settings. Literal messages or
-flags such as `--no-pager`, `--no-ext-diff` and `--no-textconv` do not establish
-the missing proof. These commands offer no exact allow rule and cannot use a
-stored exact or broad allow, even for `git commit -m 'message'`; foreground
-requires per-call approval and headless denies. Raw Git rule examples describe
-key identity only, not current allow eligibility. Any later support belongs in
-a separate complete grammar review. The separate literal-evaluator exception
-below still applies to a known outer evaluator's opaque literal payload; the
-pass does not inspect that payload for nested commands.
+`make` remains outside the positive command catalogue: assignments, evaluation
+options and build files can select executable code. Git admits only the closed
+macOS/Linux (`darwin`/`linux`) read-only forms in the
+[canonical native-command contract](../architecture/permission-policy-design.md#shell-credential-and-sink-classification).
+Canonical host Bash/PowerShell tools must carry a sealed in-process handle bound
+to the original raw command, dialect and cwd, the verified absolute image, and
+owned argv/environment. Only one literal simple command qualifies; wrappers,
+compound syntax, redirects and state changes refuse. Execution consumes that
+plan while rule and cache identity keep the original raw text. Other consumers
+and manual terminals have no handle and receive no native proof or exact upgrade.
+
+The Git subset covers fixed-format metadata log, explicit no-patch show,
+explicit cached/two-revision metadata diff, closed rev-parse queries and branch
+listing with reset sorting. No-patch show can display selected object content,
+including raw blob bytes. The subset requires a verified plain-version image
+at or above 2.45.0 and child-effective environment/configuration guards. Status,
+worktree diff, default show, patch/stat output, commit, user global options,
+paths and unknown forms stay unproven. Inherited Git variables, pager and
+loader controls are removed; owned configuration suppresses executable hooks,
+monitoring, helpers, content conversions, submodule traversal and lazy fetch.
+These guards add to the shared host Git argument builder and workspace
+availability checks, preserving the existing bare-repository and write-hold
+boundaries.
+Repository configuration/includes and metadata indirections still allow data
+reads beyond the workspace; this is not a workspace-read confinement proof.
+Retained visible floors win. Literal messages or suppression flags alone cannot
+authorize an unproved form. The floor does not inspect opaque evaluator payloads
+to discover a Git invocation.
 
 Configuration-dependent programs require an argv proof that implicit user and
 system settings cannot add execution, arguments, uploads or output writes.
@@ -155,7 +170,8 @@ unaffected.
 Startup proof follows the selected protected executable and installation, not
 an OS name. Parser and execution never resolve PowerShell through PATH or a
 user/agent-writable tree. Missing admission refuses native parsing. Candidate proof and refusal are
-cached for the process lifetime; newly installed or repaired paths require
+cached by platform and complete candidate/root specification for the process
+lifetime; newly installed or repaired paths require
 an application restart. On macOS installation access evidence must consist of
 complete plain permission records; extended or unfamiliar metadata refuses.
 On Windows both the protected System32 5.1 installation and modern
@@ -167,16 +183,20 @@ These paths offer no exact allow, require per-call consent and deny headless;
 executable admission still precedes any parser spawn. MXC parses inside confinement and receives internal
 AST bytes under a separate bound, without the display-output truncation.
 
-All nested interpreter launchers are unproven, including literal child-shell
-code and script-file forms with startup-suppression flags. No child runtime has
-a registered positive grammar. An argv proof cannot establish the identity or
-installation of a PATH-resolved executable, adjacent path-initialization files,
-or inherited startup inputs. Existing exact and broad rules cannot upgrade
-these requests; foreground requires per-call approval and headless denies.
-The outer host's protected executable and startup preparation do not transfer
-authority to a nested process. Re-admission requires a shared installation
-verifier plus a complete startup contract for the resolved image and argv, in
-a separate grammar-widening change.
+The shared executable verifier preserves the outer PowerShell installation
+proof and verifies host-declared files/trees and ancestors. It does not prove
+arbitrary transitive dependencies or binary signatures; fixed OS images retain
+the protected OS loader/library trust boundary. Nested launcher admission uses
+one generic operation over declarative recipes with complete startup guards,
+owned argv/environment and the matching host-only execution handle. The sole
+registered recipe is the closed macOS/Linux (`darwin`/`linux`) Bash literal-code form in the
+[canonical recipe table](../architecture/permission-policy-design.md#shell-credential-and-sink-classification).
+Its opaque payload can use only the existing current-format exact-rule
+exception for the complete original command; broad rules cannot authorize it.
+Python path initialization, fish data roots, Node crypto startup, nested
+PowerShell configuration, zsh system startup and Windows startup remain
+unresolved and unproven. The outer host's startup authority does not transfer
+to any nested runtime.
 
 Local transcription is an accepted host-trust residual and does not itself
 disable cmdlet automatic allowance. It is separate from executable settings;
@@ -186,8 +206,8 @@ Runtime-dependent execution, including substitutions, variables, splats,
 loops, callbacks, generated strings and runtime argv, produces no persistent
 suggestion. A registered evaluator grammar may recognize a fully literal,
 single outer builtin `eval` or `Invoke-Expression` payload on a separately
-proven host as the narrow exception. Nested interpreter launchers have no
-positive grammar and cannot acquire this exception. The grammar must consume every
+proven host as the narrow exception. The verified Bash recipe uses the same
+exception; other nested forms cannot acquire it. The grammar must consume every
 option and operand; unknown options, including unsupported common parameters,
 refuse. A common parameter on `Invoke-Expression`, for example, is unsupported
 unless that closed grammar lists it. Only a current-format exact rule for the
@@ -214,7 +234,7 @@ static result, explicit restrictions and visible floors remain authoritative.
 - **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. These commands require per-call consent, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
   - Always: `mv`, `cp`, `install`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
   - `git clean` unless `-n`/`--dry-run`; `git reset --hard/--merge/--keep`; `git restore` unless index-only (`--staged` without `--worktree`); `git stash drop/clear`.
-  - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The destructive-floor exception is `-b <new> [<start>]` without `--` or paths; it does not grant an allow because all Git forms remain unproven. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
+  - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The destructive-floor exception is `-b <new> [<start>]` without `--` or paths; it does not grant an allow because checkout remains unproven. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
   - `git prune`; `git gc --prune*`; `git tag -d/--delete`; `git remote remove/rm`; `git pull -f/--force`; `git reflog expire/delete`; `git worktree remove -f/--force` and `git worktree prune`; `git update-ref -d/--stdin`; `git fetch -f/--force/-p/--prune/--prune-tags` and `+ref` refspecs.
   - `git switch -f/-C/--discard-changes`; `git branch -d/-D/-M/-C/-f/--delete`; `git push -f/-d/--force/--force-with-lease/--delete/--mirror/--prune`, and `+ref` or `:ref` refspecs.
   - `docker`/`podman`/`nerdctl`/`docker-compose` `prune`/`rm`/`rmi`, and `compose down -v/--volumes/--rmi`.
@@ -235,7 +255,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - A dynamic root is an ordinary ask.
 - Known limits of the floor (accepted, round 6):
   - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
-  - The floor checks paths, not the content of repository history. Git commands now require per-call approval because no positive Git grammar is registered; retained prefix rules cannot authorize them.
+  - The floor checks paths, not the content of repository history or raw objects. Only the host-bound Git read-only subset has positive proof; retained prefix rules cannot authorize other Git forms.
   - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
   - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
 - The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
@@ -243,7 +263,7 @@ static result, explicit restrictions and visible floors remain authoritative.
   - `/proc/*/environ`, `/proc/*/mem` and `/proc/*/fd/**`, together with their `task/*` and `map_files` forms; `cmdline` and `status` stay readable.
   - Chromium-family `Cookies`, `Login Data`, `Web Data` and `Local State` under `~/Library/Application Support`, `~/.config` and Windows `User Data`, which covers Chrome, Edge, Brave, Arc and Chromium.
   - Firefox `logins.json`, `key4.db` and `cookies.sqlite` under `Firefox/Profiles` and `.mozilla/firefox`.
-- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain unproven with every other Git form. Retained narrowing and destructive floors still apply independently.
+- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` remain unproven outside the host-bound read-only subset. Retained narrowing and destructive floors still apply independently.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.
@@ -554,8 +574,8 @@ The baseline work used `integration/permissions`. The approval rules UI is deliv
 - `src/permissions/rules/rule-specifier.ts`: the grammar and pure host/MCP identity matchers.
 - `src/permissions/rules/scoped-rule-matcher.ts`: edit, network and MCP precedence, mandatory scoped gates and host-resolved depth candidates.
 - `src/permissions/rules/shell-prefix-policy.ts`: the suggestion; `shell-prefix-values.ts` holds the refused-prefix list and destructive/irreversible classification.
-- `src/permissions/rules/shell-argument-grammar.ts`: the positive argv proof and
-  closed command, wrapper and literal-evaluator grammars.
+- [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts): baseline positive argv proof and closed command, wrapper and literal-evaluator grammars.
+- [verified-shell-command.ts](../../src/permissions/verified-shell-command.ts): sealed host-native proof and execution identity, using the closed [Git](../../src/permissions/rules/git-readonly-argv.ts) and [launcher](../../src/permissions/rules/verified-launcher-argv.ts) grammars.
 - `src/permissions/rules/shell-rule-matcher.ts`: the AST walk and deny/ask/allow evaluation.
 - `src/permissions/rules/rule-files.ts`: rule validation and `PermissionRulesFileCorruptError`.
 - `src/permissions/rules/project-rule-files.ts`: per-project files in Ave home.
@@ -617,22 +637,23 @@ claim that this invocation was observed writing. Families that can write through
 implicit or alternate modes mark all admitted forms possible-write. This covers
 every positively parsed native `curl`, `sort` and `uniq` form, including
 read-looking forms.
-Their presence in a multi-command input refuses the whole input. The single source is
+Their presence in a multi-command input refuses the whole input. Their baseline flags and grammars live in
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
-the analyzer does not refine the flag through file-state or provenance
+sealed native proof extensions use the verified command owner and grammars
+linked above. The analyzer does not refine the flag through file-state or provenance
 simulation. That source also limits `printf` to known non-state-mutating format
 conversions; an incomplete, unknown or state-mutating conversion is unproven.
 
 A single outer command with a fully literal evaluation payload is the sole
-exception. Its registered evaluator grammar must consume every option and
-operand and identify the payload as literal. Unknown options, including
-unsupported common parameters, refuse rather than falling back to ordinary
+exception. Its registered evaluator or verified launcher grammar must consume
+every option and operand and identify the payload as literal. Unknown options,
+including unsupported common parameters, refuse rather than falling back to ordinary
 command mode. After that positive proof, a current-format exact rule may
-authorize the complete original text of direct builtin `eval` or
-`Invoke-Expression` on a proven outer host. The key preserves quote style and raw
-content. The payload stays opaque, so the floor neither reparses it nor infers
-paths or effects from it. Without that exact rule the request remains
-`unproven`, including in the sandboxed lane.
+authorize the complete original text of direct builtin `eval`,
+`Invoke-Expression` on a proven outer host, or the host-bound Bash recipe.
+The key preserves quote style and raw content. The payload stays opaque, so the
+floor neither reparses it nor infers paths or effects from it. Without that
+exact rule the request remains `unproven`, including in the sandboxed lane.
 
 File-, stdin- and network-backed content remains an accepted indirection limit
 only after a registered grammar consumes the known outer command and every
@@ -717,11 +738,12 @@ code or execution options. No suffix summary or unknown-option fallback proves
 them. Known native wrappers retain index-range delegation; both outer grammar
 and delegated argv must be proven.
 
-No nested interpreter form has a positive grammar, including script, literal
-code, module, stdin and interactive forms. Startup flags cannot establish the
-resolved installation and adjacent path-init inputs. Such launches are
-unproven and ineligible for every exact or broad allow. Visible outer paths
-and upload sinks retain their floors regardless of a rule.
+The host-bound Bash literal-code recipe is the only nested interpreter form
+with positive proof, and is exact-only with an opaque payload. Its installation,
+startup and execution binding follow the canonical recipe contract linked
+above. Script, module, stdin, interactive and unregistered literal-code forms
+remain unproven and ineligible for every exact or broad allow. Visible outer
+paths and upload sinks retain their floors regardless of a rule.
 
 ### Dialect-scoped rules and grants
 
