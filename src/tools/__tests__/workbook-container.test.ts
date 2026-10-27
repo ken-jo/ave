@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 
 import { createZipFixture } from "../../__tests__/support/zip-fixtures.js";
+import { odsDocumentFixture as odsContent } from "../../__tests__/support/ods-document-fixtures.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewDocumentLimits } from "../../shared/preview-document.js";
 import { TableDocumentError } from "../table-document-error.js";
 import { prepareWorkbookContainer } from "../workbook-container.js";
@@ -14,20 +15,6 @@ function workbook(bookType: XLSX.BookType, bookSST = false): Buffer {
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["name", "value"], ["item", 2]]), "Data");
   return XLSX.write(book, { type: "buffer", bookType, bookSST }) as Buffer;
-}
-
-function odsContent(tables: string): Buffer {
-  return createZipFixture([
-    { name: "mimetype", data: MIMETYPE, method: 0 },
-    {
-      name: "META-INF/manifest.xml",
-      data: `<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="${MIMETYPE}"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>`,
-    },
-    {
-      name: "content.xml",
-      data: `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet>${tables}</office:spreadsheet></office:body></office:document-content>`,
-    },
-  ]);
 }
 
 function table(rows: string): string {
@@ -382,6 +369,48 @@ describe("workbook calculation state", () => {
 });
 
 describe("expanded spreadsheet bounds", () => {
+  it("accepts distinct expanded attribute names emitted by a recalculating engine", () => {
+    const cells = '<table:table-cell xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0" office:value-type="float" calcext:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell>';
+    const checked = prepareWorkbookContainer(odsContent(table(row("", cells))), "ods", PREVIEW_DOCUMENT_LIMITS, 0);
+    const parsed = XLSX.read(checked, { type: "buffer", cellFormula: false });
+    expect(parsed.Sheets.Data?.A1?.v).toBe(7);
+  });
+
+  it("rejects duplicate expanded names even when their prefixes differ", () => {
+    const cells = '<table:table-cell xmlns:alias="urn:oasis:names:tc:opendocument:xmlns:office:1.0" office:value-type="float" alias:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell>';
+    expect(refusal(odsContent(table(row("", cells))), "ods").code).toBe("corrupt-document");
+    const duplicate = '<table:table-cell office:value-type="float" office:value="1" office:value="7"><text:p>7</text:p></table:table-cell>';
+    expect(refusal(odsContent(table(row("", duplicate))), "ods").code).toBe("corrupt-document");
+  });
+
+  it("restores inherited namespace bindings after a child shadow", () => {
+    const first = '<table:table-cell xmlns:alias="urn:extension" office:value-type="float" alias:value-type="float" office:value="7"><text:p>7</text:p></table:table-cell>';
+    const duplicate = '<table:table-cell office:value-type="float" alias:value-type="float" office:value="8"><text:p>8</text:p></table:table-cell>';
+    const rows = `<table:table-row xmlns:alias="urn:oasis:names:tc:opendocument:xmlns:office:1.0">${first}${duplicate}</table:table-row>`;
+    expect(refusal(odsContent(table(rows)), "ods").code).toBe("corrupt-document");
+  });
+
+  it("keeps namespace declarations separate from effective repeat controls", () => {
+    const bytes = odsContent(table(row(' xmlns:number-rows-repeated="urn:unrelated" table:number-rows-repeated="3"')));
+    expect(prepareWorkbookContainer(bytes, "ods", PREVIEW_DOCUMENT_LIMITS, 0)).toBeInstanceOf(Buffer);
+  });
+
+  it.each([
+    ' table:number-rows-repeated="1" other:number-rows-repeated="1000000000"',
+    ' other:number-rows-repeated="1000000000" table:number-rows-repeated="1"',
+    ' table:number-rows-repeated="1" other:NUMBER-ROWS-REPEATED="1000000000"',
+    ' number-rows-repeated="1000000000" table:number-rows-repeated="1"',
+    ' table:number-rows-repeated_alias="1000000000"',
+  ])("retains decoder repeat-control alias refusal across namespaces: %s", (attributes) => {
+    const bytes = odsContent(table(row(` xmlns:other="urn:extension"${attributes}`)));
+    expect(refusal(bytes, "ods").code).toBe("corrupt-document");
+  });
+
+  it("bounds a repeat control in another namespace instead of ignoring it", () => {
+    const bytes = odsContent(table(row(' xmlns:other="urn:extension" other:number-rows-repeated="1000000000"')));
+    expect(refusal(bytes, "ods").code).toBe("archive-too-large");
+  });
+
   it("accepts bounded repeated rows and cells", () => {
     const bytes = odsContent(table(row(' table:number-rows-repeated="3"', '<table:table-cell table:number-columns-repeated="2"><text:p>x</text:p></table:table-cell>')));
     expect(prepareWorkbookContainer(bytes, "ods", PREVIEW_DOCUMENT_LIMITS, 0)).toBeInstanceOf(Buffer);
