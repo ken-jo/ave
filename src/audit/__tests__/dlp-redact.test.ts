@@ -14,6 +14,12 @@ import { linearGrowthBound, measureCpuGrowth } from "../../__tests__/support/cpu
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 
+it("redacts unfinished private key bodies in diagnostic and display text", () => {
+  const text = "command\n-----BEGIN PRIVATE KEY-----\nunfinished-private-material";
+  expect(scrubDiagnosticSecretsStrict(text)).toBe("command\n[REDACTED:PRIVATE_KEY]");
+  expect(scrubSecretsForLLM(text)).toBe("command\n[REDACTED:PRIVATE_KEY]");
+});
+
 describe("redactForLLM", () => {
   it("redacts emails", () => {
     const r = redactForLLM("ping me at foo.bar+baz@example.com please");

@@ -16,6 +16,8 @@ import {
   type EgressInvocationOwner,
 } from "./egress-invocations.js";
 import type { AsrtViolationRecord } from "./asrt-sandbox.js";
+import { observeAgentTerminalEgressDecision } from "../tools/agent-terminal-observation.js";
+import { isValidEgressPort } from "./egress-grants.js";
 
 const log = createLogger("egress-deny-monitor");
 
@@ -189,6 +191,9 @@ export async function startEgressDenyMonitor(deps: EgressDenyMonitorDeps): Promi
       deps.emit(entry).catch(report);
       // The callback wrote its own decision row; a refusal the proxy made before asking it gets one here.
       if (!consumeCallbackDecision(attributionKey, deny.host, deny.port)) {
+        observeAgentTerminalEgressDecision(attributionKey, {
+          host: deny.host, port: isValidEgressPort(deny.port) ? deny.port : null, decision: "deny", basis: "sandbox", scope: null, reason: deny.reason,
+        });
         deps.emit({
           timestamp: violation.timestamp.toISOString(),
           entryKind: "egress-decision",

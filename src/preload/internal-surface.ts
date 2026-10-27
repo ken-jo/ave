@@ -3,7 +3,7 @@
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
 import type {
-  ObservationAck, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
+  ObservationRequest, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
 } from "../shared/agent-observation.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
@@ -227,7 +227,7 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.on(CHANNELS.preview.observationEvents, listener);
       return () => ipcRenderer.removeListener(CHANNELS.preview.observationEvents, listener);
     },
-    acknowledgeObservation: (ack: ObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
+    acknowledgeObservation: (request: ObservationRequest) => ipcRenderer.invoke(CHANNELS.preview.observationAck, request),
     onObservationPreview: (handler: (message: BrowserObservationPreviewMessage) => void) => {
       const listener = (_event: unknown, message: BrowserObservationPreviewMessage) => handler(message);
       ipcRenderer.on(CHANNELS.preview.observationPreviewFrames, listener);

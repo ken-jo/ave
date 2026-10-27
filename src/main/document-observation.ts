@@ -7,7 +7,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { findSessionMainWindowContents } from "./app-state.js";
 import { DocumentObservationAdapter, type JournalObservationLease } from "../observation/document-adapter.js";
 import { createTableObservationEngine } from "../observation/table-engine.js";
-import { ObservationDaemon } from "../observation/daemon.js";
+import { ObservationCapacityError, ObservationDaemon } from "../observation/daemon.js";
 import {
   isObservationAck, OBSERVATION_LIMITS,
   type ObservationBinding, type DocumentObservationEngine, type ObservationIdentity,
@@ -21,6 +21,8 @@ import { readPermissionSettings } from "../permissions/permission-settings-store
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { protectedReadDenyCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
 import { setAgentObservationSink, type ObservedFileEffect } from "../tools/agent-observation-context.js";
+import { TerminalObservationRuntime } from "./terminal-observation.js";
+import type { ObservationResponse } from "../shared/agent-observation.js";
 import { installBrowserObservation, type BrowserObservationRuntime } from "./browser-observation.js";
 
 interface ViewOwner {
@@ -42,6 +44,7 @@ function invocationKey(identity: ObservationIdentity): string {
 export class DocumentObservationRuntime {
   private readonly adapter: DocumentObservationAdapter;
   private readonly daemon = new ObservationDaemon();
+  private readonly terminalObservation: TerminalObservationRuntime;
   private readonly browser: BrowserObservationRuntime;
   private readonly views = new Map<string, ViewOwner>();
   private readonly journals = new Map<string, JournalObservationLease[]>();
@@ -51,6 +54,7 @@ export class DocumentObservationRuntime {
 
   constructor(private readonly deps: IpcDeps, engine: DocumentObservationEngine | null = createTableObservationEngine()) {
     this.adapter = new DocumentObservationAdapter(engine, this.daemon);
+    this.terminalObservation = new TerminalObservationRuntime(deps, this.daemon);
     this.browser = installBrowserObservation(deps, this.daemon);
     setAgentObservationSink({
       openJournal: (identity, path) => {
@@ -107,7 +111,8 @@ export class DocumentObservationRuntime {
     this.prune();
     for (const view of this.views.values()) if (view.event.sender === event.sender && view.event.senderFrame === event.senderFrame
       && view.sessionId === sessionId && view.path === path) this.release(view.id);
-    if (this.views.size >= OBSERVATION_LIMITS.maxViews) throw new TableDocumentError("busy", "Document observation limit exceeded");
+    // The daemon's limit is shared with terminal and browser targets, so its capacity, not the document view count, decides.
+    if (this.views.size >= OBSERVATION_LIMITS.maxViews || !this.daemon.hasCapacity()) throw new TableDocumentError("busy", "Document observation limit exceeded");
     const id = randomUUID();
     const release = (): void => this.release(id);
     const handleNavigation = (_event: unknown, _url: string, _status: number, _text: string,
@@ -125,13 +130,20 @@ export class DocumentObservationRuntime {
       event.sender.removeListener("did-frame-navigate", handleNavigation);
     } };
     this.views.set(id, view);
-    this.adapter.registerView({ id, sessionId, path, hash: digest(bytes), document,
-      isCurrent: () => this.isCurrent(view),
-      onEvents: (events) => {
-        if (!this.isCurrent(view)) { this.release(id); return; }
-        event.sender.send(CHANNELS.preview.observationEvents, events);
-      },
-    });
+    try {
+      this.adapter.registerView({ id, sessionId, path, hash: digest(bytes), document,
+        isCurrent: () => this.isCurrent(view),
+        onEvents: (events) => {
+          if (!this.isCurrent(view)) { this.release(id); return; }
+          event.sender.send(CHANNELS.preview.observationEvents, events);
+        },
+      });
+    } catch (error) {
+      // Leave no view owner, listener or timer behind.
+      this.release(id);
+      if (error instanceof ObservationCapacityError) throw new TableDocumentError("busy", "Document observation limit exceeded");
+      throw error;
+    }
     for (const target of this.knownTargets.values()) if (target.identity.sessionId === sessionId && target.path === path) {
       this.adapter.admitKnownTarget(sessionId, target.identity.turnId, path);
     }
@@ -142,8 +154,10 @@ export class DocumentObservationRuntime {
     return this.browser.previewRequest(event, raw);
   }
 
-  acknowledge(event: IpcMainInvokeEvent, raw: unknown): { ok: boolean; error?: string } {
+  acknowledge(event: IpcMainInvokeEvent, raw: unknown): ObservationResponse {
     if (!validateAppWindowMainFrameSender(event, this.deps)) return { ok: false, error: "unauthorized" };
+    const terminal = this.terminalObservation.acknowledge(event, raw);
+    if (terminal) return terminal;
     if (!isObservationAck(raw)) return { ok: false, error: "bad-request" };
     const browserResult = this.browser.acknowledge(event, raw);
     if (browserResult) return browserResult;
@@ -232,8 +246,11 @@ export class DocumentObservationRuntime {
     if (this.disposed) return;
     this.disposed = true;
     setAgentObservationSink(undefined);
-    try { this.browser.dispose(); }
-    finally { this.disposeDocuments(); }
+    try { this.terminalObservation.dispose(); }
+    finally {
+      try { this.browser.dispose(); }
+      finally { this.disposeDocuments(); }
+    }
   }
 
   private disposeDocuments(): void {

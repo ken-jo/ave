@@ -8,6 +8,7 @@ import type { ChatPreviewTarget, WorkspaceFileItem } from "../../preview/preview
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/helpers.js";
+import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
@@ -31,6 +32,13 @@ import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 
 type ChildTranscriptResult = Awaited<ReturnType<NonNullable<AveApi["chatGetSubAgentTranscript"]>>>;
+
+let initialWindowAve: unknown;
+beforeEach(() => {
+  initialWindowAve = window.ave;
+  (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
+});
+afterEach(() => { (window as unknown as { ave: unknown }).ave = initialWindowAve; });
 
 let nativeContextActionHandler: ((action: NativeContextMenuAction) => void) | null = null;
 let previousWindowAve: unknown;
@@ -253,11 +261,10 @@ describe("ChatSidePanel", () => {
         },
       },
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: {
+      preview: { ...makeMockAveNamespace().ns.preview,
         readFile: vi.fn(async () => ({ ok: true, content: "# preview", path: "/tmp/x.md", truncated: false })),
         readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "stub" })),
         onAgentObservation: vi.fn(() => () => {}),
-        acknowledgeObservation: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
@@ -697,9 +704,11 @@ describe("ChatSidePanel", () => {
       html: "<main>MCP preview card</main>",
     }));
     vi.stubGlobal("ave", {
+      preview: makeMockAveNamespace().ns.preview,
       mcp: { readUiResource },
     });
     (window as unknown as { ave: unknown }).ave = {
+      preview: makeMockAveNamespace().ns.preview,
       mcp: { readUiResource },
     };
     const targets: ChatPreviewTarget[] = [
@@ -776,7 +785,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { ave: unknown }).ave = {
       ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot,
@@ -808,7 +817,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -843,7 +852,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -878,7 +887,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -908,7 +917,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -938,7 +947,7 @@ describe("ChatSidePanel", () => {
     }));
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -967,7 +976,7 @@ describe("ChatSidePanel", () => {
     const listDir = vi.fn(async () => ({ ok: false as const, error: "read-failed" as const }));
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -1014,7 +1023,7 @@ describe("ChatSidePanel", () => {
     });
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot,
@@ -1081,7 +1090,7 @@ describe("ChatSidePanel", () => {
     vi.stubGlobal("ave", {
       ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
+      preview: { ...makeMockAveNamespace().ns.preview, onAgentObservation: vi.fn(() => () => {}), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({
           ok: true,
@@ -2565,7 +2574,7 @@ describe("ChatSidePanel", () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     stubRichWorkspace({ listRoots: vi.fn(async () => ({ ok: true, roots: [{ path: "/projects/default", isDefault: true }, { path: "/projects/A", isDefault: false }] })) });
     const readFile = vi.fn(async () => ({ ok: true as const, path: "/projects/A/src/a.ts", content: "Project A source", truncated: false }));
-    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...makeMockAveNamespace().ns.preview, ...window.ave.preview, readFile } });
     const target: ChatPreviewTarget = { id: "project-a-source", kind: "file", title: "a.ts", sourceLabel: "read_file", createdOrder: 1,
       path: "src/a.ts", canOpenExternal: false, ...(ranged ? { startLine: 3, endLine: 5 } : {}) };
     const files: WorkspaceFileItem[] = [{ id: "project-a-file", path: target.path, label: target.title, detail: target.path,
@@ -2580,7 +2589,7 @@ describe("ChatSidePanel", () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     stubRichWorkspace();
     const readFile = vi.fn(async () => ({ ok: false as const, error: "read-failed" as const }));
-    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...makeMockAveNamespace().ns.preview, ...window.ave.preview, readFile } });
     const target: ChatPreviewTarget = { id: "indexed-result", kind: "file", title: "search.md", sourceLabel: "search", createdOrder: 1,
       path: "/unavailable/docs/search.md", inlineText: "Supplied indexed document preview", canOpenExternal: false };
     const files: WorkspaceFileItem[] = [{ id: "indexed-file", path: target.path, label: target.title, detail: target.path,
@@ -2608,7 +2617,7 @@ describe("ChatSidePanel", () => {
   it("previews the current image when a recorded changed file no longer has readable diff hunks", async () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     const readFile = vi.fn(async () => ({ ok: true, path: "/ws/source.png", image: { dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png" }, truncated: false }));
-    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...makeMockAveNamespace().ns.preview, ...window.ave.preview, readFile } });
     const changes = deriveWorkspaceChanges({ files: [], targets: [], workspaceRoot: "/ws", review: {
       sessionId: "image-session", turnId: "latest", files: [{ path: "source.png", bytes: 8, lineCount: 0,
         added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, hunks: [] }],

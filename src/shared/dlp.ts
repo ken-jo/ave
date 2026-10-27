@@ -524,7 +524,7 @@ function maskAuthorizationValues(text: string): string {
 /** Both modes detect real formats and contexts; broad model-bound mode also masks bare vendor prefixes. */
 function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string {
   let out = text
-    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED:PRIVATE_KEY]")
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, "[REDACTED:PRIVATE_KEY]")
     .replace(
       /((?:x-api-key|x-auth-token)\s*:\s*)[A-Za-z0-9._\-~+/=]+/gi,
       "$1[REDACTED:TOKEN]",
