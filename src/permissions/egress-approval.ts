@@ -4,12 +4,20 @@ import { JudgeContractError } from "./judge/judge-contract.js";
 import { t } from "../i18n/index.js";
 import { buildPermissionEvaluationContext } from "./evaluation-context.js";
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
+import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
 import {
   isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
   type ApprovalGate,
 } from "./approval-gate.js";
 import type { EgressApprovalAnswer, EgressApprovalRequester } from "./egress-ask.js";
+
+// The exact host rule for one destination, or null for an address literal, which the host grammar does not name. A canonical host name that does not parse is a contract violation and throws.
+function exactNetworkRule(host: string, port: number): string | null {
+  if (isIP(host) !== 0) return null;
+  return canonicalRuleSpecifier(`Network(${host}:${port})`);
+}
 
 // The tool name a terminal tab's egress ask carries on the gate (its audit rows and card).
 const TERMINAL_EGRESS_TOOL_NAME = "terminal";
@@ -85,7 +93,10 @@ export function createApprovalGateEgressRequester(
         port,
         scopes: [...request.scopes],
         network: request.network,
+        // Host rules are shell-origin; a terminal tab's connections are decided by its grants alone.
+        rule: terminal ? null : exactNetworkRule(host, port),
         ...(terminal ? { terminalTabId: request.tabId } : {}),
+        ...(!terminal && request.scopes.includes("project") && request.workspaceRoot !== undefined ? { projectCwd: request.workspaceRoot } : {}),
       },
       ...(request.origin === "shell" && request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),

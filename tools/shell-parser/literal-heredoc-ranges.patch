@@ -1,0 +1,87 @@
+--- a/syntax/nodes.go
++++ b/syntax/nodes.go
+@@ -530,6 +530,8 @@
+ // each other. The word is delimited by word boundaries, such as spaces,
+ // newlines, semicolons, or parentheses.
+ type Word struct {
++	// LiteralData retains physical body extent and UTF-16 width from the existing heredoc reader.
++	LiteralData *[3]uint
+ 	Parts []WordPart
+ }
+ 
+--- a/syntax/lexer.go
++++ b/syntax/lexer.go
+@@ -1310,12 +1310,25 @@
+ 	p.newLit(r)
+ 	pos := p.nextPos()
+ 	stop := p.hdocStops[len(p.hdocStops)-1]
+-	for ; ; r = p.rune() {
++	units := uint(0)
++	advance := func() rune {
++		switch {
++		case r == escNewl:
++			units += 2
++		case r > 0xffff:
++			units += 2
++		case r != runeEOF:
++			units++
++		}
++		return p.rune()
++	}
++	for ; ; r = advance() {
+ 		if r == runeEOF {
+ 			return nil
+ 		}
++		lineStart, lineUnits := p.nextPos(), units
+ 		for p.quote == hdocBodyTabs && r == '\t' {
+-			r = p.rune()
++			r = advance()
+ 		}
+ 		lStart := len(p.litBs) - 1
+ 	runeLoop:
+@@ -1331,7 +1344,7 @@
+ 				p.litBs = append(p.litBs, '\\', '\n')
+ 				break runeLoop
+ 			}
+-			r = p.rune()
++			r = advance()
+ 		}
+ 		if lStart < 0 {
+ 			continue
+@@ -1347,7 +1360,10 @@
+ 			if val == "" {
+ 				return nil
+ 			}
+-			return p.wordOne(p.lit(pos, val))
++			word := p.wordOne(p.lit(pos, val))
++			word.LiteralData = &[3]uint{pos.Offset(), lineStart.Offset(), lineUnits}
++			p.literalDataWords = append(p.literalDataWords, word)
++			return word
+ 		}
+ 	}
+ }
+--- a/syntax/parser.go
++++ b/syntax/parser.go
+@@ -477,6 +477,7 @@
+ // Parser holds the internal state of the parsing mechanism of a
+ // program.
+ type Parser struct {
++	literalDataWords []*Word
+ 	callDepth int
+ 
+ 	src io.Reader
+@@ -565,6 +566,7 @@
+ const bufSize = 1 << 10
+ 
+ func (p *Parser) reset() {
++	p.literalDataWords = nil
+ 	p.continuations = &continuationMap{}
+ 	p.literalContinuations = false
+ 	if p.readBuf == nil {
+@@ -3060,3 +3062,6 @@
+ }
+ 
+ func (p *Parser) leaveCall() { p.callDepth-- }
++
++// LiteralHeredocWords returns quoted data records in the original reader order.
++func (p *Parser) LiteralHeredocWords() []*Word { return p.literalDataWords }

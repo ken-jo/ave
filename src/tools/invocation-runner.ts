@@ -1,3 +1,4 @@
+import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
@@ -1052,7 +1053,7 @@ export async function runToolInvocation(
       executionRoutePlan.disposableCapability?.kind === "workload-broker";
     const hostShellRequiresExplicitApproval =
       hostShellExecutionPlan !== undefined &&
-      requiresExplicitHostShellApproval(hostShellExecutionPlan) &&
+      requiresExplicitHostShellApproval(hostShellExecutionPlan, hostShellToolName) &&
       executionRoutePlan?.route !== "disposable-container";
     // The cache key is an authority boundary too: derive it only after the
     // canonical host shell substrate is sealed, then reuse its exact public
@@ -1814,7 +1815,9 @@ export async function runToolInvocation(
         let shellPathViolation: ShellPathPolicyViolation | null = null;
         if (hostShellToolName === "powershell") {
           const resolvedCwd = resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined);
-          for (const command of extractShellCommands(finalInput)) {
+          // Unpinned startup cannot run a native host preflight. The tool repeats
+          // this gate after host consent or parses inside the selected container.
+          for (const command of isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc" ? extractShellCommands(finalInput) : []) {
             shellPathViolation = await findPowerShellCommandPathViolation(command, resolvedCwd, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories);
             if (shellPathViolation) break;
           }

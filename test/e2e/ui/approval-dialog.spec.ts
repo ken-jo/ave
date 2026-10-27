@@ -147,7 +147,7 @@ test('approval dock floats over the route without changing its layout', async ({
 
   const approve = dock.getByTestId(TEST_IDS.approveButton);
   const deny = dock.getByTestId(TEST_IDS.denyButton);
-  const allowAlways = dock.getByTestId(TEST_IDS.allowAlwaysButton);
+  const allowAlways = dock.getByTestId(TEST_IDS.allowSessionButton);
   await expect(approve).toBeVisible();
   await expect(deny).toBeVisible();
   await expect(allowAlways).toBeVisible();
@@ -160,16 +160,17 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock.getByTestId(TEST_IDS.approvalReviewDetails)).not.toHaveAttribute('open', '');
   await expect(dock.getByText(/Review details|검토 상세/)).toBeVisible();
   await expect(dock.getByText(/Click to expand|펼쳐서 확인/)).toBeVisible();
-  await expect(dock.getByTestId(TEST_IDS.openPermanentDenySettings)).toBeVisible();
+  // Always deny lives in the Deny dropdown of the shared decision row (owner 2026-10-25, unified approval card).
+  await expect(dock.getByTestId("approval-deny-menu")).toBeVisible();
+  await expect(dock.getByTestId("approval-allow-menu")).toBeVisible();
 
   // Narrow cards must contain long translated action labels.
   const translatedControlOverflow = await dock.evaluate((element) => {
     const root = element as HTMLElement;
     const replacements = new Map<string, string>([
       ['deny-button', 'Ablehnen'],
-      ['allow-always-button', 'Immer dauerhaft zulassen'],
+      ['allow-session-button', 'Für diese Sitzung dauerhaft zulassen'],
       ['approve-button', 'Nur dieses eine Mal zulassen'],
-      ['open-permanent-deny-settings', 'Berechtigungseinstellungen öffnen'],
     ]);
     for (const [testId, label] of replacements) {
       const control = root.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
@@ -389,7 +390,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock).toBeVisible();
   const secondApprove = dock.getByTestId(TEST_IDS.approveButton);
   const secondDeny = dock.getByTestId(TEST_IDS.denyButton);
-  const secondAlways = dock.getByTestId(TEST_IDS.allowAlwaysButton);
+  const secondAlways = dock.getByTestId(TEST_IDS.allowSessionButton);
   await expect(secondDeny).toBeFocused();
   await secondDeny.press('ArrowRight');
   await expect(secondAlways).toBeFocused();

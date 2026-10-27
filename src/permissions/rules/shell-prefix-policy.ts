@@ -1,8 +1,9 @@
 // Broad shell prefixes may receive exact one-call consent but never persistent prefix allows; deny/ask rules remain unrestricted.
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 
-import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
+import { SHELLS, INTERPRETERS, WRAPPERS, PACKAGE_RUNNERS, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, WRAPPER_SET, RUNNER_SET, programName, runnerName, refusedShellPrefix, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 export { refusedShellPrefix } from "./shell-prefix-values.js";
 
 // Setup operands, value options and shell-command options share one grammar. A command view widens inspection and restrictions, never allow coverage.
@@ -20,9 +21,10 @@ interface WrapperGrammar {
   noCommand?: readonly string[];
   assignments?: true;
   shell?: true;
+  runtimeArgv?: true;
 }
 const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
-  xargs: { flags: ["-0", "-r", "-t", "-x", "-p", "--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive"], values: ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"] },
+  xargs: { flags: ["-0", "-r", "-t", "-x", "-p", "--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive"], values: ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"], runtimeArgv: true },
   sudo: { flags: ["-A", "-b", "-B", "-E", "-H", "-i", "-k", "-K", "-n", "-P", "-S", "-s", "-v", "-e", "-l", "--askpass", "--background", "--bell", "--preserve-env", "--set-home", "--login", "--reset-timestamp", "--remove-timestamp", "--non-interactive", "--preserve-groups", "--stdin", "--shell", "--validate", "--edit", "--list"], values: ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"], assignments: true },
   doas: { flags: ["-L", "-n", "-s"], values: ["-u", "-C"] },
   env: { flags: ["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"], values: ["-u", "-C", "--unset", "--chdir"], assignments: true },
@@ -60,16 +62,18 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   wsl: { flags: ["--system"], values: ["-d", "-u", "--distribution", "--distribution-id", "--user", "--cd", "--shell-type"], boundary: ["-e", "--exec"], noCommand: ["-l", "--list", "--status", "--shutdown"], shell: true },
 };
 
-// The inner argv boundary or a wrapper's explicit shell-command payload. Uncertain positions retain floor-only candidates, never an allow-rule boundary. Setup values retain proven arity. At most sixteen wrappers are followed.
-export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string; candidates?: number[] } {
-  let index = 0;
+// The inner argv boundary or a wrapper's explicit shell-command payload. Uncertain positions retain floor-only candidates, never an allow-rule boundary. Setup values retain proven arity. By default, at most sixteen wrappers are followed.
+export function wrapperCommand(argv: readonly (string | undefined)[], maxDepth = 16, start = 0): { index: number; code?: { range: { from: number; to: number } }; ordinaryAsk?: string; candidateRange?: { from: number; to: number }; nestedDialect?: true; runtimeArgv?: true } {
+  let index = start;
   let ordinaryAsk: string | undefined;
   let candidateFrom: number | undefined;
-  const finish = (at: number, code?: { text: string | undefined }) => ({
+  let runtimeArgv = false;
+  const finish = (at: number, code?: { range: { from: number; to: number } }) => ({
     index: at,
     ...(code ? { code } : {}),
     ...(ordinaryAsk ? { ordinaryAsk } : {}),
-    ...(candidateFrom === undefined ? {} : { candidates: Array.from({ length: argv.length - candidateFrom }, (_, offset) => candidateFrom! + offset) }),
+    ...(runtimeArgv ? { runtimeArgv: true as const } : {}),
+    ...(candidateFrom === undefined ? {} : { candidateRange: { from: candidateFrom, to: argv.length } }),
   });
   const inspectTail = (from: number) => {
     candidateFrom = Math.min(candidateFrom ?? from, from);
@@ -78,22 +82,23 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
     inspectTail(from);
     return finish(argv.length);
   };
-  for (let guard = 0; guard < 16 && index < argv.length; guard += 1) {
+  for (let guard = 0; guard < maxDepth && index < argv.length; guard += 1) {
     const head = argv[index];
     if (head === undefined) {
       ordinaryAsk ??= "opaque wrapper command binding";
       return uncertain(index + 1);
     }
-    const program = programName(head);
+    const program = (head.split(/[\\/]/).pop() ?? head).toLowerCase().replace(/\.exe$/i, "");
     // `eval` / `source` / `.` run a string or file: they are code carriers, not transparent wrappers.
     if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return finish(index);
     index += 1;
-    const declared = WRAPPER_GRAMMAR[program];
+    const declared = Object.hasOwn(WRAPPER_GRAMMAR, program) ? WRAPPER_GRAMMAR[program] : undefined;
     const grammar = declared ?? {};
+    runtimeArgv ||= grammar.runtimeArgv === true;
     let operand = grammar.operand;
     let options = true;
     let shell = grammar.shell;
-    let payload: { index: number; text: string | undefined } | undefined;
+    let payload: { index: number } | undefined;
     let operandIndex: number | undefined;
     while (index < argv.length) {
       const token = argv[index];
@@ -141,7 +146,7 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
               ordinaryAsk ??= "ambiguous wrapper code binding";
               return uncertain(payload.index);
             }
-            payload = { index: valueIndex, text };
+            payload = { index: valueIndex };
           }
           width = attached === undefined ? 2 : 1;
           break;
@@ -163,16 +168,20 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
       if (payload) { index += 1; continue; }
       break;
     }
-    if (payload) return finish(payload.index, { text: payload.text });
-    const tail = shell ? argv.slice(index) : [];
-    if (shell && tail.some((token) => token === undefined || /[\s;&|<>$`\\(){}\[\]*?!~'"]/.test(token))) {
-      const text = tail.every((token) => token !== undefined) ? tail.join(" ") : undefined;
-      if (text === undefined) ordinaryAsk ??= "opaque wrapper code binding";
-      return finish(index, { text });
+    if (payload) return finish(payload.index, { range: { from: payload.index, to: Math.min(payload.index + 1, argv.length) } });
+    if (shell) {
+      let code = false;
+      for (let at = index; at < argv.length; at += 1) {
+        const token = argv[at];
+        if (token === undefined) { ordinaryAsk ??= "opaque wrapper code binding"; code = true; continue; }
+        if (/[\s;&|<>$`\\(){}\[\]*?!~'"]/.test(token)) code = true;
+      }
+      if (code) return finish(index, { range: { from: index, to: argv.length } });
+      if (index < argv.length) return { ...finish(index), nestedDialect: true };
     }
   }
   const next = argv[index];
-  if (index < argv.length && (next === undefined || WRAPPER_SET.has(programName(next)))) {
+  if (index < argv.length && (next === undefined || isShellWrapperProgram(next))) {
     ordinaryAsk ??= "wrapper analysis limit exceeded";
     return uncertain(index);
   }
@@ -191,20 +200,35 @@ const GLOBAL_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   kubectl: new Set(["-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig", "--token"]),
 };
 
+// Optional suffix results belong to one argv and let restriction views share the existing option grammar.
+export function globalOptionsEnd(argv: readonly (string | undefined)[], start = 0, suffixes?: Map<string, Map<number, number>>): number {
+  const head = argv[start];
+  if (head === undefined) return start + 1;
+  const program = programName(head);
+  const valueOptions = Object.hasOwn(GLOBAL_VALUE_OPTIONS, program) ? GLOBAL_VALUE_OPTIONS[program] : undefined;
+  if (!valueOptions) return start + 1;
+  let ends = suffixes?.get(program);
+  if (suffixes !== undefined && ends === undefined) { ends = new Map(); suffixes.set(program, ends); }
+  const visited: number[] = [];
+  let index = start + 1;
+  while (index < argv.length) {
+    const cached = ends?.get(index);
+    if (cached !== undefined) { index = cached; break; }
+    const token = argv[index];
+    if (token === undefined || !token.startsWith("-")) break;
+    visited.push(index);
+    if (token === "--") { index += 1; break; }
+    index += valueOptions.has(token) ? 2 : 1;
+  }
+  for (const at of visited) ends?.set(at, index);
+  return index;
+}
+
 // argv with a multi-verb tool's global options removed (`git -C. push` → `git push`). Deny/ask matching tries this form as well as the original, so a global option can never step a command around a restriction.
 export function stripGlobalOptions(argv: readonly (string | undefined)[]): readonly (string | undefined)[] {
   const head = argv[0];
   if (head === undefined) return argv;
-  const program = programName(head);
-  const valueOptions = GLOBAL_VALUE_OPTIONS[program];
-  if (!valueOptions) return argv;
-  let index = 1;
-  while (index < argv.length) {
-    const token = argv[index];
-    if (token === undefined || !token.startsWith("-")) break;
-    if (token === "--") { index += 1; break; }
-    index += valueOptions.has(token) ? 2 : 1;
-  }
+  const index = globalOptionsEnd(argv);
   return index === 1 ? argv : [head, ...argv.slice(index)];
 }
 
@@ -227,32 +251,10 @@ export const SHELL_PREFIX_POLICY = Object.freeze({
 
 // Used by deny/ask matching to look through wrappers (it only ever widens a deny).
 export function isShellWrapperProgram(token: string): boolean {
-  return WRAPPER_SET.has(programName(token));
+  return WRAPPER_SET.has((token.split(/[\\/]/).pop() ?? token).toLowerCase().replace(/\.exe$/i, ""));
 }
 
-// Hidden code and credential-flow inspection The matcher and the exfiltration floor share interpreter, wrapper and network identities. Saved escape rules do not model program option safety.
-
-// Arguments that make a shell or interpreter print and exit without running code.
-const INFO_ONLY_ARGS = new Set(["--version", "--help"]);
-
-// Variables whose value is a command, a code path or a config that runs one (`GIT_SSH_COMMAND='rm x' git fetch`, `LESSOPEN`, `BASH_ENV`, `PATH`).
-const CODE_CARRYING_VARIABLE = /^(?:GIT_SSH_COMMAND|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_(?:KEY|VALUE)_\d+|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_DIR|PAGER|MANPAGER|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY|LESSKEYIN|MORE|BASH_ENV|ENV|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS|IFS|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|BROWSER|RIPGREP_CONFIG_PATH|TAR_OPTIONS|FZF_DEFAULT_OPTS|BAT_PAGER|DELTA_PAGER|GH_PAGER|AWS_PAGER|PSQL_PAGER|SYSTEMD_PAGER|ZDOTDIR|HOME|PATH)$/;
-
-// `NAME` when the variable carries code (see CODE_CARRYING_VARIABLE).
-export function codeCarryingVariable(name: string): boolean {
-  return CODE_CARRYING_VARIABLE.test(name);
-}
-
-function codeCarryingAssignment(args: readonly (string | undefined)[]): string | null {
-  for (const arg of args) {
-    const name = arg === undefined ? undefined : /^([A-Za-z_][A-Za-z0-9_]*)\+?=/.exec(arg)?.[1];
-    if (name && CODE_CARRYING_VARIABLE.test(name)) return `code-carrying variable ${name}`;
-  }
-  return null;
-}
-
-// Editors and pagers whose command mode runs shell commands.
-const EDITORS = new Set(["vi", "vim", "nvim", "gvim", "rvim", "view", "vimdiff", "ex", "ed", "red", "emacs", "emacsclient", "nano", "pico", "micro", "joe", "mcedit", "kak", "hx"]);
+// Network identities are shared by the conservative restriction helpers.
 const NETWORK_PROGRAMS = new Set([
   "curl", "wget", "ssh", "scp", "sftp", "rsync", "openssl", "nc", "ncat", "netcat", "socat", "telnet", "nslookup",
   "dig", "host", "drill", "whois", "ping", "gh", "glab", "aws", "gcloud", "gsutil", "az", "http", "https", "xh",
@@ -261,187 +263,10 @@ const NETWORK_PROGRAMS = new Set([
   "twine", "gpg", "websocat", "aria2c", "axel", "transmission-cli",
 ]);
 
-const LITERAL_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\[\d+\])?$/;
-
-// Options of `read` whose value is the next word (`-a` names an array, the rest are data).
-const READ_VALUE_OPTIONS = new Set(["d", "i", "n", "N", "p", "t", "u"]);
-
-// The words these builtins take as variable NAMES. Bash evaluates an array subscript in such a name arithmetically, and that evaluation runs command substitutions even from a quoted, otherwise static word (`read 'a[$(rm x)]'`, `printf -v 'a[$(rm x)]' 1`, `[ -v 'a[$(rm x)]' ]`).
-function variableNameArgs(program: string, args: readonly (string | undefined)[]): (string | undefined)[] {
-  const names: (string | undefined)[] = [];
-  const after = (flag: RegExp): void => {
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = args[index];
-      if (arg === undefined || !flag.test(arg)) continue;
-      const attached = arg.replace(flag, "");
-      names.push(attached.length > 0 ? attached : args[index + 1]);
-    }
-  };
-  switch (program) {
-    case "read": {
-      for (let index = 0; index < args.length; index += 1) {
-        const arg = args[index];
-        if (arg === undefined) { names.push(arg); continue; }
-        if (arg === "--") { names.push(...args.slice(index + 1)); break; }
-        if (!arg.startsWith("-") || arg === "-") { names.push(arg); continue; }
-        const letters = arg.slice(1);
-        for (let at = 0; at < letters.length; at += 1) {
-          const letter = letters[at]!;
-          if (letter === "a" || READ_VALUE_OPTIONS.has(letter)) {
-            const value = at + 1 < letters.length ? letters.slice(at + 1) : args[++index];
-            if (letter === "a") names.push(value);
-            break;
-          }
-        }
-      }
-      return names;
-    }
-    case "printf":
-      after(/^-v/);
-      return names;
-    case "test": case "[": case "[[":
-      after(/^-[vR]$/);
-      return names;
-    case "wait":
-      after(/^-[A-Za-z]*p/);
-      return names;
-    case "getopts":
-      return args.length >= 2 ? [args[1]] : [];
-    case "unset":
-      return args.filter((arg) => arg === undefined || !arg.startsWith("-"));
-    case "mapfile": case "readarray":
-      return args.length > 0 && (args.at(-1) === undefined || !args.at(-1)!.startsWith("-")) ? [args.at(-1)] : [];
-    default:
-      return names;
-  }
-}
-
-function subscriptedNameReason(program: string, args: readonly (string | undefined)[]): string | null {
-  for (const name of variableNameArgs(program, args)) {
-    if (name === undefined) return `${program} takes a variable name the matcher cannot read`;
-    if (!LITERAL_VARIABLE_NAME.test(name)) return `${program} evaluates the variable name ${name} (array subscripts run code)`;
-  }
-  return null;
-}
-
 // A runner always needs ordinary approval unless a rule or grant covers its raw argv. Its option spellings and sources do not establish execution facts.
 export function opaqueRunnerReason(argv: readonly (string | undefined)[]): string | null {
   const head = argv[wrapperPrefixLength(argv)];
   return head !== undefined && RUNNER_SET.has(runnerName(head)) ? "opaque runner prefix" : null;
-}
-
-// Downstream command views for sink inspection only. Literal boundaries keep delegated runner identities; opaque options retain conservative candidates. Rules must retain the complete runner prefix and must not use this list.
-export function runnerCommandIndexes(argv: readonly (string | undefined)[]): readonly number[] {
-  let start = wrapperPrefixLength(argv);
-  const head = argv[start];
-  if (head === undefined || !RUNNER_SET.has(runnerName(head))) return [];
-  const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)]!;
-  const prefixEnd = prefixes === true ? start : argv.findIndex((token, index) =>
-    index > start && runnerHasPrefix(prefixes, token));
-  if (prefixEnd < 0) return [];
-  const candidates = argv.flatMap((token, index) =>
-    index > prefixEnd && token !== undefined && !token.startsWith("-") ? [index] : []);
-  while (start < argv.length) {
-    const head = argv[start];
-    if (head === undefined || !RUNNER_SET.has(runnerName(head))) break;
-    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)]!;
-    const literal = literalCommandAfterPrefix(argv, start + 1);
-    const command = prefixes === true ? literal
-      : literal !== undefined && runnerHasPrefix(prefixes, argv[literal]) ? literalCommandAfterPrefix(argv, literal + 1) : undefined;
-    if (command === undefined) break;
-    start = command;
-    if (WRAPPER_SET.has(programName(argv[start]!))) {
-      const wrapped = wrapperPrefixLength(argv.slice(start));
-      if (wrapped > 0) start += wrapped;
-    }
-    const target = argv[start];
-    if (target === undefined) break;
-    const program = programName(target);
-    // A proved non-runner interpreter owns its code arguments. Those words cannot also acquire another language's command catalogue meanings.
-    if (!RUNNER_SET.has(runnerName(target)) && (INTERPRETER_SET.has(program)
-      || (SHELL_SET.has(program) && !["pwsh", "powershell", "cmd"].includes(program)))) return candidates.filter((index) => index <= start);
-  }
-  return candidates;
-}
-
-// Script/code prefixes declare a language without interpreting runner options.
-export function runnerCodeContext(argv: readonly (string | undefined)[]): { interpreter: string; operandIndex: number } | undefined {
-  let start = wrapperPrefixLength(argv);
-  while (start < argv.length) {
-    const head = argv[start];
-    if (head === undefined) break;
-    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)];
-    if (prefixes === undefined) break;
-    const index = literalCommandAfterPrefix(argv, start + 1);
-    if (index === undefined) break;
-    const prefix = prefixes === true ? undefined : prefixes.find((value) => (typeof value === "string" ? value : value[0]) === argv[index]);
-    if (prefix !== undefined && typeof prefix !== "string") return { interpreter: prefix[1], operandIndex: index + 1 };
-    const command = prefixes === true ? index : prefix !== undefined ? literalCommandAfterPrefix(argv, index + 1) : undefined;
-    if (command === undefined) break;
-    start = command + wrapperPrefixLength(argv.slice(command));
-  }
-  return undefined;
-}
-
-function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): string | null {
-  const head = argv[start];
-  if (head === undefined) return null;
-  const program = programName(head);
-  const args = argv.slice(start + 1);
-  if (RUNNER_SET.has(runnerName(head))) return null;
-  if (WRAPPER_SET.has(program)) {
-    if (program === "eval") return args.length > 0 ? "code passed to eval" : null;
-    if (program === "source" || program === ".") return args.length > 0 ? `script passed to ${program}` : null;
-    if (program === "env" && args.some((arg) => arg !== undefined && /^(?:-[A-Za-z]*S|--split-string)/.test(arg))) return "code passed to env -S";
-    if (wrapperCommand(argv.slice(start)).code) {
-      return `code passed to ${program}`;
-    }
-    if (STRING_JOINING_WRAPPERS.has(program) && args.some((arg) => arg === undefined || /[\s;&|$`<>()]/.test(arg))) {
-      return `code string passed to ${program}`;
-    }
-    return codeCarryingAssignment(args);
-  }
-  if (SHELL_SET.has(program) || INTERPRETER_SET.has(program)) {
-    if (args.length > 0 && args.every((arg) => arg !== undefined && INFO_ONLY_ARGS.has(arg))) return null;
-    if (args.length === 0) return `${program} reads code from stdin`;
-    return `code passed to ${program}`;
-  }
-  if (EDITORS.has(program)) return `${program} can run commands`;
-  const first = args[0];
-  switch (program) {
-    case "trap":
-      return args.length > 0 && first !== "-l" && first !== "-p" && first !== "-" ? "code passed to trap" : null;
-    case "hash":
-      return args.some((arg) => arg === undefined || /^-[A-Za-z]*p/.test(arg)) ? "hash -p rebinds a command name" : null;
-    case "alias":
-      return args.some((arg) => arg === undefined || arg.includes("=")) ? "alias defines a command" : null;
-    case "enable":
-      return args.some((arg) => arg === undefined || /^-[A-Za-z]*f/.test(arg)) ? "enable -f loads a builtin" : null;
-    case "bind":
-      return args.some((arg) => arg === undefined || /^-[A-Za-z]*x/.test(arg)) ? "bind -x binds a command" : null;
-    case "mapfile": case "readarray":
-      if (args.some((arg) => arg === undefined || /^-[A-Za-z]*C/.test(arg))) return `${program} -C runs a callback`;
-      break;
-    case "complete": case "compgen":
-      return args.some((arg) => arg === undefined || /^-[A-Za-z]*[CF]/.test(arg)) ? `${program} runs a command` : null;
-    case "fc":
-      return "fc re-runs history";
-    case "at": case "batch":
-      return first === "-l" ? null : `${program} runs code from stdin`;
-    case "crontab":
-      return args.length === 1 && first === "-l" ? null : "crontab installs commands";
-    case "launchctl":
-      return first !== undefined && ["list", "print", "version", "help"].includes(first) ? null : "launchctl runs jobs";
-    case "tmux": case "screen":
-      return `${program} runs commands`;
-    case "export": case "declare": case "typeset": case "local": case "readonly":
-      return codeCarryingAssignment(args);
-    default:
-      break;
-  }
-  const subscript = subscriptedNameReason(program, args);
-  if (subscript) return subscript;
-  return null;
 }
 
 const ARITHMETIC_TEST_OPERATORS = new Set(["-eq", "-ne", "-lt", "-le", "-gt", "-ge"]);
@@ -484,22 +309,6 @@ export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
   return null;
 }
 
-// Reason this argv runs code the matcher cannot read, else null: a shell or interpreter given any code source (stdin, here-document, script file, `-c`/`-e`/`-m`, `-s`, `-`), a code carrier (`eval`, `source`, `trap`, `hash -p`, `alias`, `bind -x`, `mapfile -C`, editors, …), a code-carrying variable. Behind a wrapper every later word is tried as the program, because wrapper option grammars differ too much to skip exactly.
-export function hiddenCodeReason(argv: readonly (string | undefined)[]): string | null {
-  const wrapper = wrapperCommand(argv);
-  const inner = wrapper.index;
-  if (!wrapper.code && inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
-  const wrapperStarts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
-  const runner = opaqueRunnerReason(argv) !== null;
-  const visibleArgv = runner ? argv.slice(0, inner + 1) : argv;
-  const starts = runner ? wrapperStarts.filter((start) => start <= inner) : wrapperStarts;
-  for (const start of starts) {
-    const reason = hiddenCodeAt(visibleArgv, start);
-    if (reason) return reason;
-  }
-  return null;
-}
-
 // True when this argv (or the program behind a wrapper) can send data off the machine.
 export function isNetworkProgram(argv: readonly (string | undefined)[]): boolean {
   const starts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
@@ -520,8 +329,9 @@ export interface ParsedShellCommand {
 export type ShellCommandInput = string | ParsedShellCommand;
 
 export function parseShellCommand(command: string): ParsedShellCommand {
+  if (command.length > MAX_LITERAL_COMMAND_LENGTH) return { command, analysis: { ok: false, reason: "literal command length limit exceeded" }, facts: new Map() };
   try {
-    return { command, analysis: analyzeShell(command, "bash"), facts: new Map() };
+    return { command, analysis: analyzeShell(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }), facts: new Map() };
   } catch (error) {
     return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() };
   }

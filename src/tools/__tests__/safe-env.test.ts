@@ -210,10 +210,11 @@ describe("plain host shell proxy inheritance", () => {
   });
 
   it("keeps provider secrets and runtime injection variables out of the child", () => {
-    const forbidden = ["BASH_ENV", "ENV", "NODE_OPTIONS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "FUTURE_PROXY_TOKEN"];
+    const forbidden = ["BASH_ENV", "ENV", "NODE_OPTIONS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "FUTURE_PROXY_TOKEN", "RIPGREP_CONFIG_PATH", "GREP_OPTIONS", "CURL_HOME", "WGETRC", "SSLKEYLOGFILE", "QLOGDIR"];
     for (const key of forbidden) vi.stubEnv(key, "must-not-inherit");
-    const env = buildHostShellChildEnv();
-    for (const key of [...SECRET_KEYS, ...forbidden]) expect(env).not.toHaveProperty(key);
+    for (const env of [buildHostShellChildEnv(), buildSafeChildEnv(), buildSandboxedChildEnv({ ...process.env })]) {
+      for (const key of [...SECRET_KEYS, ...forbidden]) expect(env).not.toHaveProperty(key);
+    }
   });
 
   it.skipIf(process.platform === "win32")("preserves different casing values without resolving client precedence", () => {

@@ -124,7 +124,8 @@ export async function applyPermissionModeCommand(
       isReadOnly: false,
       mode: "default",
     });
-    if (decision.choice !== "allow-once" && decision.choice !== "allow-always") {
+    // Any allow approves this switch; the card answers a conversation-scoped remembered allow with allow-session.
+    if (decision.choice !== "allow-once" && decision.choice !== "allow-session" && decision.choice !== "allow-always") {
       return {
         ok: false,
         error: "durable-mode-denied",

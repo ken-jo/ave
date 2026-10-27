@@ -12,6 +12,10 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool } from "../base.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
+import * as shellTools from "../shell-tools.js";
+import * as powerShellStartupPolicy from "../../shared/powershell-startup-policy.js";
+import type { PowerShellAstSummary } from "../powershell-ast.js";
+import { powerShellLiteral } from "../../__tests__/support/powershell-ast.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -606,6 +610,19 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     }
   });
 
+  // Native parser admission is covered separately; these fixtures isolate the trusted preflight's path-policy order.
+  const pathPolicyAst = (command: string): PowerShellAstSummary => {
+    const literal = powerShellLiteral;
+    const getContent = (argument: ReturnType<typeof literal>) => ({ name: "Get-Content", text: command,
+      arguments: [literal("Get-Content"), argument] });
+    if (command === "Get-Content $HOME/.ssh/id_rsa") return { errors: [], unsupported: [], redirections: [], commands: [getContent({ kind: "dynamic", text: "$HOME/.ssh/id_rsa" })] };
+    if (command === "Get-Content '~/.ssh/id_rsa'") return { errors: [], unsupported: [], redirections: [], commands: [getContent(literal("~/.ssh/id_rsa", "'~/.ssh/id_rsa'"))] };
+    if (command === "Get-Content package.json > ~/.ssh/leak") return { errors: [], unsupported: [], redirections: [literal("~/.ssh/leak")], commands: [getContent(literal("package.json"))] };
+    if (command === 'Set-Content (Join-Path $HOME "Desktop/out.txt") hi') return { errors: [], unsupported: [], redirections: [], commands: [{ name: "Set-Content", text: command,
+      arguments: [literal("Set-Content"), { kind: "dynamic", text: '(Join-Path $HOME "Desktop/out.txt")' }, literal("hi")] }] };
+    throw new Error("Missing native AST fixture");
+  };
+
   it.each([
     ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
     ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
@@ -615,6 +632,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     const registry = new ToolRegistry();
     registry.register(new PowerShellTool());
     const dir = mkdtempSync(join(tmpdir(), "ave-powershell-path-policy-"));
+    const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
+    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation").mockImplementation(async (_source, cwd, root, allowed, blockReads) =>
+      shellTools.findPowerShellAstPathViolation(pathPolicyAst(command), cwd, root, allowed, blockReads));
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.checkDetailed = () => ({
@@ -639,7 +659,10 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(result[0].content).toContain("Shell 경로 정책 차단");
       expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
       await expect(permMgr.listPersistedRules()).resolves.toEqual([]);
+      expect(preflight).toHaveBeenCalledTimes(1);
     } finally {
+      startup.mockRestore();
+      preflight.mockRestore();
       await cleanupTmpDir(dir);
     }
   });

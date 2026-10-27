@@ -128,6 +128,7 @@ async function startSandbox(
     abortSignalOf: egressInvocationAbortSignal,
     workerAllowedDomains: () => [],
     grants,
+    networkRule: async () => undefined,
     shellAskEnabled: () => true,
     requester: () => async (request) => {
       asked.push(request);

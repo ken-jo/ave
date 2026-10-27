@@ -1405,7 +1405,7 @@ import type {
   ScopedPermissionRuleError,
   UserApprovalDecision,
   UserApprovalHitPayload,
-  ShellRuleSaveScope,
+  ApprovalRuleSave,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../../shared/permissions-events.js";
@@ -1419,7 +1419,7 @@ export type AveUserApprovalApi = {
      *  ApprovalGate.getRequestSnapshot — renderer-supplied authority fields
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
-    rule?: { scope: ShellRuleSaveScope };
+    rule?: ApprovalRuleSave;
     toolName: string;
     args: string;
     source: string;
@@ -1431,7 +1431,7 @@ export type AveUserApprovalApi = {
     trustOrigin?: string;
     /** Propagate cache key for record/lookup key symmetry. */
     approvalCacheKey?: string;
-  }) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  }) => Promise<{ ok: boolean; error?: string; message?: string; warning?: "wildcard-allow-sandboxed-only" }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
   listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{

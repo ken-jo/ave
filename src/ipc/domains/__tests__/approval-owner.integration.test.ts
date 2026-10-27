@@ -198,21 +198,39 @@ describe("live native approval ownership", () => {
   it("lets only the current owner persist the host-derived exact shell rule", async () => {
     const f = await subject("default");
     const addRule = vi.spyOn(f.manager, "addRulePersist");
-    const { request } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "git status --short" } });
+    const { request } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
     const card = await f.waitForCard();
-    const payload = { requestId: request.id, args: JSON.stringify(request.args), scope: "persistent", verdictAtApproval: "low", rule: { scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true } };
-    expect(card.shellRule).toMatchObject({ exactRule: "Bash(git status --short)", persistentAllowed: true });
+    const payload = { requestId: request.id, args: JSON.stringify(request.args), scope: "persistent", verdictAtApproval: "low", rule: { action: "allow", scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true } };
+    expect(card.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", persistentAllowed: true });
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), payload)).toEqual(UNAUTHORIZED_FRAME);
     expect(addRule).not.toHaveBeenCalled();
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), payload)).toEqual({ ok: true });
     expect(addRule).toHaveBeenCalledOnce();
-    expect(await f.manager.listPersistedRules()).toContainEqual(expect.objectContaining({ pattern: "Bash(git status --short)", action: "allow" }));
+    expect(await f.manager.listPersistedRules()).toContainEqual(expect.objectContaining({ pattern: "Bash(printf ready)", action: "allow" }));
     f.setOwner(f.windowB);
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), payload)).toEqual(UNAUTHORIZED_FRAME);
     expect(addRule).toHaveBeenCalledOnce();
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), payload)).toEqual({ ok: true });
     expect(addRule).toHaveBeenCalledTimes(2);
     expect(f.gate.pendingCount).toBe(1);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
+  });
+
+  it.each(["git status --short", "make build"])("does not let a current owner persist unproven %s", async (command) => {
+    const f = await subject("default");
+    const addRule = vi.spyOn(f.manager, "addRulePersist");
+    const { request } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command } });
+    const card = await f.waitForCard();
+    const payload = { requestId: request.id, args: JSON.stringify(request.args), scope: "persistent", verdictAtApproval: "low", rule: { action: "allow", scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true } };
+    expect(card.shellRule).toMatchObject({ exactRule: null, persistentAllowed: false });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), payload)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), payload)).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    f.setOwner(f.windowB);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), payload)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), payload)).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(addRule).not.toHaveBeenCalled();
+    expect(f.gate.pendingCount).toBe(1);
+    expect(f.execute).not.toHaveBeenCalled();
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
   });
 

@@ -213,7 +213,7 @@ describe("main windows", () => {
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       isReadOnly: false,
-      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab"], network: "public", terminalTabId: tabId },
+      egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once", "tab"], network: "public", terminalTabId: tabId },
     });
     try {
       const owned = gate.requestAndWait(egressAsk("egress-owned", "terminal:0a1b2c3d-1"));

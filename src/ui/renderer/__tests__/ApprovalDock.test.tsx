@@ -8,6 +8,7 @@ import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
+import { selectDecision } from "../components/__tests__/support/decision-bar.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
@@ -204,7 +205,7 @@ describe("ApprovalDock", () => {
     });
 
     const denyBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent === "거절",
+      (button) => button.textContent === "거부",
     );
     expect(denyBtn).toBeTruthy();
     denyBtn!.focus();
@@ -229,7 +230,7 @@ describe("ApprovalDock", () => {
     });
 
     const denyBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent === "거절",
+      (button) => button.textContent === "거부",
     );
     expect(denyBtn).toBeTruthy();
     denyBtn!.focus();
@@ -250,7 +251,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
 
     const deny = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))!;
-    const always = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton))!;
+    const always = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!;
     const once = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.approveButton))!;
 
     once.focus();
@@ -278,7 +279,7 @@ describe("ApprovalDock", () => {
     );
 
     const deny = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))!;
-    const always = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton))!;
+    const always = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!;
     const once = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.approveButton))!;
     expect(always).toBeDisabled();
 
@@ -641,7 +642,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => expect(deny.tabIndex).toBe(0));
     expect(deny).toBeEnabled();
     // Reject is the sole tab stop because it is the sole DECISION: the allow options are not rendered at all for an unverifiable seal.
-    expect(document.body.querySelector(testIdSelector(TEST_IDS.allowAlwaysButton))).toBeNull();
+    expect(document.body.querySelector(testIdSelector(TEST_IDS.allowSessionButton))).toBeNull();
     expect(document.body.querySelector(testIdSelector(TEST_IDS.approveButton))).toBeNull();
     expect(document.activeElement).toBe(deny);
   });
@@ -839,11 +840,13 @@ describe("ApprovalDock", () => {
     expect(container.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy();
     expect(container.querySelector('[data-testid="tool-approval-panel"]')).toBeTruthy();
     expect(container.querySelector(testIdSelector(TEST_IDS.denyButton))).toBeTruthy();
-    expect(container.querySelector(testIdSelector(TEST_IDS.allowAlwaysButton))).toBeTruthy();
+    expect(container.querySelector(testIdSelector(TEST_IDS.allowSessionButton))).toBeTruthy();
     expect(container.querySelector(testIdSelector(TEST_IDS.approveButton))).toBeTruthy();
     expect(container.querySelector(testIdSelector(TEST_IDS.approvalReviewDetails))).toBeTruthy();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.textContent).toContain("/Users/example/Documents/project/notes.md");
+    // Always deny is selected from the Deny dropdown; its Edit rule opens the exact deny in Settings.
+    selectDecision("deny-always");
     fireEvent.click(container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!);
     expect(onOpenPermanentDeny).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "out-of-allowed-dir", toolName: "read_file" }),
@@ -874,6 +877,7 @@ describe("ApprovalDock", () => {
       />,
     );
 
+    selectDecision("deny-always");
     fireEvent.click(
       container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!,
     );
@@ -986,7 +990,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("read_file");
     });
-    const allowBtn = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton));
+    const allowBtn = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton));
     expect(allowBtn).toBeTruthy();
     fireEvent.click(allowBtn!);
     await waitFor(() => expect(onDecide).toHaveBeenCalled());
@@ -1044,6 +1048,7 @@ describe("ApprovalDock", () => {
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
     expect(document.body.textContent).toContain("대상·영향·보호 조치·전체 입력을 펼쳐서 확인");
+    selectDecision("deny-always");
     fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!);
     expect(onOpenPermanentDeny).toHaveBeenCalledWith(
       expect.objectContaining({ id: "req-1", toolName: "read_file" }),
@@ -1052,14 +1057,15 @@ describe("ApprovalDock", () => {
     expect(onDecide).not.toHaveBeenCalled();
   });
 
-  it("'항상 허용' records a persistent grant", async () => {
+  it("'이 프로젝트에서 항상 허용' records a persistent grant", async () => {
     const onDecide = vi.fn();
     render(
       <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />,
     );
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
+    selectDecision("allow-project");
     const alwaysBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (b) => b.textContent === "항상 허용",
+      (b) => b.textContent === "이 프로젝트에서 항상 허용",
     );
     expect(alwaysBtn).toBeTruthy();
     fireEvent.click(alwaysBtn!);
@@ -1085,10 +1091,11 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton))!);
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!);
     await waitFor(() => {
       expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))).toBeDisabled();
-      expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))).toBeDisabled();
+      expect(document.body.querySelector<HTMLButtonElement>('[data-testid="approval-deny-menu"]')).toBeDisabled();
+      expect(document.body.querySelector<HTMLButtonElement>('[data-testid="approval-allow-menu"]')).toBeDisabled();
     });
     const panel = document.body.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')!;
     fireEvent.keyDown(panel, { key: "d" });
@@ -1114,9 +1121,9 @@ describe("ApprovalDock", () => {
     );
 
     expect(document.body.querySelector('[data-testid="approval-decision-locked"]'))
-      .toHaveTextContent("설정에서 이 정확한 거절을 저장하거나 취소");
+      .toHaveTextContent("설정에서 이 정확한 거부를 저장하거나 취소");
     expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))).toBeDisabled();
-    expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton))).toBeDisabled();
+    expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))).toBeDisabled();
     expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.approveButton))).toBeDisabled();
 
     const panel = document.body.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')!;
@@ -1145,7 +1152,7 @@ describe("ApprovalDock", () => {
     const next = makeRequest({ id: "req-next", toolName: "write_file", args: { path: "/tmp/next" } });
     const { rerender } = render(<ApprovalDock conversationLabel="conversation" queue={[first]} onDecide={onDecide} />);
 
-    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton))!);
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!);
     await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
     rerender(<ApprovalDock conversationLabel="conversation" queue={[next]} onDecide={onDecide} />);
     expect(document.body.querySelector(testIdSelector(TEST_IDS.approvalDock)))
@@ -1174,7 +1181,7 @@ describe("ApprovalDock", () => {
     record.mockResolvedValueOnce({ ok: false, error: "managed", message: "disk unavailable" });
     render(<ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />);
 
-    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton))!);
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!);
 
     await waitFor(() => {
       expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
@@ -1199,7 +1206,7 @@ describe("ApprovalDock", () => {
       />,
     );
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
-    const alwaysBtn = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowAlwaysButton));
+    const alwaysBtn = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton));
     expect(alwaysBtn).toBeTruthy();
     expect(alwaysBtn!.disabled).toBe(true);
     expect(alwaysBtn!.title).toContain("세션마다 다시 검토");
@@ -1216,7 +1223,7 @@ describe("ApprovalDock", () => {
     );
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
     const denyBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (b) => b.textContent === "거절",
+      (b) => b.textContent === "거부",
     );
     expect(denyBtn).toBeTruthy();
     fireEvent.click(denyBtn!);

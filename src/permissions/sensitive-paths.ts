@@ -32,13 +32,14 @@
  *   - Ave-internal sensitive paths: secrets/, audit*, deferred-queue,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
-import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
+import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative } from "node:path";
+import { globMatch } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
+import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
 export const MAX_WALK_UP = 64;
@@ -379,10 +380,11 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
 // Public helpers
 
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
-export function canonicalizePathForMatch(rawPath: string): string {
+export function canonicalizePathForMatch(rawPath: string, spend?: () => void): string {
   let canonical = pathResolve(rawPath);
 
   // Step 2 — realpath walk-up. Try the path itself first; if missing, walk up to the nearest existing ancestor and compose the unresolved tail.
+  spend?.();
   try {
     canonical = realpathSync.native(canonical);
   } catch {
@@ -392,6 +394,7 @@ export function canonicalizePathForMatch(rawPath: string): string {
       const next = pathResolve(parent, "..");
       if (next === parent) break; // hit filesystem root
       parent = next;
+      spend?.();
       try {
         const realParent = realpathSync.native(parent);
         // Compose: realpath'd ancestor + remainder of original path.
@@ -410,6 +413,44 @@ export function canonicalizePathForMatch(rawPath: string): string {
   }
 
   return foldCanonicalPathSeparators(canonical);
+}
+
+// One decision observes each ancestor once. A missing directory cannot contain an
+// existing descendant; sibling paths reuse that fact without filesystem retries.
+export function createPathCanonicalizer(): (rawPath: string, normalized?: boolean) => string {
+  type PathFact = { canonical: string; folded: string; missing: boolean };
+  const paths = new Map<string, PathFact>();
+  const append = (parent: string, name: string): string => parent.endsWith(sep) ? `${parent}${name}` : `${parent}${sep}${name}`;
+  const missing = (path: string, ancestor: PathFact | undefined): PathFact => {
+    const name = basename(path);
+    const canonical = ancestor === undefined ? path : append(ancestor.canonical, name);
+    const folded = ancestor !== undefined && !/[\\\x80-\uffff]/.test(name)
+      ? `${ancestor.folded.endsWith("/") ? ancestor.folded : ancestor.folded + "/"}${name}`
+      : foldCanonicalPathSeparators(canonical);
+    return { canonical, folded, missing: true };
+  };
+  const resolvePath = (path: string, depth: number): PathFact => {
+    const known = paths.get(path);
+    if (known !== undefined) return known;
+    const parent = dirname(path);
+    const parentKnown = paths.get(parent);
+    if (parentKnown?.missing) {
+      const result = missing(path, parentKnown);
+      paths.set(path, result);
+      return result;
+    }
+    let result: PathFact;
+    try {
+      if (!existsSync(path)) result = missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1));
+      else {
+        const canonical = realpathSync.native(path);
+        result = { canonical, folded: foldCanonicalPathSeparators(canonical), missing: false };
+      }
+    } catch { result = missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1)); }
+    paths.set(path, result);
+    return result;
+  };
+  return (rawPath, normalized = false) => resolvePath(normalized ? rawPath : pathResolve(rawPath), 0).folded;
 }
 
 // Steps 3–5 of canonicalizePathForMatch: separator folding, duplicate collapse, NFC, and the win32 drive-letter case fold. Exported with an explicit `platform` because the Windows shapes cannot be exercised through canonicalizePathForMatch anywhere else: `resolve` and `realpath` follow the HOST's rules, so a `\\server\share\…` input is just a filename with backslashes in it on macOS/Linux, and a win32-only assertion would never run on the machines this is developed and CI'd on.
@@ -507,7 +548,7 @@ export function getConfiguredSessionReadPolicy(): {
 
 // Return an unconditional deny pattern for a canonical, case-folded path. Omitting the effect preserves the stricter write policy. Only the configured primary session namespace receives a read exception; other sensitive rules still apply, including credentials placed inside the readable namespace.
 // Directories whose contents hold secrets, canonical and case-folded: every anchored table row, plus the stores the unanchored globs reach under the home (`Library/Application Support`, `.config`, `AppData`) and `/proc`. A recursive search started at or above one of them reads it. Resolved per call: the home and the Ave home are read live, never cached at module load.
-function sensitiveSearchAnchors(): string[] {
+function sensitiveSearchAnchors(canonicalize: (path: string) => string = canonicalizePathForMatch): string[] {
   const home = homedir();
   const ave = aveHome();
   const paths = SENSITIVE_PATH_ENTRIES.map((entry) =>
@@ -516,14 +557,23 @@ function sensitiveSearchAnchors(): string[] {
     paths.push(pathResolve(home, ...segments));
   }
   paths.push("/proc");
-  return paths.map((path) => caseFoldForMatch(canonicalizePathForMatch(path)));
+  return paths.map((path) => caseFoldForMatch(canonicalize(path)));
 }
 
-// The secret-holding location at or below `directory` (canonical and case-folded, as canonicalizePathForMatch and caseFoldForMatch produce), or null. A recursive search rooted at `directory` would read it.
-export function sensitiveLocationUnder(directory: string): string | null {
-  const trimmed = directory.length > 1 ? directory.replace(/\/+$/, "") : directory;
-  const base = trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
-  return sensitiveSearchAnchors().find((anchor) => anchor === trimmed || anchor.startsWith(base)) ?? null;
+// Cache the secret-holding location reached by each recursive-search root in one request.
+export function createSensitiveLocationMatcher(canonicalize: (path: string) => string = canonicalizePathForMatch): (directory: string) => string | null {
+  let anchors: readonly string[] | undefined;
+  const results = new Map<string, string | null>();
+  return (directory) => {
+    const cached = results.get(directory);
+    if (cached !== undefined) return cached;
+    anchors ??= sensitiveSearchAnchors(canonicalize);
+    const trimmed = directory.length > 1 ? directory.replace(/\/+$/, "") : directory;
+    const prefix = trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+    const result = anchors.find((anchor) => anchor === trimmed || anchor.startsWith(prefix)) ?? null;
+    results.set(directory, result);
+    return result;
+  };
 }
 
 export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
@@ -531,18 +581,112 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write"): 
 }
 
 // Snapshot policy roots and compiled globs once for one permission decision.
-export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPath: string) => string | null {
+interface SensitivePattern {
+  pattern: string;
+  insensitive: boolean;
+  literal: string;
+  test: (path: string) => boolean;
+  readOnly: boolean;
+}
+interface SensitivePatternIndex {
+  patterns: SensitivePattern[];
+  fallback: number[];
+  exact: Map<string, number[]>;
+  folded: Map<string, number[]>;
+}
+const sensitivePatternIndexes = new Map<boolean, SensitivePatternIndex>();
+
+function sensitivePatternIndex(insensitivePlatform: boolean): SensitivePatternIndex {
+  const cached = sensitivePatternIndexes.get(insensitivePlatform);
+  if (cached !== undefined) return cached;
+  const index: SensitivePatternIndex = { patterns: [], fallback: [], exact: new Map(), folded: new Map() };
+  for (const pattern of SENSITIVE_PATH_PATTERNS) {
+    const insensitive = CASE_INSENSITIVE_PATTERNS.has(pattern) || insensitivePlatform;
+    const literal = pattern.replace(/\*\*\//g, "*").split(/[*?]/).sort((left, right) => right.length - left.length)[0]!;
+    const ordinal = index.patterns.length;
+    index.patterns.push({ pattern, insensitive, literal: insensitive ? literal.toLowerCase() : literal,
+      test: compileSensitivePathGlob(pattern, insensitive), readOnly: READ_ONLY_NAMESPACE_PATTERNS.has(pattern) });
+    // A complete literal segment is necessary for this pattern to match. The
+    // original catalogue order still chooses among the eligible patterns.
+    const anchor = pattern.split("/").filter((part) => part.length > 0 && !/[*?]/.test(part)).sort((left, right) => right.length - left.length)[0];
+    if (anchor === undefined) { index.fallback.push(ordinal); continue; }
+    const table = insensitive ? index.folded : index.exact;
+    const key = insensitive ? anchor.toLowerCase() : anchor;
+    const entries = table.get(key);
+    if (entries === undefined) table.set(key, [ordinal]);
+    else entries.push(ordinal);
+  }
+  sensitivePatternIndexes.set(insensitivePlatform, index);
+  return index;
+}
+
+export function createSensitivePathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
   const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
-  const patterns = SENSITIVE_PATH_PATTERNS.map((pattern) => ({
-    pattern,
-    expression: globToRegExp(pattern, { caseInsensitive: CASE_INSENSITIVE_PATTERNS.has(pattern) || platformCaseInsensitive }),
-    readOnly: READ_ONLY_NAMESPACE_PATTERNS.has(pattern),
-  }));
+  const index = sensitivePatternIndex(platformCaseInsensitive);
+  const { patterns } = index;
+  interface CandidateNode { children: Map<string, CandidateNode>; eligible: number[] }
+  const candidateRoot: CandidateNode = { children: new Map(), eligible: index.fallback };
+  const candidateParents = new Map<string, CandidateNode>();
+  const withSegment = (parent: number[], segment: string): number[] => {
+    const exact = index.exact.get(segment);
+    const folded = index.folded.get(segment.toLowerCase());
+    if (exact === undefined && folded === undefined) return parent;
+    return [...new Set([...parent, ...(exact ?? []), ...(folded ?? [])])].sort((left, right) => left - right);
+  };
+  const candidatesFor = (path: string): number[] => {
+    const normalized = normalizePath(path);
+    const end = normalized.lastIndexOf("/");
+    const parent = normalized.slice(0, end < 0 ? 0 : end);
+    let node = candidateParents.get(parent);
+    if (node === undefined) {
+      node = candidateRoot;
+      // Only this incoming parent is a full-path cache key. Unseen parents
+      // traverse segments once, without hashing every intermediate prefix.
+      for (const segment of parent.split("/")) {
+        let child: CandidateNode | undefined = node.children.get(segment);
+        if (child === undefined) {
+          child = { children: new Map(), eligible: withSegment(node.eligible, segment) };
+          node.children.set(segment, child);
+        }
+        node = child;
+      }
+      candidateParents.set(parent, node);
+    }
+    const segment = normalized.slice(end + 1);
+    let child: CandidateNode | undefined = node.children.get(segment);
+    if (child === undefined) {
+      child = { children: new Map(), eligible: withSegment(node.eligible, segment) };
+      node.children.set(segment, child);
+    }
+    return child.eligible;
+  };
+  type ApplicationPath = { entry: SensitiveEntry; base: string };
+  interface ApplicationNode { children: Map<string, ApplicationNode>; directories: ApplicationPath[] }
   let roots: { session?: string; keys: readonly string[] } | undefined;
-  let applicationPaths: { entry: SensitiveEntry; base: string }[] | undefined;
+  let applicationPaths: ApplicationPath[] | undefined;
+  let applicationExact: Map<string, ApplicationPath[]> | undefined;
+  let applicationRotations: Map<string, ApplicationPath[]> | undefined;
+  const applicationRoot: ApplicationNode = { children: new Map(), directories: [] };
+  const applicationParents = new Map<string, ApplicationPath[]>();
+  const applicationAt = (path: string): ApplicationPath[] => {
+    const cached = applicationParents.get(path);
+    if (cached !== undefined) return cached;
+    let node = applicationRoot;
+    const directories: ApplicationPath[] = [];
+    for (const segment of path.split("/")) {
+      const child = node.children.get(segment);
+      if (child === undefined) break;
+      node = child;
+      directories.push(...node.directories);
+    }
+    applicationParents.set(path, directories);
+    return directories;
+  };
   return (absPath) => {
     if (!absPath) return null;
     const candidates = policyMatchPaths(absPath);
+    const normalizedPath = candidates[0]!;
+    const eligible = candidatesFor(normalizedPath);
     if (effect === "write" && candidates.some((candidate) => {
       const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
       return [...runtimeSettingsScopes.values()].some((targets) => targets.has(target));
@@ -554,29 +698,64 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
       keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
     };
     const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);
-    const foldedPath = caseFoldForMatch(absPath);
+    const foldedPath = caseFoldForMatch(normalizedPath);
     const canReadSession = sessionRoot !== undefined
       && (foldedPath === sessionRoot || foldedPath.startsWith(`${sessionRoot}/`))
-      && !policyMatchPaths(pathRelative(sessionRoot, absPath)).some((candidate) =>
-        patterns.some(({ expression, readOnly }) => readOnly && expression.test(candidate)));
+      && !policyMatchPaths(pathRelative(sessionRoot, normalizedPath)).some((candidate) =>
+        candidatesFor(candidate).some((ordinal) => patterns[ordinal]!.readOnly && patterns[ordinal]!.test(candidate)));
     if (roots.keys.some((path) => candidates.includes(path))) return "runtime-secret-key";
     for (const candidate of candidates) {
-      for (const { pattern, expression, readOnly } of patterns) {
-        if (!(canReadSession && readOnly) && expression.test(candidate)) return pattern;
+      const lower = candidate.toLowerCase();
+      for (const ordinal of eligible) {
+        const { pattern, test, readOnly, insensitive, literal } = patterns[ordinal]!;
+        if (!(insensitive ? lower.includes(literal) : candidate.includes(literal))) continue;
+        spend?.();
+        if (!(canReadSession && readOnly) && test(candidate)) return pattern;
       }
     }
     // A relocated application root need not contain a literal namespace segment.
     if (applicationPaths === undefined) {
-      const home = canonicalizePathForMatch(aveHome());
+      const home = canonicalize(aveHome());
       applicationPaths = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home").map((entry) => ({
-        entry, base: caseFoldForMatch(canonicalizePathForMatch(pathResolve(home, ...entry.segments))),
+        entry, base: caseFoldForMatch(canonicalize(pathResolve(home, ...entry.segments))),
       }));
+      applicationExact = new Map();
+      applicationRotations = new Map();
+      for (const path of applicationPaths) {
+        if (path.entry.kind === "dir") {
+          let node = applicationRoot;
+          for (const segment of path.base.split("/")) {
+            let child = node.children.get(segment);
+            if (child === undefined) {
+              child = { children: new Map(), directories: [] };
+              node.children.set(segment, child);
+            }
+            node = child;
+          }
+          node.directories.push(path);
+        }
+        const exact = applicationExact.get(path.base) ?? [];
+        exact.push(path);
+        applicationExact.set(path.base, exact);
+        if (path.entry.rotations) {
+          const parent = path.base.slice(0, path.base.lastIndexOf("/"));
+          const entries = applicationRotations.get(parent) ?? [];
+          entries.push(path);
+          applicationRotations.set(parent, entries);
+        }
+      }
     }
-    for (const { entry, base } of applicationPaths) {
+    const parent = foldedPath.slice(0, foldedPath.lastIndexOf("/"));
+    const directories = applicationAt(parent);
+    const exact = applicationExact!.get(foldedPath);
+    const rotations = applicationRotations!.get(parent);
+    if (directories.length === 0 && exact === undefined && rotations === undefined) return null;
+    const applicationCandidates = new Set(directories);
+    for (const path of exact ?? []) applicationCandidates.add(path);
+    for (const path of rotations ?? []) if (foldedPath.startsWith(`${path.base}.`)) applicationCandidates.add(path);
+    for (const { entry } of applicationCandidates) {
       if (canReadSession && entry.access === "read-only") continue;
-      if (candidates.some((candidate) => candidate === base
-        || (entry.kind === "dir" && candidate.startsWith(`${base}/`))
-        || (entry.rotations && candidate.startsWith(`${base}.`)))) return `ave-home:${entry.segments.join("/")}`;
+      return `ave-home:${entry.segments.join("/")}`;
     }
     return null;
   };
@@ -586,5 +765,5 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
 
 // Normalize path separators: Windows backslash → forward slash. Leaves POSIX paths intact. Does NOT resolve `..` or symlinks — callers are expected to supply an absolute path already canonicalized via `path.resolve` or similar.
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/");
+  return p.includes("\\") ? p.replace(/\\/g, "/") : p;
 }

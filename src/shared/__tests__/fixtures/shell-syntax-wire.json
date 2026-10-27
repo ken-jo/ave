@@ -1,0 +1,37 @@
+[
+  {
+    "source": "A=1 B= printf '%s' \"$A\" 0 > out.txt 2>&1 &",
+    "limited": false,
+    "sha256": "c370ae27c96596d41f8c6b02a4acc9d40765ee5d46713af7e9604ef753be2463"
+  },
+  {
+    "source": "for x in a b; do if test \"$x\" = a; then printf '%s' \"$x\"; else :; fi; done",
+    "limited": false,
+    "sha256": "8f8ac9e40a618d43cf0f70f69b919456250d2a092f97d1357aff3aa32db4c628"
+  },
+  {
+    "source": "f() { ( printf x | cat ); }; f && ! false",
+    "limited": false,
+    "sha256": "024482ecfbbff03e518d1bfe58cd7f024265571856d70a32beca80736ba3d898"
+  },
+  {
+    "source": "a=(one two); echo \"${a[0]}\" \"$((1+2))\" \"$(cat file)\" <(printf data)",
+    "limited": false,
+    "sha256": "fc5419ea0b065da13efcf7fa1d450c435082868dd915aeebb857b714c393b86e"
+  },
+  {
+    "source": "printf '' \"\" $'\\n' '한글😀'; export FOO=0; readonly EMPTY=; [[ 0 -eq 0 ]]",
+    "limited": false,
+    "sha256": "659c16b071cb62a7a3f313f24c1086a316a0f86f2a640e420db25cab9cc83923"
+  },
+  {
+    "source": "cat <<-'X'\n\t한글😀\n\tX\nprintf end",
+    "limited": false,
+    "sha256": "4b0dc7431100d35545551b2ad9e865d0c35d1ec48dbc1f94f32a02c9fb31a70e"
+  },
+  {
+    "source": "cat <<-'X'\n\t한글😀\n\tX\nprintf end",
+    "limited": true,
+    "sha256": "cbe252a5fab2d62a9547a989277d60ebfe3300c709751d459419aa107858854b"
+  }
+]
