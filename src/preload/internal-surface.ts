@@ -2,6 +2,7 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
+import type { XlsxPanelEditRequest } from "../shared/xlsx-panel-edit.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
 import {
@@ -219,6 +220,7 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.preview.readFile, filePath, ...(window === undefined ? [] : [window])),
     readDocument: (filePath: string, sheetIndex: number) =>
       ipcRenderer.invoke(CHANNELS.preview.readDocument, filePath, sheetIndex),
+    editXlsx: (request: XlsxPanelEditRequest) => ipcRenderer.invoke(CHANNELS.preview.editXlsx, request),
   },
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),

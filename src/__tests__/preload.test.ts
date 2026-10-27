@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
-import type { AveApi } from "../ui/renderer/types.js";
+import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -84,6 +84,13 @@ describe("preload — plugin webview asset URLs", () => {
       "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
     ]);
     expect(windowApi.openHtmlPreview).toBeTypeOf("function");
+  });
+
+  it("passes only the bound workbook action payload to the private preview channel", async () => {
+    const preview = (await loadAveNamespace()).preview as AvePreviewApi;
+    const request = { action: "save" as const, token: "a".repeat(64), row: 0, column: 1, value: 84 };
+    await preview.editXlsx(request);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.preview.editXlsx, request);
   });
 
   afterEach(() => {

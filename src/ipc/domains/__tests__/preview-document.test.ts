@@ -9,6 +9,8 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewReadDocumentResult } from "../../../shared/preview-document.js";
 import { buildPreviewDocumentRuntime } from "../../../__tests__/support/preview-document-runtime.js";
 import { cyclicWorkbook } from "../../../__tests__/support/table-document-fixtures.js";
+import type { XlsxPanelEditResult } from "../../../shared/xlsx-panel-edit.js";
+import * as sandboxPolicy from "../../../permissions/asrt-sandbox.js";
 import * as documentInput from "../../../tools/preview-document-input.js";
 import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
 import * as managedChildren from "../../../main/managed-child-processes.js";
@@ -236,10 +238,15 @@ describe("preview:read-document handler", () => {
 
   it("supersedes an older parse for the same frame before loading the latest sheet", async () => {
     const read = documentInput.readPreviewDocumentInput;
+    const snapshot = documentInput.readPreviewDocumentSnapshot;
     const childrenAtRead: number[] = [];
-    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation((...args) => {
+    const inputReads = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation((...args) => {
       childrenAtRead.push(getManagedChildProcessCount());
       return read(...args);
+    });
+    const snapshotReads = vi.spyOn(documentInput, "readPreviewDocumentSnapshot").mockImplementation((...args) => {
+      childrenAtRead.push(getManagedChildProcessCount());
+      return snapshot(...args);
     });
     const previous = readDocument(OK_FRAME, join(root, "data", "cyclic.xls"));
     await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
@@ -247,12 +254,15 @@ describe("preview:read-document handler", () => {
     const [oldResult, newResult] = await Promise.all([previous, latest]);
     expect(oldResult).toMatchObject({ ok: false, error: "superseded" });
     expect(newResult).toMatchObject({ ok: true, document: { sheet: { name: "Notes" } } });
+    expect(inputReads).toHaveBeenCalledTimes(1);
+    expect(snapshotReads).toHaveBeenCalledTimes(1);
     expect(childrenAtRead).toEqual([0, 0]);
     expect(getManagedChildProcessCount()).toBe(0);
   });
 
   it("keeps only the latest same-frame request while an older read unwinds", async () => {
     const read = documentInput.readPreviewDocumentInput;
+    const snapshots = vi.spyOn(documentInput, "readPreviewDocumentSnapshot");
     let entered!: () => void;
     let resume!: () => void;
     const reading = new Promise<void>((resolve) => { entered = resolve; });
@@ -271,13 +281,16 @@ describe("preview:read-document handler", () => {
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(spy).toHaveBeenCalledTimes(1);
+      expect(snapshots).not.toHaveBeenCalled();
     } finally {
       resume();
       results = await Promise.all([previous, ...replacements]);
     }
     expect(results.slice(0, -1).every((result) => !result.ok && result.error === "superseded")).toBe(true);
     expect(results.at(-1)).toMatchObject({ ok: true, document: { sheet: { name: "Notes" } } });
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(snapshots).toHaveBeenCalledTimes(1);
+    expect(snapshots).toHaveBeenCalledWith(join(root, "data", "book.xlsx"), expect.any(AbortSignal));
   });
 
   it("reports another frame as busy without reading or superseding its owner", async () => {
@@ -378,5 +391,151 @@ describe("preview:read-document handler", () => {
     expect(ticks).toBeGreaterThan(10);
     expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
     expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"))).toMatchObject({ ok: true });
+  });
+});
+
+async function editFromSender(event: ReturnType<typeof documentEvent>, request: unknown): Promise<XlsxPanelEditResult> {
+  return await handlers.get(CHANNELS.preview.editXlsx)!(event, request) as XlsxPanelEditResult;
+}
+
+async function readEditToken(event: ReturnType<typeof documentEvent>): Promise<string> {
+  const result = await readFromSender(event, join(root, "data", "book.xlsx"));
+  if (!result.ok) throw new Error(`Expected a workbook preview, got ${result.error}`);
+  expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
+  expect(result.editToken).toMatch(/^[a-f0-9]{64}$/);
+  expect(result.editEnabled).toBe(false);
+  return result.editToken!;
+}
+
+describe("preview:edit-xlsx boundary", () => {
+  it.each(["source", "directory", "backup"] as const)("keeps a readable workbook uneditable when the write deny floor covers its %s", async (target) => {
+    const path = join(root, "data", "book.xlsx");
+    const denied = target === "directory" ? join(root, "data") : target === "backup" ? `${path}.ave-bak` : path;
+    const floor = vi.spyOn(sandboxPolicy, "getDefaultSensitiveWriteDenyPaths").mockReturnValue([denied]);
+    const event = documentEvent(OK_FRAME);
+    try {
+      const result = await readFromSender(event, path);
+      if (!result.ok) throw new Error(`Expected a readable workbook, got ${result.error}`);
+      expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
+      expect(floor).toHaveBeenCalled();
+      expect(result.editToken).toBeUndefined();
+      expect(result.editEnabled).toBeUndefined();
+      expect(event.sender.eventNames()).toEqual([]);
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it.each(["source", "directory", "backup"] as const)("keeps a readable workbook uneditable when the protected read floor covers its %s", async (target) => {
+    const path = join(root, "data", "book.xlsx");
+    const denied = target === "directory" ? join(root, "data") : target === "backup" ? `${path}.ave-bak` : path;
+    const floor = vi.spyOn(sandboxPolicy, "getProtectedReadDenyFloor").mockReturnValue([denied]);
+    const event = documentEvent(OK_FRAME);
+    try {
+      const result = await readFromSender(event, path);
+      if (!result.ok) throw new Error(`Expected a readable workbook, got ${result.error}`);
+      expect(result.document).toMatchObject({ format: "xlsx", sheet: { rows: [["q", "rev"], ["Q1", "10"]] } });
+      expect(floor).toHaveBeenCalled();
+      expect(result.editToken).toBeUndefined();
+      expect(result.editEnabled).toBeUndefined();
+      expect(event.sender.eventNames()).toEqual([]);
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it.each([
+    { path: "/outside/other.xlsx" },
+    { script: "arbitrary-script.cjs" },
+    { sheet: 1 },
+  ])("rejects extra target or executable fields %j on a real preview token", async (extra) => {
+    const event = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(event);
+      expect(await editFromSender(event, { action: "save", token, row: 1, column: 1, value: 84, ...extra }))
+        .toEqual({ ok: false, error: "invalid-request" });
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it.each([[2, 0], [1, 1]])("rejects a real token used by sender %s frame %s", async (senderId, routingId) => {
+    const owner = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(owner);
+      const foreign = documentEvent(OK_FRAME, senderId, routingId);
+      expect(await editFromSender(foreign, { action: "enable", token }))
+        .toEqual({ ok: false, error: "expired" });
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { owner.sender.emit("destroyed"); }
+  });
+
+  it("rejects an untrusted frame before consuming a real preview token", async () => {
+    const owner = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(owner);
+      expect(await editFromSender(documentEvent(EVIL_FRAME), { action: "enable", token }))
+        .toEqual({ ok: false, error: "unauthorized" });
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { owner.sender.emit("destroyed"); }
+  });
+
+  it.each([
+    { senderFrame: { url: OK_FRAME, processId: 1, routingId: 0 } },
+    { sender: { id: 1 }, senderFrame: { url: OK_FRAME } },
+  ])("rejects incomplete edit sender identities %j", async (event) => {
+    expect(await handlers.get(CHANNELS.preview.editXlsx)!(event, { action: "enable", token: "a".repeat(64) }))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(getManagedChildProcessCount()).toBe(0);
+  });
+
+  it("invalidates the previous token when the same frame reads the next sheet", async () => {
+    const event = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(event);
+      const next = await readFromSender(event, join(root, "data", "book.xlsx"), 1);
+      if (!next.ok) throw new Error("Expected the replacement workbook preview");
+      expect(next.document).toMatchObject({ sheet: { name: "Notes", rows: [["note"]] } });
+      expect(next.editToken).toMatch(/^[a-f0-9]{64}$/);
+      expect(next.editToken).not.toBe(token);
+      expect(await editFromSender(event, { action: "enable", token }))
+        .toEqual({ ok: false, error: "expired" });
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it("invalidates the previous token even when the replacement read is refused", async () => {
+    const event = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(event);
+      expect(await readFromSender(event, join(outside, "secret.csv")))
+        .toMatchObject({ ok: false, error: "path-not-allowed" });
+      expect(await editFromSender(event, { action: "enable", token }))
+        .toEqual({ ok: false, error: "expired" });
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it("invalidates a workbook token when its frame switches to a text preview", async () => {
+    const event = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(event);
+      const text = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"));
+      expect(text).toMatchObject({ ok: true, content: "plain" });
+      expect(await editFromSender(event, { action: "enable", token }))
+        .toEqual({ ok: false, error: "expired" });
+      expect(event.sender.eventNames()).toEqual([]);
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
+  });
+
+  it("invalidates a completed preview token on committed owner-frame navigation", async () => {
+    const event = documentEvent(OK_FRAME);
+    try {
+      const token = await readEditToken(event);
+      expect(event.sender.listenerCount("did-frame-navigate")).toBe(1);
+      event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 1, 0);
+      expect(await editFromSender(event, { action: "enable", token }))
+        .toEqual({ ok: false, error: "expired" });
+      expect(event.sender.eventNames()).toEqual([]);
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally { event.sender.emit("destroyed"); }
   });
 });

@@ -491,6 +491,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:policy:get",
         "ave:policy:set",
         "ave:preview:document-open-ack",
+        "ave:preview:edit-xlsx",
         "ave:preview:read-document",
         "ave:preview:read-file",
         "ave:prompts:delete",

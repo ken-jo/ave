@@ -2,15 +2,21 @@
 
 The table viewer accepts CSV, TSV, XLSX, XLS and ODS files and displays a bounded grid of strings. [The shared preview contract](../../src/shared/preview-document.ts) owns supported formats, result types, error codes and every resource ceiling.
 
-XLSX workbooks requesting recalculation show a localized badge because cached
-formula results may be stale. [Skill editing](xlsx-skill-editing.md) owns the
-calculation signal, preservation limits and sandbox editing contract.
+XLSX workbooks requesting recalculation show a localized badge because cached formula results may be stale. The [XLSX editing contract](xlsx-skill-editing.md) owns the calculation signal, preservation limits, sandbox execution and shared publication rules for skill and panel edits.
 
 ## Read authority
 
 `ave:preview:read-document` is a private, host-renderer IPC channel. [The preview handler](../../src/ipc/domains/preview.ts) validates the sending frame and uses `assertReadableFilePath` from [the file-read core](../../src/tools/file-read-core.ts). Preview reads always check allowed roots. Native agent file reads instead use the invocation's existing file access policy, which can allow reads outside those roots when directory fencing is disabled. The channel grants no additional filesystem authority and is unavailable through public transports.
 
 The main process checks the requested sheet index and extension, then acquires a request lease before [opening the admitted path once](../../src/tools/preview-document-input.ts). Regular-file status and size come from that descriptor. Reading stops at its checked size plus one byte; growth, shrinkage or a changed modification time refuses the read, and the descriptor closes on every outcome. A superseded read checks cancellation before allocating and after each filesystem operation; it waits for an operation already in progress to return. Child deadlines do not cover filesystem reads. Replacing the pathname after opening cannot redirect that read. Each request supplies a zero-based, non-negative sheet index; any other value returns `invalid-index` at the IPC boundary and again in the parse lease. CSV and TSV accept only index zero; workbook indexes must address the retained `sheetNames` list, so sheets beyond the tab limit cannot be selected. Successful reads use the existing audit logger with a redacted path. The renderer receives a parsed table result, never source document bytes or a parser handle.
+
+## Editing authority
+
+A successful XLSX preview can additionally receive a host-issued opaque `editToken` bound to the latest read of that authenticated frame, canonical file and selected sheet. The host retains the exact parsed source bytes and descriptor identity; the parser child never creates or receives the token. The token identifies the read and grants no permission to write. Other formats remain read-only.
+
+**Enable editing** explicitly requests a native confirmation naming the canonical full path. Approval is limited to the bound file and sheet, subject to current file-read scope, protected read floors, sensitive write denies for both source and backup, and available confinement. The private `ave:preview:edit-xlsx` channel accepts only the [shared edit request](../../src/shared/xlsx-panel-edit.ts): action/token, cell coordinates and a scalar where required. It cannot accept a path, script, environment or replacement workbook from the renderer and is unavailable through public transports. The [XLSX editing contract](xlsx-skill-editing.md#panel-authority-and-execution) owns token lifecycle, user-versus-agent authority, protected action-directory capabilities and exact-file host publication.
+
+The panel edits existing cells with raw typed values returned by the pinned editor; formatted or clipped display strings do not initialize drafts. It offers literal text, number, boolean and empty values, with an explicit hint before overwriting a formula. It has no formula authoring or structural editing. Enter saves outside composition, Escape cancels and blur does not save. Successful edits refresh the preview. Observed source identity or byte changes invalidate authority and require reload plus new enablement; changing file or sheet, leaving the frame or releasing the preview also retires its token. The [shared edit contract](../../src/shared/xlsx-panel-edit.ts) owns edit errors and limits separately from read/parse failures below.
 
 ## Parsing process and budgets
 

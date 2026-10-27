@@ -7,7 +7,7 @@
  * lazily-loaded virtualized grid. Every cap the reader applied is stated to the
  * user — nothing is cut silently.
  */
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
@@ -16,6 +16,8 @@ import {
   type PreviewDocumentError,
   type PreviewTableDocument,
 } from "../../../shared/preview-document.js";
+import type { XlsxCellValue, XlsxPanelEditError, XlsxPanelEditRequest } from "../../../shared/xlsx-panel-edit.js";
+import type { TableCellDraft } from "./table-document-grid.js";
 
 const LazyTableDocumentGrid = lazy(() =>
   import(/* webpackChunkName: "table-document-grid" */ "./table-document-grid.js").then((mod) => ({
@@ -64,7 +66,7 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
 
 type LoadState =
   | { phase: "loading" }
-  | { phase: "ok"; document: PreviewTableDocument }
+  | { phase: "ok"; document: PreviewTableDocument; editToken?: string }
   | { phase: "error"; code: Exclude<PreviewDocumentError, "superseded"> };
 
 function TruncationNotices({ document }: { document: PreviewTableDocument }) {
@@ -104,42 +106,184 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
   );
 }
 
-/** Callers key this by `path` so a new file starts on its first sheet. */
+const XLSX_ERROR_KEYS: Record<XlsxPanelEditError, string> = {
+  "invalid-request": "chatPreviewRail.xlsxErrorInvalidRequest",
+  unauthorized: "chatPreviewRail.xlsxErrorUnauthorized",
+  expired: "chatPreviewRail.xlsxErrorExpired",
+  "stale-file": "chatPreviewRail.xlsxErrorStaleFile",
+  "permission-denied": "chatPreviewRail.xlsxErrorPermissionDenied",
+  "edit-unavailable": "chatPreviewRail.xlsxErrorUnavailable",
+  "unsupported-cell": "chatPreviewRail.xlsxErrorUnsupportedCell",
+  "backup-exists": "chatPreviewRail.xlsxErrorBackupExists",
+  "edit-failed": "chatPreviewRail.xlsxErrorFailed",
+  busy: "chatPreviewRail.xlsxErrorBusy",
+};
+
+/** Callers key this by path so a new file starts on its first sheet. */
 export function TableDocumentPreview({ path }: { path: string }) {
   const { t } = useTranslation();
   const [sheetIndex, setSheetIndex] = useState(0);
   const [state, setState] = useState<LoadState>({ phase: "loading" });
+  const [revision, setRevision] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [draft, setDraft] = useState<TableCellDraft | null>(null);
+  const [operation, setOperation] = useState<"enable" | "cell" | "save" | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [editError, setEditError] = useState<XlsxPanelEditError | "invalid-value" | null>(null);
+  const generation = useRef(0);
+  const operationActive = useRef(false);
+  const saveRefresh = useRef<{ token: string; path: string; sheet: number; revision: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    let token: string | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    setState({ phase: "loading" });
+    const continuation = saveRefresh.current;
+    if (continuation?.path === path && continuation.sheet === sheetIndex && continuation.revision === revision) {
+      saveRefresh.current = null;
+    }
+    generation.current += 1;
+    operationActive.current = false;
+    setOperation(null);
+    setEnabled(false);
+    setDraft(null);
+    setRefreshFailed(false);
+    setRefreshing(true);
+    setState((previous) => previous.phase === "ok" && previous.document.sheet.index === sheetIndex && revision > 0
+      ? previous : { phase: "loading" });
+    const release = (value: string) => {
+      void window.ave.preview.editXlsx({ action: "release", token: value }).catch(() => {});
+    };
     const read = (attempt: number): void => {
-      void window.ave.preview
-        .readDocument(path, sheetIndex)
-        .then((result) => {
-          if (cancelled) return;
-          if (!result.ok && result.error === "busy") {
-            const delay = PREVIEW_DOCUMENT_LIMITS.busyRetryDelaysMs[attempt];
-            if (delay !== undefined) {
-              retryTimer = setTimeout(() => { retryTimer = undefined; read(attempt + 1); }, delay);
-              return;
-            }
+      void window.ave.preview.readDocument(path, sheetIndex).then((result) => {
+        if (cancelled) {
+          if (result.ok && result.editToken) release(result.editToken);
+          return;
+        }
+        if (!result.ok && result.error === "busy") {
+          const delay = PREVIEW_DOCUMENT_LIMITS.busyRetryDelaysMs[attempt];
+          if (delay !== undefined) {
+            retryTimer = setTimeout(() => { retryTimer = undefined; read(attempt + 1); }, delay);
+            return;
           }
-          if (result.ok) setState("sheet" in result.document
-            ? { phase: "ok", document: result.document } : { phase: "error", code: "unsupported-format" });
-          else if (result.error !== "superseded") setState({ phase: "error", code: result.error });
-        })
-        .catch(() => {
-          if (!cancelled) setState({ phase: "error", code: "read-failed" });
-        });
+        }
+        if (result.ok) {
+          token = result.editToken;
+          setEnabled(result.editEnabled === true);
+          setState("sheet" in result.document
+            ? { phase: "ok", document: result.document, editToken: token }
+            : { phase: "error", code: "unsupported-format" });
+        } else if (result.error !== "superseded") {
+          if (revision > 0) setRefreshFailed(true);
+          setState((previous) => {
+            if (previous.phase === "ok" && revision > 0) {
+              return { ...previous, editToken: undefined };
+            }
+            return { phase: "error", code: result.error as Exclude<PreviewDocumentError, "superseded"> };
+          });
+        }
+        setRefreshing(false);
+      }).catch(() => {
+        if (!cancelled) {
+          if (revision > 0) setRefreshFailed(true);
+          setState((previous) => {
+            if (previous.phase === "ok" && revision > 0) {
+              return { ...previous, editToken: undefined };
+            }
+            return { phase: "error", code: "read-failed" };
+          });
+          setRefreshing(false);
+        }
+      });
     };
     read(0);
     return () => {
       cancelled = true;
+      generation.current += 1;
       clearTimeout(retryTimer);
+      if (token && saveRefresh.current?.token === token) {
+        // Only the immediately following own-save read may consume consent.
+        // An unmount without that read still releases the consumed identity.
+        const savedToken = token;
+        queueMicrotask(() => {
+          if (saveRefresh.current?.token === savedToken) {
+            saveRefresh.current = null;
+            release(savedToken);
+          }
+        });
+      } else if (token) release(token);
     };
-  }, [path, sheetIndex]);
+  }, [path, sheetIndex, revision]);
+
+  const requestEdit = async (request: XlsxPanelEditRequest) => {
+    if (operationActive.current) return null;
+    operationActive.current = true;
+    const current = generation.current;
+    setOperation(request.action === "release" ? null : request.action);
+    setEditError(null);
+    try {
+      const result = await window.ave.preview.editXlsx(request);
+      if (current !== generation.current) return null;
+      if (!result.ok) {
+        setEditError(result.error);
+        if (["expired", "stale-file", "unauthorized"].includes(result.error)) {
+          setEnabled(false);
+          setDraft(null);
+          setState((previous) => previous.phase === "ok" ? { ...previous, editToken: undefined } : previous);
+        }
+      }
+      return result;
+    } catch {
+      if (current === generation.current) setEditError("edit-failed");
+      return null;
+    } finally {
+      if (current === generation.current) {
+        operationActive.current = false;
+        setOperation(null);
+      }
+    }
+  };
+  const token = state.phase === "ok" ? state.editToken : undefined;
+  const enableEditing = async () => {
+    if (!token) return;
+    const result = await requestEdit({ action: "enable", token });
+    if (result?.ok) setEnabled(true);
+  };
+  const beginCell = async (row: number, column: number) => {
+    if (!enabled || !token || refreshing || operationActive.current) return;
+    setSaved(false);
+    const result = await requestEdit({ action: "cell", token, row, column });
+    if (result?.ok && result.action === "cell") setDraft({ row, column, formula: result.formula,
+      type: result.value === null ? "empty" : typeof result.value === "boolean" ? "boolean"
+        : typeof result.value === "number" ? "number" : "text",
+      text: result.value === null ? "" : String(result.value) });
+  };
+  const saveCell = async () => {
+    if (!draft || !token || operationActive.current || refreshing) return;
+    let value: XlsxCellValue = draft.text;
+    if (draft.type === "empty") value = null;
+    else if (draft.type === "boolean") value = draft.text === "true";
+    else if (draft.type === "number") {
+      value = Number(draft.text);
+      if (!draft.text.trim() || !Number.isFinite(value)) { setEditError("invalid-value"); return; }
+    }
+    const result = await requestEdit({ action: "save", token, row: draft.row, column: draft.column, value });
+    if (result?.ok) {
+      saveRefresh.current = { token, path, sheet: sheetIndex, revision: revision + 1 };
+      setDraft(null);
+      setEnabled(false);
+      setSaved(true);
+      setRevision((previous) => previous + 1);
+    }
+  };
+  const cancelDraft = () => { setDraft(null); setEditError(null); };
+  const reload = () => {
+    setEnabled(false); setDraft(null); setEditError(null); setSaved(false);
+    setRevision((previous) => previous + 1);
+  };
+  const locked = operation !== null || refreshing;
 
   if (state.phase === "error") {
     return (
@@ -175,7 +319,8 @@ export function TableDocumentPreview({ path }: { path: string }) {
               type="button"
               role="tab"
               aria-selected={index === sheet.index}
-              onClick={() => setSheetIndex(index)}
+              disabled={locked || draft !== null}
+              onClick={() => { setEditError(null); setSaved(false); setSheetIndex(index); }}
               className={
                 index === sheet.index
                   ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground"
@@ -204,6 +349,31 @@ export function TableDocumentPreview({ path }: { path: string }) {
           })}
         </span>
       </div>
+      {document.format === "xlsx" ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 text-[11px]" data-testid="xlsx-edit-controls">
+          {token && !enabled ? <button type="button" disabled={locked} onClick={() => void enableEditing()}
+            className="rounded border px-2 py-1 disabled:opacity-50" data-testid="xlsx-enable-editing">
+            {t("chatPreviewRail.xlsxEnableConfirm")}
+          </button> : null}
+          {enabled ? <span>{t("chatPreviewRail.xlsxEditHint")}</span> : null}
+          {operation ? <span role="status">{t(operation === "save" ? "chatPreviewRail.xlsxSaving" : "chatPreviewRail.xlsxPreparing")}</span> : null}
+          {refreshing ? <span role="status">{t("chatPreviewRail.xlsxReloading")}</span> : null}
+          {saved ? <span role="status" data-testid="xlsx-saved">{t("chatPreviewRail.xlsxSaved")}</span> : null}
+          {editError ? <span role="alert" className="text-destructive">{t(editError === "invalid-value"
+            ? "chatPreviewRail.xlsxErrorInvalidValue" : XLSX_ERROR_KEYS[editError])}</span> : null}
+          {refreshFailed ? <span role="alert" className="text-destructive">{t("chatPreviewRail.xlsxRefreshFailed")}</span> : null}
+          {editError || refreshFailed ? <button type="button" disabled={locked} onClick={reload}
+            className="rounded border px-2 py-1">{t("chatPreviewRail.xlsxReload")}</button> : null}
+        </div>
+      ) : null}
+      {draft ? <div className="flex shrink-0 flex-wrap items-center gap-2 text-[11px]" data-testid="xlsx-edit-actions">
+        <span>{t("chatPreviewRail.xlsxCellLabel", { row: draft.row + 1, column: draft.column + 1 })}</span>
+        {draft.formula ? <span role="note">{t("chatPreviewRail.xlsxFormulaOverwriteHint")}</span> : null}
+        <button type="button" disabled={locked} onClick={() => void saveCell()} className="rounded border px-2 py-1">
+          {t("chatPreviewRail.xlsxSave")}</button>
+        <button type="button" disabled={locked} onClick={cancelDraft} className="rounded border px-2 py-1">
+          {t("chatPreviewRail.xlsxCancel")}</button>
+      </div> : null}
       <TruncationNotices document={document} />
       {sheet.rows.length === 0 ? (
         <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-empty">
@@ -211,7 +381,9 @@ export function TableDocumentPreview({ path }: { path: string }) {
         </div>
       ) : (
         <Suspense fallback={loading}>
-          <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })} />
+          <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })}
+            onEditCell={enabled && !locked ? (row, column) => { void beginCell(row, column); } : undefined}
+            draft={draft} editLocked={locked} onDraftChange={setDraft} onSave={() => void saveCell()} onCancel={cancelDraft} />
         </Suspense>
       )}
     </div>

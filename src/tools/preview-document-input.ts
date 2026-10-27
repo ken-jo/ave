@@ -1,5 +1,7 @@
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
+import { createWorkbookFileSnapshot, type WorkbookFileSnapshot } from "../skills/xlsx-file-transaction.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 
@@ -9,6 +11,23 @@ export async function readPreviewDocumentInput(
   signal?: AbortSignal,
   maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
 ): Promise<Buffer> {
+  return (await readOpenedDocument(path, signal, maxBytes)).data;
+}
+
+/** Captures the exact bytes parsed by the viewer and pins their publication parent. */
+export async function readPreviewDocumentSnapshot(path: string, signal?: AbortSignal): Promise<WorkbookFileSnapshot> {
+  const parent = await realpath(dirname(path));
+  const before = await lstat(parent, { bigint: true });
+  const { data, identity } = await readOpenedDocument(path, signal, PREVIEW_DOCUMENT_LIMITS.maxFileBytes);
+  const after = await lstat(parent, { bigint: true });
+  signal?.throwIfAborted();
+  if (await realpath(dirname(path)) !== parent || before.dev !== after.dev || before.ino !== after.ino) {
+    throw new TableDocumentError("read-failed", "Document parent changed while reading.");
+  }
+  return createWorkbookFileSnapshot(path, data, identity, before);
+}
+
+async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number) {
   signal?.throwIfAborted();
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
     throw new TableDocumentError("too-large", "Invalid preview byte limit.");
@@ -48,7 +67,7 @@ export async function readPreviewDocumentInput(
     if (received !== initial.size || final.size !== initial.size || final.mtimeMs !== initial.mtimeMs) {
       throw new TableDocumentError("read-failed", "Document changed while being read.");
     }
-    return buffer.subarray(0, received);
+    return { data: buffer.subarray(0, received), identity: opened };
   } finally {
     await handle.close();
   }

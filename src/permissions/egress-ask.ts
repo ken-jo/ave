@@ -89,6 +89,7 @@ export interface EgressAskDeps {
 
 // Fixed refusal reasons, so the model and the audit log read the same words.
 export const EGRESS_DENY_REASONS = {
+  documentOffline: "document actions cannot access the network",
   unattributed: "unattributed connection",
   malformed: "malformed destination",
   workerOffList: "not on the extension's network allowlist",
@@ -294,6 +295,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (token === undefined) return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
     const owner = deps.ownerOf(token);
     if (owner === undefined) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
+    if (owner.kind === "user-document") return { owner, decision: deny("policy", EGRESS_DENY_REASONS.documentOffline) };
     // Where this kind of process has its own listener only the listener vouches for who connected; a key that came from the proxy username alone may have been read off another process, so it names nobody.
     const strength = deps.identityStrength(owner.kind === "worker" ? "extension" : "shell", owner.kind === "terminal" ? undefined : context);
     if (strength === "kernel-channel"

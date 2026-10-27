@@ -17,6 +17,7 @@ import {
   PRIVATE_FILE_MODE,
   isCommittedAtomicWriteError,
   isMissingPathError,
+  replaceStagedFile,
   replaceUtf8FileAtomicSyncIf,
   writeUtf8FileAtomic,
   writeUtf8FileAtomicSync,
@@ -56,6 +57,66 @@ beforeEach(() => {
 afterEach(async () => {
   staging.beforeOpen = undefined;
   await cleanupTmpDir(dir);
+});
+
+describe("replaceStagedFile", () => {
+  it("checks authority before using the default replacement runtime", () => {
+    const source = join(dir, "staged.tmp");
+    const target = join(dir, "document.txt");
+    writeFileSync(source, "new");
+    writeFileSync(target, "old");
+    const denied = new Error("Authority expired");
+    const beforeRename = vi.fn(() => { throw denied; });
+
+    expect(() => replaceStagedFile(source, target, undefined, beforeRename)).toThrow(denied);
+    expect(beforeRename).toHaveBeenCalledTimes(1);
+    expect(readFileSync(source, "utf8")).toBe("new");
+    expect(readFileSync(target, "utf8")).toBe("old");
+  });
+
+  it("revalidates authority before every replacement attempt after transient contention", () => {
+    const source = join(dir, "staged.tmp");
+    const target = join(dir, "document.txt");
+    writeFileSync(source, "new");
+    writeFileSync(target, "old");
+    const events: string[] = [];
+    let attempts = 0;
+
+    replaceStagedFile(source, target, {
+      platform: "win32", open: () => 0, fsync: () => undefined, close: () => undefined,
+      rename(from, to) {
+        attempts += 1;
+        events.push("rename");
+        if (attempts < 3) throw Object.assign(new Error("Locked"), { code: "EACCES" });
+        renameSync(from, to);
+      },
+      wait: () => { events.push("wait"); },
+    }, () => { events.push("guard"); });
+
+    expect(events).toEqual(["guard", "rename", "wait", "guard", "rename", "wait", "guard", "rename"]);
+    expect(readFileSync(target, "utf8")).toBe("new");
+  });
+
+  it("aborts an authority failure after a retry delay even when its error resembles a file lock", () => {
+    const source = join(dir, "staged.tmp");
+    const target = join(dir, "document.txt");
+    writeFileSync(source, "new");
+    writeFileSync(target, "old");
+    let authorized = true;
+    const denied = Object.assign(new Error("Authority expired"), { code: "EACCES" });
+    const rename = vi.fn(() => { throw Object.assign(new Error("Locked"), { code: "EACCES" }); });
+    const wait = vi.fn(() => { authorized = false; });
+    const beforeRename = vi.fn(() => { if (!authorized) throw denied; });
+
+    expect(() => replaceStagedFile(source, target, {
+      platform: "win32", open: () => 0, fsync: () => undefined, close: () => undefined, rename, wait,
+    }, beforeRename)).toThrow(denied);
+    expect(beforeRename).toHaveBeenCalledTimes(2);
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(readFileSync(source, "utf8")).toBe("new");
+    expect(readFileSync(target, "utf8")).toBe("old");
+  });
 });
 
 describe("writeUtf8FileAtomicSync", () => {

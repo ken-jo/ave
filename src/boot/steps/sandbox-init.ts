@@ -438,16 +438,19 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   }
 }
 
-/** Sweep both private roots while retaining this process's directories; report failed roots and leave the read-deny floor intact. */
+/** Sweep private roots while retaining this process's directories; report failures and retain the read-deny floor. */
 export async function sweepSandboxPrivateRoots(): Promise<void> {
   const { appOwnedSandboxHomeRoot, appOwnedSandboxTempRoot, sandboxTempPrincipalDirsInUse } =
     await import("../../permissions/asrt-sandbox.js");
   const { sandboxProcessHomesInUse } = await import("../../permissions/sandbox-process-home.js");
+  const { appOwnedSandboxActionRoot } = await import("../../shared/sandbox-private-paths.js");
+  const { sandboxActionDirectoriesInUse } = await import("../../permissions/sandbox-action-directory.js");
   const roots = [
     [appOwnedSandboxTempRoot(), sandboxTempPrincipalDirsInUse()],
     [appOwnedSandboxHomeRoot(), sandboxProcessHomesInUse()],
+    [appOwnedSandboxActionRoot(), sandboxActionDirectoriesInUse()],
   ] as const;
-  // Reject real-home test targets before touching either root.
+  // Reject real-home test targets before touching any root.
   for (const [root] of roots) checkSandboxSweepRoot(root);
   for (const [root, inUse] of roots) {
     await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {

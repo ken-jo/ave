@@ -92,6 +92,8 @@ function parseShapedDeny(line: string): ParsedEgressDeny | undefined {
 export function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEgressDenyInvocation {
   if (owner === undefined) return { kind: "unattributed" };
   switch (owner.kind) {
+    case "user-document":
+      return { kind: "user-document", action: owner.action };
     case "shell":
       return { kind: "shell", toolName: owner.toolName, toolUseId: owner.toolUseId ?? null };
     case "terminal":

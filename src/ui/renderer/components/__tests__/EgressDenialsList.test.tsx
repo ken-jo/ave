@@ -54,6 +54,12 @@ describe("EgressDenialsList", () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
   });
 
+  it("names user document denials independently from tool and extension calls", async () => {
+    render(<EgressDenialsList fetcher={async () => [row({ source: { kind: "user-document", action: "workbook" } })]} />);
+    await waitFor(() => expect(screen.getAllByTestId("egress-denial-row")).toHaveLength(1));
+    expect(screen.getByTestId("egress-denials").textContent).toContain("Document action");
+  });
+
   it("shows a row of an unknown source kind instead of failing the tab", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

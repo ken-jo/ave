@@ -2041,6 +2041,7 @@ export interface AvePreviewApi {
    * zero-based index selects a sheet or page, according to the file format.
    */
   readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
+  editXlsx: (request: import("../../shared/xlsx-panel-edit.js").XlsxPanelEditRequest) => Promise<import("../../shared/xlsx-panel-edit.js").XlsxPanelEditResult>;
 }
 
 /**

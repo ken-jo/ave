@@ -213,8 +213,13 @@ describe("the private roots in a sandbox read deny", () => {
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
       expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
       const others = floor.filter((path) => !appOwnedSandboxPrivateRoots().includes(path));
+      const privatePatterns = new Set(appOwnedSandboxPrivateRoots().map((path) => {
+        const root = realpathSync(path);
+        return `${root.slice(0, -1)}[${root.slice(-1)}]`;
+      }));
+      for (const pattern of privatePatterns) expect(denyRead).toContain(pattern);
       // A marked `{ path, literal: true }` entry (ASRT 0.0.79) is kept, so it fails the equality.
-      expect(denyRead.filter((path) => typeof path !== "string" || !/\[[pef]\]$/.test(path))).toEqual(others);
+      expect(denyRead.filter((path) => !privatePatterns.has(path))).toEqual(others);
     },
   );
 

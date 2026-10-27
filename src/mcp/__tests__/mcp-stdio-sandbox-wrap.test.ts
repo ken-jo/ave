@@ -258,7 +258,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     const sensitive = getDefaultSensitiveReadDenyPaths();
     expect(options.filesystem.denyRead).toEqual(sensitive);
     const privateRoots = appOwnedSandboxPrivateRoots();
-    expect(privateRoots.map((root) => basename(root))).toEqual(["tmp", "home", "handoff"]);
+    expect(privateRoots.map((root) => basename(root))).toEqual(["tmp", "home", "handoff", "actions"]);
     for (const root of privateRoots) expect(options.filesystem.denyRead).toContain(root);
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "secrets"));
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "sessions"));

@@ -7,7 +7,7 @@ import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { editWorkbookFile } from "../../skills/xlsx-edit.js";
+import { editWorkbookFile, inspectWorkbookCell } from "../../skills/xlsx-edit.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { readDocumentResponse } from "../preview-document-protocol.js";
 import { formatDocumentToolOutput } from "../document-tool-output.js";
@@ -55,7 +55,85 @@ function run(path: string, edits: unknown, sheet = 0) {
   return spawnSync(process.execPath, [script, path, request], { encoding: "utf8" });
 }
 
+function inspect(path: string, cell: string, extra: Record<string, unknown> = {}) {
+  const request = join(directory, "inspect.json");
+  writeFileSync(request, JSON.stringify({ sheet: 0, cell, ...extra }));
+  return spawnSync(process.execPath, [script, "--inspect", path, request], { encoding: "utf8" });
+}
+
 describe("XLSX skill command", () => {
+  it("inspects raw typed values and a formula flag through the same bundled command", async () => {
+    const path = await save(await fixture());
+    for (const [cell, expected] of [["A1", { value: "Revenue", formula: false }], ["B1", { value: 12, formula: false }],
+      ["A2", { value: true, formula: false }], ["C1", { value: 24, formula: true }]] as const) {
+      const result = inspect(path, cell);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual(expected);
+    }
+    expect(run(path, [{ cell: "B1", value: 84 }]).status).toBe(0);
+    expect(JSON.parse(inspect(path, "B1").stdout)).toEqual({ value: 84, formula: false });
+    expect((await parseTableDocument(readFileSync(path), "xlsx", 0)).needsRecalculation).toBe(true);
+  });
+
+  it("retains complete text, escapes, rich runs, whitespace and raw numeric values during inspection", async () => {
+    const zip = await fixture();
+    const sheet = await zip.file("xl/worksheets/sheet1.xml")!.async("string");
+    const long = " raw ".repeat(1000);
+    zip.file("xl/worksheets/sheet1.xml", sheet
+      .replace(/<c r="A1"[\s\S]*?<\/c>/, `<c r="A1" t="inlineStr"><is><r><t xml:space="preserve">${long}</t></r><r><t>_x0041_&amp;_x005F_x0042_<![CDATA[<end>]]></t></r><r><t>_x00</t></r><r><t>41_</t></r></is></c>`)
+      .replace(/<c r="B1"[\s\S]*?<\/c>/, '<c r="B1" s="0"><v>1.2500e+2</v></c>')
+      .replace(/<c r="B2"[\s\S]*?<\/c>/, '<c r="B2"/>'));
+    const path = await save(zip);
+    expect(JSON.parse(inspect(path, "A1").stdout)).toEqual({ value: `${long}A&_x0042_<end>_x0041_`, formula: false });
+    expect(JSON.parse(inspect(path, "B1").stdout)).toEqual({ value: 125, formula: false });
+    expect(JSON.parse(inspect(path, "B2").stdout)).toEqual({ value: null, formula: false });
+  });
+
+  it("resolves and decodes shared strings without reading formatted display text", async () => {
+    const zip = await fixture();
+    zip.file("xl/_rels/workbook.xml.rels", (await zip.file("xl/_rels/workbook.xml.rels")!.async("string"))
+      .replace("</Relationships>", '<Relationship Id="strings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>'));
+    zip.file("xl/sharedStrings.xml", '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><r><rPr><b/></rPr><t>  raw&amp;</t></r><r><t>_x0041__x005F_x0042_  </t></r></si></sst>');
+    zip.file("xl/worksheets/sheet1.xml", (await zip.file("xl/worksheets/sheet1.xml")!.async("string"))
+      .replace(/<c r="A1"[\s\S]*?<\/c>/, '<c r="A1" t="s"><v>0</v></c>'));
+    const path = await save(zip);
+    expect(JSON.parse(inspect(path, "A1").stdout)).toEqual({ value: "  raw&A_x0042_  ", formula: false });
+  });
+
+  it.each([
+    ["missing cell", undefined, undefined, "D1"],
+    ["shared formula", '<f t="shared" si="0">B1*2</f>', "<f>B1*2</f>", "B1"],
+    ["cell extension", '<v>12</v><extLst/>', "<v>12</v>", "B1"],
+    ["protected sheet", '<sheetProtection sheet="1"/></worksheet>', "</worksheet>", "B1"],
+    ["table-managed sheet", '<tableParts count="1"/></worksheet>', "</worksheet>", "B1"],
+    ["merged target", '<mergeCells><mergeCell ref="B1:C1"/></mergeCells></worksheet>', "</worksheet>", "B1"],
+  ])("inspection shares the %s refusal without mutation", async (_label, replacement, search, cell) => {
+    const zip = await fixture();
+    if (search && replacement) zip.file("xl/worksheets/sheet1.xml", (await zip.file("xl/worksheets/sheet1.xml")!.async("string")).replace(search, replacement));
+    const path = await save(zip);
+    const before = readFileSync(path);
+    expect(inspect(path, cell!).status).toBe(1);
+    expect(readFileSync(path).equals(before)).toBe(true);
+  });
+
+  it("refuses extra inspection fields, invalid shared indices and over-limit raw text", async () => {
+    const zip = await fixture();
+    const path = await save(zip);
+    expect(inspect(path, "B1", { path: "other.xlsx" }).status).toBe(1);
+    expect(inspect(path, "B1", { formula: "1+1" }).status).toBe(1);
+    const xml = await zip.file("xl/worksheets/sheet1.xml")!.async("string");
+    zip.file("xl/worksheets/sheet1.xml", xml.replace(/<c r="A1"[\s\S]*?<\/c>/, '<c r="A1" t="s"><v>-1</v></c>'));
+    expect(() => inspectWorkbookCell(Buffer.from([]), { sheet: 0, cell: "A1" })).toThrow();
+    expect(() => inspectWorkbookCell(readFileSync(path), { sheet: 0, cell: "B1", extra: true })).toThrow("Expected sheet and cell only.");
+    expect(() => inspectWorkbookCell(readFileSync(path), { sheet: 0, cell: "D1" })).toThrow("existing cell");
+    await save(zip);
+    expect(inspect(path, "A1").status).toBe(1);
+    zip.file("xl/worksheets/sheet1.xml", xml.replace(/<c r="A1"[\s\S]*?<\/c>/, `<c r="A1" t="inlineStr"><is><t>${"x".repeat(32768)}</t></is></c>`));
+    await save(zip);
+    expect(inspect(path, "A1").status).toBe(1);
+  });
+
   it("runs the bundled command without package resolution", async () => {
     const path = await save(await fixture());
     expect(run(path, [{ cell: "B1", value: 21 }]).status).toBe(0);

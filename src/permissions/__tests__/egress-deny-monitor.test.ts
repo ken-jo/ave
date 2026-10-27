@@ -133,6 +133,13 @@ describe("unparsed and hostile deny lines", () => {
 });
 
 describe("startEgressDenyMonitor", () => {
+  it("attributes offline document attempts to the user document action", async () => {
+    const { store, rows } = await monitored();
+    const document = invocation({ kind: "user-document", action: "workbook" });
+    deny(store, "deny network-outbound example.com:443 (domain not allowed)", document.token);
+    expect(rows[0]!.invocation).toEqual({ kind: "user-document", action: "workbook" });
+    expect(JSON.stringify(rows[0])).not.toContain(document.token);
+  });
   it("records a strict-allowlist deny of a Bash call under that call's toolUseId", async () => {
     const { store, rows } = await monitored();
     const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_01FIXTURE", context: TEST_SHELL_EGRESS_CONTEXT });

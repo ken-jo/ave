@@ -17,6 +17,8 @@ interface EgressDenialsListProps {
 /** Who opened the refused connection, as one line of text. */
 function egressDenialSourceText(source: EgressDenialSource): string {
   switch (source.kind) {
+    case "user-document":
+      return t("permissionsTab.networkDenialSourceDocument");
     case "shell": {
       const tool = source.toolName === "bash" ? "Bash" : "PowerShell";
       return source.toolUseId === null

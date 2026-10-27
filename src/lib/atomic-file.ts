@@ -40,11 +40,12 @@ const DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME: ParentDirectorySyncRuntime = {
   close: closeSync,
 };
 
-/** Rename a staged filesystem entry with the shared synchronous lock policy. */
+/** Rename a staged entry with the shared lock policy. Guard failures abort without retry. */
 export function replaceStagedFile(
   from: string,
   to: string,
   runtime: ParentDirectorySyncRuntime = DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME,
+  beforeRename?: () => void,
 ): void {
   const rename = runtime.rename ?? renameSync;
   const wait = runtime.wait ?? ((milliseconds: number) => {
@@ -53,6 +54,7 @@ export function replaceStagedFile(
   // Policy (codes, curve, budget) comes from transient-fs-lock-retry.ts so this ladder and the async one in plugin-artifact-store.ts cannot drift apart again; they previously
   // disagreed 60ms vs 1750ms. The SYNC budget is the small one on purpose: this blocks the caller, and for the settings/secret/ session writers that caller is the Electron main thread.
   for (let attempt = 1; ; attempt += 1) {
+    beforeRename?.();
     try {
       rename(from, to);
       return;
