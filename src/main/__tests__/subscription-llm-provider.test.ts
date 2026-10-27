@@ -968,24 +968,27 @@ describe("SubscriptionLlmProvider", () => {
     }]);
   });
 
-  it("reports an unsupported selection without retrying or creating an API route", async () => {
+  it.each([
+    ["subscription-model-not-supported", "subscription model not supported"],
+    ["subscription-runtime-native-required", "native subscription runtime installation required"],
+  ] as const)("reports %s without retrying or creating an API route", async (code, messagePreview) => {
     const service = {
       openTextSession: vi.fn(async () => {
-        throw new SubscriptionRuntimeServiceError("subscription-model-not-supported");
+        throw new SubscriptionRuntimeServiceError(code);
       }),
     } as Pick<SubscriptionRuntimeService, "openTextSession">;
     const getApiKey = vi.fn(() => { throw new Error("API-key fallback must not be created"); });
-    const retrying = new FallbackProvider(providerWith(service), [{ provider: "claude", model: "fallback-model" }], getApiKey);
+    const retrying = new FallbackProvider(providerWith(service, "claude-code"), [{ provider: "claude", model: "fallback-model" }], getApiKey);
     const events = await collect(retrying.streamTurn(params()));
     expect(service.openTextSession).toHaveBeenCalledOnce();
     expect(getApiKey).not.toHaveBeenCalled();
     expect(events).toEqual([{
       type: "error",
-      error: "subscription-model-not-supported",
+      error: code,
       classification: "subscription-chat-unavailable",
       providerError: {
-        origin: "unknown", providerCode: "subscription-model-not-supported", isRetryable: false,
-        messagePreview: "subscription model not supported",
+        origin: "unknown", providerCode: code, isRetryable: false,
+        messagePreview,
       },
     }]);
   });

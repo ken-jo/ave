@@ -85,7 +85,7 @@ export async function copyExecutableFile(
 }
 
 // Copy a source whose location the caller already admitted, for example in one batch.
-export async function copyAdmittedExecutableFile(
+async function copyAdmittedExecutableFile(
   source: string,
   executable: string,
 ): Promise<ExecutableArtifactFile> {

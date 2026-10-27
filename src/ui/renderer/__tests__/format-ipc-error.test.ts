@@ -7,6 +7,8 @@ import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
 
 describe("formatIpcError (SOT — #830)", () => {
   it.each([
+    ["en", "subscription-runtime-native-required", "This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again."],
+    ["ko", "subscription-runtime-native-required", "이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요."],
     ["ko", "subscription-model-not-supported", "선택한 모델을 사용할 수 없습니다. 설정에서 지원되는 모델을 선택하세요."],
     ["en", "subscription-model-not-supported", "The selected model is unavailable. Choose a supported model in Settings."],
     ["ko", "invalid-send-request-id", "잘못된 입력입니다."],

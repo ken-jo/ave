@@ -153,7 +153,7 @@ async function conversation(tools: readonly ToolSchema[] = [], resolveExecutable
   const runtime = new ClaudeCodeConversationRuntime({ ...directories, bridge, ...harness,
     resolveRuntime: async () => ({
       executable: await (resolveExecutable ?? (async (path: string) => path))("/approved/claude"),
-      args: [], identity: "approved", verify: async () => {
+      identity: "approved", verify: async () => {
         if (resolveExecutable && await resolveExecutable("/approved/claude") !== "/approved/claude") {
           throw new Error("Executable changed");
         }
@@ -185,7 +185,7 @@ describe("CLI conversation boundary", () => {
     const validate = vi.spyOn(subscriptionClient, "validateClaudeCodeRuntimeDirectories").mockResolvedValue();
     const runtime = new ClaudeCodeConversationRuntime({ ...directories, ...harness, bridge: new SubscriptionToolBridge([]),
       resolveRuntime: async () => ({
-        executable: "/approved/runtime", args: [], identity: "approved", routeKind: "native",
+        executable: "/approved/runtime", identity: "approved",
         verify: async () => { throw new CodexExecutableLocationError("Rejected fixture location"); },
         discard: async () => undefined,
       }),
@@ -193,7 +193,7 @@ describe("CLI conversation boundary", () => {
     owners.push(runtime);
     await expect(collect(runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-unsafe-location" });
     expect(validate).toHaveBeenCalledTimes(2);
-    expect(validate.mock.calls.every(([, rule]) => rule === "native")).toBe(true);
+    expect(validate.mock.calls.every((call) => call.length === 1)).toBe(true);
     expect(harness.spawn).not.toHaveBeenCalled();
   });
 
@@ -395,7 +395,7 @@ function installedCli(root: string, install = true): { executable: string; candi
 async function pinForTest(executable: string): Promise<ClaudeCodeExecutable> {
   const hash = () => createHash("sha256").update(readFileSync(executable)).digest("hex");
   const identity = hash();
-  return { executable, args: [], identity, verify: async () => {
+  return { executable, identity, verify: async () => {
     if (hash() !== identity) throw new Error("Executable changed");
   }, discard: async () => undefined };
 }
@@ -593,29 +593,29 @@ describe("CLI account and verification boundary", () => {
 });
 
 describe("Claude Code CLI discovery", () => {
-  it.runIf(process.platform === "win32")("selects a native executable when both it and an earlier npm shim exist", async () => {
+  it.runIf(process.platform === "win32")("refuses an earlier package shim without selecting a later native executable", async () => {
     const directories = await paths();
     const npm = join(directories.runtimeHome, "npm");
     const native = join(directories.runtimeHome, "native");
     mkdirSync(npm); mkdirSync(native);
     const executable = join(native, "claude.exe");
-    writeCli(join(npm, "claude.cmd")); writeCli(executable);
+    writeCli(join(npm, "claude.cmd")); writeNativeExecutable(executable);
     const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
     const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
       candidates: () => claudeCodeExecutableCandidates({ platform: "win32", env: { PATH: `${npm};${native}` }, homeDir: directories.runtimeHome }),
-      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
+      resolveExecutable: async (path) => path });
     owners.push(client);
-    await expect(client.getStatus()).resolves.toMatchObject({ runtime: "unverified" });
-    expect(harness.spawn.mock.calls.every(([path]) => path === executable)).toBe(true);
-    expect(harness.spawn).toHaveBeenCalled();
+    await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-native-required" });
+    expect(harness.spawn).not.toHaveBeenCalled();
+    expect(readdirSync(directories.runtimeTempDir)).toEqual([]);
   });
 
-  it("prefers native installations over npm shims across PATH and install directories", () => {
+  it("preserves directory precedence when enumerating native and package launchers", () => {
     const candidates = claudeCodeExecutableCandidates({ platform: "win32",
       env: { PATH: "C:\\npm;C:\\native", USERPROFILE: "C:\\Users\\example", APPDATA: "C:\\Users\\example\\AppData\\Roaming" },
       homeDir: "C:\\Users\\example" });
-    expect(candidates.indexOf("C:\\native\\claude.exe")).toBeLessThan(candidates.indexOf("C:\\npm\\claude.cmd"));
-    expect(candidates.indexOf("C:\\Users\\example\\.local\\bin\\claude.exe")).toBeLessThan(candidates.indexOf("C:\\npm\\claude.cmd"));
+    expect(candidates.indexOf("C:\\npm\\claude.cmd")).toBeLessThan(candidates.indexOf("C:\\native\\claude.exe"));
+    expect(candidates.indexOf("C:\\npm\\claude.cmd")).toBeLessThan(candidates.indexOf("C:\\Users\\example\\.local\\bin\\claude.exe"));
   });
 
   async function discoveryHarness(qualification: Qualification = {}, install = true) {
@@ -640,7 +640,7 @@ describe("Claude Code CLI discovery", () => {
     ]);
     expect(claudeCodeExecutableCandidates({
       platform: "win32", env: { Path: "C:\\Tools;relative", USERPROFILE: "C:\\Users\\example" }, homeDir: "C:\\ignored",
-    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Users\\example\\.local\\bin\\claude.exe", "C:\\Tools\\claude.cmd"]);
+    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Tools\\claude.cmd", "C:\\Users\\example\\.local\\bin\\claude.exe"]);
   });
 
   it("checks the runtime version identity and advertised auth commands", () => {
@@ -866,7 +866,7 @@ describe("Claude service integration", () => {
     const status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
     const verify = vi.fn(async () => status);
     const client = {
-      getStatus: vi.fn(async () => status), verify, verifiedRuntime: async () => ({ executable: "/approved/claude", args: [], identity: "approved", verify: async () => undefined }),
+      getStatus: vi.fn(async () => status), verify, verifiedRuntime: async () => ({ executable: "/approved/claude", identity: "approved", verify: async () => undefined }),
       getRuntimePaths: () => directories, stop: vi.fn(async () => undefined),
     } as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {

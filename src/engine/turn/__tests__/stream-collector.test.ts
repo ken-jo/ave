@@ -73,19 +73,21 @@ describe("image capability refusal", () => {
 
 describe("provider completion boundary", () => {
   it.each([
-    ["en", "Error: The selected model could not be found. Please check the model in your settings."],
-    ["ko", "오류: 선택한 모델을 찾을 수 없습니다. 설정에서 모델을 확인해주세요."],
-  ] as const)("localizes a subscription model refusal in %s without exposing diagnostics", async (locale, userMessage) => {
+    ["en", "subscription-model-not-supported", "model", "Error: The selected model could not be found. Please check the model in your settings."],
+    ["ko", "subscription-model-not-supported", "model", "오류: 선택한 모델을 찾을 수 없습니다. 설정에서 모델을 확인해주세요."],
+    ["en", "subscription-runtime-native-required", "unknown", "Error: This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again."],
+    ["ko", "subscription-runtime-native-required", "unknown", "오류: 이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요."],
+  ] as const)("localizes %s %s without exposing diagnostics", async (locale, code, classification, userMessage) => {
     setLocale(locale);
     const result = await collectRoundStream({
       provider: new SubscriptionCapturingProvider([{
-        type: "error", error: "subscription-model-not-supported",
-        providerError: { origin: "unknown", providerCode: "subscription-model-not-supported",
+        type: "error", error: code,
+        providerError: { origin: "unknown", providerCode: code,
           messagePreview: "private runtime diagnostic", isRetryable: false },
       }]),
       model: "test-model", systemPrompt: "system", messages: [], toolSchemas: [], llmSettings: LLM_SETTINGS,
     });
-    expect(result).toMatchObject({ kind: "stream_error", classification: "model", userMessage });
+    expect(result).toMatchObject({ kind: "stream_error", classification, userMessage });
   });
 
   it.each(["started", "cancelled", "runtime-switched"] as const)(

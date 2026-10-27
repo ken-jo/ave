@@ -211,13 +211,17 @@ export async function collectRoundStream(
           const imageInputRefused = event.code === "image-input-unsupported";
           const subscriptionModelRefused = provider.subscriptionRuntime !== undefined
             && event.providerError?.providerCode === "subscription-model-not-supported";
+          const subscriptionNativeRequired = provider.subscriptionRuntime !== undefined
+            && event.providerError?.providerCode === "subscription-runtime-native-required";
           const classification = imageInputRefused || subscriptionModelRefused
             ? "model" : event.providerError?.classification ?? classified.category;
           const userMessage = imageInputRefused
             ? `${t("be_streamCollector.imageInputUnsupported")} ${imageInputRecoveryMessage(t)}`
             : subscriptionModelRefused
               ? t("be_errorClassifier.modelNotFound")
-              : classified.userMessage;
+              : subscriptionNativeRequired
+                ? t("be_streamCollector.nativeRuntimeRequired")
+                : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
             classification,

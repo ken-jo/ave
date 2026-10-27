@@ -3,8 +3,10 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "be_streamCollector.nativeRuntimeRequired": "이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요.",
   "modelBilling.subscription": "API 키가 아닌 본인의 {plan} 구독으로 청구됩니다.",
   "modelBilling.apiKey": "설정한 본인의 API 키로 청구됩니다.",
+  "formatIpcError.subscriptionRuntimeNativeRequired": "이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요.",
   "formatIpcError.subscriptionModelNotSupported": "선택한 모델을 사용할 수 없습니다. 설정에서 지원되는 모델을 선택하세요.",
   "providerSettingsError.title": "공급자 설정을 불러올 수 없습니다",
   "providerSettingsError.detail": "설정 파일에 올바르지 않은 필드가 있습니다.\n\n파일: {path}\n필드: {field}\n\n이 필드를 수정한 뒤 Ave를 다시 시작하세요. 파일은 변경되지 않았습니다.",

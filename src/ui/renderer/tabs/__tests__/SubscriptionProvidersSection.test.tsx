@@ -342,10 +342,27 @@ describe("SubscriptionAuthControls", () => {
     expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
   });
 
-  it("recommends the native Windows installer when an npm route is unsafe", () => {
-    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-unsafe-npm-location" })], { refreshStatus: vi.fn() });
-    expect(screen.getByTestId("subscription-provider:claude-code:error"))
-      .toHaveTextContent("the native Claude Code installer (claude.exe) is recommended");
+  it.each([
+    ["en", "This subscription runtime requires a native installation. Run claude install or use the official native installer, then remove the npm-installed copy and check again."],
+    ["ko", "이 구독 실행 환경은 네이티브 설치가 필요합니다. claude install 또는 공식 네이티브 설치 프로그램으로 설치한 다음 npm으로 설치한 복사본을 제거하고 다시 확인하세요."],
+  ] as const)("explains manual native migration and offers recheck in %s", async (locale, message) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const refreshStatus = vi.fn();
+    const beginLogin = vi.fn();
+    renderProviders([viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-native-required" })], { refreshStatus, beginLogin });
+    expect(screen.getByTestId("subscription-provider:claude-code:error")).toHaveTextContent(message);
+    const guidance = screen.getByTestId("subscription-provider:claude-code:native-install-guidance");
+    expect(guidance).toHaveTextContent("claude install");
+    expect(guidance).toHaveTextContent("npm uninstall -g @anthropic-ai/claude-code");
+    expect(guidance).toHaveTextContent("https://code.claude.com/docs/en/setup");
+    expect(guidance).not.toHaveTextContent("npm install");
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+    expect(beginLogin).not.toHaveBeenCalled();
+    expect(within(guidance).getAllByRole("button")).toEqual([screen.getByTestId("subscription-provider:claude-code:check-again")]);
+    expect(refreshStatus).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("subscription-provider:claude-code:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("claude-code");
   });
 
   it("shows a found Claude Code CLI that lacks what Ave passes as an update, not a picker", () => {

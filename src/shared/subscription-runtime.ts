@@ -446,7 +446,6 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
         Object.freeze({ label: "Windows (PowerShell)", command: "irm https://claude.ai/install.ps1 | iex" }),
         Object.freeze({ label: "Homebrew", command: "brew install --cask claude-code" }),
         Object.freeze({ label: "WinGet", command: "winget install Anthropic.ClaudeCode" }),
-        Object.freeze({ label: "npm", command: "npm install -g @anthropic-ai/claude-code" }),
       ]),
     }),
   },
@@ -503,7 +502,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-runtime-not-configured"
   | "subscription-runtime-unavailable"
   | "subscription-runtime-unsafe-location"
-  | "subscription-runtime-unsafe-npm-location"
+  | "subscription-runtime-native-required"
   | "subscription-runtime-version-unsupported"
   | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"

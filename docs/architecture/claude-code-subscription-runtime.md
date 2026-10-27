@@ -13,32 +13,20 @@ symlink owner must be the current account or root; group/world mutation is
 rejected except for sticky root-owned directories. Windows uses owner/DACL
 checks; extended access rules follow the same shared policy.
 
-Native executables run from a private, sealed, content-hashed copy. Package
-launchers resolve only the official package's `cli.js` and a pinned native
-interpreter, without a shell. The interpreter, package files and declared
-required/optional/peer dependency closure are copied through the same no-follow
-hashing and sealing primitives. Dependency directory layout is preserved, so
-nested and hoisted dependencies resolve inside the snapshot. Missing required
-dependencies, package symlinks and unsupported script interpreters fail closed.
-The manifest covers the declared transitive dependency graph. It does not
-enforce a separate direct-dependency allowlist for each package: a package may
-resolve another copied graph member when ordinary module resolution reaches it.
+Only standalone native installations are supported. Script launchers, command
+shims and npm-managed installations fail with
+`subscription-runtime-native-required` before qualification, authentication or
+conversation spawn. The settings guidance offers manual migration with
+`claude install` or the official native installer, followed by removal of the
+npm-managed copy and another availability check. Ave does not run migration
+commands or select a later executable after rejecting the first runnable one.
 
-Package entry points run only from that snapshot. A sealed preload registers
-synchronous module resolution/loading hooks before entry execution. Both import
-and require are restricted to built-ins and the copied file manifest. Global
-module search is disabled; module sources outside the graph manifest, including
-absolute and network imports, are rejected. JavaScript and JSON code are loaded from
-no-follow handles and checked against their digests at load time. The script
-interpreter must support synchronous loading hooks (22.15.0 or later on the 22.x
-line, 23.5.0 or later on newer lines); unsupported runtimes are rejected before the CLI probe.
-Copied package metadata is also checked around resolution and loading.
-The invocation uses the private snapshot rather than reopening installed script
-paths, so ordinary installer replacements do not change its copied code.
-
-Qualification, authentication and each turn recheck the original launcher route,
-source dependency graph and the sealed private artifact immediately before
-spawn. Changes detected by these checks refuse the next turn of an existing session.
+Native executables run from a private, sealed, content-hashed copy. Admission
+requires the platform's native executable format; there is no interpreter,
+package snapshot, module loader or launcher argument prefix. Qualification,
+authentication and each turn recheck the original launcher route and the sealed
+private artifact immediately before spawn. Changes refuse the next turn of an
+existing session.
 The final hash check and spawn are not atomic. A same-UID or root attacker who can
 modify the private directory can replace its executable after the check for one
 invocation. That compromise is outside the current-user/root trust boundary;

@@ -4,7 +4,7 @@ import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../shared/windows-owner-claim.js";
 import { constants, promises as fs, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, posix, resolve as resolvePath, win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRecord } from "../shared/is-record.js";
 import { createLogger } from "../lib/logger.js";
@@ -920,24 +920,6 @@ export async function createPrivateObjects<T>(create: (created: string[]) => Pro
     for (const path of [...created].reverse()) await fs.rm(path, { recursive: true, force: true });
     throw error;
   }
-}
-
-// `fs.mkdir` with `recursive` that records, parents first, each directory it made, for {@link createPrivateObjects}.
-export async function makePrivateDirectoryTree(path: string, created: string[]): Promise<void> {
-  const reported = await fs.mkdir(path, { recursive: true, mode: 0o700 });
-  if (reported === undefined) return;
-  // Normalize namespaced Windows paths and drive case; reject mkdir reports outside the target to keep rollback from deleting unrelated directories.
-  const first = resolvePath(process.platform === "win32" ? reported.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "") : reported);
-  const same = (left: string, right: string) => process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
-  const made: string[] = [];
-  let directory = resolvePath(path);
-  for (; !same(directory, first); directory = dirname(directory)) {
-    if (dirname(directory) === directory) {
-      throw new CodexExecutableLocationError(`Created directory is outside the requested path: ${JSON.stringify(reported)} for ${JSON.stringify(path)}`);
-    }
-    made.unshift(directory);
-  }
-  created.push(directory, ...made);
 }
 
 // Claim each directory for the current account in order; the first parent must exist, and later paths may nest in earlier ones.

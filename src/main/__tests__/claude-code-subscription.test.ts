@@ -168,7 +168,7 @@ function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
     getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
     verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
     verifiedRuntime: vi.fn(async () => ({
-      executable: "/approved/claude", args: [], identity: "approved-runtime",
+      executable: "/approved/claude", identity: "approved-runtime",
       verify: vi.fn(async () => undefined), discard: vi.fn(async () => undefined),
     })),
     getRuntimePaths: vi.fn(() => ({

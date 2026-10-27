@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeConversationRuntime } from "../claude-code-conversation-runtime.js";
 import { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
 import type { ClaudeCodeExecutable } from "../claude-code-executable.js";
+import { nativeExecutableBytes } from "../../__tests__/support/native-executable.js";
 import * as locations from "../codex-executable-location.js";
 import * as managed from "../managed-child-processes.js";
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
@@ -30,8 +31,8 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
     "../shared/claude-code-subscription.js": ["CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID", "claudeCodeSubscriptionStatus", "ClaudeCodeSubscriptionErrorCode", "ClaudeCodeSubscriptionStatus"],
     "./managed-child-processes.js": ["forceKillManagedChildProcess", "spawnManaged"],
     "./user-cli-discovery.js": ["cliEnvironmentValue", "cliExecutableCandidates", "cliPathApi", "usableCliDirectory", "CliDiscoveryEnvironment"],
-    "./claude-code-executable.js": ["pinClaudeCodeExecutable", "ClaudeCodeExecutable"],
-    "./codex-executable-location.js": ["assertCodexLocations", "CodexExecutableLocationError", "createPrivateTempDirectory", "CodexLocationRequest"],
+    "./claude-code-executable.js": ["ClaudeCodeNativeRequiredError", "pinClaudeCodeExecutable", "ClaudeCodeExecutable"],
+    "./codex-executable-location.js": ["assertCodexLocations", "CodexExecutableLocationError", "createPrivateTempDirectory"],
   },
   "claude-code-conversation-runtime.ts": {
     "node:child_process": ["ChildProcess", "SpawnOptions"],
@@ -56,18 +57,29 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
   "claude-code-stream.ts": {
     "../shared/is-record.js": ["isRecord"],
   },
+  "claude-code-executable.ts": {
+    "node:fs": ["promises"],
+    "node:path": ["join"],
+    "./codex-executable-artifact.js": ["copyNativeExecutableFile", "discardCodexExecutableArtifact", "hashExecutableFile", "openExecutableFile", "verifyCodexExecutableArtifact", "CodexExecutableArtifact"],
+    "./codex-executable-location.js": ["assertCodexExecutableLocation", "assertCodexPrivateRuntimeDirectory", "createPrivateObjects", "createPrivateTempDirectory"],
+    "./native-executable-format.js": ["isNativeExecutableFile"],
+    "./user-cli-discovery.js": ["CliDiscoveryEnvironment"],
+  },
 };
 
-// Path provenance lives in these four functions. A source change requires reviewing the producer and cleanup together,
+// Path provenance lives in these filesystem-owning functions. A source change requires reviewing the producer and cleanup together,
 // rather than accepting the same variable name after retargeting it. This deliberately freezes direct source, not transitive behavior.
 const TRANSPORT_FS_OWNER_DIGESTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "claude-code-subscription-client.ts": {
     "resolveClaudeCodeSubscriptionExecutable": "36bc9fe7fcd9e3e16e2c6ed000dc51c93ecc2607d95bdb612e6475e493cd82a9",
-    "locate": "d48247430bcc4c9885feca898c93f7aacf31edc9850449f5c481fa0ad47e15ef",
-    "qualify": "d16e0a46044d9887c716fff968c3b45da7cccf996122987b6ae939ded3141ec0"
+    "locate": "d45d3bd283df7eefb166d3988140fd17d26be73a3d4498f23f1c2568d4a036f0",
+    "qualify": "d671cee95ea05b799fdd37e884e004307fdaba78cb9a89c7965e46389c999e62"
   },
   "claude-code-conversation-runtime.ts": {
-    "streamTurn": "5fdbbaeba2ad818c4edc83376557b8a27aeaba144cd2a1a34e10d1d5d836518c"
+    "streamTurn": "10159534fafced47164c2004cdb93928ecddd7a51534125005201c7e204fbc1a"
+  },
+  "claude-code-executable.ts": {
+    "pinClaudeCodeExecutable": "d21ff613e6038ac9030c42d5a38c39f0c0045d0ac5e4a6e16d6aa5b12bf6832a"
   }
 };
 
@@ -75,6 +87,7 @@ const TRANSPORT_FS_OPERANDS: Readonly<Record<string, Readonly<Record<string, rea
   "claude-code-subscription-client.ts": { realpath: ["candidate"], stat: ["executable"], access: ["executable"], lstat: ["candidate"], rm: ["probeHome"] },
   "claude-code-conversation-runtime.ts": { rm: ["configPath"] },
   "claude-code-stream.ts": {},
+  "claude-code-executable.ts": { realpath: ["candidate"], rm: ["directory"] },
 };
 
 function wholeParentEnvironmentUse(node: ts.PropertyAccessExpression, file: string): boolean {
@@ -104,12 +117,19 @@ function transportPolicyViolations(source: ts.SourceFile, file: string): string[
       reject(!(ts.isImportSpecifier(node.parent) || (ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)),
         "filesystem alias or computed access bypasses the credential capability guard");
     }
+    if (ts.isInterfaceDeclaration(node) && node.name.text === "ClaudeCodeExecutable") {
+      reject(node.members.map((member) => ts.isPropertySignatureDeclaration(member) || ts.isMethodSignatureDeclaration(member) ? member.name.getText() : "unsupported-member").join(",") !== "executable,identity,verify,discard",
+        "native executable contract must not carry interpreter or loader prefix arguments");
+    }
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "args" && ts.isIdentifier(node.expression) && node.expression.text === "runtime") {
+      reject(true, "admitted native runtime must not inject interpreter or loader arguments");
+    }
     if (ts.isIdentifier(node)) {
       reject(node.text === "Bun", "alternate runtime aliases must not bypass environment sanitization");
       reject(/^(?:accessToken|refreshToken|oauthAccount|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN)$/u.test(node.text),
         "credential or token identifiers must remain private to the CLI");
       if (node.text === "process") reject(!(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node
-        && ["env", "platform"].includes(node.parent.name.text)), "process aliases and computed environment access require policy review");
+        && ["env", "platform", ...(file === "claude-code-executable.ts" ? ["arch"] : [])].includes(node.parent.name.text)), "process aliases and computed environment access require policy review");
     }
     if (ts.isPropertyAccessExpression(node)) {
       if (/^(?:ANTHROPIC_|CLAUDE_)/u.test(node.name.text)) {
@@ -210,6 +230,7 @@ const children: PolicyChild[] = [];
 const owners: Array<{ stop(): Promise<void> }> = [];
 beforeEach(() => {
   vi.spyOn(locations, "assertCodexLocations").mockResolvedValue();
+  vi.spyOn(locations, "assertCodexExecutableLocation").mockResolvedValue();
   vi.spyOn(locations, "createPrivateTempDirectory").mockImplementation((prefix) => fs.mkdtemp(prefix));
   vi.spyOn(managed, "forceKillManagedChildProcess").mockImplementation((child) => { child.kill(); });
   vi.spyOn(managed, "spawnManaged").mockImplementation(() => { throw new Error("Unexpected real process launch"); });
@@ -234,7 +255,7 @@ async function fixture() {
   await fs.writeFile(executable, "fixture-runtime", { mode: 0o700 });
   const verify = vi.fn(async () => undefined);
   const artifact: ClaudeCodeExecutable = {
-    executable, args: [], routeKind: "native", identity: "fixture-admitted-runtime", verify,
+    executable, identity: "fixture-admitted-runtime", verify,
     discard: async () => undefined,
   };
   return { ...paths, artifact, verify };
@@ -293,28 +314,58 @@ describe("subscription launch policy", () => {
     expect(copyFile, "Account commands must not copy credential files in the host").not.toHaveBeenCalled();
   });
 
-  it("uses only documented print flags with isolated credentials at the conversation spawn boundary", async () => {
+  it.each([
+    ["plain script", "installed-script", false],
+    ["command shim", "claude.cmd", false],
+    ["package-managed script", "node_modules/@anthropic-ai/claude-code/cli.js", false],
+    ["package-managed native binary", "node_modules/@anthropic-ai/claude-code/vendor/claude", true],
+    ["platform package native binary", "node_modules/@anthropic-ai/claude-code-darwin-arm64/claude", true],
+  ] as const)("refuses %s before account launch", async (_label, relativePath, native) => {
     const f = await fixture();
+    const candidate = join(f.runtimeTempDir, relativePath);
+    await fs.mkdir(join(candidate, ".."), { recursive: true });
+    await fs.writeFile(candidate, native ? nativeExecutableBytes(process.platform) : "#!/usr/bin/env node\nfixture script\n", { mode: 0o700 });
+    const spawn = vi.fn(() => { throw new Error("Rejected installation must not launch"); });
+    const client = new ClaudeCodeSubscriptionClient({ ...f, spawn, candidates: () => [candidate], resolveExecutable: async (path) => path });
+    owners.push(client);
+    await expect(client.startBrowserLogin()).rejects.toMatchObject({ code: "claude-code-runtime-native-required" });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(managed.spawnManaged).not.toHaveBeenCalled();
+    expect(await fs.readdir(f.runtimeHome)).toEqual([]);
+  });
+
+  it.each([
+    { model: undefined, tools: false },
+    { model: "claude-sonnet-5-5", tools: false },
+    { model: undefined, tools: true },
+    { model: "claude-sonnet-5-5", tools: true },
+  ])("uses only documented print flags at the conversation boundary ($model, tools=$tools)", async ({ model, tools }) => {
+    const f = await fixture();
+    const toolNames = tools ? ["mcp__ave-host-tools__read_project_file"] : [];
+    const bridge = new SubscriptionToolBridge(tools ? [{ name: "read_project_file", description: "Read a file through the host", inputSchema: { type: "object", properties: {} } }] : []);
+    vi.spyOn(bridge, "startMcpServer").mockResolvedValue({ name: "ave-host-tools", command: "/host/mcp", args: [], env: {} });
     const spawn = vi.fn((command: string, args: readonly string[], options: SpawnOptions) => {
       assertIsolatedSpawn(command, options, f);
       const config = args[args.indexOf("--mcp-config") + 1]!;
       expect(args).toEqual([
         "-p", "--output-format", "stream-json", "--verbose", "--tools", "", "--permission-mode", "default",
         "--strict-mcp-config", "--mcp-config", config, "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
-        "--disable-slash-commands", "--no-chrome", "--no-session-persistence", "--model", "claude-sonnet-5-5",
+        "--disable-slash-commands", "--no-chrome", "--no-session-persistence",
+        ...(model ? ["--model", model] : []),
+        ...(tools ? ["--allowedTools", toolNames.join(",")] : []),
       ]);
       expect(config.startsWith(join(f.runtimeTempDir, "mcp-"))).toBe(true);
-      expect(JSON.parse(readFileSync(config, "utf8"))).toEqual({ mcpServers: {} });
+      expect(JSON.parse(readFileSync(config, "utf8"))).toEqual({ mcpServers: tools ? { "ave-host-tools": { command: "/host/mcp", args: [], env: {} } } : {} });
       const child = new PolicyChild(); children.push(child);
       setImmediate(() => {
-        child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID, tools: [], mcp_servers: [], plugins: [] })}\n`);
+        child.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: SESSION_ID, tools: toolNames, mcp_servers: tools ? [{ name: "ave-host-tools", status: "connected" }] : [], plugins: [] })}\n`);
         child.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done", session_id: SESSION_ID })}\n`);
         child.close();
       });
       return child as unknown as ChildProcess;
     });
-    const runtime = new ClaudeCodeConversationRuntime({ ...f, spawn, bridge: new SubscriptionToolBridge([]),
-      model: "claude-sonnet-5-5", resolveRuntime: async () => f.artifact,
+    const runtime = new ClaudeCodeConversationRuntime({ ...f, spawn, bridge,
+      model, resolveRuntime: async () => f.artifact,
     });
     owners.push(runtime);
     const events = [];
@@ -349,6 +400,9 @@ describe("subscription launch policy", () => {
     ["approved cleanup name from the real home", 'class Client { async qualify() { const probeHome = join(homedir(), ".claude"); await fs.rm(probeHome); } }', "review path provenance"],
     ["approved cleanup name from another identifier", "class Client { async qualify() { const probeHome = sensitivePath; await fs.rm(probeHome); } }", "review path provenance"],
     ["approved executable name from another identifier", "async function resolveClaudeCodeSubscriptionExecutable() { const executable = sensitivePath; await fs.stat(executable); }", "review path provenance"],
+    ["script helper dependency", 'import { copySubscriptionPackageArtifact } from "./subscription-package-artifact.js";', "unreviewed dependency"],
+    ["interpreter prefix contract", "interface ClaudeCodeExecutable { executable: string; args: readonly string[]; identity: string; verify(): Promise<void>; discard(): Promise<void> }", "must not carry interpreter or loader prefix"],
+    ["interpreter prefix at spawn", "const arguments = [...runtime.args];", "must not inject interpreter or loader"],
     ["environment alias", "const inherited = process.env;", "parent environment may only enter"],
     ["alternate runtime environment", "const token = Bun.env.TOKEN;", "alternate runtime environment"],
     ["retargeted cleanup", 'await fs.rm("/home/example/.claude");', "reviewed executable or isolated runtime operand"],
