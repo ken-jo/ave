@@ -618,6 +618,10 @@ describe("native engine and fixture preconditions", () => {
   // Runs last in this file so the CI log records which branch every control took.
   it("reports the branch every native control took on this engine", () => {
     process.stderr.write(`[git-readonly-controls] native Git ${NATIVE_GIT.version}: ${branches.positive} positive controls, ${branches.belowFloor} below-floor refusals\n`);
+    // CI runners must prove the recipe itself; only a local older engine may take the refusal branch.
+    if (process.env.CI) {
+      expect(NATIVE_GIT.admissible, `CI requires native Git ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor} or newer, found ${NATIVE_GIT.version}`).toBe(true);
+    }
     if (NATIVE_GIT.admissible) expect(branches.belowFloor).toBe(0);
     else expect(branches.positive).toBe(0);
   });
