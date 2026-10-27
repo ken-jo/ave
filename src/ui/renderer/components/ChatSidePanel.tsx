@@ -1231,7 +1231,8 @@ export function ChatSidePanel({
         className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
       >
         {tabStripContent}
-        <TerminalObservationContent sessionId={sessionId} />
+        {/* A retained panel (side chat, agent browser tab) stays mounted while closed; unmounting here releases the terminal subscription, and reopening subscribes afresh. */}
+        {visible ? <TerminalObservationContent sessionId={sessionId} /> : null}
 
         <div className="relative min-h-0 flex-1 overflow-hidden" data-active-tab-kind={activeTab?.kind} data-active-tab-mode={activeTab?.mode}>
           {activeTab == null ? (

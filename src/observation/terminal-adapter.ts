@@ -110,7 +110,9 @@ export class TerminalObservationAdapter implements ObservationAdapter {
     if (!identity.turnId || identity.turnId.length > 256 || !identity.toolUseId || identity.toolUseId.length > 256
       || !input.command || !input.cwd || !["isolated", "unconfined", "disposable"].includes(input.sandbox.mode)
       || input.kind !== "shell" && input.kind !== "terminal"
-      || input.kind === "terminal" && (!input.tabId || !input.terminalSessionId)) {
+      || input.kind === "terminal" && (!input.tabId || !input.terminalSessionId)
+      || input.outputAvailability !== undefined && !["streaming", "on-completion", "withheld-user-input"].includes(input.outputAvailability)
+      || input.outputAvailability === "withheld-user-input" && input.kind !== "terminal") {
       throw new Error("Invalid terminal observation command.");
     }
     const session = this.session(identity.sessionId);
@@ -167,12 +169,14 @@ export class TerminalObservationAdapter implements ObservationAdapter {
     return {
       signal: controller.signal,
       write: (text, options) => {
+        if (command.outputAvailability === "withheld-user-input") throw new Error("Terminal observation output is withheld for this command.");
         if (!active()) return;
         if (options?.truncated) { command.outputTruncated = true; this.changed(identity.sessionId); }
         framer.write(text);
       },
       finish,
       bindEgress: (token, attribution = "command") => {
+        if (command.outputAvailability === "withheld-user-input") throw new Error("Terminal observation egress is withheld for this command.");
         if (!active()) return;
         if (!/^[a-f0-9]{32}$/.test(token)) throw new Error("Invalid terminal observation egress binding.");
         const existing = this.egress.get(token);

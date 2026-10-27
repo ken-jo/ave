@@ -34,6 +34,7 @@ import {
   readSandboxedShell,
   readTerminalForeground,
   type SandboxedShellReading,
+  type TerminalForegroundOptions,
   type TerminalForegroundReading,
 } from "./shell-process.js";
 import type { TerminalTtyHandoff } from "./terminal-tty-handoff.js";
@@ -942,7 +943,7 @@ const FRESH_PROMPT_TIMEOUT_MS = 3_000;
 
 /** Check what the shell's markers say against the operating system: the terminal's foreground process must be its own shell (not a program that printed a prompt), and that shell's
  * real working directory must be the one the markers reported. Markers are output text; the process table is not. Returns the shell's directory as the operating system resolves it. */
-export async function verifyAgentTerminalShell(ref: TerminalSessionRef, ownerWindowId: number, reportedCwd: string): Promise<VerifyTerminalShellResult> {
+export async function verifyAgentTerminalShell(ref: TerminalSessionRef, ownerWindowId: number, reportedCwd: string, options: TerminalForegroundOptions = {}): Promise<VerifyTerminalShellResult> {
   const tabId = ref.tabId;
   const session = agentSession(ref, ownerWindowId);
   if (!session) {
@@ -955,7 +956,7 @@ export async function verifyAgentTerminalShell(ref: TerminalSessionRef, ownerWin
       session.blocks.reportedShellPid(),
     );
   }
-  return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.pty.pid, session.shellName, reportedCwd);
+  return foregroundVerdict(await readTerminalForeground(session.pty.pid, options), session.pty.pid, session.shellName, reportedCwd);
 }
 
 /** Judge the reading of a sandboxed Linux terminal's shell ({@link readSandboxedShell}) for {@link verifyAgentTerminalShell}. The shell was found by its place in the sandbox's process tree and its name; it must also be the shell that reported the prompt (`reportedPid`, `$$` from the P marker, is its pid in its own namespace), hold its
@@ -1013,7 +1014,9 @@ export function foregroundVerdict(
   reportedCwd: string,
 ): VerifyTerminalShellResult {
   if (!reading.ok) {
-    return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
+    return reading.busy
+      ? { ok: false, reason: "shell-busy", message: `the terminal's shell is not alone on its terminal: ${reading.reason}` }
+      : { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
   }
   const { foreground } = reading;
   // The shell is the process spawned on the pty (its session leader; every wrapper before it execs
@@ -1082,13 +1085,18 @@ export async function typeAgentTerminalCommand(
       blocks: session?.blocks,
       isLive: () => live() === session && session !== undefined,
       write: (data) => { if (!signal?.aborted && live() === session) session?.pty.write(data); },
-      verify: () => verifyAgentTerminalShell(ref, ownerWindowId, expectedCwd),
+      verify: (options) => verifyAgentTerminalShell(ref, ownerWindowId, expectedCwd, options),
       onBeforeEnter: (blockId) => {
         if (!session || live() !== session || signal?.aborted) throw new Error("Terminal observation session is unavailable.");
         if (session.observation) throw new Error("Terminal observation command is still active.");
+        // Once the user has typed into this terminal, a process they started may have left it (setsid, closed descriptors) while keeping the session's
+        // egress credentials, or may reopen the terminal by path later; no process-table reading rules that out. Such a terminal still shows the agent's
+        // command, directory, exit code and duration, but neither its output nor its network decisions.
+        const withheld = session.blocks.userInputGeneration() !== 0;
         const lease = beginAgentTerminalObservation({ kind: "terminal", command: line, cwd: expectedCwd,
           tabId: ref.tabId, terminalSessionId: ref.terminalSessionId,
-          sandbox: { mode: "isolated", detail: session.info.substrate } });
+          sandbox: { mode: "isolated", detail: session.info.substrate },
+          ...(withheld ? { outputAvailability: "withheld-user-input" as const } : {}) });
         if (!lease) return;
         const stop = (): void => {
           if (session.observation === observation) session.observation = undefined;
@@ -1100,6 +1108,7 @@ export async function typeAgentTerminalCommand(
         session.observation = observation;
         lease.signal.addEventListener("abort", stop, { once: true });
         if (lease.signal.aborted) { stop(); return; }
+        if (withheld) return;
         observation.subscription = session.blocks.subscribeBlockOutput(blockId, (text) => {
           if (session.observation === observation && terminalObservationBlock(session)) lease.write(text);
         });
@@ -1123,8 +1132,8 @@ export interface PromptTypingTarget {
   write(data: string): void;
   /** Runs after the final editor proof, before Enter can synchronously produce output. */
   onBeforeEnter?(firstBlockId: number): void;
-  /** The operating-system check of its shell ({@link verifyAgentTerminalShell}). */
-  verify(): Promise<VerifyTerminalShellResult>;
+  /** The operating-system check of its shell ({@link verifyAgentTerminalShell}); `exclusive` is asked only for the last check before Enter. */
+  verify(options?: TerminalForegroundOptions): Promise<VerifyTerminalShellResult>;
   /** The message when there is no such terminal. */
   readonly missing: string;
 }
@@ -1150,10 +1159,10 @@ export async function typeLineAtPrompt(
   const generation = blocks?.userInputGeneration();
   const interrupted = (): TypeTerminalCommandResult | null =>
     target.signal?.aborted ? notTyped("aborted", "terminal command preparation was cancelled; no further input was sent") : blocks?.userInputGeneration() !== generation ? notTyped("pending-input", "the user typed while the command was being prepared; no further input was sent") : null;
-  const safeToWrite = async (): Promise<TypeTerminalCommandResult | null> => {
+  const safeToWrite = async (options?: TerminalForegroundOptions): Promise<TypeTerminalCommandResult | null> => {
     const before = interrupted();
     if (before) return before;
-    const verified = await target.verify();
+    const verified = await target.verify(options);
     if (!verified.ok) return notTyped(verified.reason, verified.message);
     return interrupted() ?? (!target.isLive() ? notTyped("no-terminal", target.missing) : null);
   };
@@ -1208,7 +1217,8 @@ export async function typeLineAtPrompt(
     if (target.isLive() && !await safeToWrite()) target.write("\u0003");
     return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
   }
-  const beforeEnter = await safeToWrite();
+  // No other process may share the terminal when Enter is pressed: whatever it writes would land in the agent's command output.
+  const beforeEnter = await safeToWrite({ exclusive: true });
   if (beforeEnter) return beforeEnter;
   // The query widget can repaint the display without changing its buffer. Echo was checked before the query; the fresh report is the buffer proof.
   if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()

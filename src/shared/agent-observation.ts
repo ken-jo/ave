@@ -47,6 +47,8 @@ export interface TerminalObservationDecision {
   ts: number;
 }
 
+export type TerminalOutputAvailability = "streaming" | "on-completion" | "withheld-user-input";
+
 export interface TerminalObservedCommand {
   id: string;
   toolUseId: string;
@@ -64,7 +66,8 @@ export interface TerminalObservedCommand {
   outputTail: string;
   outputTruncated: boolean;
   sandbox: { mode: "isolated" | "unconfined" | "disposable"; detail: string };
-  outputAvailability: "streaming" | "on-completion";
+  /** `withheld-user-input`: the user has typed into this agent terminal, so output and network use there cannot be attributed to the agent and are not observed. */
+  outputAvailability: TerminalOutputAvailability;
   decisions: TerminalObservationDecision[];
 }
 

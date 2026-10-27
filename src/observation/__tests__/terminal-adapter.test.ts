@@ -386,5 +386,22 @@ describe("terminal observation adapter", () => {
     expect(() => second.bindEgress(TOKEN)).toThrow("Terminal observation egress binding already active.");
     expect(() => first.finish(1.5)).toThrow("Invalid observed terminal exit code.");
     expect(() => adapter.recordEgress(TOKEN, { ...DECISION, port: -1 })).toThrow("Invalid observed terminal egress decision.");
+    expect(() => adapter.start(IDENTITY, { ...COMMAND, outputAvailability: "partial" as never })).toThrow("Invalid terminal observation command.");
+    // Only an agent terminal the user typed into withholds; a shell tool run has no user input to attribute.
+    expect(() => adapter.start(IDENTITY, { ...COMMAND, outputAvailability: "withheld-user-input" })).toThrow("Invalid terminal observation command.");
+  });
+
+  it("records a withheld command's metadata and refuses any output or egress for it", async () => {
+    const { adapter, addView, commands } = fixture();
+    addView();
+    const lease = adapter.start(IDENTITY, { ...COMMAND, kind: "terminal", tabId: "tab", terminalSessionId: "terminal-session",
+      outputAvailability: "withheld-user-input" });
+    expect(() => lease.write("USER_PRIVATE\n")).toThrow("Terminal observation output is withheld for this command.");
+    expect(() => lease.bindEgress(TOKEN, "terminal-session")).toThrow("Terminal observation egress is withheld for this command.");
+    adapter.recordEgress(TOKEN, DECISION);
+    lease.finish(0);
+    await flush();
+    expect(commands()[0]).toMatchObject({ command: "printf ready", status: "completed", exitCode: 0,
+      outputAvailability: "withheld-user-input", outputTail: "", decisions: [] });
   });
 });

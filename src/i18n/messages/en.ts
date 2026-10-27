@@ -32,6 +32,7 @@ export const en = {
   "terminalObservation.unknown": "unknown",
   "terminalObservation.outputOnCompletion": "Output available on completion",
   "terminalObservation.outputTruncated": "Only the bounded output tail is shown.",
+  "terminalObservation.outputWithheldUserInput": "Output and network decisions are not shown: you typed in this terminal, so processes you started there could write to it or use its network access.",
   "terminalObservation.egress.allow": "Network allowed",
   "terminalObservation.egress.deny": "Network denied",
   "terminalObservation.commandScope": "this command",

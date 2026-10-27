@@ -1,4 +1,4 @@
-import type { ObservationIdentity, TerminalObservedCommand, TerminalObservationDecision } from "../shared/agent-observation.js";
+import type { ObservationIdentity, TerminalObservedCommand, TerminalObservationDecision, TerminalOutputAvailability } from "../shared/agent-observation.js";
 import { currentAgentObservationIdentity } from "./agent-observation-context.js";
 
 export interface AgentTerminalObservationInput {
@@ -8,7 +8,7 @@ export interface AgentTerminalObservationInput {
   sandbox: TerminalObservedCommand["sandbox"];
   tabId?: string;
   terminalSessionId?: string;
-  outputAvailability?: "streaming" | "on-completion";
+  outputAvailability?: TerminalOutputAvailability;
 }
 
 export interface AgentTerminalObservationLease {

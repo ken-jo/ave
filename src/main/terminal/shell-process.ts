@@ -15,9 +15,17 @@ interface TerminalForeground {
   readonly cwd: string;
 }
 
+// `busy`: the reading succeeded and found another process sharing the terminal (a command still finishing, a background job, or an orphan that kept the
+// terminal), so whatever it writes would land in the next command's output.
 export type TerminalForegroundReading =
   | { readonly ok: true; readonly foreground: TerminalForeground }
-  | { readonly ok: false; readonly reason: string };
+  | { readonly ok: false; readonly reason: string; readonly busy?: true };
+
+export interface TerminalForegroundOptions {
+  // macOS: also require that no other process holds the terminal's device open (lsof); slower, so callers ask for it only at the last check before Enter.
+  // An agent terminal on Linux is sandboxed and checked through its sandbox's process tree instead ({@link readSandboxedShell}).
+  readonly exclusive?: boolean;
+}
 
 const PROBE_TIMEOUT_MS = 3_000;
 
@@ -47,25 +55,45 @@ async function readLinux(ptyPid: number): Promise<TerminalForegroundReading> {
   if (!(leader.tpgid > 0)) return { ok: false, reason: "the terminal has no foreground process" };
   const foreground = await linuxStat(leader.tpgid);
   if (foreground.ttyNr !== leader.ttyNr) return { ok: false, reason: "the foreground process is on another terminal" };
-  // Check every task: a child can be owned by a non-leader thread.
-  for (const task of leader.tpgid === ptyPid ? await readdir(`/proc/${ptyPid}/task`) : []) {
-    const children = await readFile(`/proc/${ptyPid}/task/${task}/children`, "utf-8");
-    if (children.trim()) return { ok: false, reason: "the terminal shell has child processes" };
+  if (leader.tpgid === ptyPid) {
+    // Check every task: a child can be owned by a non-leader thread.
+    for (const task of await readdir(`/proc/${ptyPid}/task`)) {
+      const children = await readFile(`/proc/${ptyPid}/task/${task}/children`, "utf-8");
+      if (children.trim()) return { ok: false, reason: "the terminal shell has child processes", busy: true };
+    }
+    // An orphaned background job is no longer the shell's child but keeps the terminal as its own and can still write to it.
+    const sharing = [...(await readProcSnapshot()).values()].filter((entry) => entry.pid !== ptyPid && entry.ttyNr === leader.ttyNr);
+    if (sharing.length > 0) return { ok: false, reason: sharingReason(sharing), busy: true };
   }
   const command = programName(await readFile(`/proc/${leader.tpgid}/comm`, "utf-8"));
   const cwd = await readlink(`/proc/${leader.tpgid}/cwd`);
   return { ok: true, foreground: { pid: leader.tpgid, command, cwd } };
 }
 
-async function readDarwin(ptyPid: number): Promise<TerminalForegroundReading> {
+async function readDarwin(ptyPid: number, options: TerminalForegroundOptions): Promise<TerminalForegroundReading> {
   const [ttyRaw, tpgidRaw] = (await run("/bin/ps", ["-o", "tty=,tpgid=", "-p", String(ptyPid)])).trim().split(/\s+/u);
   const tpgid = Number(tpgidRaw);
   if (!ttyRaw || !(tpgid > 0)) return { ok: false, reason: "the terminal has no foreground process" };
   const [fgTty, ...commParts] = (await run("/bin/ps", ["-o", "tty=,comm=", "-p", String(tpgid)])).trim().split(/\s+/u);
   if (fgTty !== ttyRaw) return { ok: false, reason: "the foreground process is on another terminal" };
-  const table = await run("/bin/ps", ["-axo", "ppid="]);
-  if (tpgid === ptyPid && table.split(/\s+/u).some((parent) => Number(parent) === ptyPid)) {
-    return { ok: false, reason: "the terminal shell has child processes" };
+  if (tpgid === ptyPid) {
+    // `comm` last: it may hold spaces.
+    const table = (await run("/bin/ps", ["-axo", "pid=,ppid=,tty=,comm="])).split("\n").flatMap((line) => {
+      const [pid, ppid, tty, ...comm] = line.trim().split(/\s+/u);
+      return pid ? [{ pid: Number(pid), ppid: Number(ppid), tty, command: programName(comm.join(" ")) }] : [];
+    });
+    if (table.some((entry) => entry.ppid === ptyPid)) return { ok: false, reason: "the terminal shell has child processes", busy: true };
+    // An orphaned background job is no longer the shell's child but keeps the terminal as its own and can still write to it.
+    const sharing = table.filter((entry) => entry.pid !== ptyPid && entry.tty === ttyRaw);
+    if (sharing.length > 0) return { ok: false, reason: sharingReason(sharing), busy: true };
+    if (options.exclusive) {
+      // A process that left the terminal's session (setsid) can still hold its device open. The host process holds it as the pty's owner.
+      const holders = (await run("/usr/sbin/lsof", ["-w", "-t", `/dev/${ttyRaw}`])).split("\n").map(Number)
+        .filter((pid) => pid > 0 && pid !== ptyPid && pid !== process.pid);
+      if (holders.length > 0) {
+        return { ok: false, reason: `another process holds the terminal open (pid ${holders.join(", ")})`, busy: true };
+      }
+    }
   }
   const command = programName(commParts.join(" "));
   // `-Fn`: one `n<path>` line for the cwd descriptor; `-a` ANDs the filters.
@@ -75,12 +103,16 @@ async function readDarwin(ptyPid: number): Promise<TerminalForegroundReading> {
   return { ok: true, foreground: { pid: tpgid, command, cwd } };
 }
 
+function sharingReason(sharing: readonly { readonly pid: number; readonly command: string }[]): string {
+  return `other processes share the terminal (${sharing.map(({ pid, command }) => `${JSON.stringify(command)} pid ${pid}`).join(", ")}): a command still finishing or a background job`;
+}
+
 // Read the foreground process of the terminal whose session leader (the process spawned on it) is `ptyPid`. Never throws: an unreadable process table is
 // a reason, and the caller refuses.
-export async function readTerminalForeground(ptyPid: number): Promise<TerminalForegroundReading> {
+export async function readTerminalForeground(ptyPid: number, options: TerminalForegroundOptions = {}): Promise<TerminalForegroundReading> {
   try {
     if (process.platform === "linux") return await readLinux(ptyPid);
-    if (process.platform === "darwin") return await readDarwin(ptyPid);
+    if (process.platform === "darwin") return await readDarwin(ptyPid, options);
     return { ok: false, reason: `the shell's directory cannot be read from the operating system on ${process.platform}` };
   } catch (error) {
     return { ok: false, reason: `the terminal's process could not be read (${(error as Error).message.split("\n")[0]})` };

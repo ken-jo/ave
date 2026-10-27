@@ -190,13 +190,13 @@ let foregroundReading: import("../shell-process.js").TerminalForegroundReading =
   ok: true,
   foreground: { pid: 9999, command: "zsh", cwd: "/w" },
 };
-const readForegroundMock = vi.fn(async (_ptyPid: number) => foregroundReading);
+const readForegroundMock = vi.fn(async (_ptyPid: number, _options?: import("../shell-process.js").TerminalForegroundOptions) => foregroundReading);
 /** Linux: what the operating system reports about the sandboxed shell. */
 let sandboxedShellReading: import("../shell-process.js").SandboxedShellReading = { ok: false, reason: "not set" };
 const readSandboxedShellMock = vi.fn(async (_ptyPid: number, _shellName: string, _reportedCwd: string) => sandboxedShellReading);
 const forwardResizeMock = vi.fn(async (_ptyPid: number, _shellName: string) => true);
 vi.mock("../shell-process.js", () => ({
-  readTerminalForeground: (ptyPid: number) => readForegroundMock(ptyPid),
+  readTerminalForeground: (ptyPid: number, options?: import("../shell-process.js").TerminalForegroundOptions) => readForegroundMock(ptyPid, options),
   readSandboxedShell: (ptyPid: number, shellName: string, reportedCwd: string) => readSandboxedShellMock(ptyPid, shellName, reportedCwd),
   forwardResizeToSandboxedPtyRelay: (ptyPid: number, shellName: string) => forwardResizeMock(ptyPid, shellName),
 }));
@@ -1370,6 +1370,54 @@ describe("pty-manager typing an approved agent command", () => {
     expect(lease.finish).toHaveBeenCalledTimes(1);
   });
 
+  it("withholds output and egress once the user has typed in the agent terminal, so an orphaned user job cannot write into the agent's block", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { start, lease } = observationSink();
+      const { pty, mark, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // The user starts a job that outlives its `sh`: it keeps the terminal (and the session's network credentials) and writes later.
+      expect(writeTerminal(TAB, "sh -c '(sleep 15; printf \"USER_PRIVATE\\n\") &'\r")).toEqual({ ok: true });
+      pty.emitData(`${mark("C;cmdline_url=sh")}${prompt()}`);
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
+      const respond = pty.respond;
+      pty.respond = (data) => {
+        respond?.(data);
+        if (data === "\r") pty.emitData(`${mark("C;cmdline_url=sleep%2020")}USER_PRIVATE\n`);
+      };
+      await expect(agentType("sleep 20")).resolves.toMatchObject({ ok: true });
+      expect(start).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({ command: "sleep 20", outputAvailability: "withheld-user-input" }));
+      pty.emitData(`more USER_PRIVATE\n${mark("D;0")}`);
+      expect(lease.write).not.toHaveBeenCalled();
+      expect(lease.bindEgress).not.toHaveBeenCalled();
+      // The agent's command, exit code and duration are still its own.
+      expect(lease.finish).toHaveBeenCalledExactlyOnceWith(0, undefined);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("observes a pristine agent terminal with output and session egress", async () => {
+    const { start, lease } = observationSink();
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    await agentType();
+    expect(start.mock.calls[0]![1].outputAvailability).toBeUndefined();
+    expect(lease.bindEgress).toHaveBeenCalledWith(expect.any(String), "terminal-session");
+  });
+
+  it("refuses Enter, and admits no observation, when another process holds the terminal at the last check", async () => {
+    const { start } = observationSink();
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    readForegroundMock.mockImplementation(async (_pid, options) => options?.exclusive
+      ? { ok: false, reason: "another process holds the terminal open (pid 4242)", busy: true }
+      : foregroundReading);
+    try {
+      await expect(agentType()).resolves.toMatchObject({ ok: false, reason: "shell-busy", message: expect.stringContaining("pid 4242") });
+    } finally { readForegroundMock.mockImplementation(async () => foregroundReading); }
+    expect(pty.written).not.toContain("\r");
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("does not admit observation when editor verification refuses the command", async () => {
     const { start } = observationSink();
     const { pty, prompt, shell } = await zshTerminal(3);
@@ -1482,7 +1530,10 @@ describe("pty-manager typing an approved agent command", () => {
     await expect(typeTerminalCommand(TAB, 4, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
     await expect(typeTerminalCommand(TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
     expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls -la"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
-    expect(readForegroundMock).toHaveBeenCalledWith(9999);
+    expect(readForegroundMock).toHaveBeenCalledWith(9999, {});
+    // Only the last check, right before Enter, also asks that nothing else holds the terminal open.
+    expect(readForegroundMock).toHaveBeenLastCalledWith(9999, { exclusive: true });
+    expect(readForegroundMock.mock.calls.filter(([, options]) => options?.exclusive)).toHaveLength(1);
     // Until the shell starts it, the pasted line sits at the prompt: a second command is refused.
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
     pty.emitData(`\r\n${mark("C;cmdline_url=ls%20-la")}total 0\r\n`);

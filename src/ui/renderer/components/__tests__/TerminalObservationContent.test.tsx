@@ -93,6 +93,18 @@ describe("agent terminal observation view", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("says why a command in a terminal the user typed into shows no output or network decisions", async () => {
+    await open();
+    await emit(snapshot(1, [command({ kind: "terminal", tabId: "tab", terminalSessionId: "terminal-session", outputTail: "",
+      outputAvailability: "withheld-user-input" })]));
+    const row = screen.getByTestId("terminal-observation-command-row");
+    fireEvent.click(within(row).getByText("bun test"));
+    expect(within(row).getByTestId("terminal-observation-withheld").textContent).toBe(ko["terminalObservation.outputWithheldUserInput"]);
+    expect(within(row).queryByTestId("terminal-observation-output")).toBeNull();
+    expect(within(row).queryByTestId("terminal-observation-decisions")).toBeNull();
+    expect(en["terminalObservation.outputWithheldUserInput"]).toContain("you typed in this terminal");
+  });
+
   it.each<{ scope: EgressGrantScope; label: string }>([
     { scope: "once", label: "한 번" },
     { scope: "session", label: "이 대화" },

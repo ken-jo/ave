@@ -211,6 +211,21 @@ are never observed, including commands a user types into the Agent lane. Any
 accepted user input revokes that command's capture and egress binding before
 the bytes reach the shell; pending output is discarded. A mismatched command
 or directory is a contract error, not a reason to observe another block.
+User output must never enter an agent block, so admission has two further
+conditions. First, the operating system must show the shell alone on its
+terminal before Enter: no child, and no other process with that terminal as
+its own, such as an orphaned background job whose parent exited. On macOS the
+last check before Enter also refuses any other process holding the terminal
+device open, such as one that left the session with `setsid`. The sandboxed
+Linux shell is checked through its sandbox process tree and terminal session.
+Otherwise `terminal_run` refuses with `shell-busy` and nothing is typed.
+Second, once the user has typed into an Agent-lane terminal incarnation, a
+process they started may have left the terminal while keeping its egress
+credentials, or may later reopen the terminal by path; no process-table
+reading can rule that out. Later agent commands in that incarnation are
+admitted with `outputAvailability: "withheld-user-input"`. Their entries keep
+the command, directory, exit state and duration. They capture no output and
+bind no egress. The panel states why.
 
 Terminal events use the same envelope with `source: "terminal"`. A `snapshot`
 replaces the session's bounded `commands` list; `status` carries
@@ -251,7 +266,8 @@ A terminal token belongs to its whole shell, including earlier background
 descendants: decisions captured during an admitted command are explicitly
 marked `terminal-session`, not claimed as per-process command causation.
 User-input revocation removes that binding before human activity can be
-captured. The brokered shell transport currently supplies output only on
+captured, and a terminal token is never bound for an incarnation that has
+received user input. The brokered shell transport currently supplies output only on
 completion or an existing task read; its commands declare
 `outputAvailability: "on-completion"`. Observation neither invents a live
 stream nor adds polling that consumes the task's read cursor.
@@ -294,7 +310,9 @@ The side panel's terminal observation strip uses the same agent theme color
 and shows the current command with elapsed time. A compact read-only command
 list exposes directory, output tail, exit state, duration, sandbox mode and
 the scope of egress decisions. An empty user-only session shows neither strip
-nor command list. Session changes and panel unmount release the subscription;
+nor command list. Session changes, panel unmount and closing a panel that stays
+mounted (a retained side-chat or browser tab) release the subscription;
+reopening subscribes afresh;
 the renderer accepts only its current target/session and acknowledges a
 snapshot after rendering it. Stale or other-source events cannot enter that
 list, and localized observation errors occupy the same strip.

@@ -196,6 +196,8 @@ export function TerminalObservationContent({ sessionId }: { sessionId?: string }
                 {command.outputAvailability === "on-completion" ? <span>{t("terminalObservation.outputOnCompletion")}</span> : null}
               </div>
               {command.sandbox.detail ? <div className="break-words">{command.sandbox.detail}</div> : null}
+              {command.outputAvailability === "withheld-user-input"
+                ? <p className="break-words" data-testid="terminal-observation-withheld">{t("terminalObservation.outputWithheldUserInput")}</p> : null}
               {command.outputTail ? <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/(--opacity-medium) p-1.5 font-mono text-[10px] text-foreground"
                 data-testid="terminal-observation-output">{command.outputTail}</pre> : null}
               {command.outputTruncated ? <p>{t("terminalObservation.outputTruncated")}</p> : null}
