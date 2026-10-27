@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VerifiedDocumentEngineInstallation } from "../../main/document-engine-installation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 
-const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false }));
+const residentStartup = { publish: true };
+const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false, registrationFails: false }));
 
 vi.mock("../../permissions/offline-process-sandbox.js", () => ({ wrapOfflineProcess: vi.fn(async input => ({
   argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
@@ -44,6 +45,7 @@ interface ProcessFixture extends EventEmitter {
   profile: string;
   ipc: string;
   resident: boolean;
+  holder?: string;
   job?: ConversionJob;
   end(code?: number | null, signal?: NodeJS.Signals | null): void;
 }
@@ -91,6 +93,8 @@ beforeEach(async () => {
   vi.clearAllMocks();
   javaFixture.home = undefined;
   javaFixture.broken = false;
+  javaFixture.registrationFails = false;
+  residentStartup.publish = true;
   directory = await mkdtemp(join(tmpdir(), "engine-process-contract-"));
   const root = join(directory, "runtime");
   await mkdir(root);
@@ -111,7 +115,7 @@ beforeEach(async () => {
     const profileArgument = args.find(argument => argument.startsWith("-env:UserInstallation="));
     emitter.profile = profileArgument ? fileURLToPath(profileArgument.slice("-env:UserInstallation=".length)) : children[0]?.profile ?? "";
     emitter.ipc = args.find(argument => argument.startsWith("-env:OSL_SOCKET_PATH="))?.slice("-env:OSL_SOCKET_PATH=".length) ?? "";
-    emitter.resident = command === installation.executable && args.includes("private:factory/swriter");
+    emitter.resident = command === installation.executable && !args.includes("--convert-to") && args.at(-1)!.endsWith(".fodt");
     emitter.end = (code = 0, signal = null) => {
       if (emitter.ended) return;
       emitter.ended = true;
@@ -119,8 +123,11 @@ beforeEach(async () => {
     };
     children.push(emitter);
     if (emitter.resident) {
-      // The real instance publishes its private single-instance pipe; the lstat mock reports it as a socket.
-      void writeFile(join(emitter.ipc, "OSL_PIPE_501_SingleOfficeIPC_fixture"), "");
+      // The real instance publishes its private single-instance pipe (the lstat mock reports it as a socket) and
+      // locks the holder document once that document is in a frame.
+      emitter.holder = args.at(-1)!;
+      if (residentStartup.publish) void Promise.all([writeFile(join(emitter.ipc, "OSL_PIPE_501_SingleOfficeIPC_fixture"), ""),
+        writeFile(join(dirname(emitter.holder), `.~lock.${basename(emitter.holder)}#`), "")]);
     } else if (command === installation.executable && args.includes("--convert-to")) {
       emitter.job = parseJob(args);
       queueMicrotask(() => {
@@ -131,7 +138,11 @@ beforeEach(async () => {
       });
     }
     else if (command.endsWith("/bin/java")) queueMicrotask(() => { emitter.stderr.write(javaFixture.broken ? "runtime cannot start" : 'openjdk version "17.0.1"'); emitter.end(javaFixture.broken ? 1 : 0); });
-    else if (args.includes("add") || args.includes("list")) queueMicrotask(() => { emitter.stdout.write("H2Orestart registered"); emitter.end(); });
+    else if (args.includes("add") || args.includes("list")) queueMicrotask(() => {
+      if (javaFixture.registrationFails) { emitter.stderr.write("ERROR: unopkg failed."); emitter.end(1); return; }
+      emitter.stdout.write("H2Orestart registered");
+      emitter.end();
+    });
     return emitter as unknown as ChildProcess;
   });
   vi.mocked(forceKillManagedChildProcess).mockImplementation(child => { (child as unknown as ProcessFixture).end(null, "SIGKILL"); });
@@ -179,6 +190,20 @@ describe("private conversion process ownership", () => {
     resume();
     await pending;
     expect(jobs()).toHaveLength(1);
+  });
+
+  it("forwards nothing until the resident's holder document is framed and its pipe exists", async () => {
+    residentStartup.publish = false;
+    const pending = pool.convert(installation, "one", Buffer.from("bytes"), "docx", new AbortController().signal);
+    await eventually(() => residents().length === 1);
+    const resident = residents()[0];
+    await writeFile(join(resident.ipc, "OSL_PIPE_501_SingleOfficeIPC_fixture"), "");
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(probes()).toHaveLength(0);
+    await writeFile(join(dirname(resident.holder!), `.~lock.${basename(resident.holder!)}#`), "");
+    await pending;
+    expect(probes()).toHaveLength(1);
+    expect(resident.holder!.startsWith(`${dirname(resident.ipc)}/holder/`)).toBe(true);
   });
 
   it("forwards host-selected recalculation exports for workbooks", async () => {
@@ -330,6 +355,22 @@ describe("private conversion process ownership", () => {
     javaFixture.broken = true;
     await expect(pool.convert(installation, "one", Buffer.from("hwp"), "hwp", new AbortController().signal))
       .rejects.toMatchObject({ code: "engine-runtime-unavailable" });
+    await pool.convert(installation, "one", Buffer.from("docx"), "docx", new AbortController().signal);
+    expect(residents()).toHaveLength(2);
+  });
+
+  it("reports failed importer registration as an unavailable runtime without poisoning the session", async () => {
+    const home = join(directory, "java");
+    await mkdir(join(home, "bin"), { recursive: true });
+    await writeFile(join(home, "bin", "java"), "test runtime", { mode: 0o500 });
+    await writeFile(join(home, "release"), 'JAVA_VERSION="17.0.1"\n');
+    javaFixture.home = home;
+    javaFixture.registrationFails = true;
+    const extension = Buffer.from("authenticated import extension");
+    await writeFile(installation.extensionPath, extension);
+    installation = { ...installation, extensionSha256: createHash("sha256").update(extension).digest("hex") };
+    await expect(pool.convert(installation, "one", Buffer.from("hwp"), "hwp", new AbortController().signal))
+      .rejects.toMatchObject({ code: "engine-runtime-unavailable", message: "Document importer registration failed in the private profile." });
     await pool.convert(installation, "one", Buffer.from("docx"), "docx", new AbortController().signal);
     expect(residents()).toHaveLength(2);
   });
