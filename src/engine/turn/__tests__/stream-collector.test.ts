@@ -73,8 +73,8 @@ describe("image capability refusal", () => {
 
 describe("provider completion boundary", () => {
   it.each([
-    ["en", "Error: The selected model is unavailable. Choose a supported model in Settings."],
-    ["ko", "오류: 선택한 모델을 사용할 수 없습니다. 설정에서 지원되는 모델을 선택하세요."],
+    ["en", "Error: The selected model could not be found. Please check the model in your settings."],
+    ["ko", "오류: 선택한 모델을 찾을 수 없습니다. 설정에서 모델을 확인해주세요."],
   ] as const)("localizes a subscription model refusal in %s without exposing diagnostics", async (locale, userMessage) => {
     setLocale(locale);
     const result = await collectRoundStream({

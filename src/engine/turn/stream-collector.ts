@@ -216,7 +216,7 @@ export async function collectRoundStream(
           const userMessage = imageInputRefused
             ? `${t("be_streamCollector.imageInputUnsupported")} ${imageInputRecoveryMessage(t)}`
             : subscriptionModelRefused
-              ? t("formatIpcError.subscriptionModelNotSupported")
+              ? t("be_errorClassifier.modelNotFound")
               : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
