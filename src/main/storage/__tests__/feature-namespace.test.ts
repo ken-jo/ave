@@ -109,6 +109,38 @@ describe("feature-namespace", () => {
     expect(value).toEqual({ count: 0 });
   });
 
+  it("streams an exclusive private file through existing namespace directories", async () => {
+    const ns = openFeatureNamespace("streams");
+    await ns.childDir("payload");
+    const handle = await ns.createFile("payload/artifact.bin");
+    try { await handle.writeFile(Buffer.from("first")); await handle.writeFile(Buffer.from("second")); await handle.sync(); }
+    finally { await handle.close(); }
+    expect(readFileSync(join(ns.dir, "payload", "artifact.bin"), "utf8")).toBe("firstsecond");
+    if (POSIX) expect(statSync(join(ns.dir, "payload", "artifact.bin")).mode & 0o777).toBe(0o600);
+    await expect(ns.createFile("payload/artifact.bin")).rejects.toMatchObject({ code: "EEXIST" });
+  });
+
+  it.each(["../outside", "/outside", "payload/../outside", "payload//file", "payload/./file", "C:/outside", "payload\\file", "payload/\0file"])(
+    "refuses an unsafe streamed filename %j", async (name) => {
+      const ns = openFeatureNamespace("streams");
+      await ns.childDir("payload");
+      await expect(ns.createFile(name)).rejects.toThrow("Invalid namespace file name");
+    });
+
+  it("refuses linked streamed-file parents and existing linked leaves", async () => {
+    if (!canCreateSymlinks()) return;
+    const ns = openFeatureNamespace("streams");
+    await ns.childDir("payload");
+    const outside = join(tempDir, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(ns.dir, "linked"), "dir");
+    await expect(ns.createFile("linked/file")).rejects.toThrow("plain directory");
+    writeFileSync(join(outside, "keep"), "unchanged");
+    symlinkSync(join(outside, "keep"), join(ns.dir, "payload", "leaf"));
+    await expect(ns.createFile("payload/leaf")).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(join(outside, "keep"), "utf8")).toBe("unchanged");
+  });
+
   it("writeJson → readJson round-trips", async () => {
     const ns = openFeatureNamespace("widgets");
     await ns.writeJson("config.json", { count: 7, label: "x" });

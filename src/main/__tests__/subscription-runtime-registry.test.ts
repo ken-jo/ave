@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,7 @@ function testNamespace(root: string): FeatureNamespaceHandle {
       return fallback;
     },
     async writeJson<T>(_name: string, _value: T): Promise<void> {},
+    createFile: refuseNamespaceFileCreation,
     async childDir(name: string): Promise<string> {
       const directory = join(root, name);
       mkdirSync(directory, { recursive: true });

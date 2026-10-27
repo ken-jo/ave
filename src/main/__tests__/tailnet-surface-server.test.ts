@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { createServer } from "node:net";
 import { occupyLoopbackPort as occupy } from "../../__tests__/test-helpers.js";
@@ -873,6 +874,7 @@ function memoryNamespace(seed: Record<string, unknown> = {}): FeatureNamespaceHa
       files.set(name, value);
     },
     childDir: async () => "/nonexistent",
+    createFile: refuseNamespaceFileCreation,
   };
 }
 

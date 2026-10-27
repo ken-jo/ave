@@ -1,3 +1,4 @@
+import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
@@ -862,6 +863,7 @@ describe("Claude service integration", () => {
       dir: directories.runtimeHome,
       async childDir(name) { const path = join(directories.runtimeHome, name); mkdirSync(path, { recursive: true }); return path; },
       async readJson(_name, fallback) { return fallback; }, async writeJson() {},
+      createFile: refuseNamespaceFileCreation,
     };
     const status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
     const verify = vi.fn(async () => status);
