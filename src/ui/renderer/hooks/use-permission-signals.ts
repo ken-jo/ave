@@ -69,7 +69,7 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
         !payload ||
         typeof payload.toolName !== "string" ||
         payload.toolName.length === 0 ||
-        (payload.scope !== "session" && payload.scope !== "persistent") ||
+        (payload.scope !== "session" && payload.scope !== "persistent" && payload.scope !== "global") ||
         (payload.verdictAtApproval !== "low" &&
           payload.verdictAtApproval !== "medium" &&
           payload.verdictAtApproval !== "high")

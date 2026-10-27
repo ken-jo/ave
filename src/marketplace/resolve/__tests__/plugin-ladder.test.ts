@@ -55,7 +55,7 @@ const ENTRY_JS = "export default {};\n";
 const authority = (patch: Partial<PluginAuthority> = {}): PluginAuthority => ({
   capabilities: ["notes:read"],
   networkAccess: { allowedDomains: ["api.example.com"] },
-  requires: { minAppVersion: "0.14.0", hostProtocol: "3" },
+  requires: { minAppVersion: "0.14.0", hostProtocol: "4" },
   ...patch,
 });
 
@@ -342,7 +342,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   });
 
   describe("a process entry (§9.7 P4)", () => {
-    const processAuthority = authority({ requires: { minAppVersion: "0.14.0", hostProtocol: "3" } });
+    const processAuthority = authority({ requires: { minAppVersion: "0.14.0", hostProtocol: "4" } });
 
     function processJson(command = "./bin/plugin"): string {
       return `${JSON.stringify({ name: "alpha", version: "1.0.0", description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "alpha", process: { command }, tools: [], ...processAuthority } } }, null, 2)}\n`;
@@ -356,7 +356,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     }
 
     function processMarket(repo: FixtureRepo, artifact: Record<string, unknown>, platforms: string[], extra: Record<string, string> = {}): void {
-      const described = { schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "3", platforms, payload: { authority: processAuthority, artifact } };
+      const described = { schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "4", platforms, payload: { authority: processAuthority, artifact } };
       repo.commit({
         "marketplace.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
         "plugins/alpha/ave-package.json": `${JSON.stringify(described)}\n`,
@@ -417,7 +417,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
       const zip = processZip();
       const releaseOf = (version: string) => `/acme/alpha/releases/download/v${version}/alpha-${version}.zip`;
       const directDescriptor = (version: string, pin: string) => `${JSON.stringify({
-        schemaVersion: 2, kind: "plugin", name: "alpha", version, minAppVersion: "0.14.0", hostProtocol: "3", platforms: ["darwin", "linux"],
+        schemaVersion: 2, kind: "plugin", name: "alpha", version, minAppVersion: "0.14.0", hostProtocol: "4", platforms: ["darwin", "linux"],
         payload: { authority: processAuthority, artifact: { release: { repo: "acme/alpha", sha256: pin } } },
       })}\n`;
       server.file(releaseOf("1.0.0"), entryZip);
@@ -594,7 +594,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
                 version: "1.0.0",
                 commit: base,
                 minAppVersion: "0.14.0",
-                hostProtocol: "3",
+                hostProtocol: "4",
                 authority: authority({ capabilities: ["notes:read", "notes:write"] }),
                 artifact: { tree: "plugins/alpha" },
                 publishedAt: AT,

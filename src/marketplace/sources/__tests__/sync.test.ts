@@ -928,7 +928,7 @@ describe("SourceSyncer", () => {
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "process-kit", version: "1.0.0", description: "Process extension",
       extensions: { "ai.agent-connector.ave": {
-        process: { command: "./bin/plugin" }, tools: [], requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+        process: { command: "./bin/plugin" }, tools: [], requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
       } },
     })}\n`, "bin/plugin": "#!/bin/sh\n" }, "process package");
     const { registry, syncer } = await setup();
@@ -939,12 +939,12 @@ describe("SourceSyncer", () => {
 
   it("lists a process-entry package with a pinned release, which a win32 app excludes by platforms (§9.7 P4)", async () => {
     const { repo, name } = fixture();
-    const authority = { capabilities: [], requires: { minAppVersion: "0.13.0", hostProtocol: "3" } };
+    const authority = { capabilities: [], requires: { minAppVersion: "0.13.0", hostProtocol: "4" } };
     const artifact = { release: { repo: "acme/process-kit", sha256: "e".repeat(64) } };
     repo.commit({
       "marketplace.json": index("acme", [{ kind: "plugin", name: "process-kit", path: "plugins/process-kit" }]),
       "plugins/process-kit/ave-package.json": `${JSON.stringify({
-        schemaVersion: 2, kind: "plugin", name: "process-kit", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "3",
+        schemaVersion: 2, kind: "plugin", name: "process-kit", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "4",
         platforms: ["darwin", "linux"], payload: { authority, artifact },
       })}\n`,
     }, "publish process-kit");

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -106,9 +106,14 @@ describe("host-owned script roles", () => {
   it("advertises canonical resource paths through an aliased parent directory", () => {
     const alias = join(root, "alias");
     symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
-    configureHostResources({ resourcePath: join(alias, "resources"), isPackaged: true });
-    expect(hostScriptRuntimePaths()?.bundledScriptsDirectory).toBe(realpathSync.native(join(root, "resources", "skill-scripts")));
-    expect(violation(command(join(workspace, "book.xlsx"), join(workspace, "edits.json")))).toBeNull();
+    try {
+      configureHostResources({ resourcePath: join(alias, "resources"), isPackaged: true });
+      expect(hostScriptRuntimePaths()?.bundledScriptsDirectory).toBe(realpathSync.native(join(root, "resources", "skill-scripts")));
+      expect(violation(command(join(workspace, "book.xlsx"), join(workspace, "edits.json")))).toBeNull();
+    } finally {
+      if (process.platform === "win32") rmdirSync(alias);
+      else unlinkSync(alias);
+    }
   });
 
   it("pins both the resource directory identity and manifest against replacement", () => {

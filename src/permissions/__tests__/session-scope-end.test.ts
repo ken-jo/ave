@@ -40,8 +40,8 @@ const plain = (command: string, sessionId: string) => ({
 describe("ending a conversation's session scope", () => {
   it("drops its session shell rules, session approvals and egress session hosts, and only its own", async () => {
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.addSessionShellRule("ending", "Bash(printf ready)");
-    manager.addSessionShellRule("staying", "Bash(printf ready)");
+    manager.addSessionRule("ending", "Bash(printf ready)");
+    manager.addSessionRule("staying", "Bash(printf ready)");
     await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "ending" });
     await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "staying" });
 
@@ -67,16 +67,16 @@ describe("ending a conversation's session scope", () => {
   it("ends the whole tree when its root conversation is deleted", async () => {
     withTree();
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.addSessionShellRule("child-1", "Bash(printf ready)");
-    manager.addSessionShellRule("other", "Bash(printf ready)");
+    manager.addSessionRule("child-1", "Bash(printf ready)");
+    manager.addSessionRule("other", "Bash(printf ready)");
     await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "child-2" });
     await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "other" });
 
     endSessionScopedPermissions("root", manager);
 
-    expect(manager.listSessionShellRules("root")).toEqual([]);
+    expect(manager.listSessionRules("root")).toEqual([]);
     expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "child-1"))).toMatchObject({ decision: "ask" });
-    expect(manager.listSessionShellRules("other")).toEqual(["Bash(printf ready)"]);
+    expect(manager.listSessionRules("other")).toEqual(["Bash(printf ready)"]);
     expect(listSessionApprovals().map((entry) => entry.sessionId)).toEqual(["other"]);
     expect(releasedAmong("root", "child-1", "child-2", "other", "other-child")).toEqual(["root", "child-1", "child-2"]);
   });
@@ -84,12 +84,12 @@ describe("ending a conversation's session scope", () => {
   it("ends only a deleted sub-agent session's own egress hosts, keeping its root's rules and approvals", async () => {
     withTree();
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.addSessionShellRule("child-1", "Bash(printf ready)");
+    manager.addSessionRule("child-1", "Bash(printf ready)");
     await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "child-1" });
 
     endSessionScopedPermissions("child-1", manager);
 
-    expect(manager.listSessionShellRules("root")).toEqual(["Bash(printf ready)"]);
+    expect(manager.listSessionRules("root")).toEqual(["Bash(printf ready)"]);
     expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "child-2"))).toMatchObject({ decision: "allow", layer: 3 });
     expect(listSessionApprovals().map((entry) => entry.sessionId)).toEqual(["root"]);
     expect(releasedAmong("root", "child-1", "child-2")).toEqual(["child-1"]);

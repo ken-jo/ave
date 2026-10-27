@@ -123,7 +123,7 @@ const MANIFEST: PluginManifest = {
   name: "Sample Assistant",
   version: "0.10.14",
   entry: "dist/hostPlugin.js",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   description: "the pilot plugin, served out of process",
   tools: [
     { name: "pilot_echo", description: "echo a payload back", inputSchema: EMPTY_SCHEMA },
@@ -320,7 +320,7 @@ function sessionFactory(spec: {
     const session = await openPluginProtocolSession({
       pluginId: spec.manifest.id,
       manifest: spec.manifest,
-      hostProtocolVersion: "3",
+      hostProtocolVersion: "4",
       link: spec.link,
       context,
       entryPath: spec.entryPath,
@@ -967,7 +967,7 @@ describe("construct negotiates the host protocol", () => {
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     try {
       const factory = sessionFactory({
-        manifest: { ...MANIFEST, requires: { hostProtocol: "3" } },
+        manifest: { ...MANIFEST, requires: { hostProtocol: "4" } },
         entryPath,
         link: child.link,
       });
@@ -976,7 +976,7 @@ describe("construct negotiates the host protocol", () => {
       const { hostProtocol } = construct?.params as {
         hostProtocol: { version: string; capabilities: string[] };
       };
-      expect(hostProtocol.version).toBe("3");
+      expect(hostProtocol.version).toBe("4");
       // Advertise capabilities from the actual bound table.
       expect(hostProtocol.capabilities).toContain("ave/host/callLlm");
       expect(hostProtocol.capabilities).not.toContain("ave/host/hostFetch");
@@ -1045,7 +1045,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
     name: "Process Kit",
     version: "1.0.0",
     process: { command: "./bin/plugin", args: ["--x=1"], env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
-    requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+    requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
     description: "a process entry whose spawn is recorded",
     tools: [],
   };
@@ -1676,7 +1676,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
       name: "Tilde Cache",
       version: "1.0.0",
       entry: "plugin.mjs",
-      requires: { hostProtocol: "3" },
+      requires: { hostProtocol: "4" },
       description: "keeps a cache in a directory the user chooses",
       sandbox: { write: [{ kind: "userChosenDirectory", configKey: "dataDirectory", why: "where the cache is written" }] },
       tools: [{ name: "cache_where", description: "name the cache directory", inputSchema: EMPTY_SCHEMA }],

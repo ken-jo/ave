@@ -89,65 +89,74 @@ Hard-deny rules always run before reviewer or user approval. A user approval
 does not make an invalid tool definition valid.
 
 Shell policy consumes the canonical [typed analysis and prepared execution
-contract](architecture.md#process-boundaries). The path and
-structural checks inspect every declared command-bearing field using the same
-original command, interpreter facts and statement scopes. They do not infer
-execution from a second scan of dequoted text. A `grep` pattern remains text
-even when it contains path separators, regular-expression escapes, or dollar
-anchors. Input files, pattern files supplied with `-f`/`--file`, exclusion files,
-and redirection targets remain subject to path checks. Shell substitutions are
-checked separately because they execute commands before argument passing.
+contract](architecture.md#process-boundaries). One parse of the original command
+feeds one static pass. The pass begins with no execution proof. It returns
+`static-complete` only when a registered command grammar consumes the command
+name and every argument with a fixed literal role. An unknown command, unknown
+option, missing operand, unsupported form or unconsumed argument is `unproven`;
+literal syntax alone never supplies a default allow result. The pass does not
+evaluate a derived command string, re-enter a nested dialect, replay a
+statement, or model shell execution state.
+A `grep` pattern remains text even when it contains path separators,
+regular-expression escapes, or dollar anchors. Literal input files, pattern
+files supplied with `-f`/`--file`, exclusion files, and redirection targets
+remain subject to direct path checks. A substitution makes the request
+unproven rather than supplying a value to later analysis.
 
-For `git commit`, the operand classifier in
+For `git commit`, the retained operand classifier in
 [shell-path-policy.ts](../../src/tools/shell-path-policy.ts) recognizes message
 values as data, including attached option values. Path-like text in a literal
 message does not request filesystem access. Directory options, file-backed
 messages, templates and pathspec files retain path checks. Unsupported option
 arity is refused rather than used to infer later operand roles. Classification
-preserves the original command bytes; substitutions, redirections and commit
-mutation still receive their normal checks.
+preserves the original command bytes. Redirection targets retain their direct
+path checks; substitutions make the request unproven. These operand roles do
+not supply execution proof: Git commands remain unproven under the closed
+command catalogue below.
 
-Literal dollars and percent markers remain exact filename bytes in Bash,
-including quoted `$PWD` and `%CD%`. Only typed active expansions use the
-prepared environment and point-of-use bindings. A known expansion is checked
-as its exact result; an unknown path or executable remains unresolved. Path
-resolution follows symlinks before parent components and refuses unresolved
-links. The four exact standard-stream operands `/dev/null`, `/dev/stdin`,
-`/dev/stdout` and `/dev/stderr` are recognized before host descriptor resolution.
-Other descriptor paths receive ordinary checks.
+Literal dollars and percent markers remain exact filename bytes when the parser
+classifies them as literal text. Active parameter, environment and command
+expansions are unproven; the floor does not substitute a prepared environment
+or carry a computed value into another operand. Literal path resolution follows
+symlinks before parent components and refuses unresolved links. The four exact
+standard-stream operands `/dev/null`, `/dev/stdin`, `/dev/stdout` and
+`/dev/stderr` are recognized before host descriptor resolution. Other
+descriptor paths receive ordinary checks.
 
 Pure output data does not acquire a path role because it contains a slash or
-dollar. Its executed substitutions and expansion effects are still inspected.
-Supported default/alternate parameter operands preserve conditional evaluation;
-simple arithmetic output is admitted only when its dependency values are known
-numeric data and no mutation or nested execution is present. Its computed value
-is not inferred for path authority. Unknown command outcomes preserve possible
-states through conditions and loops; a pre-execution filesystem observation
-cannot decide a later cwd after a possible shared filesystem mutation.
+dollar. A substitution, parameter choice, arithmetic evaluation, condition,
+loop, function, callback, splat or generated argument makes the command
+unproven. The pass does not preserve possible values or filesystem states across
+those constructs.
 
-The structural pass follows command text supplied through a child shell's
-`-c`, heredoc or here-string. It does not read a script file or infer its
-contents from an earlier write. Script-file execution remains subject to
-write-risk classification, path authority, approval and the execution sandbox.
-Opaque loading into the current shell through `source` or `.` is explicitly
-unsupported because it could replace the state used for later path decisions.
+The static pass does not follow command text supplied through a child shell's
+`-c`, an evaluation command, heredoc or here-string. A fully literal `-c` or
+evaluation-command payload has the narrow exact-rule exception defined below;
+heredoc and here-string code payloads remain unproven. The pass does not read a
+script file or infer its contents from an earlier write. File-, stdin- and
+network-backed content is an accepted indirection limit only after a registered
+outer-command grammar has consumed every literal operand. A program, script or
+build form outside that closed grammar does not gain a fallback proof merely
+because its words are literal. Loading into the current shell
+through `source` or `.` remains unsupported because it changes later execution
+state.
 
 Read-only evidence comes from the existing risk contract. Unknown executables
-and mutating commands retain the write boundary, including an absolute command
-path; widening reads never supplies a read-only proof for execution. Redirect
-targets carry their own effect independently of the command's argument roles.
+are `unproven`, including an absolute command path; widening reads never supplies
+a static execution proof. Known mutating commands retain the write boundary.
+Redirect targets carry their own effect independently of the command's argument
+roles.
 
 Debugger command options (`-ex`, `-iex`, `-eiex` and their documented long
-forms) carry program text. Executable, symbol, core, directory and command-file
-options remain path operands. After an argument-forwarding option or a possible
-abbreviation, later arguments receive no debugger option exemptions because
-they may belong to the child program.
+forms) carry evaluation payloads. The floor treats those payloads as opaque and
+the request as unproven. Executable, symbol, core, directory and command-file
+options remain direct path operands. After an argument-forwarding option or a
+possible abbreviation, later arguments receive no debugger option exemptions
+because they may belong to the child program.
 Potential abbreviations of value-taking options consume their value
 conservatively so that an option-looking filename cannot claim a later operand.
-Program-text classification does not make debugger execution read-only: tool
-risk review and the execution sandbox govern the program's internal effects,
-as they do for other interpreters. Shell substitutions are still checked before
-the debugger receives the resulting argument.
+Tool risk review and the execution sandbox govern the debugger's internal
+effects. A substitution remains unproven.
 
 The `sqlite3` [argument contract](../../src/tools/shell-sqlite-arguments.ts)
 defines the supported options and consumes their values before assigning positional roles.
@@ -162,9 +171,9 @@ Literal filenames in supported SQL and dot-command operations receive the same
 path checks. SQL table names are recognized in their structural context, including
 single-quoted, qualified and grouped sources, joins and `IN` table forms.
 Expression strings and aliases keep their data role. Explicit `.shell` and
-`.system` commands re-enter structural and path inspection using the CLI's
-argument construction for its POSIX system shell;
-the Windows system-shell dialect is unsupported. Computed filenames,
+`.system` commands are unproven because they enter another shell; their payload
+is not reparsed by the floor. The Windows system-shell dialect is unsupported.
+Computed filenames,
 extension loading, file-backed virtual tables, command pipes, cwd changes,
 unknown options and unsupported dot-command forms are refused before approval
 or execution. Database URIs combined with alternate file-opening modes are also
@@ -172,17 +181,19 @@ refused because those modes can interpret filename bytes differently. Conditiona
 home-directory expansion is unresolved; file-loading modes keep `:memory:` as a path.
 Positional script-file detection is unsupported when it can change later argument
 roles; explicit `-init` and `.read` keep their program-file path checks.
-Those program files and database-resident code are not read or evaluated
-by this pass; they retain write-risk review and execution sandbox controls.
+Those program files and database-resident code are not read or evaluated by
+this pass; they retain write-risk review and execution sandbox controls.
 This contract does not establish read-only execution or change permission grants.
-Shell redirects and substitutions remain independently checked.
+Shell redirects retain direct checks; substitutions are unproven.
 
 For `find`, starting points and file-valued primaries remain paths. Name/path
 patterns, regular expressions, timestamps, numeric tests, and output formats
 are expression values. In particular, `-printf` takes one format, while
 `-fprintf` takes an output file followed by a format. Each primary consumes
 its documented operands before the next primary is read. Unsupported or
-incomplete expression syntax keeps conservative path checking. The shared
+incomplete expression syntax is unproven. Primaries that launch a command from
+matched paths produce runtime argv and are always unproven; no exact or broad
+rule authorizes them. The shared
 operand classifier consumes canonical argv, so interleaved redirections do
 not consume expression operands. File redirect targets remain independently
 checked; descriptor duplication/closing consumes no argv operand. A missing
@@ -192,7 +203,7 @@ or shell redirection and substitution checks.
 
 Compiler path options preserve the complete value: `-Iinclude/sub` names
 `include/sub`, and `-ooutput/tool` names `output/tool`. Known options consume
-one argument; unknown and sysroot-dependent forms retain conservative checking.
+one argument; unknown and sysroot-dependent forms are unproven.
 The same operand classifier checks redirects separately.
 
 HTTP and HTTPS query values remain URL data. An equals sign does not create
@@ -204,7 +215,7 @@ both risk and path classification. Only recognized listing options with
 explicit local archive files establish a read operation. Entry names select
 archive contents; archive files retain sensitive-path and optional read-boundary
 checks. Mutation, unknown options, file- or environment-supplied options,
-remote transports and expandable option words remain conservative.
+remote transports and expandable option words are unproven.
 Redirects and hidden execution still affect risk.
 
 Supported grammar is not the same as supported authority analysis. Arithmetic
@@ -224,109 +235,380 @@ lifecycle coverage are described in the architecture contract.
 
 ## Shell Credential And Sink Classification
 
-Host-shell credential and exfiltration analysis uses three buckets. An
-identified floor takes precedence over an ordinary reason in the same input.
+Host-shell credential/sink classification is separate from exact raw-word
+identity. Unsandboxed input over 2,000 characters asks, or denies headless,
+before command-dependent work. In Lane B, an input-length or structural-cap
+refusal reached before static analysis returns the ordinary unsandboxed L6 ask,
+or denies headless. Lane A retains an 8,000-character executable envelope limit.
+Bash heredoc bodies receive a separate aggregate 65,536-byte data allowance only
+when every heredoc operator in the original command has a quoted delimiter and
+no known code-consuming receiver is present. A total executable-token limit
+applies across the whole command, including nested commands and assignment
+values. It never resets at simple-command boundaries; operators and separators
+remain bounded by source length. A Lane A character, data, token or structural
+limit stops analysis with a foreground modal/L2 or headless deny. No rule, saved
+grant, mode or reviewer satisfies either refusal. Identified floors retain their
+precedence over ordinary reasons.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
 
-| Bucket | Evidence | Permission behavior |
+Decision cost is bounded by structural limits, not elapsed time or a work-step
+verdict. The floor derives immutable facts for each source node and literal token
+once. Wrapper and runner command boundaries are index ranges over the original
+argv. Consumers do not construct or rescan every argv suffix. The pass never
+tracks variable values, taint, current-directory candidates, file provenance,
+loop iterations, callbacks or mutations between commands. It never reparses a
+literal payload in another dialect. A wall-clock deadline cannot change a
+permission result.
+
+The positive-proof catalogue is the only source of `static-complete`. Each
+registered grammar identifies one command or wrapper form and must consume all
+arguments exactly once. It may delegate a bounded index range to another
+registered grammar, but cannot infer a child argv from input, files, prior state
+or command output. The catalogue starts conservatively and grows by adding a
+complete grammar and its refusal tests, never by adding a denylist exception.
+If any stage is unproven, the whole command input is unproven; a proven sibling
+does not leave behind a separately reusable allow result.
+
+Option arity is explicit in the registered grammar. Required-value options may
+consume the following word when no attached value is present. An optional-value
+option never consumes the following word: a long option accepts a value only
+as `--option=value`, and a registered short option accepts it only as a
+same-word suffix. A bare optional-value option leaves every later word for
+ordinary option or operand parsing. An unknown following option therefore
+remains unproven instead of becoming an optional value.
+
+Command resolution is a finite grammar context, separate from the input quoting
+dialect. A direct shell command may use its registered builtin or cmdlet grammar.
+External delegation through `env` or Bash `exec` permanently
+switches the child range to native-executable grammar: a native program does not
+inherit the parent's builtin, cmdlet or alias grammar. Bash `command` preserves
+its shell context, and `builtin` accepts only the registered Bash builtin subset.
+Unknown delegated names remain unproven even if they spell a known cmdlet.
+
+The grammar's `changesState` flag is a conservative command-family property,
+not an inference about this invocation's effects. For families that can write
+through implicit or alternate modes, every admitted form is possible-write. The
+current family-level set covers all positively parsed native `curl`,
+`sort` and `uniq` forms, including read-looking forms with no write option. Therefore any such form in a
+multi-command input makes the whole input unproven. The authoritative flags and
+closed argv grammars live in
+[shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
+the floor never restores an allow by tracking files, provenance or later use.
+
+The same source owns the closed `printf` format grammar. It accepts only known
+non-state-mutating conversions and refuses an incomplete, unknown or
+state-mutating conversion rather than executing the format or treating it as
+ordinary data.
+
+The pass returns exactly one of these outcomes:
+
+| Outcome | Evidence | Permission behavior |
 | --- | --- | --- |
-| Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
-| Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
+| `visible-floor` | A sensitive path, credential source, upload sink or retained catalogue effect is directly visible in the literal outer command | Per-call L2 ask with `forceModal`, before every allow rule or saved grant; headless denies; never remembered |
+| `unproven` | Lane B refuses the input length or a structural cap before static analysis | Foreground L6 ask under the ordinary unsandboxed exact-rule requirement; headless denies; no rule, mode or reviewer repairs it |
+| `unproven` | Lane A exceeds a cap, or either lane has a within-cap syntax refusal, an unknown command or argument grammar, an unconsumed operand, runtime argv, or a callee or argument that depends on expansion, substitution, a splat, loop, callback, generated text, prior mutation or other runtime state | Per-call L2 ask with `forceModal`; headless denies; no broad rule, mode, reviewer or exact rule repairs it except the positively parsed literal-evaluation case below |
+| `static-complete` | A registered argv grammar consumes the known command and every literal argument in the original parse, with no runtime-state or prior-effect dependency | Sandboxed execution, including headless, follows its normal route; unsandboxed automatic allowance requires a current-format exact raw-word rule, and unsandboxed headless denies without it |
 
-The path scan checks a glob argument's literal directory prefix, before its
-first wildcard, as well as its expansions, so a wildcard below a protected
-entry (`~/.mozilla/firefox/*/log*ns.json`) is a floor whatever the profile or
-file name. Relative paths, including recursive-search roots, resolve against
-every working directory that a static `cd`, `chdir` or `pushd` earlier in the
-same input may leave in force. A change is never assumed to fail or to be
-undone by a subshell, so after `;`, `||`, a pipeline or a subshell each earlier
-directory stays a candidate (`(cd ~) && grep -r x .` searches the home as far
-as the scan knows). Only the right side of `&&` narrows: it runs after the left
-succeeded, so a static `cd` on the left is its whole working directory
-(`cd src && grep -r x ..` searches the project, not its parent). A
-command-local directory option moves that one command, on top of its earlier
-candidates: `env -C`/`--chdir`, `git -C`/`--work-tree`, `make -C`/`--directory`,
-`tar -C`/`--directory`, `ninja`/`meson`/`cargo`/`go -C`, `just -d`,
-`npm -C`/`--prefix`, `pnpm -C`/`--dir`/`--prefix`, `yarn`/`bun --cwd`,
-`uv --directory`/`--project` and `poetry -C`/`-P`; a non-static value is an
-ordinary ask like a non-static `cd`. Whole-tree readers count as recursive
-searches whose root at or above a protected entry is a floor: `grep -r`/`rg`,
-archive creation (`tar c`/`r`/`u`, `zip -r`), recursive copies (`cp -r`/`-a`,
-`rsync -r`/`-a`, `scp -r`, remote operands excluded), and `find`, `fd` or
-`du -a`, and `ls` (with or without `-R`) when every match is handed to a
-program (`-exec`, `fd -x`) or to an `xargs` stage. A plain `find`/`fd`/`du`/`ls`
-still only lists names. A recursive reader behind `xargs` takes roots from its
-input, which the scan cannot see: it is a floor when a feeding stage names a
-static path at or above a protected entry (`echo ~ | xargs grep -r x`), when
-the directory the stages run in is (`cd ~ && git ls-files | xargs rg foo`), or
-after a non-static cd; otherwise (`git ls-files | xargs rg foo`, roots from a
-file or a substitution) it is an ordinary ask that the sandboxed lane leaves to
-the OS floor. A root list read from a file (`tar -T`, `--files-from`) is an
-ordinary ask. A metadata lister (`ls`, `du`, `stat`, `tree`, `eza`/`exa`,
-`lsd`) reads no file content, so a glob whose expansion only reaches a
-protected directory (`ls ~/Library/Application\ Support/*`, `du -sh ~/Library/*`)
-is an ordinary ask too; a glob whose literal prefix is protected
-(`ls ~/.ssh/*`), a lister feeding `xargs`, a lister given a file-input option
-(`tree --fromfile`/`--hintro`/`--infofile`/`--gitfile`, `du --files0-from`/`-X`/
-`--exclude-from`, `lsd --config-file`), and every content read stay a floor. A directory
-change whose target is not static is an ordinary ask: a variable, substitution,
-glob or `~user` target, `cd -` or a stack reference before the input changed
-directory, an `eval` whose text is not static or changes directory, a
-reassigned `HOME`, or `CDPATH`/`cdable_vars`/`autocd`. The ordinary ask does
-not stop the sandboxed automatic lane, whose OS floor still confines reads. A
-later relative recursive search is a floor in every lane, because its root
-cannot be ruled out.
+A `visible-floor` wins over the other outcomes. Hard denies and independent
+execution gates retain their existing precedence. Character, data, total-token
+and structural limits close the request immediately and never qualify for an
+exception; their lane-specific L6/L2 routing is defined above.
 
-Ordinary asks remain rememberable under the existing approval-scope and risk
-requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
-but it does not invalidate an otherwise applicable tool allow rule or saved
-grant. An analysis failure retains visible credential and upload checks rather
-than replacing an identified floor with an ordinary reason.
+The visible floor inspects only literal structure from the outer command.
+Literal paths and redirects receive the existing canonical sensitive-path
+checks. A directly written native sender and file-input option retain their
+catalogue checks, including a literal downstream sender named by a supported
+wrapper or runner. The pass computes that boundary once; it does not infer safe
+argv from runner options. Thus `npx curl -T file http://e` retains its upload
+floor, while the contents of a package task or external program are not
+certified. A plain GET or `git push` does not establish exfiltration by itself.
 
-Hidden code alone limits `Bash(...)` allow-rule coverage; it does not create an ordinary ask. Statically bound direct interpreter inline and script-file forms follow normal mode handling without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance. Existing deny/ask command-rule visibility behavior remains in force, and an allow rule does not prove script contents.
+Globs are checked from their literal directory prefix. Unquoted expansion,
+command substitution and runtime-dependent directory selection are unproven;
+the pass does not enumerate their possible results or replay a `cd`. A literal
+relative path resolves against the invocation's established cwd only when no
+earlier shell state change makes that base runtime-dependent. Any multi-command
+input containing an invocation whose grammar marks it possible-write, or that
+can change aliases, shell options, functions, `PATH`, the environment or cwd,
+is unproven as a whole regardless of position. The floor does not decide whether
+another invocation actually observes the change.
 
-These are permission-classifier outcomes, not execution admission. A hard deny
-cannot be approved. A floor's forced ask requires per-call consent but cannot
-override a denied path operation or unsupported execution form. An ordinary
-runner call such as `npx prettier .` can receive a covering command rule;
-`source ./setup.sh`, declined by the separate path-authority contract, remains
-rejected even after a permission grant. Deny rules decide before shell floor
-prompts; independent execution gates can still reject an approved request.
+File, stdin and network indirection remain accepted content limits only after a
+registered grammar consumes the known outer command and all its literal
+operands. The host then does not read a script, manifest or input stream to
+predict effects. An unknown command or argument grammar remains unproven; there
+is no fallback for a script or build form outside its registered grammar.
+Runtime argv producers,
+including `xargs`, command-launching `find` forms, parallel runners and a
+PowerShell pipeline into `&` or `Start-Process`, are always unproven. They cannot
+use an exact rule, broad rule or the literal-evaluation exception. There is no
+same-input file-provenance or execution-state model.
 
-`SHELL_PREFIX_POLICY.packageRunners` owns opaque runner identities, including `npm`, `pnpm`, `yarn` and `bun`. The shared prefix analysis reports `opaque runner prefix` through the shared `SHELL_PREFIX_POLICY.wrappers` grammar, including versioned runner spellings and supported executable/script suffixes. Runner options, source URLs, package forms and registry choices have no separate classifier policy. They do not establish a floor by themselves. File-input values such as `--env-file=.env`, including an implicit `.env` for a valueless `--env-file`, still receive sensitive-path inspection.
+Literal-payload dynamic evaluation has one narrow exception. A registered,
+closed evaluator grammar must recognize a single outer simple command, consume
+every option and operand, and identify a fully literal payload. This covers the
+supported direct builtin `eval "ls"` and `Invoke-Expression 'dir'` forms on an
+independently proven outer host; the names alone are not enough. Nested
+interpreter launchers have no positive grammar, even with a literal payload. An
+unknown option, including an unsupported common parameter, makes the request
+unproven and ineligible for every allow rule. For example, a common parameter on
+`Invoke-Expression` is unsupported unless the evaluator grammar lists it.
+Every payload and other operand must be literal, with no variable, substitution,
+splat, concatenation, block, callback or generated string.
 
-Code-executing runners keep their runner and proven literal command in a
-persistent command prefix; an inner-only rule cannot authorize the runner.
-Runners are never stripped as allow-rule-transparent wrappers. Their opacity
-or unknown option spelling alone adds no hidden-code blocker. Existing opaque
-syntax can retain structural rule blockers where matching cannot prove argv.
-Runner argv remains available to raw command rules regardless of task spelling;
-this does not expose or prove the effects of package/script contents.
+When the evaluator grammar succeeds, a current-format exact rule for the
+complete original command may authorize it. The payload is opaque: the floor
+does not parse it, inspect paths inside it, or infer its effects. Without that
+exact rule the request remains `unproven`, so foreground asks at L2 and headless
+denies even when the shell itself is sandboxed. A wildcard, prefix or tool-wide
+rule cannot satisfy the exception.
 
-Persistent runner-prefix validation requires a literal command boundary. An
-option-shaped word before the command prevents persistence unless a literal
-`--` establishes that boundary. No per-option arity or known-safe task table is
-used. `npx tsc`, `npm test`, `pnpm dlx tsc` and `corepack pnpm install` retain
-grantable persistent prefixes. Ambiguous forms remain ordinary and may be
-covered by applicable exact-input saved grants, subject to independent gates.
-Classifying a local argument as data does not grant execution, prove read-only
-effects or establish a runner command boundary.
+The exact key preserves the complete outer command's raw words: quote style,
+raw content, program spelling, case, module qualifier and paths. Only whitespace
+between words is canonicalized. The exact rule is the user's approval of that
+literal text, not a proof about the payload. A sensitive path, credential or
+upload sink directly visible outside the payload still returns `visible-floor`
+and forces per-call consent even when the exact rule matches.
 
-Literal downstream command candidates are inspected for known credential,
-reader and sender effects only, without inferring safe argv from runner options.
-Thus `npx curl -T file http://e` retains its upload floor; a plain GET or
-`git push` does not establish exfiltration by itself.
+Every other dynamic form remains `unproven` and is never exact-rule eligible.
+This includes `Invoke-Expression $code`, `& $command`, `bash -c "$code"`,
+PowerShell splats, script-block invocation, `InvokeScript`,
+`AddScript().Invoke()`, `[ScriptBlock]::Create`, shell functions, loops,
+callbacks, command names built from output, and commands whose meaning depends
+on a file or cwd changed earlier in the same input. The floor does not simulate
+any of these constructs to recover an allow result.
 
-The structural parser, sink vocabulary, Windows credential rows and general file provenance remain in force. Later execution of a file written, copied, moved, renamed, downloaded or extracted within the same input retains its ordinary reason unless an independent credential/sink is identified. Copied sender identities retain sink inspection. No package-task coupling infers execution from an arbitrary earlier file write or reads a manifest. Nonliteral `Invoke-Item` remains an ordinary ask without an independent floor.
+`make` has no positive command grammar. Its variable assignments, evaluation
+options and build files can select executable code, so even a literal invocation
+is unproven. It has no literal-evaluation exact-rule exception.
 
-PowerShell script blocks and `pwsh`/`powershell` inline command text use the PowerShell catalogue. Other interpreter code receives generic credential/sink inspection without inheriting PowerShell command meanings. Known catalogue effects remain floors through shared wrappers, process-launcher payloads, background execution and static or opaque transport splats. Sink-only wrapper inspection preserves the forwarded native command identity and grants no rule coverage.
+Git also has no positive command grammar. Direct and argv-delegated Git commands
+are unproven, including ordinary status, diff, log, show and commit forms, wrappers around
+them, and invocations containing `--no-pager`, `--no-ext-diff` or
+`--no-textconv`. The pass does not inspect configuration or environment to
+prove pagers, external diff, text conversion, filters, filesystem-monitor
+commands or hooks disabled. It does not interpret `-c` configuration, callback
+options or payloads to recover an allow. A quoted commit message remains
+literal data for raw-key identity and path-role classification, but that fact
+does not make `git commit -m 'message'` exact-rule eligible. All `make` and Git
+requests require per-call approval in the foreground and deny headless; neither
+exact nor broad allows can upgrade them. Supporting any of these forms requires
+a separate complete grammar review. Literal evaluator payloads retain the
+separate opaque-payload exact-rule exception above; the pass does not inspect
+their contents to discover a nested command.
 
-`Bash(...)` rules remain dialect-scoped. PowerShell has no per-command rule
-language or project command-rule scope today. Existing tool allow rules and
-saved grants can satisfy its ordinary asks; no new command-rule grammar is
-implied.
+Implicit configuration is part of the argument-grammar proof. A program that
+can load user or system settings which execute a helper, add arguments, upload
+data or select output paths is unproven unless the admitted argv disables that
+loading. The grammar records the disabling first argument and checks it at the
+actual delegated program boundary, including after `env` or a runner.
+
+Native `wget` has no positive grammar because configuration suppression is not
+reliable across supported versions. Native `curl` requires exactly `-q` or
+`--disable` as its first argument. A later or grouped `-q` is insufficient;
+`-K` and `--config` are outside its positive grammar even after suppression.
+Unknown options still refuse, and visible upload, destructive and sensitive-path
+floors still win. These refusals offer no exact rule and cannot be repaired by
+an existing exact or broad allow. A case-insensitive command-shell alias that
+also names a known native program must satisfy both grammars, since editions
+can resolve it differently. A missing native grammar refuses the alias too.
+Thus direct `curl` and `wget` aliases remain unproven; use a supported explicit
+native delegation or the full cmdlet name for an unambiguous grammar.
+Detection still uses the alias union to retain visible floors. Native
+delegation never uses a cmdlet's grammar. Widening any removed
+configuration-dependent form requires a separate complete grammar review.
+
+Managed PowerShell execution and parsing require a separate startup proof.
+`-NoProfile` suppresses profiles only. `-SettingsFile` replaces the system-wide
+JSON file only, and an inherited `PSModulePath` can be augmented at startup.
+Neither is a proof that user configuration cannot select execution.
+
+Parser and execution resolve the same protected absolute installation. PATH,
+portable copies, per-user package roots and agent-writable installation entries
+never qualify. Admission verifies the installation and its ancestors before any
+native parser can run. Missing or unverifiable installations are unproven and
+cannot start a parser, even when a rule was stored. Installation proof and refusal are cached per candidate for the process
+lifetime. A new or repaired installation requires an application restart;
+stale refusal cannot grant authority. Successful proof trusts only changes
+excluded by the host-trust boundary.
+POSIX admission requires root ownership, no group/other write or current write
+access on every ancestor and installation entry. On macOS the fixed system
+helper must return one complete plain permission record per requested entry;
+extended metadata, ACL records, empty, truncated or unfamiliar output refuse.
+Windows admission requires non-reparse native ACL snapshots with only trusted
+system-principal ownership and mutation rights. Symlinks, elevated agents,
+special entries or incomplete evidence refuse. The fixed installation walk has
+65,536-entry and 64-level bounds; trusted administrator updates are host trust.
+
+On macOS and Linux each native parser and execution child receives a fresh
+host-owned `XDG_CONFIG_HOME` and settings file before startup. Host execution
+preserves the caller's HOME. The first command disables module autoload,
+replaces the runtime module path with exactly `$PSHOME/Modules`, and imports
+Utility and Management by their absolute installation manifest paths using
+the engine's core import command. An initialization error terminates before
+the original command; there is no discovery fallback. Sandboxed execution
+uses the same startup preparation inside its isolated profile.
+
+Outer PowerShell line and block comments are unproven because comment syntax
+can carry directives processed before the initialization prelude. The lexer
+records their presence and retains its full visible-floor pass; it does not
+enumerate directive names or treat an unknown directive as inert. Quoted `#`
+text remains literal argument data.
+
+A protected executable is necessary but does not establish Windows startup
+proof. Both the protected System32 Windows PowerShell 5.1 path and modern
+Windows PowerShell remain unproven. The legacy console's user-registry session
+configuration has not been proven ignored under the launch flags; this is an
+evidence gap, not an assertion of a verified exploit on that edition. Modern
+Windows user JSON can select an endpoint before the prelude. Ordinary
+CurrentUser execution policy alone is not the reason for refusal. No exact
+rule, saved grant or broad allow upgrades an unproven startup path; foreground
+requires per-call consent and headless denies. Executable admission remains
+independent and required before any parser spawn. Administrative policy is host
+trust only where user or agent mutation is excluded. Elevated processes cannot
+prove an installation immutable to themselves.
+
+An unpinned host AST parser starts only after genuine one-shot host authority
+is verified and consumed, and only if executable admission independently
+succeeds. MXC performs its AST inspection inside a separate confined invocation,
+then applies existing structural/path gates before execution. Its internal
+parser response has a separate 1 MiB byte limit; truncation or an
+oversized response is a parser failure, never a partial proof. Native preflight
+is deferred on unpinned paths. A pinned path retains the original full-text
+literal-evaluation exact exception.
+
+All nested interpreter launchers are unproven, including literal child-shell
+code and script-file forms with startup-suppression flags. No child runtime has
+a registered positive grammar. An argv proof cannot establish the identity or
+installation of a PATH-resolved executable, adjacent path-initialization files,
+or inherited startup inputs. Existing exact and broad rules cannot upgrade
+these requests; foreground requires per-call approval and headless denies.
+The outer host's protected executable and startup preparation do not transfer
+authority to a nested process. Re-admission requires a shared installation
+verifier plus a complete startup contract for the resolved image and argv, in
+a separate grammar-widening change.
+
+System-scope startup files count as host-trusted only when their installation
+and permissions exclude user and agent mutation. A location called system-wide
+is not sufficient. The nested grammar does not attempt such filesystem proof
+for an unavoidable startup file: for example, `zsh -f` still reads
+`/etc/zshenv`, so it remains unproven. Local configuration that can choose
+code, modules or additional arguments is not an accepted residual.
+
+Local transcript-file writes are an accepted host-trust residual. They do
+not, by themselves, revoke cmdlet automatic allowance. This residual grants
+no exception for configuration that selects modules, code or execution policy.
+
+Package task, exec and runner forms have no positive-proof grammar because
+their implicit configuration can choose startup code and execution options.
+They remain in raw rule identity for detection and narrowing rules, but never
+supply an allow rule. No runner-option suffix heuristic supplies proof.
+Interpreter file forms have no positive grammar;
+module, stdin, interactive and other runtime modes remain unproven.
+
+Shell rules are dialect-scoped: `Bash(...)` rules match bash and
+`PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at
+user, project or session scope. Exact command rules preserve every literal raw
+word, including the complete program token, module qualifier, case, quote style
+and contents. Only whitespace between words is normalized. No command head or
+argument is unquoted, requoted, case-folded, basename-collapsed or value-converted
+for exact identity. Thus `Alpha\Invoke-Probe` and `Beta\Invoke-Probe`, case
+variants, `Write-Output '0x10'` and `Write-Output 0x10` are distinct keys.
+Module/basename/case normalization belongs only to detection, effect analysis
+and conservative deny/ask matching, never exact allow keys.
+
+Fresh shell allows, including session rules, record `shellRuleVersion: 1`,
+owned by `SHELL_RULE_CANONICAL_VERSION` in
+`src/shared/shell-rule-version.ts`. Unversioned and wrong-version shell allows
+remain silently inert in all scopes. Reads and unrelated writes preserve them
+without stamping a current version. There is no migration, new error,
+invalid-rule marker or UI flow for these rows. Lost old quote provenance is not
+reconstructed; a fresh user-authored rule is required to grant current-format
+authority. Deny and ask rules retain their narrowing authority regardless of
+version.
+
+Wildcard and other broad shell allows apply only to `static-complete` sandboxed
+requests. An unsandboxed request runs without asking only under a current-format
+exact rule. A headless unsandboxed request likewise requires that exact rule or
+denies; a sandboxed `static-complete` request follows the normal headless route.
+The literal-evaluation exception is the sole case in which a current-format
+exact rule may satisfy `unproven`; every other `unproven` request asks or denies
+as described above.
+
+PowerShell launcher detection checks the whole command, including launcher
+names inside quoted strings and across pipelines or sequences. Once a launcher
+word is seen, every later token must pass a positive character proof after shell
+quote removal: each code point must be a Unicode letter, number, punctuation,
+symbol, or U+0020 ASCII space. Other separators, controls, combining marks and
+unassigned code points make the command unproven. Hangul letters remain literal.
+This proof does not infer an argument binder's whitespace behavior.
+
+Only tokens that pass the character proof receive the deliberate encoded-option
+overmatch: remove leading ASCII hyphens, slashes and U+2013/U+2014/U+2015 dashes,
+then lowercase; an e-leading result is unproven. Thus `-ExecutionPolicy` also
+asks. The scan never stops at `-File`, `--` or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only. Visible literal
+file/stdin/network indirection for a simple invocation otherwise remains
+eligible under the static contract above; runtime argv production remains
+unproven. Literal evaluation payloads use only the narrow exact-rule exception;
+other dynamic forms remain unproven.
+
+PowerShell cmdlet argv uses its own closed parameter grammar. Unsupported
+parameters, including non-ASCII dash spellings, are unproven. The registered
+HTTP cmdlets mark a possible write only when the recognized `-OutFile` parameter
+is present; their credential and upload floors remain independent. This argv
+proof is separate from the launcher-wide encoded-option character proof above.
+
+The Lane A heredoc data allowance requires every heredoc operator in the whole
+original command to have a quoted delimiter, including `<<'X'`, `<<"X"` and
+`<<\X`. One unquoted delimiter cancels the allowance for every body. In that
+case, all text after the first heredoc operator's line receives the normal
+literal checks and the command remains within the normal 8,000-character cap.
+Plain unquoted bodies without expansion remain eligible through those checks.
+Body extent comes from analysis of the original source: no body is deleted, no
+remaining text is reparsed as proof, and no separate line-continuation reader is
+used. Unsafe or ambiguous syntax fails closed.
+
+Quoted bodies also require no known code-consuming receiver. The single static
+pass identifies those receivers without inspecting body contents. Known consumers
+remain unproven and keep the 8,000-character cap;
+an unknown receiver or receiver grammar is also unproven. Literal data writes
+remain eligible only when the receiver's registered grammar consumes every
+argument. Aggregate data body bytes stay within 64 KiB and the executable
+envelope within 8,000 characters. Eligible bodies are retained as original
+source slices and scanned only to locate terminator lines, never for general
+code/floor inspection. Lane B always caps the complete original command at
+2,000 characters.
+
+Each permission request obtains one lexical representation from the original
+grammar and performs one static pass. Literal token facts, index-range argv views
+and stored-rule parses are reused within that request. Successful analysis is
+not cached across requests. The positive argv proof is owned by
+`src/permissions/rules/shell-argument-grammar.ts`; unknown commands and grammar
+remainders do not fall back to a negative-danger scan. The grammar counts
+executable word/value records across the entire input, including nested commands
+and assignment values, against the 400-record `MAX_SHELL_ANALYSIS_TOKENS` limit in
+`src/shared/shell-analysis-limits.ts`. Empty assignments and declaration heads
+also contribute records; literal quoted body data does not. It refuses
+over-limit input before expensive result serialization. The cap is global;
+there is no separate per-command word allowance. Separators and operators are
+bounded by the character cap. General structural parsing retains its existing
+safety limits.
+
+Quoted literal data is retained as an original source slice. The lexer scans
+it only to locate its terminator lines; it does not turn body contents into
+ordinary words, run launcher detection over them, or include them in the
+executable-token count. Unquoted or mixed heredocs keep the normal analysis
+path. No host-side shadow lexer predicts grammar work or body extents.
+
+Floor inspection reuses request-local canonical-path results and catalogue
+matches for literal operands. The decision has no work counter, elapsed-time
+cutoff or worker timeout as an authority input. Diagnostic counters may assert
+linear work in tests but cannot affect a verdict. Admission
+is bounded by the character, data and total-token limits; timing checks are
+regression tests and have no production decision authority.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
@@ -1020,9 +1302,17 @@ model's shell-environment description and the tool result say the sandbox is
 unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirement) every plain shell — sandbox off,
 unavailable or not covering the command, an explicit host request, and the
 Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
-only on an exact `Bash(<command>)` allow rule; otherwise it asks on the
-five-choice card (five-choice shell card) in every mode, and headless it is denied and audited.
-The reviewer and the judge are not consulted for it. The parser and plan in
+only on a current-format exact allow rule for that proven literal command,
+`Bash(<command>)` or `PowerShell(<command>)`, matched on the command's literal
+raw words with the same strictness and only after the static floor permits that
+reuse (owner decision 2026-10-25). Otherwise it asks on the shared
+decision row of the approval card (owner decision 2026-10-25, unified approval
+card) in every mode. Headless, a matching exact rule runs it — for the Plan B
+and an explicit host request too — and without one it is denied and audited.
+The reviewer and the judge are not consulted for it. Wildcard allow rules apply
+only to sandboxed runs; deny rules may be wildcards. Remembered approvals saved
+for plain shells before this decision stay inert, without migration or a card
+marker. The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
@@ -1653,7 +1943,7 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 | Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. A configured active judge chain may decide eligible calls left undecided after rules and mandatory gates. |
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
 | Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
-| Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. An ordinary shell reason still asks without an applicable allow rule or saved grant. |
+| Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. Within-cap runtime-dependent, syntactically unproven or unknown/incompletely consumed argv asks at L2 or denies headless; a Lane B pre-analysis cap refusal follows the L6 unsandboxed path. Only a qualifying within-cap literal-evaluation request whose closed grammar consumes every option and operand can use the documented exact-rule exception; a cap refusal never can. Unsandboxed shell execution still requires a current-format exact rule after positive proof. |
 
 ## Foreground And Headless Behavior
 

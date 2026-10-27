@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
+  isIssuedPlainShellExactRuleDecision,
   isIssuedShellAllowRuleDecision,
   isReviewerAutoDecisionOutcome,
   isTailnetControllerP1BlockedTool,
@@ -99,6 +100,7 @@ type AuditPermissionAsk = (
  * excluded from §S4 by its `kind`, but that exclusion lives in a third module
  * and is not what makes this value correct.
  */
+
 export function deriveApprovalIsReadOnly(opts: {
   invocationCategory: ToolCategory;
   approvalReasonPrefix: string | undefined;
@@ -421,10 +423,10 @@ export async function authorizeToolInvocation(
     // Issue #28 — every canonical host shell carries its command as the rule
     // subject, so the exfiltration and sensitive-path floors read it whatever
     // the shell. `dialect` keeps the languages apart: `Bash(...)` deny/ask/
-    // allow rules (user-global and this project's file in Ave home) match
-    // bash only, and PowerShell has no rule language, so it gets no project
-    // rule scope either (project glob rules would otherwise start applying to
-    // `powershell` by name). The project rules are loaded here because the
+    // allow rules (user-global, this project's file in Ave home, and the
+    // conversation's session rules) match bash only, and `PowerShell(...)`
+    // rules PowerShell only (owner 2026-10-25), so both shells carry the
+    // project rule scope. The project rules are loaded here because the
     // decision itself is synchronous.
     // Project rules follow the directory the command will actually run in
     // (the tool's own cwd resolution); `projectRulesLocation` realpaths it
@@ -463,7 +465,7 @@ export async function authorizeToolInvocation(
     const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
       && invocationPermissionContext.disposableSubstrate?.authority === "workload-broker"
       ? undefined : scopedSubjectCandidate;
-    const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : scopedRuleSubject ? executionCwd : undefined;
+    const projectRulesCwd = shellRuleSubject !== undefined ? shellRuleSubject.cwd : scopedRuleSubject ? executionCwd : undefined;
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
@@ -497,24 +499,31 @@ export async function authorizeToolInvocation(
     // the Windows Plan B) is gated here, before reviewer and approval-memory
     // paths. Deny decisions win unchanged; the floor and ask rules already
     // returned a forced-modal ask.
-    //   • Explicit host request: only a matching host-issued, epoch-bound
-    //     layer-3 exact `Bash(<command>)` allow rule approves it (owner
-    //     2026-10-25, unsandboxed shell exact-rule requirement); otherwise it asks with the host-execution warning.
-    //     A reviewer or mode-wide allow never stands in for that rule or card.
-    //   • Nobody can answer (headless or routine): denied and audited (I5,
-    //     owner 2026-10-16), whatever the rules say.
-    //   • Windows Plan B (foreground) runs without a sandbox, so it follows
-    //     the unsandboxed shell exact-rule requirement: an exact
-    //     `Bash(<command>)` rule or the five-choice dock card (owner
-    //     2026-10-25); its rule allow is recorded for this exact action below.
+    //   • A matching host-issued, epoch-bound layer-3 exact shell allow rule
+    //     (`Bash(<command>)` or `PowerShell(<command>)`) runs it without a
+    //     card, in the foreground and headless alike (owner 2026-10-25:
+    //     explicit-host and headless follow exact rules). A reviewer or
+    //     mode-wide allow never stands in for that rule.
+    //   • Otherwise the foreground asks on the approval card, whose saves
+    //     store that exact rule, and nobody-can-answer (headless or routine)
+    //     is denied and audited (I5).
+    //   • The explicit host request's rule allow becomes its rule-proof
+    //     permit; the Windows Plan B's is recorded as a policy-lane permit
+    //     below.
     const explicitHostRequest = hostShellExecutionPlan?.executionRequest === "host";
+    // The explicit host request needs the host-issued, epoch-bound rule proof
+    // its permit is minted from. The Plan B needs the policy's own allow: for a
+    // shell without a sandbox the permission manager allows only on an exact
+    // rule, at layer 3 (every other lane asks or denies first).
     const explicitHostAllowRule =
       explicitHostRequest &&
       remoteControllerOrigin === undefined &&
-      invocationPermissionContext.headless !== true &&
       isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager);
+    // The host-issued proof that an exact shell rule decided this plain shell (owner 2026-10-25), never the result's shape.
+    const planBExactRuleAllow = !explicitHostRequest && isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager);
+    const exactShellAllowRule = explicitHostAllowRule || planBExactRuleAllow;
     if (explicitHostAllowRule) hostShellAllowRuleDecision = permissionResult;
-    if (hostShellRequiresExplicitApproval && permissionResult.decision !== "deny" && !explicitHostAllowRule) {
+    if (hostShellRequiresExplicitApproval && permissionResult.decision !== "deny" && !exactShellAllowRule) {
       const executionReason = explicitHostRequest
         ? "explicit host execution"
         : hostShellExecutionPlan!.fallbackReason;
@@ -1540,13 +1549,13 @@ export async function authorizeToolInvocation(
         // the exact invocation shown to the user.
         const approvalRequest = {
           id: randomUUID(),
-          ...((hostShellRequiresExplicitApproval && !isCanonicalBashTool(tool)) || requiresRemoteLocalOneShot || requiresPerActionApproval
+          ...((hostShellRequiresExplicitApproval && !isCanonicalBashTool(tool) && !isCanonicalPowerShellTool(tool)) || requiresRemoteLocalOneShot || requiresPerActionApproval
             ? {
-                // Non-rule shell (PowerShell has no rule language),
-                // remote-controller and per-action requests retain exact
-                // one-shot consent. A Plan B bash card offers the five choices,
-                // each persistent one saving only the exact `Bash(<command>)`
-                // rule (owner 2026-10-25, five-choice shell card).
+                // A host shell without a rule language, remote-controller and
+                // per-action requests retain exact one-shot consent. A bash or
+                // PowerShell card (Plan B and explicit host included) offers
+                // the full card, each save storing only that shell's rule
+                // (owner 2026-10-25).
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
@@ -2067,8 +2076,9 @@ export async function authorizeToolInvocation(
       hostShellApprovalDecision === undefined && !ruleProofStands && services.permissionManager !== undefined &&
       permissionResult?.decision === "allow" && !requiresRemoteLocalOneShot &&
       // Defense in depth for the gate above: the policy lane is the Windows
-      // Plan B in the foreground only (unsandboxed shell exact-rule requirement, I5).
-      hostShellExecutionPlan?.executionRequest !== "host" && invocationPermissionContext.headless !== true) {
+      // Plan B only, and headless only on its exact shell allow rule (I5).
+      hostShellExecutionPlan?.executionRequest !== "host" &&
+      (invocationPermissionContext.headless !== true || isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager))) {
     recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
   }
 

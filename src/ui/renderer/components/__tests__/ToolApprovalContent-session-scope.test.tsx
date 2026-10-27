@@ -43,14 +43,14 @@ describe("ToolApprovalContent session-only browser scope", () => {
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(browserRequest("agent"), onDecide);
 
-    const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
+    const remember = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(remember).toHaveTextContent("이번 세션 동안 허용");
     expect(remember).not.toHaveTextContent("항상 허용");
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("https://a.example:443");
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("에이전트가 연 탭");
 
     fireEvent.click(remember);
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
   });
 
@@ -60,7 +60,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
     vi.stubGlobal("ave", { userApproval: { record } });
     const { sessionId: _omitted, ...request } = browserRequest("agent");
     renderApproval(request, onDecide);
-    const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
+    const remember = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(remember).toBeDisabled();
     const reason = "이 요청은 대화에 속하지 않아 세션 동안 허용할 수 없습니다. 한 번만 허용하세요.";
     expect(remember).toHaveAttribute("title", reason);
@@ -85,7 +85,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
       requireExplicit: true,
     };
     renderApproval(request, vi.fn());
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     expect(screen.queryByTestId("allow-always-exact-scope")).toBeNull();
     const target = screen.getByTestId("approval-browser-target");
     expect(target).toHaveTextContent("https://a.example:443");

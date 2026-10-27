@@ -1,8 +1,17 @@
 // Real sockets exercise interface binding, forged requests, and port ownership.
 import { describe, expect, it, afterEach, vi } from "vitest";
+import * as crypto from "node:crypto";
+import * as digest from "../../lib/hex-digest-equal.js";
 import { request as httpRequest } from "node:http";
 import { Server } from "node:net";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
+
+vi.hoisted(() => { vi.resetModules(); });
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomBytes: vi.fn(actual.randomBytes), timingSafeEqual: vi.fn(actual.timingSafeEqual) };
+});
 
 const OWNER = "samplemail";
 const OTHER_OWNER = "meeting";
@@ -10,6 +19,7 @@ const OTHER_OWNER = "meeting";
 const openCatchers: Array<{ catchers: AuthRedirectCatchers; owner: string; handle: string }> = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (openCatchers.length > 0) {
     const entry = openCatchers.pop();
     if (entry !== undefined) entry.catchers.close(entry.owner, entry.handle);
@@ -19,7 +29,7 @@ afterEach(() => {
 async function open(
   catchers: AuthRedirectCatchers,
   owner = OWNER,
-): Promise<{ handle: string; redirectUri: string }> {
+): Promise<{ handle: string; redirectUri: string; state: string }> {
   const result = await catchers.open(owner, { state: "xyz" });
   openCatchers.push({ catchers, owner, handle: result.handle });
   return result;
@@ -219,7 +229,9 @@ describe("what it refuses", () => {
     await expect(catchers.wait(OWNER, result.handle)).resolves.toEqual({ code: "real", state: "expected-state" });
   });
 
-  it("holds a catcher opened without a state (the plugin contract) to its exact callback path", async () => {
+  it("mints host state for plugin callbacks and retains the waiter after a forged callback", async () => {
+    const bytes = Buffer.from("0123456789abcdef0123456789abcdef");
+    const random = vi.mocked(crypto.randomBytes).mockImplementationOnce(() => bytes);
     const catchers = new AuthRedirectCatchers();
     const result = await catchers.open(OWNER);
     openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
@@ -228,8 +240,64 @@ describe("what it refuses", () => {
     void waiting.then(() => { completed = true; }, () => undefined);
     expect((await hit(result.redirectUri, "/unrelated?x=1")).status).toBe(404);
     expect(completed).toBe(false);
-    expect((await hit(result.redirectUri, "/?code=plugin&state=any")).status).toBe(303);
-    await expect(waiting).resolves.toEqual({ code: "plugin", state: "any" });
+    expect(random).toHaveBeenCalledWith(32);
+    expect(result.state).toBe("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY");
+    for (const path of ["/?code=forged&state=any", "/?code=forged", "/wrong?code=forged&state=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"]) {
+      expect((await hit(result.redirectUri, path)).status).toBe(404);
+      expect(completed).toBe(false);
+    }
+    expect((await hit(result.redirectUri, "/?code=plugin&state=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")).status).toBe(303);
+    await expect(waiting).resolves.toEqual({ code: "plugin", state: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY" });
+    expect((await hit(result.redirectUri, "/?code=replay&state=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")).status).toBe(404);
+  });
+
+  it("uses fixed-size timing-safe comparisons for matching, unequal-length and missing state", async () => {
+    const compare = vi.spyOn(digest, "timingSafeEqualHexDigest");
+    const timingSafe = vi.mocked(crypto.timingSafeEqual).mockClear();
+    const catchers = new AuthRedirectCatchers();
+    const { handle, redirectUri } = await open(catchers);
+    for (const path of ["/?code=secret-code&state=x", "/?code=secret-code&state=xyZ", "/?code=secret-code&state=%C3%A9", "/?code=secret-code"]) {
+      expect((await hit(redirectUri, path)).status).toBe(404);
+    }
+    expect((await hit(redirectUri, "/?code=accepted&state=xyz")).status).toBe(303);
+    await expect(catchers.wait(OWNER, handle)).resolves.toEqual({ code: "accepted", state: "xyz" });
+    expect(compare).toHaveBeenCalledTimes(5);
+    expect(timingSafe).toHaveBeenCalledTimes(5);
+    for (const [candidate, expected] of timingSafe.mock.calls) {
+      expect(candidate.byteLength).toBe(32);
+      expect(expected.byteLength).toBe(32);
+    }
+    for (const [candidate, expected] of compare.mock.calls) {
+      expect(candidate).toMatch(/^[0-9a-f]{64}$/);
+      expect(expected).toBe("3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282");
+    }
+  });
+
+  it("logs refusals without callback credentials or attacker-controlled query data", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const catchers = new AuthRedirectCatchers();
+    const { handle, redirectUri } = await open(catchers);
+    for (const path of ["/?code=private-code&state=attacker-state", "/?code=private-code"]) {
+      expect((await hit(redirectUri, path)).status).toBe(404);
+    }
+    expect(warn).toHaveBeenCalledTimes(2);
+    for (const call of warn.mock.calls) {
+      expect(call).toEqual(["[auth-redirect] Rejected OAuth redirect callback", { ownerKey: OWNER, reason: "state-mismatch" }]);
+    }
+    expect((await hit(redirectUri, "/?code=accepted&state=xyz")).status).toBe(303);
+    await expect(catchers.wait(OWNER, handle)).resolves.toEqual({ code: "accepted", state: "xyz" });
+  });
+
+  it("generates a fresh state after a completed flow is closed", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const first = await catchers.open(OWNER);
+    openCatchers.push({ catchers, owner: OWNER, handle: first.handle });
+    expect(first.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    catchers.close(OWNER, first.handle);
+    const second = await catchers.open(OWNER);
+    openCatchers.push({ catchers, owner: OWNER, handle: second.handle });
+    expect(second.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(second.state).not.toBe(first.state);
   });
 
   it("authenticates an error callback with the reserved state", async () => {

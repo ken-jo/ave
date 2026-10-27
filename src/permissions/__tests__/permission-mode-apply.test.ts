@@ -62,6 +62,14 @@ describe("applyPermissionModeCommand", () => {
     expect(deps.permissionManager.setModePersist).toHaveBeenCalledWith("auto");
   });
 
+  // The approval card answers a conversation-scoped remembered allow with allow-session; it approves the switch like any other allow.
+  it.each(["allow-session", "allow-always"] as const)("applies a durable mode change the person answered %s", async (choice) => {
+    const deps = makeDeps();
+    deps.approvalGate.requestAndWait.mockImplementationOnce(async (req: { id: string }) => ({ requestId: req.id, choice } as never));
+    expect(await applyPermissionModeCommand(durableAuto, deps as never)).toMatchObject({ ok: true, mode: "auto", durable: true });
+    expect(deps.permissionManager.setModePersist).toHaveBeenCalledWith("auto");
+  });
+
   it("does not request approval for durable mode changes backed by explicit built-in user action", async () => {
     const deps = makeDeps();
 

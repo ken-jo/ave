@@ -13,6 +13,8 @@ const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 const IPC_DOMAIN_DIR = resolve(__dirname, "../../../ipc/domains");
 const ALERT_SERVICE_DIR = resolve(__dirname, "../../../alerts");
 const ALERT_RESULT_CONTRACT = resolve(__dirname, "../../../shared/alerts-types.ts");
+// A card's rule save returns its refusals through the record handler unchanged, built by helpers rather than inline `{ ok: false }` literals.
+const APPROVAL_RULE_SAVE = resolve(__dirname, "../../../permissions/approval-rule-save.ts");
 
 function listTsFiles(dir: string): string[] {
   const out: string[] = [];
@@ -36,6 +38,15 @@ function extractErrorCodes(source: string): Set<string> {
   return codes;
 }
 
+/** The codes a result helper returns: `fail("code", ...)` and a refusal helper's `return "code"`. */
+function extractHelperErrorCodes(source: string): Set<string> {
+  const codes = new Set<string>();
+  for (const m of source.matchAll(/\bfail\(\s*"([a-zA-Z][a-zA-Z0-9_-]+)"/g)) codes.add(m[1]!);
+  for (const m of source.matchAll(/\breturn\s+"([a-z][a-z0-9]*(?:-[a-z0-9]+)+)"/g)) codes.add(m[1]!);
+  for (const m of source.matchAll(/\?\s*undefined\s*:\s*"([a-z][a-z0-9]*(?:-[a-z0-9]+)+)"/g)) codes.add(m[1]!);
+  return codes;
+}
+
 /** Also scan declared error unions: handlers returning computed denial codes have no inline error literal to extract. */
 function extractDeclaredErrorUnionCodes(source: string): Set<string> {
   const codes = new Set<string>();
@@ -52,6 +63,7 @@ describe("formatIpcError — full IPC error code coverage", () => {
     { surface: "IPC handlers", files: listTsFiles(IPC_DOMAIN_DIR) },
     { surface: "alert service results", files: listTsFiles(ALERT_SERVICE_DIR) },
     { surface: "shared alert results", files: [ALERT_RESULT_CONTRACT] },
+    { surface: "approval card rule saves", files: [APPROVAL_RULE_SAVE] },
   ])("every error code from $surface has a Korean mapping", ({ surface, files }) => {
     expect(files.length).toBeGreaterThan(0);
 
@@ -60,6 +72,7 @@ describe("formatIpcError — full IPC error code coverage", () => {
     for (const f of files) {
       const src = readFileSync(f, "utf8");
       for (const code of extractErrorCodes(src)) allCodes.add(code);
+      if (surface === "approval card rule saves") for (const code of extractHelperErrorCodes(src)) allCodes.add(code);
       for (const code of extractDeclaredErrorUnionCodes(src)) {
         allCodes.add(code);
         unionCodes.add(code);
@@ -75,6 +88,10 @@ describe("formatIpcError — full IPC error code coverage", () => {
       ).toBeGreaterThan(5);
       for (const code of ["path-not-allowed", "sensitive-path"]) {
         expect(unionCodes.has(code), `"${code}" is no longer discovered by the union extractor`).toBe(true);
+      }
+    } else if (surface === "approval card rule saves") {
+      for (const code of ["invalid-rule", "rule-does-not-match", "rule-required", "scope-not-offered", "one-shot-not-recordable", "rule-save-failed", "missing-session"]) {
+        expect(allCodes.has(code), `"${code}" is no longer discovered in approval-rule-save.ts`).toBe(true);
       }
     } else {
       // Each source must independently discover the failure that can reach the renderer through an unchanged service result,

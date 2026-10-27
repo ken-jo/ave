@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "process-launch",
+  "version": "1.0.0",
+  "description": "Host protocol golden fixture: a plugin whose process is its own executable, so construct carries a process manifest and the resolved command path.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Process Launch",
+      "process": {
+        "command": "./bin/plugin.mjs",
+        "args": ["--stdio", "${PLUGIN_ROOT}/assets"],
+        "env": {
+          "PLUGIN_LOG_LEVEL": "info",
+          "PLUGIN_STATE_DIR": "${PLUGIN_DATA}/state"
+        }
+      },
+      "requires": {
+        "minAppVersion": "0.14.0",
+        "hostProtocol": "4"
+      },
+      "tools": [
+        {
+          "name": "report_launch",
+          "description": "Report that the plugin's own program answered.",
+          "inputSchema": { "type": "object", "properties": {} }
+        }
+      ]
+    }
+  }
+}

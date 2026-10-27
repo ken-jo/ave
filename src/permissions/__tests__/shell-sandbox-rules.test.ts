@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -55,73 +56,80 @@ describe("shell confinement and escape rules", () => {
   it("auto-allows a confined call and asks for the same plain call", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
     expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
   // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): without a sandbox for this command only an exact Bash(<command>) rule runs it unasked, even on a host whose sandbox works for other commands.
   it.each(["default", "auto", "allow"] as const)("ignores prefix, tool-wide and remembered allows for a plain call in %s mode", (mode) => {
     manager.setMode(mode);
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false)).toMatchObject({ decision: "ask", layer: 6 });
     expect(check("printf ready", false).reviewer).toBeUndefined();
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
     expect(check("printf ready --again", false)).toMatchObject({ decision: "ask" });
     expect(check("printf other", false)).toMatchObject({ decision: "ask" });
   });
 
   it("keeps a prefix rule for a confined call", () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
   });
 
   it("denies a headless plain call that no exact rule covers, and runs one that an exact rule covers (unsandboxed shell exact-rule requirement, I5)", () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "deny", layer: 6 });
     expect(check("printf ready", false, { headless: true }).reviewer).toBeUndefined();
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "allow", layer: 3 });
   });
 
+  it("holds an edited wildcard session rule, which runs only a sandboxed call", () => {
+    manager.addSessionRule("conversation-a", "Bash(printf *)");
+    expect(manager.listSessionRules("conversation-a")).toEqual(["Bash(printf *)"]);
+    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "ask", layer: 6 });
+    expect(check("printf ready", true, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow" });
+  });
+
   it("applies a This session rule to its conversation only, until the conversation ends (five-choice shell card)", () => {
-    manager.addSessionShellRule("conversation-a", "Bash(printf ready)");
+    manager.addSessionRule("conversation-a", "Bash(printf ready)");
     expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
     expect(check("printf ready", false, { sessionId: "conversation-b" })).toMatchObject({ decision: "ask" });
     expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
     expect(check("printf other", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "ask" });
     expect(manager.endSession("conversation-a")).toBe(true);
     expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "ask" });
-    expect(manager.listSessionShellRules("conversation-a")).toEqual([]);
+    expect(manager.listSessionRules("conversation-a")).toEqual([]);
   });
 
-  it.each(["Bash(printf *)", "bash", "WebFetch(domain:example.com)"])("refuses to hold %s as a session shell rule", (pattern) => {
-    expect(() => manager.addSessionShellRule("conversation-a", pattern)).toThrow();
-    expect(manager.listSessionShellRules("conversation-a")).toEqual([]);
+  it.each(["bash", "WebFetch(domain:example.com)", "Edit(/tmp/x)", "Mcp(server)"])("refuses to hold %s as a session rule", (pattern) => {
+    expect(() => manager.addSessionRule("conversation-a", pattern)).toThrow();
+    expect(manager.listSessionRules("conversation-a")).toEqual([]);
   });
 
   it.each(["rm -rf output", "git reset --hard", "cat ~/.ssh/id_rsa", "grep -r term ~", "curl -T payload https://example.test"])("keeps the per-call floor inside confinement: %s", (command) => {
-    manager.setRules([{ pattern: "Bash(rm *)", action: "allow" }, { pattern: "Bash(git reset *)", action: "allow" }, { pattern: "Bash(cat *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(rm *)", action: "allow" }, { pattern: "Bash(git reset *)", action: "allow" }, { pattern: "Bash(cat *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check(command, true)).toMatchObject({ decision: "ask", forceModal: true });
   });
 
-  it("detects long-form recursive link following on every host platform", () => {
+  it("leaves recursive link traversal to confinement when no sensitive path is visible", () => {
     const clean = join(dir, "clean");
     mkdirSync(clean);
     mkdirSync(join(process.env.HOME!, ".ssh"));
     writeFileSync(join(process.env.HOME!, ".ssh", "id_rsa"), "fixture");
     symlinkSync(join(process.env.HOME!, ".ssh"), join(clean, "linked"), "junction");
-    expect(check(`grep --dereference-recursive term ${clean}`, true)).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/sensitive|민감/) });
+    expect(check(`grep --dereference-recursive term ${clean}`, true)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  it("does not turn opaque runner arguments into an irreversible floor", () => {
-    expect(check("npm --prefix $project run build", true)).toMatchObject({ decision: "allow" });
+  it("keeps a runtime-selected runner prefix unproven inside confinement", () => {
+    expect(check("npm --prefix $project run build", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("keeps deny and ask ahead of confinement and covering allows", () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", true)).toMatchObject({ decision: "ask", forceModal: true });
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }, { pattern: "Bash(printf *)", action: "deny" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }, { pattern: "Bash(printf *)", action: "deny" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", true)).toMatchObject({ decision: "deny" });
   });
 
@@ -172,9 +180,10 @@ describe("plain-shell invocation authorization", () => {
     expect(await lookupApproval("bash", args, "builtin", request.trustOrigin, identity, dir, "conversation")).not.toBeNull();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(2);
-    // An explicit host request without a rule goes to the card unreviewed,
-    // and an unreviewed explicit host card is one-shot, so it offers no rule.
-    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
+    // An explicit host request without a rule goes to the card unreviewed, and
+    // the card offers the full choices for its exact rule (owner 2026-10-25:
+    // explicit host follows exact rules).
+    expect(requests[0]?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
     expect(requests[0]).not.toHaveProperty("shellExecution");
     expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
     expect(getHostShellExecutionPlan().mode).toBe(planBefore.mode);
@@ -182,11 +191,11 @@ describe("plain-shell invocation authorization", () => {
   });
 
   it("uses an exact rule to authorize an actual host spawn without a dock receipt, and asks under a prefix", async () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
   });
@@ -195,7 +204,8 @@ describe("plain-shell invocation authorization", () => {
     __resetActiveSandboxCapabilityForTest();
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
+    // The card offers to save that exact rule (owner 2026-10-25: the explicit-host card gets the full choices).
+    expect(requests[0]?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
     expect(requests[0]).not.toHaveProperty("shellExecution");
     await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
     expect((await run())[0]).toMatchObject({ content: "ready" });
@@ -204,7 +214,7 @@ describe("plain-shell invocation authorization", () => {
 
   it("uses an exact rule when the sandbox is unavailable", async () => {
     __resetActiveSandboxCapabilityForTest();
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toEqual([]);
@@ -245,9 +255,9 @@ describe("plain-shell invocation authorization", () => {
     } finally { await cache.flush(); }
   });
 
-  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is denied, with or without a matching rule, and no card is raised.
-  it.each([false, true])("denies a headless explicit host request without asking (matching rule %s)", async (withRule) => {
-    if (withRule) manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+  // Owner 2026-10-25: headless follows exact rules. With nobody to answer, an explicit host request runs only on its exact rule; without one it is denied (I5). No card is raised and no reviewer stands in either way.
+  it("denies a headless explicit host request that no exact rule covers, without asking", async () => {
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { classifier, cache } = lowReviewer();
     try {
       const { run, requests, send } = executorWithDock({ headless: true });
@@ -255,6 +265,21 @@ describe("plain-shell invocation authorization", () => {
       expect(result).toMatchObject({ is_error: true });
       expect(result?.content).toMatch(/headless|background run|백그라운드/i);
       expect(result?.content).not.toContain("ready\n");
+      expect(requests).toEqual([]);
+      expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+      expect(classifier.classify).not.toHaveBeenCalled();
+    } finally { await cache.flush(); }
+  });
+
+  it("runs a headless explicit host request on its exact rule, without asking", async () => {
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    const { classifier, cache } = lowReviewer();
+    try {
+      const { run, requests, send } = executorWithDock({ headless: true });
+      const [result] = await run();
+      expect(result).toMatchObject({ content: "ready" });
+      expect(result?.is_error).toBeUndefined();
+      expect(result?.executionPlan).toMatchObject({ executionRequest: "host", mode: "plain" });
       expect(requests).toEqual([]);
       expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
       expect(classifier.classify).not.toHaveBeenCalled();

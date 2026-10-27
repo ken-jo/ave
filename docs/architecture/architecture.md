@@ -1068,6 +1068,17 @@ review: §15.6).
 
 Key boundaries:
 
+- Loopback OAuth callbacks are authenticated by the host before plugin delivery.
+  `authRedirect.open()` mints a 256-bit single-use state with the redirect URI;
+  exact path and timing-safe state validation are mandatory. Wrong or missing
+  state receives a 4xx without consuming the waiter, and rejection logs omit
+  query values. A matching provider error is returned as validated error fields.
+  Plugins must use PKCE S256 together with that state. Protocol 4 is unreleased;
+  this development build rejects older contracts before activation through
+  protocol negotiation. Released hosts and published packages still use protocol 3.
+  The [protocol contract](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)
+  and [author guide](../guides/plugin-development.md#loopback-oauth-with-pkce) own
+  the wire and migration details.
 - The complete extension-author TypeScript contract and its JSDoc are Host-owned in
   `src/plugins/public-contract.ts`. `src/plugins/types.ts` re-exports that
   surface and adds Host-private registry/marketplace DTOs. Extension repositories
@@ -1594,21 +1605,144 @@ reviewer, audit and cache consumers use that plan.
 
 A shell whose plan is not sandboxed (the sandbox is off, unavailable or does
 not cover the command, an explicit host request, or the Windows Plan B) runs
-without asking only when an exact `Bash(<command>)` allow rule — user, project
-or This session — matches it (owner decision 2026-10-25, unsandboxed shell exact-rule requirement, superseding the
-I3 rule that sent such shells to the normal rules). Prefix and tool-wide
-rules, remembered dock grants, allow mode, the reviewer and the judge never
-stand in for that rule: everything else asks on the dock, and with nobody to
-ask (a headless or routine turn) it is denied and audited (I5). PowerShell has
-no rule language, so an unsandboxed PowerShell call always asks. The bash card
-for such a shell offers the same five choices as the network card (five-choice shell card): Deny,
-Allow once, This session, This project and Always. Each save stores exactly
-the host-derived `Bash(<command>)` rule for the single simple command on the
-card — in memory for the conversation (ending with it), in the project's rule
-file, or in the user-global rules — never a prefix or an edited pattern; the
-renderer names only the scope (`userApprovalRecord` `rule: { scope }`). A
-compound, irreversible, floor-hitting or secret-bearing command has no such
-rule and offers only Deny and Allow once.
+without asking only when an exact allow rule for that command — user, project
+or This session — matches it: `Bash(<command>)` for bash and
+`PowerShell(<command>)` for PowerShell (owner decisions 2026-10-25: the
+unsandboxed shell exact-rule requirement, superseding the I3 rule that sent
+such shells to the normal rules, and exact PowerShell rules with the same
+strictness as Bash). Prefix and tool-wide rules, wildcard rules, remembered
+dock grants, allow mode, the reviewer and the judge never stand in for that
+rule: everything else asks on the dock. With nobody to ask (a headless or
+routine turn) the same exact rule still runs the command — sandbox-off bash,
+the Plan B and an explicit host request alike — and without one the call is
+denied and audited (I5). Every remaining unsandboxed headless ask, including a
+visible floor or unreadable restriction, becomes deny with its reason and layer
+preserved. Exact command-rule identity keeps every literal raw word, including
+program case, module qualifier, quote style and contents. Only interword
+whitespace changes. No head or argument normalization contributes to the exact
+key; effect and detection normalization remain separate. Current-format shell
+allows carry `shellRuleVersion: 1`; unversioned or wrong-version allows remain
+silently inert, while deny and ask rules retain their authority. Reads never
+stamp old rows current and there is no migration or new UI/error flow.
+
+Exact allows additionally require the host's
+[literal-command proof](permission-policy-design.md#literal-command-proof).
+An unsandboxed input over 2,000 characters immediately asks or denies
+headless before project loading, parsing, command-rule or floor inspection.
+Under the limit, parse or lexer/analysis-budget failure, nonliteral words and ambiguous
+raw identity remain unproven. Literal quoting is preserved, so
+`git commit -m 'msg'` can be remembered.
+
+Visible literal code, including interpreter options and delegated commands, is
+eligible for exact rules. File, stdin and network indirection are accepted
+limits, not separately detected blockers; a saved `make` or `python script.py`
+invocation does not fix the code it will later execute. The one execution-form
+exception is a recognized PowerShell launcher word anywhere in the whole
+command, including lexical words inside literal quoted command strings.
+Once a recognized launcher word is seen, every later token must pass a
+positive character proof after shell quote removal: every code point is a
+Unicode letter, number, punctuation, symbol, or U+0020 ASCII space. Other
+separators, controls, combining marks and unassigned code points are unproven;
+Hangul letters remain literal. Only validated tokens receive the deliberate
+e-prefix overmatch: remove leading `-`, `/`, U+2013/U+2014/U+2015 and
+lowercase; an e-leading result is unproven, including `ExecutionPolicy`.
+No argument-binder whitespace emulation is used. The check never stops at
+`-File`, `--`, pipelines, sequences or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only; raw keys remain
+unchanged.
+The sole launcher list is `pwsh`, `pwsh-preview`, `powershell`,
+`powershell_ise` and their `.exe` forms.
+
+For sandboxed commands the sandbox is the boundary. Normal analysis input is
+bounded at 8,000 characters. Bash heredoc bodies have a separate aggregate
+64 KiB data allowance only when every original heredoc delimiter is quoted and
+retained floor classification finds no known code-consuming receiver. Known
+consumers, including through retained wrapper/subshell/pipeline views, keep
+full-body inspection and the 8,000-character cap. The executable envelope also
+stays within 8,000 characters. Body extent comes from the original source:
+no body is deleted, no remaining text is reparsed as proof, and no separate
+line-continuation reader is used. Eligible bodies stay original source slices;
+the lexer scans only for terminator lines, not general code/floor inspection. One unquoted delimiter cancels
+every body's data allowance; all text after the first heredoc operator's line
+then receives normal literal checks under the normal cap. Plain unquoted
+bodies without expansion remain eligible within that cap. Ambiguous syntax
+fails closed. Literal `cat`/`tee -a` data writes remain eligible;
+unknown-program stdin remains an accepted limit. No new name list or Lane B
+carrier gate is introduced. Complete Lane B input remains capped at 2,000.
+
+Each request obtains one lexical representation from the original grammar and
+performs literal proof once. Structural views, command facts, stored-rule
+parses and canonical-path inspection results are reused within the request;
+successful analysis is not cached across requests.
+
+The grammar enforces one global 400-record `MAX_SHELL_ANALYSIS_TOKENS` limit
+for executable word/value records across the complete command, including nested
+commands, assignment values, empty assignments and declaration heads. The
+counter never resets at simple-command boundaries. Eligible quoted body data
+is not ordinary word/launcher/proof input and contributes no executable-token
+records. Operators and separators are bounded by source length; the parser
+refuses over-limit input before expensive result serialization. General
+structural parsing retains its existing safety limits.
+
+Character, data or total-token limit failures close Lane B with ask/L6 or
+headless deny, or Lane A with modal/L2. No rule, grant, mode or reviewer supplies
+an automatic allow. There is no shared work counter, elapsed-time cutoff or
+worker timeout in the production decision. Timing checks are regression tests
+only. Literal encoded display decoding remains presentation-only.
+
+Remembered approvals saved for unsandboxed shells before this decision stay
+silently inert: they are not migrated, the card does not mark them, and they
+never authorize a plain shell; Settings still lists and revokes them (owner
+decision 2026-10-25).
+
+Every approval card — shell (bash, PowerShell, the Plan B, an explicit host
+request), network, an exact tool approval, a folder grant, a one-shot request
+— draws one shared decision row (owner decision 2026-10-25, unified approval
+card): **Deny ▾ | Allow for session ▾ | Allow once**. The Deny dropdown holds
+Always deny; the allow dropdown holds Allow for session, Always allow in this
+project and Always allow everywhere. A dropdown item selects its choice, the
+button beside it then names and commits it, and an **Edit rule** button
+appears above the row for a choice whose rule can be edited (wildcards
+allowed). Each approval type maps the six choices onto its own store:
+
+| Card | Always deny | Allow for session / in this project / everywhere |
+|---|---|---|
+| Shell | user-global deny rule (`Bash(...)` / `PowerShell(...)`) | session, project or user-global allow rule, the host-derived exact rule unless edited |
+| Network | user-global `Network(<host>[:<port>])` deny rule | the grant of that lifetime (This session / This tab, This project, Always); an edited rule is saved as a `Network(...)` host rule instead |
+| Exact tool approval | exact deny of this tool and input (edited in Settings) | exact approval for the conversation (answers `allow-session`), for the project folder, or everywhere (a user-global approval, owner decision 2026-10-25) |
+| Folder access | exact deny of this request (edited in Settings) | **Always allow this folder** = the parent-folder grant; session and project are not offered |
+| One-shot request | not offered | not offered |
+
+An exact tool approval is stored with one of three scopes: `session` (the
+root conversation), `persistent` (bound to the project folder's
+working-directory identity) and `global` (no folder; it applies in every
+project). Any deny beats any allow, whatever their scopes: an exact deny,
+project or global, refuses the request even where a conversation, project or
+global allow exists. Among allows the conversation is consulted first, then
+the project, then the global entry; since each of them allows, a project
+entry neither narrows nor widens a global one. Settings → Permissions lists
+global entries as "Everywhere" and revokes them like the others. Where the
+host will not record an exact decision for a request (a layer-1/2 ask, a
+forced modal, a non-read reason prefix, a remote out-of-folder one-shot),
+the gate says so on the request (`exactRecordAllowed: false`) and the card
+shows Always deny disabled with the one-shot reason instead of offering a
+choice the host refuses with `one-shot-not-recordable`.
+
+Choices a request does not offer stay visible in the dropdowns, disabled with
+the reason. No card sends the gate's tool-wide `deny-always`: Always deny is
+saved as a rule or an exact deny and the request is denied once. The renderer
+sends only `{ action, scope }` plus, when the person edited it, `pattern`
+(`userApprovalRecord` `rule`). The host checks an edited rule against the
+card's own rule grammar and requires it to decide this very request; an
+invalid or non-matching rule fails with a named error (`invalid-rule`,
+`rule-does-not-match`, `rule-required`, `scope-not-offered`,
+`not-request-owner`) and the request stays pending. Deny rules may be
+wildcards. An allow edited into a wildcard is saved, but it applies only to
+sandboxed runs, and the card says so while the rule is edited (the host
+repeats it as `wildcard-allow-sandboxed-only`); an unsandboxed command still
+needs its exact rule. A compound, irreversible, floor-hitting or
+secret-bearing command has no exact rule and offers no remembered allow.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
@@ -1938,13 +2072,27 @@ ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
 every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
 a Bash or PowerShell call reaches a host a grant covers, and otherwise
-the person is asked on the approval dock with exactly five choices (owner
-decision 2026-10-25, five-choice network card): Deny, Allow once, This session (in memory; it ends
-when the conversation is deleted or the app quits), This project (persisted,
-keyed by the project root of the call's working directory: the repository
-root when one is found, the same root a project `Bash(...)` rule applies to)
-and Always (persisted, global). The scope values on the wire and on disk are
-`once`, `session`, `project` and `always`; the earlier `conversation` and
+the person is asked on the approval dock with the shared decision row (owner
+decisions 2026-10-25, five-choice network card and unified approval card):
+Deny, Always deny (a user-global `Network(...)` deny rule), Allow once,
+Allow for session (in memory; it ends when the conversation is deleted or the
+app quits), Always allow in this project (persisted, keyed by the project root
+of the call's working directory: the repository root when one is found, the
+same root a project `Bash(...)` rule applies to) and Always allow everywhere
+(persisted, global). `Network(<host>[:<port>])` host rules (a leading `*.`
+matches subdomains) are consulted before grants: a deny rule refuses the
+connection, an allow rule admits a public destination, and an ask rule skips
+the grants. A host rule keeps the grant invariants: an allow rule decides a
+connection only for a lifetime that request offers (a user rule where Always
+is offered, a project rule where This project is, a session rule where This
+session is), so a shared or session-strength connection identity is never
+admitted by a persistent rule; deny and ask rules apply everywhere. Host rules
+are shell-origin: a terminal tab's connection never consults them and its
+banner offers none. An address literal has no host rule, and a
+`Network(...)` rule naming one is refused when it is parsed. An edited
+wildcard host allow is saved with the same `wildcard-allow-sandboxed-only`
+warning as a wildcard shell allow. The scope values on the wire and on disk are
+`once`, `session`, `tab` (a terminal tab's only), `project` and `always`; the earlier `conversation` and
 `workspace` names are refused everywhere, except that a version-1 grant file's
 `workspace` grants are migrated once: a grant made at its project root becomes
 the `project` grant for that root, and one made in a subdirectory of a
@@ -1957,7 +2105,9 @@ sub-agents, and deleting a sub-agent session ends only that session's own
 network hosts, since its rules and approvals belong to the root. A workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
-the window that owns the tab (Deny, Allow once, This tab, Always: a
+the window that owns the tab, with the same shared decision row (Deny, Allow
+once, Allow for this tab, Always allow everywhere; Always deny is shown
+disabled, since host rules are shell-origin: a
 terminal's Allow once lets that one connection through and is never held;
 "This tab" takes the place of "This session" and lasts until the tab's
 shell exits, including an exit followed by a respawn; terminals have no
@@ -1980,7 +2130,8 @@ ask is drawn on the focused pane's lane instead
 Permissions → Network. Stored grants without `network` match only
 `public`; a valid recorded class is honored and an invalid explicit class is
 rejected. Only `public` destinations are eligible for persistent grants
-(This project and Always); recording a class does not extend that eligibility.
+(Always allow in this project and Always allow everywhere); recording a class
+does not extend that eligibility.
 A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
 Destinations are classed by `egressDestinationNetwork()` on the host and every

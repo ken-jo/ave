@@ -9,6 +9,11 @@ import { approvalsForDocks, TerminalEgressBanner } from "../permissions/Terminal
 import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js";
 import type { ApprovalRequest } from "../../types.js";
 import { noteTerminalTabLabel } from "../../preview/terminal-tab-labels.js";
+import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { openDecisionMenu, selectDecision } from "./support/decision-bar.js";
+
+/** The labelled buttons of a row (the dropdown chevrons carry only an accessible name). */
+const buttonLabels = (scope: HTMLElement) => within(scope).getAllByRole("button").map((button) => button.textContent).filter((text) => text !== "");
 
 const TAB = "terminal:0a1b2c3d-1";
 const OTHER_TAB = "terminal:0a1b2c3d-2";
@@ -23,7 +28,8 @@ function terminalAsk(id: string, overrides: Partial<NonNullable<ApprovalRequest[
     reason: `A command in workspace terminal ${tabId} wants to connect to github.com:443.`,
     createdAt: 0,
     allowedChoices: ["allow-once", "deny-once"],
-    egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "tab", "always"], terminalTabId: tabId, ...overrides },
+    // Host rules are shell-origin: the host sends a terminal tab's ask with no rule to save.
+    egressHost: { host: "github.com", port: 443, rule: null, network: "public", scopes: ["once", "tab", "always"], terminalTabId: tabId, ...overrides },
   } as unknown as ApprovalRequest;
 }
 
@@ -31,7 +37,7 @@ const shellAsk: ApprovalRequest = {
   ...terminalAsk("shell-1"),
   toolName: "bash",
   sessionId: "session-1",
-  egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
+  egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once", "session", "project", "always"] },
 } as ApprovalRequest;
 
 function surface(queue: ApprovalRequest[], overrides: Partial<ApprovalSurfaceContextValue> = {}): ApprovalSurfaceContextValue {
@@ -57,28 +63,74 @@ describe("TerminalEgressBanner", () => {
   beforeEach(() => { previousLocale = getLocale(); setLocale("en"); });
   afterEach(() => { setLocale(previousLocale); });
 
-  it("shows `<host>:<port> blocked` with Allow once, This tab, Always and Deny (no This project), and answers with the scope", () => {
+  it("shows `<host>:<port> blocked` with the shared row (Deny, Allow for this tab, Allow once) and answers with the scope", () => {
     const value = surface([terminalAsk("ask-1")]);
     withSurface(value, <TerminalEgressBanner tabId={TAB} />);
     const banner = screen.getByRole("region", { name: "Network approval for this terminal" });
     expect(within(banner).getByTestId("terminal-egress-target").textContent).toBe("github.com:443 blocked");
-    const buttons = within(banner).getAllByRole("button").map((button) => button.textContent);
-    expect(buttons).toEqual(["Allow once", "This tab", "Always", "Deny"]);
+    expect(buttonLabels(banner)).toEqual(["Deny", "Allow for this tab", "Allow once"]);
     expect(banner.textContent).toContain("denied after 2 minutes");
     expect(banner.textContent).toContain("Always grants can be revoked in Settings → Permissions → Network");
-    expect(banner.textContent).not.toContain("Workspace and always");
-    fireEvent.click(screen.getByTestId("terminal-egress-allow-tab"));
-    fireEvent.click(screen.getByTestId("terminal-egress-deny"));
+    fireEvent.click(within(banner).getByTestId(TEST_IDS.allowSessionButton));
+    fireEvent.click(within(banner).getByTestId(TEST_IDS.denyButton));
+    fireEvent.click(within(banner).getByTestId(TEST_IDS.approveButton));
     expect(vi.mocked(value.decide).mock.calls).toEqual([
       ["ask-1", "allow-once", undefined, { egressScope: "tab" }],
       ["ask-1", "deny-once"],
+      ["ask-1", "allow-once", undefined, { egressScope: "once" }],
     ]);
+  });
+
+  it("offers Always but not This project in the allow dropdown, and no allow saves a rule", () => {
+    const value = surface([terminalAsk("ask-1")]);
+    withSurface(value, <TerminalEgressBanner tabId={TAB} />);
+    const row = screen.getByTestId("terminal-egress-row");
+    expect(openDecisionMenu("allow-project", row)).toHaveAttribute("data-disabled");
+    expect(screen.getByTestId("approval-choice-allow-session")).toHaveTextContent("Allow for this tab");
+    expect(screen.getByTestId("approval-choice-allow-everywhere")).not.toHaveAttribute("data-disabled");
+    fireEvent.keyDown(screen.getByTestId("approval-choice-allow-session"), { key: "Enter" });
+    expect(within(row).queryByTestId("approval-edit-rule")).toBeNull();
+    selectDecision("allow-everywhere", row);
+    expect(within(row).queryByTestId("approval-edit-rule")).toBeNull();
+    fireEvent.click(within(row).getByTestId(TEST_IDS.allowSessionButton));
+    expect(vi.mocked(value.decide).mock.calls).toEqual([["ask-1", "allow-once", undefined, { egressScope: "always" }]]);
+  });
+
+  it("offers no Always deny: host rules decide the agent's commands, not a terminal tab", () => {
+    const record = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("ave", { userApproval: { record } });
+    const value = surface([terminalAsk("ask-1")]);
+    withSurface(value, <TerminalEgressBanner tabId={TAB} />);
+    const row = screen.getByTestId("terminal-egress-row");
+    expect(openDecisionMenu("deny-always", row)).toHaveAttribute("data-disabled");
+    expect(screen.getByTestId("approval-choice-deny-always-reason")).toHaveTextContent("Host rules apply to the agent's commands, not to a terminal tab.");
+    expect(record).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  // The banner's row is compact but never a fixed height: a wrapped label grows its button, and a narrow row stacks the buttons.
+  it("lets compact buttons grow and stacks them when the row is narrow", () => {
+    withSurface(surface([terminalAsk("ask-1")]), <TerminalEgressBanner tabId={TAB} />);
+    const row = screen.getByTestId("terminal-egress-row");
+    const bar = within(row).getByTestId("approval-decision-bar");
+    expect(bar.className.split(/\s+/u)).toContain("@container");
+    expect(within(row).getByTestId("approval-decision-actions").className).toContain("@max-[14rem]:grid-cols-1");
+    for (const id of [TEST_IDS.denyButton, TEST_IDS.allowSessionButton, TEST_IDS.approveButton]) {
+      const classes = within(row).getByTestId(id).className.split(/\s+/u);
+      expect(classes).toContain("h-auto");
+      expect(classes).toContain("min-h-7");
+      expect(classes).toContain("whitespace-normal");
+      expect(classes.filter((name) => /^h-\d/u.test(name))).toEqual([]);
+    }
   });
 
   it("offers a local destination only Allow once and This tab, with the private-network warning", () => {
     withSurface(surface([terminalAsk("ask-1", { host: "127.0.0.1", port: 3000, network: "local", scopes: ["once", "tab"] })]),
       <TerminalEgressBanner tabId={TAB} />);
-    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Allow once", "This tab", "Deny"]);
+    expect(buttonLabels(document.body)).toEqual(["Deny", "Allow for this tab", "Allow once"]);
+    openDecisionMenu("allow-everywhere");
+    expect(screen.getByTestId("approval-choice-allow-everywhere")).toHaveAttribute("data-disabled");
+    expect(screen.getByTestId("approval-choice-allow-project")).toHaveAttribute("data-disabled");
     expect(screen.getByTestId("terminal-egress-local-warning").textContent).toContain("private network");
     expect(screen.getByTestId("terminal-egress-local-warning").textContent).toContain("until this tab's shell exits");
     expect(screen.queryByTestId("terminal-egress-unverified-warning")).toBeNull();
@@ -89,7 +141,7 @@ describe("TerminalEgressBanner", () => {
     withSurface(surface([terminalAsk("ask-1", { host: "intranet.corp.test", network: "unverified", scopes: ["once", "tab"] })]),
       <TerminalEgressBanner tabId={TAB} />);
     expect(screen.getByTestId("terminal-egress-unverified-warning").textContent).toContain("proxy server looks up this name");
-    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Allow once", "This tab", "Deny"]);
+    expect(buttonLabels(document.body)).toEqual(["Deny", "Allow for this tab", "Allow once"]);
   });
 
   it("stacks one row per destination of this tab, and draws neither another tab's asks nor a shell call's", () => {
@@ -110,11 +162,19 @@ describe("TerminalEgressBanner", () => {
     expect(bare.container.textContent).toBe("");
   });
 
+  it("Escape in an open dropdown of a row closes it and does not deny", () => {
+    const value = surface([terminalAsk("ask-1")]);
+    withSurface(value, <TerminalEgressBanner tabId={TAB} />);
+    const item = openDecisionMenu("deny-always", screen.getByTestId("terminal-egress-row"));
+    fireEvent.keyDown(item, { key: "Escape" });
+    expect(value.decide).not.toHaveBeenCalled();
+  });
+
   it("is keyboard operable: every action is a focusable button and Escape denies the focused row", () => {
     const value = surface([terminalAsk("ask-1"), terminalAsk("ask-2", { host: "registry.npmjs.org" })]);
     withSurface(value, <TerminalEgressBanner tabId={TAB} />);
     const second = screen.getAllByTestId("terminal-egress-row")[1]!;
-    const allowOnce = within(second).getByTestId("terminal-egress-allow-once");
+    const allowOnce = within(second).getByTestId(TEST_IDS.approveButton);
     allowOnce.focus();
     expect(document.activeElement).toBe(allowOnce);
     expect(allowOnce.tagName).toBe("BUTTON");
@@ -171,8 +231,8 @@ describe("EgressHostApprovalCard for a terminal tab (drawn when the tab is not o
     expect(card.textContent).toContain("Terminal tab: Terminal 3");
     expect(card.textContent).not.toContain(TAB);
     expect(card.textContent).not.toContain("Conversation:");
-    expect(screen.getByTestId("egress-approval-allow-tab").textContent).toBe("This tab");
-    fireEvent.click(screen.getByTestId("egress-approval-allow-tab"));
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton).textContent).toBe("Allow for this tab");
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     expect(onDecide).toHaveBeenCalledWith("allow-once", undefined, { egressScope: "tab" });
   });
 

@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   PermissionManager,
@@ -12,6 +13,7 @@ import {
   isIssuedShellAllowRuleDecision,
 } from "../permission-manager.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -80,7 +82,7 @@ describe("host shell rule policy epochs", () => {
 
   it.each(mutations)("revokes an outstanding rule proof when %s changes", async (_name, mutate) => {
     const manager = new PermissionManager(join(tmpdir(), "host-epoch-permissions.json"));
-    manager.setRules([{ pattern: "Bash(echo epoch)", action: "allow" }]);
+    manager.setRules([withCurrentShellRuleVersion({ pattern: "Bash(echo epoch)", action: "allow" })]);
     manager.setToolModeOverride("bash", "auto");
     const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
@@ -96,7 +98,7 @@ describe("host shell rule policy epochs", () => {
 
   it("invalidates a proof as soon as a deny becomes live, before its write settles", async () => {
     const manager = new PermissionManager(join(tmpdir(), "host-epoch-deny.json"));
-    manager.setRules([{ pattern: "Bash(echo epoch)", action: "allow" }]);
+    manager.setRules([withCurrentShellRuleVersion({ pattern: "Bash(echo epoch)", action: "allow" })]);
     const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
       hostShellExecutionPlan: hostPlan,

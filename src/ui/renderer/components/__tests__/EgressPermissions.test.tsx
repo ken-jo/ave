@@ -7,6 +7,8 @@ import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js
 import { EgressGrantsList } from "../permissions/EgressGrantsList.js";
 import { noteTerminalTabLabel } from "../../preview/terminal-tab-labels.js";
 import type { ApprovalRequest } from "../../types.js";
+import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { openDecisionMenu, selectDecision } from "./support/decision-bar.js";
 import type { SessionEgressGrant, ListedEgressGrant, PersistentEgressGrant, TabEgressGrant } from "../../../../shared/egress-grant-scopes.js";
 
 function egressRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
@@ -19,7 +21,7 @@ function egressRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalReques
     reason: "The sandboxed bash command wants to connect to github.com:443.",
     createdAt: 0,
     allowedChoices: ["allow-once", "deny-once"],
-    egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
+    egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once", "session", "project", "always"] },
     ...overrides,
   } as ApprovalRequest;
 }
@@ -35,12 +37,13 @@ describe("EgressHostApprovalCard", () => {
     expect(screen.getByTestId("egress-approval-target").textContent).toBe("github.com:443");
     expect(screen.getByTestId("egress-approval-card").textContent).toContain("Conversation: Fix the build");
     expect(screen.getByTestId("egress-approval-card").textContent).toContain("Settings → Permissions → Network");
-    expect(["once", "session", "project", "always"].map((scope) =>
-      screen.getByTestId(`egress-approval-allow-${scope}`).textContent)).toEqual([
-      "Allow once", "This session", "This project", "Always",
-    ]);
-    fireEvent.click(screen.getByTestId("egress-approval-deny"));
-    fireEvent.click(screen.getByTestId("egress-approval-allow-project"));
+    expect([TEST_IDS.denyButton, TEST_IDS.allowSessionButton, TEST_IDS.approveButton].map((testId) =>
+      screen.getByTestId(testId).textContent)).toEqual(["Deny", "Allow for session", "Allow once"]);
+    expect(openDecisionMenu("allow-project").textContent).toBe("Always allow in this project");
+    fireEvent.keyDown(screen.getByTestId("approval-choice-allow-project"), { key: "Escape" });
+    fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
+    selectDecision("allow-project");
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     expect(onDecide.mock.calls).toEqual([
       ["deny-once"],
       ["allow-once", undefined, { egressScope: "project" }],
@@ -50,52 +53,53 @@ describe("EgressHostApprovalCard", () => {
   it("offers only the scopes the host sent, brackets an IPv6 target, and omits the revoke hint for short grants", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "::1", port: 8080, network: "local", scopes: ["once", "session"] } })}
+        request={egressRequest({ egressHost: { host: "::1", port: 8080, rule: null, network: "local", scopes: ["once", "session"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
     );
     expect(screen.getByTestId("egress-approval-target").textContent).toBe("[::1]:8080");
-    expect(screen.queryByTestId("egress-approval-allow-project")).toBeNull();
-    expect(screen.queryByTestId("egress-approval-allow-always")).toBeNull();
+    openDecisionMenu("allow-project");
+    expect(screen.getByTestId("approval-choice-allow-project")).toHaveAttribute("data-disabled");
+    expect(screen.getByTestId("approval-choice-allow-everywhere")).toHaveAttribute("data-disabled");
     expect(screen.getByTestId("egress-approval-card").textContent).not.toContain("Settings → Permissions → Network");
   });
 
   it("warns that a local or private destination is one, and shows it in canonical form", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "127.0.0.1", port: 11434, network: "local", scopes: ["once", "session"] } })}
+        request={egressRequest({ egressHost: { host: "127.0.0.1", port: 11434, rule: null, network: "local", scopes: ["once", "session"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
     );
     expect(screen.getByTestId("egress-approval-target").textContent).toBe("127.0.0.1:11434");
     expect(screen.getByTestId("egress-approval-local-warning").textContent).toContain("private network");
-    expect(screen.queryByTestId("egress-approval-allow-project")).toBeNull();
+    expect(openDecisionMenu("allow-project")).toHaveAttribute("data-disabled");
   });
 
   it("says when the upstream proxy resolves the name and Ave could not check it", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "intranet.corp.test", port: 443, network: "unverified", scopes: ["once", "session"] } })}
+        request={egressRequest({ egressHost: { host: "intranet.corp.test", port: 443, rule: "Network(intranet.corp.test:443)", network: "unverified", scopes: ["once", "session"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
     );
     expect(screen.getByTestId("egress-approval-unverified-warning").textContent).toContain("proxy server");
     expect(screen.queryByTestId("egress-approval-local-warning")).toBeNull();
-    expect(screen.queryByTestId("egress-approval-allow-always")).toBeNull();
+    expect(openDecisionMenu("allow-everywhere")).toHaveAttribute("data-disabled");
   });
 
   it("shows no local warning for a public destination", () => {
-    render(<EgressHostApprovalCard request={egressRequest({ egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once"] } })} conversationLabel="x" onDecide={vi.fn()} />);
+    render(<EgressHostApprovalCard request={egressRequest({ egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once"] } })} conversationLabel="x" onDecide={vi.fn()} />);
     expect(screen.queryByTestId("egress-approval-local-warning")).toBeNull();
   });
 
   it("can only deny a request that carries no destination", () => {
     const onDecide = vi.fn();
     render(<EgressHostApprovalCard request={egressRequest({ egressHost: undefined })} conversationLabel="x" onDecide={onDecide} />);
-    expect(screen.queryByTestId("egress-approval-allow-once")).toBeNull();
+    expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     expect(onDecide).toHaveBeenCalledWith("deny-once");
   });

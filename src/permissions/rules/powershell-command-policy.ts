@@ -1,7 +1,7 @@
 // Closed command vocabulary. Unknown names and bindings never acquire known effects.
-type PowerShellCommandEffect = "local" | "read" | "network" | "launcher" | "dispatch" | "file-write" | "variable-read" | "variable-write" | "provider-write";
+type PowerShellCommandEffect = "local" | "read" | "network" | "launcher" | "dispatch" | "file-write" | "variable-read" | "variable-write" | "provider-write" | "cwd-write";
 
-export interface PowerShellPathBinding {
+interface PowerShellPathBinding {
   parameters: readonly string[];
   position?: number;
   // Named variable destinations select a non-file parameter set.
@@ -15,26 +15,11 @@ export interface PowerShellCommandPolicy {
   parameters: readonly string[];
   // Destination bindings whose filesystem paths can send data to a share.
   destination?: PowerShellPathBinding & { kind?: "printer" | "mail" };
-  // A launcher whose executable path has a positively modeled binding.
-  executable?: PowerShellPathBinding;
-  // Ordinary content slots are data when their destination is proved local.
-  content?: PowerShellPathBinding;
-  argv?: { info?: readonly string[]; verbs?: readonly string[]; switches?: readonly string[]; modules?: readonly string[]; code?: readonly string[] };
-  // File provenance uses the same command identity and parameter signature.
-  materializes?: {
-    kind: "file" | "copy" | "rename" | "new" | "tree";
-    destination?: PowerShellPathBinding;
-    source?: PowerShellPathBinding;
-    native?: boolean;
-    optional?: boolean;
-  };
   // Native payload grammar; all other catalogue forms remain opaque.
   native?: "opaque" | "cmd" | "wmic" | "dotnet";
   // Credential-store access and explicit native transfer forms remain floors.
   credential?: true | RegExp;
   sink?: RegExp;
-  // Literal property reads understood for this command's output objects.
-  members?: readonly string[];
 }
 
 const HTTP_PARAMETERS = ["uri", "method", "infile", "body", "form", "headers", "outfile", "contenttype", "credential", "timeoutsec", "usebasicparsing?"];
@@ -44,8 +29,6 @@ const ITEM_PARAMETERS = [...PATH_PARAMETERS, "value", "destination", "name", "it
 const COPY_DESTINATION = { parameters: ["destination"], position: 1 };
 const CONTENT_DESTINATION = { parameters: ["path", "literalpath"], position: 0 };
 const PROPERTY_PARAMETERS = ["property*", "inputobject"];
-const CONTENT_VALUE = { parameters: ["value"], position: 1 };
-const INPUT_OBJECT = { parameters: ["inputobject"] };
 
 function nativePolicy(effects: PowerShellCommandPolicy["effects"], native: NonNullable<PowerShellCommandPolicy["native"]> = "opaque"): PowerShellCommandPolicy {
   return { aliases: [], effects, parameters: [], native };
@@ -71,7 +54,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "cdb.exe": nativePolicy(["launcher"]),
   "certoc.exe": nativePolicy(["launcher", "network"]),
   "certreq.exe": nativePolicy(["network"]),
-  "certutil.exe": { ...nativePolicy(["read", "network"]), sink: /-urlcache(?:\s|$)/i, materializes: { kind: "file", native: true, destination: { parameters: [], position: -1 } } },
+  "certutil.exe": { ...nativePolicy(["read", "network"]), sink: /-urlcache(?:\s|$)/i },
   "change.exe": nativePolicy(["launcher"]),
   "cl_invocation.ps1": nativePolicy(["launcher"]),
   "cl_loadassembly.ps1": nativePolicy(["launcher"]),
@@ -102,7 +85,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "dnx.exe": nativePolicy(["launcher"]),
   "dotnet-counters.exe": nativePolicy(["launcher"]),
   "dotnet-trace.exe": nativePolicy(["launcher"]),
-  "dotnet.exe": { ...nativePolicy(["launcher"], "dotnet"), argv: { info: ["--info", "--version", "--help", "--list-runtimes", "--list-sdks"], verbs: ["build", "test", "restore", "clean"] } },
+  "dotnet.exe": nativePolicy(["launcher"], "dotnet"),
   "dxcap.exe": nativePolicy(["launcher"]),
   "ecmangen.exe": nativePolicy(["network"]),
   "esentutl.exe": nativePolicy(["network"]),
@@ -159,7 +142,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "msxsl.exe": nativePolicy(["launcher", "network"]),
   "netsh.exe": nativePolicy(["launcher"]),
   "ngen.exe": nativePolicy(["network"]),
-  "node.exe": { ...nativePolicy(["launcher"]), aliases: ["node", "nodejs", "nodejs.exe"], argv: { info: ["-v", "--version", "-h", "--help"], switches: ["--test"], code: ["-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader"] } },
+  "node.exe": { ...nativePolicy(["launcher"]), aliases: ["node", "nodejs", "nodejs.exe"] },
   "nslookup.exe": nativePolicy(["network"]),
   "ntsd.exe": nativePolicy(["launcher"]),
   "odbcconf.exe": nativePolicy(["launcher"]),
@@ -182,7 +165,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "protocolhandler.exe": nativePolicy(["network"]),
   "provlaunch.exe": nativePolicy(["launcher"]),
   "pubprn.vbs": nativePolicy(["launcher"]),
-  "python.exe": { ...nativePolicy(["launcher"]), aliases: ["python", "python2", "python3", "python2.exe", "python3.exe", "pypy", "pypy3", "pypy.exe", "pypy3.exe"], argv: { info: ["-V", "--version", "-h", "--help"], modules: ["pytest", "unittest"], code: ["-c"] } },
+  "python.exe": { ...nativePolicy(["launcher"]), aliases: ["python", "python2", "python3", "python2.exe", "python3.exe", "pypy", "pypy3", "pypy.exe", "pypy3.exe"] },
   "query.exe": nativePolicy(["launcher"]),
   "rasautou.exe": nativePolicy(["launcher"]),
   "rcsi.exe": nativePolicy(["launcher"]),
@@ -262,11 +245,11 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "xsd.exe": nativePolicy(["network"]),
   "xwizard.exe": nativePolicy(["launcher", "network"]),
   "zipfldr.dll": nativePolicy(["launcher"]),
-  "invoke-webrequest": { aliases: ["iwr", "curl", "wget"], effects: ["network"], parameters: HTTP_PARAMETERS, members: ["content", "statuscode", "headers", "rawcontent"], materializes: { kind: "file", destination: { parameters: ["outfile"] }, optional: true } },
-  "invoke-restmethod": { aliases: ["irm"], effects: ["network"], parameters: HTTP_PARAMETERS, materializes: { kind: "file", destination: { parameters: ["outfile"] }, optional: true } },
+  "invoke-webrequest": { aliases: ["iwr", "curl", "wget"], effects: ["network"], parameters: HTTP_PARAMETERS },
+  "invoke-restmethod": { aliases: ["irm"], effects: ["network"], parameters: HTTP_PARAMETERS },
   "get-content": { aliases: ["gc", "cat", "type"], effects: ["read"], parameters: [...PATH_PARAMETERS, "raw?", "encoding", "totalcount", "tail", "delimiter", "wait?"] },
   "get-item": { aliases: ["gi"], effects: ["read", "variable-read"], parameters: PATH_PARAMETERS },
-  "get-childitem": { aliases: ["gci", "dir", "ls"], effects: ["read"], parameters: [...PATH_PARAMETERS, "recurse?", "name?", "file?", "directory?", "depth"], members: ["name", "fullname", "length", "extension", "basename", "psiscontainer"] },
+  "get-childitem": { aliases: ["gci", "dir", "ls"], effects: ["read"], parameters: [...PATH_PARAMETERS, "recurse?", "name?", "file?", "directory?", "depth"] },
   "select-string": { aliases: ["sls"], effects: ["read"], parameters: [...PATH_PARAMETERS, "pattern", "inputobject", "raw?", "simplematch?", "casesensitive?", "quiet?", "list?"] },
   "import-clixml": { aliases: [], effects: ["read"], parameters: ["path", "literalpath", "skip", "first"] },
   "import-csv": { aliases: ["ipcsv"], effects: ["read"], parameters: ["path", "literalpath", "delimiter", "header", "encoding", "useculture?"] },
@@ -278,27 +261,27 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "new-variable": { aliases: ["nv"], effects: ["variable-write"], parameters: VARIABLE_PARAMETERS },
   "clear-variable": { aliases: ["clv"], effects: ["variable-write"], parameters: ["name", "scope", "force?", "include", "exclude"] },
   "remove-variable": { aliases: ["rv"], effects: ["variable-write"], parameters: ["name", "scope", "force?", "include", "exclude"] },
-  "set-item": { aliases: ["si"], effects: ["provider-write"], content: CONTENT_VALUE, parameters: ITEM_PARAMETERS },
-  "new-item": { aliases: ["ni"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, materializes: { kind: "new" }, parameters: ITEM_PARAMETERS },
+  "set-item": { aliases: ["si"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
+  "new-item": { aliases: ["ni"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: ITEM_PARAMETERS },
   "clear-item": { aliases: ["cli"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "remove-item": { aliases: ["ri", "rm", "rmdir", "rd", "del", "erase"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
-  "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, materializes: { kind: "copy", source: CONTENT_DESTINATION }, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
-  "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, materializes: { kind: "copy", source: CONTENT_DESTINATION }, parameters: ITEM_PARAMETERS },
-  "rename-item": { aliases: ["rni", "ren"], effects: ["provider-write", "dispatch"], materializes: { kind: "rename", source: CONTENT_DESTINATION, destination: { parameters: ["newname"], position: 1 } }, parameters: [...ITEM_PARAMETERS, "newname"] },
-  "set-content": { aliases: ["sc"], effects: ["provider-write", "file-write"], content: CONTENT_VALUE, destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
-  "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], content: CONTENT_VALUE, destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
-  "out-file": { aliases: [], effects: ["file-write"], content: INPUT_OBJECT, destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "encoding", "append?", "force?", "noclobber?", "width", "nonewline?"] },
+  "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
+  "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, parameters: ITEM_PARAMETERS },
+  "rename-item": { aliases: ["rni", "ren"], effects: ["provider-write", "dispatch"], destination: { parameters: ["newname"], position: 1 }, parameters: [...ITEM_PARAMETERS, "newname"] },
+  "set-content": { aliases: ["sc"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
+  "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
+  "out-file": { aliases: [], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "encoding", "append?", "force?", "noclobber?", "width", "nonewline?"] },
   "out-printer": { aliases: ["lp"], effects: ["network", "file-write"], destination: { parameters: ["name"], position: 0, kind: "printer" }, parameters: ["name", "inputobject"] },
   "export-pfxcertificate": { aliases: [], effects: ["read", "file-write"], credential: true, parameters: ["cert", "filepath", "password", "chainoption", "cryptoprotectto*", "force?", "noclobber?"] },
   "export-csv": { aliases: ["epcsv"], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "delimiter", "encoding", "append?", "force?", "noclobber?", "notypeinformation?", "useculture?"] },
   "export-clixml": { aliases: [], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "depth", "encoding", "force?", "noclobber?"] },
   "export-alias": { aliases: ["epal"], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "name", "scope", "description", "as", "append?", "force?", "noclobber?"] },
   "export-pssession": { aliases: ["epsn"], effects: ["network", "file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "session", "commandname*", "commandtype*", "module*", "allowclobber?", "force?", "encoding"] },
-  "clear-content": { aliases: ["clc"], effects: ["provider-write"], materializes: { kind: "file", destination: CONTENT_DESTINATION }, parameters: ITEM_PARAMETERS },
+  "clear-content": { aliases: ["clc"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "set-itemproperty": { aliases: ["sp"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "get-itemproperty": { aliases: ["gp"], effects: ["read", "variable-read"], parameters: ITEM_PARAMETERS },
   "get-itempropertyvalue": { aliases: ["gpv"], effects: ["read", "variable-read"], parameters: ITEM_PARAMETERS },
-  "start-bitstransfer": { aliases: [], effects: ["network"], materializes: { kind: "copy", source: { parameters: ["source"], position: 0 }, destination: COPY_DESTINATION }, parameters: ["source", "destination", "transfertype", "credential", "asynchronous?", "displayname", "description"] },
+  "start-bitstransfer": { aliases: [], effects: ["network"], parameters: ["source", "destination", "transfertype", "credential", "asynchronous?", "displayname", "description"] },
   "send-mailmessage": { aliases: [], effects: ["network"], destination: { parameters: ["smtpserver"], kind: "mail" }, parameters: ["to", "from", "subject", "smtpserver", "body", "attachments", "credential", "port", "usessl?", "bodyashtml?", "cc", "bcc"] },
   "resolve-dnsname": { aliases: [], effects: ["network"], parameters: ["name", "server", "type", "dnsonly?", "quicktimeout?"] },
   "test-netconnection": { aliases: ["tnc"], effects: ["network"], parameters: ["computername", "port", "informationlevel", "traceroute?", "hops"] },
@@ -307,14 +290,14 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "enter-pssession": { aliases: ["etsn"], effects: ["network"], parameters: ["computername", "connectionuri", "credential", "session", "id", "name"] },
   "invoke-command": { aliases: ["icm"], effects: ["network", "launcher"], parameters: ["computername", "connectionuri", "credential", "session", "scriptblock", "filepath", "argumentlist*", "asjob?"] },
   "new-webserviceproxy": { aliases: [], effects: ["network"], parameters: ["uri", "credential", "namespace", "class"] },
-  "start-process": { aliases: ["saps", "start"], effects: ["launcher"], executable: { parameters: ["filepath"], position: 0 }, parameters: ["filepath", "argumentlist*", "workingdirectory", "credential", "wait?", "nonewwindow?", "passthru?", "verb", "windowstyle"] },
+  "start-process": { aliases: ["saps", "start"], effects: ["launcher"], parameters: ["filepath", "argumentlist*", "workingdirectory", "credential", "wait?", "nonewwindow?", "passthru?", "verb", "windowstyle"] },
   "invoke-item": { aliases: ["ii"], effects: ["launcher"], parameters: PATH_PARAMETERS },
   "invoke-expression": { aliases: ["iex"], effects: ["launcher"], parameters: ["command*"] },
   "start-job": { aliases: ["sajb"], effects: ["launcher"], parameters: ["scriptblock", "filepath", "name", "argumentlist*"] },
   "start-threadjob": { aliases: [], effects: ["launcher"], parameters: ["scriptblock", "filepath", "name", "argumentlist*", "initializationscript", "streaminghost", "throttlelimit"] },
   "start-scheduledtask": { aliases: [], effects: ["launcher"], parameters: ["taskname", "taskpath", "inputobject", "cimsession", "asjob?", "throttlelimit"] },
   "register-scheduledtask": { aliases: [], effects: ["launcher"], parameters: ["taskname", "taskpath", "action", "trigger", "settings", "principal", "user", "password", "xml", "inputobject", "cimsession", "asjob?", "force?"] },
-  "new-scheduledtaskaction": { aliases: [], effects: ["launcher"], executable: { parameters: ["execute"] }, parameters: ["execute", "argument", "workingdirectory", "id", "cimsession", "asjob?"] },
+  "new-scheduledtaskaction": { aliases: [], effects: ["launcher"], parameters: ["execute", "argument", "workingdirectory", "id", "cimsession", "asjob?"] },
   "add-type": { aliases: [], effects: ["launcher"], parameters: ["typedefinition", "path", "literalpath", "memberdefinition", "name", "namespace", "language"] },
   "set-alias": { aliases: ["sal"], effects: ["launcher"], parameters: VARIABLE_PARAMETERS },
   "new-alias": { aliases: ["nal"], effects: ["launcher"], parameters: VARIABLE_PARAMETERS },
@@ -337,21 +320,24 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "write-host": { aliases: [], effects: ["local"], parameters: ["object*", "nonewline?", "separator", "foregroundcolor", "backgroundcolor"] },
   "set-clipboard": { aliases: ["scb"], effects: ["local"], parameters: ["value*", "append?", "passthru?", "asosc52?"] },
   "test-path": { aliases: [], effects: ["local"], parameters: [...PATH_PARAMETERS, "pathtype", "isvalid?", "newerthan", "olderthan"] },
+  "set-location": { aliases: ["cd", "chdir", "sl"], effects: ["cwd-write"], parameters: ["path", "literalpath", "passthru?", "stackname"] },
+  "push-location": { aliases: ["pushd"], effects: ["cwd-write"], parameters: ["path", "literalpath", "passthru?", "stackname"] },
+  "pop-location": { aliases: ["popd"], effects: ["cwd-write"], parameters: ["passthru?", "stackname"] },
   "out-string": { aliases: [], effects: ["local"], parameters: ["inputobject", "width", "stream?"] },
   "get-date": { aliases: [], effects: ["local"], parameters: ["date", "format", "uformat"] },
   "join-path": { aliases: [], effects: ["local"], parameters: ["path", "childpath", "additionalchildpath*", "resolve?"] },
-  "expand-archive": { aliases: [], effects: ["local"], materializes: { kind: "tree", source: CONTENT_DESTINATION, destination: { parameters: ["destinationpath"], position: 1 } }, parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
+  "expand-archive": { aliases: [], effects: ["local"], destination: { parameters: ["destinationpath"], position: 1 }, parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
   "tee-object": { aliases: ["tee"], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0, variableParameters: ["variable"] }, parameters: ["filepath", "literalpath", "inputobject", "variable", "append?"] },
-  "copy.exe": { aliases: [], effects: ["file-write"], materializes: { kind: "copy", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
-  "xcopy": { aliases: ["xcopy.exe"], effects: ["file-write"], materializes: { kind: "copy", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
-  "robocopy": { aliases: ["robocopy.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
-  "tar": { aliases: ["tar.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true }, parameters: [] },
-  "unzip": { aliases: ["unzip.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true }, parameters: [] },
-  "7z": { aliases: ["7z.exe", "7za", "7za.exe", "7zr", "7zr.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true }, parameters: [] },
+  "copy.exe": { aliases: [], effects: ["file-write"], destination: { parameters: [], position: 1 }, parameters: [] },
+  "xcopy": { aliases: ["xcopy.exe"], effects: ["file-write"], destination: { parameters: [], position: 1 }, parameters: [] },
+  "robocopy": { aliases: ["robocopy.exe"], effects: ["file-write"], destination: { parameters: [], position: 1 }, parameters: [] },
+  "tar": { aliases: ["tar.exe"], effects: ["file-write"], parameters: [] },
+  "unzip": { aliases: ["unzip.exe"], effects: ["file-write"], parameters: [] },
+  "7z": { aliases: ["7z.exe", "7za", "7za.exe", "7zr", "7zr.exe"], effects: ["file-write"], parameters: [] },
   "new-object": { aliases: [], effects: ["launcher"], parameters: ["typename", "argumentlist*", "comobject", "property"] },
 } satisfies Record<string, PowerShellCommandPolicy>));
 
-export function powerShellCommandSpellings(name: string): string[] {
+function powerShellCommandSpellings(name: string): string[] {
   const policy = POWERSHELL_COMMAND_POLICIES[name];
   return [name, ...(policy?.native && name.endsWith(".exe") ? [name.slice(0, -4)] : []), ...(policy?.aliases ?? [])];
 }
@@ -360,65 +346,32 @@ const commandAliases = new Map(Object.keys(POWERSHELL_COMMAND_POLICIES).flatMap(
   powerShellCommandSpellings(name).map((alias) => [alias, name] as const)));
 
 export function canonicalPowerShellName(text: string): string {
-  // Qualification selects another command identity; it never inherits a built-in policy.
-  const name = text.toLowerCase();
+  // Effect classification reads the selected command leaf; exact rule identity retains the original qualification separately.
+  const name = text.slice(Math.max(text.lastIndexOf("\\"), text.lastIndexOf("/")) + 1).toLowerCase();
   return commandAliases.get(name) ?? name;
 }
 
-export function powerShellCommandsWithEffect(effect: PowerShellCommandPolicy["effects"][number]): Set<string> {
-  return new Set(Object.entries(POWERSHELL_COMMAND_POLICIES).filter(([, policy]) => policy.effects.includes(effect)).map(([name]) => name));
-}
+export const POWERSHELL_ANALYSIS_LIMITS = Object.freeze({ inputChars: 8_000, depth: 16, expressionDepth: 24 });
 
-export const POWERSHELL_ANALYSIS_LIMITS = Object.freeze({
-  inputChars: 8_192,
-  chars: 65_536,
-  steps: 16_384,
-  frameSteps: 4_096,
-  depth: 16,
-  expressionDepth: 24,
-});
+export class PowerShellStructuralLimitError extends Error {}
 
-export type PowerShellExpressionKind = "literal" | "interpolation" | "group" | "hashtable" | "concatenation" | "format" | "join-path";
-
-export class PowerShellBudgetError extends Error {}
-
-// One budget spans lexing, value analysis, scans and every nested script.
-export class PowerShellAnalysisBudget {
-  steps = 0;
-  chars = 0;
-  exhausted = false;
-  private readonly frames: number[] = [];
-  private expressionDepth = 0;
-  constructor(private readonly disabled: ReadonlySet<PowerShellExpressionKind> = new Set()) {}
-
-  spend(steps = 1, chars = 0): void {
-    const frame = this.frames.length - 1;
-    if (this.steps + steps > POWERSHELL_ANALYSIS_LIMITS.steps || this.chars + chars > POWERSHELL_ANALYSIS_LIMITS.chars
-      || (frame >= 0 && this.frames[frame]! + steps > POWERSHELL_ANALYSIS_LIMITS.frameSteps)) this.exceed();
-    this.steps += steps;
-    this.chars += chars;
-    if (frame >= 0) this.frames[frame]! += steps;
-  }
+// Structural recursion is bounded independently of machine load.
+export class PowerShellAnalysisContext {
+  limited = false;
+  readonly visits = { frames: 0, stages: 0, lexes: 0, views: 0, values: 0, dataFacts: 0, embeddedCodeCalls: 0, obligationNodes: 0, obligationVisits: 0, obligationItems: 0,
+    staticTokens: 0, staticArguments: 0, staticChars: 0, staticNodes: 0, grammarRecords: 0, recordScanChars: 0 };
+  private frameDepth = 0;
+  readonly facts = new Map<string, unknown>();
 
   enter(source: string): void {
-    if (source.length > POWERSHELL_ANALYSIS_LIMITS.inputChars || this.frames.length >= POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
-    this.frames.push(0);
-    this.spend(1, source.length);
+    this.visits.frames += 1;
+    if (source.length > POWERSHELL_ANALYSIS_LIMITS.inputChars || this.frameDepth >= POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
+    this.frameDepth += 1;
   }
-
-  leave(): void { this.frames.pop(); }
-
-  expression<T>(tokens: number, read: () => T): T {
-    if (this.expressionDepth >= POWERSHELL_ANALYSIS_LIMITS.expressionDepth) this.exceed();
-    this.spend(tokens + 1);
-    this.expressionDepth += 1;
-    try { return read(); } finally { this.expressionDepth -= 1; }
+  leave(): void { this.frameDepth -= 1; }
+  currentFrameDepth(): number { return this.frameDepth; }
+  requireAdditionalFrameDepth(additional: number): void {
+    if (this.frameDepth + additional > POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
   }
-
-  supports(kind: PowerShellExpressionKind): boolean { this.spend(); return !this.disabled.has(kind); }
-
-  private exceed(): never {
-    this.exhausted = true;
-    throw new PowerShellBudgetError("Analysis budget exceeded");
-  }
+  private exceed(): never { this.limited = true; throw new PowerShellStructuralLimitError("PowerShell structural limit exceeded"); }
 }

@@ -367,7 +367,7 @@ describe("runtime manifest validation of a process entry", () => {
       version: "1.0.0",
       description: "A process entry fixture.",
       tools: [pureTool("process_kit_ping")],
-      requires: overrides.requires ?? { minAppVersion: "0.13.0", hostProtocol: "3" },
+      requires: overrides.requires ?? { minAppVersion: "0.13.0", hostProtocol: "4" },
     };
     if ("process" in overrides) manifest.process = overrides.process;
     if ("entry" in overrides) manifest.entry = overrides.entry;
@@ -383,7 +383,7 @@ describe("runtime manifest validation of a process entry", () => {
   it("refuses a process extension declared only under an unknown namespace, and admits one beside the Ave key", async () => {
     const document = agentPluginsDocument({
       id: "process-kit", name: "Process Kit", version: "1.0.0", description: "A process entry fixture.",
-      tools: [pureTool("process_kit_ping")], process: PROCESS, requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+      tools: [pureTool("process_kit_ping")], process: PROCESS, requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
     }) as Record<string, unknown> & { extensions: Record<string, unknown> };
     const ave = document.extensions["ai.agent-connector.ave"];
     const path = join(dir, "plugin.json");
@@ -426,8 +426,8 @@ describe("runtime manifest validation of a process entry", () => {
   });
 
   it.each([
-    ["0.12.0", { minAppVersion: "0.12.0", hostProtocol: "3" }],
-    ["no minAppVersion", { hostProtocol: "3" }],
+    ["0.12.0", { minAppVersion: "0.12.0", hostProtocol: "4" }],
+    ["no minAppVersion", { hostProtocol: "4" }],
   ])("refuses %s, naming requires.minAppVersion", async (_name, requires) => {
     await expect(parse({ process: PROCESS, requires })).rejects.toThrow(/requires\.minAppVersion.*0\.13\.0 or newer/u);
   });

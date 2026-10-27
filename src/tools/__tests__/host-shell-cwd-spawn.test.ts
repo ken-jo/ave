@@ -1,8 +1,10 @@
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { ApprovalGate, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 
 const spawnBoundary = vi.hoisted(() => ({
   mutate: undefined as (() => void) | undefined,
@@ -43,11 +45,11 @@ afterEach(() => {
   cleanupTmpDir(directory);
 });
 
-function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch marker)"]) {
+async function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch marker)"]) {
   const plan = getHostShellExecutionPlan("host");
   const input = { command, cwd, executionMode: "host" as const, justification: "Run in the approved directory", timeoutSeconds: 10 };
   const manager = new PermissionManager(join(directory, "permissions.json"));
-  manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const })));
+  manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
     hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: input.command, cwd: join(directory, cwd) },
     // An explicit host retry runs without a sandbox, so only an exact Bash(<command>) allow issues the rule proof (owner 2026-10-25, unsandboxed shell exact-rule requirement).
@@ -56,7 +58,24 @@ function authorizedContext(cwd: string, command = "touch marker", rulePatterns: 
   const binding = buildHostShellExecutionPermitBinding({
     plan, toolName: "bash", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
   })!;
-  const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: manager });
+  let approvalDecision: ApprovalDecision | undefined;
+  if (decision.decision !== "allow") {
+    const webContents = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(webContents as never);
+    const pending = gate.requestAndWait({
+      id: "cwd-spawn-approval", category: "tool", toolName: "bash", toolCategory: "shell", args: input,
+      reason: "Approve the one host command used by the cwd race fixture", source: "builtin", createdAt: Date.now(),
+      allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, hostShellExecutionPermitBinding: binding,
+    });
+    const request = webContents.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
+    if (!request?.nonce || !request.hmac) throw new Error("ApprovalGate did not publish a sealed request");
+    gate.resolveFromDesktopRenderer("cwd-spawn-approval", { requestId: "cwd-spawn-approval", choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
+    approvalDecision = await pending;
+  }
+  const permit = mintHostShellExecutionPermit({
+    plan, binding, approvalDecision,
+    ...(approvalDecision === undefined ? { allowRuleDecision: decision, permissionManager: manager } : {}),
+  });
   expect(permit).toBeDefined();
   return { input, context: { cwd: directory, extraAllowedDirectories: [], metadata: { toolUseId: "cwd-spawn" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit } };
 }
@@ -67,7 +86,7 @@ const COMPOUND_RULES = ["Bash(printf command-ran)", "Bash(printf C)", "Bash(exit
 describe("host cwd races after permit consumption", () => {
   it("preserves an ordinary exit 197 and the command's output", async () => {
     mkdirSync(join(directory, "current"));
-    const { input, context } = authorizedContext("current", "printf command-ran; exit 197", COMPOUND_RULES);
+    const { input, context } = await authorizedContext("current", "printf command-ran; exit 197", COMPOUND_RULES);
     const result = await new BashTool().execute(input, context);
     expect(result.isError).toBe(true);
     expect(result.metadata?.returncode).toBe(197);
@@ -77,7 +96,8 @@ describe("host cwd races after permit consumption", () => {
 
   it("closes the guard channel before the command can write to it", async () => {
     mkdirSync(join(directory, "current"));
-    const { input, context } = authorizedContext("current", "printf command-ran; if { printf C >&3; } 2>/dev/null; then exit 0; else exit 197; fi", COMPOUND_RULES);
+    const command = "bash -c 'printf command-ran; if { printf C >&3; } 2>/dev/null; then exit 0; else exit 197; fi'";
+    const { input, context } = await authorizedContext("current", command, [`Bash(${command})`]);
     const result = await new BashTool().execute(input, context);
     expect(result.output).toContain("command-ran");
     expect(result.metadata?.returncode).toBe(197);
@@ -87,7 +107,7 @@ describe("host cwd races after permit consumption", () => {
   it.each(["project", "user"] as const)("honours a %s deny submitted by this host at native spawn", async (scope) => {
     const current = join(directory, "current");
     mkdirSync(current);
-    const { input, context } = authorizedContext("current");
+    const { input, context } = await authorizedContext("current");
     const writer = new PermissionManager(join(directory, "permissions.json"));
     let persisted: Promise<void> | undefined;
     spawnBoundary.mutate = () => {
@@ -111,7 +131,7 @@ describe("host cwd races after permit consumption", () => {
   it("validates an external policy write at native spawn before granting the waiting child", async () => {
     const current = join(directory, "current");
     mkdirSync(current);
-    const { input, context } = authorizedContext("current");
+    const { input, context } = await authorizedContext("current");
     spawnBoundary.mutate = () => {
       writeFileSync(join(directory, "permissions.json"), JSON.stringify({
         version: 1, rules: [{ pattern: "Bash(touch *)", action: "deny" }], mode: "default", updatedAt: new Date().toISOString(),
@@ -132,7 +152,7 @@ describe("host cwd races after permit consumption", () => {
   it("preserves literal quoted directory names and supported newlines", async () => {
     const name = process.platform === "win32" ? "quoted' directory" : "quoted' directory\n";
     mkdirSync(join(directory, name));
-    const { input, context } = authorizedContext(name);
+    const { input, context } = await authorizedContext(name);
     const result = await new BashTool().execute(input, context);
     expect(result.isError).toBe(false);
     expect(existsSync(join(directory, name, "marker"))).toBe(true);
@@ -145,7 +165,7 @@ describe("host cwd races after permit consumption", () => {
     mkdirSync(second);
     const current = join(directory, "current");
     symlinkSync(first, current, "junction");
-    const { input, context } = authorizedContext("current");
+    const { input, context } = await authorizedContext("current");
     spawnBoundary.mutate = () => {
       unlinkSync(current);
       symlinkSync(second, current, "junction");
@@ -161,7 +181,7 @@ describe("host cwd races after permit consumption", () => {
     const current = join(directory, "current");
     const original = join(directory, "original");
     mkdirSync(current);
-    const { input, context } = authorizedContext("current");
+    const { input, context } = await authorizedContext("current");
     spawnBoundary.mutate = () => {
       renameSync(current, original);
       mkdirSync(current);

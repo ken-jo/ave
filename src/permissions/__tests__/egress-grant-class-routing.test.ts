@@ -71,6 +71,7 @@ function approvalFixture(origin: "shell" | "terminal", invocationToken = TOKEN) 
     abortSignalOf: () => undefined,
     workerAllowedDomains: () => [],
     grants,
+    networkRule: async () => undefined,
     shellAskEnabled: () => true,
     requester: () => async (request) => {
       requests.push(request);

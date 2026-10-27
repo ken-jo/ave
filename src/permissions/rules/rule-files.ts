@@ -6,6 +6,7 @@ import {
   formatRuleSpecifier,
   isRuleSpecifier,
   parseRuleSpecifier,
+  literalRuleWord,
   type RuleSpecifier,
 } from "./rule-specifier.js";
 import { refusedShellPrefix } from "./shell-prefix-values.js";
@@ -15,10 +16,10 @@ import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js
 class BroadShellWildcardError extends RuleSpecifierError {}
 
 // The reason a stored rule is inert, or null for a rule in force. Decisions skip such a rule and Settings lists it with this reason.
-export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }): StoredRuleInvalidReason | null {
+export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }, parsed?: RuleSpecifier): StoredRuleInvalidReason | null {
   if (rule.action !== "allow" || rule.source !== undefined || !isRuleSpecifier(rule.pattern)) return null;
-  const spec = parseRuleSpecifier(rule.pattern);
-  return spec.kind === "bash" && refusedShellPrefix(spec.tokens, spec.wildcard) === "broad-prefix"
+  const spec = parsed ?? parseRuleSpecifier(rule.pattern);
+  return spec.kind === "bash" && refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), spec.wildcard) === "broad-prefix"
     ? "wildcard-not-allowlisted"
     : null;
 }
@@ -63,7 +64,7 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
     throw new RuleSpecifierError(pattern, `${spec.kind} rules are not enforced yet`);
   }
   if (spec.kind === "bash" && action === "allow") {
-    const refused = refusedShellPrefix(spec.tokens, spec.wildcard);
+    const refused = refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), spec.wildcard);
     if (refused === "broad-prefix") {
       throw new BroadShellWildcardError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (broad-prefix); save a narrower prefix or exact command instead`);
     }

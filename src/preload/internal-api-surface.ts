@@ -40,7 +40,7 @@ import { classifySubscription } from "../plugins/capabilities.js";
 import type {
   PermissionReviewSuggestionPayload,
   UserApprovalHitPayload,
-  ShellRuleSaveScope,
+  ApprovalRuleSave,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
@@ -919,8 +919,8 @@ export function buildInternalApiSurface() {
     record: async (entry: {
       /** Server-side ApprovalRequest binding; required for IPC handler validation. */
       requestId: string;
-      /** A bash card's save choice: the host stores its own exact Bash(<command>) rule at this scope. */
-      rule?: { scope: ShellRuleSaveScope };
+      /** A card's rule save: the choice's action and scope and, only when edited, the rule text (the host validates it against the card's own rule grammar). */
+      rule?: ApprovalRuleSave;
       toolName: string;
       args: string;
       source: string;

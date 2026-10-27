@@ -1940,7 +1940,7 @@ export function App() {
                         >
                           <span className="font-medium">{t("chatView.approvalMemoryApplied")}</span>
                           <span className="ml-2 text-muted-foreground">
-                            {userApprovalHitToast.toolName} · {userApprovalHitToast.scope === "persistent" ? t("chatView.approvalScopePersistent") : t("chatView.approvalScopeSession")} · {verdict.toUpperCase()}
+                            {userApprovalHitToast.toolName} · {userApprovalHitToast.scope === "persistent" ? t("chatView.approvalScopePersistent") : userApprovalHitToast.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession")} · {verdict.toUpperCase()}
                           </span>
                         </div>
                       );

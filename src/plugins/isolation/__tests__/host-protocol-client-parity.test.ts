@@ -8,7 +8,7 @@ import {
   createHostClient,
   isHostNotification,
   type HostClientTransport,
-} from "../../../../schemas/plugin-host-protocol/3/protocol-client.js";
+} from "../../../../schemas/plugin-host-protocol/4/protocol-client.js";
 import {
   generateHostProtocolClient,
   renderHostProtocolClient,
@@ -18,14 +18,14 @@ import { goldenFiles } from "./host-protocol-golden-files.js";
 type Frame = Record<string, unknown>;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const SCHEMA_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/3/protocol.schema.json");
-const CLIENT_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/3/protocol-client.ts");
+const SCHEMA_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/4/protocol.schema.json");
+const CLIENT_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/4/protocol-client.ts");
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, "utf-8")) as {
   $id: string;
   description: string;
   $defs: { methods: Record<string, unknown>; notifications: Record<string, unknown> };
 };
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/3/", import.meta.url));
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/4/", import.meta.url));
 const HOST_METHODS = Object.keys(SCHEMA.$defs.methods)
   .filter((method) => method.startsWith("ave/host/"))
   .sort();
@@ -68,7 +68,7 @@ function stubFor(client: unknown, method: string): ((params: unknown) => Promise
 describe("the client is the schema's projection, byte for byte", () => {
   it("regenerates to the committed file on this platform", async () => {
     const { path, text } = await generateHostProtocolClient();
-    expect(path).toBe("schemas/plugin-host-protocol/3/protocol-client.ts");
+    expect(path).toBe("schemas/plugin-host-protocol/4/protocol-client.ts");
     expect(text).toBe(readFileSync(CLIENT_PATH, "utf-8"));
   }, 60_000);
 
@@ -84,9 +84,9 @@ describe("the client is the schema's projection, byte for byte", () => {
       $id: SCHEMA.$id.replace(`/v${appVersion}/`, "/v99.98.97/"),
       description: SCHEMA.description.replaceAll(appVersion, "99.98.97"),
     };
-    expect(await renderHostProtocolClient("3", retagged)).toBe(committed);
+    expect(await renderHostProtocolClient("4", retagged)).toBe(committed);
     expect(committed).not.toContain(SCHEMA.$id);
-    expect(HOST_PROTOCOL_VERSION).toBe("3");
+    expect(HOST_PROTOCOL_VERSION).toBe("4");
   }, 60_000);
 });
 

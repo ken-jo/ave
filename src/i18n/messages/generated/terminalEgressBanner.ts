@@ -7,5 +7,5 @@ export const en = {
 export const ko: Record<keyof typeof en, string> = {
   "terminalEgressBanner.region": "이 터미널의 네트워크 승인",
   "terminalEgressBanner.blocked": "{target} 차단됨",
-  "terminalEgressBanner.held": "연결은 응답을 기다리며, 2분 안에 응답이 없으면 거절됩니다.",
+  "terminalEgressBanner.held": "연결은 응답을 기다리며, 2분 안에 응답이 없으면 거부됩니다.",
 };

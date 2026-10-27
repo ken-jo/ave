@@ -91,7 +91,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
     ["authority.dependencies", plugin({ authority: { dependencies: ["calendar"] } })],
     ["authority.sandbox", plugin({ authority: { sandbox: { filesystem: "none" } } })],
     ["minAppVersion", plugin({ requires: { minAppVersion: "0.14.0" } })],
-    ["hostProtocol", plugin({ requires: { hostProtocol: "3" } })],
+    ["hostProtocol", plugin({ requires: { hostProtocol: "4" } })],
     ["entryForm", plugin({ process: true })],
     ["contributionKinds", plugin({ skill: true })],
     ["mcpServer:notes", plugin({ server: "console.log('changed')" })],
@@ -111,7 +111,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
   const agentBase = agent();
   const agentRows: Array<[string, ConsentFingerprint]> = [
     ["minAppVersion", agent({ minAppVersion: "0.14.0" })],
-    ["hostProtocol", agent({ hostProtocol: "3" })],
+    ["hostProtocol", agent({ hostProtocol: "4" })],
     ["componentKinds", agent({ components: components({ prompts: [{ name: "draft", kind: "template", digest: "c".repeat(64) }] }) })],
     ["mcpServer:notes", agent({ files: [AGENT_FILES[0]!, file("server.js", "server v2"), AGENT_FILES[2]!] })],
     ["hook:0", agent({ files: [AGENT_FILES[0]!, AGENT_FILES[1]!, file("hook.js", "hook v2")] })],

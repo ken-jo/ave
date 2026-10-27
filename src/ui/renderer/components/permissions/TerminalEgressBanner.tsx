@@ -1,12 +1,14 @@
-/** Offer only host-authorized scopes; local/unverified destinations cannot be allowed permanently. The host holds
- * connections for 120 s, denies on tab close, and folds same-destination requests; Escape denies without stealing terminal
- * focus. */
+/** A terminal tab's network asks, drawn in the tab with the decision row every approval card shares (owner 2026-10-25, unified approval card).
+ * Offer only host-authorized scopes; local/unverified destinations cannot be allowed permanently. The host holds connections for 120 s, denies
+ * on tab close, and folds same-destination requests; Escape denies without stealing terminal focus (not while a decision dropdown or the rule
+ * editor has it). */
 import type { KeyboardEvent, ReactElement } from "react";
-import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ApprovalRequest } from "../../types.js";
 import { useOptionalApprovalSurface } from "../../hooks/use-approval.js";
-import { EGRESS_SCOPE_LABEL_KEYS, egressTargetLabel } from "./EgressHostApprovalCard.js";
+import type { ApprovalChoice } from "../../types.js";
+import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
+import { NetworkDecisionRow, egressTargetLabel } from "./EgressHostApprovalCard.js";
 
 /** Whether `request` is an egress ask from terminal tab `tabId`. */
 function isTerminalEgressAsk(request: ApprovalRequest, tabId: string): boolean {
@@ -49,8 +51,9 @@ export function TerminalEgressBanner({ tabId }: { tabId: string }): ReactElement
           key={request.id}
           request={request}
           locked={approvals.lockedRequestId === request.id}
-          onDeny={() => void approvals.decide(request.id, "deny-once")}
-          onAllow={(scope) => void approvals.decide(request.id, "allow-once", undefined, { egressScope: scope })}
+          decide={(choice, pattern, extras) => void (extras === undefined
+            ? approvals.decide(request.id, choice)
+            : approvals.decide(request.id, choice, pattern, extras))}
         />
       ))}
     </section>
@@ -60,13 +63,11 @@ export function TerminalEgressBanner({ tabId }: { tabId: string }): ReactElement
 function TerminalEgressRow({
   request,
   locked,
-  onDeny,
-  onAllow,
+  decide,
 }: {
   request: ApprovalRequest;
   locked: boolean;
-  onDeny: () => void;
-  onAllow: (scope: NonNullable<ApprovalRequest["egressHost"]>["scopes"][number]) => void;
+  decide: (choice: ApprovalChoice, pattern?: string, extras?: ApprovalDecisionExtras) => void;
 }): ReactElement | null {
   const { t } = useTranslation();
   const payload = request.egressHost;
@@ -75,9 +76,11 @@ function TerminalEgressRow({
   const headingId = `terminal-egress-${request.id}`;
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Escape" || locked) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest('[role="menu"], input') !== null) return;
     event.preventDefault();
     event.stopPropagation();
-    onDeny();
+    decide("deny-once");
   };
   return (
     <div
@@ -106,31 +109,7 @@ function TerminalEgressRow({
           {t("egressApprovalCard.unverifiedWarningTab")}
         </p>
       ) : null}
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        {payload.scopes.map((scope) => (
-          <Button
-            key={scope}
-            size="sm"
-            variant={scope === "once" ? "default" : "secondary"}
-            className="h-7 px-2 text-xs"
-            disabled={locked}
-            data-testid={`terminal-egress-allow-${scope}`}
-            onClick={() => onAllow(scope)}
-          >
-            {t(EGRESS_SCOPE_LABEL_KEYS[scope])}
-          </Button>
-        ))}
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 px-2 text-xs"
-          disabled={locked}
-          data-testid="terminal-egress-deny"
-          onClick={onDeny}
-        >
-          {t("egressApprovalCard.denyOnce")}
-        </Button>
-      </div>
+      <NetworkDecisionRow request={request} locked={locked} decide={decide} compact />
       <p className="min-w-0 break-words text-muted-foreground">
         {t("terminalEgressBanner.held")}
         {payload.scopes.includes("always") ? ` ${t("egressApprovalCard.revokeHintTerminal")}` : ""}

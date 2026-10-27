@@ -9,7 +9,7 @@ import { repositoryRoot } from "./child-entry-bundle.js";
 
 /** The committed fixture is read-only. */
 const PYTHON_SMOKE_FIXTURE = fileURLToPath(
-  new URL("./fixtures/host-protocol/3/plugins/python-smoke/", import.meta.url),
+  new URL("./fixtures/host-protocol/4/plugins/python-smoke/", import.meta.url),
 );
 
 const MCP_REQUIREMENT = "mcp==2.2.0";
