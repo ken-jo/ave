@@ -177,5 +177,5 @@ export type PreviewDocumentError =
 
 export type PreviewReadDocumentResult =
   | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument;
-      observation?: import("./agent-observation.js").DocumentObservationBinding }
+      observation?: import("./agent-observation.js").ObservationBinding }
   | { ok: false; error: PreviewDocumentError; path?: string; bytes?: number; message: string };

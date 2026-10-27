@@ -38,7 +38,6 @@ import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { showActiveSurface } from "../preview/active-surface.js";
-import { BrowserControlHeader } from "./BrowserControlHeader.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 import { navigateBrowserTabAsUser, useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
@@ -523,7 +522,9 @@ function ContentTabView({
       }} />
       <UrlDocumentViewer
         api={api}
+        sessionId={sessionId}
         target={browserTarget}
+        observe={visible}
         surfaceTabId={tab.id}
         browserTab={{ tabId: tab.id, ...(tab.agentRequestId === undefined ? {} : { agentRequestId: tab.agentRequestId }) }}
       />
@@ -1323,7 +1324,6 @@ export function ChatSidePanel({
                 data-testid="chat-side-panel-browser-tab-host"
                 data-tab-id={tab.id}
               >
-                <BrowserControlHeader api={api} tabId={tab.id} />
                 <div className="min-h-0 flex-1">
                   <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={tab} targetById={targetById}
                     manualUrl={browserUrlByTab[tab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />

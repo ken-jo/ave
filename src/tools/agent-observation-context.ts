@@ -45,6 +45,14 @@ export function currentAgentObservationIdentity(): ObservationIdentity | undefin
   return invocation?.active && turn?.active && invocation.turn === turn ? invocation.identity : undefined;
 }
 
+/** Native callbacks retain a revocable admission, never ambient callback metadata. */
+export function captureAgentObservationInvocation(): { identity: ObservationIdentity; isCurrent(): boolean } | undefined {
+  const identity = currentAgentObservationIdentity();
+  const invocation = invocationContext.getStore();
+  if (!identity || !invocation) return undefined;
+  return { identity, isCurrent: () => invocation.active && invocation.turn.active };
+}
+
 /** Entered only after the executor's final permission/approval admission. */
 export async function runWithAgentObservationInvocation<T>(
   identity: { sessionId?: string; toolUseId: string }, run: () => Promise<T>, preparedHome?: string, signal?: AbortSignal,

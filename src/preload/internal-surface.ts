@@ -2,7 +2,9 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
-import type { DocumentObservationAck, DocumentObservationEvent } from "../shared/agent-observation.js";
+import type {
+  ObservationAck, AgentObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest,
+} from "../shared/agent-observation.js";
 import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
 import {
@@ -220,12 +222,18 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.preview.readFile, filePath, ...(window === undefined ? [] : [window])),
     readDocument: (filePath: string, sheetIndex: number, sessionId?: string) =>
       ipcRenderer.invoke(CHANNELS.preview.readDocument, filePath, sheetIndex, ...(sessionId === undefined ? [] : [sessionId])),
-    onDocumentObservation: (handler: (events: DocumentObservationEvent[]) => void) => {
-      const listener = (_event: unknown, events: DocumentObservationEvent[]) => handler(events);
+    onAgentObservation: (handler: (events: AgentObservationEvent[]) => void) => {
+      const listener = (_event: unknown, events: AgentObservationEvent[]) => handler(events);
       ipcRenderer.on(CHANNELS.preview.observationEvents, listener);
       return () => ipcRenderer.removeListener(CHANNELS.preview.observationEvents, listener);
     },
-    acknowledgeDocumentObservation: (ack: DocumentObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
+    acknowledgeObservation: (ack: ObservationAck) => ipcRenderer.invoke(CHANNELS.preview.observationAck, ack),
+    onObservationPreview: (handler: (message: BrowserObservationPreviewMessage) => void) => {
+      const listener = (_event: unknown, message: BrowserObservationPreviewMessage) => handler(message);
+      ipcRenderer.on(CHANNELS.preview.observationPreviewFrames, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.preview.observationPreviewFrames, listener);
+    },
+    requestObservationPreview: (request: BrowserObservationPreviewRequest) => ipcRenderer.invoke(CHANNELS.preview.observationPreview, request),
   },
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),

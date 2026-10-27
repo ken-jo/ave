@@ -2025,7 +2025,7 @@ export interface AvePreviewApi {
     bytes?: number;
     truncated?: boolean;
     lineCount?: number;
-    observation?: import("../../shared/agent-observation.js").DocumentObservationBinding;
+    observation?: import("../../shared/agent-observation.js").ObservationBinding;
     document?: import("../../shared/agent-observation.js").PreviewObservedTextDocument;
     image?: { dataUrl: string; mimeType: string };
     error?:
@@ -2043,8 +2043,10 @@ export interface AvePreviewApi {
    * zero-based index selects a sheet or page, according to the file format.
    */
   readDocument: (path: string, sheetIndex: number, sessionId?: string) => Promise<PreviewReadDocumentResult>;
-  onDocumentObservation: (handler: (events: import("../../shared/agent-observation.js").DocumentObservationEvent[]) => void) => () => void;
-  acknowledgeDocumentObservation: (ack: import("../../shared/agent-observation.js").DocumentObservationAck) => Promise<{ ok: boolean; error?: string }>;
+  onAgentObservation: (handler: (events: import("../../shared/agent-observation.js").AgentObservationEvent[]) => void) => () => void;
+  acknowledgeObservation: (ack: import("../../shared/agent-observation.js").ObservationAck) => Promise<{ ok: boolean; error?: string }>;
+  onObservationPreview: (handler: (message: import("../../shared/agent-observation.js").BrowserObservationPreviewMessage) => void) => () => void;
+  requestObservationPreview: (request: import("../../shared/agent-observation.js").BrowserObservationPreviewRequest) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /**
