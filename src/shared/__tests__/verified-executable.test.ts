@@ -65,6 +65,7 @@ afterEach(() => {
   if (ORIGINAL_EUID) Object.defineProperty(process, "geteuid", ORIGINAL_EUID);
   else Reflect.deleteProperty(process, "geteuid");
   vi.unstubAllEnvs();
+  vi.doUnmock("node:path");
 });
 
 describe("verified executable installations", () => {
@@ -75,6 +76,22 @@ describe("verified executable installations", () => {
     expect(Object.isFrozen(verified)).toBe(true);
     expect(filesystem.stat.mock.calls.map(([path]) => path)).toContain(`${INSTALLATION}/lib/startup`);
     expect(filesystem.stat.mock.calls.map(([path]) => path)).not.toContain(DEPENDENCIES);
+  });
+
+  it.each(["linux", "darwin"] as const)("uses selected platform paths with native host defaults: %s", async platform => {
+    vi.doMock("node:path", async importOriginal => {
+      const original = await importOriginal<typeof import("node:path")>();
+      return { ...original, ...original.win32, default: original.win32, posix: original.posix, win32: original.win32 };
+    });
+    declareEntries({ directories: ["/bin"], files: ["/bin/ls"] });
+    systemHelper.exec.mockImplementation((_image: string, args: readonly string[]) => args.slice(1).map(path =>
+      `${entries.get(path)?.directory ? "d" : "-"}rwxr-xr-x 1 root wheel ${path}\n`).join(""));
+    const hostPaths = await import("node:path");
+    expect(hostPaths.normalize(EXECUTABLE)).toBe(String.raw`\opt\tools\reader\reader`);
+    const { resolveVerifiedExecutable } = await import("../verified-executable.js");
+    expect(resolveVerifiedExecutable([{ executable: EXECUTABLE }], platform)).toEqual({ executable: EXECUTABLE });
+    expect(resolveVerifiedExecutable([{ executable: EXECUTABLE, installationRoots: [INSTALLATION, DEPENDENCIES] }], platform)).toEqual({ executable: EXECUTABLE });
+    expect(filesystem.stat.mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(["/", "/opt", "/opt/tools", `${INSTALLATION}/lib/startup`, `${DEPENDENCIES}/startup`]));
   });
 
   it("tries fixed candidates in order and caches both unsuccessful and successful evidence", async () => {

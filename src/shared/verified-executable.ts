@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, normalize, relative, win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
@@ -26,7 +26,7 @@ export function resolveVerifiedExecutable(
   candidates: readonly VerifiedExecutableCandidate[],
   platform: NodeJS.Platform = process.platform,
 ): VerifiedExecutable | null {
-  const parent = platform === "win32" ? win32.dirname : dirname;
+  const parent = platform === "win32" ? win32.dirname : posix.dirname;
   for (const candidate of candidates) {
     const roots = candidate.installationRoots ?? [parent(candidate.executable)];
     const key = JSON.stringify([platform, candidate.executable, roots]);
@@ -49,7 +49,7 @@ export function resolveVerifiedExecutable(
 }
 
 function hasValidInstallationRoots(executable: string, roots: readonly string[], platform: NodeJS.Platform): boolean {
-  const paths = platform === "win32" ? win32 : { isAbsolute, normalize, relative };
+  const paths = platform === "win32" ? win32 : posix;
   if (roots.length === 0 || ![executable, ...roots].every(path => paths.isAbsolute(path) && paths.normalize(path) === path)) return false;
   return roots.some(root => {
     const child = paths.relative(root, executable);
@@ -84,7 +84,7 @@ function installationEntries(root: string, platform: NodeJS.Platform, inspected:
     paths.push(path);
     if (entry.isDirectory()) {
       if (platform === "darwin" && !hasNoDarwinExtendedAcl([path])) throw new Error("Executable installation has extended access");
-      for (const name of readdirSync(path)) pending.push({ path: join(path, name), depth: depth + 1 });
+      for (const name of readdirSync(path)) pending.push({ path: posix.join(path, name), depth: depth + 1 });
     }
   }
   return paths;
@@ -97,7 +97,7 @@ function verifyPosixInstallation(candidate: string, roots: readonly string[], pl
     if (executable !== candidate || !lstatSync(executable).isFile()) return null;
     let inspected = 0;
     for (const root of roots) {
-      const parents = ancestors(root, dirname);
+      const parents = ancestors(root, posix.dirname);
       if (!parents.every(isPosixEntryProtected)) return null;
       if (platform === "darwin" && !hasNoDarwinExtendedAcl(parents)) return null;
       const paths = installationEntries(root, platform, inspected);
@@ -113,7 +113,7 @@ function hasNoDarwinExtendedAcl(paths: readonly string[]): boolean {
   // Ordinary mode bits do not describe extended security-change grants.
   // The fixed system helper runs with no inherited loader or search settings.
   const helper = "/bin/ls";
-  if (!ancestors(helper, dirname).every(isPosixEntryProtected)) return false;
+  if (!ancestors(helper, posix.dirname).every(isPosixEntryProtected)) return false;
   for (let offset = 0; offset < paths.length; offset += 32) {
     const output = execFileSync(helper, ["-lde", ...paths.slice(offset, offset + 32)], {
       encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
