@@ -41,6 +41,7 @@ import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { McpAppView } from "./McpAppView.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import { BrowserObservationLiveStrip } from "../preview/BrowserObservationLiveStrip.js";
 import { committedWebSurfaceLocation, subscribeWebSurfaceLocations } from "../preview/web-surfaces.js";
 
 export const FILE_TARGET_KINDS = new Set<ChatPreviewTarget["kind"]>(["file", "diff", "image"]);
@@ -351,9 +352,11 @@ export function UrlDocumentViewer({
   showHeader = true,
   surfaceTabId,
   browserTab,
+  sessionId,
 }: {
   api: AveApi;
   target: Extract<ChatPreviewTarget, { kind: "url" }>;
+  sessionId?: string;
   /**
    * The browser tab this page belongs to. A tab's page is a web SURFACE: its
    * guest lives in the window's `WebSurfaceLayer` and this viewer renders only
@@ -474,6 +477,7 @@ export function UrlDocumentViewer({
           </Tooltip>
         </div>
       ) : null}
+      {surfaceTabId ? <BrowserObservationLiveStrip tabId={surfaceTabId} sessionId={sessionId} /> : null}
       {surfaceTabId ? (
         <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" {...(bindRequestId === undefined ? {} : { bindRequestId })} />
       ) : createElement("webview", {

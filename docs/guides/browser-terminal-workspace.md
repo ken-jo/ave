@@ -52,6 +52,23 @@ cannot be distinguished. Other observed input mismatches interrupt the agent.
 Use Stop in browser chrome for an explicit takeover independent of this
 mouse-event ambiguity.
 
+## Follow agent browsing
+
+A browser panel's compact live strip shows the latest observed agent action,
+its safe URL and target description, and recency. Navigation, clicking, typing,
+tab changes and download status use the same local observation system as
+document previews. Your own browsing does not create activity in this strip.
+
+The strip is read-only. It records no typed values, credential-field
+descriptions, cookies, browser storage or arbitrary page contents. Download activity
+contains state, without filenames or save locations; the existing native Save
+flow still applies. Download attribution requires a current agent command and a
+matching navigation or clicked-link destination; unproved button/script and
+late downloads are excluded. Click-initiated downloads also require a native
+user gesture. Bounded events support the current strip without adding a history
+viewer; they stay in memory and clear with the session. See the [observation contract](../architecture/architecture.md#agent-activity-observation)
+for attribution, retention and lifecycle details.
+
 ## Know which tabs remain
 
 An agent-created tab retains its creator separately from whoever currently

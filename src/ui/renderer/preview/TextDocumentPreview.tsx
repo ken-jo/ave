@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Badge } from "../../../components/ui/badge.js";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
-import type { DocumentObservationBinding, DocumentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
+import type { ObservationBinding, AgentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import type { ChatPreviewTarget } from "./preview-targets.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
 import { PreviewContent, resolvePreviewRenderer } from "./preview-renderers.js";
@@ -13,7 +13,7 @@ type ReadError = NonNullable<Awaited<ReturnType<typeof window.ave.preview.readFi
 interface ObservedLine { line: number; before: string; after: string; seq: number; ts: number }
 type TextState = { phase: "loading" } | { phase: "error"; code: ReadError } | {
   phase: "ok"; path: string; content: string; truncated: boolean; lineCount: number;
-  lines: string[]; image?: { dataUrl: string; mimeType: string }; binding?: DocumentObservationBinding;
+  lines: string[]; image?: { dataUrl: string; mimeType: string }; binding?: ObservationBinding;
   changes: ObservedLine[]; seq: number; status?: DocumentObservationStatus;
 };
 
@@ -46,17 +46,17 @@ export function TextDocumentPreview({ target, sessionId }: {
     setOpenFailed(false);
     if (inlineText !== undefined) { setState({ phase: "loading" }); return; }
     let cancelled = false;
-    let binding: DocumentObservationBinding | undefined;
+    let binding: ObservationBinding | undefined;
     let observedPath = target.path;
     let lastSeq = 0;
     generation.current += 1;
     setState({ phase: "loading" });
     const api = window.ave.preview;
-    const release = (value: DocumentObservationBinding): void => {
-      void api.acknowledgeDocumentObservation({ action: "release", targetId: value.targetId,
+    const release = (value: ObservationBinding): void => {
+      void api.acknowledgeObservation({ action: "release", targetId: value.targetId,
         sessionId: value.sessionId, seq: lastSeq }).catch(() => {});
     };
-    const handleEvents = (events: DocumentObservationEvent[]): void => {
+    const handleEvents = (events: AgentObservationEvent[]): void => {
       if (cancelled || !binding || binding.sessionId !== sessionId) return;
       for (const event of events) {
         if (event.actor !== "agent" || event.source !== "document" || event.sessionId !== binding.sessionId
@@ -85,7 +85,7 @@ export function TextDocumentPreview({ target, sessionId }: {
         });
       }
     };
-    const stop = !selected && sessionId ? api.onDocumentObservation(handleEvents) : () => {};
+    const stop = !selected && sessionId ? api.onAgentObservation(handleEvents) : () => {};
     const options = selected ? { offset: startLine - 1, limit: endLine - startLine + 1,
       ...(target.workspaceRoot ? { workspaceRoot: target.workspaceRoot } : {}) }
       : { ...(target.workspaceRoot ? { workspaceRoot: target.workspaceRoot } : {}), ...(sessionId ? { sessionId } : {}) };
@@ -115,7 +115,7 @@ export function TextDocumentPreview({ target, sessionId }: {
     if (acknowledged.current === key) return;
     acknowledged.current = key;
     const current = generation.current;
-    void window.ave.preview.acknowledgeDocumentObservation({ action: "rendered", targetId: binding.targetId,
+    void window.ave.preview.acknowledgeObservation({ action: "rendered", targetId: binding.targetId,
       sessionId: binding.sessionId, seq }).then((result) => {
       if (!result.ok && current === generation.current) setState((previous) => previous.phase === "ok"
         ? { ...previous, changes: [], status: "observation-error" } : previous);

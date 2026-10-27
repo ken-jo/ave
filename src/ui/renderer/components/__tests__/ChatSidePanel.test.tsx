@@ -256,8 +256,8 @@ describe("ChatSidePanel", () => {
       preview: {
         readFile: vi.fn(async () => ({ ok: true, content: "# preview", path: "/tmp/x.md", truncated: false })),
         readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "stub" })),
-        onDocumentObservation: vi.fn(() => () => {}),
-        acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })),
+        onAgentObservation: vi.fn(() => () => {}),
+        acknowledgeObservation: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
@@ -776,7 +776,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { ave: unknown }).ave = {
       ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot,
@@ -808,7 +808,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -843,7 +843,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -878,7 +878,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -908,7 +908,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -938,7 +938,7 @@ describe("ChatSidePanel", () => {
     }));
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -967,7 +967,7 @@ describe("ChatSidePanel", () => {
     const listDir = vi.fn(async () => ({ ok: false as const, error: "read-failed" as const }));
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -1014,7 +1014,7 @@ describe("ChatSidePanel", () => {
     });
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot,
@@ -1081,7 +1081,7 @@ describe("ChatSidePanel", () => {
     vi.stubGlobal("ave", {
       ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
+      preview: { onAgentObservation: vi.fn(() => () => {}), acknowledgeObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({
           ok: true,

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewDetail } from "../../components/ChatSidePanelPreview.js";
 import { PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } from "../preview-document-chrome.js";
-import type { DocumentObservationEvent, PreviewObservedTextDocument } from "../../../../shared/agent-observation.js";
+import type { AgentObservationEvent, DocumentObservationEvent, PreviewObservedTextDocument } from "../../../../shared/agent-observation.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import { en, ko } from "../../../../i18n/messages/generated/chatPreviewRail.js";
 
@@ -20,7 +20,7 @@ const FILE: ChatPreviewTarget = { kind: "file", id: "file-report", title: "repor
 let previousAve: unknown;
 let readFile: ReturnType<typeof vi.fn>;
 let acknowledge: ReturnType<typeof vi.fn>;
-let handlers: Set<(events: DocumentObservationEvent[]) => void>;
+let handlers: Set<(events: AgentObservationEvent[]) => void>;
 
 beforeEach(() => {
   previousAve = window.ave;
@@ -29,8 +29,8 @@ beforeEach(() => {
   readFile = vi.fn(async () => ({ ok: true, path: PATH, content: DOCUMENT.content,
     lineCount: 2, truncated: false, document: DOCUMENT, observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }));
   (window as unknown as { ave: unknown }).ave = { attach: { openExternal: vi.fn(async () => ({ ok: true })) }, preview: {
-    readFile, acknowledgeDocumentObservation: acknowledge,
-    onDocumentObservation: vi.fn((handler: (events: DocumentObservationEvent[]) => void) => {
+    readFile, acknowledgeObservation: acknowledge,
+    onAgentObservation: vi.fn((handler: (events: AgentObservationEvent[]) => void) => {
       handlers.add(handler); return () => handlers.delete(handler);
     }),
   } };
@@ -41,7 +41,7 @@ function lineEvent(seq: number, line: number, before: string, after: string): Do
   return { source: "document", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH },
     seq, ts: 1_700_000_000_000, kind: "element", element: { kind: "line", line }, before, after, advisory: false };
 }
-async function emit(...events: DocumentObservationEvent[]): Promise<void> {
+async function emit(...events: AgentObservationEvent[]): Promise<void> {
   await act(async () => { handlers.forEach((handler) => handler(events)); });
 }
 async function openText() {
@@ -74,6 +74,14 @@ describe("shared document viewer chrome", () => {
     expect(screen.getByRole("button", { name: "다시 불러오기" }).textContent).toBe("");
     expect(screen.queryByText("open document · builtin")).toBeNull();
     expect(screen.getByTestId("document-preview-footer").textContent).toBe("TypeScript · 2줄");
+  });
+
+  it("ignores browser events even when a document target identity is reused in the batch", async () => {
+    await openText();
+    await emit({ source: "browser", actor: "agent", sessionId: SESSION, target: { id: TARGET, path: PATH, hostSessionId: SESSION },
+      seq: 1, ts: 1_000, kind: "status", before: null, after: { code: "observation-error" } });
+    expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
+    expect(screen.queryByTestId("browser-preview-live-strip")).toBeNull();
   });
 
   it("has no live strip until this document receives agent activity", async () => {

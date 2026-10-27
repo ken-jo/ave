@@ -107,23 +107,28 @@ function ObservationRecency({ ts }: { ts: number }) {
     className="ml-auto shrink-0 text-[10px]">{formatRelativeSessionTime(ts, t)}</time>;
 }
 
-/** Only authenticated observation state gives a document its agent activity strip. */
-export function PreviewDocumentLiveStrip({ status, summary, ts, error }: {
+/** Only authenticated observation state gives a passive viewer its agent activity strip. */
+export function PreviewDocumentLiveStrip({ status, summary, ts, error, label, source = "document" }: {
   status?: DocumentObservationStatus;
   summary?: string;
   ts?: number;
   error?: string;
+  label?: string;
+  source?: "document" | "browser";
 }) {
   const { t } = useTranslation();
   if (!status && !error) return null;
   const interrupted = error !== undefined || status === "reload-required" || status === "resync-required" || status === "observation-error";
+  const statusText = error ?? label ?? t(OBSERVATION_STATUS_KEYS[status!]);
   return (
-    <div role={interrupted ? "alert" : "status"} data-testid="document-preview-live-strip"
-      className={cn("flex min-w-0 shrink-0 items-center gap-2 rounded-md bg-agent/(--opacity-subtle) px-2.5 py-1.5 text-[11px] text-agent",
+    <div role={interrupted ? "alert" : "status"} data-testid={`${source}-preview-live-strip`}
+      className={cn("flex min-w-0 shrink-0 items-center gap-2 rounded-md bg-agent/(--opacity-subtle) px-2.5 text-[11px] text-agent",
+        source === "browser" ? "h-7 whitespace-nowrap" : "py-1.5",
         interrupted && "bg-destructive/(--opacity-subtle) text-destructive")}>
       {status && !error ? <span aria-hidden="true" className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-current", status === "reconciling" && "motion-safe:animate-pulse")} /> : null}
-      <span data-testid="document-observation-status" className={cn("min-w-0", !interrupted && "shrink-0 font-medium")}>{error ?? t(OBSERVATION_STATUS_KEYS[status!])}</span>
-      {!interrupted && summary ? <span className="min-w-0 truncate font-mono" title={summary} data-testid="document-observation-summary">{summary}</span> : null}
+      <span data-testid={`${source}-observation-status`} title={source === "browser" ? statusText : undefined}
+        className={cn("min-w-0", !interrupted && "shrink-0 font-medium", source === "browser" && interrupted && "truncate")}>{statusText}</span>
+      {!interrupted && summary ? <span className="min-w-0 truncate font-mono" title={summary} data-testid={`${source}-observation-summary`}>{summary}</span> : null}
       {!interrupted && ts ? <ObservationRecency ts={ts} /> : null}
     </div>
   );

@@ -197,7 +197,7 @@ test("@cdp final activating click navigation completes", async ({}, testInfo) =>
   try {
     const navigated = await run(app, "navigate");
     expect(navigated.ok, resultMessage(navigated)).toBe(true);
-    expect(navigated.oracle.url).toMatch(/\/navigated$/);
+    await expect.poll(async () => (await read(app)).oracle.url).toMatch(/\/navigated$/);
   } finally { await close(app); }
 });
 

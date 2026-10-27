@@ -2,6 +2,8 @@
 // Frame every page read as untrusted web data.
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
+import { observeAgentBrowserCommand } from "./agent-browser-observation.js";
+import type { BrowserObservationAction, BrowserObservationElement } from "../shared/agent-observation.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
@@ -23,6 +25,11 @@ import { t } from "../i18n/index.js";
 const MAX_TYPED_CHARS = 10_000;
 const MAX_WAIT_MS = 30_000;
 const REF_PATTERN = /^e\d+$/;
+const PAGE_OBSERVATION_ACTIONS = Object.freeze({
+  [BROWSER_TOOL.click]: "click", [BROWSER_TOOL.type]: "type", [BROWSER_TOOL.pressKey]: "press-key",
+  [BROWSER_TOOL.hover]: "hover", [BROWSER_TOOL.drag]: "drag", [BROWSER_TOOL.select]: "select",
+  [BROWSER_TOOL.scroll]: "scroll",
+} as const);
 
 const NO_WINDOW = "the browser tools are available only to a conversation in an app window (or its sub-agents); this session has no browser";
 
@@ -215,9 +222,13 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   const run = (work: (actions: BrowserPageActions<G>) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> =>
     safely(async () => work(await deps.loadActions()));
 
-  const runMutation = (ctx: ToolExecutionContext, target: Extract<ReturnType<typeof live>, { ok: true }>, work: (actions: BrowserPageActions<G>) => Promise<ToolExecutionResult>) => safely(async () => {
+  const runMutation = (ctx: ToolExecutionContext, target: Extract<ReturnType<typeof live>, { ok: true }>,
+    action: BrowserObservationAction,
+    work: (actions: BrowserPageActions<G>, onTarget: ((element: BrowserObservationElement, downloadUrl?: string) => void) | undefined) => Promise<ToolExecutionResult>,
+    expectedDownloadUrl?: string) => safely(async () => {
     const lease = deps.tabs.acquireControl(target.resolved.tab, actorOf(ctx, deps));
-    try { return await work(await deps.loadActions()); }
+    try { return await observeAgentBrowserCommand(target.resolved.tab, action,
+      async (onTarget) => work(await deps.loadActions(), onTarget), ctx.abortSignal, expectedDownloadUrl); }
     finally { deps.tabs.releaseControl(target.resolved.tab.handle, lease.id); }
   });
 
@@ -236,7 +247,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     typeof input.ref === "string" && REF_PATTERN.test(input.ref) ? null : "ref must be an element ref from browser_snapshot, like \"e12\"";
 
   const pageAction = (
-    name: BrowserToolName,
+    name: keyof typeof PAGE_OBSERVATION_ACTIONS,
     validate: (input: BrowserToolInput) => string | null,
     act: (actions: BrowserPageActions<G>, target: BrowserActionTab<G>, input: BrowserToolInput) => Promise<void>,
   ) => async (input: BrowserToolInput, ctx: ToolExecutionContext): Promise<ToolExecutionResult> => {
@@ -246,12 +257,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     if (!target.ok) return target.result;
     const changed = unchangedSinceApproval(ctx, target.resolved);
     if (changed) return changed;
-    return runMutation(ctx, target, async (actions) => {
+    return runMutation(ctx, target, PAGE_OBSERVATION_ACTIONS[name], async (actions, onTarget) => {
       const fresh = recheck(input, ctx, target);
       if (!fresh.ok) return fresh.result;
       const changed = unchangedSinceApproval(ctx, fresh.resolved);
       if (changed) return changed;
-      await act(actions, pageTarget(ctx, fresh), input);
+      await act(actions, { ...pageTarget(ctx, fresh), onObservationTarget: onTarget }, input);
       const outcome = await actions.settle({ tab: fresh.resolved.tab, signal: ctx.abortSignal ?? new AbortController().signal });
       return fenced({
         tabId: target.resolved.tab.handle,
@@ -275,12 +286,15 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (typeof input.select !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.select)) {
           return failure("select must be a tab id from browser_tabs, like \"tab-2\"");
         }
-        const outcome = await deps.tabs.requestTabOp(scope.windowId, { op: "select", tabId: input.select, actor }, signalOptions(ctx));
-        if (!outcome.ok) {
-          return failure(outcome.error === "no-such-tab"
+        const selected = deps.tabs.liveTabInWindow(input.select, scope.windowId);
+        if (!selected) return failure(`no browser tab ${JSON.stringify(input.select)}; call browser_tabs to list this window's tabs`);
+        const result = await observeAgentBrowserCommand(selected, "tab-switch", async () => {
+          const outcome = await deps.tabs.requestTabOp(scope.windowId, { op: "select", tabId: selected.handle, actor }, signalOptions(ctx));
+          return outcome.ok ? fenced({ selected: selected.handle }) : failure(outcome.error === "no-such-tab"
             ? `no browser tab ${JSON.stringify(input.select)}; call browser_tabs to list this window's tabs`
             : `could not show the tab (${outcome.error})`);
-        }
+        }, ctx.abortSignal);
+        if (result.isError) return result;
       }
       const tabs = input.scope === "conversation" ? deps.tabs.listSessionTabs(scope.windowId, actor, input.includeDirectChildren === true) : deps.tabs.listTabs(scope.windowId);
       return fenced({ tabs, ...(tabs.length === 0 ? { note: t("be_browserTools.noTabs") } : {}) });
@@ -366,14 +380,14 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = navigationUnchangedSinceApproval(ctx, target.resolved, url.origin);
       if (changed) return changed;
-      return runMutation(ctx, target, async (actions) => {
+      return runMutation(ctx, target, "navigate", async (actions) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = navigationUnchangedSinceApproval(ctx, fresh.resolved, url.origin);
         if (changed) return changed;
         const loaded = await actions.navigate(pageTarget(ctx, fresh), url.url, url.origin);
         return fenced({ tabId: target.resolved.tab.handle, url: loaded.url, title: target.resolved.tab.guest?.getTitle() ?? "" });
-      });
+      }, url.url);
     },
 
     [BROWSER_TOOL.hover]: pageAction(BROWSER_TOOL.hover, validRef, (actions, target, input) => actions.hover(target, input.ref as string)),
@@ -393,7 +407,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
-      return runMutation(ctx, target, async (actions) => {
+      return runMutation(ctx, target, "upload", async (actions) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
@@ -447,14 +461,14 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
       // Install the origin guard before navigating the blank bound view or following redirects.
       const lease = deps.tabs.acquireControl(tab, actorOf(ctx, deps));
-      try { return await run(async (actions) => {
+      try { return await observeAgentBrowserCommand(tab, "tab-open", () => run(async (actions) => {
         const fresh = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
         if (!fresh || signal.aborted || fresh.guest !== guest || fresh.documentId !== documentId || fresh.opener !== "agent") {
           return failure("the new tab changed before navigation; nothing was done. Call again.");
         }
         const loaded = await actions.navigate({ tab: fresh, signal, leaseId: lease.id, ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
         return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
-      }); } finally { deps.tabs.releaseControl(tab.handle, lease.id); }
+      }), ctx.abortSignal, url.url); } finally { deps.tabs.releaseControl(tab.handle, lease.id); }
     },
 
     [BROWSER_TOOL.tabClose]: async (input, ctx) => {
@@ -470,9 +484,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         || authorized.controlGeneration !== target.resolved.tab.controlGeneration) {
         return failure("the tab changed or the user took it over since approval; nothing was done. Call again to ask.");
       }
-      const outcome = await deps.tabs.requestTabOp(target.windowId, { op: "close", tabId: target.resolved.tab.handle, actor: actorOf(ctx, deps) }, signalOptions(ctx));
-      if (!outcome.ok) return failure(`could not close the tab (${outcome.error})`);
-      return fenced(outcome.retained ? { released: target.resolved.tab.handle, retained: true } : { closed: target.resolved.tab.handle });
+      return observeAgentBrowserCommand(target.resolved.tab, "tab-close", async () => {
+        const outcome = await deps.tabs.requestTabOp(target.windowId, { op: "close", tabId: target.resolved.tab.handle, actor: actorOf(ctx, deps) }, signalOptions(ctx));
+        if (!outcome.ok) return failure(`could not close the tab (${outcome.error})`);
+        return fenced(outcome.retained ? { released: target.resolved.tab.handle, retained: true } : { closed: target.resolved.tab.handle });
+      }, ctx.abortSignal);
     },
   };
   const allowed: Record<BrowserToolName, readonly string[]> = {
