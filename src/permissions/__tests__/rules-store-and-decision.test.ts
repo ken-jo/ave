@@ -445,9 +445,10 @@ describe("scoped rule management", () => {
     writeFileSync(corrupt.filePath, "{broken");
     const fresh = new PermissionManager(permissionsFile);
     const listed = await fresh.listScopedRules();
+    const fixtureRoot = fixtureParent.replaceAll("\\", "/").replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
     expect(listed.rules).toEqual(expect.arrayContaining([
       expect.objectContaining({ pattern: "Bash(git status *)", scope: "user" }),
-      expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: captureApprovalWorkingDirectory(project).path }),
+      expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: `${fixtureRoot}/fixture/project` }),
     ]));
     expect(listed.errors).toEqual([{ filePath: corrupt.filePath, errorCode: "rules-file-unavailable" }]);
     const projectRow = listed.rules.find((rule) => rule.scope === "project")!;

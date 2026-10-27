@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:p
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
 export function resolveShellFilesystemPath(path: string, cwd: string): string {
   if (process.platform === "win32") {
-    const absolute = isAbsolute(path) ? path : `${cwd}${sep}${path}`;
+    const absolute = anchorFilesystemPath(path, cwd);
     const lexical = resolveExistingShellPath(resolve(cwd, path));
     // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
     const { root } = parse(absolute);
@@ -56,11 +56,22 @@ export function inspectPhysicalFilesystemPath(
 
 type BasicPhysicalFilesystemPathResolution = Omit<PhysicalFilesystemPathResolution, "routingSymlinkPaths">;
 
+function anchorFilesystemPath(path: string, cwd: string): string {
+  if (!isAbsolute(path)) return `${cwd}${sep}${path}`;
+  const { root } = parse(path);
+  // A rooted Windows operand inherits the invocation's drive, not the host process's drive.
+  // Attach only the root so directory-link parent components remain available for inspection.
+  if (process.platform === "win32" && root.length === 1) {
+    return `${parse(resolve(cwd)).root}${path.slice(root.length)}`;
+  }
+  return path;
+}
+
 function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: number): BasicPhysicalFilesystemPathResolution {
   if (maxMissingAncestors < 0 || (!Number.isSafeInteger(maxMissingAncestors) && maxMissingAncestors !== Number.POSITIVE_INFINITY)) {
     throw new RangeError("Missing ancestor limit must be a non-negative integer");
   }
-  const absolute = isAbsolute(path) ? path : `${cwd}${sep}${path}`;
+  const absolute = anchorFilesystemPath(path, cwd);
   const suffix: string[] = [];
   let cursor = absolute;
   for (;;) {
@@ -93,6 +104,7 @@ function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: n
 
 function inspectRoutingSymlinks(path: string, cwd: string, maxComponents: number): string[] {
   const absolute = isAbsolute(path);
+  if (absolute) path = anchorFilesystemPath(path, cwd);
   const root = absolute ? parse(path).root : cwd;
   const remainder = absolute ? path.slice(root.length) : path;
   const components = remainder.split(process.platform === "win32" ? /[\\/]+/u : /\/+/u).filter(Boolean);

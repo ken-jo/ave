@@ -3,7 +3,7 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
-import { isAbsolute, join, posix, resolve } from "node:path";
+import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 import {
   staticShellWord,
   type ShellCommand,
@@ -487,15 +487,26 @@ type ScanWork = (steps: number, chars?: number) => void;
 const SHELL_PATH_SCAN_LIMITS = Object.freeze({ steps: 16_384, chars: 65_536 });
 class ShellScanBudgetError extends Error {}
 
+// Match the shell namespace and the native identity through the same projection in every scan lane.
+// Fold separators before resolving parents; drive/share/device roots only locate the namespace.
+function matchShellPath(path: string, match: (path: string) => string | null, canonical: boolean): string | null {
+  const slashed = foldCanonicalPathSeparators(path);
+  let shellPath = slashed;
+  if (process.platform === "win32") {
+    shellPath = shellPath.replace(/^\/+[?.]\//, "");
+    if (/^UNC\//i.test(shellPath)) shellPath = `//${shellPath.slice(4)}`;
+    const root = win32.parse(shellPath).root;
+    if (root) shellPath = `/${shellPath.slice(root.length)}`;
+  }
+  const shellHit = match(caseFoldForMatch(posix.normalize(shellPath)));
+  return shellHit ?? match(caseFoldForMatch(canonical
+    ? canonicalizePathForMatch(slashed) : posix.normalize(slashed)));
+}
+
 function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolean, match: (path: string) => string | null, spend?: ScanWork, canonical = true): string | null {
   spend?.(1, glob.length);
   if (!glob || glob === "-") return null;
-  const matchPath = (path: string): string | null => {
-    // A Windows shell can expose virtual POSIX roots that native realpath resolves onto the current drive.
-    const shellRoot = process.platform === "win32" && /^\/(?!\/)/.test(path)
-      ? match(caseFoldForMatch(posix.normalize(path))) : null;
-    return shellRoot ?? match(caseFoldForMatch(canonical ? canonicalizePathForMatch(path) : foldCanonicalPathSeparators(path)));
-  };
+  const matchPath = (path: string): string | null => matchShellPath(path, match, canonical);
   const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
   const segments = absolute.split(/[\\/]/);
   // Whatever a wildcard expands to stays below its literal directory prefix:
@@ -727,10 +738,9 @@ function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState,
     }
   }
   // Plain lexical checks are linear in the bounded source text against the fixed path catalogue; they do not perform filesystem or glob expansion.
-  const literal = unescapeGlob(glob);
-  const path = process.platform === "win32" && /^\/(?!\/)/.test(literal)
-    ? posix.normalize(literal) : resolve(cwd ?? "/", literal);
-  return state.match(caseFoldForMatch(foldCanonicalPathSeparators(path)));
+  const literal = foldCanonicalPathSeparators(unescapeGlob(glob));
+  const path = isAbsolute(literal) ? literal : resolve(cwd ?? "/", literal);
+  return matchShellPath(path, state.match, false);
 }
 
 function checkGlob(glob: string, state: ScanState, braceExpansion = false): void {
@@ -768,7 +778,7 @@ function confineListingGlob(candidate: string, cwd: string | undefined, state: S
   const segments = absolute.split(/[\\/]/);
   const firstWild = segments.findIndex(hasWildcard);
   const prefix = unescapeGlob(segments.slice(0, Math.max(firstWild, 0)).join("/")) || "/";
-  if (state.match(caseFoldForMatch(canonicalizePathForMatch(prefix)))) return;
+  if (matchShellPath(prefix, state.match, !state.ordinaryAsk)) return;
   state.confinedAsk ??= `listing glob expands into ${state.sensitive}`;
   state.sensitive = null;
 }

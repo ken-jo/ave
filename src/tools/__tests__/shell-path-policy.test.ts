@@ -1785,13 +1785,16 @@ describe("shell-path-policy", () => {
       });
 
       it.each([
-        "env -C /tmp sh -c 'cat .ssh/id_rsa'",
-        "uv run env -C /tmp sh -c 'cat .ssh/id_rsa'",
-        "uv run uv run env -C /tmp sh -c 'cat .ssh/id_rsa'",
-      ])("passes projected wrapper cwd into relative nested shell paths: %s", (command) => {
+        "",
+        "uv run ",
+        "uv run uv run ",
+      ])("passes projected wrapper cwd into relative nested shell paths: %s", (wrapper) => {
         withRoot((root) => {
-          expect(validateShellCommandPathPolicy(command, root, root, ["/tmp"], true))
-            .toContain("Sensitive path:");
+          withRoot((wrapperCwd) => {
+            const command = `${wrapper}env -C '${wrapperCwd.replaceAll("\\", "/")}' sh -c 'cat .ssh/id_rsa'`;
+            expect(validateShellCommandPathPolicy(command, root, root, [wrapperCwd], true))
+              .toContain("Sensitive path:");
+          });
         });
       });
 

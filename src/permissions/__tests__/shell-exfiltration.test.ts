@@ -20,6 +20,59 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CWD = "/work/project";
+
+describe("sensitive path projection", () => {
+  it.each([
+    String.raw`/etc\scratch/../shadow`,
+    String.raw`/home/u/.ssh\scratch/../config`,
+  ])("keeps mixed separators after path analysis exhaustion: %s", (path) => {
+    const operands = Array.from({ length: 300 }, (_, index) => `./x${index}`).join(" ");
+    const command = `cat ${operands} '${path}'`;
+    expect(shellScanOrdinaryAsk(command, CWD)).toContain("budget");
+    expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
+  });
+
+  it("keeps a rooted virtual path in canonical and exhausted scans", () => {
+    const operands = Array.from({ length: 300 }, (_, index) => `./x${index}`).join(" ");
+    expect(shellSensitivePathSignal("cat /proc/self/environ", CWD)).not.toBeNull();
+    expect(shellSensitivePathSignal(`cat ${operands} /proc/self/environ`, CWD)).not.toBeNull();
+  });
+
+  it.runIf(process.platform === "win32").each([
+    String.raw`C:\proc\self\environ`,
+    String.raw`\\server\share\proc\self\environ`,
+    String.raw`\?\C:\proc\self\environ`,
+    String.raw`\\?\C:\proc\self\environ`,
+    String.raw`\\?\UNC\server\share\proc\self\environ`,
+  ])("keeps virtual root spellings in canonical and exhausted scans: %s", (path) => {
+    expect(shellSensitivePathSignal(`cat '${path}'`, CWD)).not.toBeNull();
+    const operands = Array.from({ length: 300 }, (_, index) => `./x${index}`).join(" ");
+    expect(shellSensitivePathSignal(`cat ${operands} '${path}'`, CWD)).not.toBeNull();
+  });
+
+  it.each([
+    "/proc/self/fd",
+    "/proc/self/map_files",
+    "/proc/self/task/1/fd",
+  ])("keeps protected literal listing prefixes: %s", (path) => {
+    expect(shellSensitivePathSignal(`ls ${path}/*`, CWD)).not.toBeNull();
+  });
+
+  it.runIf(process.platform === "win32").each([
+    String.raw`C:\proc\self\fd`,
+    String.raw`\\server\share\proc\self\map_files`,
+    String.raw`\?\C:\proc\self\task\1\fd`,
+    String.raw`\\?\C:\proc\self\fd`,
+    String.raw`\\?\UNC\server\share\proc\self\fd`,
+  ])("keeps protected native listing prefixes: %s", (path) => {
+    expect(shellSensitivePathSignal(`ls '${path}'/*`, CWD)).not.toBeNull();
+  });
+
+  it.each(["/proc/self/cmdline", "/proc/self/status"])("keeps public process metadata readable: %s", (path) => {
+    expect(shellSensitivePathSignal(`cat ${path}`, CWD)).toBeNull();
+  });
+});
+
 let accountDirectory: string;
 beforeAll(() => {
   accountDirectory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-exfil-accounts-")));

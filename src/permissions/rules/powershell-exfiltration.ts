@@ -564,6 +564,8 @@ interface Context {
   // Positively modeled property expressions inside a dispatch block.
   memberReads: Set<PsCommand>;
   ordinary: { reason?: string };
+  // Helpers publish established floors before spending more of the shared budget.
+  retained: FloorSignals;
   budget: PowerShellAnalysisBudget;
 }
 
@@ -1576,7 +1578,10 @@ function genericInterpreter(name: string): boolean {
 
 function genericTextSignals(text: string, ctx: Context): FloorSignals {
   ctx.budget.spend(text.length * 4 + 1, text.length);
-  return { sensitive: shellSensitivePathSignal(text, ctx.cwd), exfiltration: shellExfiltrationSignal(text, ctx.cwd) };
+  const signals = { sensitive: shellSensitivePathSignal(text, ctx.cwd), exfiltration: shellExfiltrationSignal(text, ctx.cwd) };
+  ctx.retained.sensitive ??= signals.sensitive;
+  ctx.retained.exfiltration ??= signals.exfiltration;
+  return signals;
 }
 
 function genericInvocation(cmd: PsCommand, ctx: Context): boolean {
@@ -1629,7 +1634,9 @@ function nativeTextSignals(text: string, target: string, ctx: Context): FloorSig
     signals.sensitive ??= interpreted.sensitive;
     signals.exfiltration ??= interpreted.exfiltration;
     signals.sensitive ??= credentialCommandSignal(view, ctx);
+    ctx.retained.sensitive ??= signals.sensitive;
     signals.exfiltration ??= senderSignal(view, false, ctx);
+    ctx.retained.exfiltration ??= signals.exfiltration;
     const { name, args } = headOf(view, ctx);
     if (name !== undefined) {
       const native = nativeInvocation(name, args, ctx);
@@ -1640,6 +1647,8 @@ function nativeTextSignals(text: string, target: string, ctx: Context): FloorSig
           const child = code.native ? nativeTextSignals(code.text, code.native, ctx) : inspectPowerShell(code.text, ctx.cwd, ctx.budget, true, false, ctx.files);
           signals.sensitive ??= child.sensitive;
           signals.exfiltration ??= child.exfiltration;
+          ctx.retained.sensitive ??= signals.sensitive;
+          ctx.retained.exfiltration ??= signals.exfiltration;
           if (child.ordinaryAsk) ordinarySignal(ctx, child.ordinaryAsk);
         }
       }
@@ -2071,9 +2080,7 @@ function inspectPowerShell(input: ShellCommandInput, cwd: string | undefined, bu
 }
 
 // Every literal argument is probed independently of the receiving command's policy.
-function inspectArgumentCode(stage: PsCommand, ctx: Context, scanned: string | undefined, handled: ReadonlySet<PsToken>): FloorSignals {
-  let sensitive: string | null = null;
-  let exfiltration: string | null = null;
+function inspectArgumentCode(stage: PsCommand, ctx: Context, scanned: string | undefined, handled: ReadonlySet<PsToken>): void {
   const seen = new Set<string>();
   const { name, args } = headOf(stage, ctx);
   const contents = new Set(localContent(name, args, ctx));
@@ -2100,11 +2107,10 @@ function inspectArgumentCode(stage: PsCommand, ctx: Context, scanned: string | u
     const visibleUpload = UNREADABLE_FALLBACK.test(normalizeDashes(value.text));
     if (!nested.boundary && !visibleUpload) continue;
     ctx.literalBoundary = true;
-    sensitive ??= nested.sensitive;
-    exfiltration ??= nested.exfiltration ?? (visibleUpload ? "PowerShell file upload (literal command text)" : null);
+    ctx.retained.sensitive ??= nested.sensitive;
+    ctx.retained.exfiltration ??= nested.exfiltration ?? (visibleUpload ? "PowerShell file upload (literal command text)" : null);
     if (nested.ordinaryAsk) ordinarySignal(ctx, nested.ordinaryAsk);
   }
-  return { sensitive, exfiltration };
 }
 
 // Preserve visible credentials and uploads when structural analysis is opaque.
@@ -2139,7 +2145,7 @@ function visibleFallback(command: string, cwd: string | undefined, ordinaryAsk: 
 
 function inspectFrame(command: string, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched: boolean, probe: boolean, files: PowerShellFileProvenance, pathData: boolean): FrameSignals {
   const { pipelines, reason, readable } = lex(command, budget);
-  const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, files, pathData: new Set(), memberReads: new Set(), ordinary: {}, budget };
+  const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, files, pathData: new Set(), memberReads: new Set(), ordinary: {}, retained: { sensitive: null, exfiltration: null }, budget };
   let sensitive: string | null = null;
   const networkText = DOTNET_NETWORK.test(command);
   if (pipelines === null) {
@@ -2188,7 +2194,6 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
         for (const data of body.stages) nativeData.add(data);
       }
     }
-    let argumentExfiltration: string | null = null;
     for (const { stage, feeder, mutatingBlocks } of executionStages(pipelines, budget, ctx.files)) {
       if (nativeData.has(stage)) continue;
       const materialize = materializationPlan(stage, ctx);
@@ -2236,15 +2241,14 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
           if (code.opaque) ordinarySignal(ctx, "PowerShell hidden code (opaque native command grammar)");
         }
       }
-      const argumentsCode = nativePayload ? { sensitive: null, exfiltration: null } : inspectArgumentCode(stage, ctx, scanned, handled);
-      sensitive ??= argumentsCode.sensitive;
-      argumentExfiltration ??= argumentsCode.exfiltration;
+      if (!nativePayload) inspectArgumentCode(stage, ctx, scanned, handled);
+      sensitive ??= ctx.retained.sensitive;
+      exfiltration ??= ctx.retained.exfiltration;
       materialize?.();
       const first = stage.tokens[0];
       if (name !== undefined && (!POWERSHELL_COMMAND_POLICIES[name] || POWERSHELL_COMMAND_POLICIES[name]?.native) && !isPowerShell(name)
         && first?.kind === "word" && !first.quoted && !/^[\[$@]/.test(first.text)) ctx.files.observeOpaqueEffects();
     }
-    exfiltration ??= argumentExfiltration;
     const boundary = candidate || sensitive !== null || exfiltration !== null || ctx.literalBoundary;
     if (probe && !candidate && !boundary) return { sensitive: null, exfiltration: null, boundary: false };
     const opaque = closedWorldSignal(pipelines, ctx, sensitive !== null);
@@ -2258,6 +2262,8 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
     return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}), boundary: boundary || sensitive !== null || exfiltration !== null };
   } catch (error) {
     // Later analysis cannot erase a credential or transport floor already established.
+    sensitive ??= ctx.retained.sensitive;
+    exfiltration ??= ctx.retained.exfiltration;
     if (!(error instanceof PowerShellBudgetError) || (sensitive === null && exfiltration === null)) throw error;
     return { sensitive, exfiltration, ordinaryAsk: "PowerShell hidden code (analysis budget exceeded)", boundary: true };
   }

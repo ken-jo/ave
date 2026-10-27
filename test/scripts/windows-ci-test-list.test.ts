@@ -8,6 +8,17 @@ import { conditionalGates } from "./windows-test-gates.js";
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const REQUIRED_SECURITY_SUITES = [
+  "src/permissions/__tests__/shell-exfiltration.test.ts",
+  "src/permissions/__tests__/powershell-exfiltration.test.ts",
+  "src/permissions/__tests__/rules-store-and-decision.test.ts",
+  "src/permissions/__tests__/shell-sandbox-rules.test.ts",
+  "src/permissions/__tests__/egress-ask.test.ts",
+  "src/permissions/__tests__/execution-router.test.ts",
+  "src/permissions/__tests__/scoped-rules.test.ts",
+  "src/permissions/judge/__tests__/judge-dispatch.test.ts",
+  "src/main/__tests__/document-open.test.ts",
+] as const;
 function windowsJobFiles(workflow: string): string[] {
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${STEP_NAME}`);
@@ -36,7 +47,8 @@ function listProblems(sources: Map<string, string>, workflow: string): string[] 
     const gates = conditionalGates(source);
     const unknown = gates.filter((gate) => gate.classification === "unclassifiable")
       .map((gate) => `${file}:${gate.line}: unclassifiable argument: ${gate.argument}`);
-    const required = file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only");
+    const required = REQUIRED_SECURITY_SUITES.some((suite) => suite === file)
+      || file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only");
     return [...unknown, ...(required && !listed.includes(file) ? [`${file}: missing from ${STEP_NAME}`] : [])];
   }).sort();
 }
@@ -53,6 +65,16 @@ describe("Windows CI test list", () => {
 
   it("names every file with win32-only cases", () => {
     expect(listProblems(sources, workflow)).toEqual([]);
+  });
+
+  it("names every unconditional security suite", () => {
+    expect(REQUIRED_SECURITY_SUITES.filter((file) => !sources.has(file))).toEqual([]);
+    expect(REQUIRED_SECURITY_SUITES.filter((file) => !listed.includes(file))).toEqual([]);
+  });
+
+  it.each(REQUIRED_SECURITY_SUITES)("rejects removal of an unconditional security suite: %s", (file) => {
+    const withoutSuite = workflow.split("\n").filter((line) => line.trim() !== file).join("\n");
+    expect(listProblems(sources, withoutSuite)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("rejects removal of the executable location tests from the workflow string", () => {
