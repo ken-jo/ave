@@ -18,6 +18,7 @@ import { mintOneShotHostShellPermit } from "../../__tests__/support/host-shell-a
 import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { powerShellLiteral as psLiteral } from "../../__tests__/support/powershell-ast.js";
+import { POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL } from "../../shared/powershell-recursive-traversal.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -829,6 +830,36 @@ describe("powershell tool", () => {
       ["-Force alone", [psParameter("Force")]],
     ] as const)("does not report forced recursive deletion for %s", (_, parameters) => {
       expect(removal(...parameters)).toBeNull();
+    });
+
+    describe("definite recursion shared with the permission decision", () => {
+      const command = (name: string, ...rest: PowerShellArgument[]) => ({ name, arguments: [psLiteral(name), ...rest] });
+      const refusal = (summary: PowerShellAstSummary) => {
+        const reason = validatePowerShellAst(summary);
+        return reason === null ? null : `PowerShell command blocked: ${reason}`;
+      };
+
+      it.each([
+        ["Get-ChildItem -Recurse dir", [command("Get-ChildItem", psParameter("Recurse"), psLiteral("dir"))]],
+        ["gci -r dir", [command("gci", psParameter("r"), psLiteral("dir"))]],
+        ["gci -s dir", [command("gci", psParameter("s"), psLiteral("dir"))]],
+        ["Get-ChildItem -Depth 2 dir", [command("Get-ChildItem", psParameter("Depth"), psLiteral("2"), psLiteral("dir"))]],
+        ["Copy-Item -Recurse:$true dir dest", [command("Copy-Item", psParameter("Recurse", psLiteral("true", "$true")), psLiteral("dir"), psLiteral("dest"))]],
+        ["Copy-Item -Recurse:$x dir dest", [command("Copy-Item", psParameter("Recurse", psDynamic("$x")), psLiteral("dir"), psLiteral("dest"))]],
+        ["gci -r dir | Select-String x", [command("gci", psParameter("r"), psLiteral("dir")), command("Select-String", psLiteral("x"))]],
+        ["robocopy dir dest /S", [command("robocopy", psLiteral("dir"), psLiteral("dest"), psLiteral("/S"))]],
+        ["tar -cf out.tar dir", [command("tar", psLiteral("-cf"), psLiteral("out.tar"), psLiteral("dir"))]],
+      ] as const)("refuses %s with the decision's reason", (_, commands) => {
+        const summary = ast([...commands]);
+        expect(refusal(summary)).toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
+        expect(findPowerShellAstPathViolation(summary, process.cwd(), process.cwd(), [], false))
+          .toEqual({ kind: "dynamic-path", reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL });
+      });
+
+      it("keeps a literal -Recurse:$false non-traversal", () => {
+        expect(validatePowerShellAst(ast([command("Copy-Item", psParameter("Recurse", psLiteral("false", "$false")), psLiteral("dir"), psLiteral("dest"))]))).toBeNull();
+        expect(validatePowerShellAst(ast([command("robocopy", psLiteral("dir"), psLiteral("dest"))]))).toBeNull();
+      });
     });
 
     describe("awaited host script command", () => {

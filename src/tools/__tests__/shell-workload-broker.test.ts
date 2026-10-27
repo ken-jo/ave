@@ -13,6 +13,7 @@ import {
   buildHostShellExecutionRoute,
   issueBrokeredToolExecutionGrant,
   issueExecutionGrant,
+  executionPlanPathPolicyRelaxations,
   type ExecutionGrant,
 } from "../../permissions/execution-router.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "../types.js";
@@ -121,7 +122,7 @@ function issueBrokerShellGrant(input: {
     background: input.background ?? false,
     brokeredWorkloadCapability: broker.capability as never,
   });
-  return { legacyPlan, grant: issueExecutionGrant(route.plan, { toolUseId: "tool-use-test", toolName: "bash" }) };
+  return { legacyPlan, grant: issueExecutionGrant(route.plan, { toolUseId: "tool-use-test", toolName: "bash", decidedPathPolicyRelaxations: executionPlanPathPolicyRelaxations(route.plan) }) };
 }
 
 function context(input: {

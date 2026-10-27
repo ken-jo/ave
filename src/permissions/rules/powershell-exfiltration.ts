@@ -17,6 +17,12 @@ import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
+import {
+  isDefinitePowerShellRecursion,
+  isPowerShellRecursionParameter,
+  type PowerShellTraversalArgument,
+  type PowerShellTraversalValue,
+} from "../../shared/powershell-recursive-traversal.js";
 
 class SharedPowerShellContext extends PowerShellAnalysisContext {
   readonly floor = new ShellFloorContext("powershell");
@@ -920,41 +926,84 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
 
 const POWERSHELL_KEYWORDS = new Set(["begin", "break", "catch", "continue", "data", "do", "dynamicparam", "else", "elseif", "end", "exit",
   "filter", "finally", "for", "foreach", "function", "if", "param", "process", "return", "switch", "throw", "trap", "try", "until", "while", "workflow"]);
-const RECURSE_PARAMETER = /^-(?:r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?|de(?:p(?:th?)?)?)(?::|$)/;
-const CHILD_ITEM_RECURSE_ALIAS = /^-s(?::|$)/;
-const NATIVE_RECURSE_SWITCH: Readonly<Record<string, RegExp>> = { robocopy: /^\/(?:s|e|mir)$/i, xcopy: /^\/[se]$/i, "findstr.exe": /^\/s$/i };
-const ARCHIVE_WALKERS = new Set(["tar", "unzip", "7z"]);
+// A parameter token, optionally colon-bound (`-Recurse:$x`, or `-Recurse: $x` with the value in the next token).
+const PARAMETER_TOKEN = /^-([A-Za-z_?][\w-]*)(:?)([\s\S]*)$/;
 
-function commandMayTraverse(pipeline: PsPipeline, stageIndex: number): boolean {
+function traversalValue(token: PsToken | undefined): PowerShellTraversalValue {
+  const value = token === undefined ? undefined : literalWordValue(token);
+  return value === undefined ? { kind: "dynamic" } : { kind: "literal", value };
+}
+
+function boundTraversalValue(token: PsWord, text: string): PowerShellTraversalValue {
+  if (token.nested.length > 0 || token.adjacent) return { kind: "dynamic" };
+  const constant = /^\$(true|false)$/i.exec(text);
+  if (constant !== null) return { kind: "literal", value: constant[1]!.toLowerCase() };
+  if (token.reason !== undefined) return { kind: "dynamic" };
+  const value = literalRuleWord(text, "powershell");
+  return value === undefined ? { kind: "dynamic" } : { kind: "literal", value };
+}
+
+function traversalArguments(tokens: readonly PsToken[]): PowerShellTraversalArgument[] {
+  const result: PowerShellTraversalArgument[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const match = token.kind === "word" && !token.quoted ? PARAMETER_TOKEN.exec(normalizeDashes(token.raw)) : null;
+    if (match === null) { result.push(traversalValue(token)); continue; }
+    const [, name, colon, rest] = match as unknown as [string, string, string, string];
+    if (colon === "") result.push({ kind: "parameter", name });
+    else if (rest === "") {
+      const next = tokens[++index];
+      result.push({ kind: "parameter", name, argument: next?.kind === "word" ? boundTraversalValue(next, next.raw) : traversalValue(next) });
+    }
+    else result.push({ kind: "parameter", name, argument: boundTraversalValue(token as PsWord, rest) });
+  }
+  return result;
+}
+
+interface TraversalStage { name: string | undefined; args: readonly PowerShellTraversalArgument[] }
+
+// null: an expression-mode element, which is a value; its nested bodies are walked separately.
+function traversalStage(pipeline: PsPipeline, stageIndex: number): TraversalStage | null {
   let tokens = pipeline.stages[stageIndex]!.tokens;
   if (stageIndex === 0 && (pipeline.assign.length > 0 || pipeline.key !== undefined)) {
     const operator = tokens.findIndex((token) => token.kind === "word" && !token.quoted && /^[+\-*/]?=$/.test(token.text));
     tokens = tokens.slice(operator >= 0 ? operator + 1 : 1);
   }
   const head = tokens[0];
-  // Expression-mode elements are values; their nested bodies are walked separately.
-  if (head === undefined || head.kind === "group" || head.quoted || /^[$@\[\d(-]/.test(head.text)) return false;
-  const argv = tokens.map(literalWordValue);
-  if (argv[0] === undefined) return true;
-  const name = canonicalName(argv[0]);
-  if (POWERSHELL_KEYWORDS.has(name)) return false;
-  const policy = POWERSHELL_COMMAND_POLICIES[name];
-  if (policy === undefined || policy.effects.includes("launcher") || ARCHIVE_WALKERS.has(name)) return true;
-  const options = argv.slice(1);
-  if (name === "get-childitem" && options.some((value) => value === undefined || CHILD_ITEM_RECURSE_ALIAS.test(optionName(value)))) return true;
-  const native = NATIVE_RECURSE_SWITCH[name];
-  return options.some((value) => value !== undefined && (RECURSE_PARAMETER.test(optionName(value)) || native?.test(value) === true));
+  if (head?.kind === "word" && !head.quoted && (head.text === "&" || head.text === ".")) {
+    const target = tokens[1] === undefined ? undefined : literalWordValue(tokens[1]);
+    return { name: target === undefined ? undefined : canonicalName(target), args: traversalArguments(tokens.slice(2)) };
+  }
+  // A digit-led word is a number unless it names a known command (`7z`).
+  if (head === undefined || head.kind === "group" || head.quoted || /^[$@\[(-]/.test(head.text)
+    || (/^\d/.test(head.text) && POWERSHELL_COMMAND_POLICIES[canonicalName(head.text)] === undefined)) return null;
+  const literal = literalWordValue(head);
+  const name = literal === undefined ? undefined : canonicalName(literal);
+  if (name !== undefined && POWERSHELL_KEYWORDS.has(name)) return null;
+  return { name, args: traversalArguments(tokens.slice(1)) };
 }
 
-/** True unless every PowerShell command element is known not to walk a tree; unparsed input counts as walking. */
-export function mayTraversePowerShellRecursively(input: PowerShellCommandInput): boolean {
-  const parsed = asPowerShellCommand(input);
-  if (parsed.analysisLimited || parsed.syntax.pipelines === null) return true;
-  const pending = [...parsed.syntax.pipelines];
+function stageDefinitelyTraverses(stage: TraversalStage): boolean {
+  return stage.name !== undefined && isDefinitePowerShellRecursion(stage.name, stage.args);
+}
+
+// Fail-closed: unknown, launcher and dynamic command names, and Get-ChildItem with any unresolved operand, may walk.
+function stageMayTraverse(stage: TraversalStage): boolean {
+  if (stage.name === undefined) return true;
+  const policy = POWERSHELL_COMMAND_POLICIES[stage.name];
+  if (policy === undefined || policy.effects.includes("launcher") || stageDefinitelyTraverses(stage)) return true;
+  if (stage.name === "get-childitem" && stage.args.some((argument) => argument.kind === "dynamic"
+    || (argument.kind === "parameter" && argument.argument?.kind === "dynamic"))) return true;
+  return stage.args.some((argument) => argument.kind === "parameter" && isPowerShellRecursionParameter(stage.name!, argument));
+}
+
+function someTraversalStage(parsed: ParsedPowerShellCommand, predicate: (stage: TraversalStage) => boolean): boolean {
+  const pending = [...parsed.syntax.pipelines!];
   while (pending.length > 0) {
     const pipeline = pending.pop()!;
     for (let stageIndex = 0; stageIndex < pipeline.stages.length; stageIndex += 1) {
-      if (commandMayTraverse(pipeline, stageIndex)) return true;
+      const stage = traversalStage(pipeline, stageIndex);
+      if (stage !== null && predicate(stage)) return true;
       for (const token of pipeline.stages[stageIndex]!.tokens) {
         if (token.kind === "group") pending.push(...token.body);
         else for (const body of token.nested) pending.push(...body);
@@ -962,4 +1011,18 @@ export function mayTraversePowerShellRecursively(input: PowerShellCommandInput):
     }
   }
   return false;
+}
+
+/** Definite: some command element certainly walks a tree (the host block's rule). Unparsed input is undecided, not definite. */
+export function definitelyTraversesPowerShellRecursively(input: PowerShellCommandInput): boolean {
+  const parsed = asPowerShellCommand(input);
+  if (parsed.analysisLimited || parsed.syntax.pipelines === null) return false;
+  return someTraversalStage(parsed, stageDefinitelyTraverses);
+}
+
+/** May: true unless every PowerShell command element is known not to walk a tree; unparsed input counts as walking. */
+export function mayTraversePowerShellRecursively(input: PowerShellCommandInput): boolean {
+  const parsed = asPowerShellCommand(input);
+  if (parsed.analysisLimited || parsed.syntax.pipelines === null) return true;
+  return someTraversalStage(parsed, stageMayTraverse);
 }

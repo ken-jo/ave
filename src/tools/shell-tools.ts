@@ -46,6 +46,13 @@ import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } fro
 import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import {
+  isDefinitePowerShellRecursion,
+  isPowerShellParameterPrefix,
+  isPowerShellRecursionParameter,
+  isPowerShellSwitchEnabled,
+  POWERSHELL_RECURSIVE_TRAVERSAL_REASON,
+} from "../shared/powershell-recursive-traversal.js";
 import { getPolicyHome } from "../shared/policy-home.js";
 import { hostPathForShellPath } from "../lib/shell-resolver.js";
 import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
@@ -3323,7 +3330,7 @@ export function validatePowerShellAstStructure(ast: PowerShellAstSummary): strin
     if (parameters.some((parameter) => ENCODED_COMMAND_FLAGS.has("-" + parameter.name.toLowerCase()))) {
       return "encoded commands are not allowed";
     }
-    if (REMOVE_ITEM_COMMANDS.has(name) && parameters.some((parameter) => isPowerShellRecursion(name, parameter))
+    if (REMOVE_ITEM_COMMANDS.has(name) && parameters.some((parameter) => isPowerShellRecursionParameter(name, parameter))
       && parameters.some(isPowerShellForce)) {
       return "recursive forced deletion is not allowed";
     }
@@ -3337,11 +3344,8 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
   if (structural) return structural;
   for (const command of ast.commands) {
     const name = canonicalPowerShellCommandName(command.name?.trim().toLowerCase() ?? "");
+    if (isDefinitePowerShellRecursion(name, command.arguments.slice(1))) return POWERSHELL_RECURSIVE_TRAVERSAL_REASON;
     if (!FILESYSTEM_COMMANDS.has(name)) continue;
-    const parameters = command.arguments.filter((argument) => argument.kind === "parameter");
-    if (parameters.some((parameter) => isPowerShellRecursion(name, parameter))) {
-      return "recursive shell filesystem traversal is not allowed";
-    }
     const dynamic = command.arguments.slice(1).find((argument) => argument.kind === "dynamic"
       || (argument.kind === "parameter" && argument.argument?.kind === "dynamic"));
     if (dynamic) return `dynamic path argument is not allowed: ${dynamic.text}`;
@@ -3355,27 +3359,9 @@ function canonicalPowerShellCommandName(name: string): string {
 
 type PowerShellParameter = Extract<PowerShellArgument, { kind: "parameter" }>;
 
-// PowerShell binds any unambiguous name prefix; an ambiguous one fails to bind, so matching it only over-blocks.
-function isPowerShellParameterPrefix(parameter: PowerShellParameter, name: string, minimum = 1): boolean {
-  const spelled = parameter.name.toLowerCase();
-  return spelled.length >= minimum && name.startsWith(spelled);
-}
-
-// -Depth implies -Recurse whatever its value; Get-ChildItem also aliases Recurse as -s.
-function isPowerShellRecursion(command: string, parameter: PowerShellParameter): boolean {
-  if (isPowerShellParameterPrefix(parameter, "depth")) return true;
-  const recurse = isPowerShellParameterPrefix(parameter, "recurse")
-    || (command === "get-childitem" && parameter.name.toLowerCase() === "s");
-  return recurse && isPowerShellSwitchEnabled(parameter);
-}
-
 // -f is ambiguous with -Filter on Remove-Item.
 function isPowerShellForce(parameter: PowerShellParameter): boolean {
   return isPowerShellParameterPrefix(parameter, "force", 2) && isPowerShellSwitchEnabled(parameter);
-}
-
-function isPowerShellSwitchEnabled(parameter: PowerShellParameter): boolean {
-  return parameter.argument === undefined || parameter.argument.kind !== "literal" || parameter.argument.value.toLowerCase() !== "false";
 }
 
 export function findPowerShellAstPathViolation(

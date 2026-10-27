@@ -23,7 +23,9 @@ import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation 
 import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
-import { inspectPowerShellCommand, mayTraversePowerShellRecursively, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { definitelyTraversesPowerShellRecursively, inspectPowerShellCommand, mayTraversePowerShellRecursively, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL } from "../shared/powershell-recursive-traversal.js";
+import type { DisposablePathPolicyRelaxation } from "./execution-router.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
@@ -228,8 +230,8 @@ export interface PermissionCheckContext {
   ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string } | ScopedRuleSubject;
   // project whose per-project rule file applies. The caller must have awaited PermissionManager.ensureProjectRulesLoaded for it.
   projectRulesCwd?: string;
-  // Host-only per-invocation route; a missing shell route is plain (no sandbox).
-  shellExecution?: { runsSandboxed: boolean };
+  // Host-only per-invocation route; a missing shell route is plain (no sandbox). pathPolicyRelaxations comes from the selected execution plan (executionPlanPathPolicyRelaxations); missing means none.
+  shellExecution?: { runsSandboxed: boolean; pathPolicyRelaxations?: readonly DisposablePathPolicyRelaxation[] };
   // Conversation the invocation belongs to: selects its "This session" shell rules (`addSessionRule`).
   sessionId?: string;
   // Host-detected corruption of the exact-approval store (Store B) for this invocation, naming the file. Treated like a corrupt rule file: non-read calls ask with this reason; reads keep the normal matrix.
@@ -1278,6 +1280,17 @@ export class PermissionManager {
     const parsedPowerShellSubject = shellInput !== undefined && shellDialect === "powershell"
       ? boundPowerShell ?? parsePowerShellCommand(shellInput) : undefined;
     if (parsedPowerShellSubject?.analysisLimited) return closeShellAnalysis();
+    // The host PowerShell block refuses definite recursion on every route that does not relax dynamic paths; decide it up front.
+    if (parsedPowerShellSubject !== undefined
+      && !(context.shellExecution?.pathPolicyRelaxations ?? []).includes("dynamic-path")
+      && definitelyTraversesPowerShellRecursively(parsedPowerShellSubject)) {
+      return {
+        decision: "deny",
+        reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL,
+        layer: 0,
+        denyReasons: [{ layer: 0, reason: "shell-path-policy", source: "directory-policy" }],
+      };
+    }
     const trust = this.resolveTrust(toolName, source);
     // Strict patterns, owned by `shared/staged-origins.ts` — the same table the send gate, the stream derivation, and the model-facing guidance read. Loose `startsWith` would accept malformed values like "overlay:Bad/Path" or "app:" that no upstream gate emits but a future hand-injected codepath might; fail-closed on malformed input. THIS is the one enforcement site — grep `isStagedTurnSource` to find it.
     const isOverlayTrigger = isStagedTurnSource(overlayTriggerOrigin ?? null);
@@ -1494,7 +1507,7 @@ export class PermissionManager {
     const plainShell = ruleSubject !== undefined && !shellExecution.runsSandboxed;
     // Actual confinement, not a remembered approval, opens the automatic shell lane.
     if (ruleSubject && shellExecution.runsSandboxed) {
-      // The MXC link-traversal itest decides whether container reads through links are confined.
+      // The MXC link-traversal itest decides whether container reads through links are confined. Definite PowerShell recursion was denied above; this asks for the undecidable remainder.
       if (context.hostShellExecutionPlan?.substrate === "mxc" && (ruleSubject.dialect === "powershell"
         ? mayTraversePowerShellRecursively(parsedPowerShellSubject!)
         : shellShape === undefined || !shellShape.ok || shellShape.commands.some((command) => mayTraverseRecursively(command.argv)))) {

@@ -1277,6 +1277,52 @@ satisfy dynamic, recursive and guest path-boundary uncertainty, but it retains
 the host shell grammar, structural and sensitive-path checks before spawning in
 that already-confined process.
 
+#### Recursive PowerShell traversal
+
+Two classifiers answer different questions about PowerShell traversal:
+
+- **Definite** ([powershell-recursive-traversal.ts](../../src/shared/powershell-recursive-traversal.ts)):
+  the command certainly walks a tree. It covers:
+  - a `-Recurse` or `-Depth` name prefix on a filesystem cmdlet that takes one.
+    A colon-bound dynamic value counts as enabled; only a literal false does
+    not;
+  - Get-ChildItem's `-s`;
+  - the robocopy/xcopy/findstr recursive switches;
+  - archive walkers.
+
+  The host PowerShell block (`validatePowerShellAst`, including the Remove-Item
+  recursive-and-forced check) and the permission decision both import it.
+- **May** (`mayTraversePowerShellRecursively`): a fail-closed superset.
+  Unknown, launcher and dynamic command names, unresolved Get-ChildItem
+  operands and unparsed input count as walking. Only the permission decision
+  uses it, and only on the MXC route, where it keeps the forced modal ask for
+  the undecidable remainder. It is never a host-block rule.
+
+Definite recursion is refused on every host route: MXC, ASRT, the pinned or
+explicitly approved host shell, and the Windows plain child. The only exception
+is the disposable container, whose grant relaxes `dynamic-path`. The reason is
+that the host block is the final layer before spawn. The MXC link-traversal
+measurement (T6) covered only non-recursive reads through links inside MXC. The
+permission decision therefore denies definite recursion up front, at layer 0
+with the host block's exact refusal text, wherever the selected route does not
+relax `dynamic-path`. A user never sees an ask that execution then refuses.
+
+Enabling recursive PowerShell on MXC later would need two things. First, a
+container-layer measurement of the recursive forms through junctions and
+directory links. Second, a deliberate change to the host block. The decision
+follows the shared classifier and the route fact, so it needs no separate edit.
+
+The route fact is one value. `executionPlanPathPolicyRelaxations(plan)` derives
+the relaxations a grant for the selected plan would carry. The executor passes
+that value for the plan it selected before authorization as
+`shellExecution.pathPolicyRelaxations`; an absent value means none. Grant
+issuance recomputes it from the final, possibly rebuilt plan. If it differs
+from what the decision saw, issuance refuses with an internal-contract error,
+so nothing runs under a decision made for another route. Consumption compares
+the grant's relaxations with the same function and fails closed on a mismatch.
+A rebuild from host to `analysis-required` keeps the empty set and is
+unaffected.
+
 The host-native broker route has a different boundary. The controller cannot
 open the workload filesystem directly, and the workload is created without
 host binds, devices, Compose secrets/configs, added Linux capabilities or

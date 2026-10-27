@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PermissionManager } from "../permission-manager.js";
+import { POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL } from "../../shared/powershell-recursive-traversal.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -17,6 +22,7 @@ import {
   buildExecutionPlan,
   consumeExecutionGrantForBuiltinToolInvocation,
   consumeExecutionGrantForShellInvocation,
+  disposableGrantRelaxesPathPolicy,
   executionRouteForHostShellPlan,
   getExecutionPlanAuditProjection,
   isIssuedExecutionCapability,
@@ -26,6 +32,9 @@ import {
   issueBrokeredToolExecutionGrant,
   issueExecutionCapability,
   issueExecutionGrant,
+  executionPlanPathPolicyRelaxations,
+  assertDecidedPathPolicyRelaxations,
+  PATH_POLICY_DECISION_MISMATCH_ERROR,
   type ExecutionCapability,
   type ExecutionPlan,
   type ExecutionRoute,
@@ -115,6 +124,11 @@ function capability(
   generation = getSandboxGeneration(),
 ) {
   return issueExecutionCapability({ generation, availableRoutes: routes });
+}
+
+// The runner passes the relaxations its permission decision saw for the same plan.
+function issueDecidedGrant(plan: ExecutionPlan, binding: { toolUseId: string; toolName: "bash" | "powershell" }) {
+  return issueExecutionGrant(plan, { ...binding, decidedPathPolicyRelaxations: executionPlanPathPolicyRelaxations(plan) });
 }
 
 function resetSandbox(): void {
@@ -412,7 +426,7 @@ describe("execution router", () => {
   it("relaxes sensitive paths only for workload-broker shell authority", () => {
     const brokeredWorkloadCapability = issuedBrokeredWorkloadCapability();
     const brokerLegacyPlan = issuedPlain();
-    const brokerGrant = issueExecutionGrant(buildHostShellExecutionRoute({
+    const brokerGrant = issueDecidedGrant(buildHostShellExecutionRoute({
       legacyPlan: brokerLegacyPlan,
       toolName: "bash",
       command: "cat /etc/hosts",
@@ -433,7 +447,7 @@ describe("execution router", () => {
 
     const operatorCapability = issuedDisposableCapability();
     const operatorLegacyPlan = issuedPlain();
-    const operatorGrant = issueExecutionGrant(buildHostShellExecutionRoute({
+    const operatorGrant = issueDecidedGrant(buildHostShellExecutionRoute({
       legacyPlan: operatorLegacyPlan,
       toolName: "bash",
       command: "find . -type f",
@@ -460,7 +474,7 @@ describe("execution router", () => {
   it("returns the exact branded workload capability when consuming a broker shell grant", () => {
     const brokeredWorkloadCapability = issuedBrokeredWorkloadCapability();
     const legacyPlan = issuedPlain();
-    const grant = issueExecutionGrant(buildHostShellExecutionRoute({
+    const grant = issueDecidedGrant(buildHostShellExecutionRoute({
       legacyPlan,
       toolName: "bash",
       command: "printf ok",
@@ -573,7 +587,7 @@ describe("execution router", () => {
   it("consumes a disposable grant once and binds it to the exact live shell action", () => {
     const disposableCapability = issuedDisposableCapability();
     const legacyPlan = issuedPlain();
-    const makeGrant = () => issueExecutionGrant(buildHostShellExecutionRoute({
+    const makeGrant = () => issueDecidedGrant(buildHostShellExecutionRoute({
       legacyPlan,
       toolName: "bash",
       command: "find . -type f",
@@ -647,11 +661,11 @@ describe("execution router", () => {
       ...routeInput,
       disposableRevalidationLease: lease,
     });
-    expect(issueExecutionGrant(route.plan, {
+    expect(issueDecidedGrant(route.plan, {
       toolUseId: "lease-first-use",
       toolName: "bash",
     })).toMatchObject({ disposableAuthority: "operator-container" });
-    expect(() => issueExecutionGrant(route.plan, {
+    expect(() => issueDecidedGrant(route.plan, {
       toolUseId: "lease-replay",
       toolName: "bash",
     })).toThrow("no fresh revalidation lease");
@@ -666,7 +680,7 @@ describe("execution router", () => {
       legacyPlan: issuedPlain(),
       disposableRevalidationLease: forgedLease,
     });
-    expect(() => issueExecutionGrant(forgedRoute.plan, {
+    expect(() => issueDecidedGrant(forgedRoute.plan, {
       toolUseId: "lease-forged",
       toolName: "bash",
     })).toThrow("no fresh revalidation lease");
@@ -684,7 +698,7 @@ describe("execution router", () => {
       disposableCapability,
     });
     operatorCapabilities.current = null;
-    expect(() => issueExecutionGrant(route.plan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("capability is stale");
+    expect(() => issueDecidedGrant(route.plan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("capability is stale");
   });
 
   it("preserves an explicit host request as approval-required even when analysis is uncertain", () => {
@@ -725,7 +739,7 @@ describe("execution router", () => {
     expect(isIssuedExecutionPlan(plan)).toBe(true);
     expect(isIssuedExecutionPlan(forgedPlan)).toBe(false);
     expect(() => getExecutionPlanAuditProjection(forgedPlan)).toThrow("plan was not issued");
-    expect(() => issueExecutionGrant(forgedPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("plan was not issued");
+    expect(() => issueDecidedGrant(forgedPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("plan was not issued");
   });
 
   it("keeps identities stable and invalidates them when effects or capability generations change", () => {
@@ -749,7 +763,7 @@ describe("execution router", () => {
     expect(first.identity).toBe(same.identity);
     expect(first.identity).not.toBe(changedRequest.identity);
 
-    const grant = issueExecutionGrant(first, { toolUseId: "tool-use-test", toolName: "bash" });
+    const grant = issueDecidedGrant(first, { toolUseId: "tool-use-test", toolName: "bash" });
     expect(isIssuedExecutionGrant(grant)).toBe(true);
     expect(Object.isFrozen(grant)).toBe(true);
 
@@ -763,7 +777,7 @@ describe("execution router", () => {
       capability: nextCapability,
     });
     expect(first.identity).not.toBe(changedGeneration.identity);
-    expect(() => issueExecutionGrant(first, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("generation is stale");
+    expect(() => issueDecidedGrant(first, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("generation is stale");
   });
 
   it("binds an issued legacy plan to its capability generation", () => {
@@ -796,7 +810,7 @@ describe("execution router", () => {
     });
     expect(projection.capabilityGeneration).toBe(issuedGeneration);
     expect(projection.capabilityGeneration).not.toBe(replacementGeneration);
-    expect(() => issueExecutionGrant(issuedPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("generation is stale");
+    expect(() => issueDecidedGrant(issuedPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("generation is stale");
   });
 
   it("does not issue a grant for approval, analysis, or blocked decisions", () => {
@@ -807,7 +821,7 @@ describe("execution router", () => {
       capability: capability(["host"], getSandboxGeneration()),
     });
     expect(approvalPlan.decision).toBe("approval-required");
-    expect(() => issueExecutionGrant(approvalPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("requires another decision");
+    expect(() => issueDecidedGrant(approvalPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("requires another decision");
   });
 
   it("selects the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
@@ -923,5 +937,71 @@ describe("execution router", () => {
       }],
     };
     expect(validatePowerShellAstStructure(structural)).toContain("Invoke-Expression");
+  });
+  describe("path-policy relaxations shared by the decision and the grant", () => {
+    const route = (legacyPlan: ReturnType<typeof issuedPlain>, extra: Partial<Parameters<typeof buildHostShellExecutionRoute>[0]> = {}) =>
+      buildHostShellExecutionRoute({
+        legacyPlan, toolName: "powershell", command: "gci -r dir", cwd: "/workspace", timeoutSeconds: 120, background: false, ...extra,
+      });
+
+    it("refuses a grant when a rebuild changed the relaxations the decision saw", () => {
+      const legacyPlan = issuedPlain();
+      const decided = executionPlanPathPolicyRelaxations(route(legacyPlan).plan);
+      expect(decided).toEqual([]);
+      const operatorCapability = issuedDisposableCapability();
+      const rebuilt = route(legacyPlan, {
+        disposableCapability: operatorCapability,
+        disposableRevalidationLease: revalidationLease(operatorCapability),
+      }).plan;
+      expect(rebuilt.route).toBe("disposable-container");
+      expect(() => issueExecutionGrant(rebuilt, { toolUseId: "tool-use-test", toolName: "powershell", decidedPathPolicyRelaxations: decided }))
+        .toThrow(PATH_POLICY_DECISION_MISMATCH_ERROR);
+    });
+
+    it("keeps the host to analysis-required rebuild", () => {
+      const legacyPlan = issuedPlain();
+      const decided = executionPlanPathPolicyRelaxations(route(legacyPlan).plan);
+      const rebuilt = route(legacyPlan, { unresolvedRequirementKind: "dynamic-path" }).plan;
+      expect(rebuilt).toMatchObject({ decision: "analysis-required", route: null });
+      expect(() => assertDecidedPathPolicyRelaxations(rebuilt, decided)).not.toThrow();
+    });
+
+    it("lets the disposable container run what the host block refuses, in both layers", () => {
+      const root = mkdtempSync(join(tmpdir(), "execution-router-decision-"));
+      try {
+        const operatorCapability = issuedDisposableCapability();
+        const legacyPlan = issuedPlain();
+        const plan = route(legacyPlan, {
+          disposableCapability: operatorCapability,
+          disposableRevalidationLease: revalidationLease(operatorCapability),
+        }).plan;
+        const pathPolicyRelaxations = executionPlanPathPolicyRelaxations(plan);
+        const decide = (relaxations: typeof pathPolicyRelaxations) => new PermissionManager(join(root, "permissions.json"))
+          .checkDetailed("powershell", "builtin", "shell", null, {
+            ruleSubject: { kind: "shell", dialect: "powershell", command: "gci -r dir", cwd: root },
+            hostShellExecutionPlan: legacyPlan,
+            shellExecution: { runsSandboxed: legacyPlan.sandboxed, pathPolicyRelaxations: relaxations },
+          });
+        expect(decide(pathPolicyRelaxations).reason).not.toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
+        expect(decide([])).toMatchObject({ decision: "deny", reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL, layer: 0 });
+
+        const grant = issueExecutionGrant(plan, { toolUseId: "tool-use-test", toolName: "powershell", decidedPathPolicyRelaxations: pathPolicyRelaxations });
+        const consumed = consumeExecutionGrantForShellInvocation({
+          grant, legacyPlan, toolName: "powershell", command: "gci -r dir", cwd: "/workspace", timeoutSeconds: 120, background: false,
+        });
+        const violation = findPowerShellAstPathViolation({
+          errors: [], unsupported: [], redirections: [],
+          commands: [{ name: "gci", text: "gci -r dir", arguments: [
+            { kind: "literal", text: "gci", value: "gci" },
+            { kind: "parameter", text: "-r", name: "r" },
+            { kind: "literal", text: "dir", value: "dir" },
+          ] }],
+        }, root, root, [], false);
+        expect(violation).toEqual({ kind: "dynamic-path", reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL });
+        expect(disposableGrantRelaxesPathPolicy(consumed, violation!.kind)).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });
