@@ -4,7 +4,7 @@ export const ALERT_FIXTURE_MANIFEST = {
   version: "1.0.0",
   description: "Declared alerts for Settings and delivery checks.",
   entry: "dist/hostPlugin.js",
-  requires: { minAppVersion: "0.12.0", hostProtocol: "3" },
+  requires: { minAppVersion: "0.12.0", hostProtocol: "4" },
   tools: [{
     name: "alert_fixture_raise",
     description: "Raise a declared fixture alert.",

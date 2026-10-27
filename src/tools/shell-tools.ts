@@ -19,12 +19,12 @@ import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-p
  * Copyright (c) 2025 OpenHarness Contributors
  */
 
-import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessByStdio, type SpawnOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "../permissions/srt-win-integrity.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve, win32 as win32Path } from "node:path";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 
@@ -54,6 +54,10 @@ import {
 } from "./shell-path-policy.js";
 export type { PowerShellAstSummary } from "./powershell-ast.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import { preparePowerShellLaunch, retainPowerShellLaunchUntilExit } from "./powershell-launch.js";
+import { createPowerShellParserResponse } from "./powershell-parser-response.js";
+import { resolveTrustedPowerShellExecutable } from "../shared/powershell-executable.js";
+import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../shared/powershell-startup-policy.js";
 import {
   validateShellWorkingDirectory,
 } from "./shell-path-policy.js";
@@ -118,6 +122,7 @@ import {
 } from "../workload/protocol.js";
 
 type PipedChild = ChildProcessByStdio<null, Readable, Readable>;
+type ManagedPowerShellChild = ChildProcessByStdio<Writable | null, Readable, Readable>;
 
 // Output-formatting contract shared verbatim by both shell dialects.
 const OUTPUT_CAP = 12_000;
@@ -2787,8 +2792,8 @@ export function createBashKillTool(
  * Native PowerShell tool.
  *
  * This is a distinct shell surface, not a bash alias. The executable is
- * deterministic per platform: Windows uses `powershell.exe`; other platforms
- * use `pwsh`. Missing executables are reported as tool errors.
+ * selected only from a verified absolute installation. Missing or writable
+ * installations are refused before the parser or caller source can start.
  */
 type PowerShellParser = (command: string) => Promise<PowerShellAstSummary>;
 
@@ -2974,12 +2979,55 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     }
     if (
       !disposableExecution &&
-      requiresExplicitHostShellApproval(hostShellPlan) &&
+      requiresExplicitHostShellApproval(hostShellPlan, "powershell") &&
       !ctx.hostShellExecutionPermit
     ) {
       return { output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit.", isError: true, metadata: { sandboxed: false, isolation: "none" } };
     }
-    const commandAst = await parsePowerShellAst(input.command);
+    let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
+    const authorizeHostSpawn = (): void => {
+      if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan, "powershell")) {
+        const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
+          permit: ctx.hostShellExecutionPermit,
+          plan: hostShellPlan,
+          toolName: "powershell",
+          toolUseId:
+            typeof ctx.metadata.toolUseId === "string"
+              ? ctx.metadata.toolUseId
+              : undefined,
+          command: input.command,
+          requestedCwd: input.cwd,
+          executionCwd: ctx.cwd,
+          resolvedCwd,
+          timeoutSeconds: input.timeoutSeconds,
+          executionMode: input.executionMode ?? "default",
+          justification: input.justification,
+          runInBackground: input.run_in_background ?? false,
+          allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+        });
+        if (spawnAuthorization === undefined) {
+          throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+        }
+        hostSpawnAuthorization = spawnAuthorization;
+      }
+
+    };
+    if (!isPowerShellStartupPinned()) {
+      try { authorizeHostSpawn(); } catch (error) {
+        return { output: `PowerShell spawn failed: ${(error as Error).message}`, isError: true, metadata: { sandboxed: false, isolation: "none" } };
+      }
+    }
+    let commandAst: PowerShellAstSummary;
+    try {
+      const parsed = hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc"
+        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds)
+        : await parsePowerShellAst(input.command, isPowerShellStartupPinned() || hostSpawnAuthorization !== undefined);
+      if ("failure" in parsed) return parsed.failure;
+      commandAst = parsed;
+    } catch (error) {
+      return { output: `PowerShell parser failed: ${(error as Error).message}`, isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+    }
     const structuralViolation = validatePowerShellAstStructure(commandAst);
     if (structuralViolation !== null) {
       return { output: `PowerShell command blocked: ${structuralViolation}`, isError: true };
@@ -3001,37 +3049,13 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     // Its opaque permit exists only after an allow-once approval (or, for an
     // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
-    let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
-    if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
-      const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
-        permit: ctx.hostShellExecutionPermit,
-        plan: hostShellPlan,
-        toolName: "powershell",
-        toolUseId:
-          typeof ctx.metadata.toolUseId === "string"
-            ? ctx.metadata.toolUseId
-            : undefined,
-        command: input.command,
-        requestedCwd: input.cwd,
-        executionCwd: ctx.cwd,
-        resolvedCwd,
-        timeoutSeconds: input.timeoutSeconds,
-        executionMode: input.executionMode ?? "default",
-        justification: input.justification,
-        runInBackground: input.run_in_background ?? false,
-        allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
-      });
-      if (spawnAuthorization === undefined) {
-        return {
-          output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`,
-          isError: true,
-          metadata: { sandboxed: false, isolation: "none" },
-        };
+    // A pinned parser precedes permit consumption. An unpinned host parser may
+    // start only after the exact one-shot authority was verified and consumed.
+    if (isPowerShellStartupPinned()) {
+      try { authorizeHostSpawn(); } catch (error) {
+        return { output: `PowerShell spawn failed: ${(error as Error).message}`, isError: true, metadata: { sandboxed: false, isolation: "none" } };
       }
-      hostSpawnAuthorization = spawnAuthorization;
     }
-    // Native AST admission above also covers direct callers. It precedes the
-    // one-shot permit consumption, so a refused command never spends approval.
     if (!disposableExecution && hostShellPlan.mode === "blocked") {
       return {
         output:
@@ -3217,35 +3241,44 @@ export async function findPowerShellCommandPathViolation(
   return findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories);
 }
 
-/**
- * Resolve the PowerShell executable for the host.
- *
- * Off-Windows: `pwsh` (PowerShell 7 — the only flavor that exists there).
- *
- * Windows: prefer the standard ProgramFiles/PowerShell/7 installation, otherwise
- * use WindowsPowerShell/v1.0 under System32. Portable and PATH installations are
- * not searched: parser, direct execution and the sandbox shell descriptor must
- * select the same absolute image.
- */
+/** Parser and execution select the same verified absolute installation image. */
 export function resolvePowerShellExecutable(): string {
-  if (process.platform !== "win32") return "pwsh";
-  const systemShell = win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe");
-  const programFiles = process.env.ProgramFiles ?? process.env.PROGRAMFILES;
-  if (programFiles !== undefined) {
-    const root = windowsSystemRoot({ SystemRoot: programFiles });
-    const installedShell = win32Path.join(root, "PowerShell", "7", "pwsh.exe");
-    if (existsSync(installedShell)) return installedShell;
-  }
-  return systemShell;
+  const installation = resolveTrustedPowerShellExecutable();
+  if (installation === null) throw new Error("Trusted PowerShell installation is unavailable");
+  return installation.executable;
 }
 
-async function parsePowerShellAst(command: string): Promise<PowerShellAstSummary> {
+async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolExecutionContext, timeoutSeconds: number): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
+  // Only AST input is embedded; decoding never executes the supplied source.
+  const input = Buffer.from(command, "utf8").toString("base64");
+  const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
+  const writePaths = deriveSandboxWritePaths({
+    ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
+    allowedDirectories: [cwd, ...ctx.extraAllowedDirectories],
+  });
+  const response = createPowerShellParserResponse();
+  const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
+    typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response);
+  if (result.isError) return { failure: result };
+  return normalizePowerShellAstSummary(JSON.parse(response.read()));
+}
+
+function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }): ManagedPowerShellChild {
+  const launch = preparePowerShellLaunch(command, options.env);
+  try {
+    const child = spawn(executable, launch.args, { ...options, env: launch.env }) as ManagedPowerShellChild;
+    retainPowerShellLaunchUntilExit(launch, child);
+    return child;
+  } catch (error) { launch.cleanup(); throw error; }
+}
+
+async function parsePowerShellAst(command: string, authorized = false): Promise<PowerShellAstSummary> {
+  if (!isPowerShellStartupPinned() && !authorized) throw new Error(POWERSHELL_STARTUP_UNPROVEN_REASON);
   return new Promise<PowerShellAstSummary>((resolve, reject) => {
     const executable = resolvePowerShellExecutable();
     assertManagedChildProcessAdmissionOpen("tool:powershell-parser");
-    const parser = spawn(
-      executable,
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWER_SHELL_AST_PARSER],
+    const parser = spawnManagedPowerShell(
+      executable, POWER_SHELL_AST_PARSER,
       {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
@@ -3253,9 +3286,9 @@ async function parsePowerShellAst(command: string): Promise<PowerShellAstSummary
       },
     );
     trackManagedChildProcess(parser, { label: "tool:powershell-parser" });
-    const stdout: Buffer[] = [];
+    const response = createPowerShellParserResponse();
     const stderr: Buffer[] = [];
-    parser.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    parser.stdout.on("data", response.collect);
     parser.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     parser.on("error", (err) => {
       const message = err && "code" in err && err.code === "ENOENT"
@@ -3269,12 +3302,12 @@ async function parsePowerShellAst(command: string): Promise<PowerShellAstSummary
         return;
       }
       try {
-        resolve(normalizePowerShellAstSummary(JSON.parse(Buffer.concat(stdout).toString("utf-8"))));
+        resolve(normalizePowerShellAstSummary(JSON.parse(response.read())));
       } catch (err) {
         reject(new Error(`PowerShell parser returned invalid JSON: ${(err as Error).message}`));
       }
     });
-    parser.stdin.end(command);
+    parser.stdin!.end(command);
   }).catch((err) => ({
     errors: [(err as Error).message],
     commands: [], redirections: [], unsupported: [],
@@ -3338,21 +3371,13 @@ async function spawnPowerShellWithSandbox(
     };
   }
   const isWindows = process.platform === "win32";
-  // Windows receives the command separately from the shell descriptor. Other
-  // hosts render the invocation into the enclosing POSIX shell command.
-  const sandboxCommand = isWindows
-    ? command
-    : [
-        executable,
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        posixSingleQuote(command),
-      ].join(" ");
+  let powerShellLaunch: ReturnType<typeof preparePowerShellLaunch>;
+  try { powerShellLaunch = preparePowerShellLaunch(command, buildSafeChildEnv({ ...sandboxHome.env }), sandboxHome); }
+  catch (error) { sandboxHome.cleanup(); throw error; }
+  const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
+    : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
   const binShell = isWindows
-    ? { exe: executable, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"] }
-    : undefined;
+    ? { exe: executable, args: powerShellLaunch.args.slice(0, -1) } : undefined;
 
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
@@ -3421,7 +3446,9 @@ async function spawnPowerShellWithSandbox(
   // allow-listed proxy/CA/SANDBOX_RUNTIME keys ASRT set/changed — so on win32
   // the proxy set is propagated (the "spread") and on mac/linux nothing extra
   // leaks (ASRT changed nothing in process.env). Secrets stay stripped on both.
-  const childEnv = buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env });
+  const childEnv = buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
+    XDG_CONFIG_HOME: powerShellLaunch.env.XDG_CONFIG_HOME!, PSModulePath: powerShellLaunch.env.PSModulePath!,
+  });
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
@@ -3543,9 +3570,20 @@ async function spawnPowerShellInMxc(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   toolUseId?: string,
+  parserResponse?: ReturnType<typeof createPowerShellParserResponse>,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   const systemRoot = windowsSystemRoot();
+  const installation = resolveTrustedPowerShellExecutable();
+  const systemExecutable = win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe");
+  if (installation === null || installation.kind !== "windows-powershell"
+    || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
+    return {
+      output: "PowerShell spawn failed: trusted system installation is unavailable",
+      isError: true,
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+    };
+  }
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
   try {
     sandboxHome = createSandboxProcessHome();
@@ -3556,6 +3594,7 @@ async function spawnPowerShellInMxc(
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
+  const powerShellLaunch = preparePowerShellLaunch(command, buildSafeChildEnv({ ...sandboxHome.env }), sandboxHome);
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], hostHome, sandboxHome.path);
@@ -3574,7 +3613,7 @@ async function spawnPowerShellInMxc(
     const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
     launch = await prepareMxcShellLaunch({
       egressToken: egress.token,
-      commandLine: powerShellMxcCommandLine(systemRoot, command),
+      commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!),
       cwd,
       filesystem: {
         allowWrite: mandatory.allowWrite,
@@ -3586,7 +3625,7 @@ async function spawnPowerShellInMxc(
         ])],
         floorPierces,
       },
-      env: buildSafeChildEnv({ ...sandboxHome.env }),
+      env: powerShellLaunch.env,
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
     });
@@ -3636,7 +3675,7 @@ async function spawnPowerShellInMxc(
     trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
-    child.stdout.on("data", outputCollector.collect);
+    child.stdout.on("data", parserResponse === undefined ? outputCollector.collect : parserResponse.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
@@ -3714,9 +3753,8 @@ async function spawnPowerShell(
   const launch = (): Promise<ToolExecutionResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:powershell");
-    const child = spawn(
-      executable,
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", (prelude ?? "") + command],
+    const child = spawnManagedPowerShell(
+      executable, (prelude ?? "") + command,
       {
         windowsHide: true,
         detached: process.platform !== "win32",

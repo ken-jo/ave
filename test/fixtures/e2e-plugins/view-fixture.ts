@@ -13,7 +13,7 @@ const VIEW_FIXTURE_MANIFEST = {
   version: "1.0.0",
   description: "In-repository plugin with one sidebar view and one tool, for local UI verification.",
   entry: "dist/hostPlugin.js",
-  requires: { minAppVersion: "0.12.0", hostProtocol: "3" },
+  requires: { minAppVersion: "0.12.0", hostProtocol: "4" },
   tools: [{
     name: VIEW_FIXTURE_TOOL,
     description: "Return a marker that proves the host dispatched this call into the plugin.",

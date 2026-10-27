@@ -209,7 +209,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "approve",
         h: "승인",
         blocks: [
-          { p: "승인 요청은 화면 아래 독에 나타나고 대화를 가리지 않습니다. 버튼은 거절, 한 번만 허용, 항상 허용입니다. 항상 허용은 정확히 그 도구, 그 입력, 그 작업 폴더에만 묶입니다. 대상 이름에 와일드카드가 들어 있으면 규칙을 저장하지 않고 한 번만 허용을 권합니다." },
+          { p: "승인 요청은 화면 아래 독에 나타나고 대화를 가리지 않습니다. 버튼은 거부▾(항상 거부), 이번 세션 동안 허용▾(이 프로젝트에서 항상 허용 / 모든 곳에서 항상 허용), 한 번만 허용입니다. 셸·네트워크 카드에서는 기억하는 선택을 고르면 저장할 규칙과 규칙 편집 버튼이 나타납니다. 셸 명령은 그 명령의 정확한 Bash/PowerShell 규칙으로, 다른 도구는 정확히 그 도구와 그 입력으로 기억합니다. 이 프로젝트에서 항상 허용은 그 작업 폴더에, 모든 곳에서 항상 허용은 모든 프로젝트에 적용되며, 어디서든 저장한 거부가 허용보다 우선합니다. 대상 이름에 와일드카드가 들어 있으면 규칙을 저장하지 않고 한 번만 허용을 권합니다." },
           { p: "플러그인이 제안한 대화(오버레이 제안)는 내가 받아들여야 시작되고, 그 안의 쓰기, 셸, 네트워크 도구는 다시 확인을 받습니다." },
         ],
       },
@@ -258,7 +258,7 @@ const ko: Record<DocSlug, DocPage> = {
             ["entry", "JavaScript 모듈입니다."],
             ["process", "어떤 언어로든 만든 프로그램이 표준 입출력의 JSON-RPC로 호스트와 대화합니다. OS 샌드박스가 켜져 있어야 실행되고, Windows에서는 지원하지 않습니다."],
           ] },
-          { p: "플러그인은 호스트 프로토콜 3을 요구한다고 선언합니다. 설치된 플러그인은 ~/.ave/plugins/<id>/ 에 있고, 켜진 목록은 registry.json 이 정합니다." },
+          { p: "현재 출시된 앱용 플러그인은 호스트 프로토콜 3과 최소 앱 버전 0.14.0을 선언합니다. 프로토콜 4는 아직 출시 전입니다. 출시 후에는 루프백 OAuth에 호스트가 발급한 state를 그대로 보내고 PKCE S256을 함께 사용해야 합니다. 새 프로토콜의 출시 전까지 배포 패키지는 프로토콜 3을 유지하세요. 설치된 플러그인은 ~/.ave/plugins/<id>/ 에 있고, 켜진 목록은 registry.json 이 정합니다." },
         ],
       },
       {
@@ -665,7 +665,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "approve",
         h: "Approving",
         blocks: [
-          { p: "Requests appear in a dock at the bottom of the window that does not cover the conversation. The buttons are Reject, Allow once and Always allow. Always allow is bound to the exact tool, input and working folder; if the target name contains a wildcard, Ave won’t save the rule and suggests Allow once instead." },
+          { p: "Requests appear in a dock at the bottom of the window that does not cover the conversation. The buttons are Deny ▾ (Always deny), Allow for session ▾ (Always allow in this project / Always allow everywhere) and Allow once. On a shell or network card, selecting a remembered choice shows the rule it saves and an Edit rule button. A shell command is remembered as its exact Bash/PowerShell rule, any other tool as exactly that tool and input. Always allow in this project applies to that working folder, Always allow everywhere to every project, and a deny you save anywhere wins over an allow; if the target name contains a wildcard, Ave won’t save the rule and suggests Allow once instead." },
           { p: "A conversation a plugin proposes (an overlay suggestion) starts only when you accept it, and write, shell and network tools inside it ask again." },
         ],
       },
@@ -714,7 +714,7 @@ const en: Record<DocSlug, DocPage> = {
             ["entry", "A JavaScript module."],
             ["process", "A program in any language that talks to the host over JSON-RPC on standard input and output. It runs only with the OS sandbox on and is not supported on Windows."],
           ] },
-          { p: "Plugins declare that they need host protocol 3. Installed plugins live in ~/.ave/plugins/<id>/, and registry.json decides which are active." },
+          { p: "Plugins for released hosts currently declare host protocol 3 and minimum app version 0.14.0. Protocol 4 is upcoming and unreleased: after it ships, loopback OAuth must send the host-issued state unchanged together with PKCE S256. Keep published packages on protocol 3 until that release. Installed plugins live in ~/.ave/plugins/<id>/, and registry.json decides which are active." },
         ],
       },
       {

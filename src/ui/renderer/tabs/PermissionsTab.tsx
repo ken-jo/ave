@@ -1866,8 +1866,8 @@ export function PermissionsTab({
                         {approval.decision === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
                       </Badge></td>
                       <td className="max-w-[180px] break-all px-3 py-2">
-                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : t("permissionsTab.scopePersistent")}
-                        <p className="text-[10px] text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.projectCwd}</p>
+                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : approval.scope === "global" ? t("permissionsTab.scopeGlobal") : t("permissionsTab.scopePersistent")}
+                        <p className="text-[10px] text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.scope === "global" ? t("permissionsTab.scopeGlobalTarget") : approval.projectCwd}</p>
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{approval.source ?? t("permissionsTab.sourceAll")}</td>
                       <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={approvalsBusy}

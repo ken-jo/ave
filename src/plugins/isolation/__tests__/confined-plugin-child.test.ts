@@ -113,7 +113,7 @@ const CANDIDATE_MANIFEST: PluginManifest = {
   name: "Sample Assistant",
   version: "1.0.0",
   entry: "index.js",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   description: "Exercises declared filesystem authority",
   tools: [],
   sandbox: {
@@ -1459,7 +1459,7 @@ export const createPlugin = async (context) => ({
           name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "3" },
+          requires: { hostProtocol: "4" },
           description: "the pilot, confined",
           tools: [
             {
@@ -1511,7 +1511,7 @@ export const createPlugin = async (context) => ({
 describe("the host protocol, spoken by a real confined child", () => {
   /** A complete plugin: its manifest, its entry and its recorded transcript. */
   const MEETING_GOLDEN = fileURLToPath(
-    new URL("./fixtures/host-protocol/3/plugins/meeting/", import.meta.url),
+    new URL("./fixtures/host-protocol/4/plugins/meeting/", import.meta.url),
   );
 
   /** The plugin's own tool results in a recorded transcript, by tool name. */
@@ -1563,7 +1563,7 @@ describe("the host protocol, spoken by a real confined child", () => {
         name: pluginId,
         version: "1.0.0",
         entry: "entry.mjs",
-        requires: { hostProtocol: "3" },
+        requires: { hostProtocol: "4" },
         description: "a child the protocol's process rules are measured on",
         tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
       },
@@ -1868,7 +1868,7 @@ export const createPlugin = async (context) => {
           name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "3" },
+          requires: { hostProtocol: "4" },
           description: "the lossy members, confined",
           configSchema: { type: "object", properties: { watched: { type: "string" }, workspace: { type: "string" } } },
           sandbox: CANDIDATE_MANIFEST.sandbox,
@@ -2188,7 +2188,7 @@ export const createPlugin = async (context) => {
           name: "Meeting",
           version: "0.5.42",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "3" },
+          requires: { hostProtocol: "4" },
           description: "the recorder, confined",
           configSchema: {
             type: "object",
@@ -2716,7 +2716,7 @@ export default async function createPlugin(context) {
           name: "Local Indexer",
           version: "0.5.40",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "3" },
+          requires: { hostProtocol: "4" },
           description: "the indexer's host-supplied answers",
           tools: ["indexer_home_probe", "indexer_drive_probe"].map((name) => ({
             name,
@@ -2836,7 +2836,7 @@ process.stdin.on("end", () => process.exit(0));
         name: plugin.pluginId,
         version: "1.0.0",
         process: { command: "./bin/plugin", env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
-        requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
         description: "a process entry whose environment is measured",
         tools: [],
       },

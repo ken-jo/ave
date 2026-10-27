@@ -1,4 +1,4 @@
-import { ShellAnalysisError, parseShellSyntax, type ShellSyntaxNode } from "./shell-parser.js";
+import { ShellAnalysisError, parseShellSyntax, type ShellSyntaxNode, type ShellParserLimits } from "./shell-parser.js";
 
 export interface ShellSpan { start: number; end: number; raw: string }
 export type ShellWordPart =
@@ -18,6 +18,8 @@ export interface ShellRedirect {
   target?: ShellWord;
   data?: ShellWord;
   descriptor: boolean;
+  heredocQuoted?: boolean;
+  literalDataBytes?: number;
 }
 export interface ShellCommand {
   kind: "command";
@@ -42,7 +44,7 @@ export type ShellStatement =
   | { kind: "function"; source: ShellSpan; name: string; body: ShellStatement }
   | { kind: "unsupported"; source: ShellSpan; reason: string };
 
-export type ShellAnalysis = { ok: true; program: ShellStatement } | { ok: false; reason: string };
+export type ShellAnalysis = { ok: true; program: ShellStatement; totalTokens?: number } | { ok: false; reason: string };
 
 export function literalWord(value: string, source: ShellSpan): ShellWord {
   return { source, parts: [{ kind: "literal", value }], preservesEmpty: true };
@@ -95,7 +97,7 @@ function decodeLiteral(text: string, context: WordContext): LoweredWordPart[] {
   return parts.length ? parts : [{ kind: "literal", value: "" }];
 }
 
-interface ShellSource { text: string; bytes: Buffer; dialect: "bash" | "posix"; braceWords: ReadonlySet<string>; escapedStrings: Readonly<Record<string, string>> }
+interface ShellSource { text: string; bytes: Buffer; offsets: ReadonlyMap<number, number>; literalHeredocs: ReadonlyMap<number, readonly number[]>; dialect: "bash" | "posix"; braceWords: ReadonlySet<string>; escapedStrings: Readonly<Record<string, string>> }
 function object(value: unknown): ShellSyntaxNode {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Missing typed shell syntax node");
   return value as ShellSyntaxNode;
@@ -116,26 +118,50 @@ function span(node: ShellSyntaxNode, source: ShellSource): ShellSpan {
   const start = node.Pos?.Offset ?? 0;
   const end = node.End?.Offset ?? start;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > source.bytes.length) throw new Error("Invalid shell syntax source span");
-  return { start, end, raw: source.bytes.subarray(start, end).toString("utf8") };
+  const from = source.offsets.get(start), to = source.offsets.get(end);
+  if (from === undefined || to === undefined) throw new Error("Invalid shell syntax text span");
+  return { start, end, raw: source.text.slice(from, to) };
 }
 function unsupported(node: ShellSyntaxNode, source: ShellSource): ShellStatement {
   return { kind: "unsupported", source: span(node, source), reason: `Unsupported shell syntax: ${node.Type ?? "statement"}` };
 }
-export function analyzeShell(command: string, dialect: "bash" | "posix" = "bash"): ShellAnalysis {
+export function analyzeShell(command: string, dialect: "bash" | "posix" = "bash", workLimits?: ShellParserLimits): ShellAnalysis {
   try {
-    const file = parseShellSyntax(command);
+    const file = parseShellSyntax(command, workLimits);
     const braceWords = file.BraceWords;
     if (!Array.isArray(braceWords) || braceWords.some((range) => !Array.isArray(range)
       || range.length !== 2 || !range.every((offset) => Number.isSafeInteger(offset)))) throw new Error("Invalid shell brace annotations");
     const escapedStrings = file.EscapedStrings;
     if (!escapedStrings || typeof escapedStrings !== "object" || Array.isArray(escapedStrings)
       || Object.values(escapedStrings).some((item) => typeof item !== "string")) throw new Error("Invalid shell string annotations");
-    const source = { text: command, bytes: Buffer.from(command, "utf8"), dialect, braceWords: new Set(braceWords.map((range) => `${range[0]}:${range[1]}`)), escapedStrings: escapedStrings as Record<string, string> };
-    return { ok: true, program: sequence(children(file, "Stmts"), source, { start: 0, end: source.bytes.length, raw: command }) };
+    const literalHeredocs = new Map((file.LiteralHeredocs as readonly (readonly number[])[]).map((range) => [range[0]!, range]));
+    const offsets = sourceOffsets(command, [...literalHeredocs.values()]);
+    const source = { text: command, bytes: Buffer.from(command, "utf8"), offsets, literalHeredocs, dialect, braceWords: new Set(braceWords.map((range) => `${range[0]}:${range[1]}`)), escapedStrings: escapedStrings as Record<string, string> };
+    return { ok: true, program: sequence(children(file, "Stmts"), source, { start: 0, end: source.bytes.length, raw: command }), totalTokens: file.TotalTokens as number };
   } catch (error) {
     if (error instanceof ShellAnalysisError) return { ok: false, reason: error.message };
     throw error;
   }
+}
+// Convert positions only in executable text. Literal body widths come from the native terminator reader.
+function sourceOffsets(text: string, bodies: readonly (readonly number[])[]): ReadonlyMap<number, number> {
+  const ranges = bodies;
+  const offsets = new Map<number, number>();
+  let byte = 0, index = 0, body = 0;
+  while (index < text.length) {
+    offsets.set(byte, index);
+    const range = ranges[body];
+    if (range !== undefined && byte === range[0]) {
+      if (index !== range[2]) throw new Error("Invalid shell literal data text position");
+      byte = range[1]!; index = range[3]!; body += 1;
+      continue;
+    }
+    const point = text.codePointAt(index)!;
+    byte += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    index += point > 0xffff ? 2 : 1;
+  }
+  offsets.set(byte, index);
+  return offsets;
 }
 function sequence(nodes: readonly ShellSyntaxNode[], source: ShellSource, location: ShellSpan): ShellStatement {
   return { kind: "sequence", source: location, statements: nodes.map((node) => lowerStatement(node, source)) };
@@ -172,12 +198,27 @@ function lowerCommandNode(node: ShellSyntaxNode, source: ShellSource): ShellStat
     case "Block": return sequence(children(node, "Stmts"), source, location);
     case "Subshell": return { kind: "subshell", source: location, body: sequence(children(node, "Stmts"), source, location) };
     case "BinaryCmd": {
-      const left = lowerStatement(child(node, "X"), source);
-      const right = lowerStatement(child(node, "Y"), source);
       const operator = value(node, "Op");
       if (operator === "|&" && source.dialect !== "bash") return unsupported(node, source);
+      if (operator === "|" || operator === "|&") {
+        const statements: ShellStatement[] = [];
+        const pending = [child(node, "Y"), child(node, "X")];
+        while (pending.length > 0) {
+          const statement = pending.pop()!;
+          const command = statement.Cmd ? child(statement, "Cmd") : undefined;
+          const nestedOperator = command?.Type === "BinaryCmd" ? value(command, "Op") : undefined;
+          const transparent = !statement.Negated && !statement.Background && !statement.Coprocess && children(statement, "Redirs").length === 0;
+          if (transparent && command && (nestedOperator === "|" || (nestedOperator === "|&" && source.dialect === "bash"))) {
+            pending.push(child(command, "Y"), child(command, "X"));
+          } else {
+            statements.push(lowerStatement(statement, source));
+          }
+        }
+        return { kind: "pipeline", source: location, statements };
+      }
+      const left = lowerStatement(child(node, "X"), source);
+      const right = lowerStatement(child(node, "Y"), source);
       if (operator === "&&" || operator === "||") return { kind: operator === "&&" ? "and" : "or", source: location, left, right };
-      if (operator === "|" || operator === "|&") return { kind: "pipeline", source: location, statements: [...(left.kind === "pipeline" ? left.statements : [left]), ...(right.kind === "pipeline" ? right.statements : [right])] };
       return unsupported(node, source);
     }
     case "ForClause": {
@@ -244,10 +285,14 @@ function lowerRedirect(node: ShellSyntaxNode, source: ShellSource): ShellRedirec
   const location = span(node, source);
   const operator = value(node, "Op");
   const word = lowerWord(child(node, "Word"), source);
-  if (node.Hdoc) {
+  if (operator === "<<" || operator === "<<-") {
     const quoted = children(child(node, "Word"), "Parts").some((part) => part.Type !== "Lit" || value(part, "Value").includes("\\"));
-    return { source: location, effect: "read", descriptor: false,
-      data: lowerWord(child(node, "Hdoc"), source, quoted ? "literal" : "heredoc") };
+    const body = node.Hdoc ? child(node, "Hdoc") : undefined;
+    const range = body ? source.literalHeredocs.get(body.Pos?.Offset ?? -1) : undefined;
+    const data = range === undefined ? (body ? lowerWord(body, source, quoted ? "literal" : "heredoc") : literalWord("", location))
+      : literalWord(source.text.slice(range[2], range[3]), { start: range[0]!, end: range[1]!, raw: source.text.slice(range[2], range[3]) });
+    return { source: location, effect: "read", descriptor: false, heredocQuoted: quoted, data,
+      ...(range ? { literalDataBytes: range[1]! - range[0]! } : {}) };
   }
   if (operator === "<<<") {
     if (source.dialect !== "bash") throw new ShellAnalysisError("Unsupported non-POSIX here-string");

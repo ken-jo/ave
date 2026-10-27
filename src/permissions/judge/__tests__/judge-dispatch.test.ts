@@ -629,9 +629,9 @@ describe("configured judge dispatch lanes", () => {
     subject.manager.setMode("allow");
     const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
     const after = await checkAndDispatch(subject, { ...context, ruleSubject: { ...context.ruleSubject, cwd: subject.root } });
-    expect(before).toMatchObject({ decision: "deny", layer: 6 });
+    expect(before).toMatchObject({ decision: "deny", layer: 2 });
     expect(before.reviewer).toBeUndefined();
-    expect(after).toMatchObject({ decision: before.decision, reason: before.reason, layer: 6 });
+    expect(after).toMatchObject({ decision: before.decision, reason: before.reason, layer: 2 });
     expect(after.reviewer).toBeUndefined();
     expect(reviewer.calls()).toBe(0);
     expect(provider.requests).toHaveLength(0);

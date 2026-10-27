@@ -146,7 +146,7 @@ test.describe("release check — docked approval card", () => {
     const firstTarget = ((await target.textContent()) ?? "").trim();
     expect(firstTarget.length).toBeGreaterThan(0);
 
-    for (const testId of ["deny-button", "allow-always-button", "approve-button"]) {
+    for (const testId of ["deny-button", "allow-session-button", "approve-button"]) {
       await expect(page.getByTestId(testId)).toBeVisible();
     }
 

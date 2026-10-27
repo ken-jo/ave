@@ -117,6 +117,8 @@ function makeDeps(options: {
   snapshotArgs?: unknown;
   snapshotSessionId?: string | null;
   shellRule?: import("../../../shared/permissions-events.js").ShellRuleApproval;
+  egress?: { host: string; port: number; network: "public" | "local" | "unverified"; rule: string | null; projectCwd?: string; scopes: readonly ("once" | "session" | "tab" | "project" | "always")[]; terminalTabId?: string };
+  mayRecord?: boolean;
   snapshotVerdict?: "low" | "medium" | "high";
   snapshotApprovalCacheKey?: string;
   snapshotApprovalMemory?: import("../../../shared/permissions-events.js").ApprovalMemory;
@@ -150,7 +152,7 @@ function makeDeps(options: {
     listPersistedRules: vi.fn(async () => []),
     listScopedRules: vi.fn(async (): Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }> => ({ rules: [], errors: [] })),
     addRulePersist: vi.fn(async () => undefined),
-    addSessionShellRule: vi.fn(() => undefined),
+    addSessionRule: vi.fn(() => undefined),
     removeRulePersist: vi.fn(async () => undefined),
     addAlwaysAllowedPersist: vi.fn(async () => undefined),
     addAlwaysDeniedPersist: vi.fn(async () => undefined),
@@ -191,6 +193,7 @@ function makeDeps(options: {
       })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
+      mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
       listPendingRendererRequests: vi.fn(() => []),
       canAccessRendererRequest: vi.fn(() => true),
       // #799 + CRITICAL-2 ralph iter 4: server-side ApprovalRequest binding. userApprovalRecord handler reads identity, raw args, and
@@ -199,6 +202,7 @@ function makeDeps(options: {
         sessionId: options.snapshotSessionId === null ? undefined : options.snapshotSessionId ?? "conversation-1",
         projectCwd: "/srv/project",
         shellRule: options.shellRule,
+        egress: options.egress,
         toolName: "bash_run",
         args: options.snapshotArgs ?? { command: "ls" },
         source: "user-keyboard" as const,
@@ -1472,6 +1476,37 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(result).toMatchObject({ ok: true });
   });
 
+  // Owner decision 2026-10-25: "Always allow everywhere" on an exact tool approval is a user-global record.
+  it("records a global exact allow with no project, and only where the host permits remembering", async () => {
+    await setup();
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-global", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
+    });
+    expect(result).toMatchObject({ ok: true });
+    const entry = (recordApprovalMock.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(entry).toMatchObject({ decision: "allow", scope: "global" });
+    expect(entry).not.toHaveProperty("projectCwd");
+
+    recordApprovalMock.mockClear();
+    await setup({ persistentAllowAllowed: false });
+    const refused = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-global-refused", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
+    });
+    expect(refused).toMatchObject({ ok: false });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a global allow for a session-only browser scope", async () => {
+    await setup({ snapshotApprovalCacheKey: undefined, snapshotApprovalMemory: {
+      kind: "key", key: "browser_click:origin-a",
+      scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener: "agent", tabId: "tab-1", documentId: 1 },
+    } });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-browser-global", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
+    });
+    expect(result).toMatchObject({ ok: false, error: "session-only-scope" });
+  });
+
   it("records a persistent exact deny without turning it into a HIGH approval", async () => {
     await setup({ snapshotArgs: { command: "rm build.tmp" }, snapshotVerdict: "high" });
 
@@ -1655,88 +1690,212 @@ describe("state-mutating permission channels refuse non-host frames", () => {
 });
 
 
-describe("command rules recorded from live approvals", () => {
-  // Owner 2026-10-25 (five-choice shell card): the renderer names only a save scope; the host stores the exact rule it derived.
-  const exactRule = "Bash(git status --short)";
-  const body = { requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, rule: { scope: "project" } };
-  const shellRule = { exactRule, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
+describe("rules recorded from live approval cards", () => {
+  // Owner 2026-10-25 (unified approval card): the renderer names the choice's action and scope and, only when edited, the rule text; the host validates it against the card's own grammar and the live request.
+  const exactRule = "Bash(printf %s ready)";
+  const body = { requestId: "live-shell", args: "{}", scope: "persistent", decision: "allow", verdictAtApproval: "medium", nlJustification: null, rule: { action: "allow", scope: "project" } };
+  const shellRule = { dialect: "bash" as const, exactRule, denyRule: exactRule, denyAllowed: true, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
+  const live = { shellRule, snapshotArgs: { command: "printf %s ready" } };
+  const pm = (deps: Awaited<ReturnType<typeof setup>>["deps"]) => deps.conversationLoop.permissionManager;
 
   it("writes only the host's exact project rule and never also records an exact decision", async () => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    const { deps } = await setup(live);
     const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
-    expect(result).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(result).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(deps.auditLogger.log).toHaveBeenCalledWith({
       timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
-      output: `[approval:remembered] store=rules decision=allow scope=project rule=${JSON.stringify(exactRule)} toolName="bash_run" source="user-keyboard"`,
+      output: `[approval:remembered] store=rules decision=allow scope=project rule=${JSON.stringify(exactRule)} edited=false toolName="bash_run" source="user-keyboard"`,
     });
   });
 
-  it("writes the exact rule to the user-global rules for Always", async () => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { scope: "always" } })).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
+  it("writes the exact rule to the user-global rules for Always allow everywhere", async () => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always" } })).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
   });
 
-  it("holds the exact rule for This session in the conversation, never on disk", async () => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: { scope: "session" } })).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addSessionShellRule).toHaveBeenCalledWith("conversation-1", exactRule);
-    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  it("holds the rule for Allow for session in the conversation, never on disk", async () => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: { action: "allow", scope: "session" } })).toEqual({ ok: true });
+    expect(pm(deps).addSessionRule).toHaveBeenCalledWith("conversation-1", exactRule);
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
     expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("stores an edited exact rule in canonical spelling without a warning", async () => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always", pattern: "  Bash(printf  %s ready) " } })).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
+  });
+
+  it("stores an edited wildcard allow and warns that it applies only to sandboxed runs", async () => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
+      .toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });
 
   it.each([
-    [{ scope: "project", pattern: "Bash(git status *)" }, "persistent"],
-    [{ scope: "project", pattern: exactRule }, "persistent"],
-    [{ scope: "user" }, "persistent"],
-    [{ scope: "workspace" }, "persistent"],
-    [{ scope: "conversation" }, "session"],
-    [{ scope: "session" }, "persistent"],
-    [{ scope: "always" }, "session"],
-    [{}, "persistent"],
-  ])("refuses a renderer pattern, an unknown or mismatched scope: %j (%s)", async (rule, scope) => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope, rule })).toMatchObject({ ok: false, error: "invalid-rule" });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
-    expect(deps.conversationLoop.permissionManager.addSessionShellRule).not.toHaveBeenCalled();
+    ["Bash(git push)", "rule-does-not-match"],
+    ["PowerShell(printf %s ready)", "rule-does-not-match"],
+    ["Network(example.com)", "rule-does-not-match"],
+    ["Bash(git status; rm -rf /)", "invalid-rule"],
+    ["printf %s ready", "invalid-rule"],
+    ["Bash(*)", "invalid-rule"],
+  ])("refuses an edited allow %s that is not this card's rule for this command (%s)", async (pattern, error) => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern } })).toMatchObject({ ok: false, error });
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+  });
+
+  it("saves Always deny as the host's exact deny rule, user-global", async () => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always" } })).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "deny" }, { kind: "user" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a rule decision that is not an allow", async () => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny" })).toMatchObject({ ok: false, error: "invalid-rule" });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  it("saves an edited wildcard deny with no warning", async () => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always", pattern: "Bash(printf *)" } })).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf *)", action: "deny" }, { kind: "user" });
   });
 
-  it("refuses a host rule that no longer covers the live command exactly", async () => {
-    const { deps } = await setup({ shellRule: { ...shellRule, exactRule: "Bash(git status *)" }, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git status *)", action: "allow" }, expect.anything());
-    deps.conversationLoop.permissionManager.addRulePersist.mockClear();
-    await setup({ shellRule: { ...shellRule, exactRule: "Bash(git push)" }, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "invalid-rule" });
+  it("keeps a narrowing Git deny saveable when the command has no allow proof", async () => {
+    const { deps } = await setup({ ...live, snapshotArgs: { command: "git status --short" }, shellRule: {
+      ...shellRule, denyRule: "Bash(git status --short)", exactRule: null, persistentAllowed: false, sessionAllowed: false,
+    } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: {
+      action: "deny", scope: "always", pattern: "Bash(git *)",
+    } })).toEqual({ ok: true });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git *)", action: "deny" }, { kind: "user" });
+  });
+
+  it("asks for an edited rule when Always deny has no derived one", async () => {
+    const { deps } = await setup({ ...live, shellRule: { ...shellRule, denyRule: null } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always" } })).toMatchObject({ ok: false, error: "rule-required" });
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ action: "allow", scope: "project", extra: true }, "persistent", "allow"],
+    [{ action: "allow", scope: "user" }, "persistent", "allow"],
+    [{ action: "allow", scope: "workspace" }, "persistent", "allow"],
+    [{ action: "allow", scope: "conversation" }, "session", "allow"],
+    [{ action: "allow", scope: "session" }, "persistent", "allow"],
+    [{ action: "allow", scope: "always" }, "session", "allow"],
+    [{ scope: "project" }, "persistent", "allow"],
+    [{ action: "allow", scope: "project", pattern: 7 }, "persistent", "allow"],
+    [{ action: "deny", scope: "project" }, "persistent", "deny"],
+    [{ action: "deny", scope: "always" }, "persistent", "allow"],
+    [{ action: "allow", scope: "always" }, "persistent", "deny"],
+    [{}, "persistent", "allow"],
+  ])("refuses an unknown, incomplete or mismatched rule save: %j (%s, %s)", async (rule, scope, decision) => {
+    const { deps } = await setup(live);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope, decision, rule })).toMatchObject({ ok: false, error: "invalid-rule" });
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    expect(pm(deps).addSessionRule).not.toHaveBeenCalled();
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a derived rule that no longer decides the live command", async () => {
+    await setup({ ...live, shellRule: { ...shellRule, exactRule: "Bash(git push)" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "rule-does-not-match" });
   });
 
   it("reports a storage failure apart from an invalid rule", async () => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
-    deps.conversationLoop.permissionManager.addRulePersist.mockRejectedValueOnce(new Error("permissions.json is corrupt"));
+    const { deps } = await setup(live);
+    pm(deps).addRulePersist.mockRejectedValueOnce(new Error("permissions.json is corrupt"));
     expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "rule-save-failed", message: "permissions.json is corrupt" });
     expect(deps.auditLogger.log).not.toHaveBeenCalledWith(expect.objectContaining({ type: "approval" }));
   });
 
-  it.each(["session", "project", "always"])("refuses %s when the host offered no saveable rule", async (ruleScope) => {
-    const { deps } = await setup({ shellRule: { ...shellRule, exactRule: null, persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: ruleScope === "session" ? "session" : "persistent", rule: { scope: ruleScope } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
-    expect(deps.conversationLoop.permissionManager.addSessionShellRule).not.toHaveBeenCalled();
+  it.each(["session", "project", "always"])("refuses an allow at %s when the host offered no saveable rule, edited or not", async (ruleScope) => {
+    const { deps } = await setup({ ...live, shellRule: { ...shellRule, exactRule: null, persistentAllowed: false, sessionAllowed: false } });
+    const record = { ...body, scope: ruleScope === "session" ? "session" : "persistent" };
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...record, rule: { action: "allow", scope: ruleScope } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...record, rule: { action: "allow", scope: ruleScope, pattern: exactRule } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    expect(pm(deps).addSessionRule).not.toHaveBeenCalled();
   });
 
-  it("refuses This session without a conversation", async () => {
-    const { deps } = await setup({ snapshotSessionId: null, shellRule: { ...shellRule, sessionAllowed: false }, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: { scope: "session" } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
-    expect(deps.conversationLoop.permissionManager.addSessionShellRule).not.toHaveBeenCalled();
+  it.each(["git status --short", "make build"])("cannot repair the unproven live tool %s with an edited allow", async (command) => {
+    const { deps } = await setup({ ...live, snapshotArgs: { command }, shellRule: {
+      ...shellRule, exactRule: null, persistentAllowed: false, sessionAllowed: false,
+    } });
+    for (const ruleScope of ["session", "project", "always"] as const) {
+      const scope = ruleScope === "session" ? "session" : "persistent";
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope, rule: {
+        action: "allow", scope: ruleScope, pattern: `Bash(${command})`,
+      } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    }
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    expect(pm(deps).addSessionRule).not.toHaveBeenCalled();
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses Allow for session without a conversation", async () => {
+    const { deps } = await setup({ ...live, snapshotSessionId: null, shellRule: { ...shellRule, sessionAllowed: false } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: { action: "allow", scope: "session" } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(pm(deps).addSessionRule).not.toHaveBeenCalled();
+  });
+
+  describe("network host rules", () => {
+    const egress = { host: "api.example.com", port: 443, network: "public" as const, rule: "Network(api.example.com:443)", projectCwd: "/srv/project", scopes: ["once", "session", "project", "always"] as const };
+    const networkBody = { ...body, decision: "deny", rule: { action: "deny", scope: "always" } };
+
+    it("saves Always deny as the host's exact host rule", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, networkBody)).toEqual({ ok: true });
+      expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(api.example.com:443)", action: "deny" }, { kind: "user" });
+    });
+
+    // A host rule decides only a sandboxed command's connections, so a wildcard one carries the same warning as a wildcard shell allow.
+    it("saves an edited wildcard host allow for the project, with the sandboxed-only warning", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Network(*.example.com)" } })).toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
+      expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(*.example.com)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    });
+
+    it.each([
+      ["Network(other.test)", "rule-does-not-match"],
+      ["Network(api.example.com:80)", "rule-does-not-match"],
+      ["Bash(curl api.example.com)", "rule-does-not-match"],
+      ["Network(API.example.com)", "invalid-rule"],
+    ])("refuses an edited host rule %s that does not name this destination (%s)", async (pattern, error) => {
+      const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...networkBody, rule: { action: "deny", scope: "always", pattern } })).toMatchObject({ ok: false, error });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
+
+    it("refuses a persistent host allow for a destination offered only in-memory scopes", async () => {
+      const { deps } = await setup({ egress: { ...egress, network: "local", scopes: ["once", "session"] } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always" } })).toMatchObject({ ok: false, error: "scope-not-offered" });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
+
+    // Host rules are shell-origin, as shell grants are: a terminal tab's card saves none, deny or allow.
+    it("refuses every host rule from a terminal tab's card", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: ["once", "tab", "always"], terminalTabId: "tab-1", rule: null } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...networkBody, rule: { action: "deny", scope: "always", pattern: "Network(api.example.com)" } })).toMatchObject({ ok: false, error: "scope-not-offered" });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always", pattern: "Network(api.example.com)" } })).toMatchObject({ ok: false, error: "scope-not-offered" });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
+
+    it("refuses an IP-literal host rule with the grammar's error", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...networkBody, rule: { action: "deny", scope: "always", pattern: "Network(169.254.169.254)" } })).toMatchObject({ ok: false, error: "invalid-rule" });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
+
+    it("records a terminal tab's host rule only from the window that owns the tab", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: ["once", "tab", "always"], terminalTabId: "tab-1" }, mayRecord: false });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, networkBody)).toMatchObject({ ok: false, error: "not-request-owner" });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -1744,12 +1903,12 @@ describe("command rules recorded from live approvals", () => {
 describe("shell persistence cannot fall back to exact input", () => {
   const body = { requestId: "live-shell", args: "{}", verdictAtApproval: "medium", nlJustification: null };
   it.each(["session", "persistent"])("refuses a %s exact allow for a bash card: a shell is remembered only as its exact rule", async (scope) => {
-    await setup({ shellRule: { exactRule: "Bash(node script.js)", projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
+    await setup({ shellRule: { dialect: "bash", exactRule: "Bash(node script.js)", denyRule: "Bash(node script.js)", denyAllowed: true, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope })).toMatchObject({ ok: false, error: "command-rule-required" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
   it.each(["session", "persistent"])("refuses omitted rule persistence for a floor in %s scope", async (scope) => {
-    await setup({ shellRule: { exactRule: null, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
+    await setup({ shellRule: { dialect: "bash", exactRule: null, denyRule: null, denyAllowed: true, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope })).toMatchObject({ ok: false });
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });

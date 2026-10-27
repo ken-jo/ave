@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import type { PayloadFile } from "../../../plugins/contribution-approval-digest.js";
 import type { ExtensionComponentConsent } from "../../../shared/git-marketplace.js";
+import { getAveAppVersion } from "../../../shared/app-version.js";
 import { pluginConsent } from "../../updates/consent.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
@@ -180,7 +181,7 @@ export async function folderService(options: {
     policy,
     tokens: { get: () => null, has: () => false, set: async () => {}, delete: async () => {} },
     previewTokens: new Map(),
-    versionContext: () => ({ appVersion: "0.14.0", platform: options.folders.platform, canaryOptIn: false, installationId: "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b" }),
+    versionContext: () => ({ appVersion: getAveAppVersion(), platform: options.folders.platform, canaryOptIn: false, installationId: "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b" }),
     installers,
     ladder: { zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_CACHE as never },
     mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,

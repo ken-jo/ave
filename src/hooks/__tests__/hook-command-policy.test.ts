@@ -2,6 +2,7 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -144,11 +145,11 @@ describe("hook command permission admission", () => {
   it.each([true, false])("admits a hook only through an exact allow (sandbox-capable host %s)", async (active) => {
     sandboxedHost.active = active;
     const p = policy();
-    p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const command = { ...hook, command: ["printf", "ready"] };
     expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
-    p.permissionManager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash('printf' 'ready')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const admitted = await p.authorizeCommand(command, payload, process.cwd());
     expect(admitted.decision, admitted.reason).toBe("allow");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
@@ -157,17 +158,26 @@ describe("hook command permission admission", () => {
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {
     const p = policy();
     // Exact: a hook runs without a sandbox, so a wildcard allow never admits it.
-    p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "allow" }]);
-    const admitted = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
+    const pattern = "Bash('printf' 'ready')";
+    p.permissionManager.setRules([{ pattern, action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const admitted = await p.authorizeCommand({ ...hook, command: ["printf", "ready"] }, payload, process.cwd());
     expect(admitted.decision).toBe("allow");
-    p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "ask" }]);
+    p.permissionManager.setRules([{ pattern, action: "ask" }]);
     expect(admitted.assertAllowed).toBeTypeOf("function");
     expect(() => admitted.assertAllowed!()).toThrow("Hook command permission changed");
   });
 
+  it("does not automatically admit an unsupported node option through an exact allow rule", async () => {
+    const p = policy();
+    p.permissionManager.setRules([{ pattern: "Bash('node' '--version')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const result = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
+    expect(result.decision).toBe("deny");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+  });
+
   it("requires approval for interpreter code even with a matching shell allow rule", async () => {
     const p = policy("allow-once");
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
     expect(result.decision, result.reason).toBe("allow");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
@@ -212,7 +222,7 @@ describe("hook command permission admission", () => {
       mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
     });
     const p = policy("allow-once");
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
     expect(result.decision, result.reason).toBe("allow");
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
@@ -227,7 +237,7 @@ describe("hook command permission admission", () => {
       mode: "plain", fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true,
     });
     const p = policy();
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
     const gate = new ApprovalGate(wc as never);
     const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
@@ -248,7 +258,7 @@ describe("hook command permission admission", () => {
     windowsPartialPlan();
     // An allow-once that did not come through the gate carries no valid receipt.
     const p = policy("allow-once");
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
     expect(result).toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("approval receipt is invalid") });
     expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.any(Object) }));
@@ -267,7 +277,7 @@ describe("hook command permission admission", () => {
 
   it("denies an unattended hook a prefix rule does not admit, without raising a card (unsandboxed shell exact-rule requirement, I5)", async () => {
     const p = policy();
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
       () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
     expect(result.decision).toBe("deny");

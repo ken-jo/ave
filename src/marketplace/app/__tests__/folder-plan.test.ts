@@ -9,11 +9,11 @@ import { folderService, type FolderServiceHarness } from "../../__tests__/fixtur
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 
 const ENTRY_JS = "export default { planned: true };\n";
-const auth = { capabilities: ["notes:read"], networkAccess: { allowedDomains: ["api.example.com"] }, requires: { minAppVersion: "0.14.0", hostProtocol: "3" } };
+const auth = { capabilities: ["notes:read"], networkAccess: { allowedDomains: ["api.example.com"] }, requires: { minAppVersion: "0.14.0", hostProtocol: "4" } };
 const pluginJson = (extension: Record<string, unknown> = { entry: "dist/index.js" }) =>
   `${JSON.stringify({ name: "alpha", version: "1.0.0", description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "alpha", ...extension, ...auth } } }, null, 2)}\n`;
 const pluginDescriptor = (artifact: Record<string, unknown>) =>
-  `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "3", payload: { authority: auth, artifact } })}\n`;
+  `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "4", payload: { authority: auth, artifact } })}\n`;
 const skillDescriptor = `${JSON.stringify({ schemaVersion: 2, kind: "skill", name: "notes", version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } })}\n`;
 const index = `${JSON.stringify({
   schemaVersion: 2,

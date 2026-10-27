@@ -15,6 +15,7 @@ const MIRROR = fileURLToPath(
 interface MirrorCopy {
   readonly protocol: string;
   readonly appVersion: string;
+  readonly publishedTag: string | null;
 }
 
 describe("HOST_PROTOCOL_FIRST_APP_VERSION", () => {
@@ -25,13 +26,18 @@ describe("HOST_PROTOCOL_FIRST_APP_VERSION", () => {
   });
 
   for (const protocol of HOST_PROTOCOL_VERSIONS_SERVED) {
-    it(`is the lowest appVersion the mirror records for protocol ${protocol}`, () => {
+    it(`distinguishes the release floor from untagged candidates for protocol ${protocol}`, () => {
       const recorded = copies
         .filter((copy) => copy.protocol === protocol)
         .map((copy) => copy.appVersion)
         .sort(compareSemver);
       expect(recorded.length).toBeGreaterThan(0);
-      expect(HOST_PROTOCOL_FIRST_APP_VERSION[protocol]).toBe(recorded[0]);
+      const floor = HOST_PROTOCOL_FIRST_APP_VERSION[protocol];
+      if (floor === undefined) {
+        expect(copies.filter(copy => copy.protocol === protocol && copy.publishedTag !== null)).toEqual([]);
+      } else {
+        expect(floor).toBe(recorded[0]);
+      }
     });
   }
 });

@@ -498,3 +498,74 @@ describe("target-wide memory key as the remembered identity", () => {
     expect(approvalCacheKeyIdentity(undefined, originMemory(A))).toEqual({ memoryKey: `web_fetch:${A}` });
   });
 });
+
+// Owner decision 2026-10-25: "Always allow everywhere" for an exact tool approval is a user-global scope. A deny at any scope beats it, and Settings revokes it.
+describe("global scope", () => {
+  const ARGS = '{"path":"notes.md"}';
+  async function projects(): Promise<[string, string]> {
+    const a = join(TEST_HOME, "project-a");
+    const b = join(TEST_HOME, "project-b");
+    await mkdir(a, { recursive: true });
+    await mkdir(b, { recursive: true });
+    return [a, b];
+  }
+  const record = (scope: "persistent" | "global", decision: "allow" | "deny", cwd?: string) =>
+    recordApproval("read_file", ARGS, "builtin", {
+      decision, scope, verdictAtApproval: "medium", nlJustification: null,
+      ...(cwd === undefined ? {} : { workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity, projectCwd: cwd }),
+    });
+
+  it("a global allow recorded in one project applies in another, and to no other input", async () => {
+    const [a, b] = await projects();
+    await recordApproval("read_file", ARGS, "builtin", {
+      scope: "global", verdictAtApproval: "medium", nlJustification: null,
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(a).identity,
+    });
+    const hit = await lookupApproval("read_file", ARGS, "builtin", undefined, undefined, b);
+    expect(hit?.scope).toBe("global");
+    expect(await lookupApproval("read_file", '{"path":"other.md"}', "builtin", undefined, undefined, b)).toBeNull();
+  });
+
+  it("a project deny beats a global allow, and a global deny beats a project allow", async () => {
+    const [a, b] = await projects();
+    await record("global", "allow");
+    await record("persistent", "deny", b);
+    expect((await lookupUserDecision("read_file", ARGS, "builtin", undefined, undefined, b))?.decision).toBe("deny");
+    expect((await lookupUserDecision("read_file", ARGS, "builtin", undefined, undefined, a))?.decision).toBe("allow");
+    __resetSessionStoreForTest();
+    await rm(TEST_HOME, { recursive: true, force: true });
+    const [c] = await projects();
+    await record("persistent", "allow", c);
+    await record("global", "deny");
+    expect((await lookupUserDecision("read_file", ARGS, "builtin", undefined, undefined, c))?.decision).toBe("deny");
+  });
+
+  it("a session allow does not hide a global deny", async () => {
+    const [a] = await projects();
+    await record("global", "deny");
+    await recordApproval("read_file", ARGS, "builtin", {
+      scope: "session", sessionId: SESSION, verdictAtApproval: "medium", nlJustification: null,
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(a).identity,
+    });
+    expect((await lookupUserDecision("read_file", ARGS, "builtin", undefined, undefined, a, SESSION))?.decision).toBe("deny");
+  });
+
+  it("is listed with its scope and no project, and revoking it ends it everywhere", async () => {
+    const [, b] = await projects();
+    await record("global", "allow");
+    const rows = (await listApprovals()).filter((row) => row.scope === "global");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.projectCwd).toBeUndefined();
+    await revokeApprovalByKey(rows[0]!.key);
+    expect(await lookupApproval("read_file", ARGS, "builtin", undefined, undefined, b)).toBeNull();
+    __resetSessionStoreForTest();
+    expect(await lookupApproval("read_file", ARGS, "builtin", undefined, undefined, b)).toBeNull();
+  });
+
+  it("refuses a project directory on a global approval", async () => {
+    const [a] = await projects();
+    await expect(recordApproval("read_file", ARGS, "builtin", {
+      scope: "global", verdictAtApproval: "medium", nlJustification: null, projectCwd: a,
+    })).rejects.toThrow("A global approval names no project");
+  });
+});

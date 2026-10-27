@@ -2,6 +2,7 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -291,7 +292,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b.json");
     pm.setMode(mode);
     pm.setInteractiveAutoApprove("medium");
-    pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
+    pm.setRules([{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }, { pattern: "bash", action: "allow" }]);
     setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
@@ -342,9 +343,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     // No once/deny narrowing: the renderer shows the full grid.
     expect(card.allowedChoices).toBeUndefined();
     expect(card.reviewerVerdict).toBeUndefined();
-    // This session (the conversation is known), This project and Always (persistent saves allowed), all for the exact rule.
+    // Allow for session (the conversation is known), this project and everywhere (persistent saves allowed), and Always deny, all for the exact rule.
     expect(card.shellRule).toEqual({
+      dialect: "bash",
       exactRule: "Bash(echo plan-b)",
+      denyRule: "Bash(echo plan-b)",
+      denyAllowed: true,
       projectCwd: expect.any(String),
       projectRoot: expect.any(String),
       sessionAllowed: true,
@@ -365,7 +369,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     registry.register(shellProbe(execute));
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
     pm.setMode(mode);
-    pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow" }]);
+    pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
@@ -379,6 +383,62 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(observedPermit).toBeDefined();
     expect(result[0]?.is_error).toBeUndefined();
+  });
+
+  // Owner 2026-10-25: headless follows exact rules. A background Plan B shell runs on its exact rule, on the policy-lane permit, and is denied without one; neither path raises a card or consults the reviewer.
+  it.each([true, false])("runs a headless Plan B shell only on its exact rule (rule %s)", async (withRule) => {
+    partialWindowsAsrt();
+    let observedPermit: unknown;
+    const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-headless.json");
+    pm.setMode("allow");
+    pm.setRules(withRule ? [{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }] : [{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    pm.dispatchReviewer = vi.fn() as never;
+    const requestAndWait = vi.fn();
+    const audit = recordingAuditLogger();
+    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never, undefined, audit.auditLogger).executeAll(
+      [{ id: "partial-shell-headless", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
+    );
+
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    if (withRule) {
+      expect(execute).toHaveBeenCalledOnce();
+      expect(observedPermit).toBeDefined();
+      expect(result[0]?.is_error).toBeUndefined();
+      // The run is audited as the rule lane (layer 3 on the permission chain), and the tool-call row names the exact rule that let it through.
+      expect(audit.permissionEntries.find((entry) => entry.decision === "allow")).toMatchObject({ layer: 3 });
+      const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
+      expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "allow" });
+      expect(call?.toolCalls?.[0]?.permissionReason).toContain("Bash(echo no-run)");
+    } else {
+      expect(execute).not.toHaveBeenCalled();
+      expect(result[0]?.is_error).toBe(true);
+      // The denial is audited (I5): a deny row on the permission chain, no allow row, and a denied tool-call row.
+      expect(audit.permissionEntries.some((entry) => entry.decision === "deny")).toBe(true);
+      expect(audit.permissionEntries.some((entry) => entry.decision === "allow")).toBe(false);
+      const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
+      expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "deny" });
+    }
+  });
+
+  // A structural `{ allow, layer 3 }` lookalike is not the host-issued exact-rule proof: headless, it runs nothing.
+  it("does not run a headless Plan B shell on an allow that only looks like the exact-rule lane", async () => {
+    partialWindowsAsrt();
+    const execute = vi.fn();
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const requestAndWait = vi.fn();
+    const result = await new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "allow rules Bash(echo no-run)", layer: 3 }), undefined, { requestAndWait } as never).executeAll(
+      [{ id: "partial-shell-lookalike", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(result[0]?.is_error).toBe(true);
   });
 
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {
@@ -691,7 +751,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(execute).not.toHaveBeenCalled();
       expect(asked[0]?.is_error).toBe(true);
 
-      pm.setRules([{ pattern: "Bash(echo reviewed)", action: "allow" }]);
+      pm.setRules([{ pattern: "Bash(echo reviewed)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
       const result = await run(`requested-unavailable-${platform}-rule`);
       expect(pm.dispatchReviewer).not.toHaveBeenCalled();
       expect(requestAndWait).toHaveBeenCalledTimes(1);

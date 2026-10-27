@@ -7,11 +7,13 @@ const powershellSectionStart = shellTools.indexOf(" * Native PowerShell tool.");
 const bashSection = shellTools.slice(0, powershellSectionStart);
 const powershellSection = shellTools.slice(powershellSectionStart);
 
-function expectShellDialectContracts(section: string): void {
+function expectShellDialectContracts(section: string, dialect: "bash" | "powershell"): void {
   expect(section).toContain("const suppliedHostShellPlan = ctx.hostShellExecutionPlan");
   expect(section).toContain("isIssuedHostShellExecutionPlan(suppliedHostShellPlan)");
   expect(section).toContain("consumeHostShellExecutionPermit");
-  expect(section).toContain("requiresExplicitHostShellApproval(hostShellPlan)");
+  expect(section).toContain(dialect === "powershell"
+    ? 'requiresExplicitHostShellApproval(hostShellPlan, "powershell")'
+    : "requiresExplicitHostShellApproval(hostShellPlan)");
   expect(section).toContain('hostShellPlan.mode === "blocked"');
   expect(section).toContain('hostShellPlan.mode === "asrt"');
   expect(section).toContain("shell: false");
@@ -24,11 +26,11 @@ function expectShellDialectContracts(section: string): void {
 describe("shell ASRT source contracts", () => {
   it("the bash sections verify an issued plan and consume a generic one-shot fallback permit", () => {
     expect(powershellSectionStart).toBeGreaterThan(0);
-    expectShellDialectContracts(bashSection);
+    expectShellDialectContracts(bashSection, "bash");
   });
 
   it("the powershell sections verify an issued plan and consume a generic one-shot fallback permit", () => {
-    expectShellDialectContracts(powershellSection);
+    expectShellDialectContracts(powershellSection, "powershell");
   });
 });
 

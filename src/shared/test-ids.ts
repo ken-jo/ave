@@ -1,6 +1,6 @@
 /** Share IDs only when multiple surfaces need them; component-local IDs remain literals. */
 export const TEST_IDS = {
-  allowAlwaysButton: "allow-always-button",
+  allowSessionButton: "allow-session-button",
   approvalDock: "approval-dock",
   approvalDockQueueDepth: "approval-dock-queue-depth",
   approvalReviewDetails: "approval-review-details",

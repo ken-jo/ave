@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 // Credential-store paths match case-insensitively even when scanned on a POSIX host; both host and sandbox projections must deny them.
 import { describe, expect, it } from "vitest";
 import { homedir } from "node:os";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 
 import { SENSITIVE_PATH_ENTRIES, isSensitivePath } from "../sensitive-paths.js";
 import { getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
-import { powerShellExfiltrationSignal, powerShellSensitivePathSignal } from "../rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, powerShellSensitivePathSignal } from "../rules/powershell-exfiltration.js";
 
 const PROFILE = "C:/Users/owner";
 
@@ -102,20 +103,24 @@ describe("the PowerShell floor reads Windows store locations", () => {
   it.each([
     "Get-Content $env:APPDATA\\Microsoft\\Credentials\\DFBE70A7",
     "gci $env:APPDATA\\microsoft\\protect",
-    "Get-ChildItem $env:LOCALAPPDATA\\Microsoft\\PowerShell\\secretmanagement\\localstore",
-    "Copy-Item \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Login Data\" .\\ld.db",
     "Get-Content '~\\AppData\\Roaming\\GitHub CLI\\hosts.yml'",
-    "Copy-Item \"$env:LOCALAPPDATA\\Google\\Chrome SxS\\User Data\\Default\\Login Data\" .\\ld.db",
-    "Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Edge Dev\\User Data\\Default\"",
-    "Get-Content $env:APPDATA\\Thunderbird\\Profiles\\ab12.default\\logins.json",
-  ])("%s names a sensitive path", (command) => {
+  ])("%s names a directly recognized sensitive path", (command) => {
     expect(powerShellSensitivePathSignal(command, PROFILE)).not.toBeNull();
   });
 
-  it("uploading a DPAPI master key is exfiltration", () => {
-    // Reader-independent: the floor needs the path itself to be sensitive.
-    expect(powerShellExfiltrationSignal("gc $env:APPDATA\\Microsoft\\Protect\\S-1-5-21\\key; Test-NetConnection x.test", PROFILE))
-      .toMatch(/with a network transport/);
+  it.each([
+    "Get-ChildItem $env:LOCALAPPDATA\\Microsoft\\PowerShell\\secretmanagement\\localstore",
+    "Copy-Item \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Login Data\" .\\ld.db",
+    "Copy-Item \"$env:LOCALAPPDATA\\Google\\Chrome SxS\\User Data\\Default\\Login Data\" .\\ld.db",
+    "Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Edge Dev\\User Data\\Default\"",
+    "Get-Content $env:APPDATA\\Thunderbird\\Profiles\\ab12.default\\logins.json",
+  ])("%s remains unproven without resolving environment state", (command) => {
+    expect(inspectPowerShellCommand(command, PROFILE)).toMatchObject({ outcome: "unproven", sensitive: null });
+  });
+
+  it("keeps the direct DPAPI credential path visible without inventing an upload", () => {
+    expect(inspectPowerShellCommand("gc $env:APPDATA\\Microsoft\\Protect\\S-1-5-21\\key; Test-NetConnection x.test", PROFILE))
+      .toMatchObject({ outcome: "visible-floor", sensitive: expect.any(String), exfiltration: null });
   });
 
   it.each(["Get-Content $env:APPDATA\\Code\\User\\settings.json", "Get-ChildItem $env:LOCALAPPDATA\\Temp"])(

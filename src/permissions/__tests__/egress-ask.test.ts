@@ -91,6 +91,7 @@ let answer: (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
 let strength: EgressIdentityStrength;
 let askEnabled: boolean;
 let requesterPresent: boolean;
+let networkRule: EgressAskDeps["networkRule"];
 const signals = new Map<string, AbortSignal>();
 
 function rawCallback(identityStrength: EgressAskDeps["identityStrength"] = () => strength) {
@@ -100,6 +101,7 @@ function rawCallback(identityStrength: EgressAskDeps["identityStrength"] = () =>
     abortSignalOf: (token) => signals.get(token),
     workerAllowedDomains: (pluginId) => (pluginId === "fixture_plugin" ? ["api.fixture.example", "*.cdn.example:443"] : []),
     grants,
+    networkRule: (subject) => networkRule(subject),
     shellAskEnabled: () => askEnabled,
     requester: () => (requesterPresent
       ? async (request) => {
@@ -132,6 +134,7 @@ beforeEach(() => {
   strength = "kernel-channel";
   askEnabled = true;
   requesterPresent = true;
+  networkRule = async () => undefined;
   signals.clear();
 });
 
@@ -150,6 +153,7 @@ describe("egress ask callback — attribution", () => {
       abortSignalOf: () => undefined,
       workerAllowedDomains: () => [],
       grants,
+      networkRule: async () => undefined,
       shellAskEnabled: () => true,
       requester: () => async (request) => { asked.push(request); return answer(request); },
       audit: () => {},
@@ -206,6 +210,7 @@ describe("egress ask callback — attribution", () => {
       abortSignalOf: () => undefined,
       workerAllowedDomains: () => ["api.fixture.example"],
       grants,
+      networkRule: async () => undefined,
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => {},
@@ -610,6 +615,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       abortSignalOf: () => undefined,
       workerAllowedDomains: () => [],
       grants,
+      networkRule: async () => undefined,
       shellAskEnabled: () => true,
       requester: () => async (request) => { asked.push(request); return answer(request); },
       audit: () => {},
@@ -844,6 +850,7 @@ describe("egress ask callback — shell calls", () => {
       abortSignalOf: () => undefined,
       workerAllowedDomains: () => ["api.fixture.example"],
       grants,
+      networkRule: async () => undefined,
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => { throw new Error("disk full"); },
@@ -885,6 +892,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
       abortSignalOf: () => undefined,
       workerAllowedDomains: () => [host.replace(/^\[|\]$/gu, "")],
       grants,
+      networkRule: async () => undefined,
       shellAskEnabled: () => true,
       requester: () => async (request) => { asked.push(request); return { allow: true, scope: "once" }; },
       audit: () => {},
@@ -1052,10 +1060,89 @@ describe("egress ask callback — local, private and reserved destinations", () 
       abortSignalOf: () => undefined,
       workerAllowedDomains: () => ["localhost:11434"],
       grants,
+      networkRule: async () => undefined,
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => {},
     }));
     expect(await ask({ host: "localhost", port: 11434 }, listener(WORKER_TOKEN))).toBe(true);
+  });
+});
+
+// Owner 2026-10-25: the network card's "Always deny" and edited rules are `Network(...)` host rules, consulted before grants.
+describe("egress ask callback — host rules", () => {
+  const github = { host: "github.com", port: 443 };
+  const publicGithub = () => listener(SHELL_TOKEN, ["140.82.112.3"]);
+
+  it("asks the host rules with the shell's conversation and project, and never for a worker", async () => {
+    const seen: unknown[] = [];
+    networkRule = async (subject) => { seen.push(subject); return undefined; };
+    await callback()(github, publicGithub());
+    await callback()({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" });
+    expect(seen[0]).toEqual({ host: "github.com", port: 443, sessionId: "session-1", projectCwd: PROJECT });
+    expect(seen.every((subject) => (subject as { host: string }).host === "github.com")).toBe(true);
+  });
+
+  it("denies on a deny rule without asking or consulting grants", async () => {
+    await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
+    networkRule = async () => ({ decision: "deny", pattern: "Network(github.com)", scope: "user" });
+    expect(await callback()(github, publicGithub())).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.denyRule} Network(github.com)` });
+    expect(asked).toEqual([]);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["deny", "rule", null]]);
+  });
+
+  it("allows a public destination on an allow rule without asking", async () => {
+    networkRule = async () => ({ decision: "allow", pattern: "Network(*.github.com)", scope: "user" });
+    expect(await callback()(github, publicGithub())).toBe(true);
+    expect(asked).toEqual([]);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "rule", null]]);
+  });
+
+  it("asks instead of allowing when an allow rule's name resolves to a private address", async () => {
+    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+    expect(await callback()(github, listener(SHELL_TOKEN, ["10.0.0.5"]))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.network).toBe("local");
+  });
+
+  it("asks on an ask rule even when a grant covers the destination", async () => {
+    await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
+    networkRule = async () => ({ decision: "ask", pattern: "Network(github.com)", scope: "user" });
+    expect(await callback()(github, publicGithub())).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(1);
+  });
+
+  // Security review of #223: host rules keep the grant invariants. They are shell-origin, and a shared identity uses no persistent one.
+  it("never consults host rules for a terminal tab", async () => {
+    let consulted = false;
+    networkRule = async () => { consulted = true; return { decision: "allow", pattern: "Network(github.com)", scope: "user" }; };
+    expect(await callback()(github, listener(TERMINAL_TOKEN, ["140.82.112.3"]))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(consulted).toBe(false);
+    expect(asked).toHaveLength(1);
+  });
+
+  it.each([["user", false], ["project", false], ["session", true]] as const)("a shared identity honors a %s allow rule: %s", async (scope, honored) => {
+    strength = "shared";
+    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope });
+    const result = await callback()(github, { ...publicGithub(), identity: "username" });
+    if (honored) {
+      expect(result).toBe(true);
+      expect(asked).toEqual([]);
+    } else {
+      expect(result).toEqual({ allow: false, reason: "denied by the user" });
+      expect(asked).toHaveLength(1);
+    }
+  });
+
+  it("a shared identity still meets a persistent deny rule", async () => {
+    strength = "shared";
+    networkRule = async () => ({ decision: "deny", pattern: "Network(github.com)", scope: "user" });
+    expect(await callback()(github, { ...publicGithub(), identity: "username" })).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.denyRule} Network(github.com)` });
+  });
+
+  it("turns a host rule lookup failure into an audited deny", async () => {
+    networkRule = async () => { throw new Error("project rules file is corrupt"); };
+    expect(await callback()(github, publicGithub())).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.failed}: project rules file is corrupt` });
+    expect(audit.map((row) => [row.decision, row.basis])).toEqual([["deny", "policy"]]);
   });
 });

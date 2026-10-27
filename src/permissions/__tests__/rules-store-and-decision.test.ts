@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Across scopes, floors outrank deny, then ask, then allow; corrupt rule data must not silently disappear.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +33,7 @@ import { PermissionRulesFileCorruptError, validatePermissionRule } from "../rule
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
-import { shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
   captureApprovalWorkingDirectory,
@@ -167,19 +168,19 @@ describe("decision path", () => {
     vi.stubEnv("HOME", home);
     vi.stubEnv("USERPROFILE", home);
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "project", projectCwd: project });
     const restarted = new PermissionManager(permissionsFile);
     await restarted.ensureProjectRulesLoaded(project);
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project }))
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: project }))
       .toMatchObject({ decision: "allow" });
     const sibling = join(dir, "sibling");
     mkdirSync(sibling);
     await restarted.ensureProjectRulesLoaded(sibling);
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: sibling }))
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: sibling }))
       .toMatchObject({ decision: "ask" });
   });
 
-  it("Bash allow rules persist, survive restart, and match only via the shell subject", async () => {
+  it("stored Bash rules survive restart but require a proven shell subject", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
     // A plain (unsandboxed) shell runs only on an exact rule (owner 2026-10-25, unsandboxed shell exact-rule requirement): the stored prefix does not run it.
@@ -188,7 +189,11 @@ describe("decision path", () => {
 
     const restarted = new PermissionManager(permissionsFile);
     await restarted.loadRulesFromFile();
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    await restarted.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
+    const proven = new PermissionManager(permissionsFile);
+    await proven.loadRulesFromFile();
+    expect(proven.checkDetailed("bash", "builtin", "shell", null, shell("printf ready"))).toMatchObject({ decision: "allow", layer: 3 });
     expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git push"))).toMatchObject({ decision: "ask" });
     // No subject → the specifier never matches the tool name.
     expect(restarted.checkDetailed("bash", "builtin", "shell")).toMatchObject({ decision: "ask" });
@@ -214,30 +219,30 @@ describe("decision path", () => {
     const ctx = (command: string) => ({ ...shell(command), projectRulesCwd: project });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny", layer: 1 });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     pm.setMode("allow");
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
-    // A deny rule that cannot see inside `bash -c` makes the call ask, even in allow mode.
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", forceModal: true });
+    // Literal shell payloads are opaque and require their own complete exact rule.
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "project", projectCwd: project });
     const location = projectRulesLocation(dir, project);
     expect(location.filePath.startsWith(join(dir, "permissions", "project-rules"))).toBe(true);
-    expect(JSON.parse(readFileSync(location.filePath, "utf8"))).toMatchObject({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] });
-    await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: true, rules: [{ pattern: "Bash(npm test)" }] });
+    expect(JSON.parse(readFileSync(location.filePath, "utf8"))).toMatchObject({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(printf ready)", action: "allow" }] });
+    await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: true, rules: [{ pattern: "Bash(printf ready)" }] });
     // A sibling project does not inherit it.
     const sibling = join(dir, "sibling");
     mkdirSync(sibling);
     await pm.ensureProjectRulesLoaded(sibling);
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: sibling })).toMatchObject({ decision: "ask" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: sibling })).toMatchObject({ decision: "ask" });
     await pm.ensureProjectRulesLoaded(project);
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "allow" });
-    await pm.removeRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "ask" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: project })).toMatchObject({ decision: "allow" });
+    await pm.removeRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "project", projectCwd: project });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: project })).toMatchObject({ decision: "ask" });
   });
 
   it("a Store B corruption reported by the pipeline asks for non-read calls only", () => {
@@ -271,11 +276,11 @@ describe("decision path", () => {
     writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     mkdirSync(join(repo, "packages", "app"), { recursive: true });
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
+    await pm.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     await pm.ensureProjectRulesLoaded(repo);
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
     // Outside a repository the cwd itself is the project.
     expect(projectRulesLocation(dir, project).projectRoot).toBe(captureApprovalWorkingDirectory(project).path);
   });
@@ -291,11 +296,11 @@ describe("decision path", () => {
     mkdirSync(a);
     mkdirSync(b);
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: a });
+    await pm.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "project", projectCwd: a });
     const restarted = new PermissionManager(permissionsFile);
     for (const [cwd, decision] of [[a, "allow"], [b, "ask"]] as const) {
       await restarted.ensureProjectRulesLoaded(cwd);
-      expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: cwd }))
+      expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: cwd }))
         .toMatchObject({ decision });
     }
     expect(projectRulesLocation(dir, a).identity).not.toBe(projectRulesLocation(dir, b).identity);
@@ -343,11 +348,11 @@ describe("decision path", () => {
   it("re-reads a project rule file when it changes on disk", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.ensureProjectRulesLoaded(project);
-    const ctx = { ...shell("npm test"), projectRulesCwd: project };
+    const ctx = { ...shell("printf ready"), projectRulesCwd: project };
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask" });
     const location = projectRulesLocation(dir, project);
     mkdirSync(join(dir, "permissions", "project-rules"), { recursive: true });
-    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] }));
+    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [withCurrentShellRuleVersion({ pattern: "Bash(printf ready)", action: "allow" })] }));
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "allow" });
     writeFileSync(location.filePath, "{ broken");
@@ -569,21 +574,22 @@ describe("non-shell session approvals are keyed by the root conversation", () =>
 
 describe("host shell-rule suggestions", () => {
   it("defaults to exact argv and proves whole-command coverage", () => {
-    expect(buildShellRuleApproval("git status --short", project, true, "conversation-a")).toMatchObject({ exactRule: "Bash(git status --short)", persistentAllowed: true, sessionAllowed: true });
-    expect(buildShellRuleApproval("git status && git diff", project, true, "conversation-a").exactRule).toBeNull();
-    expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status && curl https://example.test", project)).toBe(false);
-    expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status --short", project)).toBe(true);
+    expect(buildShellRuleApproval("bash", "git status --short", project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval("bash", "printf ready", project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: "Bash(printf ready)", persistentAllowed: true, sessionAllowed: true });
+    expect(buildShellRuleApproval("bash", "git status && git diff", project, { allow: true, deny: true }, "conversation-a").exactRule).toBeNull();
+    expect(shellRuleCoversCommand("bash", "Bash(git status *)", "allow", "git status && curl https://example.test", project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", "Bash(git status *)", "allow", "git status --short", project)).toBe(false);
   });
 
   it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
   });
 
   it.each([
-    ["git status --short", "Bash(git status --short)"],
+    ["git status --short", null],
     ["ls -la src", "Bash(ls -la src)"],
-  ])("suggests exact consent for %s", (command, pattern) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: pattern, persistentAllowed: true, sessionAllowed: true });
+  ])("keeps the declared exact suggestion for %s", (command, pattern) => {
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: pattern, persistentAllowed: pattern !== null, sessionAllowed: pattern !== null });
   });
 
   it.each([
@@ -594,10 +600,10 @@ describe("host shell-rule suggestions", () => {
     "git switch -f main", "git switch --discard-changes main", "git switch -C main", "cp draft.txt final.txt",
     "git checkout README.md",
   ])("never offers or stores any rule covering the irreversible %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false });
     const argv = command.split(" ");
     expect(refusedShellPrefix(argv, false)).not.toBeNull();
-    expect(() => shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toThrow();
+    expect(() => shellRuleCoversCommand("bash", `Bash(${command})`, "allow", command, project)).toThrow();
   });
 
   it.each([
@@ -613,36 +619,36 @@ describe("host shell-rule suggestions", () => {
     "npm unpublish pkg@1.0.0", "pnpm unpublish pkg", "yarn npm unpublish", "nerdctl rm web", "nerdctl system prune -af",
     "nerdctl compose down -v", "install -m 755 tool /usr/local/bin/tool", "xattr -c app", "xattr -d com.apple.quarantine app",
   ])("never offers, stores or matches a rule for %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false });
     expect(refusedShellPrefix(command.split(" "), false)).not.toBeNull();
     expect(() => validatePermissionRule({ pattern: `Bash(${command})`, action: "allow" })).toThrow();
-    expect(shellRuleCoversCommand("Bash(git log *)", "allow", command, project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", "Bash(git log *)", "allow", command, project)).toBe(false);
   });
 
   it.each(["git clean -fdx", "truncate -s 1M data.bin", "git checkout -- .", "git reset --hard", "git stash drop", "docker system prune -af", "kubectl delete pod web", "mv draft.txt final.txt", "tee out.txt", "unlink stale.lock"])("keeps irreversible commands once-only: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
   });
 
   it.each(["rm -v -r ~/work", "rm --recursive --force ~", "rm -i -rf ~", "rm -d -R /tmp/x", "chmod -R 777 /"])("treats argv-level destruction as a floor: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
   });
 
   // Owner 2026-10-25 (five-choice shell card): every save scope stores this one exact rule, never a prefix, and only a single simple command has one.
-  it.each(["git status --short", "npm test -- --watch=false", "ls -la src"])("offers session, project and always for the exact rule of %s, sandboxed or not", (command) => {
-    const approval = buildShellRuleApproval(command, project, true, "conversation-a");
+  it.each(["printf ready", "cat README.md", "ls -la src"])("offers session, project and always for the exact rule of %s, sandboxed or not", (command) => {
+    const approval = buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a");
     expect(approval.exactRule).toBe(`Bash(${command})`);
     expect(approval).toMatchObject({ sessionAllowed: true, persistentAllowed: true });
     expect(parseRuleSpecifier(approval.exactRule!)).toMatchObject({ kind: "bash", wildcard: false });
-    expect(shellRuleCoversCommand(approval.exactRule!, "allow", `${command} --extra`, project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", approval.exactRule!, "allow", `${command} --extra`, project)).toBe(false);
   });
 
   it.each(["git status; git diff", "git status | cat", "ls && pwd"])("offers no saveable rule for the compound %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, sessionAllowed: false, persistentAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, sessionAllowed: false, persistentAllowed: false });
   });
 
   it("does not derive a session grant without a conversation or widen a sealed one-shot", () => {
-    expect(buildShellRuleApproval("ls", project, true).sessionAllowed).toBe(false);
-    expect(buildShellRuleApproval("ls", project, false, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval("bash", "ls", project, { allow: true, deny: true }).sessionAllowed).toBe(false);
+    expect(buildShellRuleApproval("bash", "ls", project, { allow: false, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
   });
 });
 
@@ -698,15 +704,15 @@ describe("sensitive reads through searches, browser stores, /proc and git object
   });
 
   const floored = (command: string, cwd: string) => {
-    expect(shellSensitivePathSignal(command, cwd)).not.toBeNull();
-    expect(buildShellRuleApproval(command, cwd, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    const directlyResolvedLink = /^(?:grep -R BEGIN keys|find -H keys )/.test(command);
+    expect(inspectShellCommand(command, cwd)).toMatchObject({ sensitive: directlyResolvedLink ? expect.any(String) : null });
   };
 
   it.each([
     "grep -r BEGIN ~", "grep -rn BEGIN /", "grep --recursive BEGIN ~", "grep -d recurse BEGIN ~", "grep -r BEGIN ..",
     "rg -uuu BEGIN ~", "rg --hidden BEGIN ~", "rg BEGIN /", "rg -e BEGIN ~ src",
     "grep --directories recurse BEGIN ~", "grep --directories=recurse BEGIN ~",
-  ])("floors a recursive search rooted above a sensitive directory: %s", (command) => {
+  ])("keeps a recursive search scope unproven: %s", (command) => {
     floored(command, project);
   });
 
@@ -716,7 +722,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     // BSD find leading options, and `-f <path>` naming a root.
     "find -L -E . -name id_ed25519", "find -L -x -s . -type f", "find -L -d -X . -type f", "find -L -f . -name id_ed25519",
     "find -sL . -type f",
-  ])("floors a symlink-following search that reaches a sensitive path through a project link: %s", (command) => {
+  ])("keeps a symlink-following search scope unproven: %s", (command) => {
     floored(command, project);
   });
 
@@ -735,7 +741,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     beforeEach(() => { Object.defineProperty(process, "platform", { value: platform }); });
     afterEach(() => { Object.defineProperty(process, "platform", { value: original }); });
 
-    it.each(follows)("floors %s, which follows the project link", (command) => {
+    it.each(follows)("keeps %s unproven because it follows the project link", (command) => {
       floored(command, project);
     });
 
@@ -756,9 +762,9 @@ describe("sensitive reads through searches, browser stores, /proc and git object
   });
 
   it("does not let catalog find cover a search the floor stops", () => {
-    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find ~/.ssh -name id_ed25519", project)).toBe(false);
-    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
-    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(true);
+    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find ~/.ssh -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(false);
   });
 
   it.each([
@@ -793,10 +799,10 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     ["git show origin/main:config/.env", "Bash(git show *)"], ["git cat-file -p HEAD:.env", null],
     ["git log -p -- .env", "Bash(git log *)"], ["git diff HEAD -- .env", "Bash(git diff *)"],
     ["git blame -- .env", "Bash(git blame *)"], ["git show HEAD:id_rsa", "Bash(git show *)"],
-  ])("floors the git object path in %s like a direct read", (command, catalog) => {
-    expect(shellSensitivePathSignal(command, project)).not.toBeNull();
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, sessionAllowed: false });
-    if (catalog) expect(shellRuleCoversCommand(catalog, "allow", command, project)).toBe(false);
+  ])("classifies the outer git path in %s without reading object contents", (command, catalog) => {
+    const directPathOperand = /(?:origin\/main:config\/\.env|\s--\s\.env$)/.test(command);
+    expect(shellSensitivePathSignal(command, project)).toEqual(directPathOperand ? expect.any(String) : null);
+    if (catalog) expect(shellRuleCoversCommand("bash", catalog, "allow", command, project)).toBe(false);
   });
 
   it.each(["git show HEAD:src/app.ts", "git log -p -- src", "git diff HEAD -- src/app.ts"])("leaves the git read %s alone", (command) => {

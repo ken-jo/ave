@@ -21,9 +21,12 @@ try {
   const upstream = join(temporary, "upstream");
   cpSync(module.Dir, upstream, { recursive: true });
   const lexer = join(upstream, "syntax/lexer.go");
-  const patchedFiles = ["syntax/lexer.go", "syntax/parser.go", "syntax/parser_arithm.go", "syntax/braces.go", "syntax/nodes.go"];
-  for (const name of patchedFiles) chmodSync(join(upstream, name), 0o644);
-  for (const patch of ["exact-bash-lexing.patch", "bounded-parser-recursion.patch", "bounded-brace-work.patch", "logical-shell-input.patch"]) {
+  const patchedFiles = ["syntax/lexer.go", "syntax/parser.go", "syntax/parser_arithm.go", "syntax/braces.go", "syntax/nodes.go", "syntax/typedjson/json.go"];
+  for (const name of patchedFiles) {
+    chmodSync(dirname(join(upstream, name)), 0o755);
+    chmodSync(join(upstream, name), 0o644);
+  }
+  for (const patch of ["exact-bash-lexing.patch", "bounded-parser-recursion.patch", "bounded-brace-work.patch", "logical-shell-input.patch", "literal-heredoc-ranges.patch", "cached-json-shapes.patch"]) {
     run("git", ["apply", "--check", join(source, patch)], upstream);
     run("git", ["apply", join(source, patch)], upstream);
   }
@@ -36,7 +39,7 @@ try {
   cpSync(join(goroot, "lib/wasm/wasm_exec.js"), join(output, "wasm_exec.cjs"));
   cpSync(join(module.Dir, "LICENSE"), join(output, "LICENSE.parser"));
   cpSync(join(source, "LICENSE.runtime"), join(output, "LICENSE.runtime"));
-  const inputs = Object.fromEntries(["build.mjs", "main.go", "go.mod", "go.sum", "exact-bash-lexing.patch", "bounded-parser-recursion.patch", "bounded-brace-work.patch", "logical-shell-input.patch", "LICENSE.runtime", "README.md"].map((name) => [name, hash(join(source, name))]));
+  const inputs = Object.fromEntries(["build.mjs", "main.go", "go.mod", "go.sum", "exact-bash-lexing.patch", "bounded-parser-recursion.patch", "bounded-brace-work.patch", "logical-shell-input.patch", "literal-heredoc-ranges.patch", "cached-json-shapes.patch", "LICENSE.runtime", "README.md"].map((name) => [name, hash(join(source, name))]));
   writeFileSync(join(output, "manifest.json"), JSON.stringify({
     compiler: "go1.26.5", module: "mvdan.cc/sh/v3", version: module.Version,
     moduleSum: module.Sum, moduleGoModSum: module.GoModSum,

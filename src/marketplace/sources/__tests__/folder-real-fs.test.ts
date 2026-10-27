@@ -10,9 +10,9 @@ import type { FolderFs } from "../folder-fs.js";
 import { FolderTree } from "../folder-tree.js";
 
 const SKILL = "---\nname: note\ndescription: A note skill\n---\nWrite notes.\n";
-const AUTHORITY = { capabilities: ["notes:read"], requires: { minAppVersion: "0.12.0", hostProtocol: "3" } };
+const AUTHORITY = { capabilities: ["notes:read"], requires: { minAppVersion: "0.12.0", hostProtocol: "4" } };
 const PLUGIN_JSON = `${JSON.stringify({ name: "alpha", version: "1.0.0", description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "alpha", entry: "dist/index.js", ...AUTHORITY } } })}\n`;
-const PLUGIN_DESCRIPTOR = `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.12.0", hostProtocol: "3", payload: { authority: AUTHORITY, artifact: { release: { repo: "acme/alpha", sha256: "0".repeat(64) } } } })}\n`;
+const PLUGIN_DESCRIPTOR = `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.12.0", hostProtocol: "4", payload: { authority: AUTHORITY, artifact: { release: { repo: "acme/alpha", sha256: "0".repeat(64) } } } })}\n`;
 const windows = process.platform === "win32";
 
 let scratch: string;

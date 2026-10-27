@@ -115,10 +115,17 @@ describe("terminal_run permission", () => {
   });
 
   it("a Bash(...) allow rule runs the command without a card, as it would for bash", async () => {
-    const { decision, requestAndWait, typed } = await run("npm test", { rules: [{ pattern: "Bash(npm test)", action: "allow" }] });
+    const { decision, requestAndWait, typed } = await run("printf ready", { rules: [{ pattern: "Bash(printf ready)", action: "allow" }] });
     expect(decision).toMatchObject({ decision: "allow" });
     expect(requestAndWait).not.toHaveBeenCalled();
-    expect(typed).toEqual(["npm test"]);
+    expect(typed).toEqual(["printf ready"]);
+  });
+
+  it("keeps implicit package startup modal even with an exact terminal rule", async () => {
+    const result = await run("npm test", { mode: "allow", rules: [{ pattern: "Bash(npm test)", action: "allow" }] });
+    expect(result.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.typed).toEqual([]);
   });
 
   it("ignores a prefix for plain terminal execution even in allow mode", async () => {

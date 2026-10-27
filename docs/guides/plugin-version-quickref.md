@@ -14,7 +14,7 @@ today.
 | The app refuses to install a version whose `minAppVersion` is newer than the app. | `src/marketplace/resolve/descriptor.ts` (`PACKAGE_INCOMPATIBLE`) |
 | The app refuses to load an extension whose `minAppVersion` is newer than the app. | `markIncompatibleAppVersion` in `src/plugins/runtime/index.ts` (`incompatible-app-version`) |
 | The app refuses to load an extension whose `requires.hostProtocol` is missing or not served. | `markIncompatibleHostProtocol` in `src/plugins/runtime/index.ts`, served set `HOST_PROTOCOL_VERSIONS_SERVED` in `src/plugins/isolation/host-api-wire.ts` (`incompatible-host-protocol`) |
-| `minAppVersion` must not be lower than the first app release that served the declared protocol. | `HOST_PROTOCOL_FIRST_APP_VERSION`, checked by `src/plugins/validate/validate-plugin.ts` and at marketplace install by `gitInstallManifestMismatches` in `src/marketplace/resolve/manifest-rules.ts` |
+| `minAppVersion` must not be lower than a known first app release for the declared protocol; unreleased availability is determined by protocol negotiation. | `HOST_PROTOCOL_FIRST_APP_VERSION`, checked by `src/plugins/validate/validate-plugin.ts` and at marketplace install by `gitInstallManifestMismatches` in `src/marketplace/resolve/manifest-rules.ts` |
 
 Both load refusals are not fixed by reinstalling: the same package fails the
 same way. `incompatible-app-version` means update the app;
@@ -23,9 +23,7 @@ this app does not serve.
 
 ## What To Declare
 
-The app serves host protocol `"3"` only (the `ave/*` wire). Extensions built
-for protocol 2 are refused before they start. An extension for the
-first release that serves protocol 3 declares:
+Released hosts serve protocol `"3"`; published extensions currently declare:
 
 ```jsonc
 "extensions": {
@@ -35,15 +33,15 @@ first release that serves protocol 3 declares:
 }
 ```
 
-The validator's floor for protocol 3 is `HOST_PROTOCOL_FIRST_APP_VERSION["3"]`
-= `"0.14.0"` in `src/plugins/isolation/host-api-wire.ts`: 0.14.0 is the first
-release that serves protocol 3, and the released 0.13.0 served protocol 2 only.
-A lower `minAppVersion` fails validation.
-
-The protocol 3 migration note is in [`CHANGELOG.md`](../../CHANGELOG.md); the
-field definitions are in [Manifest Basics](./plugin-development.md#manifest-basics).
-A `process` extension has an extra floor; see
-[`entry` or `process`](./plugin-development.md#entry-or-process).
+**Upcoming, unreleased:** this development build serves protocol 4 and requires
+host-issued loopback OAuth state. Do not publish protocol-4 packages for released
+protocol-3 hosts: the host-protocol declaration, independently of `minAppVersion`,
+refuses an unserved contract. No first published app version exists for protocol 4;
+the release PR selects it and records the numeric floor. The untagged
+`4/v0.14.1` schema candidate is not a compatibility promise.
+See [protocol §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)
+and the [upcoming OAuth migration](./plugin-development.md#loopback-oauth-with-pkce).
+A `process` extension also follows the [entry rules](./plugin-development.md#entry-or-process).
 
 When you start using a contract member that a later app release added, raise
 `minAppVersion` to that release in both `plugin.json` and the package

@@ -53,24 +53,19 @@ import { randomBytes } from "node:crypto";
  * the previous version after its announced boundary (§3.2). The same value
  * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["3"] as const;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["4"] as const;
 
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
 
 /**
- * The first app version that served each protocol this build serves
- * (`docs/design/plugin-hostapi-protocol.md` decision 29).
- *
- * A manifest that declares a protocol must not declare a `minAppVersion` below
- * this: an older app would install the plugin and then refuse to load it. Held
- * by a test to the lowest `appVersion` the published schema mirror records for
- * the protocol, so it is read off the release history rather than restated.
+ * Known first published app release for each served protocol. An unreleased
+ * protocol has no numeric floor: requires.hostProtocol negotiation determines
+ * availability, independently of the open app-version candidate. Release
+ * preparation records the actual first version when that protocol ships.
  */
-export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string>> = {
-  // Protocol 3 (the `ave/*` wire) first ships in 0.14.0; released 0.13.0
-  // served protocol 2 only, so a protocol-3 plugin cannot load on it.
-  "3": "0.14.0",
+export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string | undefined>> = {
+  "4": undefined,
 };
 
 /** Whether `value` names a version this build serves. */
@@ -1186,8 +1181,8 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
-  // The host-owned loopback redirect catcher. `handle` is the only state that
-  // crosses, and it is a NAME rather than a resource: the child cannot act on
+  // The host-owned loopback redirect catcher returns a URI and single-use OAuth
+  // state. Its `handle` is a NAME rather than a resource: the child cannot act on
   // it except by handing it back to one of these three members, each of which
   // re-checks that the calling plugin is its owner. That is why `lifetime` is
   // "none" and not "child-disposable" — nothing on the child side needs

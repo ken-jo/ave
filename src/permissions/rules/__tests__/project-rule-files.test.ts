@@ -37,10 +37,13 @@ describe("project rule root boundaries", () => {
     const cwd = join(repo, "packages", "app");
     repository(repo);
     mkdirSync(cwd, { recursive: true });
-    const approval = buildShellRuleApproval("git status", cwd, true, "conversation-a");
+    const approval = buildShellRuleApproval("bash", "printf ready", cwd, { allow: true, deny: true }, "conversation-a");
     expect(approval.projectCwd).toBe(cwd);
     expect(approval.projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     expect(projectRuleRoot(cwd)).toBe(projectRulesLocation(root, cwd).projectRoot);
+    const unproven = buildShellRuleApproval("bash", "git status", cwd, { allow: true, deny: true }, "conversation-a");
+    expect(unproven.exactRule).toBeNull();
+    expect(unproven.projectRoot).toBe(approval.projectRoot);
   });
 
   it.each([

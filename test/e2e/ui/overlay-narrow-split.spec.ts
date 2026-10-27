@@ -170,7 +170,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
         scrollRange: approval.scrollHeight - approval.clientHeight,
         scrollTop: approval.scrollTop,
         laneScrollTop: lane.scrollTop,
-        buttons: ["open-permanent-deny-settings", "deny-button", "allow-always-button", "approve-button"]
+        buttons: ["deny-button", "approval-deny-menu", "allow-session-button", "approval-allow-menu", "approve-button"]
           .map((id) => {
             const button = approval.querySelector<HTMLElement>(`[data-testid="${id}"]`);
             return button ? hit(button) : false;

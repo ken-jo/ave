@@ -1,3 +1,4 @@
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +28,7 @@ describe("host shell invocation authorization", () => {
   it.each(["remove allow", "add deny"])("requires normal authorization again after %s invalidates a decision", async (change) => {
     const manager = new PermissionManager(join(directory, "permissions.json"));
     // No sandbox here, so only an exact allow rule can authorize the host run.
-    manager.setRules([{ pattern: "Bash(printf authorized)", action: "allow" }]);
+    manager.setRules([{ pattern: "Bash(printf authorized)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const check = vi.spyOn(manager, "checkDetailed");
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute");
@@ -55,7 +56,7 @@ describe("host shell invocation authorization", () => {
       sessionId: "host-authorization", permissionContext: userPermissionContext(),
       callbacks: {
         onToolStart: () => manager.setRules(change === "remove allow" ? [] : [
-          { pattern: "Bash(printf authorized)", action: "allow" },
+          { pattern: "Bash(printf authorized)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION },
           { pattern: "Bash(printf authorized)", action: "deny" },
         ]),
       },
