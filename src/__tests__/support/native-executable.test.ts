@@ -1,10 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, win32 } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertCodexExecutableLocation, assertCodexLocations } from "../../main/codex-executable-location.js";
-import { fixtureAclHost, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "./native-executable.js";
+import { fakeFixtureAclTransport, fixtureAclHost, maskFixtureAncestorAclTransport, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "./native-executable.js";
+import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("./native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
@@ -29,6 +30,17 @@ function fixture(grant = false): string {
   if (grant) icacls(root, "/grant", `${AUTHENTICATED_USERS}:(M)`);
   return writeNativeExecutable(join(root, "bin", "codex.exe"));
 }
+
+it("composes packaged resources before fixture access-rule transports query the operating system", () => {
+  const previousHost = fixtureAclHost.current;
+  for (const createTransport of [() => fakeFixtureAclTransport(execFile), () => maskFixtureAncestorAclTransport(spawn)]) {
+    configureHostResources({ resourcePath: join(tmpdir(), "uncomposed-fixture"), isPackaged: false });
+    const transport = createTransport();
+    expect(getHostResources()).toEqual({ resourcePath: resolve("resources"), isPackaged: false });
+    transport.discard();
+  }
+  fixtureAclHost.current = previousHost;
+});
 
 describe.skipIf(process.platform !== "win32")("Windows fixture ancestor ACL masking", () => {
   it("admits a clean fixture once only its shared ancestors read as owner-only", async () => {

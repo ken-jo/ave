@@ -75,7 +75,7 @@ async function caskFixture(prefix: string, cask = "claude-code", platform: NodeJ
   const physicalHome = join(f.root, "logical", "home");
   const physicalPrefix = linuxPrefix ? join(physicalHome, "linuxbrew", ".linuxbrew") : join(f.root, "prefix");
   const translate = (path: string): string => {
-    if (linuxPrefix && ["/home", "/home/linuxbrew"].includes(path)) return `${physicalHome}${path.slice("/home".length)}`;
+    if (linuxPrefix && ["/home", dirname(prefix)].includes(path)) return `${physicalHome}${path.slice("/home".length)}`;
     return path === prefix || path.startsWith(`${prefix}/`) ? `${physicalPrefix}${path.slice(prefix.length)}` : path;
   };
   const project = (path: string): string => {

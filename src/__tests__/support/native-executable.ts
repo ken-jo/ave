@@ -7,8 +7,9 @@ import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { vi } from "vitest";
 import type { CodexExecutableArtifact } from "../../main/codex-executable-artifact.js";
-// Keep runtime imports out so process-module mock factories can load this helper.
+// Keep process execution imports out so process-module mock factories can load this helper.
 import { WindowsAclHost, WindowsAclHostError, _setWindowsAclTransportForTest, type WindowsAclTransport } from "../../main/windows-acl-host.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const readLstat = fs.lstat.bind(fs);
 const fixtureAncestors = new Set<string>();
@@ -132,6 +133,7 @@ export const fixtureAclHost: { current?: WindowsAclHost } = {};
 
 /** Keep real host replies while masking fixture ancestors; spawn outside suite mocks. */
 export function maskFixtureAncestorAclTransport(spawn: typeof ChildProcessModule.spawn): WindowsAclTransport {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   const host = new WindowsAclHost((command, args, options) => spawn(command, args, options));
   fixtureAclHost.current = host;
   return {
@@ -160,6 +162,7 @@ export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeo
 }
 
 export function fakeFixtureAclTransport(execFile: typeof ChildProcessModule.execFile): WindowsAclTransport {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   return {
     async request(request) {
       try {
