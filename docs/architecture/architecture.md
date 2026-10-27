@@ -72,8 +72,175 @@ The [page preview contract](page-document-preview.md) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
 The [agent document tools](agent-document-tools.md) reuse that parser with bounded
 model-context selections and policy-checked, session-bound panel requests.
-The [XLSX editing skill](xlsx-skill-editing.md) uses only the sandbox shell;
-the existing viewer exposes its in-file recalculation request.
+The [XLSX editing contract](xlsx-skill-editing.md) keeps editing in the agent's
+ordinary approved sandbox shell. The document panel is a read-only live view;
+the host observes and renders, with no document publication API.
+
+### Agent activity observation
+
+One main-process observation daemon owns bounded, session-bound adapter
+lifetimes. Its source interface is deliberately separate from its document
+rendering engine. Only the document adapter ships here; browser and terminal
+sources may implement the same interface later. User document, browser and
+terminal activity is outside the observation contract. Events and snapshots
+stay in local memory and private process directories: they are not transcript
+content, telemetry, remote-surface events or provider input.
+
+Every event has `source: "document" | "browser" | "terminal"`,
+`actor: "agent"`, host-derived `sessionId`, `target: { id, path }`, monotonically
+increasing target-local `seq`, `kind`, `before`, `after`, and `ts` (epoch
+milliseconds). Document kinds are `element`, `snapshot`, and `status`.
+An element names a cell by sheet name and absolute row/column, or a text line
+by one-based line number, and carries bounded display strings in `before`/`after`.
+Journal cells are explicitly advisory until reconciliation; native line diffs
+come from a verified save. A snapshot replaces the bounded rendered table and
+its recalculation signal, or the bounded text document. A status carries a
+stable localized code without document contents. Element addresses leave room
+for paragraph and shape adapters without implementing them. The daemon, not a
+journal or renderer, supplies actor, session, target identity, sequence and
+timestamp.
+
+The adapter contract starts an exact target, accepts a rendered snapshot and
+agent mutation evidence, reconciles a settled save, and disposes all watches,
+timers and pending work. A replaceable `DocumentObservationEngine` accepts
+already admitted bytes, a format and selection index, and returns a bounded
+table or text document under cancellation. Table decoding delegates to the
+existing isolated parser; text decoding retains the existing UTF-8 preview's
+2,000,000-byte and 5,000-line ceilings and rejects binary content. There is no
+converter download, warm conversion service or new document serializer. Engine
+absence produces the explicit `engine-unavailable` status and leaves the existing viewer usable;
+parse, integrity and contract errors remain errors rather than selecting that
+fallback. Future engines must retain bounded input/output, verification,
+confinement and per-session lifecycle ownership.
+
+Full default text/code reads can bind observation through the same private
+preview read contract and rendered acknowledgement as tables. Selected line
+windows, inline snippets and images retain ordinary viewing without observation.
+The initial content and digest come from the same admitted bytes. Page documents
+retain their existing readers without synthetic live events; adding a shared
+viewer header does not add a page observation engine or content capture.
+Observed text reads retain only the newest request owner for each actual frame
+and canonical path. A late replaced read cannot register or release the newer
+view. There are at most 16 current request-owner keys; cancellation still waits
+for a filesystem operation already in progress to return.
+
+Scope comes from successful agent `open_document` acknowledgements, bound to
+their existing live session/window/main-frame receipt, and exact native
+mutation targets known in the current agent turn. Successful native mutations
+retain at most 16 exact target identities until that turn ends, even when a
+view has not opened yet. No contents are captured for that admission metadata;
+watching starts only once a same-session view supplies a rendered baseline.
+Turn completion removes this temporary scope, while agent-opened panels retain
+their own view lifetime. An ordinary user preview is
+only a rendered baseline: it creates no filesystem watch. If an authorized
+agent later changes that exact file, it can become an observed target. There
+is no workspace enumeration or recursive watch. Target admission requires a
+host model-turn context and a successfully authorized tool invocation;
+renderer metadata and UI/plugin tool origins cannot create that context.
+Watching a parent directory only filters the exact basename so replacement
+renames remain observable; it never reads sibling contents.
+
+For an agent table open, the existing tab-selection receipt and a host-accepted
+initial rendered-grid acknowledgement must both arrive before `open_document`
+completes. Either may arrive first; a still-live matching rendered baseline can
+satisfy readiness immediately. The original document-open deadline, frame,
+session and cancellation guards remain in force. This prevents an immediate
+following edit from outrunning baseline admission. Pending agent-open marks
+without a parsed view expire within the existing reader startup, parse and busy
+retry budgets. Files without a rendered baseline are never watched or read by
+the observer merely because a tool named them.
+
+Filesystem notifications are wakeups, not writer identity. Native mutations
+provide their exact intended post-image; the skill provides a tool-bound
+journal completion digest. A displayed agent delta requires a matching
+pre-image digest rooted in the last acknowledged rendered snapshot and a
+matching stable post-image. Consecutive admitted mutations may extend an
+unbroken before/after digest chain while a prior snapshot awaits rendering;
+they do not advance the rendered comparison baseline. Any gap in that chain
+requires reload. Mere temporal overlap with an agent tool is insufficient.
+Unattributed or conflicting saves must not be recorded as agent changes.
+The adapter debounces notifications for 80 ms, requires two equal descriptor
+size/mtime observations 40 ms apart, retries a transient rename for at most
+eight settle attempts, and computes the cell or line diff against the last
+acknowledged rendered snapshot. A prior user save therefore cannot be folded
+into an attributed agent delta.
+
+An agent shell's existing isolated sandbox HOME is its action directory.
+`AVE_DOCUMENT_JOURNAL` names only the host-selected
+`<HOME>/document-observation/journal.jsonl`; host registration binds this
+directory to one admitted tool call, turn and session. The skill appends UTF-8
+JSON Lines with version `1`: `begin` has `editId`, canonical `target`, and
+`beforeHash`; `cell` has `editId`, `sheet`, A1 `cell`, `before`, and `after`;
+`commit` has `editId` and `afterHash`. Hashes are lowercase SHA-256 hex.
+The journal is capped at 2 MiB per invocation, 16 KiB per line, 500 cell
+records per edit, and 2,000 display characters per value. The reader reads at
+most 64 KiB per poll, retains an incomplete final line until its newline,
+and refuses truncation, replacement, links, malformed records and paths
+outside the registered action directory. A journal target can match only a
+host-known target or an already rendered exact file in that same session;
+it creates no general file-read authority.
+
+Journal cells are provisional display data. They never supply document bytes
+to the host or authorize a write. A verified save discards the provisional
+overlay and renders the actual parsed file, including when journal cell text
+disagrees. Failed, cancelled or unverifiable edits clear overlays and require
+a reload rather than keeping a draft as file truth. The skill retains its
+existing size ceiling, refusal rules, backup and atomic replacement; the host
+has no edit IPC, staging publisher, workbook transaction or write token.
+
+Each daemon has at most 16 active document views, 256 queued events and
+1 MiB of queued element data per view. It sends batches of at most 32 events
+with at most 64 unacknowledged events. Repeated pending elements coalesce by
+address; overload produces a resynchronization status and a fresh verified
+snapshot, never an unbounded replay. Snapshot payloads retain the existing
+4 MiB preview cap. Renderer acknowledgements advance the rendered baseline
+only for the matching snapshot sequence; a delivered snapshot is not assumed
+rendered. Releasing a view, changing its session, navigating or destroying
+its frame, closing or hiding the panel, ending a journal invocation or
+shutting down disposes the corresponding capabilities and bounded buffers. A
+closed or hidden panel may stay mounted for a retained side chat or browser
+tab; its document views keep their sheet, scroll and page position but hold no
+subscription, and showing the panel again reads a fresh baseline. No
+observation survives a host restart.
+
+Private observation push and acknowledgement IPC require the same registered
+app-window main-frame identity as preview reads: a live registered window,
+its actual main frame and default session, rechecked at delivery. Webviews,
+plugin partitions, subframes and unregistered contents are refused regardless
+of URL. Acknowledgements name only a host-issued read-only target identity
+and sequence; no request accepts a document path, script or write payload.
+The panel offers no edit affordance or save action. Agent editing retains
+the ordinary tool approval path; observation grants no permission and prompts
+for no user modification confirmation.
+
+File/code, table and page viewers share one compact header: format icon, bold
+basename, muted monospaced parent path and right-aligned icon-only actions.
+The displayed path is workspace-relative when available, otherwise compacted;
+it truncates with ellipsis while its title exposes the complete path. Open in
+the default application, copy and applicable reload actions have localized
+accessible labels. There is no separate path box, file-kind badge or source row.
+
+A single live-strip slot beneath that header appears only for authenticated
+agent observation activity or its error/resynchronization state. It reports
+editing or edited, the latest cell/line change summary and recency. The current
+element has an outline and a small Ave tag; earlier changes retain a faint tint.
+These marks use one theme color with light and dark variants. A compact footer
+owns format, selected sheet/page or line count, recalculation status and
+truncation notices. Idle user-only previews have no live strip. Localized
+observation errors occupy that same slot rather than creating additional status rows.
+
+The default-application icon reuses the existing attachment opener. Successful
+preview reads supply bounded, frame-bound read receipts instead of adding paths
+to the attachment allowlist. Opening requires the registered main-frame identity,
+the same caller's canonical read target and current read scope, with session,
+navigation, sensitive-path and dangerous-extension checks. This is a user action:
+it emits no agent observation and grants no document write authority.
+Preview-derived receipts admit only explicit passive formats and inert source
+types; reading a script, shortcut or active web file cannot authorize execution
+through its default application. Picker/drop authorizations retain their own
+existing contract.
+
+### Host runtime and subprocesses
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and

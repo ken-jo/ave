@@ -28,6 +28,8 @@ import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  getBuiltinShellReadPolicy,
+  getBuiltinShellSessionReadPolicy,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
   resetAsrtSandbox,
@@ -223,33 +225,65 @@ describe("the private roots in a sandbox read deny", () => {
     expect(buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead).toEqual(floor);
   });
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "keeps a wrap's own HOME readable when it is also granted a directory above the roots",
-    async () => {
+  it.runIf(process.platform === "darwin")("maps canonical private-root denies when the feature home uses a system alias", () => {
+    const alias = mkdtempSync(join("/tmp", "ave-private-root-alias-"));
+    try {
+      process.env.AVE_HOME = join(alias, ".ave");
+      for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
+      const roots = appOwnedSandboxPrivateRoots();
+      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: getDefaultSensitiveReadDenyPaths() })!.filesystem!.denyRead;
+      for (const root of roots) {
+        const canonical = realpathSync(root);
+        expect(canonical).not.toBe(root);
+        expect(denyRead).toContain(`${canonical.slice(0, -1)}[${canonical.slice(-1)}]`);
+        expect(denyRead).not.toContain(canonical);
+        expect(denyRead).not.toContain(root);
+      }
+    } finally { rmSync(alias, { recursive: true, force: true }); }
+  });
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux").each(
+    process.platform === "darwin" ? [[false, false], [true, false], [false, true], [true, true]] : [[false, false], [true, false]],
+  )(
+    "keeps its own HOME readable under an ancestor grant with session access refused=%s and alias=%s",
+    async (sessionRefused, aliased) => {
+      if (aliased && process.platform === "darwin" && home.startsWith("/private/")) {
+        process.env.AVE_HOME = join(home.slice("/private".length), ".ave");
+      }
       if (!(await asrtCanInitialize())) {
         if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
         return;
       }
-      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const sessionRoot = getBuiltinShellSessionReadPolicy().allowRead[0]!;
+      const protectedPath = join(home, "protected", "secret");
+      mkdirSync(join(home, "protected"));
+      writeFileSync(protectedPath, "protected");
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true,
+        denyRead: [protectedPath, ...(sessionRefused ? [sessionRoot] : [])] });
       const own = createSandboxProcessHome();
       const other = createSandboxProcessHome();
       try {
         writeFileSync(join(own.path, "own"), "own");
         writeFileSync(join(other.path, "other"), "other");
+        const journal = own.env.AVE_DOCUMENT_JOURNAL!;
+        writeFileSync(journal, "before");
+        const policy = getBuiltinShellReadPolicy([home, own.path, other.path], homedir(), own.path);
+        expect(policy.allowRead).toContain(own.path);
+        expect(policy.allowRead).not.toContain(other.path);
         // `home` holds AVE_HOME, as a workspace at the user's HOME holds `~/.ave`: an ancestor of both private roots.
         const { argv, env } = await wrapWorkerCommand(
-          `/bin/cat '${join(own.path, "own")}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused`,
+          `/bin/cat '${join(own.path, "own")}'; echo; printf '%s' '-after' >> '${journal}'; /bin/cat '${journal}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused; /bin/cat '${protectedPath}' 2>/dev/null || echo protected-refused`,
           { commandId: TEST_COMMAND_ID,
             filesystem: {
-              allowRead: [home, own.path],
+              ...policy,
               allowWrite: [own.path],
-              denyRead: getDefaultSensitiveReadDenyPaths(),
               denyWrite: getDefaultSensitiveWriteDenyPaths(),
             },
           },
         );
         const out = execFileSync(argv[0]!, argv.slice(1), { env: { ...env }, encoding: "utf-8" });
-        expect(out.trim().split("\n")).toEqual(["own", "refused"]);
+        expect(out.trim().split("\n")).toEqual(["own", "before-after", "refused", "protected-refused"]);
+        expect(readFileSync(journal, "utf8")).toBe("before-after");
       } finally {
         own.cleanup();
         other.cleanup();

@@ -519,11 +519,6 @@
     },
     {
       "type": "types",
-      "file": "src/ipc/domains/preview.ts",
-      "name": "PreviewReadFileResult"
-    },
-    {
-      "type": "types",
       "file": "src/ipc/domains/workspace.ts",
       "name": "WorkspaceDirEntry"
     },

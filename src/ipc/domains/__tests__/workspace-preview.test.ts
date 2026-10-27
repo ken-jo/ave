@@ -2,9 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { PLUGIN_SHELL_FRAME_URL } from "../../../__tests__/test-helpers.js";
-import { makeAppIpcFrameInvoker } from "./test-helpers.js";
 
 const {
   handlers,
@@ -16,8 +16,10 @@ const {
   completeWorkspaceRootRemovalPersistMock,
   additionalDirectories,
   pendingWorkspaceRootRemovals,
+  defaultSession,
 } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  defaultSession: {},
   showOpenDialogMock: vi.fn(),
   showItemInFolderMock: vi.fn(),
   addAllowedDirectoryPersistMock: vi.fn(async () => [] as string[]),
@@ -38,6 +40,7 @@ const {
 }));
 
 vi.mock("electron", () => ({
+  session: { defaultSession },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -75,10 +78,13 @@ function withSandboxRuntime(value: unknown): never {
   } as never;
 }
 
+const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
+
 const deps = {
   auditLogger: { log: vi.fn() },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
-  getMainWindow: () => null,
+  getMainWindow: () => appWindows[0] ?? null,
+  getAppWindows: () => appWindows,
   memoryManager: {
     allowProjectRoot: vi.fn(),
     detachSessionsFromProject: vi.fn(async () => 0),
@@ -97,7 +103,18 @@ const deps = {
   },
 } as never;
 
-const invoke = makeAppIpcFrameInvoker(handlers);
+function frameEvent(url: string) {
+  const frame = { url, processId: 1, routingId: 0, detached: false, isDestroyed: () => false };
+  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, session: defaultSession, getType: () => "window", isDestroyed: () => false });
+  appWindows.push({ isDestroyed: () => false, webContents: sender });
+  return { sender, senderFrame: frame };
+}
+
+function invoke(channel: string, url: string, ...args: unknown[]): Promise<unknown> {
+  const handler = handlers.get(channel);
+  if (!handler) throw new Error(`No handler registered for: ${channel}`);
+  return Promise.resolve(handler(frameEvent(url), ...args));
+}
 
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
@@ -119,6 +136,7 @@ afterAll(async () => {
   await cleanupTmpDir(root);
 });
 beforeEach(() => {
+  appWindows.length = 0;
   showOpenDialogMock.mockReset();
   showItemInFolderMock.mockReset();
   addAllowedDirectoryPersistMock.mockClear();
@@ -168,6 +186,15 @@ beforeEach(() => {
 });
 
 describe("preview:read-file handler", () => {
+  it.each(["webview", "subframe", "foreign-session", "unregistered"])("refuses a host-like file URL from %s", async (kind) => {
+    const event = frameEvent("file:///plugins/example/view.js");
+    if (kind === "webview") Object.assign(event.sender, { getType: () => "webview" });
+    if (kind === "subframe") event.senderFrame = { ...event.senderFrame, routingId: 1 };
+    if (kind === "foreign-session") Object.assign(event.sender, { session: {} });
+    if (kind === "unregistered") appWindows.length = 0;
+    expect(await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "docs", "architecture.md")))
+      .toMatchObject({ ok: false, error: "unauthorized" });
+  });
   it("previews signature-verified images through the normal allowed-root read", async () => {
     const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64");
     const path = join(root, "source-image.dat");

@@ -104,5 +104,6 @@ describe("model-facing catalog keys", () => {
     expect(isModelFacingKey("sandboxPolicy.scanNarrowed")).toBe(true);
     expect(isModelFacingKey("appearanceTab.pageTitle")).toBe(false);
     expect(isModelFacingKey("routinePanel.errorNaturalParseFailed")).toBe(false);
+    expect(isModelFacingKey("chatPreviewRail.documentObservationLive")).toBe(false);
   });
 });

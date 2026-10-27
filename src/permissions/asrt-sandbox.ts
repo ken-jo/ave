@@ -467,7 +467,7 @@ function pinnedWriteRootDenies(writeRoots: readonly string[]): string[] {
 // Canonicalize macOS private-root denies and spell the last character as a glob class so late deny emission preserves own-directory re-allows under broader grants. Literal denies would override them; other private directories stay denied. Linux keeps literal masks because grants bind back inside them.
 function asrtReadDenyPaths(denyRead: readonly string[], exactRoots: readonly string[]): string[] {
   if (process.platform !== "darwin") return [...denyRead];
-  const roots = new Set(exactRoots);
+  const roots = new Set(exactRoots.flatMap((path) => [path, normalizePathForSandbox(path)]));
   return denyRead.map((path) => (roots.has(path) ? exactSeatbeltDenyGlob(path) : path));
 }
 
@@ -960,7 +960,11 @@ export function getBuiltinShellReadPolicy(
   const privateRoots = appOwnedSandboxPrivateRoots();
   const ownHome = sandboxHome === undefined ? undefined : canonicalizePathForMatch(sandboxHome);
   void hostHome;
-  const sessionDenyCovering = readDenyCovering(sessions.denyRead);
+  // Refusing saved-session access restates private roots too. Those roots still
+  // allow this invocation's own HOME; an explicit protected deny keeps priority.
+  const protectedDenies = new Set(getProtectedReadDenyPaths());
+  const sessionDenyCovering = readDenyCovering(sessions.denyRead.filter((denied) =>
+    !privateRoots.includes(denied) || protectedDenies.has(denied)));
   const privateRootCovering = readDenyCovering(privateRoots);
   const allowRead = [...readPaths, ...sessions.allowRead].filter((path) => {
     const resolved = canonicalizePathForMatch(path);

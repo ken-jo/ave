@@ -702,7 +702,7 @@ describe("invocation audit and sealed resume", () => {
       ["permission-audit-writable-fail-closed", "services.auditLogger.assertPermissionAuditWritable()"],
       ["tool-start-emit-boundary", "    emitToolStart(callbacks, toolUse.name, finalInput, meta);\n\n    // ── Step 6: Execute"],
       ["during-execute-effect-gate-context", "runWithEffectGateContext("],
-      ["tool-execute", "return tool.execute(finalInput, ctx)"],
+      ["tool-execute", "return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },\n                () => tool.execute(finalInput, ctx),"],
       ["effect-shadow-reconciliation", "const effectSummary = effectLedger.summary()"],
       ["post-tool-use-hooks", "postFeedback = await services.hookRunner.runPostHooks("],
       ["post-failure-lifecycle", "\"PostToolUseFailure\","],

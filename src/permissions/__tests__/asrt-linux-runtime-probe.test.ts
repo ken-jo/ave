@@ -69,6 +69,7 @@ import {
   buildPerCommandSandboxCustomConfig,
   getBuiltinShellReadPolicy,
   getBuiltinShellSessionReadPolicy,
+  getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
@@ -707,6 +708,35 @@ describe("configured profile launch on macOS", () => {
     expect(failure).toMatchObject({ code: ASRT_MAC_RUNTIME_PROBE_ERROR_CODE });
     expect(h.reset).toHaveBeenCalledOnce();
     expect(isAsrtSandboxActive()).toBe(false);
+  });
+});
+
+describe.each(["darwin", "linux"] as const)("private HOME reads after session refusal on %s", (platform) => {
+  it("retains only the invocation HOME grant when session reads are refused", async () => {
+    setProcessPlatform(platform);
+    const sessionRoot = getBuiltinShellSessionReadPolicy().allowRead[0];
+    expect(sessionRoot).toBeDefined();
+    await initializeAsrtSandbox({ allowedDomains: [], denyRead: [sessionRoot!] });
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    const homeRoot = privateRoots.find((root) => basename(root) === "home")!;
+    const ownHome = join(homeRoot, "invocation-home");
+    const otherHome = join(homeRoot, "other-home");
+    const policy = getBuiltinShellReadPolicy([ownHome, join(ownHome, "document-observation"), otherHome], homedir(), ownHome);
+    expect(policy.allowRead).toEqual([ownHome, join(ownHome, "document-observation")]);
+    expect(policy.denyRead).toEqual(expect.arrayContaining(getDefaultSensitiveReadDenyPaths()));
+    expect(policy.floorPierces).toEqual([]);
+  });
+
+  it("preserves a trusted deny of the private HOME root", async () => {
+    setProcessPlatform(platform);
+    const sessionRoot = getBuiltinShellSessionReadPolicy().allowRead[0];
+    expect(sessionRoot).toBeDefined();
+    const homeRoot = appOwnedSandboxPrivateRoots().find((root) => basename(root) === "home")!;
+    await initializeAsrtSandbox({ allowedDomains: [], denyRead: [sessionRoot!, homeRoot] });
+    const ownHome = join(homeRoot, "invocation-home");
+    const policy = getBuiltinShellReadPolicy([ownHome, join(ownHome, "document-observation")], homedir(), ownHome);
+    expect(policy.allowRead).toEqual([]);
+    expect(policy.denyRead).toContain(homeRoot);
   });
 });
 

@@ -2,19 +2,49 @@
 
 The table viewer accepts CSV, TSV, XLSX, XLS and ODS files and displays a bounded grid of strings. [The shared preview contract](../../src/shared/preview-document.ts) owns supported formats, result types, error codes and every resource ceiling.
 
-XLSX workbooks requesting recalculation show a localized badge because cached
-formula results may be stale. [Skill editing](xlsx-skill-editing.md) owns the
-calculation signal, preservation limits and sandbox editing contract.
+XLSX workbooks requesting recalculation show a localized badge because cached formula results may be stale. The [XLSX editing contract](xlsx-skill-editing.md) owns the calculation signal, preservation limits and approved sandbox-shell editing. The panel remains read-only while showing live agent changes under the [observation contract](architecture.md#agent-activity-observation).
 
 ## Read authority
 
-`ave:preview:read-document` is a private, host-renderer IPC channel. [The preview handler](../../src/ipc/domains/preview.ts) validates the sending frame and uses `assertReadableFilePath` from [the file-read core](../../src/tools/file-read-core.ts). Preview reads always check allowed roots. Native agent file reads instead use the invocation's existing file access policy, which can allow reads outside those roots when directory fencing is disabled. The channel grants no additional filesystem authority and is unavailable through public transports.
+`ave:preview:read-document` is a private, host-renderer IPC channel. [The preview handler](../../src/ipc/domains/preview.ts) uses the same registered app-window main-frame guard as `readFile`, `documentOpenAck` and observation acknowledgements. The sender must be a live `WebContents` of type `window`, belong to a live app window registered through `IpcDeps.getAppWindows()` with `getMainWindow()` as the compatibility fallback, use the default session, and supply the actual `sender.mainFrame` as `senderFrame`. Reads recheck that live identity and registration after asynchronous work; observation delivery rechecks it before sending events. Source-URL validation is supplemental: a matching URL cannot make an embedded webview, subframe, unregistered window or plugin partition an app-window principal. Navigating a webview to a `.js` URL grants no preview-read or observation authority.
+
+The handler uses `assertReadableFilePath` from [the file-read core](../../src/tools/file-read-core.ts). Preview reads always check allowed roots. Native agent file reads instead use the invocation's existing file access policy, which can allow reads outside those roots when directory fencing is disabled. This renderer guard does not change agent policy. The channel grants no additional filesystem authority and is unavailable through public transports.
 
 The main process checks the requested sheet index and extension, then acquires a request lease before [opening the admitted path once](../../src/tools/preview-document-input.ts). Regular-file status and size come from that descriptor. Reading stops at its checked size plus one byte; growth, shrinkage or a changed modification time refuses the read, and the descriptor closes on every outcome. A superseded read checks cancellation before allocating and after each filesystem operation; it waits for an operation already in progress to return. Child deadlines do not cover filesystem reads. Replacing the pathname after opening cannot redirect that read. Each request supplies a zero-based, non-negative sheet index; any other value returns `invalid-index` at the IPC boundary and again in the parse lease. CSV and TSV accept only index zero; workbook indexes must address the retained `sheetNames` list, so sheets beyond the tab limit cannot be selected. Successful reads use the existing audit logger with a redacted path. The renderer receives a parsed table result, never source document bytes or a parser handle.
 
+## Agent live view
+
+The grid has no direct cell editor or save operation. Editing remains in the agent's ordinary governed tools, skills and shell; the host has no document write API. Viewing a file never grants editing authority or asks the user to approve a modification.
+
+Table, file/code and page previews share a single-line header with a format icon,
+bold file name, muted monospaced parent path and accessible icon-only open, copy
+and applicable reload actions. The parent path is relative to the workspace when
+known and truncates with ellipsis; the full path remains in its title. The old
+separate path box, kind badge, source subtitle and action rows are absent.
+The default-application action reuses the attachment opener with a host-owned
+receipt for the successfully read canonical target. It rechecks the registered
+frame and current file-read scope; a renderer cannot authorize another path.
+
+The live strip beneath the header is hidden until authenticated agent observation
+activity arrives. It shows editing or edited, the latest cell change and recency;
+observation errors, engine absence and resynchronization use that same slot.
+Changed cells use the shared light/dark agent color. The current target is outlined
+with a small Ave tag, while earlier changes keep a faint tint. The compact footer
+shows format, selected sheet and dimensions, plus the recalculation badge and all
+applicable truncation notices. Other than its sheet tabs, the table remains a
+read-only grid.
+
+A successful preview read can register a bounded rendered baseline for its host-verified session. A user-only preview creates no filesystem watch. Successful session-bound agent panel opens and exact agent mutation evidence admit observed targets. If the agent edits a file the user already has open, that exact file can become an agent target. The observer never enumerates a workspace or records user-only document activity.
+
+The document adapter combines exact-file save notifications with the skill's append-only edit journal. Journal cell events highlight provisional values before publication; the saved-file snapshot replaces that overlay and refreshes the recalculation badge. It diffs against the last acknowledged rendered snapshot, with debounce and settling for atomic replacement. Neither a watch event nor temporal overlap with an agent call proves who wrote the file: attribution also requires host-bound invocation evidence and matching before/after digests. Unverified changes are not streamed as agent content.
+
+Private observation push and acknowledgement channels reuse registered app-window main-frame checks and session ownership. Acknowledgements carry only a read-only target identity and sequence; there is no path, script or document-write payload. The renderer acknowledges snapshots after rendering and releases the binding on document, sheet or session change and unmount. The [observation contract](architecture.md#agent-activity-observation) owns event schemas, journal containment and caps, lifecycle, back-pressure and agent-only local privacy.
+
+The replaceable observation engine uses the same bounded table-reader child as manual previews. The same document adapter also accepts verified native text saves and emits line diffs for full text/code previews; selected line windows, snippets and images are outside that live scope. Page previews share the compact presentation but retain their existing reader without fabricated live activity. If the observation engine is absent, the explicit `engine-unavailable` state leaves the existing viewer and reload action available. Parser or protocol failures stay errors. Conversion services and browser/terminal adapters are outside this implementation.
+
 ## Parsing process and budgets
 
-[The process owner](../../src/tools/preview-document-process.ts) grants a lease covering input reading, child startup, parsing, response validation and cleanup. A lease belongs to the authenticated sender and frame identity. A newer request from that frame supersedes its predecessor and kills its child, then waits for the old read to unwind and the child to close before admitting another read. Intermediate replaced requests never read source bytes. Sender destruction or a renderer crash, committed navigation of the owning frame, and observed frame detachment abort pending and admitted requests. Owner listeners and the detached-state watcher are removed on cancellation and in `finally`; the handler releases an admitted lease after cleanup on every outcome. Another frame receives `busy` before any source allocation. The renderer ignores `superseded` replies and retries `busy` on the bounded shared schedule while the component remains mounted with the same path and sheet. It shows the localized busy message only after exhausting that schedule; unmounting or changing the target cancels pending retry timers.
+[The process owner](../../src/tools/preview-document-process.ts) grants a lease covering input reading, child startup, parsing, response validation and cleanup. A lease belongs to the admitted app-window main-frame identity. A newer request from that frame supersedes its predecessor and kills its child, then waits for the old read to unwind and the child to close before admitting another read. Intermediate replaced requests never read source bytes. Sender destruction or a renderer crash, committed navigation of the owning frame, and observed frame detachment abort pending and admitted requests. Owner listeners and the detached-state watcher are removed on cancellation and in `finally`; the handler releases an admitted lease after cleanup on every outcome. Another admitted app-window main frame receives `busy` before any source allocation. The renderer ignores `superseded` replies and retries `busy` on the bounded shared schedule while the component remains mounted with the same path and sheet. It shows the localized busy message only after exhausting that schedule; unmounting or changing the target cancels pending retry timers.
 
 Each admitted parse runs in a disposable managed child with a filtered environment. [The child entry](../../src/tools/preview-document-child-main.ts) loads its modules, validates request arguments and writes a fixed ready marker before reading source bytes. The parent enforces a separate startup deadline through that marker; premature exit, malformed framing or startup expiry returns `read-failed`. Once ready, the parent starts the parse deadline and sends the source bytes through stdin. [The table reader](../../src/tools/table-document-reader.ts) runs only in the child. There is no in-process parsing fallback.
 
