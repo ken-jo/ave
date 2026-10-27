@@ -98,6 +98,8 @@ describe("agent terminal observation view", () => {
     await emit(snapshot(1, [command({ kind: "terminal", tabId: "tab", terminalSessionId: "terminal-session", outputTail: "",
       outputAvailability: "withheld-user-input" })]));
     const row = screen.getByTestId("terminal-observation-command-row");
+    // Visible on the collapsed row, before the details are opened.
+    expect(within(row).getByTestId("terminal-observation-withheld-marker").textContent).toBe(ko["terminalObservation.outputWithheldShort"]);
     fireEvent.click(within(row).getByText("bun test"));
     expect(within(row).getByTestId("terminal-observation-withheld").textContent).toBe(ko["terminalObservation.outputWithheldUserInput"]);
     expect(within(row).queryByTestId("terminal-observation-output")).toBeNull();

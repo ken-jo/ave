@@ -34,6 +34,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "terminalObservation.unknown": "알 수 없음",
   "terminalObservation.outputOnCompletion": "완료 시 출력 제공",
   "terminalObservation.outputTruncated": "한도 내 최근 출력만 표시합니다.",
+  "terminalObservation.outputWithheldShort": "출력 숨김",
   "terminalObservation.outputWithheldUserInput": "이 터미널에 직접 입력한 적이 있어 출력과 네트워크 판정을 표시하지 않습니다. 직접 시작한 프로세스가 이 터미널에 출력하거나 네트워크를 쓸 수 있기 때문입니다.",
   "terminalObservation.egress.allow": "네트워크 허용",
   "terminalObservation.egress.deny": "네트워크 거부",

@@ -185,6 +185,8 @@ export function TerminalObservationContent({ sessionId }: { sessionId?: string }
             <summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] marker:hidden">
               <span aria-hidden="true" className="text-muted-foreground">›</span>
               <span className="min-w-0 flex-1 truncate font-mono" title={command.command}>{command.command}</span>
+              {command.outputAvailability === "withheld-user-input"
+                ? <span className="shrink-0 text-muted-foreground" data-testid="terminal-observation-withheld-marker">{t("terminalObservation.outputWithheldShort")}</span> : null}
               <span className="shrink-0 text-muted-foreground">{t(`terminalObservation.status.${command.status}`)}</span>
               <span className="shrink-0 font-mono text-muted-foreground">{elapsedSeconds(command, now)}s</span>
             </summary>
