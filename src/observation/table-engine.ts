@@ -9,12 +9,13 @@ export function createTableObservationEngine(): DocumentObservationEngine {
   let request = 0;
   return {
     id: "table-reader",
-    async parse(bytes, format, sheetIndex, signal) {
+    async parse(bytes, format, sheetIndex, signal, context) {
       signal.throwIfAborted();
       if (format === "text") {
         if (sheetIndex !== 0) throw new Error("Invalid observed text selection.");
         return parseObservedTextDocument(bytes);
       }
+      if (context?.parse) return context.parse(bytes, format, sheetIndex, signal);
       const controller = new AbortController();
       const handleAbort = (): void => controller.abort(signal.reason);
       signal.addEventListener("abort", handleAbort, { once: true });

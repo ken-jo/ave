@@ -139,6 +139,26 @@ afterEach(() => {
 });
 
 describe("egress ask callback — attribution", () => {
+  it("refuses offline service destinations before identity, grants, routing or endpoint allowlists", async () => {
+    owners.set(WORKER_TOKEN, { kind: "worker", role: "worker", pluginId: undefined, network: "offline" });
+    const allowlist = vi.fn(() => ["*"]);
+    const identity = vi.fn(() => "kernel-channel" as const);
+    const rule = vi.fn(async () => ({ decision: "allow" as const, pattern: "Network(*)", scope: "user" as const }));
+    const ask = createEgressAskCallback({
+      identityStrength: identity, ownerOf: token => owners.get(token), abortSignalOf: () => undefined,
+      workerAllowedDomains: allowlist, grants, networkRule: rule, shellAskEnabled: () => true,
+      requester: () => async request => { asked.push(request); return { allow: true, scope: "always" }; },
+      audit: entry => audit.push(entry),
+    });
+    expect(await ask({ host: "model.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "listener", phase: "name" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
+    expect(identity).not.toHaveBeenCalled();
+    expect(allowlist).not.toHaveBeenCalled();
+    expect(rule).not.toHaveBeenCalled();
+    expect(asked).toEqual([]);
+    expect(audit).toHaveLength(1);
+  });
+
   it("offers strong scopes only to the host-owned shell lane on a shared host", async () => {
     const platform = process.platform;
     setProcessPlatform("win32");

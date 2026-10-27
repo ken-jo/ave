@@ -10,6 +10,7 @@ import { stopTailnetObserverServer } from "./tailnet-surface-server.js";
 import { stopTelegramBridgeServer } from "./telegram-bridge-server.js";
 import { stopRemoteA2AReceiverServer } from "./a2a-remote-receiver-server.js";
 import { stopSubscriptionRuntimes } from "./subscription-runtime-service.js";
+import { stopDocumentEngineSessions } from "../observation/libreoffice-engine.js";
 import {
   forceKillAndDrainManagedChildProcesses,
   forceKillManagedChildProcesses,
@@ -131,6 +132,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
       () => bootPluginShutdown?.closeAdmission(),
       () => bootMcpDisconnect?.(),
       () => bootPluginShutdown?.stopRuntime(signal),
+      () => stopDocumentEngineSessions(),
       () => stopSubscriptionRuntimes(),
       () => disposeBrowserUploads(),
       () => forceKillAllTerminalsForShutdown(),
@@ -187,6 +189,9 @@ export async function runAppShutdownCleanup(options: {
           "shutdown: interrupted running turns",
         );
       }
+      if (signal.aborted) return;
+      // Await converter exit and private-directory cleanup before service teardown and the generic child drain.
+      await stopDocumentEngineSessions();
       if (signal.aborted) return;
       await disposeBrowserUploads();
       await browserTabRegistry.flushBindingWrites().catch((error: unknown) => {
