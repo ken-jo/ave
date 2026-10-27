@@ -1,5 +1,6 @@
-vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
-vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+// Packaged resource fixtures omit the native classifier; derive Windows path facts from host files.
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), "linux"));
 
 // Publish an active adapter only after its initialized wrapper runs a fixed no-I/O probe; wrap, timeout or cleanup failures reset it.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
