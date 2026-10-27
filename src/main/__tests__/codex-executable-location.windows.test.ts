@@ -2,7 +2,7 @@ import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlin
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi, type TestContext } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { decodeWindowsAclScript, withWindowsAclScript, windowsCommandLineLength } from "../../__tests__/support/windows-acl-launch.js";
 import {
@@ -23,6 +23,7 @@ import {
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { readWindowsDirectoryDacls } from "../../shared/ave-home.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { configureHostResources } from "../host-resources.js";
 
 // Mocked access rules answer at the request level. The real case empties the seam, so the product's own ACL host runs.
@@ -229,11 +230,11 @@ it.runIf(process.platform === "win32")("admits the system command executable as 
 
 it.runIf(process.platform === "win32")("admits a temporary native executable with mocked access rules", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-native-route-")));
-  roots.push(root);
+  roots.push(root); setFixtureOwner(root);
   const trust = { capSidPath: join(root, "absent-cap-fixture") };
   await assertCodexLocations([{ path: root, kind: "directory", routeKind: "native" }], trust);
   const executable = join(root, "fixture.exe");
-  copyFileSync(join(process.env.SystemRoot!, "System32", "cmd.exe"), executable);
+  copyFileSync(join(process.env.SystemRoot!, "System32", "cmd.exe"), executable); setFixtureOwner(executable);
   await expect(assertCodexExecutableLocation(executable, "native", trust)).resolves.toBeUndefined();
 });
 
@@ -243,12 +244,12 @@ it.runIf(process.platform === "win32")("claims created directories and files for
   const { host, request, prime } = realHostFixture();
   await prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-claim-")));
-  roots.push(parent);
-  // What this process's token gives a new object on its own (Administrators under an elevated token with the default owner policy).
-  const unclaimed = realpathSync(mkdtempSync(join(parent, "unclaimed-")));
+  roots.push(parent); setFixtureOwner(parent);
+  // Keep fixture ownership independent of the token default owner.
+  const unclaimed = realpathSync(mkdtempSync(join(parent, "unclaimed-"))); setFixtureOwner(unclaimed);
   const directory = await createPrivateTempDirectory(join(parent, "claimed-"));
   const file = join(directory, "copy.bin");
-  writeFileSync(file, "private");
+  writeFileSync(file, "private"); setFixtureOwner(file);
   await claimPrivateOwnership([file]);
   const reply = JSON.parse(await request(300, [unclaimed, directory, file])) as RawReply;
   const [defaultOwner, directoryOwner, fileOwner] = reply.result.paths.map(({ owner }) => owner);
@@ -265,25 +266,26 @@ function setOwner(path: string, sid: string): void {
     { windowsHide: true, stdio: "pipe" });
 }
 
-// icacls /setowner to another account needs SeRestorePrivilege in the token; it only enables, never grants, it.
-function holdsRestorePrivilege(): boolean {
-  const output = execFileSync(join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/priv", "/fo", "csv", "/nh"],
-    { windowsHide: true, encoding: "utf8" });
-  return output.split(/\r?\n/).some((line) => line.startsWith('"SeRestorePrivilege",'));
+function requireRestorePrivilege(context: TestContext): void {
+  const privileges = execFileSync(join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/priv"], { encoding: "utf8", windowsHide: true });
+  if (!/\bSeRestorePrivilege\b/.test(privileges)) context.skip("SeRestorePrivilege is absent; this token cannot create a foreign-owned fixture");
 }
-const RESTORE_PRIVILEGE_SKIP = "SeRestorePrivilege is not held, so the foreign-owner fixture cannot be created";
 
 interface ClaimReply { result: { currentSid: string; claims: { path: string; previousOwner: string; outcome: string }[] } }
 
 it.runIf(process.platform === "win32")("replaces inherited foreign access when claiming a private runtime directory", async (context) => {
+  requireRestorePrivilege(context);
   const fixture = realHostFixture();
   await fixture.prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-access-")));
-  roots.push(parent);
-  expect(readWindowsDirectoryDacls([parent], true)[0]).toMatchObject({ protected: true });
+  roots.push(parent); setFixtureOwner(parent);
+  const [parentDacl] = readWindowsDirectoryDacls([parent]);
+  execFileSync(join(process.env.SystemRoot!, "System32", "icacls.exe"),
+    [parent, "/inheritance:r", "/grant:r", `*${parentDacl.currentUserSid}:(OI)(CI)F`, "/q"], { windowsHide: true, stdio: "pipe" });
+  expect(readWindowsDirectoryDacls([parent])[0]).toMatchObject({ protected: true });
   execFileSync(join(process.env.SystemRoot!, "System32", "icacls.exe"),
     [parent, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/q"], { windowsHide: true, stdio: "pipe" });
-  const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
+  const directory = realpathSync(mkdtempSync(join(parent, "runtime-"))); setFixtureOwner(directory);
   const [before] = readWindowsDirectoryDacls([directory]);
   expect(before.rules).toContainEqual(expect.objectContaining({ sid: "S-1-5-32-545", isInherited: true }));
   if (!before.elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
@@ -303,10 +305,9 @@ it.runIf(process.platform === "win32")("admits a private runtime directory claim
   if (!readWindowsDirectoryDacls([tmpdir()])[0].elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
   const fixture = realHostFixture();
   await fixture.prime();
-  // Admission walks every ancestor: root the fixture in the real profile, not a runner temp tree owned by an image account.
-  const base = process.env.LOCALAPPDATA!;
+  const base = tmpdir();
   const parent = realpathSync(mkdtempSync(join(base, "ave-owner-admit-")));
-  roots.push(parent);
+  roots.push(parent); setFixtureOwner(parent);
   const trust = { capSidPath: join(parent, "absent-cap-fixture") };
   const refusal = await assertCodexLocations([{ path: parent, kind: "directory", routeKind: "native" }], trust)
     .then(() => "", (error: unknown) => String(error));
@@ -316,7 +317,7 @@ it.runIf(process.platform === "win32")("admits a private runtime directory claim
     const owners = readWindowsDirectoryDacls(chain).map(({ path, ownerSid }) => `${path}=${ownerSid}`);
     context.skip(`An ancestor of ${base} is not admissible: ${owners.join(", ")}`);
   }
-  const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
+  const directory = realpathSync(mkdtempSync(join(parent, "runtime-"))); setFixtureOwner(directory);
   setOwner(directory, "S-1-5-32-544");
   await claimPrivateOwnership([directory]);
   await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }], trust)).resolves.toBeUndefined();
@@ -326,7 +327,7 @@ it.runIf(process.platform === "win32")("keeps a directory the account already ow
   const fixture = realHostFixture();
   await fixture.prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-kept-")));
-  roots.push(parent);
+  roots.push(parent); setFixtureOwner(parent);
   const directory = await createPrivateDirectory(join(parent, "owned"));
   // The account owns it and holds Modify only: neither TakeOwnership nor ChangePermissions.
   const script = [
@@ -347,14 +348,14 @@ it.runIf(process.platform === "win32")("keeps a directory the account already ow
 }, 45_000);
 
 it.runIf(process.platform === "win32")("refuses a directory another account owns and changes nothing in its batch", async (context) => {
-  if (!holdsRestorePrivilege()) context.skip(RESTORE_PRIVILEGE_SKIP);
+  requireRestorePrivilege(context);
   const fixture = realHostFixture();
   await fixture.prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-foreign-")));
-  roots.push(parent);
-  const administrators = realpathSync(mkdtempSync(join(parent, "administrators-")));
+  roots.push(parent); setFixtureOwner(parent);
+  const administrators = realpathSync(mkdtempSync(join(parent, "administrators-"))); setFixtureOwner(administrators);
   setOwner(administrators, "S-1-5-32-544");
-  const foreign = realpathSync(mkdtempSync(join(parent, "foreign-")));
+  const foreign = realpathSync(mkdtempSync(join(parent, "foreign-"))); setFixtureOwner(foreign);
   setOwner(foreign, "S-1-5-18");
   const refusal = await claimPrivateOwnership([administrators, foreign]).then(() => null, (error: unknown) => error);
   expect(refusal).toBeInstanceOf(CodexExecutableLocationError);
@@ -365,15 +366,15 @@ it.runIf(process.platform === "win32")("refuses a directory another account owns
 }, 45_000);
 
 it.runIf(process.platform === "win32")("claims a junction itself and leaves its target alone", async (context) => {
-  if (!holdsRestorePrivilege()) context.skip(RESTORE_PRIVILEGE_SKIP);
+  requireRestorePrivilege(context);
   const fixture = realHostFixture();
   await fixture.prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-junction-")));
-  roots.push(parent);
-  const target = realpathSync(mkdtempSync(join(parent, "target-")));
+  roots.push(parent); setFixtureOwner(parent);
+  const target = realpathSync(mkdtempSync(join(parent, "target-"))); setFixtureOwner(target);
   setOwner(target, "S-1-5-18");
   const link = join(parent, "link");
-  symlinkSync(target, link, "junction");
+  symlinkSync(target, link, "junction"); setFixtureOwner(link);
   try {
     // A followed link would read the target's owner and refuse.
     await claimPrivateOwnership([link]);
@@ -394,7 +395,7 @@ it.runIf(process.platform === "win32")("refuses a claim the real host cannot app
 
 it.runIf(process.platform === "win32")("answers from its own imports when no module directory is searchable", async () => {
   const empty = realpathSync(mkdtempSync(join(tmpdir(), "ave-empty-module-path-")));
-  roots.push(empty);
+  roots.push(empty); setFixtureOwner(empty);
   const replies: string[] = [];
   const host = new WindowsAclHost((command, args, options) =>
     spawn(command, args, { ...options, env: { ...options.env, PSModulePath: empty } }));
@@ -449,7 +450,7 @@ it.runIf(process.platform === "win32").each([
   CodexExecutableLocationError],
 ] as const)("removes a directory it created after %s", async (_label, answer, refusal) => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-refusal-")));
-  roots.push(parent);
+  roots.push(parent); setFixtureOwner(parent);
   const requests: WindowsAclRequest[] = [];
   _setWindowsAclTransportForTest({
     async request(request) { requests.push(request); return answer(request); },

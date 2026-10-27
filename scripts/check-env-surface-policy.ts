@@ -25,6 +25,8 @@ const INTERNAL: readonly string[] = [
   "AVE_DEV_LAUNCHER",
   // Pass ACL paths as JSON data, never interpolate them into the child command.
   "AVE_DACL_REQUEST",
+  // The host selects the journal in the admitted shell's private HOME.
+  "AVE_DOCUMENT_JOURNAL",
   // Hook metadata is host-owned; matcher and payload fields are conditional.
   "AVE_HOOK_EVENT",
   "AVE_HOOK_MATCHER",

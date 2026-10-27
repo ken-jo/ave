@@ -6,9 +6,12 @@ import { AuditLogger } from "../../../audit/audit-logger.js";
 import { verifyChain } from "../../../audit/hmac-chain.js";
 import * as sandboxAuditSink from "../../../audit/sandbox-audit-sink.js";
 import { t } from "../../../i18n/index.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import { PermissionManager, type PermissionCheckContext } from "../../permission-manager.js";
 import { readJudgeSettings } from "../../permission-settings-store.js";
 import { PermissionTestResources } from "../../__tests__/test-resources.js";

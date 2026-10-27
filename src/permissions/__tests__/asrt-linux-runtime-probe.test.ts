@@ -1,3 +1,7 @@
+// Packaged resource fixtures omit the native classifier; derive Windows path facts from host files.
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), "linux"));
+
 // Publish an active adapter only after its initialized wrapper runs a fixed no-I/O probe; wrap, timeout or cleanup failures reset it.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
@@ -69,6 +73,7 @@ import {
   buildPerCommandSandboxCustomConfig,
   getBuiltinShellReadPolicy,
   getBuiltinShellSessionReadPolicy,
+  getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
@@ -707,6 +712,35 @@ describe("configured profile launch on macOS", () => {
     expect(failure).toMatchObject({ code: ASRT_MAC_RUNTIME_PROBE_ERROR_CODE });
     expect(h.reset).toHaveBeenCalledOnce();
     expect(isAsrtSandboxActive()).toBe(false);
+  });
+});
+
+describe.each(["darwin", "linux"] as const)("private HOME reads after session refusal on %s", (platform) => {
+  it("retains only the invocation HOME grant when session reads are refused", async () => {
+    setProcessPlatform(platform);
+    const sessionRoot = getBuiltinShellSessionReadPolicy().allowRead[0];
+    expect(sessionRoot).toBeDefined();
+    await initializeAsrtSandbox({ allowedDomains: [], denyRead: [sessionRoot!] });
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    const homeRoot = privateRoots.find((root) => basename(root) === "home")!;
+    const ownHome = join(homeRoot, "invocation-home");
+    const otherHome = join(homeRoot, "other-home");
+    const policy = getBuiltinShellReadPolicy([ownHome, join(ownHome, "document-observation"), otherHome], homedir(), ownHome);
+    expect(policy.allowRead).toEqual([ownHome, join(ownHome, "document-observation")]);
+    expect(policy.denyRead).toEqual(expect.arrayContaining(getDefaultSensitiveReadDenyPaths()));
+    expect(policy.floorPierces).toEqual([]);
+  });
+
+  it("preserves a trusted deny of the private HOME root", async () => {
+    setProcessPlatform(platform);
+    const sessionRoot = getBuiltinShellSessionReadPolicy().allowRead[0];
+    expect(sessionRoot).toBeDefined();
+    const homeRoot = appOwnedSandboxPrivateRoots().find((root) => basename(root) === "home")!;
+    await initializeAsrtSandbox({ allowedDomains: [], denyRead: [sessionRoot!, homeRoot] });
+    const ownHome = join(homeRoot, "invocation-home");
+    const policy = getBuiltinShellReadPolicy([ownHome, join(ownHome, "document-observation")], homedir(), ownHome);
+    expect(policy.allowRead).toEqual([]);
+    expect(policy.denyRead).toContain(homeRoot);
   });
 });
 

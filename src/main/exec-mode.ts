@@ -427,7 +427,7 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
   if (!deps.isAuthorizedProjectRoot(request.cwd)) {
     deps.stderr.write(
       `exec: ${request.cwd} is not an authorized workspace project; add it to `
-      + "permissions.additionalDirectories in ~/.ave/settings.json or run from the default workspace\n",
+      + "permissions.additionalDirectories in ~/.ave/config/settings.json or run from the default workspace\n",
     );
     return EXEC_USAGE_EXIT_CODE;
   }

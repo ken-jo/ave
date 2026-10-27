@@ -1,18 +1,22 @@
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { derivePluginChildEnvelope } from "../../isolation/out-of-process-plugin.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
+import { initializeAveHomeFixture } from "../../../__tests__/support/ave-home-privacy.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import { _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 
 const PLUGIN_ID = "sandbox-candidate";
 let root: string;
 let previousHome: string | undefined;
 
 function setApproved(directories: string[]): void {
-  writeFileSync(join(root, "home", "settings.json"), JSON.stringify({
+  writePermissionSettingsFixture(join(root, "home"), JSON.stringify({
     permissions: { additionalDirectories: directories },
   }));
 }
@@ -50,14 +54,16 @@ function runtime(): WithdrawalRuntime {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "ave-sandbox-withdrawal-"));
+  setFixtureOwner(root);
   previousHome = process.env.AVE_HOME;
   process.env.AVE_HOME = join(root, "home");
-  mkdirSync(process.env.AVE_HOME, { recursive: true });
+  await initializeAveHomeFixture(process.env.AVE_HOME);
 });
 
 afterEach(() => {
+  _resetAveHomePrivacyForTest();
   if (previousHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousHome;
   rmSync(root, { recursive: true, force: true });

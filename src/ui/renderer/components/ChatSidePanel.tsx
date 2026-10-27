@@ -474,6 +474,7 @@ function tabLabel(
 function ContentTabView({
   api,
   sessionId,
+  visible,
   tab,
   targetById,
   manualUrl,
@@ -481,6 +482,7 @@ function ContentTabView({
 }: {
   api: AveApi;
   sessionId?: string;
+  visible: boolean;
   tab: WorkspaceTab;
   targetById: Map<string, ChatPreviewTarget>;
   manualUrl: string | null;
@@ -542,7 +544,7 @@ function ContentTabView({
       data-testid="chat-side-panel-content-view"
       data-tab-id={tab.id}
     >
-      <PreviewDetail api={api} sessionId={sessionId} target={target} />
+      <PreviewDetail api={api} sessionId={sessionId} target={target} visible={visible} />
     </div>
   );
 }
@@ -1256,13 +1258,14 @@ export function ChatSidePanel({
             // Drawn below, where every browser page tab stays mounted.
             null
           ) : activeTab.content ? (
-            <ContentTabView api={api} sessionId={sessionId} tab={activeTab} targetById={targetById}
+            <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={activeTab} targetById={targetById}
               manualUrl={browserUrlByTab[activeTab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
           ) : activeTab.kind === "file-browser" ? (
             <FileBrowserWorkspace
               key={sessionId}
               api={api}
               sessionId={sessionId}
+              visible={visible}
               files={files}
               changes={changes}
               revealRequest={revealRequest}
@@ -1301,7 +1304,7 @@ export function ChatSidePanel({
             // Drawn below, where it stays mounted across tab switches.
             null
           ) : (
-            <PreviewWorkspace api={api} sessionId={sessionId} targets={previewTargets} selectedId={selectedId} onSelect={onSelect} />
+            <PreviewWorkspace api={api} sessionId={sessionId} visible={visible} targets={previewTargets} selectedId={selectedId} onSelect={onSelect} />
           )}
           {browserTabs.map((tab) => {
             // Every browser PAGE tab (one url: the agent's tabs, pages opened
@@ -1322,7 +1325,7 @@ export function ChatSidePanel({
               >
                 <BrowserControlHeader api={api} tabId={tab.id} />
                 <div className="min-h-0 flex-1">
-                  <ContentTabView api={api} sessionId={sessionId} tab={tab} targetById={targetById}
+                  <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={tab} targetById={targetById}
                     manualUrl={browserUrlByTab[tab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
                 </div>
               </div>

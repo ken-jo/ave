@@ -653,7 +653,7 @@ export class PermissionManager {
     return this.interactiveAutoApprove;
   }
 
-  // Re-fence read-tier path operands to the allowed directories. Boot reads `permissions.blockReadsOutsideWorkingDirectories` from `~/.ave/settings.json` and pushes it here, the same way the reviewer's interactive policy arrives, so the enforcement path never re-reads the file per tool call. It ships OFF: a read reaches any path Layer 0 permits.
+  // Re-fence read-tier path operands to the allowed directories. Boot reads `permissions.blockReadsOutsideWorkingDirectories` from `~/.ave/config/settings.json` and pushes it here, the same way the reviewer's interactive policy arrives, so the enforcement path never re-reads the file per tool call. It ships OFF: a read reaches any path Layer 0 permits.
   setBlockReadsOutsideWorkingDirectories(value: boolean): void {
     if (this.blockReadsOutsideWorkingDirectories !== value) this.policyGeneration += 1;
     this.blockReadsOutsideWorkingDirectories = value;

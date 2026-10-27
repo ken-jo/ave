@@ -1,3 +1,7 @@
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+
 /** `spawnWindowsBundledProcess`: a bundled hook or MCP stdio server under srt-win. What it holds (the ACL grant, the throwaway HOME), what it hands
  * the confined spawn, and that every failure gives all of it back. The relay and the grant are each tested where they live; this is the composition. */
 import { EventEmitter } from "node:events";

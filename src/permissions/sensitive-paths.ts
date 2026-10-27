@@ -253,6 +253,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["secrets"], kind: "dir", why: "encrypted API keys, tokens" },
   { anchor: "ave-home", segments: ["subscription-runtimes"], kind: "dir", why: "subscription credentials, executable grants, and host-owned runtime state" },
   { anchor: "ave-home", segments: ["keys"], kind: "dir", why: "signing / encryption keys" },
+  { anchor: "ave-home", segments: ["config"], kind: "dir", why: "permission settings, user policy, and legacy secrets" },
   { anchor: "ave-home", segments: ["ave-secrets.json"], kind: "file", why: "legacy consolidated secrets file" },
   { anchor: "ave-home", segments: ["settings.json"], kind: "file", why: "app settings + permission configuration" },
   { anchor: "ave-home", segments: ["permissions.json"], kind: "file", why: "legacy/current permission settings file" },

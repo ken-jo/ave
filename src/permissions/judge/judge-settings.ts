@@ -8,7 +8,7 @@ import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-setti
 import { JUDGE_BLOCK_THRESHOLDS } from "./judge-breaker.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
-// Settings path of the subtree. The write floor is enforced outside this module: agent file and shell writes to `~/.ave/settings.json` hit the sensitive-path floor, and the only writer is the user-keyboard-gated Settings IPC in `src/ipc/domains/permission-judge.ts`.
+// Settings path of the subtree. The write floor is enforced outside this module: agent file and shell writes to `~/.ave/config/settings.json` hit the sensitive-path floor, and the only writer is the user-keyboard-gated Settings IPC in `src/ipc/domains/permission-judge.ts`.
 const JUDGE_SETTINGS_KEY = "permissions.judge";
 
 const JUDGE_STAGE_PROVIDERS = ["builtin-llm", "external"] as const;

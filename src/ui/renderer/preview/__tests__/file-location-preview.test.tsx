@@ -24,7 +24,7 @@ describe("file location preview", () => {
   it("reads the selected line window and renders source line numbers instead of formatting the fragment", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, content: "# selected heading\nplain second line", path: "/workspace/src/example.md", truncated: false });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={target} />);
+    render(<PreviewBody observe api={{} as never} target={target} />);
     await waitFor(() => expect(readFile).toHaveBeenCalledWith("src/example.md", { offset: 699, limit: 2 }));
     const first = await screen.findByTestId("file-preview-line-700");
     expect(first.textContent).toContain("# selected heading");
@@ -37,9 +37,9 @@ describe("file location preview", () => {
   it("rereads a different range in the same file", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, content: "line", truncated: false });
     vi.stubGlobal("ave", { preview: { readFile } });
-    const view = render(<PreviewBody api={{} as never} target={target} />);
+    const view = render(<PreviewBody observe api={{} as never} target={target} />);
     await screen.findByTestId("file-preview-line-700");
-    view.rerender(<PreviewBody api={{} as never} target={{ ...target, startLine: 20, endLine: 20 }} />);
+    view.rerender(<PreviewBody observe api={{} as never} target={{ ...target, startLine: 20, endLine: 20 }} />);
     await waitFor(() => expect(readFile).toHaveBeenLastCalledWith("src/example.md", { offset: 19, limit: 1 }));
     await screen.findByTestId("file-preview-line-20");
   });
@@ -47,7 +47,7 @@ describe("file location preview", () => {
   it("keeps selected ranges behind the normal read policy even when a target carries inline text", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: false, error: "path-not-allowed" });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={{ ...target, inlineText: "unread source" }} />);
+    render(<PreviewBody observe api={{} as never} target={{ ...target, inlineText: "unread source" }} />);
     await screen.findByTestId("chat-side-panel-file-error");
     expect(readFile).toHaveBeenCalledWith(target.path, { offset: 699, limit: 2 });
     expect(screen.queryByText("unread source")).toBeNull();
@@ -57,7 +57,7 @@ describe("file location preview", () => {
   it("does not invent a selected source line when a location is beyond the current file", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, content: "", lineCount: 0, truncated: false });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={target} />);
+    render(<PreviewBody observe api={{} as never} target={target} />);
     await screen.findByTestId("file-preview-selected-range");
     expect(screen.queryByTestId("file-preview-line-700")).toBeNull();
   });
@@ -65,7 +65,7 @@ describe("file location preview", () => {
   it("forwards the workspace resolution hint while keeping its label relative", async () => {
     const readFile = vi.fn().mockResolvedValue({ ok: true, content: "line", lineCount: 1 });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody api={{} as never} target={{ ...target, workspaceRoot: "/workspace/project" }} />);
+    render(<PreviewBody observe api={{} as never} target={{ ...target, workspaceRoot: "/workspace/project" }} />);
     await screen.findByTestId("file-preview-line-700");
     expect(readFile).toHaveBeenCalledWith(target.path, { offset: 699, limit: 2, workspaceRoot: "/workspace/project" });
     expect(screen.getByTestId("chat-side-panel-file-preview").textContent).not.toContain("/workspace/project");

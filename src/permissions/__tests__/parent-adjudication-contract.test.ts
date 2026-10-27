@@ -1,7 +1,10 @@
 // Settings cannot raise the parent verdict ceiling to HIGH; host-only adjudication fields must never reach the renderer.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import { readPermissionSettings } from "../permission-settings-store.js";
 import { PermissionTestResources } from "./test-resources.js";
 import { ApprovalGate, approvalAnswererAuditToken } from "../approval-gate.js";

@@ -769,7 +769,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       data-testid={TEST_IDS.chatViewRoot}
     >
       <div
-        className="@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size]"
+        className={`@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size] ${approvalHead !== null && panelLayout.mode === "overlay" ? "z-50" : ""}`}
         data-testid="chat-main-column"
       >
 

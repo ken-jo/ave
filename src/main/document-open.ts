@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types.js";
 import type { IpcDeps } from "../ipc/types.js";
 import { CHANNELS } from "../contract/app-contract.js";
-import { validateHostRendererSender, auditUnauthorized } from "../ipc/gated.js";
+import { auditUnauthorized } from "../ipc/gated.js";
+import { validateAppWindowMainFrameSender } from "../ipc/app-window-sender.js";
 import { findSessionMainWindowContents, mainWindowForContents } from "./app-state.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
@@ -12,12 +13,20 @@ import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directori
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { setDocumentPanelOpener } from "../tools/document-panel-access.js";
 import { parseDocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
+import type { ObservationIdentity } from "../shared/agent-observation.js";
+import { currentAgentObservationIdentity } from "../tools/agent-observation-context.js";
+import { observeAgentOpenedDocument } from "./document-observation.js";
+import { previewDocumentFormatOf } from "../shared/preview-document.js";
 
 interface PendingOpen {
   sender: WebContents;
   frame: WebContents["mainFrame"];
   sessionId: string;
   expiresAt: number;
+  path: string;
+  identity?: ObservationIdentity;
+  acknowledged: boolean;
+  observationSignal: AbortSignal;
   finish: (opened: boolean) => void;
 }
 const pending = new Map<string, PendingOpen>();
@@ -39,7 +48,7 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
   settings = deps.settingsService;
   setDocumentPanelOpener(openDocumentForSession);
   ipcMain.handle(CHANNELS.preview.documentOpenAck, (event, raw: unknown) => {
-    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+    if (!validateAppWindowMainFrameSender(event, deps)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.preview.documentOpenAck, event);
       return { ok: false, error: "unauthorized" };
     }
@@ -47,6 +56,7 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
     if (!ack) return { ok: false, error: "bad-request" };
     const entry = pending.get(ack.requestId);
     if (!entry) return { ok: false, error: "stale-request" };
+    if (entry.acknowledged) return { ok: false, error: "stale-request" };
     if (entry.sender !== event.sender || entry.frame !== event.senderFrame || entry.sessionId !== ack.sessionId) {
       auditUnauthorized(deps.auditLogger, CHANNELS.preview.documentOpenAck, event);
       return { ok: false, error: "unauthorized" };
@@ -55,7 +65,13 @@ export function registerDocumentOpenHandlers(deps: IpcDeps): void {
       entry.finish(false);
       return { ok: false, error: "stale-request" };
     }
-    entry.finish(ack.opened);
+    entry.acknowledged = true;
+    if (ack.opened && entry.identity && previewDocumentFormatOf(entry.path)) {
+      void observeAgentOpenedDocument(entry.identity, entry.path, entry.expiresAt, entry.observationSignal).then((ready) => {
+        entry.finish(ready && Date.now() < entry.expiresAt && validateAppWindowMainFrameSender(event, deps)
+          && visibleSession(entry.sessionId) === entry.sender);
+      }).catch(() => entry.finish(false));
+    } else entry.finish(ack.opened);
     return { ok: true };
   });
 }
@@ -76,8 +92,10 @@ export async function openDocumentForSession(path: string, context: ToolExecutio
   const requestId = randomUUID();
   const request: DocumentOpenRequest = { requestId, sessionId, path, expiresAt: Date.now() + TOOL_TIMEOUT_POLICY.documentPanelAckMs };
   const opened = await new Promise<boolean>((resolve) => {
+    const observationController = new AbortController();
     const finish = (success: boolean): void => {
       if (!pending.delete(requestId)) return;
+      observationController.abort();
       clearTimeout(timer);
       sender.removeListener("destroyed", cancel);
       sender.removeListener("render-process-gone", cancel);
@@ -88,7 +106,10 @@ export async function openDocumentForSession(path: string, context: ToolExecutio
     const cancel = (): void => finish(false);
     const timer = setTimeout(cancel, TOOL_TIMEOUT_POLICY.documentPanelAckMs);
     timer.unref?.();
-    pending.set(requestId, { sender, frame: sender.mainFrame, sessionId, expiresAt: request.expiresAt, finish });
+    const identity = currentAgentObservationIdentity();
+    pending.set(requestId, { sender, frame: sender.mainFrame, sessionId, expiresAt: request.expiresAt, path,
+      ...(identity?.sessionId === sessionId ? { identity } : {}), acknowledged: false,
+      observationSignal: observationController.signal, finish });
     sender.once("destroyed", cancel);
     sender.once("render-process-gone", cancel);
     sender.once("did-start-navigation", cancel);

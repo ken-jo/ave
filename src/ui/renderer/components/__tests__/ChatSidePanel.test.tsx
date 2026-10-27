@@ -256,6 +256,8 @@ describe("ChatSidePanel", () => {
       preview: {
         readFile: vi.fn(async () => ({ ok: true, content: "# preview", path: "/tmp/x.md", truncated: false })),
         readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "stub" })),
+        onDocumentObservation: vi.fn(() => () => {}),
+        acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
@@ -774,7 +776,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { ave: unknown }).ave = {
       ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot,
@@ -806,7 +808,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -841,7 +843,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -876,7 +878,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -906,7 +908,7 @@ describe("ChatSidePanel", () => {
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -936,7 +938,7 @@ describe("ChatSidePanel", () => {
     }));
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -955,7 +957,7 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const fileRow = await screen.findByTestId("chat-side-panel-fs-file");
     fireEvent.click(fileRow);
-    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/ws/docs/architecture.md", { workspaceRoot: "/ws" }));
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/ws/docs/architecture.md", { workspaceRoot: "/ws", sessionId: "session-1" }));
     // The real content (not a path-only placeholder) renders in the detail pane.
     await screen.findByTestId("chat-side-panel-file-preview");
     await waitFor(() => expect(screen.getByText(/real content/)).toBeTruthy());
@@ -965,7 +967,7 @@ describe("ChatSidePanel", () => {
     const listDir = vi.fn(async () => ({ ok: false as const, error: "read-failed" as const }));
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
@@ -1012,7 +1014,7 @@ describe("ChatSidePanel", () => {
     });
     vi.stubGlobal("ave", {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "", path: "/ws/x", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
         pickRoot,
@@ -1079,7 +1081,7 @@ describe("ChatSidePanel", () => {
     vi.stubGlobal("ave", {
       ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
-      preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
+      preview: { onDocumentObservation: vi.fn(() => () => {}), acknowledgeDocumentObservation: vi.fn(async () => ({ ok: true })), readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
       workspace: {
         listRoots: vi.fn(async () => ({
           ok: true,
@@ -2479,7 +2481,7 @@ describe("ChatSidePanel", () => {
       { id: "edit", path: "/ws/alpha/a1.md", label: "a1.md", detail: "alpha/a1.md", sourceLabel: "edit_file", operation: "modify", canOpenExternal: false },
       { id: "outside", path: "/elsewhere/artifact.md", label: "artifact.md", detail: "artifact.md", sourceLabel: "attachment", operation: "attachment", canOpenExternal: false },
     ];
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="s" files={files} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="s" files={files} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
     expect(screen.queryByTestId("chat-side-panel-file-source-segment")).toBeNull();
     await screen.findByTestId("chat-side-panel-file-filter-changed");
     expect(screen.getByTestId("chat-side-panel-file-filter-session")).toHaveTextContent("1");
@@ -2498,7 +2500,7 @@ describe("ChatSidePanel", () => {
   it("reveals a requested file through ancestors and clears search with the changed filter", async () => {
     stubRichWorkspace();
     const files: WorkspaceFileItem[] = [{ id: "edit", path: "/ws/alpha/a1.md", label: "a1.md", detail: "alpha/a1.md", sourceLabel: "edit_file", operation: "modify", canOpenExternal: false }];
-    const props = { api: api(), sessionId: "s", files, targetById: new Map<string, ChatPreviewTarget>(), selectedId: null, onSelect: vi.fn() };
+    const props = { visible: true, api: api(), sessionId: "s", files, targetById: new Map<string, ChatPreviewTarget>(), selectedId: null, onSelect: vi.fn() };
     const result = renderPanel(<FileBrowserWorkspace {...props} />);
     const search = await screen.findByRole("textbox");
     fireEvent.change(search, { target: { value: "missing" } });
@@ -2518,7 +2520,7 @@ describe("ChatSidePanel", () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     stubRichWorkspace();
     const bridge = api();
-    renderPanel(<FileBrowserWorkspace api={bridge} sessionId="s" files={[]} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
+    renderPanel(<FileBrowserWorkspace visible api={bridge} sessionId="s" files={[]} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId("chat-side-panel-file-browser")).toHaveAttribute("data-file-layout", "columns"));
     const divider = screen.getByRole("separator");
     expect(divider).toHaveAttribute("aria-orientation", "vertical");
@@ -2532,7 +2534,7 @@ describe("ChatSidePanel", () => {
   it("narrow selection opens detail and Back returns focus to the selected tree row", async () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(360);
     stubRichWorkspace();
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="s" files={[]} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="s" files={[]} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
     const row = (await within(screen.getByRole("tree")).findByText("readme.md")).closest<HTMLElement>('[role="treeitem"]')!;
     act(() => row.focus());
     fireEvent.keyDown(row, { key: "Enter" });
@@ -2553,7 +2555,7 @@ describe("ChatSidePanel", () => {
       listDir: vi.fn(async (path: string) => ({ ok: true, path, entries: [], truncated: false })),
     } });
     const files: WorkspaceFileItem[] = [{ id: "win", path: "C:\\project\\src\\a.ts", label: "a.ts", detail: "src/a.ts", sourceLabel: "edit_file", operation: "modify", canOpenExternal: false }];
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="win" files={files} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "C:/project/src/a.ts" }} />);
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="win" files={files} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "C:/project/src/a.ts" }} />);
     await waitFor(() => expect(screen.getByTestId("chat-side-panel-root-select")).toHaveValue("C:\\project"));
     const selected = await within(screen.getByRole("tree")).findByText("a.ts");
     expect(selected.closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
@@ -2569,8 +2571,8 @@ describe("ChatSidePanel", () => {
     const files: WorkspaceFileItem[] = [{ id: "project-a-file", path: target.path, label: target.title, detail: target.path,
       sourceLabel: "read_file", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
     const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/projects/A", review: null });
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="project-a" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
-    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/projects/A/src/a.ts", ranged ? { offset: 2, limit: 3, workspaceRoot: "/projects/A" } : { workspaceRoot: "/projects/A" }));
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="project-a" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/projects/A/src/a.ts", ranged ? { offset: 2, limit: 3, workspaceRoot: "/projects/A" } : { workspaceRoot: "/projects/A", sessionId: "project-a" }));
     expect(readFile).toHaveBeenCalledTimes(1);
   });
 
@@ -2583,7 +2585,7 @@ describe("ChatSidePanel", () => {
       path: "/unavailable/docs/search.md", inlineText: "Supplied indexed document preview", canOpenExternal: false };
     const files: WorkspaceFileItem[] = [{ id: "indexed-file", path: target.path, label: target.title, detail: target.path,
       sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="indexed" files={files} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="indexed" files={files} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
     expect(await screen.findByText("Supplied indexed document preview")).toBeVisible();
     expect(readFile).not.toHaveBeenCalled();
   });
@@ -2598,7 +2600,7 @@ describe("ChatSidePanel", () => {
     const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/ws", review: { sessionId: "indexed", turnId: "latest",
       files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true,
         hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }] }] } });
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="indexed" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="indexed" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
     expect(await screen.findByTestId("turn-change-detail")).toHaveTextContent("after");
     expect(screen.queryByText("Older indexed preview")).toBeNull();
   });
@@ -2611,11 +2613,11 @@ describe("ChatSidePanel", () => {
       sessionId: "image-session", turnId: "latest", files: [{ path: "source.png", bytes: 8, lineCount: 0,
         added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, hunks: [] }],
     } });
-    renderPanel(<FileBrowserWorkspace api={api()} sessionId="image-session" files={[]} changes={changes} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "/ws/source.png" }} />);
+    renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="image-session" files={[]} changes={changes} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "/ws/source.png" }} />);
     expect(await screen.findByTestId("file-preview-image")).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
     expect(screen.queryByTestId("turn-change-detail")).toBeNull();
     expect(screen.getByTestId("chat-side-panel-file-change-counts")).toHaveTextContent("+8 −2");
-    expect(readFile).toHaveBeenCalledWith("/ws/source.png", { workspaceRoot: "/ws" });
+    expect(readFile).toHaveBeenCalledWith("/ws/source.png", { workspaceRoot: "/ws", sessionId: "image-session" });
   });
 
 });

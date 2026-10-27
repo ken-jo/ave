@@ -1,7 +1,9 @@
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import path from "node:path";
 import os from "node:os";
+beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false }));
 import { mkdirSync, realpathSync } from "node:fs";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { CHANNELS } from "../../../contract/app-contract.js";

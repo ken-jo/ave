@@ -93,6 +93,8 @@ try {
   const rows = JSON.parse(pins.stdout);
   assert.equal(rows.length, paths.length);
   for (const row of rows.flatMap(row => [row, ...row.ancestors])) {
+    if (row.exists === true) assert.match(row.fileSystemName, /^[A-Za-z0-9_-]{1,255}$/u, "retained handles report their filesystem");
+    else assert.equal(row.fileSystemName, null, "missing and uninspected objects have no filesystem name");
     if (row.exists === true) assert.match(row.changeTime, /^0x[0-9a-f]{16}$/u, "changeTime is a hex-64 string");
     else assert.equal(row.changeTime, null, "missing and uninspected objects have null changeTime");
   }

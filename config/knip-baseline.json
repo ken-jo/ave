@@ -519,11 +519,6 @@
     },
     {
       "type": "types",
-      "file": "src/ipc/domains/preview.ts",
-      "name": "PreviewReadFileResult"
-    },
-    {
-      "type": "types",
       "file": "src/ipc/domains/workspace.ts",
       "name": "WorkspaceDirEntry"
     },
@@ -691,16 +686,6 @@
       "type": "types",
       "file": "src/permissions/permission-manager.ts",
       "name": "PermissionDecision"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/permission-settings-store.ts",
-      "name": "PermissionSettingsBlock"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/permission-settings-store.ts",
-      "name": "ReviewerInteractiveBlock"
     },
     {
       "type": "types",
