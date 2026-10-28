@@ -1001,8 +1001,13 @@ export function getProtectedReadDenyFloor(): readonly string[] {
 
 // The protected read deny covering `path`, if any. A plugin's chosen directory is refused when one does: its read half would re-allow the deny on every platform, and on Linux its write half would too.
 export function protectedReadDenyCovering(path: string, floor: readonly string[] = getProtectedReadDenyPaths()): string | undefined {
-  const resolved = canonicalizePathForMatch(path);
-  return floor.find((denied) => readDenyCoversPath(denied, resolved));
+  return protectedReadDenyMatcher(floor)(path);
+}
+
+// protectedReadDenyCovering for many paths against one floor: each entry compiles once, not once per path and ancestor.
+export function protectedReadDenyMatcher(floor: readonly string[] = getProtectedReadDenyPaths()): (path: string) => string | undefined {
+  const covering = readDenyCovering(floor);
+  return (path) => covering(canonicalizePathForMatch(path));
 }
 
 // Keep write roots from reopening reads the floor denies. Seatbelt keeps a write grant write-only, but bubblewrap grants a write by binding the host directory read-write over the deny's tmpfs mask, which exposes everything under it. So on Linux a write root covered by the floor is not granted, for every wrap: the user's shell, plugin children and workers, bundled hooks, MCP stdio servers and the terminal all reach ASRT through buildPerCommandSandboxCustomConfig, and the shared config through buildSandboxConfig. macOS keeps the root, since the grant stays write-only there. Ordinary working trees remain writable.

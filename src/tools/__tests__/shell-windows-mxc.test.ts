@@ -4,7 +4,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -58,6 +58,7 @@ import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissio
 import { permissionsFilePath } from "../../permissions/permissions-store.js";
 import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
 import { egressGrantFilePath } from "../../permissions/egress-grants.js";
+import { egressInvocationOwner, onEgressInvocationReleased } from "../../permissions/egress-invocations.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -401,6 +402,69 @@ describe("builtin shell — Windows MXC containers", () => {
     launcher!.emit("exit", 1, null);
     launcher!.emit("close", 1, null);
     await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
+  });
+
+  const releaseListenerCleanups: (() => void)[] = [];
+  afterEach(() => { for (const cleanup of releaseListenerCleanups.splice(0)) cleanup(); });
+
+  // Fails only the caller's (second) container release; returns its token and HOME.
+  function failCommandContainerRelease(failure: { egressThrows?: Error; launchRejects?: Error }): { token: () => string; home: () => string } {
+    let token: string | undefined;
+    let home: string | undefined;
+    mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string; egressToken: string; filesystem: { allowWrite: string[] } }) => {
+      const parser = isParserLaunch(input);
+      if (!parser) {
+        token = input.egressToken;
+        home = input.filesystem.allowWrite.find((path) => path.includes("ave-mxc-test-home-"));
+      }
+      const rejects = parser ? undefined : failure.launchRejects;
+      return {
+        argv: [WXC_EXEC, "--config-base64", parser ? PARSER_REQUEST : "eyJ9"],
+        proxyPort: 51234,
+        release: rejects === undefined ? mxcLaunchMock.release : async () => { await mxcLaunchMock.release(); throw rejects; },
+      };
+    });
+    const thrown = failure.egressThrows;
+    if (thrown !== undefined) releaseListenerCleanups.push(onEgressInvocationReleased((released) => { if (released === token) throw thrown; }));
+    return { token: () => token!, home: () => home! };
+  }
+
+  it("settles with the error and still releases the launch and HOME when egress release throws", async () => {
+    bootMxcShells();
+    const container = failCommandContainerRelease({ egressThrows: new Error("listener close threw") });
+    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-egress-throws"));
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+    expect(result.output).toContain(CONTAINER_OUTPUT);
+    expect(result.output).toContain("listener close threw");
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    expect(egressInvocationOwner(container.token())).toBeUndefined();
+    expect(existsSync(container.home())).toBe(false);
+  });
+
+  it("settles with the error and still releases egress and HOME when the launch release rejects", async () => {
+    bootMxcShells();
+    const container = failCommandContainerRelease({ launchRejects: new Error("relay close rejected") });
+    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-launch-rejects"));
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+    expect(result.output).toContain("relay close rejected");
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    expect(egressInvocationOwner(container.token())).toBeUndefined();
+    expect(existsSync(container.home())).toBe(false);
+  });
+
+  it("settles with the error and still releases the launch, HOME and egress when output finalization throws", async () => {
+    bootMxcShells();
+    const container = failCommandContainerRelease({});
+    const progress = { write: () => {}, end: () => { throw new Error("progress sink closed"); } };
+    const result = await new PowerShellTool().execute(
+      { command: "Write-Output hi", timeoutSeconds: 7 },
+      { ...context("ps-mxc-collector-throws"), metadata: { toolUseId: "ps-mxc-collector-throws", toolOutputProgress: progress } },
+    );
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+    expect(result.output).toContain("progress sink closed");
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    expect(egressInvocationOwner(container.token())).toBeUndefined();
+    expect(existsSync(container.home())).toBe(false);
   });
 
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath, resolveShellFilesystemPath } from "../shell-filesystem-path.js";
 
 describe("physical filesystem path contracts", () => {
@@ -58,6 +58,14 @@ describe("physical filesystem path contracts", () => {
       unresolvedParentTraversal: false,
       routingSymlinkPaths: [],
     });
+  });
+  it.runIf(process.platform === "win32")("resolves a drive-less rooted operand on the working directory's drive, not the host process's", () => {
+    const hostDrive = root[0]!.toUpperCase() === "Q" ? "R" : "Q";
+    const hostCwd = vi.spyOn(process, "cwd").mockReturnValue(`${hostDrive}:\\ave-host-process`);
+    try {
+      const operand = `\\${root.slice(parse(root).root.length)}\\missing`;
+      expect(resolveShellFilesystemPath(operand, root)).toBe(join(root, "missing"));
+    } finally { hostCwd.mockRestore(); }
   });
   it.runIf(process.platform !== "win32")("reports routing link names separately from their physical targets", () => {
     const physical = join(root, "physical");
