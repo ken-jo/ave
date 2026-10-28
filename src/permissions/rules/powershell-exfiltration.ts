@@ -18,6 +18,7 @@ import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } fr
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
 import {
+  classifyPowerShellArchiveTraversal,
   isDefinitePowerShellRecursion,
   isPowerShellRecursionParameter,
   type PowerShellTraversalArgument,
@@ -930,8 +931,19 @@ const POWERSHELL_KEYWORDS = new Set(["begin", "break", "catch", "continue", "dat
 const PARAMETER_TOKEN = /^-([A-Za-z_?][\w-]*)(:?)([\s\S]*)$/;
 
 function traversalValue(token: PsToken | undefined): PowerShellTraversalValue {
-  const value = token === undefined ? undefined : literalWordValue(token);
+  const value = token === undefined ? undefined : literalWordValue(token) ?? wildcardWordValue(token);
   return value === undefined ? { kind: "dynamic" } : { kind: "literal", value };
+}
+
+// The host AST passes an unquoted wildcard word as a literal; keep the same view so both layers agree.
+function wildcardWordValue(token: PsToken): string | undefined {
+  if (token.kind !== "word" || token.quoted || token.nested.length > 0 || token.adjacent) return undefined;
+  return wildcardText(token.raw);
+}
+
+function wildcardText(text: string): string | undefined {
+  if (!/[*?[]/.test(text)) return undefined;
+  return literalRuleWord(text.replace(/[*?[\]]/g, "a"), "powershell") === undefined ? undefined : text;
 }
 
 function boundTraversalValue(token: PsWord, text: string): PowerShellTraversalValue {
@@ -939,7 +951,7 @@ function boundTraversalValue(token: PsWord, text: string): PowerShellTraversalVa
   const constant = /^\$(true|false)$/i.exec(text);
   if (constant !== null) return { kind: "literal", value: constant[1]!.toLowerCase() };
   if (token.reason !== undefined) return { kind: "dynamic" };
-  const value = literalRuleWord(text, "powershell");
+  const value = literalRuleWord(text, "powershell") ?? wildcardText(text);
   return value === undefined ? { kind: "dynamic" } : { kind: "literal", value };
 }
 
@@ -987,14 +999,20 @@ function stageDefinitelyTraverses(stage: TraversalStage): boolean {
   return stage.name !== undefined && isDefinitePowerShellRecursion(stage.name, stage.args);
 }
 
-// Fail-closed: unknown, launcher and dynamic command names, and Get-ChildItem with any unresolved operand, may walk.
+// Fail-closed: unknown, launcher and dynamic command names, an archiver with an unresolved mode or operand, and
+// Get-ChildItem with any unresolved operand may walk.
 function stageMayTraverse(stage: TraversalStage): boolean {
-  if (stage.name === undefined) return true;
+  if (stage.name === undefined || classifyPowerShellArchiveTraversal(stage.name, stage.args) === "undecidable") return true;
   const policy = POWERSHELL_COMMAND_POLICIES[stage.name];
   if (policy === undefined || policy.effects.includes("launcher") || stageDefinitelyTraverses(stage)) return true;
-  if (stage.name === "get-childitem" && stage.args.some((argument) => argument.kind === "dynamic"
-    || (argument.kind === "parameter" && argument.argument?.kind === "dynamic"))) return true;
+  // A wildcard operand stays unresolved here, as it was before wildcards were read as literals.
+  if (stage.name === "get-childitem" && stage.args.some((argument) => unresolvedOperand(argument)
+    || (argument.kind === "parameter" && argument.argument !== undefined && unresolvedOperand(argument.argument)))) return true;
   return stage.args.some((argument) => argument.kind === "parameter" && isPowerShellRecursionParameter(stage.name!, argument));
+}
+
+function unresolvedOperand(argument: PowerShellTraversalArgument): boolean {
+  return argument.kind === "dynamic" || (argument.kind === "literal" && /[*?[]/.test(argument.value));
 }
 
 function someTraversalStage(parsed: ParsedPowerShellCommand, predicate: (stage: TraversalStage) => boolean): boolean {

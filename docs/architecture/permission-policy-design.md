@@ -1288,15 +1288,29 @@ Two classifiers answer different questions about PowerShell traversal:
     not;
   - Get-ChildItem's `-s`;
   - the robocopy/xcopy/findstr recursive switches;
-  - archive walkers.
+  - archive creation that reads an operand tree (below).
 
   The host PowerShell block (`validatePowerShellAst`, including the Remove-Item
   recursive-and-forced check) and the permission decision both import it.
 - **May** (`mayTraversePowerShellRecursively`): a fail-closed superset.
-  Unknown, launcher and dynamic command names, unresolved Get-ChildItem
-  operands and unparsed input count as walking. Only the permission decision
+  Unknown, launcher and dynamic command names, archivers whose mode or operand
+  is undecidable, unresolved Get-ChildItem operands and unparsed input count as
+  walking. Only the permission decision
   uses it, and only on the MXC route, where it keeps the forced modal ask for
   the undecidable remainder. It is never a host-block rule.
+
+Archivers are classified by mode, because listing or extracting an archive does
+not walk an existing tree:
+
+| Class | Forms | Result |
+|---|---|---|
+| Definite | tar create, append or update: `c`/`r`/`u` in a bundled first argument (`tar cf`) or a dash bundle (`-czf`), or `--create`/`--append`/`--update`; 7z, 7za or 7zr `a`/`u`; `zip -r` (also bundled, as in `-qr`, and `--recurse-paths`); Compress-Archive whose `-Path` (by prefix or position) is a wildcard, or whose `-Path`/`-LiteralPath` is directory-shaped (`.`, `..`, or a trailing separator) | denied on both layers |
+| Not traversal | tar `-t`/`-x`, 7z `l`/`x`/`e`, unzip, Expand-Archive | not a traversal; extraction writes belong to the write policy |
+| Undecidable | a mode that is not static: a dynamic first argument, bundled flags from a variable or splat, a dynamic 7z command, zip with a dynamic argument and no `-r`; Compress-Archive with a dynamic path, a path from the pipeline, or a literal non-wildcard path not shaped as a directory | not definite, so the host does not refuse it; `may`, so MXC keeps the forced ask |
+
+A literal Compress-Archive path such as `src` may be a file or a directory.
+The shared classifier reads no filesystem state, so both layers see the same
+answer: undecidable, not denied.
 
 Definite recursion is refused on every host route: MXC, ASRT, the pinned or
 explicitly approved host shell, and the Windows plain child. The only exception

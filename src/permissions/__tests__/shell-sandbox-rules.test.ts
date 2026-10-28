@@ -172,7 +172,10 @@ describe("shell confinement and escape rules", () => {
       "Get-ChildItem src -Depth 2", "gci src -de 1", "Get-ChildItem src -Recurse:$true",
       "Get-ChildItem -r src | Select-String term", "Select-String term -Path (Get-ChildItem -Recurse src)",
       "if ($true) { gci -Recurse src }", "$files = gci -r src; Select-String term $files",
-      "Remove-Item -Recurse build", "Copy-Item src out -Recurse", "robocopy src out /E", "7z x a.7z", "tar -tf a.tar",
+      "Remove-Item -Recurse build", "Copy-Item src out -Recurse", "robocopy src out /E",
+      "tar cf x.tar d", "tar -czf x.tar d", "tar --create -f x.tar d", "tar -rf x.tar d", "tar -uf x.tar d", "& tar c .",
+      "7z a x.7z d", "7za u x.7z d", "zip -r a.zip d", "zip -qr a.zip d",
+      "Compress-Archive -Path d/ -DestinationPath a.zip", "Compress-Archive *.txt a.zip", "Compress-Archive -Path:src/* a.zip",
     ])("denies definite traversal %s with the host block's reason", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(true);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
@@ -182,10 +185,19 @@ describe("shell confinement and escape rules", () => {
     it.each([
       "tree src", "rg term", "node walker.js src", "cmd /c dir /s", "iex 'Get-ChildItem'", "& $cmd src",
       "Get-ChildItem @options", "Get-ChildItem 'unterminated",
+      "tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
     ])("keeps the forced ask for undecidable traversal %s", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
       expect(checkPowerShell(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    });
+
+    // Listing and extraction read the archive, not a tree; extraction writes belong to the write policy.
+    it.each(["tar -tf x.tar", "tar -xf x.tar", "tar xf x.tar", "7z l x.7z", "7z x x.7z", "7z e x.7z", "unzip x.zip", "Expand-Archive x.zip d"])
+    ("does not deny archive listing or extraction %s as traversal", command => {
+      expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
+      expect(mayTraversePowerShellRecursively(command)).toBe(false);
+      expect(checkPowerShell(command).decision).not.toBe("deny");
     });
 
     it.each(["Get-ChildItem src", "Get-ChildItem -Directory src", "Get-Content notes.txt", "Select-String term notes.txt",

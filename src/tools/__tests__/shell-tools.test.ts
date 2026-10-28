@@ -849,6 +849,17 @@ describe("powershell tool", () => {
         ["gci -r dir | Select-String x", [command("gci", psParameter("r"), psLiteral("dir")), command("Select-String", psLiteral("x"))]],
         ["robocopy dir dest /S", [command("robocopy", psLiteral("dir"), psLiteral("dest"), psLiteral("/S"))]],
         ["tar -cf out.tar dir", [command("tar", psLiteral("-cf"), psLiteral("out.tar"), psLiteral("dir"))]],
+        // Archive shapes follow the native parser: `-czf` is a parameter, `cf` and `--create` are literals.
+        ["tar cf x.tar d", [command("tar", psLiteral("cf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar -czf x.tar d", [command("tar", psParameter("czf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar --create -f x.tar d", [command("tar", psLiteral("--create"), psParameter("f"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar -rf x.tar d", [command("tar", psParameter("rf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar -uf x.tar d", [command("tar", psParameter("uf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["7z a x.7z d", [command("7z", psLiteral("a"), psLiteral("x.7z"), psLiteral("d"))]],
+        ["7za u x.7z d", [command("7za", psLiteral("u"), psLiteral("x.7z"), psLiteral("d"))]],
+        ["zip -r a.zip d", [command("zip", psParameter("r"), psLiteral("a.zip"), psLiteral("d"))]],
+        ["Compress-Archive -Path d/ -DestinationPath a.zip", [command("Compress-Archive", psParameter("Path"), psLiteral("d/"), psParameter("DestinationPath"), psLiteral("a.zip"))]],
+        ["Compress-Archive *.txt a.zip", [command("Compress-Archive", psLiteral("*.txt"), psLiteral("a.zip"))]],
       ] as const)("refuses %s with the decision's reason", (_, commands) => {
         const summary = ast([...commands]);
         expect(refusal(summary)).toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
@@ -859,6 +870,21 @@ describe("powershell tool", () => {
       it("keeps a literal -Recurse:$false non-traversal", () => {
         expect(validatePowerShellAst(ast([command("Copy-Item", psParameter("Recurse", psLiteral("false", "$false")), psLiteral("dir"), psLiteral("dest"))]))).toBeNull();
         expect(validatePowerShellAst(ast([command("robocopy", psLiteral("dir"), psLiteral("dest"))]))).toBeNull();
+      });
+
+      it.each([
+        ["tar -tf x.tar", [command("tar", psParameter("tf"), psLiteral("x.tar"))]],
+        ["tar -xf x.tar", [command("tar", psParameter("xf"), psLiteral("x.tar"))]],
+        ["7z l x.7z", [command("7z", psLiteral("l"), psLiteral("x.7z"))]],
+        ["7z x x.7z", [command("7z", psLiteral("x"), psLiteral("x.7z"))]],
+        ["Expand-Archive x.zip d", [command("Expand-Archive", psLiteral("x.zip"), psLiteral("d"))]],
+        // Undecidable: the decision asks, and the host block does not refuse.
+        ["tar $mode x.tar", [command("tar", psDynamic("$mode"), psLiteral("x.tar"))]],
+        ["Compress-Archive src a.zip", [command("Compress-Archive", psLiteral("src"), psLiteral("a.zip"))]],
+      ] as const)("does not refuse %s as traversal", (_, commands) => {
+        const summary = ast([...commands]);
+        expect(validatePowerShellAst(summary)).toBeNull();
+        expect(findPowerShellAstPathViolation(summary, process.cwd(), process.cwd(), [], false)?.reason).not.toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
       });
     });
 
