@@ -8,6 +8,7 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
@@ -18,8 +19,6 @@ import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn, setAgentObservationSink } from "../agent-observation-context.js";
 import type { DocumentEditJournalRecord } from "../../shared/document-edit-journal.js";
-
-const quotePowerShell = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 // Unsupported host tiers carry a per-test skip reason; integrity, probe and execution failures remain failures.
 describe("native governed XLSX command", () => {

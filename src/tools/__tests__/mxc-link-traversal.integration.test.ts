@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
@@ -14,8 +15,6 @@ import { resolveTrustedPowerShellExecutable } from "../../shared/powershell-exec
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
-
-const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 // A link inside a granted cwd must not expose a credential-floor target to recursive or direct reads.
 describe.runIf(process.platform === "win32")("MXC link traversal into a denied path", () => {
@@ -56,7 +55,7 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
         hostShellExecutionPlan: getHostShellExecutionPlan() };
       expect(context.hostShellExecutionPlan.mode).toBe("asrt");
       const timeoutSeconds = TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000;
-      const listing = `Get-ChildItem -LiteralPath ${quote(clean)}`;
+      const listing = `Get-ChildItem -LiteralPath ${quotePowerShell(clean)}`;
       const pipeRead = `${listing} | Get-ChildItem -File | Get-Content`;
       // Unsandboxed baseline: piping each item back into Get-ChildItem follows the link (PS 5.1 -Recurse/-Depth do not).
       const powershell = resolveTrustedPowerShellExecutable()!.executable;
@@ -69,8 +68,8 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
         { name: "recurse-get-content", layer: "host", command: `${listing} -Recurse -File | Get-Content`, refusal: /recursive shell filesystem traversal/ },
         { name: "depth-prefix-get-content", layer: "host", command: `${listing} -Dep 3 -File | Get-Content`, refusal: /recursive shell filesystem traversal/ },
         { name: "recurse-select-string",layer: "host", command: `${listing} -Recurse -File | Select-String -Pattern 'AVE-T6-'`, refusal: /recursive shell filesystem traversal/ },
-        { name: "direct-plain-name", layer: "host", command: `Get-Content -LiteralPath ${quote(join(linked, "notes.txt"))}`, refusal: /Sensitive path: .*\.ssh/ },
-        { name: "direct-id-rsa", layer: "host", command: `Get-Content -LiteralPath ${quote(join(linked, "id_rsa"))}`, refusal: /Sensitive path: .*\.ssh/ },
+        { name: "direct-plain-name", layer: "host", command: `Get-Content -LiteralPath ${quotePowerShell(join(linked, "notes.txt"))}`, refusal: /Sensitive path: .*\.ssh/ },
+        { name: "direct-id-rsa", layer: "host", command: `Get-Content -LiteralPath ${quotePowerShell(join(linked, "id_rsa"))}`, refusal: /Sensitive path: .*\.ssh/ },
         { name: "pipe-get-content", layer: "container", command: pipeRead },
         { name: "pipe-select-string", layer: "container", command: `${listing} | Get-ChildItem -File | Select-String -Pattern 'AVE-T6-'` },
       ];
@@ -93,7 +92,7 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
           expect(result.output).toContain(linked);
         }
       }
-      const bash = await new BashTool().execute({ command: `cat ${quote(join(linked, "id_rsa"))}`, timeoutSeconds }, context);
+      const bash = await new BashTool().execute({ command: `cat ${quotePowerShell(join(linked, "id_rsa"))}`, timeoutSeconds }, context);
       const bashLeaked = secrets.some((value) => bash.output.includes(value));
       console.info("MXC link evidence " + JSON.stringify({ link: linkType, case: "bash-direct", layer: "host", exitCode: bash.metadata?.returncode ?? null,
         isError: bash.isError, sandboxed: bash.metadata?.sandboxed ?? null, leaked: bashLeaked, error: bash.output.slice(0, 400) }));
