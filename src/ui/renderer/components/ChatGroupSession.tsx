@@ -21,7 +21,7 @@ import {
   type PendingAnswers,
   type SideChatSurface,
 } from "./chat-group-session-registry.js";
-import { ApprovalDock } from "./permissions/ApprovalDock.js";
+import { CoveredConversationApprovalDock } from "./permissions/ApprovalDock.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { useApprovalSurface } from "../hooks/use-approval.js";
@@ -110,6 +110,7 @@ export interface ChatGroupEnvironment {
   sideChatOpenRequest?: { chatGroupId: string; sessionId: string; nonce: number } | null;
   /** Bring a chat group forward, including one a narrow canvas has folded away. Returns whether focus moved. */
   focusChatGroup: (chatGroupId: string) => boolean;
+  onReturnToConversation: (chatGroupId: string) => void;
   /** Where the attention dot goes, decided once by the window. A tile reads its own side chat's verdict from here rather than
    * deciding for itself, so the panel toggle, the panel's tab and the sidebar row agree. */
   pendingAnswers: PendingAnswers;
@@ -759,11 +760,16 @@ export function ChatGroupSession({
   const settle: ReactNode = routed ? (
     <>
       <QuestionOverlay api={api} requests={drawnAskQuestions} onResolved={dismissAskQuestion} />
-      <ApprovalDock
+      <CoveredConversationApprovalDock
         queue={drawnApprovals}
-        conversationLabel={t("approvalAttribution.paneConversation", {
-          title: currentSessionTitle ?? t("mainToolbar.newChat"),
-        })}
+        conversation={{
+          sessionId: currentSessionId,
+          title: env.sessions.find((session) => session.id === currentSessionId)?.title ?? storedSessionTitle,
+          messages: entries.flatMap((entry) => entry.kind === "user" || entry.kind === "assistant"
+            ? [{ role: entry.kind, content: entry.text }]
+            : []),
+        }}
+        onOpenConversation={() => env.onReturnToConversation(chatGroupId)}
         proposedChoice={
           settleApprovalHead !== null && approvals.proposal?.requestId === settleApprovalHead.id
             ? approvals.proposal.choice

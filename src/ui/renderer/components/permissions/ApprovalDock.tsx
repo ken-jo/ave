@@ -10,12 +10,28 @@ import { Badge } from "../../../../components/ui/badge.js";
 import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import { FLOATING_LANE_ITEM_WIDTH } from "../FloatingRightLane.js";
 import { MODAL_DIALOG_SELECTOR, TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
+import { resolveConversationTitle } from "../../../../shared/conversation-title.js";
+
+/** A covered pane keeps its requesting conversation visible and reachable. */
+export function CoveredConversationApprovalDock({
+  conversation,
+  ...props
+}: Omit<ApprovalDockProps, "conversationLabel"> & {
+  conversation: Parameters<typeof resolveConversationTitle>[0];
+}) {
+  const { t } = useTranslation();
+  return <ApprovalDock {...props} conversationLabel={t("approvalAttribution.paneConversation", {
+    title: resolveConversationTitle(conversation, t),
+  })} />;
+}
 
 export interface ApprovalDockProps {
   /** The requests this surface draws, head first. */
   queue: readonly ApprovalRequest[];
   /** What the card calls the conversation that asked; the tile's title, not its id. */
   conversationLabel: string;
+  /** Return to the conversation while another surface covers its pane. */
+  onOpenConversation?: () => void;
   proposedChoice?: ApprovalChoice | null;
   onDecide: (
     choice: ApprovalChoice,
@@ -79,6 +95,7 @@ function focusPendingQuestion(scope: HTMLElement | null): boolean {
 export function ApprovalDock({
   queue,
   conversationLabel,
+  onOpenConversation,
   proposedChoice = null,
   onDecide,
   onOpenPermanentDeny,
@@ -292,6 +309,14 @@ export function ApprovalDock({
           </Badge>
         ) : null}
       </header>
+      {onOpenConversation ? (
+        <div className="border-b px-3 py-2 text-xs">
+          <p>{conversationLabel}</p>
+          <button type="button" className="text-primary underline" onClick={onOpenConversation}>
+            {t("approvalAttribution.returnToConversation")}
+          </button>
+        </div>
+      ) : null}
       <p id={descriptionId} className="sr-only">
         {t("toolApprovalDialog.dialogDescription")}
       </p>

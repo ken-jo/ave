@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { act, screen, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import { endAnimation } from "../../../../test/renderer/helpers.js";
+import { approvalRequest, clickSidebarNavRow, endAnimation } from "../../../../test/renderer/helpers.js";
+import { MOCK_DEFAULT_SESSION_ID } from "../../../../test/renderer/mock-ave-api.js";
 
 describe("App notification toasts", () => {
   const originalGlobalResizeObserver = globalThis.ResizeObserver;
@@ -80,6 +81,47 @@ describe("App notification toasts", () => {
 
     await waitFor(() => {
       expect(api.chatSessionResume).toHaveBeenCalledWith("sess-target");
+    });
+  });
+
+  it("returns from a covering surface and focuses the requesting conversation card when its toast is clicked", async () => {
+    const user = userEvent.setup();
+    const title = "그래 두개 진행해보자";
+    const { api, container, emitApproval, emitNotificationToast, emitNotificationClicked } = await renderApp({
+      hasApiKey: true,
+      sessions: [{ id: MOCK_DEFAULT_SESSION_ID, title, modifiedAt: "2026-01-01T00:00:00Z" }],
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [
+        { index: 0, role: "user", content: title },
+        { index: 1, role: "user", content: "Continue" },
+      ] },
+    });
+    await clickSidebarNavRow("features", "toolbar-work-board");
+    await waitFor(() => expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).not.toBeNull());
+    await act(async () => {
+      emitApproval(approvalRequest({ id: "notice-write", sessionId: MOCK_DEFAULT_SESSION_ID }));
+    });
+    await screen.findByTestId("tool-approval-panel");
+    expect(screen.getByTestId("approval-conversation").textContent).toContain(
+      screen.getByTestId(`sidebar-session-${MOCK_DEFAULT_SESSION_ID}`).textContent,
+    );
+    api.notifyClick.mockImplementation(async (payload) => {
+      emitNotificationClicked(payload);
+      return { ok: true };
+    });
+    await act(async () => {
+      emitNotificationToast({
+        kind: "approval",
+        title: "승인이 필요합니다",
+        body: "views.c4 파일 쓰기 · 대화: 그래 두개 진행해보자",
+        contextRef: { approvalId: "notice-write", sessionId: MOCK_DEFAULT_SESSION_ID },
+      });
+    });
+    await user.click(await screen.findByRole("button", { name: /자세히 알아보기|Learn more/ }));
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).toBeNull();
+      const panel = screen.getByTestId("tool-approval-panel");
+      expect(panel.getAttribute("data-approval-request-id")).toBe("notice-write");
+      expect(document.activeElement).toBe(panel);
     });
   });
 });

@@ -2,6 +2,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { recordManualApproval } from "./judge/manual-approval.js";
 import type { WebContents } from "electron";
 import { t } from "../i18n/index.js";
+import { approvalActionSummary } from "../shared/approval-action-summary.js";
+import { resolveConversationTitle } from "../shared/conversation-title.js";
 import type { PolicyFile } from "./policy-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { NotificationService } from "../main/notification-service.js";
@@ -891,6 +893,7 @@ export class ApprovalGate {
   private readonly auditLogger?: AuditLogger;
   // optional NotificationService — when supplied, the gate fires an `approval` system notification at the entry of `requestAndWait` so the user sees the prompt even if the window is backgrounded.
   private readonly notificationService?: NotificationService;
+  private conversationTitleResolver?: (sessionId: string) => string;
   // Per-instance HMAC secret for confused-deputy defense. 32 random bytes generated at construction time. Never leaves the main process — used only to sign/verify the nonce that rides along with approval requests. A fresh key each boot naturally scopes replay protection to the current ApprovalGate lifetime.
   private readonly sessionKey: Buffer = randomBytes(32);
 
@@ -940,6 +943,26 @@ export class ApprovalGate {
       managed: false,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  setConversationTitleResolver(resolve: (sessionId: string) => string): void {
+    this.conversationTitleResolver = resolve;
+  }
+
+  private notificationBody(request: ApprovalRequest): string {
+    const action = approvalActionSummary({
+      ...request,
+      args: maskArgsForDisplay(request.args, new Set<string>()),
+      ...(request.target?.filePath ? { target: { filePath: maskSensitiveData(request.target.filePath).masked } } : {}),
+    }, t);
+    const segment = (value: string): string => {
+      const characters = [...maskSensitiveData(value).masked];
+      return characters.length > 30 ? characters.slice(0, 29).join("") + "…" : characters.join("");
+    };
+    if (request.sessionId === undefined) return segment(action);
+    const title = this.conversationTitleResolver?.(request.sessionId)
+      ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
+    return t("be_approvalGate.conversationNotification", { action: segment(action), title: segment(title) });
   }
 
   // Replace the runtime policy immediately from the ave:policy:set IPC handler.
@@ -1241,9 +1264,9 @@ export class ApprovalGate {
         kind: "approval",
         title: t("be_approvalGate.notificationTitle"),
         body: t("be_approvalGate.deferredEscalationBody", {
-          name: request.toolName,
+          action: this.notificationBody(request),
         }),
-        contextRef: { approvalId: request.id },
+        contextRef: { approvalId: request.id, sessionId: request.sessionId },
         urgent: true,
       });
     } catch {
@@ -1897,8 +1920,8 @@ export class ApprovalGate {
       this.notificationService?.fire({
         kind: "approval",
         title: t("be_approvalGate.notificationTitle"),
-        body: `${fullReq.toolName}: ${fullReq.reason}`,
-        contextRef: { approvalId: fullReq.id },
+        body: this.notificationBody(fullReq),
+        contextRef: { approvalId: fullReq.id, sessionId: fullReq.sessionId },
         urgent: true,
       });
     } catch {

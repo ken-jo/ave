@@ -60,6 +60,7 @@ import {
   type ElicitationFieldKind as ElicitationSchemaFieldKind,
 } from "../../../shared/mcp-elicitation-schema.js";
 import { isRecord } from "../../../shared/is-record.js";
+import { approvalActionSummary } from "../../../shared/approval-action-summary.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
@@ -1099,15 +1100,7 @@ export function ToolApprovalContent({
     ? []
     : approvalReviewRows(request, category, argsStr, originLabel, source, sourceBadge);
   const sandboxSummary = isRationaleApproval ? null : approvalSandboxSummary(request);
-  const categoryImpact = category === "read"
-    ? tHook("toolApprovalDialog.impactRead")
-    : category === "write"
-      ? tHook("toolApprovalDialog.impactWrite")
-      : category === "network"
-        ? tHook("toolApprovalDialog.impactNetwork")
-        : category === "shell"
-          ? tHook("toolApprovalDialog.impactShell")
-          : tHook("toolApprovalDialog.impactMeta");
+  const categoryImpact = approvalActionSummary(request, tHook);
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
   const specificHostReason = request.reason.trim();
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.

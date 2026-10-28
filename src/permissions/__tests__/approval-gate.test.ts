@@ -1609,7 +1609,7 @@ describe("ApprovalGate", () => {
       expect(notificationService.fire).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "approval",
-          body: `${req.toolName}: ${staticReason}`,
+          body: expect.not.stringContaining(req.toolName),
         }),
       );
       expect(JSON.stringify(auditLogger.log.mock.calls)).not.toContain(

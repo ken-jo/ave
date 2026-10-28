@@ -3,6 +3,11 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "approvalAction.writeFile": "{target} 파일 쓰기",
+  "approvalAction.editFile": "{target} 파일 수정",
+  "approvalAction.readFile": "{target} 파일 읽기",
+  "approvalAction.outsideDirectory": "허용된 디렉터리 밖의 {target} 읽기",
+  "be_approvalGate.conversationNotification": "{action} · 대화: {title}",
   "terminalObservation.decisionBasis": "결정 근거: {basis}",
   "terminalObservation.decisionScope": "허용 범위: {scope}",
   "terminalObservation.basis.extensionAllowlist": "선언된 네트워크 접근",

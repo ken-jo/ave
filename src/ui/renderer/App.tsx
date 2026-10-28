@@ -1120,18 +1120,47 @@ export function App() {
     );
   }, [pluginCards, pluginViews]);
 
+  const [approvalFocusId, setApprovalFocusId] = useState<string | null>(null);
+  useEffect(() => {
+    if (approvalFocusId === null || activeView !== "home") return;
+    if (!approvalQueue.some((request) => request.id === approvalFocusId)) {
+      setApprovalFocusId(null);
+      return;
+    }
+    const panel = [...document.querySelectorAll<HTMLElement>('[data-testid="tool-approval-panel"]')]
+      .find((element) => element.dataset.approvalRequestId === approvalFocusId && !element.closest('[data-visible="false"]'));
+    if (!panel) return;
+    panel.scrollIntoView?.({ block: "nearest" });
+    panel.focus();
+    setApprovalFocusId(null);
+  }, [approvalFocusId, activeView, tileSessions, approvalQueue]);
+
   useEffect(() => {
     if (typeof api.onNotificationClicked !== "function") return undefined;
     return api.onNotificationClicked((payload) => {
       const contextRef = payload.contextRef;
+      if (payload.kind === "approval" || contextRef?.approvalId) {
+        const request = approvalQueue.find((entry) => entry.id === contextRef?.approvalId);
+        const sessionId = request?.sessionId ?? contextRef?.sessionId;
+        if (request) setApprovalFocusId(request.id);
+        if (sessionId) {
+          void handleLoadSessionAndRefresh(sessionId).then((reached) => {
+            if (reached !== false) {
+              const owner = approvalClaims.ownerOf(sessionId);
+              if (owner && tileSessions.some((tile) => tile.chatGroupId === owner)) chatGroups.setPaneContent(owner, { view: "home" });
+              else setActiveView("home");
+              if (!request && approvalQueue.length === 0) setDeferredQueueOpen(true);
+            }
+          });
+        } else {
+          setActiveView("home");
+          if (approvalQueue.length === 0) setDeferredQueueOpen(true);
+        }
+        return;
+      }
       if (contextRef?.sessionId) {
         setActiveView("home");
         void handleLoadSessionAndRefresh(contextRef.sessionId);
-        return;
-      }
-      if (payload.kind === "approval" || contextRef?.approvalId) {
-        setActiveView("home");
-        if (approvalQueue.length === 0) setDeferredQueueOpen(true);
         return;
       }
       if (payload.kind === "routine" || contextRef?.routineId) {
@@ -1144,7 +1173,7 @@ export function App() {
       }
       setActiveView("home");
     });
-  }, [api, approvalQueue.length, handleLoadSessionAndRefresh, handleViewSelect]);
+  }, [api, approvalQueue, approvalClaims, chatGroups.setPaneContent, tileSessions, handleLoadSessionAndRefresh, handleViewSelect, setActiveView]);
 
   // Settings remains inline at every width; reselecting it changes the tab without remounting.
   const onOpenSettings = useCallback((tab = "llm") => {
@@ -1432,6 +1461,10 @@ export function App() {
     enableThinkingChat, toggleThinking,
     processingDisplayLevel,
     refreshSessions, sessions, focusChatGroup,
+    onReturnToConversation: (chatGroupId) => {
+      chatGroups.setPaneContent(chatGroupId, { view: "home" });
+      focusChatGroup(chatGroupId);
+    },
     sideChatOpenRequest,
     isSessionStarred: (sessionId: string) => Boolean(isSessionStarred(sessionId)),
     handleToggleSessionStar,
@@ -1461,7 +1494,7 @@ export function App() {
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
     effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, llmOutputTokenLimit,
     rolePresets, activePreset, activePresetId, setActivePresetId,
-    enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions,
+    enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions, chatGroups.setPaneContent,
     sideChatOpenRequest,
     isSessionStarred, handleToggleSessionStar, starredIsEntry, starredToggle,
     searchOpen, searchQuery, searchCase, searchMatches, searchMatchSet, searchIdx,

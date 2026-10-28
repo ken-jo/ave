@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
+import { CoveredConversationApprovalDock } from "../permissions/ApprovalDock.js";
 import { I18nProvider } from "../../../../i18n/react.js";
 import { getLocale, setLocale as setRuntimeLocale } from "../../../../i18n/runtime.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
@@ -22,6 +23,30 @@ import type {
   NativeContextMenuAction,
   NativeContextMenuPayload,
 } from "../../../../shared/native-context-menu.js";
+
+it("names a covered conversation's approval exactly as its untitled sidebar row", () => {
+  const title = "그래 두개 진행해보자";
+  const { getByTestId, restore } = renderSidebar({
+    sessions: [sessionRow({ id: "untitled-conversation", title, modifiedAt: "2026-01-01T00:00:00Z" })],
+  });
+  try {
+    const sidebarTitle = getByTestId("sidebar-session-untitled-conversation").textContent;
+    const approval = render(
+      <CoveredConversationApprovalDock
+        conversation={{ sessionId: "untitled-conversation", messages: [{ role: "user", content: title }] }}
+        queue={[{ id: "write-request", category: "tool", toolName: "write_file", toolCategory: "write",
+          args: { path: "/workspace/views.c4" }, reason: "Internal reason", createdAt: Date.now(), requireExplicit: false }]}
+        onDecide={vi.fn()} onOpenConversation={vi.fn()}
+      />,
+    );
+    expect(approval.getByTestId("approval-conversation").textContent).toContain(sidebarTitle);
+    expect(sidebarTitle).toBe(title);
+    expect(approval.getByTestId("approval-conversation").textContent).not.toContain("새 대화");
+  } finally {
+    cleanup();
+    restore();
+  }
+});
 
 function renderSidebar(
   overrides: Partial<Parameters<typeof Sidebar>[0]> = {},

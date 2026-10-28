@@ -1,3 +1,4 @@
+import { resolveConversationTitle } from "../shared/conversation-title.js";
 import { readBoundedTextWindow } from "../shared/bounded-tool-output.js";
 import { ToolOutputArtifactStore } from "./tool-output-artifact-store.js";
 import { deleteCodeCheckpoints } from "./code-checkpoints.js";
@@ -2686,7 +2687,7 @@ export class MemoryManager implements PromptMemorySource {
           id: session.id,
           modifiedAt: session.modifiedAt,
           sessionKind,
-          title: metadata?.title || summary.title || metadata?.routineTitle || t("be_memoryManager.sessionTitleShort", { id: session.id.slice(0, 8) }),
+          title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || summary.title, routineTitle: metadata?.routineTitle }, t),
           preview: summary.preview,
           routineId: metadata?.routineId,
           routineTitle: metadata?.routineTitle,
@@ -3875,7 +3876,7 @@ export class MemoryManager implements PromptMemorySource {
     }
 
     return {
-      title: (lastUser || lastContent || t("be_memoryManager.sessionTitleShort", { id: sessionId.slice(0, 8) })).slice(0, 80),
+      title: resolveConversationTitle({ sessionId, messages }, t),
       preview: (lastContent || lastUser || t("be_memoryManager.sessionPreviewEmpty")).slice(0, 200),
     };
   }
