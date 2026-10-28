@@ -1,3 +1,4 @@
+import { deferred } from "../../../__tests__/support/deferred.js";
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -418,11 +419,16 @@ describe("MarketplaceService", () => {
     market.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations }) }, "revoke");
   }
 
-  async function installedForRemoval(kind: "skill" | "mcp") {
+  async function installPackage(kind: "skill" | "mcp") {
     const source = market();
     await addMarket(source.url);
     const key = { sourceId: "acme-tools", kind, name: kind === "mcp" ? "notes" : "review" };
     await service.executeInstall((await service.planInstall(key)).planId);
+    return { source, key };
+  }
+
+  async function installedForRemoval(kind: "skill" | "mcp") {
+    const { source, key } = await installPackage(kind);
     const recordPath = join(root, "packages", kind === "mcp" ? "mcp-installs.json" : "ledger.json");
     return { source, key, recordPath, before: readFileSync(recordPath, "utf8") };
   }
@@ -1139,15 +1145,10 @@ describe("MarketplaceService", () => {
   });
 
   it("removes a revoked package under its package lock: a holder of that package finishes first (§10.4, §18.6)", async () => {
-    const acme = market();
-    await addMarket(acme.url);
-    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
-    await service.executeInstall((await service.planInstall(key)).planId);
+    const { source: acme } = await installPackage("skill");
     createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    let entered!: () => void;
-    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const { promise: held, resolve: release } = deferred<void>();
+    const { promise: inside, resolve: entered } = deferred<void>();
     const holder = service.asOneOperation(async () => {
       entered();
       await held;
@@ -1169,19 +1170,14 @@ describe("MarketplaceService", () => {
 
   /** Holds enforcement across an update; widened revocations arrive before enforcement obtains the lock. */
   async function reviseWhileRevoking(widened: boolean): Promise<{ removedVersions: string[]; done: Promise<void> }> {
-    const acme = market();
-    await addMarket(acme.url);
-    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
-    await service.executeInstall((await service.planInstall(key)).planId);
+    const { source: acme, key } = await installPackage("skill");
     acme.publish("2.0.0");
     await service.refresh("acme-tools");
     const plan = await service.planInstall(key);
     expect(plan).toMatchObject({ version: "2.0.0" });
     createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "old release unsafe", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    let entered!: () => void;
-    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const { promise: held, resolve: release } = deferred<void>();
+    const { promise: inside, resolve: entered } = deferred<void>();
     feedHold = { at: feedCalls + 1, wait: async () => { entered(); await held; } };
     const refresh = service.refresh("acme-tools");
     await inside;
@@ -1190,8 +1186,7 @@ describe("MarketplaceService", () => {
     let widening: Promise<void> = Promise.resolve();
     if (widened) {
       createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "every release unsafe", at: "2026-09-25T00:00:00Z", action: "uninstall" }]);
-      let published!: () => void;
-      const publishedNew = new Promise<void>((resolve) => { published = resolve; });
+      const { promise: publishedNew, resolve: published } = deferred<void>();
       afterSourceSynced = () => published();
       widening = service.refresh("acme-tools").then(() => undefined);
       await publishedNew;
@@ -1216,15 +1211,10 @@ describe("MarketplaceService", () => {
   });
 
   it("judges a revocation again under the package lock: one its source withdrew while it waited removes nothing (§10.4, §18.6)", async () => {
-    const acme = market();
-    await addMarket(acme.url);
-    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
-    await service.executeInstall((await service.planInstall(key)).planId);
+    const { source: acme } = await installPackage("skill");
     createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "withdrawn rule", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    let entered!: () => void;
-    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const { promise: held, resolve: release } = deferred<void>();
+    const { promise: inside, resolve: entered } = deferred<void>();
     const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
     await inside;
     const removal = vi.spyOn(store, "uninstall");
@@ -1233,8 +1223,7 @@ describe("MarketplaceService", () => {
     // Real syncs can exceed the default wait on slow Windows disks.
     await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
     createRevocations(acme, []);
-    let published!: () => void;
-    const publishedNew = new Promise<void>((resolve) => { published = resolve; });
+    const { promise: publishedNew, resolve: published } = deferred<void>();
     afterSourceSynced = () => published();
     const second = service.refresh("acme-tools");
     await publishedNew;
@@ -1247,15 +1236,10 @@ describe("MarketplaceService", () => {
   });
 
   it("keeps an install whose source's revocations cannot be read when its turn comes, and says so, not that the rule was withdrawn (§10.4, §18.6)", async () => {
-    const acme = market();
-    await addMarket(acme.url);
-    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
-    await service.executeInstall((await service.planInstall(key)).planId);
+    const { source: acme } = await installPackage("skill");
     createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "still revoked", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    let entered!: () => void;
-    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const { promise: held, resolve: release } = deferred<void>();
+    const { promise: inside, resolve: entered } = deferred<void>();
     const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
     await inside;
     const removal = vi.spyOn(store, "uninstall");
@@ -1286,15 +1270,10 @@ describe("MarketplaceService", () => {
   });
 
   it("skips a revocation whose install was removed while it waited for the package lock (§10.4, §18.6)", async () => {
-    const acme = market();
-    await addMarket(acme.url);
-    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
-    await service.executeInstall((await service.planInstall(key)).planId);
+    const { source: acme, key } = await installPackage("skill");
     createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    let entered!: () => void;
-    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const { promise: held, resolve: release } = deferred<void>();
+    const { promise: inside, resolve: entered } = deferred<void>();
     const holder = service.asOneOperation(async (lease) => {
       entered();
       await held;
@@ -1326,10 +1305,7 @@ describe("MarketplaceService", () => {
   });
 
   it("expires a reviewed update whose package was removed before it ran: the review judged the install then (§18.6, §18.7.3)", async () => {
-    const acme = market();
-    await addMarket(acme.url);
-    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
-    await service.executeInstall((await service.planInstall(key)).planId);
+    const { source: acme, key } = await installPackage("skill");
     acme.publish("2.0.0");
     await service.refresh("acme-tools");
     const review = await service.planUpdate(key);

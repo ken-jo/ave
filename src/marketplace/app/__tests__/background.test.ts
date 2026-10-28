@@ -148,6 +148,13 @@ function harness(options: {
   return { input, service, calls, settings, history, published, resume, discoverCount, lastStatus, discoveries, activity, goIdle };
 }
 
+async function startedHarness() {
+  const h = harness();
+  const background = startMarketplaceBackground(h.input);
+  await background.started;
+  return { h, background };
+}
+
 /** Flushes pending promise chains without advancing fake time. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 50; i += 1) await Promise.resolve();
@@ -450,9 +457,7 @@ describe("the due rules (design §18.7.1)", () => {
   });
 
   it("does not repeat a successful discovery for 6 hours with the default interval", async () => {
-    const h = harness();
-    const background = startMarketplaceBackground(h.input);
-    await background.started;
+    const { h, background } = await startedHarness();
 
     await at(5.99);
     expect(h.discoverCount()).toBe(1);
@@ -562,9 +567,7 @@ describe("the due rules (design §18.7.1)", () => {
   });
 
   it("runs a discovery on resume after the clock jumps 30 hours, with no timer firing", async () => {
-    const h = harness();
-    const background = startMarketplaceBackground(h.input);
-    await background.started;
+    const { h, background } = await startedHarness();
     expect(h.discoverCount()).toBe(1);
 
     vi.setSystemTime(T0 + 30 * HOUR);
@@ -583,9 +586,7 @@ describe("the due rules (design §18.7.1)", () => {
   });
 
   it("answers Check now when its discovery and apply check end", async () => {
-    const h = harness();
-    const background = startMarketplaceBackground(h.input);
-    await background.started;
+    const { h, background } = await startedHarness();
     await at(2);
 
     let release: () => void = () => {};
@@ -672,9 +673,7 @@ describe("the due rules (design §18.7.1)", () => {
   });
 
   it("starts nothing once stopped: no timer, no resume", async () => {
-    const h = harness();
-    const background = startMarketplaceBackground(h.input);
-    await background.started;
+    const { h, background } = await startedHarness();
     background.stop();
     expect(h.resume.size).toBe(0);
 
@@ -835,9 +834,7 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
   const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] };
 
   it("publishes no revocation notice from a recheck whose service opens after the stop", async () => {
-    const h = harness();
-    const background = startMarketplaceBackground(h.input);
-    await background.started;
+    const { h, background } = await startedHarness();
     let release: () => void = () => {};
     h.input.service = async () => {
       await new Promise<void>((resolve) => {
