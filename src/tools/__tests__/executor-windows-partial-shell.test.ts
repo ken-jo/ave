@@ -176,7 +176,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(executed.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
     const checkedContext = checkDetailed.mock.calls[0]?.[4];
     expect(checkedContext?.hostShellExecutionPlan).toBe(executed.mock.calls[0][0].hostShellExecutionPlan);
-    expect(checkedContext?.shellExecution).toEqual({ runsSandboxed: false });
+    expect(checkedContext?.shellExecution).toEqual({ runsSandboxed: false, pathPolicyRelaxations: [] });
     expect(result[0].is_error).toBeUndefined();
   });
 
