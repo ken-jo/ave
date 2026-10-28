@@ -421,6 +421,7 @@ describe("builtin shell — Windows MXC containers", () => {
       return {
         argv: [WXC_EXEC, "--config-base64", parser ? PARSER_REQUEST : "eyJ9"],
         proxyPort: 51234,
+        bindChild: mxcLaunchMock.bindChild,
         release: rejects === undefined ? mxcLaunchMock.release : async () => { await mxcLaunchMock.release(); throw rejects; },
       };
     });
