@@ -812,7 +812,10 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     const launch = resolveManualShell();
     if (!statSync(launch.command).isFile()) throw new Error("terminal interpreter is not a file");
     accessSync(launch.command, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-    integration = prepareHostShellIntegration(launch, buildHostShellChildEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }));
+    integration = prepareHostShellIntegration(launch, buildHostShellChildEnv({
+      TERM: "xterm-256color", COLORTERM: "truecolor",
+      ...(process.env.ZDOTDIR === undefined ? {} : { ZDOTDIR: process.env.ZDOTDIR }),
+    }));
     const native = await loadPty();
     owner.abort.signal.throwIfAborted();
     pty = native.spawn(integration.command, integration.args, {

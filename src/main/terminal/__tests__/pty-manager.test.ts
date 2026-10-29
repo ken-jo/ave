@@ -125,7 +125,7 @@ vi.mock("../../../permissions/sandbox-write-jail.js", () => ({
 }));
 
 vi.mock("../../../tools/safe-env.js", () => ({
-  buildHostShellChildEnv: () => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin" }),
+  buildHostShellChildEnv: (extra: Record<string, string> = {}) => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin", ...extra }),
   buildSandboxedChildEnv: (env: NodeJS.ProcessEnv, extra: Record<string, string> = {}) => ({
     ...env,
     PATH: "/usr/bin",
@@ -2392,12 +2392,13 @@ describe("host tabs and conversation-owned isolation", () => {
   it("preserves the configured host interpreter without confined backend availability", async () => {
     gateActive = false;
     vi.stubEnv("SHELL", process.execPath);
+    vi.stubEnv("ZDOTDIR", "/synthetic/shell-profile");
     try {
       const result = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8, cwd: tmpdir() });
       expect(result).toMatchObject({ ok: true, session: { lane: "manual", substrate: "host", shellIntegration: false, integrationUnavailableReason: expect.any(String) } });
       expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
       expect(ptySpawnMock.mock.calls[0]?.[0]).toBe(process.execPath);
-      expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ env: { HOME: process.env.HOME ?? "" } });
+      expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ env: { HOME: process.env.HOME ?? "", ZDOTDIR: "/synthetic/shell-profile" } });
       expect(await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 })).toMatchObject({ ok: false, reason: "no-terminal" });
       if (!result.ok) throw new Error("expected host terminal");
       expect(await typeAgentTerminalCommand(result.session, 8, "echo no", "/workspace")).toMatchObject({ ok: false, reason: "no-terminal" });
