@@ -1,26 +1,29 @@
 import { useSyncExternalStore } from "react";
 
-interface TerminalFileReviewState { readonly pending: number; readonly requested: boolean }
+interface TerminalFileReviewState { readonly pending: number; readonly requested: boolean; readonly refreshFailed: boolean }
 const listeners = new Set<() => void>();
 let snapshot: ReadonlyMap<string, TerminalFileReviewState> = new Map();
 
 function update(tabId: string, state: TerminalFileReviewState): void {
   const previous = snapshot.get(tabId);
-  if (previous?.pending === state.pending && previous.requested === state.requested) return;
+  if (previous?.pending === state.pending && previous.requested === state.requested && previous.refreshFailed === state.refreshFailed) return;
   snapshot = new Map(snapshot).set(tabId, state);
   for (const listener of [...listeners]) listener();
 }
 
-export function publishTerminalFileReview(tabId: string, pending: number): void {
-  update(tabId, { pending, requested: snapshot.get(tabId)?.requested ?? false });
+/** The mounted view's pending count and whether its last refresh failed; the header badge is their only display. */
+export function publishTerminalFileReview(tabId: string, pending: number, refreshFailed = false): void {
+  update(tabId, { pending, requested: snapshot.get(tabId)?.requested ?? false, refreshFailed });
 }
 
 export function requestTerminalFileReview(tabId: string): void {
-  update(tabId, { pending: snapshot.get(tabId)?.pending ?? 0, requested: true });
+  const previous = snapshot.get(tabId);
+  update(tabId, { pending: previous?.pending ?? 0, requested: true, refreshFailed: previous?.refreshFailed ?? false });
 }
 
 export function consumeTerminalFileReviewRequest(tabId: string): void {
-  update(tabId, { pending: snapshot.get(tabId)?.pending ?? 0, requested: false });
+  const previous = snapshot.get(tabId);
+  update(tabId, { pending: previous?.pending ?? 0, requested: false, refreshFailed: previous?.refreshFailed ?? false });
 }
 
 export function forgetTerminalFileReview(tabId: string): void {

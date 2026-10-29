@@ -9,6 +9,7 @@ import { loadLocaleMessages, setLocale, t } from "../../../../i18n/index.js";
 import { TerminalFileReview } from "../TerminalFileReview.js";
 import { TerminalFileReviewBadge } from "../TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../../preview/terminal-file-review.js";
+import type { TerminalBlockAnchors } from "../terminal-block-anchors.js";
 
 const session = terminalSessionFixture("terminal:review", "manual");
 
@@ -30,20 +31,58 @@ function reviewApi(snapshot = evidence()) {
   return terminalApi;
 }
 
-function renderWithBadge(terminalApi: ReturnType<typeof reviewApi>, revision = 0) {
-  return render(<><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={revision} /></>);
+const anchorContainers: HTMLElement[] = [];
+
+/** Command rows the terminal knows; each attach returns that block's decoration container. */
+function fakeAnchors(blockIds: readonly number[] = [1, 2, 3, 4]): TerminalBlockAnchors & { attach: ReturnType<typeof vi.fn> } {
+  const containers = new Map<number, HTMLElement>();
+  return {
+    attach: vi.fn((blockId: number) => {
+      if (!blockIds.includes(blockId)) return null;
+      let container = containers.get(blockId);
+      if (!container) {
+        container = document.createElement("div");
+        container.dataset.blockId = String(blockId);
+        document.body.appendChild(container);
+        anchorContainers.push(container);
+        containers.set(blockId, container);
+      }
+      return container;
+    }),
+    subscribe: () => () => {},
+    version: () => 0,
+  };
 }
 
+function view(terminalApi: ReturnType<typeof reviewApi>, revision: number, anchors: TerminalBlockAnchors | null) {
+  return <><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={revision} anchors={anchors} /></>;
+}
+
+function renderWithBadge(terminalApi: ReturnType<typeof reviewApi>, anchors: TerminalBlockAnchors | null = fakeAnchors()) {
+  const rendered = render(view(terminalApi, 0, anchors));
+  return { ...rendered, rerenderAt: (revision: number) => rendered.rerender(view(terminalApi, revision, anchors)) };
+}
+
+const annotationFor = (blockId: number) => document.querySelector<HTMLElement>(`[data-block-id="${blockId}"] [data-testid="terminal-file-warning"]`);
+
 beforeEach(async () => { await loadLocaleMessages("ko"); setLocale("ko"); });
-afterEach(() => { forgetTerminalFileReview(session.tabId); setLocale("ko"); vi.useRealTimers(); });
+afterEach(() => {
+  forgetTerminalFileReview(session.tabId);
+  setLocale("ko");
+  vi.useRealTimers();
+  for (const container of anchorContainers.splice(0)) container.remove();
+});
 
 describe("TerminalFileReview", () => {
-  it("shows one thin non-blocking banner and opens the panel from the header badge", async () => {
+  it("annotates the matched command's row inline and opens the panel from the header badge", async () => {
     const terminalApi = reviewApi();
     renderWithBadge(terminalApi);
-    const banner = await screen.findByTestId("terminal-file-warning");
-    expect(banner).toHaveTextContent("에이전트가 수정한 파일 사용: run.sh");
-    expect(banner).toHaveClass("absolute", "h-8");
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
+    const annotation = annotationFor(1)!;
+    expect(annotation).toHaveTextContent("# ⚠ 에이전트가 수정한 파일 사용: run.sh");
+    expect(annotation).toHaveAttribute("data-active", "true");
+    expect(within(annotation).getByRole("button", { name: "[변경 보기]" })).toBeTruthy();
+    expect(within(annotation).getByRole("button", { name: "[검토 완료]" })).toBeTruthy();
     const badge = screen.getByTestId("terminal-tab-file-review-badge");
     expect(badge).toHaveTextContent("검토 대기 2");
     fireEvent.click(badge);
@@ -56,41 +95,60 @@ describe("TerminalFileReview", () => {
     expect(terminalApi.reviewFiles).not.toHaveBeenCalled();
   });
 
+  it("renders no floating overlay: the only warning is the annotation inside its command anchor", async () => {
+    const { container } = renderWithBadge(reviewApi());
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
+    expect(screen.getAllByTestId("terminal-file-warning")).toEqual([annotationFor(1)]);
+    expect(within(container).queryByTestId("terminal-file-warning")).toBeNull();
+  });
+
   it("renders the pending badge exactly once, in the header", async () => {
     renderWithBadge(reviewApi());
-    await screen.findByTestId("terminal-file-warning");
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
     await screen.findByTestId("terminal-tab-file-review-badge");
     expect(screen.getAllByText(/검토 대기/)).toHaveLength(1);
     expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2");
   });
 
-  it("never banners unresolved indirection or a command without a matched changed file", async () => {
+  it("never annotates unresolved indirection or a command without a matched changed file", async () => {
     const snapshot = { ...evidence(), warnings: [
       { blockId: 3, command: "$RUN_SCRIPT", files: [], unresolved: true },
       { blockId: 4, command: "clear", files: [] },
     ], latestBlockId: 4 } as unknown as TerminalFileReviewSnapshot;
-    const terminalApi = reviewApi(snapshot);
-    renderWithBadge(terminalApi);
+    const anchors = fakeAnchors();
+    renderWithBadge(reviewApi(snapshot), anchors);
     await waitFor(() => expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2"));
     expect(screen.queryByTestId("terminal-file-warning")).toBeNull();
   });
 
-  it("shows exactly one banner, for the latest of two consecutive matching commands", async () => {
+  it("keeps exactly one actionable annotation, on the latest of two consecutive matching commands", async () => {
     const snapshot = evidence();
     snapshot.warnings.push({ blockId: 2, command: "make build", files: ["/repo/unused.sh"] });
     renderWithBadge(reviewApi({ ...snapshot, latestBlockId: 2 }));
-    await waitFor(() => expect(screen.getAllByTestId("terminal-file-warning")).toHaveLength(1));
-    expect(screen.getByTestId("terminal-file-warning")).toHaveTextContent("에이전트가 수정한 파일 사용: unused.sh");
-    expect(screen.getByTestId("terminal-file-warning")).not.toHaveTextContent("run.sh");
+    await waitFor(() => expect(annotationFor(2)).not.toBeNull());
+    expect(screen.getAllByTestId("terminal-file-warning").filter((element) => element.dataset.active === "true")).toEqual([annotationFor(2)]);
+    expect(annotationFor(2)).toHaveTextContent("에이전트가 수정한 파일 사용: unused.sh");
+    expect(annotationFor(1)).toHaveTextContent("에이전트가 수정한 파일 사용: run.sh");
+    expect(within(annotationFor(1)!).queryByRole("button")).toBeNull();
   });
 
-  it("drops the banner once a later command without a match runs, keeping the files pending", async () => {
+  it("collapses the annotation to plain history once a later command runs, keeping the files pending", async () => {
     const terminalApi = reviewApi();
-    const view = renderWithBadge(terminalApi);
-    await screen.findByTestId("terminal-file-warning");
+    const { rerenderAt } = renderWithBadge(terminalApi);
+    await waitFor(() => expect(annotationFor(1)).toHaveAttribute("data-active", "true"));
     terminalApi.listFileReviews.mockResolvedValue({ ok: true, snapshot: { ...evidence(), latestBlockId: 3 } });
-    view.rerender(<><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={1} /></>);
-    await waitFor(() => expect(screen.queryByTestId("terminal-file-warning")).toBeNull());
+    rerenderAt(1);
+    await waitFor(() => expect(annotationFor(1)).toHaveAttribute("data-active", "false"));
+    expect(annotationFor(1)).toHaveTextContent("# ⚠ 에이전트가 수정한 파일 사용: run.sh");
+    expect(within(annotationFor(1)!).queryByRole("button")).toBeNull();
+    expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2");
+  });
+
+  it("draws nothing for a block whose command row is not in the terminal", async () => {
+    const anchors = fakeAnchors([]);
+    renderWithBadge(reviewApi(), anchors);
+    await waitFor(() => expect(anchors.attach).toHaveBeenCalledWith(1));
+    expect(screen.queryByTestId("terminal-file-warning")).toBeNull();
     expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2");
   });
 
@@ -99,34 +157,17 @@ describe("TerminalFileReview", () => {
     snapshot.files.push({ path: "/repo/scripts/build.sh", hash: "c".repeat(64), sessionIds: ["conversation"], reviewed: false, lastUsed: null });
     snapshot.warnings.splice(0, 1, { blockId: 1, command: "make build", files: ["/repo/run.sh", "/repo/unused.sh", "/repo/scripts/build.sh"] });
     renderWithBadge(reviewApi(snapshot));
-    expect(await screen.findByTestId("terminal-file-warning")).toHaveTextContent("에이전트가 수정한 파일 사용: run.sh, unused.sh +1");
-  });
-
-  it("dismisses the banner until the next positive match and keeps the files pending", async () => {
-    const terminalApi = reviewApi();
-    const view = renderWithBadge(terminalApi);
-    await screen.findByTestId("terminal-file-warning");
-    fireEvent.click(screen.getByRole("button", { name: "경고 닫기" }));
-    view.rerender(<><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={1} /></>);
-    await waitFor(() => expect(terminalApi.listFileReviews.mock.calls.length).toBeGreaterThan(1));
-    expect(screen.queryByTestId("terminal-file-warning")).toBeNull();
-    expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2");
-    const next = evidence();
-    next.warnings.push({ blockId: 2, command: "./run.sh", files: ["/repo/run.sh"] });
-    terminalApi.listFileReviews.mockResolvedValue({ ok: true, snapshot: { ...next, latestBlockId: 2 } });
-    view.rerender(<><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={2} /></>);
-    expect(await screen.findByTestId("terminal-file-warning")).toHaveTextContent("run.sh");
-    expect(terminalApi.reviewFiles).not.toHaveBeenCalled();
+    await waitFor(() => expect(annotationFor(1)).toHaveTextContent("에이전트가 수정한 파일 사용: run.sh, unused.sh +1"));
   });
 
   it("reviews the observed warning hashes without reviewing unrelated files", async () => {
     const terminalApi = reviewApi();
     renderWithBadge(terminalApi);
-    const banner = await screen.findByTestId("terminal-file-warning");
-    fireEvent.click(within(banner).getByRole("button", { name: "검토 완료" }));
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
+    fireEvent.click(within(annotationFor(1)!).getByRole("button", { name: "[검토 완료]" }));
     await waitFor(() => expect(terminalApi.reviewFiles).toHaveBeenCalledWith(session, [{ path: "/repo/run.sh", hash: "a".repeat(64) }]));
     await waitFor(() => expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 1"));
-    expect(screen.queryByTestId("terminal-file-warning")).toBeNull();
+    expect(annotationFor(1)).toHaveAttribute("data-active", "false");
   });
 
   it("reviews a single file then all remaining files from the panel", async () => {
@@ -143,9 +184,9 @@ describe("TerminalFileReview", () => {
   });
 
   it("opens the real recorded diff and labels unavailable text diffs", async () => {
-    const terminalApi = reviewApi();
-    renderWithBadge(terminalApi);
-    fireEvent.click(await screen.findByRole("button", { name: "변경 보기" }));
+    renderWithBadge(reviewApi());
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
+    fireEvent.click(within(annotationFor(1)!).getByRole("button", { name: "[변경 보기]" }));
     const diff = screen.getByTestId("terminal-file-review-diff");
     expect(diff).toHaveTextContent("before");
     expect(diff).toHaveTextContent("after");
@@ -157,20 +198,19 @@ describe("TerminalFileReview", () => {
     const snapshot = evidence();
     snapshot.files.splice(0, snapshot.files.length, ...snapshot.files.map((file) => ({ ...file, reviewed: true })));
     const terminalApi = reviewApi(snapshot);
-    const view = renderWithBadge(terminalApi);
+    const { rerenderAt } = renderWithBadge(terminalApi);
     await waitFor(() => expect(terminalApi.listFileReviews).toHaveBeenCalled());
     expect(screen.queryByTestId("terminal-tab-file-review-badge")).toBeNull();
-    expect(screen.queryByTestId("terminal-file-warning")).toBeNull();
     terminalApi.listFileReviews.mockResolvedValue({ ok: true, snapshot: { ...snapshot, files: [{ ...snapshot.files[0]!, hash: "c".repeat(64), reviewed: false }] } });
-    view.rerender(<><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={1} /></>);
+    rerenderAt(1);
     expect(await screen.findByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 1");
   });
 
-  it("renders the banner and best-effort footnote in English", async () => {
+  it("renders the annotation and best-effort footnote in English", async () => {
     setLocale("en");
     renderWithBadge(reviewApi());
-    expect(await screen.findByTestId("terminal-file-warning")).toHaveTextContent("Uses files the agent changed: run.sh");
-    expect(screen.getByRole("button", { name: "View changes" })).toBeTruthy();
+    await waitFor(() => expect(annotationFor(1)).toHaveTextContent("# ⚠ Uses files the agent changed: run.sh"));
+    expect(within(annotationFor(1)!).getByRole("button", { name: "[View changes]" })).toBeTruthy();
     fireEvent.click(screen.getByTestId("terminal-tab-file-review-badge"));
     expect(screen.getByRole("complementary")).toHaveAccessibleName("Files changed by the agent · 2");
     expect(screen.getByText(/^Detection is best-effort/)).toBeTruthy();
@@ -178,28 +218,28 @@ describe("TerminalFileReview", () => {
 
   it("never reads or renders evidence on isolated terminal surfaces", async () => {
     const terminalApi = reviewApi();
-    const { container } = render(<TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={terminalSessionFixture("isolated", "agent")} revision={0} />);
+    const { container } = render(<TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={terminalSessionFixture("isolated", "agent")} revision={0} anchors={fakeAnchors()} />);
     await act(async () => {});
     expect(container).toBeEmptyDOMElement();
     expect(terminalApi.listFileReviews).not.toHaveBeenCalled();
   });
 
-  it("reports a failed refresh without clearing prior review evidence", async () => {
-    const snapshot = evidence();
-    snapshot.warnings.splice(0);
-    const terminalApi = reviewApi(snapshot);
-    const view = renderWithBadge(terminalApi);
+  it("reports a failed refresh on the header badge without clearing prior review evidence", async () => {
+    const terminalApi = reviewApi();
+    const { rerenderAt } = renderWithBadge(terminalApi);
     await waitFor(() => expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2"));
     terminalApi.listFileReviews.mockRejectedValue(new Error("unavailable"));
-    view.rerender(<><TerminalFileReviewBadge tabId={session.tabId} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={1} /></>);
-    expect(await screen.findByRole("status")).toHaveTextContent("파일 검토 정보를 새로 고치지 못했습니다.");
+    rerenderAt(1);
+    await waitFor(() => expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveAttribute("title", "파일 검토 정보를 새로 고치지 못했습니다."));
     expect(screen.getByTestId("terminal-tab-file-review-badge")).toHaveTextContent("검토 대기 2");
+    fireEvent.click(screen.getByTestId("terminal-tab-file-review-badge"));
+    expect(await screen.findByRole("status")).toHaveTextContent("파일 검토 정보를 새로 고치지 못했습니다.");
   });
 
   it("opens the same panel from the terminal tab header badge", async () => {
     const terminalApi = reviewApi();
     const onOpen = vi.fn();
-    render(<><TerminalFileReviewBadge tabId={session.tabId} onOpen={onOpen} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={0} /></>);
+    render(<><TerminalFileReviewBadge tabId={session.tabId} onOpen={onOpen} /><TerminalFileReview terminalApi={terminalApi as unknown as TerminalApi} session={session} revision={0} anchors={null} /></>);
     const badge = await screen.findByTestId("terminal-tab-file-review-badge");
     expect(badge).toHaveTextContent("검토 대기 2");
     fireEvent.click(badge);
@@ -216,6 +256,7 @@ describe("TerminalFileReview", () => {
     const panel = await screen.findByTestId("terminal-file-review-panel");
     expect(within(panel).getByRole("button", { name: "검토 완료" })).toBeDisabled();
     expect(within(panel).getByRole("button", { name: "모두 검토 완료" })).toBeDisabled();
+    expect(within(annotationFor(1)!).getByRole("button", { name: "[검토 완료]" })).toBeDisabled();
     expect(screen.getByText(t("terminalFileReview.contentUnavailable"))).toBeTruthy();
     expect(terminalApi.reviewFiles).not.toHaveBeenCalled();
   });
@@ -225,11 +266,11 @@ describe("TerminalFileReview", () => {
     const snapshot = evidence();
     snapshot.files.splice(0, snapshot.files.length, ...snapshot.files.map((file) => ({ ...file, reviewed: true })));
     const terminalApi = reviewApi(snapshot);
-    let view: ReturnType<typeof render>;
+    let rendered: ReturnType<typeof render>;
     await act(async () => {
-      view = renderWithBadge(terminalApi);
+      rendered = renderWithBadge(terminalApi);
     });
-    view!.rerender(<TerminalFileReviewBadge tabId={session.tabId} />);
+    rendered!.rerender(<TerminalFileReviewBadge tabId={session.tabId} />);
     expect(screen.queryByTestId("terminal-tab-file-review-badge")).toBeNull();
     terminalApi.listFileReviews.mockResolvedValue({ ok: true, snapshot: evidence() });
     await act(async () => { await vi.advanceTimersByTimeAsync(1500); });

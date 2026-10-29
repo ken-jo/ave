@@ -1907,11 +1907,15 @@ files, target recipes in makefiles, package scripts and their referenced scripts
 and physical local-bin entry points are matched conservatively. The command
 continues without a confirmation dialog. Only a positive match to at least one
 agent-changed file warns: commands with no file reference, shell-integration and
-prompt internals, and unresolved dynamic indirection never do. Each terminal
-shows at most one warning, a single-line strip overlaid on the top of its output
-area that never takes rows from the terminal. It belongs to the latest command:
-the next command replaces it with its own strip when it matches and clears it
-otherwise, and dismissing it hides it until the next match. The changed-file panel carries one
+prompt internals, and unresolved dynamic indirection never do. The warning is
+an inline annotation on the matched command's own row, drawn as a renderer-only
+terminal decoration after the command text like a trailing shell comment. Main
+names each authenticated command block on the C marker it forwards to the view
+and drops that field from unauthenticated markers. Nothing is written to the
+shell, the PTY or the terminal buffer, so no rows are taken and the annotation
+scrolls with its block until its row leaves the scrollback. Only the latest
+command's annotation offers [view changes] and [mark reviewed]; once another
+command runs it remains as dim history text. The changed-file panel carries one
 static note that detection is best-effort; subprocess writes without concrete
 path evidence and dynamic indirection are not claimed covered. Provenance is
 advisory and is never permission or terminal authority.
@@ -1922,8 +1926,8 @@ latest known command use or that no execution use was observed. Users can open
 a diff and mark one or all entries reviewed. Review decisions bind the observed
 content hash: another content revision becomes pending again. Canonical physical
 paths retain session attribution across symlink aliases and delete/restore;
-deleting a file does not erase its historical evidence. Dismissing an inline
-warning does not grant permission or mark its files reviewed.
+deleting a file does not erase its historical evidence. An inline warning that
+collapses to history neither grants permission nor marks its files reviewed.
 Evidence and review decisions live only in memory for the running application;
 restarting clears them. Command use is inferred from command blocks and static
 file contents, rather than proof of operating-system file opens.

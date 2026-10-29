@@ -6,6 +6,7 @@ import type { AveApi } from "../types.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { TerminalFileReview } from "./TerminalFileReview.js";
+import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
@@ -99,6 +100,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const hasBoxRef = useRef(false);
   const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);
+  const [anchors, setAnchors] = useState<XtermBlockAnchors | null>(null);
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
   const appliedRevision = useOptionalTheme()?.appliedRevision ?? 0;
 
@@ -125,6 +127,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    const blockAnchors = new XtermBlockAnchors(term);
+    setAnchors(blockAnchors);
 
     const safeFit = (): { cols: number; rows: number } => {
       try {
@@ -144,6 +148,10 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     // default handling.
     const markerSub = term.parser.registerOscHandler(133, (data) => {
       const marker = data.charAt(0);
+      if (marker === "C") {
+        const blockId = viewBlockId(data);
+        if (blockId !== null) blockAnchors.noteCommandStart(blockId);
+      }
       if (marker === "A" || marker === "C" || marker === "D") bumpBlocks();
       return false;
     });
@@ -243,6 +251,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       offData();
       offExit();
       termRef.current = null;
+      blockAnchors.dispose();
+      setAnchors(null);
       term.dispose();
       // NOTE: PTY is intentionally NOT killed here — it survives unmount and is torn down on tab close (closeWorkspaceTab →
       // terminal.kill).
@@ -291,10 +301,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           onSession={setSession}
         />
       ) : null}
-      {/* Review UI overlays this output area; the xterm host is its only in-flow child, so no rows are taken. */}
+      {/* Warnings are xterm decorations on their command's row; only the review side panel overlays this area, so the
+          xterm host stays its only in-flow child and no rows are taken. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
         <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
-        {api.terminal && session ? <TerminalFileReview key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} /> : null}
+        {api.terminal && session ? <TerminalFileReview key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={anchors} /> : null}
       </div>
     </div>
   );

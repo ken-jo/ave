@@ -25,3 +25,7 @@ export interface TerminalBlock extends TerminalBlockSummary {
   /** Plain text: escape sequences removed, line rewrites applied. */
   readonly output: string;
 }
+
+/** Field of the OSC 133 C marker main forwards to the renderer, `ESC ] 133 ; C ; ave-block=<block id> BEL`, naming the
+ * block whose command was just entered. Main drops this field from any marker it did not authenticate. */
+export const TERMINAL_VIEW_BLOCK_FIELD = "ave-block=";

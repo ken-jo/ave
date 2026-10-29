@@ -1447,9 +1447,10 @@ confinement, TTY/nonce readiness, egress and cancellation checks. These isolated
 checks remain in force, including the Linux initial-namespace revalidation limit
 and fail-closed behavior when the backend is unavailable. Host startup/user output
 is private; only explicit user-selected block attachments share host context.
-Host terminals show a non-blocking one-line execution warning, only for a
-command positively matched to tracked agent-changed files, and a hash-keyed
-pending-review header badge that opens a side panel. The side-work-panel
+Host terminals annotate a command positively matched to tracked agent-changed
+files with a non-blocking inline warning on its own row (a renderer decoration,
+never PTY input or buffer text), and show a hash-keyed pending-review header
+badge that opens a side panel. The side-work-panel
 host terminal has the same advisory review UI while retaining no agent access.
 Successful write provenance uses canonical physical paths; it is never permission
 authority. Dynamic indirection and subprocess writes without concrete path evidence

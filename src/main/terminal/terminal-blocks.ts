@@ -6,7 +6,7 @@ import type {
   TerminalBlockSource,
   TerminalBlockSummary,
 } from "../../shared/terminal-blocks.js";
-
+import { TERMINAL_VIEW_BLOCK_FIELD as VIEW_BLOCK_FIELD } from "../../shared/terminal-blocks.js";
 import { terminalLaneKey, sameTerminalSession, type TerminalRef, type TerminalSessionRef, type TerminalSessionInfo } from "../../shared/terminal-session.js";
 
 // Completed blocks kept per terminal; older ones are dropped first.
@@ -582,7 +582,11 @@ export class TerminalBlockTracker {
     }
     const marker = this.handleOsc(esc.payload, flush);
     if (marker === null) {
-      this.display += `${esc.introducer}${esc.payload}${terminator}`;
+      // Only an authenticated C names its block for the view; a program's own copy of that field is not shown as one.
+      if (!(esc.payload.startsWith("133;") && esc.payload.includes(VIEW_BLOCK_FIELD))) this.display += `${esc.introducer}${esc.payload}${terminator}`;
+    } else if (marker === "C" && this.open?.source === "osc133") {
+      // The view re-lists on C and anchors block annotations (changed-file warnings) to the row where this block's command was entered.
+      this.display += `\u001b]133;C;${VIEW_BLOCK_FIELD}${this.open.id}\u0007`;
     } else if (marker !== "P" && marker !== "E") {
       // The view only needs the letter (PtyTerminalView re-lists on A/C/D).
       this.display += `\u001b]133;${marker}\u0007`;

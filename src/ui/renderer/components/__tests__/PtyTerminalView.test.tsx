@@ -16,11 +16,15 @@ import { applyInstalledContent, resetInstalledContentForTests } from "../../inst
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
+interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
   options: { theme?: unknown };
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
   written: string[];
+  cursorLine: number;
+  markers: { offset: number; marker: FakeMarker }[];
+  decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[];
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -41,8 +45,27 @@ vi.mock("@xterm/xterm", () => ({
       this.options = { ...options };
       terminals.push(this);
     }
+    cursorLine = 4;
+    host: HTMLElement | null = null;
+    markers: { offset: number; marker: FakeMarker }[] = [];
+    decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[] = [];
+    buffer = { active: { getLine: (_line: number) => ({ translateToString: () => "~/demo ❯ make build" }) } };
+    registerMarker(offset = 0): FakeMarker {
+      const marker = { line: this.cursorLine + offset, isDisposed: false, onDispose: () => ({ dispose() {} }), dispose() {} };
+      this.markers.push({ offset, marker });
+      return marker;
+    }
+    registerDecoration(options: { marker: FakeMarker; x?: number; width?: number; height?: number }) {
+      // xterm draws decorations in its own layer inside the screen, never as rows of the buffer.
+      const element = document.createElement("div");
+      element.className = "xterm-decoration";
+      this.host?.appendChild(element);
+      this.decorations.push({ options, element });
+      return { element, marker: options.marker, onRender: (listener: (element: HTMLElement) => void) => { listener(element); return { dispose() {} }; },
+        onDispose: () => ({ dispose() {} }), dispose: () => element.remove() };
+    }
     loadAddon() {}
-    open() {}
+    open(host: HTMLElement) { this.host = host; }
     onData(handler: (data: string) => void) {
       this.dataHandler = handler;
       return { dispose: () => { this.dataHandler = null; } };
@@ -314,8 +337,8 @@ describe("PtyTerminalView environment and session boundaries", () => {
   });
 });
 
-describe("PtyTerminalView changed-file banner layout", () => {
-  it("overlays the one-line banner on the output area without taking space from the xterm host", async () => {
+describe("PtyTerminalView changed-file annotation", () => {
+  it("anchors the warning to its command's row as an xterm decoration, with no overlay and no rows taken", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
     terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: {
@@ -325,16 +348,34 @@ describe("PtyTerminalView changed-file banner layout", () => {
       warnings: [{ blockId: 1, command: "make build", files: ["/workspace/Makefile"] }],
     } } as never);
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:banner" tabLabel="Terminal 1" />);
-    const banner = await screen.findByTestId("terminal-file-warning");
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    const term = terminals[0]!;
+    // Main forwards an authenticated C with its block id while the cursor sits just below the entered command.
+    act(() => { term.oscHandlers.get(133)!("C;ave-block=1"); });
+    expect(term.markers).toEqual([{ offset: -1, marker: expect.objectContaining({ line: 3 }) }]);
+    const annotation = await screen.findByTestId("terminal-file-warning");
+    expect(annotation).toHaveTextContent("# ⚠ 에이전트가 수정한 파일 사용: Makefile");
+    expect(term.decorations).toHaveLength(1);
+    const [decoration] = term.decorations;
+    expect(decoration!.options.marker).toBe(term.markers[0]!.marker);
+    expect(decoration!.options).toMatchObject({ height: 1, x: "~/demo ❯ make build".length + 2, width: 80 - ("~/demo ❯ make build".length + 2) });
+    expect(decoration!.element).toContainElement(annotation);
+    // Nothing reaches the shell or the buffer: no PTY input and no xterm writes for the warning.
+    expect(terminal.input).not.toHaveBeenCalled();
+    expect(term.written.join("")).not.toContain("에이전트");
+    // No overlay strip: the xterm host remains the output area's only in-flow child.
     const outputArea = screen.getByTestId("terminal-output-area");
     const xtermHost = screen.getByTestId("terminal-xterm-host");
-    expect(banner.parentElement).toBe(outputArea);
-    expect(outputArea).toHaveClass("relative", "flex-1");
-    expect(banner).toHaveClass("absolute", "h-8");
-    // The xterm host is the only in-flow child, so FitAddon measures the full output area with or without a banner.
-    const inFlow = [...outputArea.children].filter((child) => !child.classList.contains("absolute"));
-    expect(inFlow).toEqual([xtermHost]);
+    expect([...outputArea.children].filter((child) => !child.classList.contains("absolute"))).toEqual([xtermHost]);
+    expect(outputArea.querySelectorAll(".absolute")).toHaveLength(0);
     expect(xtermHost).toHaveClass("flex-1");
-    expect(screen.getByTestId("chat-side-panel-pty-terminal").lastElementChild).toBe(outputArea);
+  });
+
+  it("ignores a C marker without a main-assigned block id", async () => {
+    const { api } = makeMockAveApi();
+    render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:plain" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    act(() => { terminals[0]!.oscHandlers.get(133)!("C"); terminals[0]!.oscHandlers.get(133)!("C;ave-block=x"); });
+    expect(terminals[0]!.markers).toEqual([]);
   });
 });
