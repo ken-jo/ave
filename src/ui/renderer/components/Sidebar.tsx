@@ -1268,26 +1268,30 @@ function ProjectSessionList({
     const configured = workspaceProjects.filter((project) => !project.isDefault);
     return sortWithPinnedFirst(configured, (project) => Boolean(isProjectPinned?.(project.projectRoot)));
   }, [isProjectPinned, workspaceProjects]);
+  const paneSurfaceOf = (session: SessionSummary) => session.family === "side-chat"
+    ? surfaces.find((surface) => surface.tabId === session.paneTabId && surface.boundSessionIds.includes(session.id))
+    : undefined;
+  const ordinarySessions = sessions.filter((session) => !paneSurfaceOf(session));
   const sessionsByProject = useMemo(
     () => namedProjects.map((project) => {
       const projectSessions = sortWithPinnedFirst(
-        sessions.filter((session) => session.projectRoot && projectRootEquals(session.projectRoot, project.projectRoot)),
+        ordinarySessions.filter((session) => session.projectRoot && projectRootEquals(session.projectRoot, project.projectRoot)),
         (session) => isSessionPinned(session.id),
       );
       return { project, projectSessions };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- isSessionPinned is derived fresh each render from isSessionStarred (a stable-enough dep); listing it would require useCallback ceremony for no behavioral benefit.
-    [sessions, namedProjects, isSessionStarred],
+    [ordinarySessions, namedProjects, isSessionStarred],
   );
   // Display unscoped and unmatched-root sessions as plain chats; main strips legacy default-workspace metadata at the read
   // boundary.
   const ungroupedSessions = useMemo(() => {
-    const plain = sessions.filter(
+    const plain = ordinarySessions.filter(
       (session) => !session.projectRoot || !namedProjects.some((project) => projectRootEquals(project.projectRoot, session.projectRoot)),
     );
     return sortWithPinnedFirst(plain, (session) => isSessionPinned(session.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions, namedProjects, isSessionStarred]);
+  }, [ordinarySessions, namedProjects, isSessionStarred]);
 
   // Collapsed rail: deliberately NOT wired to the add-project menu. The rail
   // renders no projects at all, and it has nowhere to host the adjacency
@@ -1318,9 +1322,19 @@ function ProjectSessionList({
   };
   const generalSurfaces = surfaces.filter((surface) => !projectOfSurface(surface));
   const hasUngroupedSessions = ungroupedSessions.length > 0 || generalSurfaces.length > 0;
-  const renderSurfaceRow = (surface: SidebarSurface) => (
-    <SidebarSurfaceRow key={surface.tabId} surface={surface} visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} />
-  );
+  const renderSurfaceRow = (surface: SidebarSurface) => {
+    const children = sessions.filter((session) => paneSurfaceOf(session)?.tabId === surface.tabId);
+    return (
+      <div key={surface.tabId} data-testid={`sidebar-surface-tree-${surface.tabId}`}>
+        <SidebarSurfaceRow surface={surface} visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} />
+        {children.length > 0 && (
+          <div className="ml-4 border-l border-border/(--opacity-half) pl-2" data-testid={`sidebar-surface-chats-${surface.tabId}`}>
+            {children.map(renderFamilyRow)}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const conversationMenuHandlers = (session: SessionSummary): NativeContextMenuHandlers => {
     const actions = conversationActions;
@@ -1372,7 +1386,7 @@ function ProjectSessionList({
           ? undefined
           : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
       case "side-chat":
-        if (session.paneTabId && surfaces.some((surface) => surface.tabId === session.paneTabId)) {
+        if (paneSurfaceOf(session)) {
           return () => onOpenPaneChat?.(session.paneTabId!);
         }
         return () => onOpenSideChat?.(session.id, session.originSessionId);
@@ -1386,20 +1400,26 @@ function ProjectSessionList({
   const renderFamilyRow = (session: SessionSummary) => {
     const open = openFamilyRow(session);
     return (
-      <SessionRow
-        key={session.id}
-        session={session}
-        active={false}
-        family={session.family}
-        pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
-        {...(open ? { onOpenFamilyRow: open } : {})}
-        onOpenMenu={(event) => openNativeContextMenu(
-          event,
-          "conversation",
-          (open ? { "conversation.open": open } : {}) as NativeContextMenuHandlers,
+      <div key={session.id}>
+        <SessionRow
+          session={session}
+          active={false}
+          family={session.family}
+          pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
+          {...(open ? { onOpenFamilyRow: open } : {})}
+          onOpenMenu={(event) => openNativeContextMenu(
+            event,
+            "conversation",
+            (open ? { "conversation.open": open } : {}) as NativeContextMenuHandlers,
+          )}
+          t={t}
+        />
+        {session.paneTabId && !paneSurfaceOf(session) && (
+          <div className="truncate pl-7 text-[10px] text-muted-foreground">
+            {t(session.paneTabId.startsWith("terminal:") ? "sidebar.formerTerminalChat" : "sidebar.formerPageChat")}
+          </div>
         )}
-        t={t}
-      />
+      </div>
     );
   };
 
@@ -1442,10 +1462,10 @@ function ProjectSessionList({
   const visibleSessions = (list: SessionSummary[]) =>
     showArchived || !conversationActions
       ? list
-      : list.filter((session) => !conversationActions.isArchived(session.id));
+      : list.filter((session) => session.family === "side-chat" || !conversationActions.isArchived(session.id));
 
   const hasArchivedSessions = Boolean(
-    conversationActions && sessions.some((session) => conversationActions.isArchived(session.id)),
+    conversationActions && sessions.some((session) => session.family !== "side-chat" && conversationActions.isArchived(session.id)),
   );
 
   // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never

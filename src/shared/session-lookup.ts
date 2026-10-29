@@ -56,7 +56,7 @@ export interface SessionListRow {
    * sidebar can draw it under that conversation instead of beside it.
    */
   originSessionId?: string;
-  /** The terminal or page holding this side-chat conversation, when still live. */
+  /** Host-recorded pane identity; current host bindings determine whether it is still live. */
   paneTabId?: string;
   routineId?: string;
   routineTitle?: string;

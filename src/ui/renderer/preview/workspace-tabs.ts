@@ -4,6 +4,7 @@ import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
 import { parseTabId } from "../../../shared/tab-id.js";
 import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
 import { forgetActiveSurface } from "./active-surface.js";
+import { terminalOrdinal } from "./terminal-ordinal.js";
 
 /** Keep tab state above panel unmount; start empty, keep at most one reusable ephemeral content slot, and pin explicit
  * launcher tabs. */
@@ -165,11 +166,10 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     }
     previousTabsRef.current = state.tabs;
   }, [state.tabs]);
-  const nextOrdinalRef = useRef<Record<WorkspaceTabKind, number>>({
+  const nextOrdinalRef = useRef<Record<Exclude<WorkspaceTabKind, "terminal">, number>>({
     "file-browser": 1,
     preview: 1,
     browser: 1,
-    terminal: 1,
     subagent: 1,
     activity: 1,
     "side-chat": 1,
@@ -190,8 +190,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
 
   const addTab = useCallback((kind: WorkspaceTabKind) => {
     setState((prev) => {
-      const ordinal = nextOrdinalRef.current[kind]++;
       const id = mintTabId(kind);
+      const ordinal = kind === "terminal" ? terminalOrdinal(id) : nextOrdinalRef.current[kind]++;
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -203,8 +203,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       if (existing) {
         return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
       }
-      const ordinal = nextOrdinalRef.current[kind]++;
       const id = mintTabId(kind);
+      const ordinal = kind === "terminal" ? terminalOrdinal(id) : nextOrdinalRef.current[kind]++;
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -342,10 +342,11 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
     releasedTabIdsRef.current.delete(incoming.id);
     // A tab that keeps its number here must not see a later tab of its kind take it again.
-    if (nextOrdinalRef.current[incoming.kind] <= incoming.ordinal) nextOrdinalRef.current[incoming.kind] = incoming.ordinal + 1;
+    if (incoming.kind !== "terminal" && nextOrdinalRef.current[incoming.kind] <= incoming.ordinal) nextOrdinalRef.current[incoming.kind] = incoming.ordinal + 1;
     setState((prev) => {
       if (prev.tabs.some((tab) => tab.id === incoming.id)) return { ...prev, activeTabId: incoming.id };
-      const tab: WorkspaceTab = { id: incoming.id, kind: incoming.kind, ordinal: incoming.ordinal, mode: "pinned", content: null };
+      const ordinal = incoming.kind === "terminal" ? terminalOrdinal(incoming.id, incoming.ordinal) : incoming.ordinal;
+      const tab: WorkspaceTab = { id: incoming.id, kind: incoming.kind, ordinal, mode: "pinned", content: null };
       return {
         tabs: [...prev.tabs, tab],
         activeTabId: tab.id,

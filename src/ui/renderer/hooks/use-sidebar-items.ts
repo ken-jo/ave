@@ -9,6 +9,8 @@ import { subscribeWebSurfaces, subscribeWebSurfaceLocations, webSurfaceFavicon, 
 
 export interface SidebarSurface extends MainSurface {
   title?: string;
+  /** Main-owned binding membership, independent of the surface creator. */
+  boundSessionIds: readonly string[];
   sessionId?: string;
   faviconDataUrl: string | null;
 }
@@ -58,6 +60,9 @@ export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupI
     const url = surface.kind === "browser" ? webSurfaceLocation(surface.tabId) ?? browser?.url ?? surface.url : surface.url;
     surfaces.set(surface.tabId, {
       ...surface,
+      boundSessionIds: bindings?.bindings.filter((binding) =>
+        (surface.kind === "browser" ? binding.browserTabIds : binding.terminalTabIds).includes(surface.tabId))
+        .map((binding) => binding.sessionId) ?? [],
       url,
       ...(browser ? { title: browser.title } : {}),
       ...(sessionId ? { sessionId } : {}),

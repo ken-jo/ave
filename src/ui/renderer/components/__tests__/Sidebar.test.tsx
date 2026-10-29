@@ -1799,17 +1799,26 @@ describe("Sidebar — every conversation family", () => {
     }
   });
 
-  it("opens a live pane-bound side chat on its own surface instead of the rail", async () => {
+  it.each(["terminal", "browser"] as const)("nests a host-bound %s chat only under its surface and preserves pane routing", async (kind) => {
     const onOpenSideChat = vi.fn();
     const onOpenPaneChat = vi.fn();
-    const tabId = "terminal:pane-chat";
-    const { getByTestId, onLoadSession, restore } = renderSidebar({
-      sessions: [{ ...sideChatRow, paneTabId: tabId }],
-      mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }],
-      onOpenSideChat,
-      onOpenPaneChat,
-    });
+    const tabId = kind + ":pane-chat";
+    const root = "/projects/pane-chat";
+    const browserTabs = {
+      getSessionBindings: async () => ({ revision: 1, bindings: [{ sessionId: sideChatRow.id, browserTabIds: kind === "browser" ? [tabId] : [], terminalTabIds: kind === "terminal" ? [tabId] : [] }] }),
+      onSessionBindingsChanged: () => () => {},
+    } as unknown as AveApi["browserTabs"];
+    const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
+      sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root }],
+      projects: [{ projectRoot: root, projectName: "Pane project" }],
+      mainSurfaces: [{ tabId, kind, ordinal: 1, url: null }],
+      onOpenSideChat, onOpenPaneChat,
+    }, { browserTabs });
     try {
+      await waitFor(() => expect(getByTestId("sidebar-surface-chats-" + tabId).contains(getByTestId("sidebar-session-side-1"))).toBe(true));
+      expect(getAllByTestId("sidebar-session-side-1")).toHaveLength(1);
+      expect(getAllByTestId("sidebar-surface-" + tabId)).toHaveLength(1);
+      expect(getByTestId("sidebar-session-side-1").closest(`[data-testid="sidebar-surface-tree-${tabId}"]`)).toBe(getByTestId("sidebar-surface-tree-" + tabId));
       fireEvent.click(getByTestId("sidebar-session-side-1"));
       expect(onOpenPaneChat).toHaveBeenCalledWith(tabId);
       expect(onOpenSideChat).not.toHaveBeenCalled();
@@ -1817,19 +1826,40 @@ describe("Sidebar — every conversation family", () => {
     } finally { restore(); }
   });
 
-  it("opens a closed pane's side chat on the rail", async () => {
+  it.each(["ko", "en"])("returns an ended binding to an ordinary row with a provenance caption in %s", async (locale) => {
+    let update!: (state: SessionTabBindingsState) => void;
+    const tabId = "terminal:closed";
+    const browserTabs = {
+      getSessionBindings: async () => ({ revision: 1, bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }),
+      onSessionBindingsChanged: (handler: typeof update) => { update = handler; return () => {}; },
+    } as unknown as AveApi["browserTabs"];
     const onOpenSideChat = vi.fn();
     const onOpenPaneChat = vi.fn();
-    const { getByTestId, restore } = renderSidebar({
-      sessions: [{ ...sideChatRow, paneTabId: "terminal:closed" }],
-      onOpenSideChat,
-      onOpenPaneChat,
-    });
+    const suiteLocale = getLocale();
+    const conversationActions = { isArchived: () => true, isUnread: () => false, isResponding: () => false,
+      onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() };
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId, archivedAt: "2026-10-29T00:00:00Z" }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
     try {
-      fireEvent.click(getByTestId("sidebar-session-side-1"));
+      await waitFor(() => view.getByTestId("sidebar-surface-chats-" + tabId));
+      act(() => update({ revision: 2, bindings: [] }));
+      expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
+      expect(view.getByTestId("sidebar-unassigned-sessions").textContent).toContain(locale === "ko" ? "이전 터미널 채팅" : "Former terminal chat");
+      expect(view.getByTestId("sidebar-surface-tree-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(false);
+      fireEvent.click(view.getByTestId("sidebar-session-side-1"));
       expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
       expect(onOpenPaneChat).not.toHaveBeenCalled();
-    } finally { restore(); }
+    } finally { view.restore(); setRuntimeLocale(suiteLocale); }
+  });
+
+  it("does not nest a renderer-only pane claim without a host binding", () => {
+    const tabId = "terminal:unbound";
+    const onOpenPaneChat = vi.fn();
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenPaneChat });
+    try {
+      expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
+      fireEvent.click(view.getByTestId("sidebar-session-side-1"));
+      expect(onOpenPaneChat).not.toHaveBeenCalled();
+    } finally { view.restore(); }
   });
 
   it("lists a side chat whose conversation is not here at the top level", async () => {
