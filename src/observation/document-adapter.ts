@@ -469,6 +469,8 @@ export class DocumentObservationAdapter {
     signal.throwIfAborted();
     if (!this.current(view) || version !== view.version) return;
     await terminalFileEvidence.recordWrite(proof.identity.sessionId, view.registration.path);
+    signal.throwIfAborted();
+    if (!this.current(view) || version !== view.version) return;
     this.publishDiff(view, document);
     const seq = this.daemon.publish(view.registration.id, { kind: "snapshot", before: null, after: document });
     if (seq !== undefined) {

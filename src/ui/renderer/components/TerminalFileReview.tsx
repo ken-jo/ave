@@ -106,16 +106,18 @@ export function TerminalFileReview({ terminalApi, session, revision }: {
           {t("terminalFileReview.pending", { count: pending.length })}
         </button>
       </div>}
-      {warnings.map(({ warning, files }) => <div key={warning.blockId} className="shrink-0 border-b border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-3 py-2 text-xs" data-testid="terminal-file-warning">
-        {files.length > 0 && <p className="break-words">{t("terminalFileReview.banner", { count: files.length, files: files.map((file) => file.path).join(", ") })}</p>}
-        <p className="mt-1 truncate font-mono text-muted-foreground" title={warning.command}>$ {warning.command}</p>
-        {warning.unresolved && <p className="mt-1 text-muted-foreground">{t("terminalFileReview.unresolved")}</p>}
-        <div className="mt-1 flex items-center gap-1">
-          {files.length > 0 && <button type="button" className={ACTION_CLASS} onClick={() => openDiff(files[0]!.path)}>{t("terminalFileReview.viewChanges")}</button>}
-          {files.length > 0 && <button type="button" className={ACTION_CLASS} disabled={reviewing || !files.some((file) => /^[a-f0-9]{64}$/i.test(file.hash))} onClick={() => { void review(files); }}>{t("terminalFileReview.markReviewed")}</button>}
-          <button type="button" className={`${ACTION_CLASS} ml-auto`} aria-label={t("terminalFileReview.dismiss")} onClick={() => setDismissed((previous) => new Set([...previous, warning.blockId]))}>×</button>
-        </div>
-      </div>)}
+      {warnings.length > 0 && <div className="min-h-0 max-h-[40%] shrink-0 overflow-y-auto" data-testid="terminal-file-warning-list">
+        {warnings.map(({ warning, files }) => <div key={warning.blockId} className="shrink-0 border-b border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-3 py-2 text-xs" data-testid="terminal-file-warning">
+          {files.length > 0 && <p className="break-words">{t("terminalFileReview.banner", { count: files.length, files: files.map((file) => file.path).join(", ") })}</p>}
+          <p className="mt-1 truncate font-mono text-muted-foreground" title={warning.command}>$ {warning.command}</p>
+          {warning.unresolved && <p className="mt-1 text-muted-foreground">{t("terminalFileReview.unresolved")}</p>}
+          <div className="mt-1 flex items-center gap-1">
+            {files.length > 0 && <button type="button" className={ACTION_CLASS} onClick={() => openDiff(files[0]!.path)}>{t("terminalFileReview.viewChanges")}</button>}
+            {files.length > 0 && <button type="button" className={ACTION_CLASS} disabled={reviewing || !files.some((file) => /^[a-f0-9]{64}$/i.test(file.hash))} onClick={() => { void review(files); }}>{t("terminalFileReview.markReviewed")}</button>}
+            <button type="button" className={`${ACTION_CLASS} ml-auto`} aria-label={t("terminalFileReview.dismiss")} onClick={() => setDismissed((previous) => new Set([...previous, warning.blockId]))}>×</button>
+          </div>
+        </div>)}
+      </div>}
       {open && <aside aria-label={t("terminalFileReview.title", { count: snapshot.files.length })} className="absolute inset-y-0 right-0 z-10 flex w-full max-w-md flex-col border-l border-border bg-background shadow-lg" data-testid="terminal-file-review-panel">
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <h3 className="min-w-0 flex-1 text-sm font-medium">{t("terminalFileReview.title", { count: snapshot.files.length })}</h3>
