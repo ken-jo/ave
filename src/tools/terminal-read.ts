@@ -93,7 +93,6 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     jsonSchema: {
       type: "object",
       properties: {
-        lane: { type: "string", enum: ["agent"], description: t("be_terminalRead.laneDescription") },
         terminalSessionId: { type: "string", description: t("be_terminalRead.sessionDescription") },
         tabId: { type: "string", description: t("be_terminalRead.tabIdDescription") },
         blockId: { type: "integer", minimum: 1, description: t("be_terminalRead.blockIdDescription") },
@@ -108,8 +107,9 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     },
     execute: async (rawInput, ctx) => {
       if (rawInput !== undefined && (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput))) return terminalToolFailure("terminal_read expects an object");
-      const input = (rawInput ?? {}) as { tabId?: unknown; lane?: unknown; terminalSessionId?: unknown; blockId?: unknown; limit?: unknown };
-      if (Object.keys(input).some((key) => !["tabId", "lane", "terminalSessionId", "blockId", "limit"].includes(key))) return terminalToolFailure("unknown terminal_read argument");
+      const input = (rawInput ?? {}) as { tabId?: unknown; terminalSessionId?: unknown; blockId?: unknown; limit?: unknown };
+      // Only a conversation's isolated shell is readable, so there is no lane to choose; a `lane` argument is unknown.
+      if (Object.keys(input).some((key) => !["tabId", "terminalSessionId", "blockId", "limit"].includes(key))) return terminalToolFailure("unknown terminal_read argument");
       if (input.tabId !== undefined && typeof input.tabId !== "string") {
         return terminalToolFailure("tabId must be a string");
       }
@@ -142,17 +142,16 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         });
       }
 
-      if (input.lane !== "agent") return terminalToolFailure("Host terminal output is private; ask the user to attach a command block explicitly.");
       if (typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
-        return terminalToolFailure("targeted terminal_read requires lane and terminalSessionId; call terminal_read with no arguments to list sessions");
+        return terminalToolFailure("targeted terminal_read requires terminalSessionId; call terminal_read with no arguments to list this conversation's isolated terminal");
       }
 
       const tabId = (input.tabId as string | undefined) ?? owned?.tabId;
       if (tabId === undefined) {
-        return terminalToolFailure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
+        return terminalToolFailure("This conversation has no isolated terminal. Host terminal output is private; ask the user to attach a command block explicitly.");
       }
-      // A tab of another window answers exactly like a tab that does not exist.
-      const ref: TerminalSessionRef = { tabId, lane: input.lane, terminalSessionId: input.terminalSessionId };
+      // A host tab, or a terminal of another conversation or window, answers exactly like one that does not exist.
+      const ref: TerminalSessionRef = { tabId, lane: "agent", terminalSessionId: input.terminalSessionId };
       if (!owned || owned.lane !== "agent" || !sameTerminalSession(owned, ref)) {
         return terminalToolFailure("No matching isolated terminal belongs to this conversation.");
       }

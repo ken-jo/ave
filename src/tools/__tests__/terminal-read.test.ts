@@ -46,7 +46,7 @@ function bodyOf(output: string, isError: boolean): Record<string, unknown> {
 }
 
 function target(input: Record<string, unknown>, defaultTab = "terminal:1") {
-  return Object.keys(input).length === 0 ? input : { lane: "agent", terminalSessionId: `${input.tabId ?? defaultTab}/agent`, ...input };
+  return Object.keys(input).length === 0 ? input : { terminalSessionId: `${input.tabId ?? defaultTab}/agent`, ...input };
 }
 
 async function call(input: unknown) {
@@ -163,7 +163,7 @@ describe("terminal_read", () => {
     const tool = createTerminalReadTool({ ...deps, conversationTerminalRef: () => host });
     const listing = await tool.execute({}, ctx);
     expect(bodyOf(listing.output as string, false).terminals).toEqual([]);
-    const read = await tool.execute({ tabId: host.tabId, lane: "agent", terminalSessionId: host.terminalSessionId, blockId: 1 }, ctx);
+    const read = await tool.execute({ tabId: host.tabId, terminalSessionId: host.terminalSessionId, blockId: 1 }, ctx);
     expect(read.isError).toBe(true);
     expect(read.output).not.toContain("HOST-SECRET");
   });
@@ -203,7 +203,7 @@ describe("terminal_read", () => {
 
   it("defaults an authenticated continuation to its own isolated terminal", async () => {
     register("terminal:1", trackerWith([{ command: "echo one", output: "one\n", exit: 0 }]));
-    const result = await createTerminalReadTool(deps).execute({ lane: "agent", terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
+    const result = await createTerminalReadTool(deps).execute({ terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
     expect(result.isError).toBe(false);
     expect(bodyOf(result.output as string, false)).toMatchObject({ tabId: "terminal:1", block: { output: "one\n" } });
   });
@@ -231,11 +231,11 @@ it("refuses host output and stale incarnations, including continuation-shaped re
   const tool = createTerminalReadTool(deps);
   for (const invalid of [
     { tabId: "terminal:1" }, { blockId: 1 }, { lane: "agent" },
-    { terminalSessionId: "terminal:1/agent" }, { lane: "host", terminalSessionId: "x" }, [],
+    { lane: "agent", terminalSessionId: "terminal:1/agent" }, { lane: "host", terminalSessionId: "x" }, [],
     { tabId: "terminal:1", lane: "manual", terminalSessionId: "terminal:1/manual", blockId: 1 },
-    { lane: "manual", terminalSessionId: "terminal:1/manual", blockId: 1 },
-    { tabId: "terminal:1", lane: "agent", terminalSessionId: "terminal:1/manual", blockId: 1 },
-    { tabId: "terminal:1", lane: "agent", terminalSessionId: "retired", blockId: 1 },
+    { terminalSessionId: "terminal:1/manual", blockId: 1 },
+    { tabId: "terminal:1", terminalSessionId: "terminal:1/manual", blockId: 1 },
+    { tabId: "terminal:1", terminalSessionId: "retired", blockId: 1 },
   ]) {
     const result = await tool.execute(invalid, ctx);
     expect(result.isError, JSON.stringify(invalid)).toBe(true);
@@ -244,6 +244,6 @@ it("refuses host output and stale incarnations, including continuation-shaped re
   const listing = await tool.execute({}, ctx);
   expect((bodyOf(listing.output as string, false).terminals as unknown[])).toHaveLength(1);
   expect(listing.output).not.toContain("human");
-  const isolated = await tool.execute({ tabId: "terminal:1", lane: "agent", terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
+  const isolated = await tool.execute({ tabId: "terminal:1", terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
   expect(bodyOf(isolated.output as string, false)).toMatchObject({ lane: "agent", block: { command: "agent", output: "ISOLATED" } });
 });

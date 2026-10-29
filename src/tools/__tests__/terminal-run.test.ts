@@ -678,7 +678,7 @@ describe("terminal_run", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       const parsed = body((await pending).output as string);
       expect(parsed).toMatchObject({ finished: false, block: { id: 1, status: "running", output: "building…\n" } });
-      expect(parsed.continuation).toEqual({ tabId: "terminal:aaaaaaaa-1", lane: "agent", terminalSessionId: "terminal:aaaaaaaa-1/agent", blockId: 1 });
+      expect(parsed.continuation).toEqual({ tabId: "terminal:aaaaaaaa-1", terminalSessionId: "terminal:aaaaaaaa-1/agent", blockId: 1 });
     });
 
     it("rejects a wait outside the policy bounds", async () => {

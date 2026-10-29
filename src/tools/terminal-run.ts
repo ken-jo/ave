@@ -326,7 +326,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       typed: true,
       finished,
       block: withOutputBudget([block])[0],
-      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }), continuation: { tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId, blockId: block.id } }),
+      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }), continuation: { tabId: scope.tabId, terminalSessionId: scope.terminalSessionId, blockId: block.id } }),
     });
   };
 
