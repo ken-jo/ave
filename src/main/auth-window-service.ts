@@ -3,7 +3,7 @@ export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberP
 // The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
 import { randomBytes } from "node:crypto";
 import { BrowserWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
-import { attachAuthWindowContent, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
+import { attachAuthWindowContent, authWindowChromeOptions, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
 import { isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
 import { resolveAppIconPath } from "./app-icon.js";
@@ -386,7 +386,7 @@ async function openAuthWindowInternal(
     icon: resolveAppIconPath(),
     autoHideMenuBar: true,
     // Native controls keep both login lanes independent of host IPC capabilities.
-    frame: true, titleBarStyle: "default",
+    ...authWindowChromeOptions(),
     // Explicit show:false suppresses initial display and later web-content focus while still permitting navigation and harvest.
     show: showRequested,
     webPreferences: {
@@ -740,7 +740,6 @@ async function openAuthWindowInternal(
       partition: effectivePartition,
       platform: process.platform,
       devConsole: policy.devConsole,
-      nativeFrame: true,
     });
     authWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch((err) => {
       finish(() => {

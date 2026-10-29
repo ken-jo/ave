@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { BrowserWindow, WebContentsView, type Session, type WebContents } from "electron";
-import { buildTitlebarCss, buildTitlebarHtml, buildTitlebarButtonScript } from "./window-titlebar-shell.js";
+import { buildTitlebarCss } from "./window-titlebar-shell.js";
 import { hardenRemoteWebPreferences } from "./remote-browser-preferences.js";
 import { markAsAuthOwned } from "./auth-window-registry.js";
 import { escapeHtml } from "../shared/escape-html.js";
@@ -23,26 +23,36 @@ function getErudaSource(): string | null {
   }
 }
 
+export const AUTH_TITLEBAR_HEIGHT = 36;
+
+/** Native controls share the trusted address row; neither shell needs a privileged preload. */
+export function authWindowChromeOptions(platform: NodeJS.Platform = process.platform): Electron.BrowserWindowConstructorOptions {
+  return {
+    frame: true,
+    minWidth: 520,
+    titleBarStyle: platform === "darwin" ? "hiddenInset" : "hidden",
+    ...(platform === "darwin" ? {} : { titleBarOverlay: { height: AUTH_TITLEBAR_HEIGHT } }),
+  };
+}
+
 type AuthDocumentError = "" | "certificate-error" | "load-error";
 
 export function buildAuthWindowShellHtml(input: {
   title: string;
   url: string;
   partition: string;
-  // macOS keeps native inset controls; Windows/Linux need HTML controls because the native frame is removed.
+  // Reserve native control space within the same host-rendered address row.
   platform?: NodeJS.Platform;
   // When true, inline the development console script.
   devConsole?: boolean;
-  nativeFrame?: boolean;
   chromeOnly?: boolean;
   errorState?: AuthDocumentError;
 }): string {
   const platform: NodeJS.Platform = input.platform ?? process.platform;
-  const title = JSON.stringify(input.title);
+  const title = JSON.stringify(input.title).replace(/</g, "\\u003c");
   const url = JSON.stringify(input.url).replace(/</g, "\\u003c");
-  const partition = JSON.stringify(input.partition);
+  const partition = JSON.stringify(input.partition).replace(/</g, "\\u003c");
   const erudaScript = input.devConsole === true ? buildErudaInlineScript() : "";
-  const titleBarHtml = input.nativeFrame ? "" : buildTitlebarHtml({ platform, title: input.title });
   return `<!doctype html>
 <html lang="ko">
 <head>
@@ -51,13 +61,19 @@ export function buildAuthWindowShellHtml(input: {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(input.title)}</title>
   <style>${buildTitlebarCss()}
-    #oauth-location { display: flex; flex: 0 0 64px; align-items: center; gap: 8px; padding: 0 12px; box-sizing: border-box; background: var(--ts-webview-bg); color: var(--ts-fg); }
-    #oauth-uri { flex: 1; min-width: 0; padding: 6px; color: inherit; background: transparent; }
+    #oauth-location { display: flex; flex: 0 0 ${AUTH_TITLEBAR_HEIGHT}px; height: ${AUTH_TITLEBAR_HEIGHT}px; align-items: center; gap: 8px; padding: 0 ${platform === "darwin" ? "12px 0 80px" : "140px 0 12px"}; background: var(--ts-bg); color: var(--ts-fg); -webkit-app-region: drag; }
+    #oauth-security { flex: 0 0 16px; height: 16px; -webkit-app-region: no-drag; }
+    #oauth-security svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    #oauth-security[data-security="certificate-error"], #oauth-security[data-security="load-error"] { color: #d33c32; }
+    #oauth-uri { display: flex; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12px; direction: ltr; }
+    #oauth-host { flex: 0 0 auto; font-weight: 650; }
+    #oauth-scheme, #oauth-path { color: var(--ts-btn); }
+    #oauth-scheme { flex: 0 0 auto; }
+    #oauth-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   </style>
 </head>
 <body>
-  ${titleBarHtml}
-  ${input.nativeFrame ? `<div id="oauth-location"><span id="oauth-security" role="status"></span><input id="oauth-uri" readonly aria-label="${escapeHtml(t("oauthWindow.address"))}" /></div>` : ""}
+  <div id="oauth-location"><span id="oauth-security" role="img"></span><div id="oauth-uri" role="group" aria-label="${escapeHtml(t("oauthWindow.address"))}"><span id="oauth-scheme"></span><bdi id="oauth-host" dir="ltr"></bdi><span id="oauth-path"></span></div></div>
   ${input.chromeOnly ? "" : '<webview id="auth-view" src="" partition="" allowpopups></webview>'}
   <script>
     const title = ${title};
@@ -69,15 +85,23 @@ export function buildAuthWindowShellHtml(input: {
     const view = document.getElementById("auth-view");
     const uri = document.getElementById("oauth-uri");
     const security = document.getElementById("oauth-security");
-    let committedUrl = ${input.chromeOnly ? "url" : '""'};
+    let committedUrl = url;
     let errorState = ${JSON.stringify(input.errorState ?? "")};
     const certificateErrors = new Set();
     const updateLocation = () => {
       if (!uri || !security) return;
-      uri.value = committedUrl;
+      uri.title = committedUrl;
+      const parsed = new URL(committedUrl);
+      document.getElementById("oauth-scheme").textContent = parsed.protocol + "//";
+      document.getElementById("oauth-host").textContent = parsed.host;
+      document.getElementById("oauth-path").textContent = parsed.pathname + parsed.search + parsed.hash;
       const secure = committedUrl.startsWith("https:") && !errorState;
-      security.textContent = errorState === "certificate-error" ? ${JSON.stringify(t("oauthWindow.certificateError"))} : errorState === "load-error" ? ${JSON.stringify(t("oauthWindow.loadError"))} : secure ? ${JSON.stringify(t("oauthWindow.secure"))} : ${JSON.stringify(t("oauthWindow.insecure"))};
+      const label = errorState === "certificate-error" ? ${JSON.stringify(t("oauthWindow.certificateError"))} : errorState === "load-error" ? ${JSON.stringify(t("oauthWindow.loadError"))} : secure ? ${JSON.stringify(t("oauthWindow.secure"))} : ${JSON.stringify(t("oauthWindow.insecure"))};
+      security.title = label;
+      security.setAttribute("aria-label", label);
       security.dataset.security = errorState || (secure ? "https" : "http");
+      const shape = errorState === "certificate-error" ? '<path d="m8 8 8 8m0-8-8 8"/><circle cx="12" cy="12" r="9"/>' : errorState === "load-error" ? '<path d="m12 3 10 18H2Z"/><path d="M12 9v5m0 3h.01"/>' : secure ? '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>' : '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0"/>';
+      security.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + shape + '</svg>';
     };
     const recordFailure = (failedUrl, certificateFailure) => {
       committedUrl = failedUrl;
@@ -104,7 +128,6 @@ export function buildAuthWindowShellHtml(input: {
       view.setAttribute("partition", partition);
       view.setAttribute("src", url);
     }
-    ${input.nativeFrame ? "" : buildTitlebarButtonScript({ platform, title: input.title })}
   </script>
   ${erudaScript}
 </body>
@@ -172,7 +195,7 @@ export function attachAuthWindowContent(input: {
   window.on("closed", closePopups);
   const updateLocation = (popup: BrowserWindow, url: string, errorState: AuthDocumentError = ""): void => {
     if (popup.isDestroyed()) return;
-    const html = buildAuthWindowShellHtml({ title, url, partition, nativeFrame: true, chromeOnly: true, errorState });
+    const html = buildAuthWindowShellHtml({ title, url, partition, chromeOnly: true, errorState });
     void popup.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(error => {
       if (error && typeof error === "object" && "code" in error && error.code === "ERR_ABORTED") return;
       if (!popup.isDestroyed()) popup.destroy();
@@ -210,7 +233,7 @@ export function attachAuthWindowContent(input: {
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
-          parent: window, width: 520, height: 720, autoHideMenuBar: true, frame: true,
+          parent: window, width: 520, height: 720, autoHideMenuBar: true, ...authWindowChromeOptions(),
           webPreferences: preferences,
         },
         createWindow: (options: Electron.BrowserWindowConstructorOptions) => {
@@ -222,7 +245,7 @@ export function attachAuthWindowContent(input: {
             throw new Error("Invalid auth popup session");
           }
           const child = new BrowserWindow({
-            parent: window, x, y, width, height, autoHideMenuBar: true, frame: true,
+            parent: window, x, y, width, height, autoHideMenuBar: true, ...authWindowChromeOptions(),
             webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false },
           });
           guardShell(child);
@@ -231,7 +254,7 @@ export function attachAuthWindowContent(input: {
           teardowns.push(new Promise<void>(resolve => webContents.once("destroyed", () => resolve())));
           const resize = (): void => {
             const { width, height } = child.getContentBounds();
-            guest.setBounds({ x: 0, y: 64, width, height: Math.max(0, height - 64) });
+            guest.setBounds({ x: 0, y: AUTH_TITLEBAR_HEIGHT, width, height: Math.max(0, height - AUTH_TITLEBAR_HEIGHT) });
           };
           resize();
           child.on("resize", resize);
@@ -242,7 +265,7 @@ export function attachAuthWindowContent(input: {
           });
           webContents.on("destroyed", () => { if (!child.isDestroyed()) child.destroy(); });
           attachGuest(webContents, depth + 1, child);
-          updateLocation(child, "");
+          updateLocation(child, url);
           return webContents;
         },
       };

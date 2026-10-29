@@ -267,41 +267,26 @@ describe("buildAuthResult", () => {
   });
 });
 
-describe("buildAuthWindowShellHtml", () => {
-  it("Win/Linux: renders HTML titlebar with min/max/close (no native frame)", () => {
-    const html = buildAuthWindowShellHtml({
-      title: "Login <unsafe>",
-      url: "https://sso.example.com/login",
-      partition: "persist:plugin-auth:example",
-      platform: "win32",
-    });
-    expect(html).toContain("titlebar-btn");
-    expect(html).toContain("id=\"minimize\"");
-    expect(html).toContain("id=\"maximize\"");
-    expect(html).toContain("id=\"close\"");
-    expect(html).toContain("<webview");
-    expect(html).toContain("window.aveWindow");
-    expect(html).toContain("https://sso.example.com/login");
-    expect(html).toContain("persist:plugin-auth:example");
-    expect(html).toContain("<title>Login &lt;unsafe&gt;</title>");
-  });
+const { authWindowChromeOptions } = await import("../auth-window-content.js");
 
-  it("macOS: suppresses HTML titlebar buttons + title text so OS traffic lights aren't duplicated", () => {
-    const html = buildAuthWindowShellHtml({
-      title: "Login",
-      url: "https://sso.example.com/login",
-      partition: "persist:plugin-auth:example",
-      platform: "darwin",
-    });
-    expect(html).not.toContain("id=\"minimize\"");
-    expect(html).not.toContain("id=\"maximize\"");
-    expect(html).not.toContain("id=\"close\"");
-    // No <button class="titlebar-btn"> elements should be rendered. The CSS class itself stays in the <style> block (harmless dead rule) — only the DOM rendering is suppressed.
-    expect(html).not.toContain("<button class=\"titlebar-btn");
-    expect(html).toContain("titlebar-mac");
-    expect(html).toContain("<webview");
-    // Drag region must remain so users can still move the window.
-    expect(html).toContain("-webkit-app-region: drag");
+describe("buildAuthWindowShellHtml", () => {
+  it.each(["darwin", "win32", "linux"] as const)("uses native title controls in the shared row on %s", platform => {
+    const options = authWindowChromeOptions(platform);
+    expect(options).toMatchObject({ frame: true, minWidth: 520, titleBarStyle: platform === "darwin" ? "hiddenInset" : "hidden" });
+    expect(options.titleBarOverlay).toEqual(platform === "darwin" ? undefined : { height: 36 });
+  });
+  it.each(["darwin", "win32", "linux"] as const)("renders one trusted address row beside native controls on %s", platform => {
+    const html = buildAuthWindowShellHtml({ title: "Login <unsafe>", url: "https://sso.example.com/login", partition: "ephemeral-auth-test", platform });
+    expect(html).toContain('<title>Login &lt;unsafe&gt;</title>');
+    expect(html).toContain('<div id="oauth-location">');
+    expect(html).toContain('<bdi id="oauth-host" dir="ltr">');
+    expect(html).not.toContain('<input');
+    expect(html).not.toContain('window.aveWindow');
+    expect(html).toContain('-webkit-app-region: drag');
+    expect(html).toContain('-webkit-app-region: no-drag');
+    expect(html).toContain('#oauth-host { flex: 0 0 auto;');
+    expect(html).toContain('text-overflow: ellipsis');
+    expect(html).toContain('<webview');
   });
 
   it("devConsole=true: inlines eruda init script in the shell", () => {
