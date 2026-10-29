@@ -1465,6 +1465,27 @@ confinement, TTY/nonce readiness, egress and cancellation checks. These isolated
 checks remain in force, including the Linux initial-namespace revalidation limit
 and fail-closed behavior when the backend is unavailable. Host startup/user output
 is private; only explicit user-selected block attachments share host context.
+Host terminals annotate a command positively matched to tracked agent-changed
+files with a non-blocking inline warning on its own row (a renderer decoration,
+never PTY input or buffer text, never over the command text), and show an
+agent-changed file count on the header badge. Both open the terminal's 변경 파일
+view in its work panel, built from the conversation's change UI. A terminal
+pane has one header row, like a conversation pane: a compact host chip, whose
+tooltip carries the environment note, the shell-reported directory, block
+history and attach-last, the badge, and the same work-panel toggle. Its chat and
+changes open in the same docked work panel a conversation pane uses, docked from
+the conversation pane's breakpoint up and overlaid below it. The side-work-panel
+host terminal has the same single row (its chip also says the agent has no
+access) and the same advisory changed-file UI while retaining no agent access.
+Successful write provenance uses canonical physical paths and the identity the
+writer's own descriptor reported, which alone the diff may read; it is never
+permission authority. An attended host terminal takes keyboard focus when it opens
+or is activated only if nothing holds focus or focus is on this terminal's own
+selected tab, so a composer, an approval card, a tab elsewhere or the terminal's
+own controls keep focus. Dynamic indirection and subprocess writes without concrete path evidence
+remain explicitly outside complete coverage. The
+[changed-file review policy](permission-policy-design.md#agent-changed-file-review)
+defines the evidence lifetime and the separate isolated loader write-deny floor.
 Side-work-panel host terminals have no agent read/write access. Host command
 approval and takeover are pending; this delivery enables no agent host typing.
 

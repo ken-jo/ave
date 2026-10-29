@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 /** Retint the existing terminal from root theme values; recreating it would discard screen and scrollback. */
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render as renderUnwrapped, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { TerminalSessionInfo, TerminalSpawnRequest, TerminalDataEvent, TerminalExitEvent } from "../../../../shared/terminal-session.js";
 import { PtyTerminalView } from "../PtyTerminalView.js";
+import { SidePanelTerminal } from "../SidePanelTerminal.js";
+import { forgetTerminalFileReview, requestTerminalFileReview } from "../../preview/terminal-file-review.js";
+import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
+import { useState, type ReactElement } from "react";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
 import { terminalCwd } from "../../preview/main-layout-restore.js";
@@ -13,14 +18,22 @@ import { surfaceMountLocation } from "../../preview/surface-mounts.js";
 import { ThemeProvider } from "../../theme/ThemeProvider.js";
 import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
+/** The app renders every terminal under its root TooltipProvider; the terminal's header chip needs one. */
+const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: TooltipProvider });
+
+interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
   options: { theme?: unknown };
+  commandRow: string;
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
   written: string[];
+  cursorLine: number;
+  focusCount: number;
+  markers: { offset: number; marker: FakeMarker }[];
+  decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[];
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -41,8 +54,35 @@ vi.mock("@xterm/xterm", () => ({
       this.options = { ...options };
       terminals.push(this);
     }
+    cursorLine = 4;
+    focusCount = 0;
+    focus() { this.focusCount++; }
+    host: HTMLElement | null = null;
+    markers: { offset: number; marker: FakeMarker }[] = [];
+    decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[] = [];
+    /** The text on the command row, as the shell echoed it. */
+    commandRow = "~/demo ❯ make build";
+    buffer = { active: { getLine: (_line: number) => {
+      const text = this.commandRow;
+      return { length: this.cols, translateToString: () => text,
+        getCell: (x: number) => ({ getChars: () => text[x] ?? "", getWidth: () => 1 }) };
+    } } };
+    registerMarker(offset = 0): FakeMarker {
+      const marker = { line: this.cursorLine + offset, isDisposed: false, onDispose: () => ({ dispose() {} }), dispose() {} };
+      this.markers.push({ offset, marker });
+      return marker;
+    }
+    registerDecoration(options: { marker: FakeMarker; x?: number; width?: number; height?: number }) {
+      // xterm draws decorations in its own layer inside the screen, never as rows of the buffer.
+      const element = document.createElement("div");
+      element.className = "xterm-decoration";
+      this.host?.appendChild(element);
+      this.decorations.push({ options, element });
+      return { element, marker: options.marker, onRender: (listener: (element: HTMLElement) => void) => { listener(element); return { dispose() {} }; },
+        onDispose: () => ({ dispose() {} }), dispose: () => element.remove() };
+    }
     loadAddon() {}
-    open() {}
+    open(host: HTMLElement) { this.host = host; }
     onData(handler: (data: string) => void) {
       this.dataHandler = handler;
       return { dispose: () => { this.dataHandler = null; } };
@@ -64,12 +104,13 @@ afterEach(() => {
 
 function terminalApi() {
   return {
-    spawn: vi.fn(async (payload: TerminalSpawnRequest) => ({ ok: true as const, tabId: payload.tabId, replayed: false, session: { ...terminalSessionFixture(payload.tabId, payload.lane), initialCwd: payload.cwd ?? "/workspace" } })),
+    spawn: vi.fn(async (payload: TerminalSpawnRequest) => ({ ok: true as const, tabId: payload.tabId, replayed: false, session: { ...terminalSessionFixture(payload.tabId, payload.lane), initialCwd: payload.cwd ?? "/workspace" }, blockMarkerToken: "view-token" })),
     input: vi.fn(async () => ({ ok: true as const })),
     resize: vi.fn(async () => ({ ok: true as const })),
     kill: vi.fn(async () => ({ ok: true as const })),
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
+    listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
     listBlocks: vi.fn(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: session.shellIntegration, blocks: [] as unknown[] })),
     getBlock: vi.fn(async (_session: TerminalSessionInfo, _id: number) => ({ ok: false as const, error: "block-not-found" })),
   };
@@ -242,8 +283,22 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const terminal = terminalApi();
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:11" tabLabel="Terminal 11" initialCwd="/repo/app" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", cwd: "/repo/app" })));
-    expect(await screen.findByText(t("ptyTerminal.initialCwd", { cwd: "/repo/app" }))).toBeTruthy();
+    // The launch directory is the chip's tooltip; the row's directory waits for the shell to report one.
+    await waitFor(() => expect(screen.getByTestId("terminal-pane-host-chip").getAttribute("title")).toContain(t("ptyTerminal.initialCwd", { cwd: "/repo/app" })));
+    expect(screen.getByTestId("terminal-pane-cwd").textContent).toBe("");
     expect(terminalCwd("terminal:11")).toBeNull();
+  });
+
+  it("shows the directory the shell reported as its last segment in the header row, the full path on hover", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listBlocks.mockImplementation(async (session: TerminalSessionInfo) => ({ ok: true as const,
+      session: { ...session, currentCwd: "/repo/app/packages/web", cwdSource: "shell-marker" as const }, integrated: true, blocks: [] }));
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:16" tabLabel="Terminal 16" initialCwd="/repo/app" />);
+    const cwd = screen.getByTestId("terminal-pane-cwd");
+    await waitFor(() => expect(cwd.textContent).toBe("web"));
+    expect(cwd.getAttribute("title")).toBe("/repo/app/packages/web");
+    expect(screen.getByTestId("terminal-pane-host-chip").getAttribute("title")).not.toContain("/repo/app");
   });
 
   it("refuses an invalid explicitly chosen directory without silently changing it", async () => {
@@ -274,7 +329,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
       data({ ...manual, terminalSessionId: "old-manual", chunk: "OLD" });
       data({ ...terminalSessionFixture(tabId, "agent"), chunk: "AGENT" });
       data({ ...manual, chunk: "MANUAL" });
-      return { ok: true, tabId, replayed: true, session: manual };
+      return { ok: true, tabId, replayed: true, session: manual, blockMarkerToken: "view-token" };
     });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 14" />);
     await waitFor(() => expect(terminals[0]!.written.join("")).toBe("MANUAL"));
@@ -288,7 +343,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
     const session = { ...terminalSessionFixture("terminal:16", "manual"), shellIntegration: false, integrationUnavailableReason: "unsupported-shell" as const };
-    terminal.spawn.mockResolvedValue({ ok: true, tabId: session.tabId, replayed: false, session });
+    terminal.spawn.mockResolvedValue({ ok: true, tabId: session.tabId, replayed: false, session, blockMarkerToken: "view-token" });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={session.tabId} tabLabel="Terminal 16" />);
     expect(await screen.findByTestId("terminal-integration-unavailable")).toHaveTextContent(t("ptyTerminal.integrationUnsupportedShell"));
     act(() => terminals[0]!.dataHandler!("user-command\r"));
@@ -303,10 +358,238 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const view = render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 15" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual" }));
-    expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadge"));
+    // One row of chrome, as a pane header: the chip carries the identity, its tooltip the explanation.
+    const header = screen.getByTestId("terminal-pane-header");
+    const chip = within(header).getByTestId("terminal-pane-host-chip");
+    expect(chip.textContent).toBe(t("ptyTerminal.hostChipAgentless"));
+    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.hostBadge"));
+    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.manualEnvironment"));
+    await waitFor(() => expect(within(header).getByTestId("terminal-blocks-toggle")).toBeTruthy());
+    expect(screen.queryByTestId("terminal-host-identity")).toBeNull();
+    expect(screen.getByTestId("chat-side-panel-pty-terminal").textContent).not.toContain(t("ptyTerminal.manualEnvironment"));
     expect(screen.queryAllByRole("button", { pressed: true })).toHaveLength(0);
     expect(terminals).toHaveLength(1);
     view.unmount();
     expect(terminal.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("PtyTerminalView changed-file annotation", () => {
+  it("anchors the warning to its command's row as an xterm decoration, with no overlay and no rows taken", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: {
+      cwd: "/workspace",
+      latestBlockId: 1,
+      files: [{ path: "/workspace/Makefile", sessionIds: ["conversation"], lastUsed: { command: "make build", when: 1_000 } }],
+      warnings: [{ blockId: 1, command: "make build", files: ["/workspace/Makefile"] }],
+    } } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:banner" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    const term = terminals[0]!;
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    await act(async () => {});
+    // Main forwards an authenticated C with its block id and this incarnation's view token while the cursor sits just
+    // below the entered command. Copies without the token, as a program could print, are ignored.
+    act(() => {
+      term.oscHandlers.get(133)!("C;ave-block=1;ave-view=forged");
+      term.oscHandlers.get(133)!("C;ave-block=1");
+      term.oscHandlers.get(133)!("C;ave-block=1;ave-view=view-token");
+    });
+    expect(term.markers).toEqual([{ offset: -1, marker: expect.objectContaining({ line: 3 }) }]);
+    const annotation = await screen.findByTestId("terminal-file-warning");
+    expect(annotation).toHaveTextContent("# ⚠ 에이전트가 수정한 파일 사용: Makefile");
+    expect(term.decorations).toHaveLength(1);
+    const [decoration] = term.decorations;
+    expect(decoration!.options.marker).toBe(term.markers[0]!.marker);
+    expect(decoration!.options).toMatchObject({ height: 1, x: "~/demo ❯ make build".length + 2, width: 80 - ("~/demo ❯ make build".length + 2) });
+    expect(decoration!.element).toContainElement(annotation);
+    // Nothing reaches the shell or the buffer: no PTY input and no xterm writes for the warning.
+    expect(terminal.input).not.toHaveBeenCalled();
+    expect(term.written.join("")).not.toContain("에이전트");
+    // No overlay strip: the xterm host remains the output area's only in-flow child.
+    const outputArea = screen.getByTestId("terminal-output-area");
+    const xtermHost = screen.getByTestId("terminal-xterm-host");
+    expect([...outputArea.children].filter((child) => !child.classList.contains("absolute"))).toEqual([xtermHost]);
+    expect(outputArea.querySelectorAll(".absolute")).toHaveLength(0);
+    expect(xtermHost).toHaveClass("flex-1");
+  });
+
+  it("never draws a warning over a long command: it shrinks to the free columns after it", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: {
+      cwd: "/workspace", latestBlockId: 1,
+      files: [{ path: "/workspace/Makefile", sessionIds: ["conversation"], lastUsed: { command: "make build", when: 1_000 } }],
+      warnings: [{ blockId: 1, command: "make build", files: ["/workspace/Makefile"] }],
+    } } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:long" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    const term = terminals[0]!;
+    term.commandRow = `~/demo ❯ make build ${"VERBOSE=1 ".repeat(4)}`.trimEnd();
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    await act(async () => {});
+    act(() => { term.oscHandlers.get(133)!("C;ave-block=1;ave-view=view-token"); });
+    const annotation = await screen.findByTestId("terminal-file-warning");
+    const start = term.commandRow.length + 2;
+    expect(term.decorations[0]!.options).toMatchObject({ x: start, width: 80 - start });
+    expect(annotation).toHaveAttribute("data-form", "compact");
+    expect(annotation.textContent).toBe("⚠[변경 보기]");
+  });
+
+  it("ignores a C marker without a main-assigned, token-proven block id", async () => {
+    const { api } = makeMockAveApi();
+    render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:plain" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    await act(async () => {});
+    act(() => {
+      for (const data of ["C", "C;ave-block=x;ave-view=view-token", "C;ave-block=3", "C;ave-block=3;ave-view=other"]) terminals[0]!.oscHandlers.get(133)!(data);
+    });
+    expect(terminals[0]!.markers).toEqual([]);
+  });
+});
+
+describe("PtyTerminalView keyboard focus", () => {
+  it("focuses the terminal when it opens attended, so keystrokes reach the shell without a click", async () => {
+    const { api } = makeMockAveApi();
+    render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:focus" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    expect(terminals[0]!.focusCount).toBe(1);
+  });
+
+  it("focuses when its pane becomes attended, and not while unattended", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:pane" tabLabel="Terminal 1" attended={false} />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    expect(terminals[0]!.focusCount).toBe(0);
+    view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:pane" tabLabel="Terminal 1" attended />);
+    expect(terminals[0]!.focusCount).toBe(1);
+  });
+
+  it("never takes focus from the chat composer the user is typing in", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const composer = document.createElement("textarea");
+    document.body.appendChild(composer);
+    composer.focus();
+    try {
+      const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(0);
+      expect(document.activeElement).toBe(composer);
+    } finally { composer.remove(); }
+  });
+
+  it("leaves focus on an approval card's button on open and on activation", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const card = document.createElement("div");
+    card.setAttribute("data-approval-scope", "");
+    const allow = document.createElement("button");
+    allow.textContent = "Allow once";
+    card.appendChild(allow);
+    document.body.appendChild(card);
+    allow.focus();
+    try {
+      const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      await act(async () => {});
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(0);
+      expect(document.activeElement).toBe(allow);
+    } finally { card.remove(); }
+  });
+
+  it("takes focus only from this terminal's own selected tab, and keeps any other focused control", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    // A tab strip entry as the side panel renders it: the tab button inside its tab's `data-tab-id` wrapper.
+    const tabFor = (tabId: string) => {
+      const wrapper = document.createElement("div");
+      wrapper.setAttribute("data-tab-id", tabId);
+      const button = document.createElement("button");
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", "true");
+      wrapper.appendChild(button);
+      document.body.appendChild(wrapper);
+      return { button, remove: () => wrapper.remove() };
+    };
+    const own = tabFor("terminal:tab");
+    const other = tabFor("terminal:other");
+    const cycle = (view: ReturnType<typeof render>) => {
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+    };
+    try {
+      own.button.focus();
+      const view = render(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(1);
+      // A selected tab in another area is not an activation of this terminal.
+      other.button.focus();
+      cycle(view);
+      expect(terminals[0]!.focusCount).toBe(1);
+      expect(document.activeElement).toBe(other.button);
+      // Nor is a tab that is no longer selected.
+      own.button.setAttribute("aria-selected", "false");
+      own.button.focus();
+      cycle(view);
+      expect(terminals[0]!.focusCount).toBe(1);
+      // A control inside the terminal keeps focus too.
+      const chip = view.getByTestId("terminal-pane-host-chip");
+      chip.focus();
+      cycle(view);
+      expect(terminals[0]!.focusCount).toBe(1);
+      expect(document.activeElement).toBe(chip);
+    } finally { own.remove(); other.remove(); }
+  });
+
+  it("writes nothing to the PTY when it opens or is activated", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    await act(async () => {});
+    view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" attended={false} />);
+    view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" attended />);
+    await act(async () => {});
+    expect(terminals[0]!.focusCount).toBe(2);
+    expect(terminal.input).not.toHaveBeenCalled();
+  });
+});
+
+describe("SidePanelTerminal", () => {
+  function Harness({ ave }: { ave: never }) {
+    const [showChanges, setShowChanges] = useState(false);
+    return <TooltipProvider><SidePanelTerminal api={ave} tabId="terminal:side" tabLabel="Terminal 1" visible showChanges={showChanges} onShowChanges={setShowChanges} /></TooltipProvider>;
+  }
+
+  it("shows the side-panel terminal's 변경 파일 view in the work panel on [view changes], and returns to the same shell", async () => {
+    const previousAve = window.ave;
+    (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
+    try {
+      const { api } = makeMockAveApi();
+      const terminal = terminalApi();
+      render(<Harness ave={{ ...api, terminal } as never} />);
+      await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("terminal-changes-view")).toBeNull();
+      act(() => { requestTerminalFileReview("terminal:side", "/workspace/Makefile"); });
+      expect(await screen.findByTestId("terminal-changes-view")).toBeTruthy();
+      expect(screen.queryByTestId("terminal-xterm-host")).toBeNull();
+      // The PTY outlives the view switch, as it outlives a tab switch.
+      expect(terminal.kill).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId("terminal-changes-back"));
+      expect(await screen.findByTestId("terminal-xterm-host")).toBeTruthy();
+      expect(terminal.kill).not.toHaveBeenCalled();
+    } finally {
+      (window as unknown as { ave: unknown }).ave = previousAve;
+      forgetTerminalFileReview("terminal:side");
+    }
   });
 });

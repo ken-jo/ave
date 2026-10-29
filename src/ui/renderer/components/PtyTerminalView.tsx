@@ -1,10 +1,14 @@
 /** One host shell per tab. Unmount detaches the view; tab close owns the PTY. */
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
+import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
+import { TerminalPaneHeader } from "./TerminalPaneHeader.js";
+import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
@@ -54,6 +58,11 @@ interface PtyTerminalViewProps {
   /** Whether the user is looking at this terminal when it is on screen: a side panel's front tab is (default); a main pane is
    * while it has focus, so a terminal in the other half of a split still rings. */
   attended?: boolean;
+  /** A pane's header, where the terminal's identity and block controls go as one row instead of rows over the output.
+   * Absent: they are drawn above the output (a side panel's tab). Null: the pane header has not committed yet. */
+  headerSlot?: HTMLElement | null;
+  /** The directory the shell last reported (never the launch directory), for a header that shows it. */
+  onCwd?: (cwd: string) => void;
 }
 
 /**
@@ -85,7 +94,20 @@ export function PtyTerminalView({
   return <AttachedPtyTerminal key={props.tabId} {...props} />;
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true }: PtyTerminalViewProps) {
+/**
+ * Keyboard focus follows the terminal the user is attending to, so typing reaches the shell (and xterm shows its
+ * blinking focused cursor) without a click. It moves only when nothing holds focus, or when focus is on the selected
+ * tab of this terminal, the user's explicit activation of it. Any other focused element keeps it: the chat composer
+ * the user is typing in, an approval card's buttons, a menu, a tab in another area, this terminal's own controls.
+ */
+function focusAttendedTerminal(term: Terminal, tabId: string): void {
+  const active = document.activeElement;
+  const activatedHere = active instanceof HTMLElement && active.getAttribute("role") === "tab" && active.getAttribute("aria-selected") === "true"
+    && active.closest("[data-tab-id]")?.getAttribute("data-tab-id") === tabId;
+  if (active === null || active === document.body || activatedHere) term.focus();
+}
+
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd }: PtyTerminalViewProps) {
   const { t } = useTranslation();
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -98,6 +120,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const hasBoxRef = useRef(false);
   const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);
+  const [anchors, setAnchors] = useState<XtermBlockAnchors | null>(null);
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
   const appliedRevision = useOptionalTheme()?.appliedRevision ?? 0;
 
@@ -110,6 +133,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
 
     let disposed = false;
     let liveRef: TerminalSessionRef | null = null;
+    let blockMarkerToken: string | null = null;
     setSession(null);
     const term = new Terminal({
       cursorBlink: true,
@@ -124,6 +148,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    const blockAnchors = new XtermBlockAnchors(term);
+    setAnchors(blockAnchors);
 
     const safeFit = (): { cols: number; rows: number } => {
       try {
@@ -143,6 +169,10 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     // default handling.
     const markerSub = term.parser.registerOscHandler(133, (data) => {
       const marker = data.charAt(0);
+      if (marker === "C") {
+        const blockId = viewBlockId(data, blockMarkerToken);
+        if (blockId !== null) blockAnchors.noteCommandStart(blockId);
+      }
       if (marker === "A" || marker === "C" || marker === "D") bumpBlocks();
       return false;
     });
@@ -206,6 +236,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
         return;
       }
       liveRef = result.session;
+      blockMarkerToken = result.blockMarkerToken;
       setSession(result.session);
       for (const event of pending) if (sameTerminalSession(result.session, event)) renderEvent(event);
       pending = [];
@@ -242,6 +273,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       offData();
       offExit();
       termRef.current = null;
+      blockAnchors.dispose();
+      setAnchors(null);
       term.dispose();
       // NOTE: PTY is intentionally NOT killed here — it survives unmount and is torn down on tab close (closeWorkspaceTab →
       // terminal.kill).
@@ -253,6 +286,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     if (termRef.current) setTerminalAttended(tabId, attended && hasBoxRef.current);
   }, [tabId, attended]);
 
+  // On open (each new xterm publishes its anchors) and whenever the tab or pane becomes attended.
+  useEffect(() => {
+    if (attended && anchors && termRef.current) focusAttendedTerminal(termRef.current, tabId);
+  }, [attended, anchors, tabId]);
+
   // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,
   // scrollback and cursor are kept.
   useEffect(() => {
@@ -262,35 +300,44 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     term.options.theme = terminalTheme(host);
   }, [appliedRevision]);
 
+  // Only a directory the shell reported is the current one; the launch directory is not evidence of it.
+  const reportedCwd = session?.currentCwd ?? null;
+  useEffect(() => {
+    if (reportedCwd) onCwd?.(reportedCwd);
+  }, [reportedCwd, onCwd]);
+  const inlineChrome = headerSlot === undefined;
+  const blocks = api.terminal && session ? (
+    <TerminalBlocksBar
+      terminalApi={api.terminal}
+      key={`${session.lane}/${session.terminalSessionId}`}
+      session={session}
+      tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
+      revision={blockRevision}
+      {...(onAttachText ? { onAttachText } : {})}
+      onSession={setSession}
+    />
+  ) : null;
+
   return (
     <div
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
-        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t("ptyTerminal.hostBadge")}</span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
-          {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
-        </span>
-      </div>
-      <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-        {t("ptyTerminal.manualEnvironment")}
-      </p>
+      {inlineChrome || headerSlot ? (() => {
+        const cwdNote = session && !session.currentCwd ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : null;
+        const header = <TerminalPaneHeader blocks={blocks} cwdNote={cwdNote}
+          {...(inlineChrome ? { inline: { cwd: session?.currentCwd ?? null } } : {})} />;
+        return inlineChrome ? header : createPortal(header, headerSlot!);
+      })() : null}
       {session?.integrationUnavailableReason ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-integration-unavailable">
         {t(INTEGRATION_UNAVAILABLE_KEYS[session.integrationUnavailableReason])}
       </p> : null}
-      {api.terminal && session ? (
-        <TerminalBlocksBar
-          terminalApi={api.terminal}
-          key={`${session.lane}/${session.terminalSessionId}`}
-          session={session}
-          tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
-          revision={blockRevision}
-          {...(onAttachText ? { onAttachText } : {})}
-          onSession={setSession}
-        />
-      ) : null}
-      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />
+      {/* Warnings are xterm decorations on their command's row; only the review side panel overlays this area, so the
+          xterm host stays its only in-flow child and no rows are taken. */}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
+        <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
+        {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={anchors} /> : null}
+      </div>
     </div>
   );
 }

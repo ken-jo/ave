@@ -66,7 +66,7 @@ test("keeps a requested blank tab mounted through its first navigation", async (
     // Opening the host terminal retains the browser's actual guest instance.
     await ctx.page.getByTestId("chat-side-panel-add-tab").click();
     await ctx.page.getByTestId("chat-side-panel-launcher-menu-terminal").click();
-    await expect(ctx.page.getByTestId("terminal-host-badge")).toHaveText(/^(My terminal \(host\) · No agent access|내 터미널 \(호스트\) · 에이전트 접근 없음)$/u);
+    await expect(ctx.page.getByTestId("chat-side-panel-pty-terminal").getByTestId("terminal-pane-host-chip")).toHaveText(/^(Host · no agent access|호스트 · 에이전트 접근 없음)$/u);
     await expect(ctx.page.getByTestId("chat-side-panel-pty-terminal").locator(".xterm")).toBeVisible();
     const terminalTabId = await ctx.page.getByTestId("chat-side-panel-tab-terminal").evaluate((element) => element.closest("[data-tab-id]")?.getAttribute("data-tab-id"));
     if (!terminalTabId) throw new Error("Visible terminal identity unavailable");

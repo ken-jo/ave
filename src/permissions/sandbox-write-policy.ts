@@ -17,7 +17,12 @@ import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 export function isSandboxGitMetadataEntry(entry: string): boolean {
   return entry === ".git" || entry.startsWith(".git/");
 }
-const SANDBOX_PROTECTED_ROOT_ENTRIES = PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry));
+const SANDBOX_LOADER_ENTRIES = [
+  ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky",
+] as const;
+const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
+  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry)), ...SANDBOX_LOADER_ENTRIES,
+])];
 
 // Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
@@ -66,6 +71,7 @@ export interface SandboxGitControlSnapshot {
   readonly storeMissingAncestors: ReadonlyMap<string, string>;
 }
 interface GitControlDiscovery {
+  loaderPaths?: Set<string>;
   isPathExcluded?: (path: string, includesChildren?: boolean) => boolean;
   roots: readonly string[];
   cleanup: boolean;
@@ -217,6 +223,136 @@ function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | und
   } finally { closeSync(fd); }
 }
 
+
+// Read only the path-bearing configuration subset; unknown settings never execute.
+// Conditional includes are over-approximated, so a later condition change cannot expose hooks.
+function decodeGitConfigPath(value: string): string {
+  let result = "";
+  let quoted = false;
+  let pendingSpace = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (!quoted && (character === "#" || character === ";")) break;
+    if (character === '"') { result += pendingSpace; pendingSpace = ""; quoted = !quoted; continue; }
+    if (character === "\\") {
+      const escaped = value[++index];
+      const escapes: Record<string, string> = { n: "\n", t: "\t", b: "\b", "\\": "\\", '"': '"' };
+      if (escaped === undefined || escapes[escaped] === undefined) throw new Error("Invalid sandbox Git configuration path escape");
+      result += pendingSpace + escapes[escaped]; pendingSpace = "";
+      continue;
+    }
+    if (!quoted && /[ \t]/u.test(character)) { if (result) pendingSpace += character; continue; }
+    result += pendingSpace + character; pendingSpace = "";
+  }
+  if (quoted || !result || /[\0\r\n]/u.test(result) || result.includes("%(")) throw new Error("Unsupported sandbox Git configuration path");
+  return result;
+}
+
+function expandGitConfigurationPath(path: string): string {
+  if (path === "~" || path.startsWith("~/")) {
+    const home = process.env.HOME ?? process.env.USERPROFILE;
+    if (!home) throw new Error("Sandbox Git configuration home is unavailable");
+    return join(home, path.slice(2));
+  }
+  if (path.startsWith("~")) throw new Error("Named-home sandbox Git configuration paths are unsupported");
+  return path;
+}
+
+function addConfiguredGitHookPaths(
+  configuration: string, workingDirectories: readonly string[], paths: Set<string>, routingPins: Set<string>,
+  budget: GitDiscoveryBudget, visited = new Set<string>(), depth = 0, protectMissing = true,
+): void {
+  if (depth > 10) throw new Error("Sandbox Git configuration include depth exceeded");
+  const configPath = resolvePolicyDenyPath(configuration);
+  if (visited.has(configPath)) return;
+  visited.add(configPath);
+  const content = readGitMetadata(configPath, budget);
+  if (content !== undefined || protectMissing) {
+    paths.add(configuration);
+    paths.add(configPath);
+    addProtectedRoutingPins(configuration, routingPins);
+  }
+  if (content === undefined) return;
+  let section = "";
+  const logicalLines: string[] = [];
+  let current = "";
+  for (const line of content.split(/\r?\n/u)) {
+    current += line;
+    const trailing = /\\+$/u.exec(current)?.[0].length ?? 0;
+    if (trailing % 2 === 1) { current = current.slice(0, -1); continue; }
+    logicalLines.push(current); current = "";
+  }
+  if (current) throw new Error("Invalid sandbox Git configuration continuation");
+  for (const line of logicalLines) {
+    const header = /^\s*\[([^\]]+)\]/u.exec(line);
+    if (header) section = header[1]!.trim().toLowerCase();
+    const body = header ? line.slice(header[0].length) : line;
+    const setting = /^\s*([a-z][a-z0-9-]*)\s*=\s*(.*)$/iu.exec(body);
+    if (!setting) continue;
+    const key = setting[1]!.toLowerCase();
+    if (section === "core" && key === "hookspath") {
+      const target = expandGitConfigurationPath(decodeGitConfigPath(setting[2]!));
+      // A POSIX null device cannot contain hooks; retaining its ordinary write role is necessary for shell redirection.
+      if (process.platform !== "win32" && target === "/dev/null") continue;
+      for (const cwd of workingDirectories) {
+        const resolved = resolve(target.startsWith("/") || isAbsolute(target) ? target : join(cwd, target));
+        paths.add(resolved);
+        paths.add(resolvePolicyDenyPath(resolved));
+        addProtectedRoutingPins(resolved, routingPins);
+      }
+    } else if ((section === "include" || /^includeif\s+"/u.test(section)) && key === "path") {
+      const included = expandGitConfigurationPath(decodeGitConfigPath(setting[2]!));
+      addConfiguredGitHookPaths(resolve(dirname(configPath), included), workingDirectories, paths, routingPins, budget, visited, depth + 1);
+    }
+  }
+}
+
+function addInheritedGitConfigHookPaths(workingDirectories: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  const configs = new Set([
+    ...(process.env.GIT_CONFIG_NOSYSTEM === "1" ? [] : [process.env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig"]),
+    ...(process.platform === "darwin" && process.env.GIT_CONFIG_SYSTEM === undefined ? ["/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"] : []),
+    ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "git", "config")] : []),
+  ]);
+  for (const config of configs) addConfiguredGitHookPaths(config, workingDirectories, paths, routingPins, budget);
+}
+
+function addInheritedGitHookPaths(roots: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {
+  addInheritedGitConfigHookPaths(roots, paths, routingPins, budget);
+  for (const root of roots) {
+    let current = root;
+    for (let depth = 0; depth < MAX_REPOSITORY_ANCESTORS; depth += 1) {
+      const marker = join(current, ".git");
+      let identity;
+      try { identity = lstatSync(marker); }
+      catch (error) { if (!isMissingPath(error)) throw error; }
+      if (identity?.isSymbolicLink()) throw new Error("Linked sandbox Git markers are unsupported");
+      if (identity?.isDirectory() || identity?.isFile()) {
+        let gitDir = marker;
+        if (identity.isFile()) {
+          const pointer = readGitMetadata(marker, budget) ?? "";
+          const match = /^gitdir: ([^\r\n\0]+)$/u.exec(pointer);
+          if (match === null) break;
+          gitDir = resolvePolicyPath(match[1]!, current);
+        }
+        const contexts = [current, gitDir];
+        for (const name of ["config", "config.worktree"]) addConfiguredGitHookPaths(join(gitDir, name), contexts, paths, routingPins, budget, new Set(), 0, false);
+        const commonPath = readGitMetadata(join(gitDir, "commondir"), budget);
+        if (commonPath !== undefined) {
+          if (!commonPath || /[\r\n\0]/u.test(commonPath)) throw new Error("Invalid sandbox Git common directory");
+          const commonDir = resolvePolicyPath(commonPath, gitDir);
+          addConfiguredGitHookPaths(join(commonDir, "config"), contexts, paths, routingPins, budget, new Set(), 0, false);
+        }
+        break;
+      }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+      if (depth === MAX_REPOSITORY_ANCESTORS - 1) throw new Error("Sandbox Git hook ancestry exceeds its depth limit");
+    }
+  }
+}
+
 function hasGitHead(directory: string): boolean {
   try { return lstatSync(join(directory, "HEAD")).isFile(); }
   catch (error) { if (isMissingPath(error)) return false; throw error; }
@@ -307,6 +443,10 @@ function addGitDirectoryControls(
         continue;
       }
       throw new Error("Sandbox Git metadata store identity changed during invocation");
+    }
+    if (!discovery?.previous && !discovery?.cleanup) {
+      addInheritedGitConfigHookPaths([directory, dirname(directory)], discovery?.loaderPaths ?? paths, routingPins, budget);
+      for (const name of ["config", "config.worktree"]) addConfiguredGitHookPaths(join(directory, name), [directory, dirname(directory)], discovery?.loaderPaths ?? paths, routingPins, budget, new Set(), 0, false);
     }
     for (const entry of gitControlEntries(discovery)) paths.add(join(directory, entry));
     if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
@@ -518,6 +658,8 @@ function addGitControlPaths(
   } else if (!entry.isDirectory()) {
     throw new Error("Invalid sandbox Git marker");
   }
+  // Inherited relative hook paths are relative to each discovered repository, not its covering write grant.
+  addInheritedGitConfigHookPaths([dirname(marker), gitDir], discovery?.loaderPaths ?? paths, routingPins, budget);
   discovery?.markerStores.set(marker, [gitDir]);
   const relatedStores = discovery ? new Set<string>() : undefined;
   if (!addGitDirectoryControls(gitDir, paths, routingPins, budget, discovery, relatedStores)) return false;
@@ -669,10 +811,11 @@ export function buildMandatorySandboxWritePolicy(
   const budget = { entries: MAX_GIT_SCAN_ENTRIES, metadataBytes: MAX_GIT_METADATA_TOTAL_BYTES };
   const routingPins = new Set<string>();
   const roots = [...new Set(rootSnapshots.map(root => root.physical))];
+  addInheritedGitHookPaths(roots, paths, routingPins, budget);
   const rootIdentities = new Map(roots.map(root => [root, gitEntryIdentity(root)] as const));
   const bareRoots = new Set(classifyNonRepositoryWriteRoots(roots, budget));
   const gitDiscovery: GitControlDiscovery | undefined = process.platform === "linux" ? {
-    roots, cleanup: false, quarantineRoot: resolvePolicyPath(sandboxQuarantineRoot(), process.cwd()),
+    roots, loaderPaths: paths, cleanup: false, quarantineRoot: resolvePolicyPath(sandboxQuarantineRoot(), process.cwd()),
     markers: new Map(), stores: new Map(), markerStores: new Map(), replacedMarkers: new Set(), directories: new Map(), directoryTargets: new Map(), directoryDepths: new Map(), storeMissingAncestors: new Map(), scannedStores: new Set(), bareEntries: new Map(),
   } : undefined;
   for (const root of bareRoots) {
