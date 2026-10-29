@@ -29,18 +29,22 @@ const SHELL_RULES: readonly OptionRule[] = [
   { flag: /^-[eux]+$/ }, { flag: /^--no(?:rc|profile)$/ }, { flag: /^-o$/, value: (name) => SHELL_SET_OPTIONS.has(name) },
 ];
 const PYTHON_RULES: readonly OptionRule[] = [{ flag: /^-[uB]+$/ }, { flag: /^-W$/, value: (action) => PYTHON_WARNING_ACTIONS.has(action) }];
-const INTERPRETER_RULES: Readonly<Record<string, readonly OptionRule[]>> = {
-  ".": [], source: [], sh: SHELL_RULES, bash: SHELL_RULES, zsh: SHELL_RULES,
-  node: [{ flag: /^--(?:no-warnings|no-deprecation|enable-source-maps)$/ }],
-  python: PYTHON_RULES, python3: PYTHON_RULES, ruby: [{ flag: /^-w$/ }], perl: [{ flag: /^-w$/ }],
-};
+// A Map, so a command word such as `constructor` or `__proto__` finds no inherited entry.
+const INTERPRETER_RULES: ReadonlyMap<string, readonly OptionRule[]> = new Map([
+  [".", []], ["source", []], ["sh", SHELL_RULES], ["bash", SHELL_RULES], ["zsh", SHELL_RULES],
+  ["node", [{ flag: /^--(?:no-warnings|no-deprecation|enable-source-maps)$/ }]],
+  ["python", PYTHON_RULES], ["python3", PYTHON_RULES], ["ruby", [{ flag: /^-w$/ }]], ["perl", [{ flag: /^-w$/ }]],
+]);
 const nonEmpty = (value: string) => value.length > 0 && !value.startsWith("-");
 const MAKE_RULES: readonly OptionRule[] = [
-  { flag: /^-j\d*$/ }, { flag: /^(?:-s|--silent|--no-print-directory)$/ },
+  // `-j` alone is unlimited; a count must be a positive integer (`make -j0` runs nothing).
+  { flag: /^-j(?:[1-9]\d*)?$/ }, { flag: /^(?:-s|--silent|--no-print-directory)$/ },
   { flag: /^-C$/, value: nonEmpty }, { flag: /^-f$/, value: nonEmpty },
 ];
 /** Options before a package runner's subcommand. */
 const PACKAGE_RUNNER_RULES: readonly OptionRule[] = [{ flag: /^(?:-s|--silent)$/ }];
+/** Flags a package runner reads anywhere in its arguments as "print and exit": with one, no script runs. */
+const PACKAGE_RUNNER_NON_EXECUTING = new Set(["--version", "-v", "--help", "-h"]);
 const NPX_RULES: readonly OptionRule[] = [{ flag: /^--no-install$/ }];
 
 /**
@@ -61,6 +65,7 @@ function provenOptions(rules: readonly OptionRule[], args: readonly string[]): {
       options.push([option, value]);
       index += 2;
     } else if (option === "-j" && /^\d+$/.test(args[index + 1] ?? "")) {
+      if (!/^[1-9]\d*$/.test(args[index + 1]!)) return undefined;
       options.push([option, args[index + 1]]);
       index += 2;
     } else {
@@ -339,7 +344,7 @@ async function command(source: string, cwd: string, evidence: ExecutionEvidence,
       if (bin && localBins) await script(bin, cwd, evidence, localBins);
       else if (bin) evidence.unresolved = true;
     }
-    const interpreter = INTERPRETER_RULES[verb];
+    const interpreter = INTERPRETER_RULES.get(verb);
     if (interpreter) {
       const proven = provenOptions(interpreter, args);
       if (!proven) { evidence.unresolved = true; continue; }
@@ -349,7 +354,7 @@ async function command(source: string, cwd: string, evidence: ExecutionEvidence,
       await makeTarget(cwd, args, evidence, localBins);
     } else if (["npm", "pnpm", "yarn", "bun"].includes(verb)) {
       const proven = provenOptions(PACKAGE_RUNNER_RULES, args);
-      if (!proven) { evidence.unresolved = true; continue; }
+      if (!proven || args.some(arg => PACKAGE_RUNNER_NON_EXECUTING.has(arg))) { evidence.unresolved = true; continue; }
       args.splice(0, proven.operand);
       const run = args[0] === "run" || args[0] === "run-script";
       const name = run ? args[1] : args[0];

@@ -1908,8 +1908,11 @@ and physical local-bin entry points (only where a package runner puts them on
 PATH) are matched conservatively. A runner matches only in a proven executing
 form: every option before the operand is on a short per-runner list, and an
 option that takes a value has one the list validates (a shell's `-o errexit`,
-`make -j N`, `-s`, `-C dir`, `-f file`, `--silent` before a package runner's
-subcommand, `npx --no-install`). Any other option or value, including dry runs,
+`make -j N` with a positive count, `-s`, `-C dir`, `-f file`, `--silent`
+before a package runner's subcommand, `npx --no-install`). A package runner
+given `--version`, `-v`, `--help` or `-h` anywhere in its arguments runs no
+script, and a command word is looked up only among the listed runners, never
+among object properties. Any other option or value, including dry runs,
 version or help output, syntax checks, preloads and variable assignments, is
 uncertain and never a positive match: precision wins over recall. The command
 continues without a confirmation dialog. Only a positive match to at least one

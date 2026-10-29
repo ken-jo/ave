@@ -278,7 +278,9 @@ describe("host execution provenance", () => {
     // Options outside the proven forms, or with a value the form does not validate, are uncertain.
     "bash -o noexec ./run.sh", "bash -o bogus ./run.sh", "bash -o ./run.sh", "zsh +o errexit ./run.sh", "bash -c ./run.sh",
     "node -r ./run.js --version", "node --require ./run.js ./run.js", "python3 -W bogus ./run.py", "python3 -m run",
-    "make FOO=1 build", "make -C ./run.sh", "make -f -n build", "make build -n", "npm --prefix . run build", "npm --if-present run build"])("never calls a command that runs nothing, or an unclassified option, a match: %s", async (command) => {
+    "make FOO=1 build", "make -C ./run.sh", "make -f -n build", "make build -n", "npm --prefix . run build", "npm --if-present run build",
+    "npm run build --version", "npm run build --help", "npm run build -h", "pnpm build -v", "yarn build --version", "bun run build -- --help",
+    "make -j0 build", "make -j 0 build", "make -j00 build"])("never calls a command that runs nothing, or an unclassified option, a match: %s", async (command) => {
     await changed("package.json", JSON.stringify({ scripts: { build: "node run.js" } }));
     await changed("Makefile", "build:\n\tnode run.js\n");
     await changed("run.sh");
@@ -302,7 +304,14 @@ describe("host execution provenance", () => {
     }
   });
 
-  it.each(["make -j4 build", "make -j 4 build", "make -s build", "make --no-print-directory build"])("still matches make options that run recipes: %s", async (command) => {
+  it.each(["constructor -x ./run.sh", "toString ./run.sh", "__proto__ ./run.sh", "hasOwnProperty ./run.sh"])("treats a command word named like an object property as an unknown command, without failing: %s", async (command) => {
+    await changed("run.sh");
+    expect((await evidence.snapshot(directory, [block(command)])).warnings).toEqual([]);
+    // Later snapshots still work.
+    expect((await evidence.snapshot(directory, [block("./run.sh", 2)])).warnings).toHaveLength(1);
+  });
+
+  it.each(["make -j4 build", "make -j 4 build", "make -j build", "make -j16 build", "make -s build", "make --no-print-directory build"])("still matches make options that run recipes: %s", async (command) => {
     const makefile = await changed("Makefile", "build:\n\t./run.sh\n");
     const script = await changed("run.sh");
     expect((await evidence.snapshot(directory, [block(command)])).warnings[0]?.files).toEqual([makefile, script]);
