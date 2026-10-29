@@ -57,6 +57,7 @@ class FakeBrowserWindow extends FakeEmitter {
   private _destroyed = false;
   private _minimized = false;
   public setMenu = vi.fn();
+  public setTitleBarOverlay = vi.fn();
   public isDestroyed = vi.fn(() => this._destroyed);
   public isMinimized = vi.fn(() => this._minimized);
   public restore = vi.fn(() => { this._minimized = false; });
@@ -84,6 +85,7 @@ vi.mock("electron", () => {
   }
   return {
     BrowserWindow: MockBrowserWindow,
+    nativeTheme: { shouldUseDarkColors: false, on: vi.fn(), off: vi.fn() },
     WebContentsView: class {
       webContents = new FakeWebContents();
       setBounds = vi.fn();
@@ -119,11 +121,6 @@ vi.mock("../window-chrome.js", () => ({ getCommonChromeOptions: vi.fn(() => ({})
 vi.mock("../../ipc/domains/window.js", () => ({ registerWindowEventListeners: vi.fn() }));
 vi.mock("../../ipc/window-control-registry.js", () => ({ markAsWindowControlOwned: vi.fn() }));
 vi.mock("../auth-window-registry.js", () => ({ markAsAuthOwned: vi.fn() }));
-vi.mock("../window-titlebar-shell.js", () => ({
-  buildTitlebarCss: vi.fn(() => ""),
-  buildTitlebarHtml: vi.fn(() => ""),
-  buildTitlebarButtonScript: vi.fn(() => ""),
-}));
 vi.mock("../app-icon.js", () => ({ resolveAppIconPath: vi.fn(() => undefined) }));
 vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
@@ -324,8 +321,13 @@ describe("host OAuth auth window", () => {
   function shellState(win: FakeBrowserWindow) {
     const html = decodeURIComponent(win.loadURL.mock.calls.at(-1)![0]);
     const listeners = new Map<string, (event: Record<string, unknown>) => void>();
-    const uri = { title: "" };
-    const parts = { "oauth-host": { textContent: "" }, "oauth-path": { textContent: "" }, "oauth-scheme": { textContent: "" } };
+    const uriListeners = new Map<string, (event: Record<string, unknown>) => void>();
+    const uri = { title: "", addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => uriListeners.set(name, callback) };
+    const parts = {
+      "oauth-subdomain-text": { textContent: "" }, "oauth-domain": { textContent: "" }, "oauth-port": { textContent: "" },
+      "oauth-path": { textContent: "" }, "oauth-scheme": { textContent: "" }, "oauth-status": { textContent: "" },
+      "oauth-host": { get textContent() { return parts["oauth-subdomain-text"].textContent + parts["oauth-domain"].textContent + parts["oauth-port"].textContent; } },
+    };
     const security = { title: "", innerHTML: "", setAttribute: vi.fn(), dataset: { security: "" } };
     const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
     const context = {
@@ -333,7 +335,7 @@ describe("host OAuth auth window", () => {
       document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security, ...parts })[id] },
     };
     runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], context);
-    return { uri, security, listeners, context, parts };
+    return { uri, security, listeners, context, parts, uriListeners };
   }
 
   describe.each(["oauth", "cookie"] as const)("shared %s window", lane => {
@@ -370,11 +372,16 @@ describe("host OAuth auth window", () => {
     it.each(["https://auth.example.test/", "http://127.0.0.1:8123/"])("renders an accessible security icon and preserves the host for %s", async base => {
       const attempt = start();
       try {
-        const { uri, security, listeners, parts } = shellState(constructed[0]);
+        const { uri, security, listeners, parts, uriListeners } = shellState(constructed[0]);
         const url = base + "long-path/".repeat(200);
         listeners.get("did-start-navigation")!({ url: base, isMainFrame: true });
         listeners.get("did-navigate")!({ url, isMainFrame: true });
         expect(uri.title).toBe(url);
+        const setData = vi.fn();
+        const preventDefault = vi.fn();
+        uriListeners.get("copy")!({ clipboardData: { setData }, preventDefault });
+        expect(setData).toHaveBeenCalledWith("text/plain", url);
+        expect(preventDefault).toHaveBeenCalled();
         expect(parts["oauth-host"].textContent).toBe(new URL(base).host);
         expect(parts["oauth-path"].textContent.length).toBeGreaterThan(1000);
         expect(security.innerHTML).toContain('<svg');
@@ -382,10 +389,33 @@ describe("host OAuth auth window", () => {
       } finally { await attempt.finish(); }
     });
 
+    it.each([
+      ["https://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:8443/path", "accounts.google.com.signin.oauth2.session-verify.", "attacker-example.io", ":8443"],
+      ["https://signin.accounts.example.co.uk:8443/path", "signin.accounts.", "example.co.uk", ":8443"],
+      ["https://signin.accounts.example.co.uk.:8443/path", "signin.accounts.", "example.co.uk.", ":8443"],
+      ["https://signin.tenant.github.io/path", "signin.", "tenant.github.io", ""],
+      ["http://[::1]:8123/path", "", "[::1]", ":8123"],
+      ["http://127.0.0.1:8123/path", "", "127.0.0.1", ":8123"],
+      ["about:blank", "", "", ""],
+    ])("separates the registrable identity and port for %s", async (url, subdomain, domain, port) => {
+      const attempt = start();
+      try {
+        const { uri, security, listeners, parts } = shellState(constructed[0]);
+        listeners.get("did-navigate")!({ url, isMainFrame: true });
+        expect(uri.title).toBe(url);
+        expect(parts["oauth-subdomain-text"].textContent).toBe(subdomain);
+        expect(parts["oauth-domain"].textContent).toBe(domain);
+        expect(parts["oauth-port"].textContent).toBe(port);
+        expect(parts["oauth-status"].textContent).toBe(security.title);
+        if (url === "about:blank") expect(parts["oauth-path"].textContent).toBe("about:blank");
+        if (url.startsWith("http:")) expect(security.innerHTML).toContain("m12 2 10 10-10 10L2 12Z");
+      } finally { await attempt.finish(); }
+    });
+
     it.each([-202, -105])("replaces the shell identity on a main-frame error-page commit (%s)", async errorCode => {
       const attempt = start();
       try {
-        const { uri, security, listeners } = shellState(constructed[0]);
+        const { uri, security, listeners, parts } = shellState(constructed[0]);
         listeners.get("did-navigate")!({ url: "https://identity.example.test/login", isMainFrame: true });
         const failedUrl = "https://failed.example.test/login";
         listeners.get("did-start-navigation")!({ url: failedUrl, isMainFrame: true });
@@ -394,6 +424,7 @@ describe("host OAuth auth window", () => {
         expect(security.dataset.security).toBe(errorCode === -202 ? "certificate-error" : "load-error");
         expect(security.title).toBe(t(errorCode === -202 ? "oauthWindow.certificateError" : "oauthWindow.loadError"));
         expect(security.setAttribute).toHaveBeenLastCalledWith("aria-label", security.title);
+        expect(parts["oauth-status"].textContent).toBe(security.title);
         expect(security.innerHTML).toContain(errorCode === -202 ? "<circle" : "m12 3 10 18H2Z");
         listeners.get("did-navigate-in-page")!({ url: failedUrl + "#details", isMainFrame: true });
         expect(security.dataset.security).not.toBe("https");
@@ -559,7 +590,7 @@ describe("host OAuth auth window", () => {
       try {
         const win = constructed[0];
         const html = decodeURIComponent(win.loadURL.mock.calls[0][0]);
-        expect(html).toContain('id="oauth-host" dir="ltr"');
+        expect(html).toContain('id="oauth-domain" dir="ltr"');
         expect(html).toContain('id="oauth-security"');
         expect(html).not.toContain("ave-oauth-system-browser:");
         const preferences = { preload: "unsafe.js", preloadURL: "file:///unsafe.js" };
@@ -618,7 +649,7 @@ describe("host OAuth auth window", () => {
       const location = "http://127.0.0.1:12345/callback?code=private";
       page.emit("did-navigate", {}, location);
       const html = decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0]);
-      expect(html).toContain('id="oauth-host" dir="ltr"');
+      expect(html).toContain('id="oauth-domain" dir="ltr"');
       expect(html).toContain(location);
       expect(html).not.toContain("<webview");
       page.emit("did-navigate", {}, "https://invalid.example.test/");

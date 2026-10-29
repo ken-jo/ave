@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { BrowserWindow, WebContentsView, type Session, type WebContents } from "electron";
-import { buildTitlebarCss } from "./window-titlebar-shell.js";
+import { BrowserWindow, WebContentsView, nativeTheme, type Session, type WebContents } from "electron";
+import { buildTitlebarCss, TITLEBAR_COLORS } from "./window-titlebar-shell.js";
 import { hardenRemoteWebPreferences } from "./remote-browser-preferences.js";
 import { markAsAuthOwned } from "./auth-window-registry.js";
 import { escapeHtml } from "../shared/escape-html.js";
@@ -25,14 +25,36 @@ function getErudaSource(): string | null {
 
 export const AUTH_TITLEBAR_HEIGHT = 36;
 
+type AuthWindowChromeOptions = Pick<Electron.BrowserWindowConstructorOptions,
+  "frame" | "minWidth" | "titleBarStyle" | "trafficLightPosition" | "titleBarOverlay">;
+
 /** Native controls share the trusted address row; neither shell needs a privileged preload. */
-export function authWindowChromeOptions(platform: NodeJS.Platform = process.platform): Electron.BrowserWindowConstructorOptions {
+export function authWindowChromeOptions(platform: NodeJS.Platform = process.platform, dark = nativeTheme.shouldUseDarkColors): AuthWindowChromeOptions {
+  const colors = TITLEBAR_COLORS[dark ? "dark" : "light"];
   return {
     frame: true,
     minWidth: 520,
     titleBarStyle: platform === "darwin" ? "hiddenInset" : "hidden",
-    ...(platform === "darwin" ? {} : { titleBarOverlay: { height: AUTH_TITLEBAR_HEIGHT } }),
+    ...(platform === "darwin" ? { trafficLightPosition: { x: 12, y: 11 } } : { titleBarOverlay: { height: AUTH_TITLEBAR_HEIGHT, color: colors.background, symbolColor: colors.foreground } }),
   };
+}
+
+/** Keep native overlay controls in step with the shell's system-theme media query. */
+export function wireAuthWindowTheme(window: BrowserWindow, platform: NodeJS.Platform = process.platform): void {
+  if (platform === "darwin") return;
+  const update = (): void => {
+    const colors = TITLEBAR_COLORS[nativeTheme.shouldUseDarkColors ? "dark" : "light"];
+    window.setTitleBarOverlay({ height: AUTH_TITLEBAR_HEIGHT, color: colors.background, symbolColor: colors.foreground });
+  };
+  update();
+  nativeTheme.on("updated", update);
+  window.once("closed", () => nativeTheme.off("updated", update));
+}
+
+// The installed parser includes the maintained public suffix list, including private suffixes.
+let cachedDomainParserSource: string | undefined;
+function getDomainParserSource(): string {
+  return cachedDomainParserSource ??= readFileSync(requireFromHere.resolve("tldts/dist/index.umd.min.js"), "utf8");
 }
 
 type AuthDocumentError = "" | "certificate-error" | "load-error";
@@ -65,17 +87,24 @@ export function buildAuthWindowShellHtml(input: {
     #oauth-security { flex: 0 0 16px; height: 16px; -webkit-app-region: no-drag; }
     #oauth-security svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     #oauth-security[data-security="certificate-error"], #oauth-security[data-security="load-error"] { color: #d33c32; }
-    #oauth-uri { display: flex; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12px; direction: ltr; }
-    #oauth-host { flex: 0 0 auto; font-weight: 650; }
+    #oauth-uri { display: flex; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12px; direction: ltr; -webkit-app-region: no-drag; user-select: text; }
+    #oauth-host { display: flex; flex: 0 1 auto; min-width: 0; }
+    #oauth-subdomain { min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; color: var(--ts-btn); }
+    #oauth-domain { flex: 0 0 auto; font-weight: 650; }
+    #oauth-port { flex: 0 0 auto; }
+    #oauth-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    #oauth-security[data-security="http"] { color: #9a6700; }
+    @media (prefers-color-scheme: dark) { #oauth-security[data-security="http"] { color: #f0b64c; } }
     #oauth-scheme, #oauth-path { color: var(--ts-btn); }
     #oauth-scheme { flex: 0 0 auto; }
-    #oauth-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    #oauth-path { flex: 0 1000 auto; min-width: 1em; overflow: hidden; text-overflow: ellipsis; }
   </style>
 </head>
 <body>
-  <div id="oauth-location"><span id="oauth-security" role="img"></span><div id="oauth-uri" role="group" aria-label="${escapeHtml(t("oauthWindow.address"))}"><span id="oauth-scheme"></span><bdi id="oauth-host" dir="ltr"></bdi><span id="oauth-path"></span></div></div>
+  <div id="oauth-location"><span id="oauth-security" role="img"></span><div id="oauth-uri" role="group" tabindex="0" aria-label="${escapeHtml(t("oauthWindow.address"))}"><span id="oauth-scheme"></span><span id="oauth-host"><span id="oauth-subdomain"><bdi id="oauth-subdomain-text" dir="ltr"></bdi></span><bdi id="oauth-domain" dir="ltr"></bdi><span id="oauth-port"></span></span><span id="oauth-path"></span></div><span id="oauth-status" role="status" aria-live="polite" aria-atomic="true"></span></div>
   ${input.chromeOnly ? "" : '<webview id="auth-view" src="" partition="" allowpopups></webview>'}
   <script>
+    ${getDomainParserSource()}
     const title = ${title};
     const url = ${url};
     const partition = ${partition};
@@ -88,19 +117,39 @@ export function buildAuthWindowShellHtml(input: {
     let committedUrl = url;
     let errorState = ${JSON.stringify(input.errorState ?? "")};
     const certificateErrors = new Set();
+    uri.addEventListener("copy", event => {
+      event.clipboardData.setData("text/plain", committedUrl);
+      event.preventDefault();
+    });
     const updateLocation = () => {
       if (!uri || !security) return;
       uri.title = committedUrl;
-      const parsed = new URL(committedUrl);
-      document.getElementById("oauth-scheme").textContent = parsed.protocol + "//";
-      document.getElementById("oauth-host").textContent = parsed.host;
-      document.getElementById("oauth-path").textContent = parsed.pathname + parsed.search + parsed.hash;
+      const scheme = document.getElementById("oauth-scheme");
+      const subdomain = document.getElementById("oauth-subdomain-text");
+      const domain = document.getElementById("oauth-domain");
+      const port = document.getElementById("oauth-port");
+      const path = document.getElementById("oauth-path");
+      if (/^https?:/i.test(committedUrl)) {
+        const parsed = new URL(committedUrl);
+        const hostname = parsed.hostname.endsWith(".") ? parsed.hostname.slice(0, -1) : parsed.hostname;
+        const registrableDomain = tldts.getDomain(hostname, { allowPrivateDomains: true }) ?? hostname;
+        scheme.textContent = parsed.protocol + "//";
+        subdomain.textContent = hostname.slice(0, hostname.length - registrableDomain.length);
+        domain.textContent = registrableDomain + (hostname === parsed.hostname ? "" : ".");
+        port.textContent = parsed.port ? ":" + parsed.port : "";
+        path.textContent = parsed.pathname + parsed.search + parsed.hash;
+      } else {
+        scheme.textContent = subdomain.textContent = domain.textContent = port.textContent = "";
+        path.textContent = committedUrl;
+      }
       const secure = committedUrl.startsWith("https:") && !errorState;
       const label = errorState === "certificate-error" ? ${JSON.stringify(t("oauthWindow.certificateError"))} : errorState === "load-error" ? ${JSON.stringify(t("oauthWindow.loadError"))} : secure ? ${JSON.stringify(t("oauthWindow.secure"))} : ${JSON.stringify(t("oauthWindow.insecure"))};
+      const status = document.getElementById("oauth-status");
+      if (status.textContent !== label) status.textContent = label;
       security.title = label;
       security.setAttribute("aria-label", label);
       security.dataset.security = errorState || (secure ? "https" : "http");
-      const shape = errorState === "certificate-error" ? '<path d="m8 8 8 8m0-8-8 8"/><circle cx="12" cy="12" r="9"/>' : errorState === "load-error" ? '<path d="m12 3 10 18H2Z"/><path d="M12 9v5m0 3h.01"/>' : secure ? '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>' : '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0"/>';
+      const shape = errorState === "certificate-error" ? '<path d="m8 8 8 8m0-8-8 8"/><circle cx="12" cy="12" r="9"/>' : errorState === "load-error" ? '<path d="m12 3 10 18H2Z"/><path d="M12 9v5m0 3h.01"/>' : secure ? '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>' : '<path d="m12 2 10 10-10 10L2 12Z"/><path d="M12 7v6m0 4h.01"/>';
       security.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + shape + '</svg>';
     };
     const recordFailure = (failedUrl, certificateFailure) => {
@@ -187,6 +236,7 @@ export function attachAuthWindowContent(input: {
     shell.webContents.on("will-frame-navigate", event => event.preventDefault());
     shell.webContents.on("will-redirect", event => event.preventDefault());
   };
+  wireAuthWindowTheme(window);
   guardShell(window);
   const closePopups = (): void => {
     for (const popup of popups) if (!popup.isDestroyed()) popup.destroy();
@@ -248,6 +298,7 @@ export function attachAuthWindowContent(input: {
             parent: window, x, y, width, height, autoHideMenuBar: true, ...authWindowChromeOptions(),
             webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false },
           });
+          wireAuthWindowTheme(child);
           guardShell(child);
           const guest = new WebContentsView({ webContents });
           child.contentView.addChildView(guest);
