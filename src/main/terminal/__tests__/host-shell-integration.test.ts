@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,7 +7,7 @@ import * as nodePty from "node-pty";
 import { prepareHostShellIntegration, type HostShellIntegration } from "../host-shell-integration.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
 import { TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_PWSH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 const directories: string[] = [];
 const integrations: HostShellIntegration[] = [];
@@ -111,7 +111,7 @@ describe("host shell startup", () => {
   });
 
   it("preserves unsupported native interpreters and reports why integration is unavailable", () => {
-    for (const command of ["/bin/fish", "/bin/nu", "/bin/cmd.exe", "/bin/powershell.exe", "/bin/pwsh"]) {
+    for (const command of ["/bin/fish", "/bin/nu", "/bin/cmd.exe", "/bin/powershell.exe"]) {
       const integration = prepare(command, directory(), ["-i"]);
       expect(integration.command).toBe(command);
       expect(integration.args).toEqual(["-i"]);
@@ -190,4 +190,102 @@ it("retains the configured debug trap without replacing it on an older interpret
   expect(raw).toContain("USER-DEBUG-TRAP");
   expect(raw).toContain("NATIVE-ALIVE");
   expect(raw).not.toContain("trap -- '__ave_preexec' DEBUG");
+});
+
+describe("pwsh host startup (generated files)", () => {
+  it("wraps the native launch so the nonce is taken before any profile and hooks install after them", () => {
+    for (const [args, login] of [[["-l", "-i"], true], [[], false], [["-Interactive"], false]] as const) {
+      const integration = prepare("/usr/local/bin/pwsh", directory(), [...args]);
+      expect(integration.integrationUnavailableReason).toBeUndefined();
+      expect(integration.marksPromptEnd).toBe(true);
+      expect(integration.args.slice(0, -1)).toEqual([...(login ? ["-Login"] : []), "-NoProfile", "-NoExit", "-Command"]);
+      const wrapperPath = /^\. '(.+)'$/u.exec(integration.args.at(-1)!)![1]!;
+      const wrapper = readFileSync(wrapperPath, "utf8");
+      const nonceRead = wrapper.indexOf("ReadAllText");
+      const nonceDelete = wrapper.indexOf("Remove-Item -LiteralPath");
+      const profiles = wrapper.indexOf("$PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost");
+      const hooks = wrapper.indexOf("hooks.ps1");
+      expect(nonceRead).toBeGreaterThan(-1);
+      expect(nonceRead).toBeLessThan(nonceDelete);
+      expect(nonceDelete).toBeLessThan(profiles);
+      expect(profiles).toBeLessThan(hooks);
+      // The nonce is in an owner-only file, never in the launch arguments or environment.
+      expect(readFileSync(join(dirname(wrapperPath), ".ave-terminal-nonce"), "utf8")).toBe(integration.nonce);
+      expect(statSync(join(dirname(wrapperPath), ".ave-terminal-nonce")).mode & 0o077).toBe(0);
+      expect(JSON.stringify([integration.args, integration.env])).not.toContain(integration.nonce);
+      const hookText = readFileSync(join(dirname(wrapperPath), "hooks.ps1"), "utf8");
+      // No documented bracketed paste in PSReadLine: every prompt says so, and agent typing refuses it.
+      expect(hookText).toContain(";Paste=0;");
+      expect(hookText).toContain(";Edit=0;");
+    }
+  });
+
+  it("keeps a pwsh launch with other arguments native", () => {
+    const integration = prepare("/usr/local/bin/pwsh", directory(), ["-NoLogo", "-i"]);
+    expect(integration.args).toEqual(["-NoLogo", "-i"]);
+    expect(integration.integrationUnavailableReason).toBe("custom-launch");
+  });
+
+  it("parses the generated prompt markers as an attested prompt that refuses agent typing", () => {
+    const integration = prepare("/usr/local/bin/pwsh", directory(), []);
+    const tracker = new TerminalBlockTracker({ nonce: integration.nonce, marksPromptEnd: true });
+    const n = integration.nonce;
+    tracker.recordOutput(`\u001b]133;D;0;${n}\u0007\u001b]133;P;Cwd=C:\\Users\\me;Keys=emacs;Paste=0;NotFound=0;Edit=0;B=${"ab".repeat(16)};Pid=4242;${n}\u0007\u001b]133;A;${n}\u0007PS C:\\Users\\me> \u001b]133;B;${"ab".repeat(16)}\u0007`);
+    expect(tracker.isIntegrated()).toBe(true);
+    expect(tracker.currentCwd()).toBe("C:\\Users\\me");
+    expect(tracker.promptState()).toBe("no-bracketed-paste");
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+  });
+});
+
+/** Native pwsh (PowerShell 7). Runs where pwsh is installed or `AVE_TEST_PWSH` names it; the Windows verification session runs it there. */
+describe.runIf(TERMINAL_TEST_PWSH !== undefined)("pwsh host startup (native)", () => {
+  async function start(home: string, args: string[], extra: Record<string, string> = {}) {
+    const integration = prepare(TERMINAL_TEST_PWSH!, home, args, extra);
+    const tracker = new TerminalBlockTracker({ nonce: integration.nonce, marksPromptEnd: integration.marksPromptEnd });
+    const pty = nodePty.spawn(integration.command, integration.args, {
+      cwd: home, cols: 120, rows: 30, env: { ...integration.env, TERM: "xterm-256color" },
+    });
+    let raw = "";
+    pty.onData((data) => { raw += data; tracker.recordOutput(data); });
+    const exited = new Promise<void>((resolve) => pty.onExit(() => resolve()));
+    editors.push({ pty, exited });
+    await waitForTerminal(() => tracker.promptEndCount() > 0, 30_000);
+    return { integration, tracker, pty, raw: () => raw };
+  }
+
+  it("attests prompts and directories with the terminal's nonce, deletes the nonce file, and refuses agent typing", async () => {
+    const home = directory();
+    const { integration, tracker } = await start(home, process.platform === "win32" ? [] : ["-l", "-i"]);
+    expect(tracker.isIntegrated()).toBe(true);
+    expect(tracker.currentCwd()).not.toBeNull();
+    expect(tracker.reportedShellPid()).not.toBeNull();
+    expect(tracker.promptState()).toBe("no-bracketed-paste");
+    const wrapperPath = /^\. '(.+)'$/u.exec(integration.args.at(-1)!)![1]!;
+    expect(existsSync(join(dirname(wrapperPath), ".ave-terminal-nonce"))).toBe(false);
+  }, 60_000);
+
+  it("records the user's command block with its exit status", async () => {
+    const home = directory();
+    const { tracker, pty } = await start(home, process.platform === "win32" ? [] : ["-l", "-i"]);
+    const before = tracker.promptEndCount();
+    pty.write("Write-Output ave-block; exit-not-a-command\r");
+    await waitForTerminal(() => tracker.promptEndCount() > before, 30_000);
+    const block = tracker.list().find((summary) => summary.command.includes("ave-block"));
+    expect(block?.source).toBe("osc133");
+    expect(block?.exitCode).not.toBe(0);
+  }, 60_000);
+
+  it.runIf(process.platform !== "win32")("dot-sources the user's profiles after the nonce is taken and before the hooks", async () => {
+    const home = directory();
+    const config = join(home, ".config", "powershell");
+    mkdirSync(config, { recursive: true });
+    const trace = join(home, "profile-trace");
+    for (const name of ["profile.ps1", "Microsoft.PowerShell_profile.ps1"]) {
+      // A profile sees the nonce variable (it shares the shell) but never its file, and runs before the prompt hook replaces `prompt`.
+      writeFileSync(join(config, name), `Add-Content -LiteralPath '${trace}' -Value ("${name}:" + [bool]$global:__ave_nonce + ":" + [bool](Get-Command __ave_encode -ErrorAction SilentlyContinue))\n`);
+    }
+    await start(home, ["-l", "-i"], { XDG_CONFIG_HOME: join(home, ".config") });
+    expect(readFileSync(trace, "utf8").trim().split(/\r?\n/u)).toEqual(["profile.ps1:True:False", "Microsoft.PowerShell_profile.ps1:True:False"]);
+  }, 60_000);
 });

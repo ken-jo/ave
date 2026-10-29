@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { TerminalIntegrationUnavailableReason } from "../../shared/terminal-session.js";
 import type { ManualShellLaunch } from "./manual-shell.js";
-import { generateHostShellHooks, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
+import { generateHostShellHooks, generatePwshHostHooks, PWSH_PROFILE_STARTUP, powerShellQuote, pwshNoncePrologue, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
 
 export interface HostShellIntegration {
   command: string;
@@ -29,6 +29,7 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
     marksPromptEnd: false, integrationUnavailableReason: reason, cleanup() {},
   });
   const shell = basename(launch.command).replace(/\.exe$/iu, "");
+  if (shell === "pwsh") return preparePwsh(launch, shellEnv, nonce, native);
   if (shell !== "zsh" && shell !== "bash") {
     return native("unsupported-shell");
   }
@@ -82,6 +83,45 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
     const rcPath = write("bashrc", prologue + "\n" + startup + "\nsource " + quote(hooksPath) + "\n");
     return { command: launch.command, args: ["--rcfile", rcPath, "-i"], env: shellEnv, nonce,
       marksPromptEnd: true, cleanup: () => rmSync(ownedDirectory, { recursive: true, force: true }) };
+  } catch {
+    if (directory) rmSync(directory, { recursive: true, force: true });
+    return native("setup-failed");
+  }
+}
+
+const PWSH_STARTUP_FLAGS: Readonly<Record<string, "login" | "interactive">> = {
+  "-l": "login", "-login": "login", "-i": "interactive", "-interactive": "interactive",
+};
+
+// PowerShell 7: launch with -NoProfile so nothing of the user's runs before the owned wrapper, which takes the nonce first, then dot-sources the
+// user's profiles in PowerShell's own order, then installs the hooks. A launch with any other argument stays native.
+function preparePwsh(
+  launch: ManualShellLaunch,
+  env: Record<string, string>,
+  nonce: string,
+  native: (reason: TerminalIntegrationUnavailableReason) => HostShellIntegration,
+): HostShellIntegration {
+  const flags = launch.args.map((arg) => PWSH_STARTUP_FLAGS[arg.toLowerCase()]);
+  if (flags.some((flag) => flag === undefined)) return native("custom-launch");
+  let directory: string | undefined;
+  try {
+    directory = mkdtempSync(join(tmpdir(), "ave-host-terminal-"));
+    const ownedDirectory = directory;
+    const write = (name: string, text: string): string => {
+      const path = join(ownedDirectory, name);
+      writeFileSync(path, text, { mode: 0o600 });
+      return path;
+    };
+    const noncePath = write(SHELL_INTEGRATION_NONCE_FILE, nonce);
+    const hooksPath = write("hooks.ps1", generatePwshHostHooks());
+    const wrapper = write("startup.ps1", [pwshNoncePrologue(noncePath), PWSH_PROFILE_STARTUP, `. ${powerShellQuote(hooksPath)}`, ""].join("\n"));
+    return {
+      command: launch.command,
+      // -Login must come first when it is given at all.
+      args: [...(flags.includes("login") ? ["-Login"] : []), "-NoProfile", "-NoExit", "-Command", `. ${powerShellQuote(wrapper)}`],
+      env, nonce, marksPromptEnd: true,
+      cleanup: () => rmSync(ownedDirectory, { recursive: true, force: true }),
+    };
   } catch {
     if (directory) rmSync(directory, { recursive: true, force: true });
     return native("setup-failed");
