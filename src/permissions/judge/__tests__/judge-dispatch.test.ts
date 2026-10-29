@@ -1006,7 +1006,7 @@ describe("automatic review pause and evidence", () => {
     await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(1));
     const card = sentApprovalCards<ApprovalRequest>(wc)[0]!;
     expect(card.reason).toBe(t("permissionJudge.pausedConsecutive"));
-    expect(notifications.fire).toHaveBeenCalledWith(expect.objectContaining({ kind: "approval", body: expect.stringContaining(t("toolApprovalDialog.impactShell")) }));
+    expect(notifications.fire).toHaveBeenCalledWith(expect.objectContaining({ kind: "approval", body: expect.stringContaining(t("approvalAction.shell")) }));
     const answer = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
     subject.manager.resumeAutomatedApproval("session-root", answer);
     expect(subject.manager.getJudgeBreaker().isOpen("session-root")).toBe(true);

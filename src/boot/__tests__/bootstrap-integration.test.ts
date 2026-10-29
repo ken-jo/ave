@@ -117,7 +117,7 @@ vi.mock("../conversation.js", () => ({
   createPostTurnHookChain: vi.fn(() => ({ postTurnHookChain: {} })),
   createApprovalGate: vi.fn(async () => {
     h.rec("approvalGate");
-    return {};
+    return { setConversationTitleResolver: vi.fn() };
   }),
   createHookRunner: vi.fn(() => ({})),
   createConversationLoop: vi.fn((deps) => {

@@ -21,12 +21,13 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
   });
 }
 
-test('approval toast returns to the requesting conversation and focuses its card', async ({ app, mainWindow }, testInfo) => {
+test('approval toast returns from a browser surface and focuses the requesting conversation card', async ({ app, mainWindow }, testInfo) => {
   const sessionId = await currentSessionId(mainWindow);
   const features = mainWindow.getByTestId('sidebar-group-features');
   if ((await features.getAttribute('aria-expanded')) !== 'true') await features.click();
-  await mainWindow.getByTestId('toolbar-work-board').click();
-  await expect(mainWindow.getByTestId('work-board-panel')).toBeVisible();
+  await mainWindow.getByTestId('sidebar-web').click();
+  const browser = mainWindow.locator('[data-surface-kind="browser"]');
+  await expect(browser).toBeVisible();
   await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
     if (!win) throw new Error('Visible window unavailable');
@@ -44,7 +45,7 @@ test('approval toast returns to the requesting conversation and focuses its card
   await expect(mainWindow.getByRole('button', { name: /Return to conversation|대화로 돌아가기/ })).toBeVisible();
   await mainWindow.screenshot({ path: testInfo.outputPath('covered-approval.png') });
   await mainWindow.getByRole('button', { name: /Learn more|자세히 알아보기/ }).click();
-  await expect(mainWindow.getByTestId('work-board-panel')).not.toBeVisible();
+  await expect(browser).not.toBeVisible();
   const panel = mainWindow.getByTestId('tool-approval-panel');
   await expect(panel).toHaveAttribute('data-approval-request-id', 'approval-notice-e2e');
   await expect(panel).toBeFocused();

@@ -1,11 +1,13 @@
 // Integrations are mocked; these cases exercise notification trigger wiring.
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { AskUserQuestionGate } from "../ask-user-question-gate.js";
 import { ApprovalGate } from "../../permissions/approval-gate.js";
 import type { NotificationService, FireOptions } from "../notification-service.js";
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import { t, setLocale } from "../../i18n/runtime.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+
+afterEach(() => setLocale("ko"));
 
 function makeFakeNotificationService(): NotificationService {
   return {
@@ -70,6 +72,24 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
     expect(notice.body).toContain("대화: 그래 두개 진행해보자");
     gate.disposeAll();
     await waiting;
+  });
+
+  it.each(["ko", "en"] as const)("keeps the action verb around a long filename in %s", async (locale) => {
+    setLocale(locale);
+    const svc = makeFakeNotificationService();
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    gate.setConversationTitleResolver(() => "T".repeat(30));
+    const waiting = gate.requestAndWait({
+      id: "long-filename", category: "tool", toolName: "write_file", toolCategory: "write",
+      args: { path: "x".repeat(100) }, reason: "internal", createdAt: Date.now(), sessionId: "session-1",
+    });
+    const notice = vi.mocked(svc.fire).mock.calls[0][0];
+    expect(notice.body).toMatch(locale === "ko" ? /x+… 파일 쓰기/ : /Write x+… file/);
+    expect(notice.body).toContain("T".repeat(30));
+    expect([...notice.body].length).toBeLessThanOrEqual(80);
+    gate.disposeAll();
+    await waiting;
+    setLocale("ko");
   });
 
   it("fires with kind=approval and urgent=true", async () => {

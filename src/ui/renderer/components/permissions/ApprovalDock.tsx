@@ -311,7 +311,6 @@ export function ApprovalDock({
       </header>
       {onOpenConversation ? (
         <div className="border-b px-3 py-2 text-xs">
-          <p>{conversationLabel}</p>
           <button type="button" className="text-primary underline" onClick={onOpenConversation}>
             {t("approvalAttribution.returnToConversation")}
           </button>

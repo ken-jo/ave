@@ -1135,20 +1135,33 @@ export function App() {
     setApprovalFocusId(null);
   }, [approvalFocusId, activeView, tileSessions, approvalQueue]);
 
+  const notificationNavigationRef = useRef({ approvalQueue, approvalClaims, tileSessions, handleLoadSessionAndRefresh,
+    handleViewSelect, setActiveView, focusChatGroup, setPaneContent: chatGroups.setPaneContent });
+  notificationNavigationRef.current = { approvalQueue, approvalClaims, tileSessions, handleLoadSessionAndRefresh,
+    handleViewSelect, setActiveView, focusChatGroup, setPaneContent: chatGroups.setPaneContent };
   useEffect(() => {
     if (typeof api.onNotificationClicked !== "function") return undefined;
     return api.onNotificationClicked((payload) => {
+      const { approvalQueue, approvalClaims, tileSessions, handleLoadSessionAndRefresh,
+        handleViewSelect, setActiveView, focusChatGroup, setPaneContent } = notificationNavigationRef.current;
       const contextRef = payload.contextRef;
       if (payload.kind === "approval" || contextRef?.approvalId) {
         const request = approvalQueue.find((entry) => entry.id === contextRef?.approvalId);
         const sessionId = request?.sessionId ?? contextRef?.sessionId;
         if (request) setApprovalFocusId(request.id);
         if (sessionId) {
+          const owner = approvalClaims.ownerOf(sessionId);
+          if (owner !== null) {
+            if (tileSessions.some((tile) => tile.chatGroupId === owner)) {
+              focusChatGroup(owner);
+              setPaneContent(owner, { view: "home" });
+            } else setActiveView("home");
+            if (!request && approvalQueue.length === 0) setDeferredQueueOpen(true);
+            return;
+          }
           void handleLoadSessionAndRefresh(sessionId).then((reached) => {
             if (reached !== false) {
-              const owner = approvalClaims.ownerOf(sessionId);
-              if (owner && tileSessions.some((tile) => tile.chatGroupId === owner)) chatGroups.setPaneContent(owner, { view: "home" });
-              else setActiveView("home");
+              notificationNavigationRef.current.setActiveView("home");
               if (!request && approvalQueue.length === 0) setDeferredQueueOpen(true);
             }
           });
@@ -1173,7 +1186,7 @@ export function App() {
       }
       setActiveView("home");
     });
-  }, [api, approvalQueue, approvalClaims, chatGroups.setPaneContent, tileSessions, handleLoadSessionAndRefresh, handleViewSelect, setActiveView]);
+  }, [api]);
 
   // Settings remains inline at every width; reselecting it changes the tab without remounting.
   const onOpenSettings = useCallback((tab = "llm") => {

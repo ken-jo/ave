@@ -1,5 +1,5 @@
 // The three operator-facing options of tier 2, exercised through the gate. Each asks the same two questions. Does the option do nothing at all in its default setting — so a machine that never touches the settings file behaves exactly as it did before these existed? And when it is turned on, can it produce an allow, or send something it should not have sent?
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   ApprovalGate,
   deferredParentEscalationOf,
@@ -22,6 +22,9 @@ import type {
 import type { ParentContextTurn } from "../parent-context-evidence.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { auditRowStartingWith } from "./test-helpers.js";
+import { setLocale } from "../../i18n/runtime.js";
+
+afterEach(() => setLocale("ko"));
 
 const CHILD_SESSION = "child-session-1";
 const PARENT_SESSION = "parent-session-1";
@@ -259,6 +262,23 @@ describe("tier 2 — which model answers", () => {
 });
 
 describe("tier 3 — where a background escalation goes", () => {
+  it.each(["ko", "en"] as const)("keeps denial and queue status within the notification limit in %s", async (locale) => {
+    setLocale(locale);
+    const { queue } = fakeQueue();
+    const { gate, notificationService } = makeGate({ deferredQueue: queue });
+    gate.setConversationTitleResolver(() => "T".repeat(30));
+    await gate.requestAndWait(makeChildRequest({
+      toolName: "write_file", args: { path: "x".repeat(100) },
+    }));
+    const body = notificationService.fire.mock.calls[0][0].body as string;
+    expect([...body.split(" · ")[1]]).toHaveLength(30);
+    expect([...body].length).toBeLessThanOrEqual(80);
+    expect(body).toMatch(locale === "ko" ? /거부.*검토 대기열/ : /Denied.*queued/);
+    expect(body).toContain("T".repeat(30));
+    expect(body).toMatch(locale === "ko" ? /x+… 파일 쓰기/ : /Write x+… file/);
+    setLocale("ko");
+  });
+
   it("stops waiting for a deferred append on shutdown and sends no late notification", async () => {
     const { queue, append } = fakeQueue();
     let finish!: (id: string) => void;

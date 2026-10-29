@@ -57,7 +57,8 @@ export async function setupWorkflowStores(
     sessionMetadataStores.find(
       (store) => store.hasSessionTranscript(sessionId) || store.hasSessionMetadataFile(sessionId),
     ) ?? sessionMetadataStores[0];
-  approvalGate.setConversationTitleResolver((sessionId) => {
+  approvalGate.setConversationTitleResolver((requestingSessionId) => {
+    const sessionId = ctx.resolveRootSessionId(requestingSessionId);
     const store = sessionOwner(sessionId);
     const metadata = store.loadSessionMetadata(sessionId);
     const liveLoop = ctx.findLoopBySessionId?.(sessionId)

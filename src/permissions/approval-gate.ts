@@ -949,20 +949,28 @@ export class ApprovalGate {
     this.conversationTitleResolver = resolve;
   }
 
-  private notificationBody(request: ApprovalRequest): string {
+  private notificationBody(request: ApprovalRequest, deferred = false): string {
     const action = approvalActionSummary({
       ...request,
       args: maskArgsForDisplay(request.args, new Set<string>()),
       ...(request.target?.filePath ? { target: { filePath: maskSensitiveData(request.target.filePath).masked } } : {}),
-    }, t);
+      ...(request.outOfAllowedDir ? { outOfAllowedDir: {
+        ...request.outOfAllowedDir,
+        candidatePath: maskSensitiveData(request.outOfAllowedDir.candidatePath).masked,
+      } } : {}),
+    }, t, { maxCharacters: 30 });
     const segment = (value: string): string => {
       const characters = [...maskSensitiveData(value).masked];
       return characters.length > 30 ? characters.slice(0, 29).join("") + "…" : characters.join("");
     };
-    if (request.sessionId === undefined) return segment(action);
-    const title = this.conversationTitleResolver?.(request.sessionId)
-      ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
-    return t("be_approvalGate.conversationNotification", { action: segment(action), title: segment(title) });
+    const maskedAction = maskSensitiveData(action).masked;
+    if (request.sessionId === undefined && !deferred) return maskedAction;
+    const title = request.sessionId === undefined ? ""
+      : this.conversationTitleResolver?.(request.sessionId)
+        ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
+    return t(deferred ? "be_approvalGate.deferredEscalationBody" : "be_approvalGate.conversationNotification", {
+      action: maskedAction, title: segment(title),
+    });
   }
 
   // Replace the runtime policy immediately from the ave:policy:set IPC handler.
@@ -1263,9 +1271,7 @@ export class ApprovalGate {
       this.notificationService?.fire({
         kind: "approval",
         title: t("be_approvalGate.notificationTitle"),
-        body: t("be_approvalGate.deferredEscalationBody", {
-          action: this.notificationBody(request),
-        }),
+        body: this.notificationBody(request, true),
         contextRef: { approvalId: request.id, sessionId: request.sessionId },
         urgent: true,
       });

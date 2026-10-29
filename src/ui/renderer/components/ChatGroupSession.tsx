@@ -964,7 +964,7 @@ export function ChatGroupSession({
         onSelectPlugin={env.onSelectPlugin}
         onOpenApprovalQueue={env.onOpenApprovalQueue}
         currentSessionKind={currentSessionKind}
-        currentSessionTitle={currentSessionTitle}
+        currentSessionTitle={env.sessions.find((session) => session.id === currentSessionId)?.title ?? currentSessionTitle}
         onLoadSession={handleLoadSessionAndRefresh}
         commandActions={env.commandActions}
         slashPickerOpen={env.slashPickerOpen}
