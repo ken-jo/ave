@@ -172,11 +172,12 @@ shell, labeled **My terminal (host) · No agent access**. It uses your real HOME
 profile and validated initial directory. Moving or hiding the pane preserves its
 shell; closing the terminal tab ends that host shell.
 
-Supported shell versions use authenticated hooks installed through a temporary
+zsh and bash use authenticated hooks installed through a temporary
 startup directory, without replacing your HOME or modifying your startup files.
 The wrapper sources your actual startup files before installing its hooks and
-preserves their environment semantics, including the original ZDOTDIR. Unsupported
-interpreters and integration failures leave the configured user shell usable.
+preserves their environment semantics, including the original ZDOTDIR. Other
+interpreters (PowerShell, cmd, fish, nu) and integration failures leave the
+configured user shell usable, with integration reported as unavailable.
 Unverified current directory or exit status remains unknown. Host integration
 alone never enables agent typing or automatic output access.
 

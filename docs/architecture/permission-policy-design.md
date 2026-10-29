@@ -1722,7 +1722,7 @@ in force.
 
 Each visible workspace or side-work-panel terminal has one **My terminal
 (host) · No agent access** shell. It uses real HOME, the configured native
-interpreter/profile and a validated initial directory. Supported versions use a
+interpreter/profile and a validated initial directory. zsh and bash use a
 per-PTY temporary rc directory and nonce-authenticated hooks, sourcing the actual
 startup files before hooks and restoring the original ZDOTDIR for user startup
 files. This never runs the disposable-HOME installer against real HOME. Unsupported
@@ -1830,7 +1830,8 @@ cancelling a waiter is not process-cleanup proof.
 Unavailable confinement refuses without host/foreign fallback while the host
 shell remains usable. The current Windows isolated interactive backend cannot
 attest this contract. Supported host-shell integration is a separate capability;
-Windows PowerShell, cmd, fish and nu receive no agent-typing claim.
+PowerShell (pwsh and Windows PowerShell), cmd, fish and nu have no host
+integration in this delivery and receive no agent-typing claim.
 
 Existing one-shot shell tools retain their explicit approved host/outside-sandbox
 execution route. Their inline badge reflects the actual execution mode: an

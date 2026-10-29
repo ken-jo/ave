@@ -1411,7 +1411,7 @@ improvement.
 
 Each visible terminal tab owns one
 native host shell, with a host badge/color band and **No agent access** label.
-Its real HOME and configured profile remain intact. Supported versions use
+Its real HOME and configured profile remain intact. zsh and bash use
 nonce-authenticated integration from a per-PTY temporary startup directory;
 unsupported shells or failed integration retain the user's native shell without
 claiming current-directory, exit-status or agent-control capabilities that have
