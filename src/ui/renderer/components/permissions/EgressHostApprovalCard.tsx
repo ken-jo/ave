@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
-import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import { resolveUserApprovalVerdict } from "../../../../shared/permissions-events.js";
 import { ApprovalDecisionBar, decisionSlotsDisabled, useApprovalDecisionState } from "./ApprovalDecisionBar.js";
@@ -176,18 +175,16 @@ export function EgressHostApprovalCard({
         </code>
         {payload.network === "local" ? (
           <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-local-warning">
-            {t(terminalTabId === undefined ? "egressApprovalCard.localWarning" : "egressApprovalCard.localWarningTab")}
+            {t(terminalTabId === undefined ? "egressApprovalCard.localWarning" : "egressApprovalCard.localWarningShell")}
           </p>
         ) : null}
         {payload.network === "unverified" ? (
           <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-unverified-warning">
-            {t(terminalTabId === undefined ? "egressApprovalCard.unverifiedWarning" : "egressApprovalCard.unverifiedWarningTab")}
+            {t(terminalTabId === undefined ? "egressApprovalCard.unverifiedWarning" : "egressApprovalCard.unverifiedWarningShell")}
           </p>
         ) : null}
         <p className="min-w-0 break-words text-xs text-muted-foreground">
-          {terminalTabId === undefined
-            ? t("egressApprovalCard.conversation", { conversation: conversationLabel })
-            : t("egressApprovalCard.terminalTab", { tab: terminalTabLabel(terminalTabId) ?? t("egressApprovalCard.terminalTabElsewhere") })}
+          {t("egressApprovalCard.conversation", { conversation: conversationLabel })}
         </p>
       </div>
       <NetworkDecisionRow request={request} locked={interactionLocked} decide={onDecide} />

@@ -105,7 +105,7 @@ export function networkDecisionModel(payload: EgressPayload, sessionId: string |
       "deny-always": rule === null
         ? refused(terminal ? "toolApprovalDialog.networkRuleTerminal" : "toolApprovalDialog.networkRuleUnavailable", label("deny-always"))
         : offered(rule, "inline", label("deny-always")),
-      "allow-session": scoped("allow-session", sessionScope, !terminal && sessionId !== undefined, terminal ? "toolApprovalDialog.decisionAllowTab" : label("allow-session")),
+      "allow-session": scoped("allow-session", sessionScope, !terminal && sessionId !== undefined, terminal ? "toolApprovalDialog.decisionAllowShell" : label("allow-session")),
       "allow-project": scoped("allow-project", "project", payload.projectCwd !== undefined),
       "allow-everywhere": scoped("allow-everywhere", "always", true),
     },

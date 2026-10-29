@@ -2143,7 +2143,7 @@ allowed). Each approval type maps the six choices onto its own store:
 | Card | Always deny | Allow for session / in this project / everywhere |
 |---|---|---|
 | Shell | user-global deny rule (`Bash(...)` / `PowerShell(...)`) | session, project or user-global allow rule, the host-derived exact rule unless edited |
-| Network | user-global `Network(<host>[:<port>])` deny rule | the grant of that lifetime (This session / This tab, This project, Always); an edited rule is saved as a `Network(...)` host rule instead |
+| Network | user-global `Network(<host>[:<port>])` deny rule | the grant of that lifetime (This session / while the isolated shell runs, This project, Always); an edited rule is saved as a `Network(...)` host rule instead |
 | Exact tool approval | exact deny of this tool and input (edited in Settings) | exact approval for the conversation (answers `allow-session`), for the project folder, or everywhere (a user-global approval, owner decision 2026-10-25) |
 | Folder access | exact deny of this request (edited in Settings) | **Always allow this folder** = the parent-folder grant; session and project are not offered |
 | One-shot request | not offered | not offered |
@@ -2572,8 +2572,8 @@ address it resolved to, most restrictive first: link-local, cloud metadata,
 unspecified, multicast and broadcast addresses are refused without asking;
 loopback, `localhost`/`*.localhost`, local-network names (`*.local`,
 `*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`), RFC1918, CGNAT, ULA
-and site-local addresses are offered at most This session (a terminal:
-This tab), with a local-network warning on the card, and persistent grants
+and site-local addresses are offered at most This session (a conversation's
+isolated shell: while that shell runs), with a local-network warning on the card, and persistent grants
 never apply to them. Only the desktop window
 answers an egress ask; an answer from any other surface leaves it pending. Session and
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
@@ -2584,7 +2584,7 @@ row. DNS, route-lookup, and connection failures return 502; timeouts return
 row with the failure kind and response status, without a denial decision.
 Policy refusals remain 403. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
 or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
-at This session (a terminal: This tab). Persistent grants remain stored
+at This session (a conversation's isolated shell: while that shell runs). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again
 when the channel is strong. Grant lookup filters eligible scopes before
 selecting the narrowest match.

@@ -21,7 +21,7 @@ export const en = {
   "terminalObservation.basis.sandbox": "sandbox refusal",
   "terminalObservation.scope.once": "once",
   "terminalObservation.scope.session": "this conversation",
-  "terminalObservation.scope.tab": "this terminal tab",
+  "terminalObservation.scope.tab": "this isolated shell",
   "terminalObservation.scope.project": "this project",
   "terminalObservation.scope.always": "always",
   "terminalObservation.scope.none": "no permission grant",

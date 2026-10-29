@@ -119,7 +119,7 @@ describe("agent terminal observation view", () => {
   it.each<{ scope: EgressGrantScope; label: string }>([
     { scope: "once", label: "한 번" },
     { scope: "session", label: "이 대화" },
-    { scope: "tab", label: "이 터미널 탭" },
+    { scope: "tab", label: "이 격리 셸" },
     { scope: "project", label: "이 프로젝트" },
     { scope: "always", label: "항상" },
   ])("shows the actual $scope permission separately from command correlation", async ({ scope, label }) => {

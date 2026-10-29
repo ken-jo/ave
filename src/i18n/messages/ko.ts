@@ -23,7 +23,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "terminalObservation.basis.sandbox": "샌드박스 거부",
   "terminalObservation.scope.once": "한 번",
   "terminalObservation.scope.session": "이 대화",
-  "terminalObservation.scope.tab": "이 터미널 탭",
+  "terminalObservation.scope.tab": "이 격리 셸",
   "terminalObservation.scope.project": "이 프로젝트",
   "terminalObservation.scope.always": "항상",
   "terminalObservation.scope.none": "허용 없음",

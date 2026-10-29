@@ -7,7 +7,6 @@ import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
-import { noteTerminalTabLabel } from "../preview/terminal-tab-labels.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
 import { sameTerminalSession, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
@@ -73,7 +72,6 @@ export function PtyTerminalView({
   const { t } = useTranslation();
   const mount = useSurfaceMount(props.tabId, location);
   // The name its egress card in the approval lane and Settings use for it.
-  useEffect(() => noteTerminalTabLabel(props.tabId, props.tabLabel), [props.tabId, props.tabLabel]);
   if (!mount.owned) {
     return (
       <div
