@@ -505,30 +505,49 @@ describe("PtyTerminalView keyboard focus", () => {
     } finally { card.remove(); }
   });
 
-  it("takes focus from the tab the user selected to show it, and from its own controls", async () => {
+  it("takes focus only from this terminal's own selected tab, and keeps any other focused control", async () => {
     const { api } = makeMockAveApi();
     const ave = { ...api, terminal: terminalApi() };
-    const tab = document.createElement("button");
-    tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-selected", "true");
-    document.body.appendChild(tab);
-    tab.focus();
+    // A tab strip entry as the side panel renders it: the tab button inside its tab's `data-tab-id` wrapper.
+    const tabFor = (tabId: string) => {
+      const wrapper = document.createElement("div");
+      wrapper.setAttribute("data-tab-id", tabId);
+      const button = document.createElement("button");
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", "true");
+      wrapper.appendChild(button);
+      document.body.appendChild(wrapper);
+      return { button, remove: () => wrapper.remove() };
+    };
+    const own = tabFor("terminal:tab");
+    const other = tabFor("terminal:other");
+    const cycle = (view: ReturnType<typeof render>) => {
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+    };
     try {
+      own.button.focus();
       const view = render(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
       await waitFor(() => expect(terminals).toHaveLength(1));
       view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
       expect(terminals[0]!.focusCount).toBe(1);
-      tab.setAttribute("aria-selected", "false");
-      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
-      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+      // A selected tab in another area is not an activation of this terminal.
+      other.button.focus();
+      cycle(view);
       expect(terminals[0]!.focusCount).toBe(1);
-      const own = view.getByTestId("terminal-pane-header");
-      own.tabIndex = -1;
-      own.focus();
-      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
-      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
-      expect(terminals[0]!.focusCount).toBe(2);
-    } finally { tab.remove(); }
+      expect(document.activeElement).toBe(other.button);
+      // Nor is a tab that is no longer selected.
+      own.button.setAttribute("aria-selected", "false");
+      own.button.focus();
+      cycle(view);
+      expect(terminals[0]!.focusCount).toBe(1);
+      // A control inside the terminal keeps focus too.
+      const chip = view.getByTestId("terminal-pane-host-chip");
+      chip.focus();
+      cycle(view);
+      expect(terminals[0]!.focusCount).toBe(1);
+      expect(document.activeElement).toBe(chip);
+    } finally { own.remove(); other.remove(); }
   });
 
   it("writes nothing to the PTY when it opens or is activated", async () => {

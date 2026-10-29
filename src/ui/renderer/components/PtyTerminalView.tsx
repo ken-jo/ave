@@ -96,22 +96,21 @@ export function PtyTerminalView({
 
 /**
  * Keyboard focus follows the terminal the user is attending to, so typing reaches the shell (and xterm shows its
- * blinking focused cursor) without a click. It moves only when nothing holds focus, when focus is already inside this
- * terminal, or when it is on the tab the user just selected to show this terminal. Any other focused element keeps
- * it: the chat composer the user is typing in, an approval card's buttons, a menu.
+ * blinking focused cursor) without a click. It moves only when nothing holds focus, or when focus is on the selected
+ * tab of this terminal, the user's explicit activation of it. Any other focused element keeps it: the chat composer
+ * the user is typing in, an approval card's buttons, a menu, a tab in another area, this terminal's own controls.
  */
-function focusAttendedTerminal(term: Terminal, root: HTMLElement): void {
+function focusAttendedTerminal(term: Terminal, tabId: string): void {
   const active = document.activeElement;
-  const free = active === null || active === document.body || root.contains(active)
-    || active instanceof HTMLElement && active.getAttribute("role") === "tab" && active.getAttribute("aria-selected") === "true";
-  if (free) term.focus();
+  const activatedHere = active instanceof HTMLElement && active.getAttribute("role") === "tab" && active.getAttribute("aria-selected") === "true"
+    && active.closest("[data-tab-id]")?.getAttribute("data-tab-id") === tabId;
+  if (active === null || active === document.body || activatedHere) term.focus();
 }
 
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd }: PtyTerminalViewProps) {
   const { t } = useTranslation();
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const rootRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
   const initialCwdRef = useRef(initialCwd ?? null);
   // Attention is "seen" only while the terminal is both attended and on screen; the box is measured by the resize observer
@@ -289,8 +288,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
 
   // On open (each new xterm publishes its anchors) and whenever the tab or pane becomes attended.
   useEffect(() => {
-    if (attended && anchors && termRef.current && rootRef.current) focusAttendedTerminal(termRef.current, rootRef.current);
-  }, [attended, anchors]);
+    if (attended && anchors && termRef.current) focusAttendedTerminal(termRef.current, tabId);
+  }, [attended, anchors, tabId]);
 
   // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,
   // scrollback and cursor are kept.
@@ -321,7 +320,6 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
 
   return (
     <div
-      ref={rootRef}
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
