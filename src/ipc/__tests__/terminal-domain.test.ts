@@ -169,6 +169,7 @@ describe("terminal preview display boundary", () => {
     registerTerminalBlockTracker(terminalSessionFixture(tabId, "manual"), tracker, 1);
     const result = await handlers.get(CHANNELS.terminal.preview)!(from(windowOne), { tabId });
     expect(result).toEqual({ ok: true, command: `${firstLine.slice(0, 199)}…` });
+    if (typeof result !== "object" || result === null || !("command" in result)) throw new Error("Expected command preview");
     expect(result.command).toHaveLength(200);
     expect(result.command).not.toContain("private heredoc body");
   });
