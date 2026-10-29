@@ -1,9 +1,7 @@
 /** Advisory provenance; these records never confer file or terminal authority. */
 export interface TerminalReviewFile {
   readonly path: string;
-  readonly hash: string;
   readonly sessionIds: string[];
-  readonly reviewed: boolean;
   readonly diff?: { readonly before: string; readonly after: string };
   readonly lastUsed: { readonly command: string; readonly when: number } | null;
 }

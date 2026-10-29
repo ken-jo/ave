@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -9,16 +8,13 @@ import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-pat
 
 const MAX_INFERENCE_BYTES = 1_048_576;
 const MAX_INFERENCE_STEPS = 128;
-const MAX_HASH_BYTES = 64 * 1_048_576;
 interface ChangedFile {
   readonly path: string;
   readonly sessionIds: Set<string>;
   readonly recordedAt: number;
   before?: string | null;
-  reviewedHash?: string;
   lastUsed: TerminalReviewFile["lastUsed"];
 }
-interface Revision { hash: string; text?: string }
 interface ExecutionEvidence { paths: Set<string>; unresolved: boolean; steps: number; visited: Set<string> }
 
 function missing(error: unknown): boolean {
@@ -64,37 +60,6 @@ export async function readTerminalReviewText(path: string): Promise<string | nul
     return textBytes(bytes.subarray(0, size));
   } catch (error) {
     if (isTerminalReviewUnavailable(error)) return undefined;
-    throw error;
-  } finally { await handle.close(); }
-}
-
-async function revision(path: string): Promise<Revision> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW).catch((error: unknown) => { if (missing(error)) return null; if (isTerminalReviewUnavailable(error)) return undefined; throw error; });
-  if (handle === null) return { hash: "missing" };
-  if (handle === undefined) return { hash: "unavailable" };
-  try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.size > MAX_HASH_BYTES) return { hash: "unavailable" };
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(65_536);
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for (;;) {
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
-      if (!bytesRead) break;
-      size += bytesRead;
-      if (size > MAX_HASH_BYTES) return { hash: "unavailable" };
-      hash.update(buffer.subarray(0, bytesRead));
-      if (size <= MAX_INFERENCE_BYTES) chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
-    }
-    const after = await handle.stat();
-    const currentPath = await lstat(path);
-    if (!currentPath.isFile() || before.dev !== currentPath.dev || before.ino !== currentPath.ino
-      || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
-      || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) return { hash: "unavailable" };
-    return { hash: hash.digest("hex"), ...(size <= MAX_INFERENCE_BYTES ? { text: textBytes(Buffer.concat(chunks)) } : {}) };
-  } catch (error) {
-    if (missing(error) || isTerminalReviewUnavailable(error)) return { hash: "unavailable" };
     throw error;
   } finally { await handle.close(); }
 }
@@ -303,13 +268,6 @@ export class TerminalFileEvidence {
       before: before === null || before !== undefined && Buffer.byteLength(before, "utf8") <= MAX_INFERENCE_BYTES && !before.includes("\0") ? before : undefined, lastUsed: null, recordedAt: Date.now() });
   }
 
-  review(files: readonly { path: string; hash: string }[]): void {
-    for (const file of files) {
-      const known = this.files.get(file.path);
-      if (known && /^[a-f0-9]{64}$/.test(file.hash)) known.reviewedHash = file.hash;
-    }
-  }
-
   async snapshot(cwd: string, blocks: readonly TerminalBlockSummary[], terminalSessionId = ""): Promise<TerminalFileReviewSnapshot> {
     const physicalCwd = resolvePhysicalFilesystemPath(cwd, process.cwd(), 64);
     const warnings: TerminalExecutionWarning[] = [];
@@ -335,10 +293,10 @@ export class TerminalFileEvidence {
     const files: TerminalReviewFile[] = [];
     for (const file of this.files.values()) {
       if (!within(physicalCwd, file.path) && !relevant.has(file.path)) continue;
-      const current = await revision(file.path);
-      files.push({ path: file.path, hash: current.hash, sessionIds: [...file.sessionIds],
-        reviewed: /^[a-f0-9]{64}$/.test(current.hash) && file.reviewedHash === current.hash, lastUsed: file.lastUsed,
-        ...(file.before !== undefined && current.text !== undefined ? { diff: { before: file.before ?? "", after: current.text } } : {}) });
+      // Current text for the diff only; absent, oversized, binary or unreadable content has no text diff.
+      const after = file.before === undefined ? undefined : await readTerminalReviewText(file.path);
+      files.push({ path: file.path, sessionIds: [...file.sessionIds], lastUsed: file.lastUsed,
+        ...(file.before !== undefined && typeof after === "string" ? { diff: { before: file.before ?? "", after } } : {}) });
     }
     const latestBlockId = blocks.reduce<number | null>((latest, block) => latest === null || block.id > latest ? block.id : latest, null);
     return { cwd: physicalCwd, latestBlockId, files, warnings };

@@ -51,7 +51,6 @@ export interface TerminalApi {
     | { readonly ok: true; readonly snapshot: TerminalFileReviewSnapshot }
     | { readonly ok: false; readonly error: string }
   >;
-  reviewFiles(ref: TerminalSessionRef, files: readonly { path: string; hash: string }[]): Promise<TerminalMutationResult>;
   onData(handler: (event: TerminalDataEvent) => void): () => void;
   onExit(handler: (event: TerminalExitEvent) => void): () => void;
 }

@@ -1914,22 +1914,22 @@ names each authenticated command block on the C marker it forwards to the view
 and drops that field from unauthenticated markers. Nothing is written to the
 shell, the PTY or the terminal buffer, so no rows are taken and the annotation
 scrolls with its block until its row leaves the scrollback. Only the latest
-command's annotation offers [view changes] and [mark reviewed]; once another
+command's annotation offers [view changes]; once another
 command runs it remains as dim history text. The changed-file panel carries one
 static note that detection is best-effort; subprocess writes without concrete
 path evidence and dynamic indirection are not claimed covered. Provenance is
 advisory and is never permission or terminal authority.
 
-The pending-review badge appears once, in the terminal's header or tab, and
-opens the changed-file panel beside the output. Each entry shows its
-latest known command use or that no execution use was observed. Users can open
-a diff and mark one or all entries reviewed. Review decisions bind the observed
-content hash: another content revision becomes pending again. Canonical physical
-paths retain session attribution across symlink aliases and delete/restore;
-deleting a file does not erase its historical evidence. An inline warning that
-collapses to history neither grants permission nor marks its files reviewed.
-Evidence and review decisions live only in memory for the running application;
-restarting clears them. Command use is inferred from command blocks and static
+The agent-changed badge appears once, in the terminal's header or tab, counts
+the agent-changed files currently attributed to this terminal's sessions, and
+opens the changed-file panel beside the output. Each entry shows its latest
+known command use or that no execution use was observed, and opens a diff
+against the recorded baseline. There is no review or acknowledgement state:
+the change has already happened, so the count follows the set of changed files
+and never drops on a user action. Canonical physical paths retain session
+attribution across symlink aliases and delete/restore; deleting a file does not
+erase its historical evidence. Evidence lives only in memory for the running
+application; restarting clears it. Command use is inferred from command blocks and static
 file contents, rather than proof of operating-system file opens.
 
 ### Isolated shell readiness and command checks

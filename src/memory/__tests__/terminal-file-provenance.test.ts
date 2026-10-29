@@ -77,7 +77,9 @@ describe("successful native mutation provenance", () => {
       await checkpointFileMutation([{ path, content: "agent\n" }], () => writeFile(path, "agent\n"));
       await checkpointFileMutation([{ path, content: null }], () => unlink(path));
     });
-    expect((await snapshot()).files.find(file => file.path === path)?.hash).toBe("missing");
+    const removed = (await snapshot()).files.find(file => file.path === path);
+    expect(removed?.sessionIds).toHaveLength(1);
+    expect(removed?.diff).toBeUndefined();
     await writeFile(path, "restored\n");
     expect((await snapshot()).files.find(file => file.path === path)?.diff).toEqual({ before: "", after: "restored\n" });
   });

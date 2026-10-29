@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import type { TerminalApi, TerminalSessionInfo } from "../../../shared/terminal-session.js";
-import type { TerminalFileReviewSnapshot, TerminalReviewFile } from "../../../shared/terminal-file-review.js";
+import type { TerminalFileReviewSnapshot } from "../../../shared/terminal-file-review.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FileEditDiff } from "./FileEditDiff.js";
 import type { TerminalBlockAnchors } from "./terminal-block-anchors.js";
@@ -10,10 +10,8 @@ import { consumeTerminalFileReviewRequest, observeTerminalFileReview, publishTer
 const REVIEW_REFRESH_MS = 1500;
 const ANNOTATION_NAMED_FILES = 2;
 const ACTION_CLASS = "rounded px-2 py-1 text-xs underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
-const ANNOTATION_ACTION_CLASS = "shrink-0 text-warning hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring disabled:opacity-50";
+const ANNOTATION_ACTION_CLASS = "shrink-0 text-warning hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring";
 const NO_ANCHORS = { subscribe: () => () => {}, version: () => 0 };
-
-const isReviewableHash = (hash: string): boolean => /^[a-f0-9]{64}$/i.test(hash);
 
 /** Paths inside the terminal's physical cwd read as the user typed them (`Makefile`, `scripts/build.sh`). */
 function terminalReviewDisplayPath(path: string, cwd: string): string {
@@ -31,10 +29,11 @@ function annotationFiles(names: readonly string[]): string {
 }
 
 /**
- * Review evidence is advisory; none of these actions writes to a shell. Each positively matched command gets a
- * one-row annotation drawn as an xterm decoration on its own command row, like a trailing shell comment: it scrolls
- * with its block and never takes rows. Only the latest command's annotation carries actions; once another command
- * runs it stays as dim history. The pending count lives only on the terminal's header badge.
+ * Changed-file evidence is advisory and read-only; nothing here writes to a shell or records a decision. Each
+ * positively matched command gets a one-row annotation drawn as an xterm decoration on its own command row, like a
+ * trailing shell comment: it scrolls with its block and never takes rows. Only the latest command's annotation offers
+ * [view changes]; once another command runs it stays as dim history. The count of agent-changed files lives only on
+ * the terminal's header badge.
  */
 export function TerminalFileReview({ terminalApi, session, revision, anchors }: {
   terminalApi: TerminalApi;
@@ -47,22 +46,13 @@ export function TerminalFileReview({ terminalApi, session, revision, anchors }: 
   const [snapshot, setSnapshot] = useState<TerminalFileReviewSnapshot>({ cwd: "", latestBlockId: null, files: [], warnings: [] });
   const [open, setOpen] = useState(false);
   const [diffPath, setDiffPath] = useState<string | null>(null);
-  const [error, setError] = useState<"refreshFailed" | "staleReview" | null>(null);
-  const [reviewing, setReviewing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const refreshRef = useRef<() => void>(() => {});
-  const mountedRef = useRef(false);
   const tabReview = useTerminalFileReviewState(session.tabId);
-  const pending = snapshot.files.filter((file) => !file.reviewed);
-  const reviewable = pending.filter((file) => isReviewableHash(file.hash));
   const host = session.lane === "manual" && session.substrate === "host";
   // Re-render when a command row gains or loses its marker (scrollback trim, `clear`).
   const subscribeAnchors = useCallback((listener: () => void) => (anchors ?? NO_ANCHORS).subscribe(listener), [anchors]);
   useSyncExternalStore(subscribeAnchors, () => (anchors ?? NO_ANCHORS).version());
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
 
   useEffect(() => {
     if (!host) return;
@@ -76,10 +66,10 @@ export function TerminalFileReview({ terminalApi, session, revision, anchors }: 
       running = true;
       void terminalApi.listFileReviews(session).then((result) => {
         if (cancelled) return;
-        if (!result.ok) { setError("refreshFailed"); return; }
+        if (!result.ok) { setRefreshFailed(true); return; }
         setSnapshot(result.snapshot);
-        setError(null);
-      }).catch(() => { if (!cancelled) setError("refreshFailed"); }).finally(() => {
+        setRefreshFailed(false);
+      }).catch(() => { if (!cancelled) setRefreshFailed(true); }).finally(() => {
         running = false;
         if (!cancelled && queued) { queued = false; refresh(); }
       });
@@ -98,28 +88,14 @@ export function TerminalFileReview({ terminalApi, session, revision, anchors }: 
   useEffect(() => { refreshRef.current(); }, [revision]);
 
   useEffect(() => {
-    if (host) publishTerminalFileReview(session.tabId, pending.length, error === "refreshFailed");
-  }, [host, session.tabId, pending.length, error]);
+    if (host) publishTerminalFileReview(session.tabId, snapshot.files.length, refreshFailed);
+  }, [host, session.tabId, snapshot.files.length, refreshFailed]);
 
   useEffect(() => {
     if (!host || !tabReview?.requested) return;
     setOpen(true);
     consumeTerminalFileReviewRequest(session.tabId);
   }, [host, session.tabId, tabReview?.requested]);
-
-  const review = useCallback(async (files: readonly TerminalReviewFile[]) => {
-    setReviewing(true);
-    try {
-      const result = await terminalApi.reviewFiles(session, files.filter((file) => isReviewableHash(file.hash)).map(({ path, hash }) => ({ path, hash })));
-      if (!mountedRef.current) return;
-      if (!result.ok) setError(result.error === "stale-file-review" ? "staleReview" : "refreshFailed");
-      else refreshRef.current();
-    } catch {
-      if (mountedRef.current) setError("refreshFailed");
-    } finally {
-      if (mountedRef.current) setReviewing(false);
-    }
-  }, [terminalApi, session.tabId, session.lane, session.terminalSessionId]);
 
   if (!host) return null;
   const selected = snapshot.files.find((file) => file.path === diffPath);
@@ -131,17 +107,13 @@ export function TerminalFileReview({ terminalApi, session, revision, anchors }: 
     const container = anchors.attach(warning.blockId);
     if (!container) return [];
     const names = warning.files.map(display);
-    const pendingFiles = warning.blockId === snapshot.latestBlockId ? pending.filter((file) => warning.files.includes(file.path)) : [];
-    const actionable = pendingFiles.length > 0;
+    const actionable = warning.blockId === snapshot.latestBlockId;
     return [createPortal(
       <div className={`flex h-full min-w-0 items-center gap-2 whitespace-nowrap pl-1 font-mono text-[11px] leading-none ${actionable ? "text-muted-foreground" : "text-muted-foreground/(--opacity-strong)"}`}
         title={`$ ${warning.command}\n${names.join("\n")}`}
         data-testid="terminal-file-warning" data-active={actionable ? "true" : "false"}>
         <span className="min-w-0 truncate"># <span className={actionable ? "text-warning" : undefined}>⚠</span> {t("terminalFileReview.annotation", { files: annotationFiles(names) })}</span>
-        {actionable ? <>
-          <button type="button" className={ANNOTATION_ACTION_CLASS} onClick={() => openDiff(pendingFiles[0]!.path)}>[{t("terminalFileReview.viewChanges")}]</button>
-          <button type="button" className={ANNOTATION_ACTION_CLASS} disabled={reviewing || !pendingFiles.some((file) => isReviewableHash(file.hash))} onClick={() => { void review(pendingFiles); }}>[{t("terminalFileReview.review")}]</button>
-        </> : null}
+        {actionable ? <button type="button" className={ANNOTATION_ACTION_CLASS} onClick={() => openDiff(warning.files[0]!)}>[{t("terminalFileReview.viewChanges")}]</button> : null}
       </div>,
       container,
       `terminal-file-warning-${warning.blockId}`,
@@ -157,16 +129,14 @@ export function TerminalFileReview({ terminalApi, session, revision, anchors }: 
           <button type="button" className={ACTION_CLASS} aria-label={t("terminalFileReview.closePanel")} onClick={() => setOpen(false)}>×</button>
         </div>
         <div className="flex-1 space-y-2 overflow-auto p-3">
-          {error && <p role="status" className="text-xs text-muted-foreground">{t(`terminalFileReview.${error}`)}</p>}
+          {refreshFailed && <p role="status" className="text-xs text-muted-foreground">{t("terminalFileReview.refreshFailed")}</p>}
           {snapshot.files.map((file) => <section key={file.path} className="rounded border border-border px-2 py-1.5" data-testid="terminal-file-review-row">
             <p className="break-all font-mono text-xs" title={file.path}>{display(file.path)}</p>
             <p className={`mt-0.5 break-words text-xs ${file.lastUsed ? "text-warning" : "text-muted-foreground"}`}>{file.lastUsed
               ? t("terminalFileReview.used", { command: file.lastUsed.command, when: new Date(file.lastUsed.when).toLocaleString(locale) })
               : t("terminalFileReview.unused")}</p>
-            {!isReviewableHash(file.hash) && <p className="mt-0.5 text-xs text-muted-foreground">{t("terminalFileReview.contentUnavailable")}</p>}
             <div className="mt-1 flex gap-1">
               <button type="button" className={ACTION_CLASS} onClick={() => openDiff(file.path)}>{t("terminalFileReview.openDiff")}</button>
-              <button type="button" className={ACTION_CLASS} disabled={file.reviewed || reviewing || !isReviewableHash(file.hash)} onClick={() => { void review([file]); }}>{t(file.reviewed ? "terminalFileReview.reviewed" : "terminalFileReview.review")}</button>
             </div>
           </section>)}
           {selected && <section aria-label={selected.path} data-testid="terminal-file-review-diff">
@@ -175,8 +145,7 @@ export function TerminalFileReview({ terminalApi, session, revision, anchors }: 
               : <p className="text-xs text-muted-foreground">{t("terminalFileReview.diffUnavailable")}</p>}
           </section>}
         </div>
-        <div className="shrink-0 space-y-1 border-t border-border p-2">
-          <button type="button" className={ACTION_CLASS} disabled={reviewable.length === 0 || reviewing} onClick={() => { void review(reviewable); }}>{t("terminalFileReview.reviewAll")}</button>
+        <div className="shrink-0 border-t border-border p-2">
           <p className="px-2 text-xs text-muted-foreground">{t("terminalFileReview.advisory")}</p>
         </div>
       </aside>}

@@ -11,7 +11,6 @@ export function buildTerminalApiSurface(): TerminalApi {
     listBlocks: (ref) => ipcRenderer.invoke(CHANNELS.terminal.blocks, ref),
     getBlock: (ref, blockId) => ipcRenderer.invoke(CHANNELS.terminal.block, { ...ref, blockId }),
     listFileReviews: (ref) => ipcRenderer.invoke(CHANNELS.terminal.fileReviews, ref),
-    reviewFiles: (ref, files) => ipcRenderer.invoke(CHANNELS.terminal.reviewFiles, { ...ref, files }),
     onData: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
         const parsed = parseTerminalDataEvent(payload);

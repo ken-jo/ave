@@ -1,29 +1,29 @@
 import { useSyncExternalStore } from "react";
 
-interface TerminalFileReviewState { readonly pending: number; readonly requested: boolean; readonly refreshFailed: boolean }
+interface TerminalFileReviewState { readonly changed: number; readonly requested: boolean; readonly refreshFailed: boolean }
 const listeners = new Set<() => void>();
 let snapshot: ReadonlyMap<string, TerminalFileReviewState> = new Map();
 
 function update(tabId: string, state: TerminalFileReviewState): void {
   const previous = snapshot.get(tabId);
-  if (previous?.pending === state.pending && previous.requested === state.requested && previous.refreshFailed === state.refreshFailed) return;
+  if (previous?.changed === state.changed && previous.requested === state.requested && previous.refreshFailed === state.refreshFailed) return;
   snapshot = new Map(snapshot).set(tabId, state);
   for (const listener of [...listeners]) listener();
 }
 
-/** The mounted view's pending count and whether its last refresh failed; the header badge is their only display. */
-export function publishTerminalFileReview(tabId: string, pending: number, refreshFailed = false): void {
-  update(tabId, { pending, requested: snapshot.get(tabId)?.requested ?? false, refreshFailed });
+/** The mounted view's count of agent-changed files and whether its last refresh failed; the header badge is their only display. */
+export function publishTerminalFileReview(tabId: string, changed: number, refreshFailed = false): void {
+  update(tabId, { changed, requested: snapshot.get(tabId)?.requested ?? false, refreshFailed });
 }
 
 export function requestTerminalFileReview(tabId: string): void {
   const previous = snapshot.get(tabId);
-  update(tabId, { pending: previous?.pending ?? 0, requested: true, refreshFailed: previous?.refreshFailed ?? false });
+  update(tabId, { changed: previous?.changed ?? 0, requested: true, refreshFailed: previous?.refreshFailed ?? false });
 }
 
 export function consumeTerminalFileReviewRequest(tabId: string): void {
   const previous = snapshot.get(tabId);
-  update(tabId, { pending: previous?.pending ?? 0, requested: false, refreshFailed: previous?.refreshFailed ?? false });
+  update(tabId, { changed: previous?.changed ?? 0, requested: false, refreshFailed: previous?.refreshFailed ?? false });
 }
 
 export function forgetTerminalFileReview(tabId: string): void {
@@ -59,7 +59,7 @@ function stopObserver(observer: TerminalReviewObserver): void {
   observer.timer = null;
 }
 
-/** An inactive tab still needs its hash-based badge. Mounted views own their richer refresh. */
+/** An inactive tab still needs its changed-file badge. Mounted views own their richer refresh. */
 export function observeTerminalFileReview(api: TerminalReviewObserver["api"], session: TerminalReviewObserver["session"]): () => void {
   let observer = observers.get(session.tabId);
   if (observer && (observer.api !== api || observer.session.terminalSessionId !== session.terminalSessionId)) {
@@ -88,7 +88,7 @@ export function observeTerminalFileReview(api: TerminalReviewObserver["api"], se
           forgetTerminalFileReview(session.tabId);
           return;
         }
-        publishTerminalFileReview(session.tabId, result.snapshot.files.filter((file) => !file.reviewed).length);
+        publishTerminalFileReview(session.tabId, result.snapshot.files.length);
       } catch {
         // A transport interruption leaves the last observed count; the next poll retries.
       } finally { current.running = false; }

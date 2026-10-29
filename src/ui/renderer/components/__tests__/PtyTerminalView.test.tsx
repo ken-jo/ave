@@ -94,7 +94,6 @@ function terminalApi() {
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
     listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
-    reviewFiles: vi.fn(async () => ({ ok: true as const })),
     listBlocks: vi.fn(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: session.shellIntegration, blocks: [] as unknown[] })),
     getBlock: vi.fn(async (_session: TerminalSessionInfo, _id: number) => ({ ok: false as const, error: "block-not-found" })),
   };
@@ -344,7 +343,7 @@ describe("PtyTerminalView changed-file annotation", () => {
     terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: {
       cwd: "/workspace",
       latestBlockId: 1,
-      files: [{ path: "/workspace/Makefile", hash: "a".repeat(64), sessionIds: ["conversation"], reviewed: false, lastUsed: { command: "make build", when: 1_000 } }],
+      files: [{ path: "/workspace/Makefile", sessionIds: ["conversation"], lastUsed: { command: "make build", when: 1_000 } }],
       warnings: [{ blockId: 1, command: "make build", files: ["/workspace/Makefile"] }],
     } } as never);
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:banner" tabLabel="Terminal 1" />);

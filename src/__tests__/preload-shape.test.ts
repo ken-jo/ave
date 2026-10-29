@@ -735,7 +735,6 @@ describe("preload contextBridge world shape lock", () => {
             "onData",
             "onExit",
             "resize",
-            "reviewFiles",
             "spawn",
           ],
           "tour": [

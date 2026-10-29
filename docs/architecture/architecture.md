@@ -1449,14 +1449,14 @@ and fail-closed behavior when the backend is unavailable. Host startup/user outp
 is private; only explicit user-selected block attachments share host context.
 Host terminals annotate a command positively matched to tracked agent-changed
 files with a non-blocking inline warning on its own row (a renderer decoration,
-never PTY input or buffer text), and show a hash-keyed pending-review header
-badge that opens a side panel. The side-work-panel
-host terminal has the same advisory review UI while retaining no agent access.
+never PTY input or buffer text), and show an agent-changed file count on the
+header badge that opens a side panel with each file's use and diff. The side-work-panel
+host terminal has the same advisory changed-file UI while retaining no agent access.
 Successful write provenance uses canonical physical paths; it is never permission
 authority. Dynamic indirection and subprocess writes without concrete path evidence
 remain explicitly outside complete coverage. The
 [changed-file review policy](permission-policy-design.md#agent-changed-file-review)
-defines review lifetime and the separate isolated loader write-deny floor.
+defines the evidence lifetime and the separate isolated loader write-deny floor.
 Side-work-panel host terminals have no agent read/write access. Host command
 approval and takeover are pending; this delivery enables no agent host typing.
 

@@ -122,38 +122,23 @@ describe("host execution provenance", () => {
     expect((await evidence.snapshot(directory, [block("make build")])).warnings).toEqual([{ blockId: 1, command: "make build", files: [makefile] }]);
   });
 
-  it("keeps changes pending until their exact content hash is reviewed", async () => {
+  it("lists every changed file for as long as the session runs, with the diff following the current content", async () => {
     const path = await changed("run.sh");
-    const first = await evidence.snapshot(directory, []);
-    expect(first.files[0]?.reviewed).toBe(false);
-    evidence.review(first.files);
-    expect((await evidence.snapshot(directory, [])).files[0]?.reviewed).toBe(true);
+    await changed("other.sh");
+    expect((await evidence.snapshot(directory, [])).files.map(item => item.path)).toEqual([path, join(directory, "other.sh")]);
     await writeFile(path, "echo changed again\n");
-    expect((await evidence.snapshot(directory, [])).files[0]?.reviewed).toBe(false);
-  });
-
-  it("a review using a stale hash cannot acknowledge newer content", async () => {
-    const path = await changed("run.sh");
-    const first = await evidence.snapshot(directory, []);
-    await writeFile(path, "echo newer\n");
-    evidence.review(first.files);
-    expect((await evidence.snapshot(directory, [])).files[0]?.reviewed).toBe(false);
-  });
-
-  it("reviews files individually and all together", async () => {
-    await changed("a.sh");
-    await changed("b.sh");
-    const first = await evidence.snapshot(directory, []);
-    evidence.review(first.files.slice(0, 1));
-    expect((await evidence.snapshot(directory, [])).files.map(item => item.reviewed)).toEqual([true, false]);
-    evidence.review(first.files);
-    expect((await evidence.snapshot(directory, [])).files.every(item => item.reviewed)).toBe(true);
+    const again = await evidence.snapshot(directory, []);
+    expect(again.files).toHaveLength(2);
+    expect(again.files[0]?.diff).toEqual({ before: "", after: "echo changed again\n" });
+    expect(Object.keys(again.files[0]!).sort()).toEqual(["diff", "lastUsed", "path", "sessionIds"]);
   });
 
   it("retains provenance through delete and restore", async () => {
     const path = await changed("run.sh");
     await unlink(path);
-    expect((await evidence.snapshot(directory, [])).files[0]).toMatchObject({ path, hash: "missing", reviewed: false });
+    const removed = (await evidence.snapshot(directory, [])).files[0];
+    expect(removed?.path).toBe(path);
+    expect(removed?.diff).toBeUndefined();
     await writeFile(path, "echo restored\n");
     expect((await evidence.snapshot(directory, [block("./run.sh")])).warnings[0]?.files).toEqual([path]);
   });
@@ -189,7 +174,7 @@ describe("host execution provenance", () => {
     expect((await evidence.snapshot(directory, [command], "first")).warnings).toEqual([]);
   });
 
-  it("returns a bounded real baseline and current contents with the current hash", async () => {
+  it("returns a bounded real baseline and the current contents", async () => {
     const path = await file("run.sh", "after\n");
     await evidence.recordWrite("session-a", path, "before\n");
     const snapshot = await evidence.snapshot(directory, []);
@@ -231,8 +216,8 @@ describe("host execution provenance", () => {
     await unlink(bad);
     await symlink(bad, bad);
     const result = await evidence.snapshot(directory, [block("./bad.sh && ./good.sh")]);
-    expect(result.files.find(item => item.path === bad)?.hash).toBe("unavailable");
-    expect(result.files.find(item => item.path === good)?.hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.files.find(item => item.path === bad)?.diff).toBeUndefined();
+    expect(result.files.find(item => item.path === good)?.diff).toEqual({ before: "", after: "echo changed\n" });
     expect((await inferExecutedPaths("./bad.sh && ./good.sh", directory)).unresolved).toBe(true);
     expect(result.warnings[0]?.files).toEqual([good]);
   });
