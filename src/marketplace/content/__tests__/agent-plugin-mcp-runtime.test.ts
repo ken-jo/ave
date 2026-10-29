@@ -28,6 +28,17 @@ function packageFixture(): { item: InstalledAgentPluginRuntime; dataDir: string 
   return { item, dataDir };
 }
 
+function credentialFixture() {
+  const { item, dataDir } = packageFixture();
+  const withCredential = (version: string, envName: string, digest: string): InstalledAgentPluginRuntime => ({
+    ...item, version, generationId: digest,
+    content: { ...item.content, components: { ...item.content.components, mcpServers: {
+      notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", auth: "api-key", apiKeyEnv: envName, digest },
+    } } },
+  });
+  return { item, dataDir, withCredential };
+}
+
 describe("installed agent plugin MCP publication", () => {
   it("keeps data across an update, skips unchanged reloads, and retires removal", async () => {
     const { item, dataDir } = packageFixture();
@@ -109,13 +120,7 @@ describe("installed agent plugin MCP publication", () => {
   });
 
   it("drops a key when its declaration changes and restores it if publication fails", async () => {
-    const { item, dataDir } = packageFixture();
-    const withCredential = (version: string, envName: string, digest: string): InstalledAgentPluginRuntime => ({
-      ...item, version, generationId: digest,
-      content: { ...item.content, components: { ...item.content.components, mcpServers: {
-        notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", auth: "api-key", apiKeyEnv: envName, digest },
-      } } },
-    });
+    const { dataDir, withCredential } = credentialFixture();
     let saved: string | null = null;
     let refusePublication = false;
     const stageDrop = vi.fn(async (_packageRef, _serverName, declaration?: string) => {
@@ -148,13 +153,7 @@ describe("installed agent plugin MCP publication", () => {
   });
 
   it("invalidates a changed credential after disable and retains a matching replacement after re-enable", async () => {
-    const { item, dataDir } = packageFixture();
-    const withCredential = (version: string, envName: string, digest: string): InstalledAgentPluginRuntime => ({
-      ...item, version, generationId: digest,
-      content: { ...item.content, components: { ...item.content.components, mcpServers: {
-        notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", auth: "api-key", apiKeyEnv: envName, digest },
-      } } },
-    });
+    const { item, dataDir, withCredential } = credentialFixture();
     const first = bundledCredentialDeclaration({ transport: "stdio", auth: "api-key", apiKeyEnv: "FIRST_TOKEN" });
     const second = bundledCredentialDeclaration({ transport: "stdio", auth: "api-key", apiKeyEnv: "SECOND_TOKEN" });
     let saved: string | null = null;

@@ -204,6 +204,11 @@ describe("plugin artifact ladder (design §6.2)", () => {
     );
   }
 
+  const alphaTreeFiles = () => ({
+    "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+    "plugins/alpha/dist/index.js": ENTRY_JS,
+  });
+
   const releasePath = "/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip";
 
   it("uses the pinned release asset and records it as the used rung", async () => {
@@ -248,10 +253,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
 
   it("keeps nothing from the tree rung", async () => {
     const { repo, name } = fixture();
-    market(repo, { tree: "plugins/alpha" }, {
-      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
-      "plugins/alpha/dist/index.js": ENTRY_JS,
-    });
+    market(repo, { tree: "plugins/alpha" }, alphaTreeFiles());
     const { gate, syncer } = await open(name);
     const keep = vi.fn(async () => undefined);
     const staged = await ladder(syncer, gate, planPluginInstall(await row(syncer)), false, { artifacts: { read: async () => null, keep } });
@@ -279,10 +281,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     server.file("/archives/alpha-1.0.0.zip", null);
 
     const second = fixture();
-    const files = {
-      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
-      "plugins/alpha/dist/index.js": ENTRY_JS,
-    };
+    const files = alphaTreeFiles();
     market(second.repo, { release: { repo: "acme/alpha", sha256: sha(zip) } }, files);
     const other = await open(second.name);
     const fromTree = await ladder(other.syncer, other.gate, planPluginInstall(await row(other.syncer)));
@@ -329,10 +328,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const { repo, name } = fixture();
     const wrong = pluginZip("alpha", "1.0.0", authority({ networkAccess: { allowedDomains: ["evil.example"] } }));
     server.file(releasePath, wrong);
-    market(repo, { release: { repo: "acme/alpha", sha256: sha(wrong) } }, {
-      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
-      "plugins/alpha/dist/index.js": ENTRY_JS,
-    });
+    market(repo, { release: { repo: "acme/alpha", sha256: sha(wrong) } }, alphaTreeFiles());
     const { gate, syncer } = await open(name);
     const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(LadderError);
@@ -502,10 +498,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   it("skips a release or archive without a pin as ARTIFACT_NOT_PINNED and moves on", async () => {
     const { repo, name } = fixture();
     server.file(releasePath, pluginZip("alpha", "1.0.0"));
-    market(repo, { release: { repo: "acme/alpha" }, archive: { url: "https://dl.example.com/alpha.zip" }, tree: "plugins/alpha" }, {
-      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
-      "plugins/alpha/dist/index.js": ENTRY_JS,
-    });
+    market(repo, { release: { repo: "acme/alpha" }, archive: { url: "https://dl.example.com/alpha.zip" }, tree: "plugins/alpha" }, alphaTreeFiles());
     const { gate, syncer } = await open(name);
     const staged = await ladder(syncer, gate, planPluginInstall(await row(syncer)));
     expect(staged.rungs).toEqual([

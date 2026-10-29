@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,10 @@ describe("generated global config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  const readGeneratedConfig = (gitPath: string, output: string) => execFileSync(gitPath, ["config", "--file", output, "--null", "--list"], {
+    encoding: "utf8", env: gitFixtureEnv(dir),
+  });
+
   it("copies the user's credential helper and drops everything else", async () => {
     writeFileSync(
       join(dir, ".gitconfig"),
@@ -91,10 +96,7 @@ describe("generated global config", () => {
     expect(text).not.toContain("insteadOf");
     expect(text).not.toContain("extraHeader");
     expect(text).not.toContain("sslVerify");
-    const { execFileSync } = await import("node:child_process");
-    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], {
-      encoding: "utf8", env: gitFixtureEnv(dir),
-    });
+    const readBack = readGeneratedConfig(git.path, output);
     expect(selectCopiedEntries(parseNullConfigList(readBack))).toEqual(entries);
   });
 
@@ -117,10 +119,7 @@ describe("generated global config", () => {
     const output = join(dir, "generated");
     await writeGeneratedGlobalConfig(output, entries);
     const git = await hostGitExecutable();
-    const { execFileSync } = await import("node:child_process");
-    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], {
-      encoding: "utf8", env: gitFixtureEnv(dir),
-    });
+    const readBack = readGeneratedConfig(git.path, output);
     expect(parseNullConfigList(readBack)).toEqual(entries);
   });
 });
