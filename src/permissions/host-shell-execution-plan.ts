@@ -1,7 +1,7 @@
 // Path-string ACL grants cannot make one-shot filesystem leases reparse-safe; until handle-bound/no-follow grants exist, the plain-host Windows route requires per-invocation consent.
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import type { SandboxCapability } from "./sandbox-capability.js";
+import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
 import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -368,4 +368,14 @@ export function parseHostShellExecutionInput(
     return undefined;
   }
   return Object.freeze({ command: input.command, cwd, timeoutSeconds, executionMode, justification, runInBackground });
+}
+
+// Only the actual host-shell confinement plan establishes proxy-limited egress.
+// A broker guest has its own network policy and cannot inherit this authority.
+export function isConfinedHostShellExecution(
+  plan: HostShellExecutionPlan | undefined,
+  disposableSubstrate: DisposableSubstrate | undefined,
+): boolean {
+  return disposableSubstrate === undefined && plan?.sandboxed === true && plan.mode === "asrt"
+    && (plan.substrate === "asrt" || plan.substrate === "mxc");
 }

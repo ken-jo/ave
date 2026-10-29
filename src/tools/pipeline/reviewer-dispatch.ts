@@ -1,3 +1,4 @@
+import type { ReviewerDispatchInput } from "../../permissions/permission-manager.js";
 /** Classify raw finalized input consistently across reviewer and modal lanes; DLP-masked URLs can change risk classification.
  * Mask only at the reviewer prompt boundary before data reaches the model. */
 import type { ToolSource, ToolCategory } from "../types.js";
@@ -233,6 +234,7 @@ export async function dispatchReviewerForInteractiveAuto(
   abortSignal?: AbortSignal,
   auditInput?: Record<string, unknown>,
   sessionId?: string,
+  permissionDecision?: ReviewerDispatchInput["permissionDecision"],
 ): Promise<PermissionCheckResult | null> {
   if (context.headless === true) return null;
   // PermissionManager's resolved route marker is the sole eligibility SOT. Reaching this dispatcher means foreground review was explicitly selected.
@@ -253,6 +255,8 @@ export async function dispatchReviewerForInteractiveAuto(
       toolName,
       {
         invocationId: reviewerInvocationId(meta),
+        ...(category === "shell" && permissionDecision?.layer === 2
+          && permissionDecision.reviewer?.route === "foreground-auto" ? { permissionDecision } : {}),
         ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,

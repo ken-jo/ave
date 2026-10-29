@@ -1,3 +1,4 @@
+import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
@@ -464,7 +465,8 @@ export async function authorizeToolInvocation(
         : undefined;
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
-          runsSandboxed: hostShellExecutionPlan.sandboxed || invocationPermissionContext.disposableSubstrate !== undefined,
+          runsSandboxed: isConfinedHostShellExecution(hostShellExecutionPlan, invocationPermissionContext.disposableSubstrate)
+            || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
         } : terminalScope !== undefined ? { runsSandboxed: false } : undefined;
     const scopedSubjectCandidate = scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets);
@@ -1047,6 +1049,7 @@ export async function authorizeToolInvocation(
         abortSignal,
         auditInput,
         sessionId,
+        permissionResult,
       );
       if (abortSignal?.aborted) {
         return withHostShellExecutionPlan(

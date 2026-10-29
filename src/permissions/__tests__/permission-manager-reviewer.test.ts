@@ -91,6 +91,11 @@ describe("PermissionManager.dispatchReviewer", () => {
     const plan = buildHostShellExecutionPlan({ platform: "darwin", requestedSandbox: true,
       activeCapability: { kind: "asrt", confidence: "verified", platform: "darwin", reason: "confined",
         confines: { filesystem: true, process: true, network: true } } });
+    const permissionDecision = pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, shellExecution: { runsSandboxed: true }, hostShellExecutionPlan: plan,
+    });
+    const lookup = vi.spyOn(cache, "lookup");
+    const store = vi.spyOn(cache, "store");
     try {
       await recordApproval("bash", canonicalStringify(finalInput), "builtin", {
         scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
@@ -101,12 +106,14 @@ describe("PermissionManager.dispatchReviewer", () => {
         const reviewed = await pm.dispatchReviewer("bash", {
           invocationId: randomUUID(), sessionId, source: "builtin", category: "shell", pathFields: [],
           finalInput, executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
-          trustOrigin: "user-keyboard", hostShellExecutionPlan: plan,
+          trustOrigin: "user-keyboard", hostShellExecutionPlan: plan, permissionDecision,
         }, undefined, { defer: "none" });
         expect(reviewed.outcome).toBe("fresh");
         expect(reviewed.verdict.level).toBe("medium");
       }
       expect(classify).toHaveBeenCalledTimes(2);
+      expect(lookup).not.toHaveBeenCalled();
+      expect(store).not.toHaveBeenCalled();
     } finally { __resetSessionStoreForTest(); }
   });
 

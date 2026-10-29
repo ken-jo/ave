@@ -1,3 +1,4 @@
+import { isConfinedHostShellExecution } from "./host-shell-execution-plan.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
@@ -34,6 +35,7 @@ import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-revi
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
 import { getToolCategoryDescriptor } from "./category-registry.js";
 import {
+  DisabledRiskClassifier,
   RuleBasedRiskClassifier,
   maxVerdict,
   isDestructiveShellText,
@@ -212,6 +214,7 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  disposableSubstrate?: DisposableSubstrate;
   // Host-only bound native execution; JSON and terminal callers cannot issue it.
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-issued per-invocation substrate, sealed before permission evaluation.
@@ -240,6 +243,8 @@ export interface PermissionCheckContext {
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
+  // Original host policy result; dispatch must preserve its per-call authority and reason.
+  permissionDecision?: Pick<PermissionCheckResult, "decision" | "layer" | "reason" | "reviewer">;
   // Host invocation identity shared by scope assessment and ordinary review.
   invocationId: string;
   // Conversation whose turn is being reviewed. Recorded on a deferred entry so the question reaches the tile that raised it. Absent for invocations that belong to no conversation.
@@ -487,6 +492,7 @@ export class PermissionManager {
   private userRulesVersion: PersistedPolicyVersion | undefined;
   // Permission policy reviewer agent dispatch components. Wired at boot.
   private reviewerClassifier: TracingRiskClassifier | null = null;
+  private reviewerJudgmentEnabled = false;
   private reviewerModel: string | undefined;
   private reviewerUnavailableReason: string | undefined;
   private judgeDeps: JudgeEngineDeps | undefined;
@@ -536,6 +542,7 @@ export class PermissionManager {
     unavailableReason?: string;
   }): void {
     this.reviewerClassifier = traceRiskClassifier(deps.classifier);
+    this.reviewerJudgmentEnabled = !(deps.classifier instanceof DisabledRiskClassifier);
     this.reviewerModel = deps.model;
     this.reviewerUnavailableReason = deps.unavailableReason;
     this.verdictCache = deps.cache;
@@ -1429,14 +1436,11 @@ export class PermissionManager {
       return { decision: "ask", reason: rulesFileError, layer: 1, forceModal: true };
     }
     const reviewShellFloor = shellExecution.runsSandboxed
+      && isConfinedHostShellExecution(context.hostShellExecutionPlan, context.disposableSubstrate)
+      && this.reviewerJudgmentEnabled
       && this.shouldRouteForegroundReviewer(resolvedCategory, context)
       && !shellExfiltration && !shellSensitivePath && !scopedFloor;
     let shellReviewReason: string | undefined;
-    if (shellDestructive) {
-      const reason = t("be_permissionManager.shellDestructiveFloorReason");
-      if (!reviewShellFloor) return { decision: "ask", reason, layer: 2, forceModal: true };
-      shellReviewReason = reason;
-    }
     if (shellExfiltration) {
       return {
         decision: "ask",
@@ -1452,6 +1456,11 @@ export class PermissionManager {
         layer: 2,
         forceModal: true,
       };
+    }
+    if (shellDestructive) {
+      const reason = t("be_permissionManager.shellDestructiveFloorReason");
+      if (!reviewShellFloor) return { decision: "ask", reason, layer: 2, forceModal: true };
+      shellReviewReason = reason;
     }
     if (shellFloorSignals?.analysisLimited) {
       return { decision: "ask", reason: SHELL_FLOOR_BUDGET_REASON, layer: 2, forceModal: true };
@@ -1512,6 +1521,13 @@ export class PermissionManager {
       };
     }
 
+    // The MXC link-traversal itest decides whether container reads through links are confined. Definite PowerShell recursion was denied above; this asks for the undecidable remainder.
+    if (ruleSubject && shellExecution.runsSandboxed && context.hostShellExecutionPlan?.substrate === "mxc" && (ruleSubject.dialect === "powershell"
+      ? mayTraversePowerShellRecursively(parsedPowerShellSubject!)
+      : shellShape === undefined || !shellShape.ok || shellShape.commands.some((command) => mayTraverseRecursively(command.argv)))) {
+      return { decision: "ask", reason: t("be_permissionManager.mxcRecursiveTraversalReason"), layer: 2, forceModal: true };
+    }
+
     // Keep floors ahead of grants and allow rules, but after mandatory human gates.
     if (shellReviewReason !== undefined) {
       return { decision: "ask", reason: shellReviewReason, layer: 2, reviewer: { route: "foreground-auto" } };
@@ -1520,12 +1536,6 @@ export class PermissionManager {
     const plainShell = ruleSubject !== undefined && !shellExecution.runsSandboxed;
     // Actual confinement, not a remembered approval, opens the automatic shell lane.
     if (ruleSubject && shellExecution.runsSandboxed) {
-      // The MXC link-traversal itest decides whether container reads through links are confined. Definite PowerShell recursion was denied above; this asks for the undecidable remainder.
-      if (context.hostShellExecutionPlan?.substrate === "mxc" && (ruleSubject.dialect === "powershell"
-        ? mayTraversePowerShellRecursively(parsedPowerShellSubject!)
-        : shellShape === undefined || !shellShape.ok || shellShape.commands.some((command) => mayTraverseRecursively(command.argv)))) {
-        return { decision: "ask", reason: t("be_permissionManager.mxcRecursiveTraversalReason"), layer: 2, forceModal: true };
-      }
       return { decision: "allow", reason: t("be_permissionManager.shellSandboxedReason"), layer: 3 };
     }
 
@@ -1659,6 +1669,12 @@ export class PermissionManager {
     routineScope?: Record<string, unknown>,
     options?: { defer?: ReviewerDeferPolicy; abortSignal?: AbortSignal; purpose?: "approval-scope" },
   ): Promise<ReviewerDispatchResult> {
+    if (input.category === "shell" && input.permissionDecision?.layer === 2
+      && input.permissionDecision.reviewer?.route === "foreground-auto"
+      && (!isConfinedHostShellExecution(input.hostShellExecutionPlan, input.disposableSubstrate)
+        || !this.reviewerJudgmentEnabled)) {
+      throw new JudgeContractError("Shell floor review requires confined execution and enabled judgment");
+    }
     const lane = options?.defer === "none" ? "foreground" : "headless";
     let judged: Awaited<ReturnType<PermissionManager["dispatchJudge"]>>;
     try {
@@ -1703,6 +1719,7 @@ export class PermissionManager {
       allowedDirectories: input.allowedDirectories,
       sensitivePathsAdjacent: input.sensitivePathsAdjacent,
       sandboxCapability: reviewerSandboxState.capability,
+      ...(input.permissionDecision ? { permissionReason: input.permissionDecision.reason } : {}),
       ...(input.conversationContext ? { conversationContext: input.conversationContext } : {}),
       ...(input.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: input.ownerPluginSandboxRoot } : {}),
     });
@@ -1759,16 +1776,10 @@ export class PermissionManager {
       hostShellExecutionPlan: hostShellExecutionPlanAudit,
     };
     // User-approval memory hit Check the user-approval store before consulting the LLM classifier. A memory hit for a non-revoked approval bypasses the LLM call and returns the rule-based verdict directly (composition rule still applies — sandbox/context quality can only raise, not lower). HIGH-verdict approvals are intentionally included: if the user already justified a HIGH action this session, re-running the LLM is wasteful. Built outside the storage catch: a key without its identity mode is an internal contract violation and must surface, not read as a miss.
-    // Re-evaluate the same floor branch so reviewer memory cannot turn per-call consent into a grant.
-    const perCallShellReview = input.hostShellExecutionPlan?.sandboxed === true
-      && input.source === "builtin" && (toolName === "bash" || toolName === "powershell")
-      && typeof input.finalInput.command === "string"
-      && this.checkDetailed(toolName, input.source, input.category, undefined, {
-        ruleSubject: { kind: "shell", dialect: toolName, command: input.finalInput.command, cwd: input.executionCwd },
-        shellExecution: { runsSandboxed: true },
-        hostShellExecutionPlan: input.hostShellExecutionPlan,
-        sessionId: input.sessionId,
-      }).layer <= 2;
+    const perCallShellReview = input.category === "shell"
+      && isConfinedHostShellExecution(input.hostShellExecutionPlan, input.disposableSubstrate)
+      && input.permissionDecision?.layer === 2
+      && input.permissionDecision.reviewer?.route === "foreground-auto";
     const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemory);
     const userApprovalArgs = canonicalStringify(cacheIdentityInput);
     const rememberedDecision = (perCallShellReview || input.hostShellExecutionPlan?.mode === "plain") ? undefined : await lookupApproval(
@@ -1807,7 +1818,9 @@ export class PermissionManager {
     // Include the sandbox capability in the cache scope so a change to OS isolation invalidates stale verdicts produced under different sandbox assumptions. Capture this live state immediately before cache lookup: no await may sit between wrap-state sampling and cache lookup, or a worker un-wrap could replay a verdict relaxed under stale confinement.
     sandboxCacheState = readSandboxCacheState();
     const cacheCtx = buildCacheContext(sandboxCacheState);
-    const cacheResult = cache.lookup(lookupKey, cacheCtx);
+    const cacheResult = perCallShellReview
+      ? { hit: false as const, reason: "miss-not-found" as const }
+      : cache.lookup(lookupKey, cacheCtx);
     let verdict: RiskVerdict;
     let ruleVerdictForAudit: RiskVerdict["level"] | null = null;
     let llmVerdictForAudit: RiskVerdict["level"] | null = null;
@@ -1981,6 +1994,7 @@ export class PermissionManager {
       trustOrigin: input.trustOrigin, finalInput: input.finalInput, executionCwd: input.executionCwd,
       allowedDirectories: input.allowedDirectories, sensitivePathsAdjacent: input.sensitivePathsAdjacent,
       sandboxCapability: sandboxState.capability,
+      ...(input.permissionDecision ? { permissionReason: input.permissionDecision.reason } : {}),
       ...(input.conversationContext ? { conversationContext: input.conversationContext } : {}),
       ...(input.ownerPluginSandboxRoot ? { ownerPluginSandboxRoot: input.ownerPluginSandboxRoot } : {}),
     };

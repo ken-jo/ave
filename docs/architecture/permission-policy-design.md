@@ -251,13 +251,17 @@ grant, mode or reviewer satisfies either refusal. Identified floors retain their
 precedence over ordinary reasons.
 Hard denies, credential-exfiltration and sensitive-path floors, analysis limits,
 scoped floors, explicit ask rules, origin and explicit host-execution requirements
-retain their authority. When the invocation actually runs under shell confinement,
-auto mode with an enabled foreground reviewer routes destructive and runtime
+retain their authority. When the invocation actually uses a host shell confinement plan,
+auto mode with an enabled judging foreground reviewer routes destructive and runtime
 unproven floors to foreground review at L2. Other modes, auto approval set to off,
 and unsandboxed execution retain per-call human approval; headless unproven input
-denies. The sandbox confines writes to the workspace's admitted write scope and
+denies. Disabled review and disposable guests retain human-only floors. The
+host shell sandbox confines writes to the workspace's admitted write scope and
 egress to the proxy, so the reviewer can assess the full command within those
-boundaries. This does not establish static proof or a reusable allow rule.
+boundaries. Disposable guests have their own network policy; their egress is not
+claimed as proxy-confined and does not qualify for this route. The recursive
+container-traversal gate still requires a person before any floor review. This
+does not establish static proof or a reusable allow rule.
 
 Decision cost is bounded by structural limits, not elapsed time or a work-step
 verdict. The floor derives immutable facts for each source node and literal token
@@ -2310,9 +2314,11 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 
 For actually confined shell invocations, destructive and runtime-evaluation floor
 asks use the same foreground reviewer eligibility and configured threshold as
-other auto-mode calls. The existing rule-verdict reason supplies the floor context
+other auto-mode calls. The original permission decision supplies the floor reason through the existing
+rule-verdict context
 alongside the full command; review assesses the text without executing runtime
-expansions. LOW/MEDIUM verdicts pass only through the configured
+expansions. Destructive compounds are at least MEDIUM in rule review, including
+when model review degrades to rules. LOW/MEDIUM verdicts pass only through the configured
 threshold; HIGH asks a person. These confined builtin shell floor calls bypass remembered approvals and
 verdict-cache reuse, never seed a verdict cache or reusable rule, and retain
 per-call approval when review asks a person or is unavailable. Credential and
