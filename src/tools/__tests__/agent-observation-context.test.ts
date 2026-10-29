@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentObservationFixture } from "../../__tests__/support/agent-observation.js";
+import { reviewChange } from "../../__tests__/support/terminal-session-fixtures.js";
 
 import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation } from "../../memory/code-checkpoints.js";
@@ -325,9 +326,13 @@ describe("agent document observation context", () => {
     finishMutation.mockImplementation(async () => { throw new Error("observer finalization failed"); });
     await expect(admitted(() => checkpointFileMutation([{ path, content: "after" }], () => writeFile(path, "after"))))
       .rejects.toThrow("observer finalization failed");
-    const snapshot = await terminalFileEvidence.snapshot(directory, []);
+    // The evidence lists a changed file once a command of the terminal uses it.
+    const snapshot = await terminalFileEvidence.snapshot(directory, [{ id: 1, command: "./run.sh", cwd: directory, startedAt: Date.now() + 1_000,
+      endedAt: null, exitCode: null, status: "running", source: "osc133", outputChars: 0, truncated: false }]);
     const canonical = await realpath(path);
-    expect(snapshot.files.find(file => file.path === canonical)).toMatchObject({ sessionIds: [IDENTITY.sessionId], diff: { before: "before", after: "after" } });
+    const entry = snapshot.files.find(file => file.path === canonical);
+    expect(entry).toMatchObject({ sessionIds: [IDENTITY.sessionId] });
+    expect(reviewChange(entry)).toEqual({ operation: "modify", hunks: [["before", "after"]] });
   });
 
   it("does not execute a mutation after its observation admission fails", async () => {
