@@ -3,7 +3,8 @@ import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
-import { clickSidebarNavRow, splitIntoTwoTiles } from "./helpers.js";
+import { clickSidebarNavRow, deferred, splitIntoTwoTiles } from "./helpers.js";
+import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
 import { SURFACE_DRAG_TYPE } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
@@ -11,6 +12,7 @@ import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { clearActiveSurface, getActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
+import type { ChatStreamEvent } from "../../src/lib/chat-stream-state.js";
 import type { TerminalSessionRef } from "../../src/shared/terminal-session.js";
 import { t } from "../../src/i18n/index.js";
 
@@ -601,6 +603,9 @@ describe("main-area terminal and web panels", () => {
       expect(tab).not.toBe(terminal);
       return tab;
     });
+    // Each tab owns its toggle: a newly shown page starts closed.
+    expect(chat()).toBeNull();
+    await act(async () => { fireEvent.click(pane().querySelector('[data-testid="pane-action-surface.chat"]')!); });
     const pageChat = await waitFor(() => {
       const el = pane().querySelector<HTMLElement>(`[data-testid="pane-chat"][data-tab-id="${page}"]`);
       expect(el).not.toBeNull();
@@ -675,6 +680,191 @@ describe("main-area terminal and web panels", () => {
     expect(sentText).toContain("$ npm test\nok\n");
     expect(sentText).toContain(`${terminalTabId}/manual`);
     expect(api.chatSend).not.toHaveBeenCalled();
+  });
+
+  it("opens the host-refused pane even when its conversation has no sidebar row", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [], settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    const sideChat = (api as unknown as { sideChat: Record<"send", ReturnType<typeof vi.fn>> }).sideChat;
+    sideChat.send.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", paneTabId: tabId });
+    const tiles = await splitIntoTwoTiles(container);
+    await act(async () => { fireEvent.click(tiles[1]!.element.querySelector('[data-testid="pane-panel-toggle"]')!); });
+    await act(async () => { fireEvent.click(document.querySelector('[data-testid="chat-side-panel-launcher-side-chat"]')!); });
+    const railChat = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-testid="side-chat-view"]'); expect(el).not.toBeNull(); return el!;
+    });
+    await act(async () => { fireEvent.change(railChat.querySelector("textarea")!, { target: { value: "continue this conversation" } }); });
+    await act(async () => { fireEvent.click(railChat.querySelector('[data-testid="side-chat-action-row"] button:last-child')!); });
+    const open = await waitFor(() => {
+      const el = [...railChat.querySelectorAll("button")].find((button) => button.textContent === "열기");
+      expect(el).toBeDefined(); return el!;
+    });
+    expect(railChat.textContent).toContain("이 대화는 터미널 1에 열려 있습니다.");
+    expect(container.querySelector('[data-testid^="sidebar-session-"]')).toBeNull();
+    await act(async () => { fireEvent.click(open); });
+    await waitFor(() => expect(container.querySelector(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`)).not.toBeNull());
+  });
+
+  it("reports a localized notice when the pane target closes before its row click", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
+    const useMainSurfaces = mainSurfaceStore.useMainSurfaces;
+    let surfaceStore!: ReturnType<typeof useMainSurfaces>;
+    vi.spyOn(mainSurfaceStore, "useMainSurfaces").mockImplementation(() => {
+      surfaceStore = useMainSurfaces(); return surfaceStore;
+    });
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", family: "side-chat", paneTabId: tabId }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    const row = await waitFor(() => {
+      expect(shownSurfaces(container)[0]?.tabId).toBe(tabId);
+      const el = container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`); expect(el).not.toBeNull(); return el!;
+    });
+    await act(async () => {
+      surfaceStore.close(tabId);
+      fireEvent.click(row);
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
+      .toContain("이 터미널 또는 페이지는 이 창에서 더 이상 사용할 수 없습니다."));
+    expect(container.querySelector('[data-testid="pane-chat"]')).toBeNull();
+  });
+
+  it("reports a localized notice when a live pane cannot be revealed", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
+    const useMainSurfaces = mainSurfaceStore.useMainSurfaces;
+    let refuseReveal = false;
+    let lookups = 0;
+    vi.spyOn(mainSurfaceStore, "useMainSurfaces").mockImplementation(() => {
+      const store = useMainSurfaces();
+      return { ...store, get: (id: string) => refuseReveal && id === tabId && ++lookups > 1 ? undefined : store.get(id) };
+    });
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", family: "side-chat", paneTabId: tabId }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    refuseReveal = true;
+    await act(async () => { fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`)!); });
+    await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
+      .toContain("터미널 또는 페이지를 열 수 없습니다. 작업 공간에서 해당 화면을 선택한 뒤 다시 시도해 주세요."));
+    expect(container.querySelector('[data-testid="pane-chat"]')).toBeNull();
+  });
+
+  it("opens a pane-bound conversation row on its terminal and keeps the chat open across navigation", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container, api } = await renderApp({
+      hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", title: "terminal conversation", family: "side-chat", paneTabId: tabId }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    const sideChat = (api as unknown as { sideChat: { load: ReturnType<typeof vi.fn>; paneHistory: ReturnType<typeof vi.fn> } }).sideChat;
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    await clickSidebarNavRow("features", "toolbar-work-board");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+    const row = await waitFor(() => {
+      const el = container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`);
+      expect(el).not.toBeNull(); return el!;
+    });
+    await act(async () => { fireEvent.click(row); });
+    await waitFor(() => {
+      expect(shownSurfaces(container)[0]?.tabId).toBe(tabId);
+      expect(container.querySelector(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`)).not.toBeNull();
+    });
+    expect(sideChat.paneHistory).toHaveBeenCalledWith(tabId);
+    expect(sideChat.load).not.toHaveBeenCalled();
+    expect(api.chatSessionResume).not.toHaveBeenCalled();
+    await clickSidebarNavRow("features", "toolbar-work-board");
+    await act(async () => { fireEvent.click(row); });
+    await waitFor(() => expect(container.querySelector(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`)).not.toBeNull());
+    expect(sideChat.load).not.toHaveBeenCalled();
+  });
+
+  it("moves a pane-bound row's live rail tab into its pane chat without losing the running turn", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: ["main"], thumbnailOpenIds: [],
+      sideTabs: { main: [{ kind: "browser", tabId: "browser:abcd1234-2", ordinal: 1, cwd: null, url: null }] },
+    };
+    const { container, api } = await renderApp({
+      hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", title: "moving terminal conversation", family: "side-chat", paneTabId: tabId }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    const sideChat = (api as unknown as { sideChat: Record<"send" | "load" | "abort" | "endPaneChat" | "onStream", ReturnType<typeof vi.fn>> }).sideChat;
+    const listeners = new Set<(event: ChatStreamEvent) => void>();
+    sideChat.onStream.mockImplementation((listener: (event: ChatStreamEvent) => void) => {
+      listeners.add(listener); return () => { listeners.delete(listener); };
+    });
+    const emit = (event: ChatStreamEvent) => act(() => { for (const listener of listeners) listener(event); });
+    const reply = deferred<{ ok: true; result: Record<string, never> }>();
+    let sendRequestId = "";
+    sideChat.send.mockImplementation((_input: string, _attachments: unknown, _origin: unknown, requestId: string) => {
+      sendRequestId = requestId; return reply.promise;
+    });
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    const pane = () => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`)!.closest('[data-testid="pane"]')!;
+    await act(async () => { fireEvent.click(pane().querySelector('[data-testid="pane-action-surface.chat"]')!); });
+    const chat = () => container.querySelector<HTMLElement>(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`);
+    await waitFor(() => expect(chat()).not.toBeNull());
+    await act(async () => { fireEvent.change(chat()!.querySelector("textarea")!, { target: { value: "keep running while moved" } }); });
+    await act(async () => { fireEvent.click(chat()!.querySelector('[data-testid="side-chat-action-row"] button:last-child')!); });
+    await waitFor(() => expect(sendRequestId).not.toBe(""));
+    emit({ type: "user_message", sessionId, sendRequestId, streamId: 501, text: "keep running while moved" });
+    emit({ type: "text_delta", streamId: 501, text: "before " });
+    const transfer = dataTransfer();
+    fireEvent.dragStart(pane().querySelector('[data-testid="pane-header"]')!, { dataTransfer: transfer });
+    const strip = document.querySelector('[data-testid="chat-side-panel-tab-strip"]')!;
+    expect(strip).not.toBeNull();
+    fireEvent.dragOver(strip, { dataTransfer: transfer });
+    await act(async () => { fireEvent.drop(strip, { dataTransfer: transfer }); });
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+    expect(sideTabIds()).toContain(tabId);
+    expect(chat()).toBeNull();
+    emit({ type: "text_delta", streamId: 501, text: "while moving " });
+    await act(async () => { fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`)!); });
+    await waitFor(() => {
+      expect(shownSurfaces(container)[0]?.tabId).toBe(tabId);
+      expect(chat()).not.toBeNull();
+      expect(chat()!.textContent).toContain("before while moving");
+    });
+    expect(sideTabIds()).not.toContain(tabId);
+    expect(container.querySelectorAll('[data-testid="side-chat-view"]')).toHaveLength(1);
+    expect(sideChat.load).not.toHaveBeenCalled();
+    expect(sideChat.abort).not.toHaveBeenCalled();
+    expect(sideChat.endPaneChat).not.toHaveBeenCalled();
+    emit({ type: "text_delta", streamId: 501, text: "after" });
+    await waitFor(() => expect(chat()!.textContent).toContain("before while moving after"));
+    emit({ type: "done", streamId: 501 });
+    await act(async () => { reply.resolve({ ok: true, result: {} }); await reply.promise; });
   });
 
   it("saves the layout as it changes and puts it back at the next launch, with new shells in the saved directories", async () => {

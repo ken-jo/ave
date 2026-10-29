@@ -18,6 +18,7 @@ import type {
   HostShellExecutionPlan,
   HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
+import type { DisposablePathPolicyRelaxation } from "../permissions/execution-router.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
 import { recordHostShellPolicyAuthorization, resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import {
@@ -125,6 +126,8 @@ export interface AuthorizationStageContext {
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellExecutionPlanAudit:
     | HostShellExecutionPlanAuditProjection | undefined;
+  // Relaxations of the selected execution-route plan (execution-router).
+  hostShellPathPolicyRelaxations: readonly DisposablePathPolicyRelaxation[] | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   finalInput: Record<string, unknown>;
@@ -189,6 +192,7 @@ export async function authorizeToolInvocation(
     hostShellExecutionPlan,
     verifiedShellCommand,
     hostShellExecutionPlanAudit,
+    hostShellPathPolicyRelaxations,
     hostShellExecutionPermitBinding,
     finalInput,
     invocationAllowedScope,
@@ -461,6 +465,7 @@ export async function authorizeToolInvocation(
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
           runsSandboxed: hostShellExecutionPlan.sandboxed || invocationPermissionContext.disposableSubstrate !== undefined,
+          pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
         } : terminalScope !== undefined ? { runsSandboxed: false } : undefined;
     const scopedSubjectCandidate = scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets);
     // Guest file paths belong to the workload namespace, never to host Edit scopes.

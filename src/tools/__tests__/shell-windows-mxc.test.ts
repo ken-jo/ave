@@ -18,6 +18,7 @@ const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
+  bindChild: vi.fn(),
   release: vi.fn(async () => undefined),
 }));
 
@@ -148,6 +149,7 @@ describe("builtin shell — Windows MXC containers", () => {
     mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }) => ({
       argv: [WXC_EXEC, "--config-base64", isParserLaunch(input) ? PARSER_REQUEST : "eyJ9"],
       proxyPort: 51234,
+      bindChild: mxcLaunchMock.bindChild,
       release: mxcLaunchMock.release,
     }));
   });
@@ -318,6 +320,21 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
   });
 
+  it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
+    bootMxcShells();
+    mxcLaunchMock.prepare.mockResolvedValueOnce({ argv: [WXC_EXEC, "--config-base64", PARSER_REQUEST], proxyPort: 51234, bindChild: mxcLaunchMock.bindChild, release: mxcLaunchMock.release });
+    const message = "Windows sandbox policy is too large: 40324 characters, limit 24574";
+    mxcLaunchMock.prepare.mockRejectedValueOnce(new Error(message));
+    const result = await new PowerShellTool().execute(
+      { command: "Write-Output hi", timeoutSeconds: 7 }, { ...context("policy-delivery-failure"), headless },
+    );
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result.output).toBe(`PowerShell spawn failed: ${message}`);
+    expect(childProcessMock.spawn).toHaveBeenCalledTimes(1);
+    expect(childProcessMock.spawn.mock.calls[0]![0]).toBe(WXC_EXEC);
+    expect(childProcessMock.spawn.mock.calls[0]![1]).toContain(PARSER_REQUEST);
+  });
+
   it("refuses a missing system root before preparing or spawning a container", async () => {
     bootMxcShells();
     const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
@@ -404,6 +421,7 @@ describe("builtin shell — Windows MXC containers", () => {
       return {
         argv: [WXC_EXEC, "--config-base64", parser ? PARSER_REQUEST : "eyJ9"],
         proxyPort: 51234,
+        bindChild: mxcLaunchMock.bindChild,
         release: rejects === undefined ? mxcLaunchMock.release : async () => { await mxcLaunchMock.release(); throw rejects; },
       };
     });

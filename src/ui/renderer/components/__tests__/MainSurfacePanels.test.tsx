@@ -104,7 +104,7 @@ describe("useMainSurfaces", () => {
     act(() => { page = result.current.create("browser", "https://example.com/"); });
     render(
       <TooltipProvider>
-        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} />
+        <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} />
         <WebSurfaceLayer api={makeMockAveApi().api as never} />
       </TooltipProvider>,
     );
@@ -152,7 +152,7 @@ describe("SurfacePane", () => {
     setWebSurfaceElement(tabId, element);
     const unregister = registerBrowserTabHost(api as never, { sessionId: () => null, hasTab: () => false, selectTab: () => {}, closeTab: () => {} });
     try {
-      render(<TooltipProvider><SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} /></TooltipProvider>);
+      render(<TooltipProvider><SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} /></TooltipProvider>);
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
       await act(async () => {
         if (action === "address") {
@@ -179,7 +179,7 @@ describe("SurfacePane", () => {
     const terminal = terminalApi();
     render(
       <TooltipProvider>
-        <SurfacePane chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("pane-header").textContent).toMatch(/ 2$/);
@@ -191,7 +191,7 @@ describe("SurfacePane", () => {
     const onNavigate = vi.fn();
     render(
       <TooltipProvider>
-        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} />
+        <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();
@@ -230,7 +230,7 @@ describe("SurfacePane", () => {
       const page = { ...surface("browser"), url: "https://a.example/" };
       render(
         <TooltipProvider>
-          <SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={page} paneId="main" frame={{}} onNavigate={onNavigate} />
+          <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={api as never} surface={page} paneId="main" frame={{}} onNavigate={onNavigate} />
         </TooltipProvider>,
       );
       const address = screen.getByTestId("web-panel-address");

@@ -322,6 +322,7 @@ export function toSessionListRow(
     ...(family === "side-chat" && session.originSessionId
       ? { originSessionId: session.originSessionId }
       : {}),
+    ...(family === "side-chat" && session.paneTabId ? { paneTabId: session.paneTabId } : {}),
     ...(session.routineId ? { routineId: session.routineId } : {}),
     ...(session.routineTitle ? { routineTitle: session.routineTitle } : {}),
     ...(session.routineFiredAt ? { routineFiredAt: session.routineFiredAt } : {}),
@@ -373,6 +374,8 @@ export interface SessionListEntry {
   sessionKind: SessionKind;
   // Derive workBoardItemId only from a host-created run origin.
   workBoardItemId?: number;
+  // The host-written terminal or page identity, kept in side-chat list rows.
+  paneTabId?: string;
   // Carry conversation origins only when they are valid session ids; item origins use workBoardItemId.
   originSessionId?: string;
   routineId?: string;
@@ -2696,6 +2699,7 @@ export class MemoryManager implements PromptMemorySource {
           ...(metadata?.projectName ? { projectName: metadata.projectName } : {}),
           ...(workBoardItemId !== null ? { workBoardItemId } : {}),
           ...(isValidSessionId(metadata?.originSessionId) ? { originSessionId: metadata.originSessionId } : {}),
+          ...(metadata?.paneTabId ? { paneTabId: metadata.paneTabId } : {}),
           ...(metadata?.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
           ...(metadata?.branchedFromCompactNum !== undefined ? { branchedFromCompactNum: metadata.branchedFromCompactNum } : {}),
           ...(metadata?.branchedAt ? { branchedAt: metadata.branchedAt } : {}),

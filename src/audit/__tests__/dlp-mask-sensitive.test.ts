@@ -2,13 +2,18 @@ import { describe, it, expect } from "vitest";
 import { maskSensitiveData, redactForLLM } from "../dlp-filter.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 
+function masksCase(text: string, original: string, replacement: string, detection: string) {
+  return () => {
+    const { masked, detections } = maskSensitiveData(text);
+    expect(masked).not.toContain(original);
+    expect(masked).toContain(replacement);
+    expect(detections).toContain(detection);
+  };
+}
+
 describe("maskSensitiveData — 주민등록번호 (Korean RRN)", () => {
-  it("masks a valid RRN with hyphen", () => {
-    const { masked, detections } = maskSensitiveData("주민번호: 900101-1234567");
-    expect(masked).not.toContain("900101-1234567");
-    expect(masked).toContain("******-*******");
-    expect(detections).toContain("주민등록번호");
-  });
+  it("masks a valid RRN with hyphen",
+    masksCase("주민번호: 900101-1234567", "900101-1234567", "******-*******", "주민등록번호"));
 
   it("does not mask a RRN-like string with gender digit outside [1-4]", () => {
     const { masked } = maskSensitiveData("900101-5234567");
@@ -25,12 +30,8 @@ describe("maskSensitiveData — 주민등록번호 (Korean RRN)", () => {
 
 describe("maskSensitiveData — 신용카드 (credit card)", () => {
   // Use a Luhn-valid card and preserve only its last four digits and separators.
-  it("masks a Luhn-valid 16-digit card with spaces, preserves last 4 and grouping", () => {
-    const { masked, detections } = maskSensitiveData("카드: 4111 1111 1111 1111");
-    expect(masked).not.toContain("4111 1111 1111 1111");
-    expect(masked).toContain("**** **** **** 1111");
-    expect(detections).toContain("신용카드");
-  });
+  it("masks a Luhn-valid 16-digit card with spaces, preserves last 4 and grouping",
+    masksCase("카드: 4111 1111 1111 1111", "4111 1111 1111 1111", "**** **** **** 1111", "신용카드"));
 
   it("masks a Luhn-valid 16-digit card with hyphens", () => {
     const { masked } = maskSensitiveData("card: 4111-1111-1111-1111");
@@ -38,12 +39,8 @@ describe("maskSensitiveData — 신용카드 (credit card)", () => {
     expect(masked).toContain("****-****-****-1111");
   });
 
-  it("masks a Luhn-valid 16-digit card without separators", () => {
-    const { masked, detections } = maskSensitiveData("num: 4111111111111111");
-    expect(masked).not.toContain("4111111111111111");
-    expect(masked).toContain("************1111");
-    expect(detections).toContain("신용카드");
-  });
+  it("masks a Luhn-valid 16-digit card without separators",
+    masksCase("num: 4111111111111111", "4111111111111111", "************1111", "신용카드"));
 
   // Display and model redactors must both leave non-Luhn digit runs intact.
   it("leaves a card-length digit run that fails Luhn intact", () => {
@@ -88,12 +85,8 @@ describe("maskSensitiveData — API 키 (sk- prefix)", () => {
 });
 
 describe("maskSensitiveData — 전화번호 (Korean 010)", () => {
-  it("masks 010-XXXX-XXXX format", () => {
-    const { masked, detections } = maskSensitiveData("내 번호: 010-1234-5678");
-    expect(masked).not.toContain("010-1234-5678");
-    expect(masked).toContain("010-****-****");
-    expect(detections).toContain("전화번호");
-  });
+  it("masks 010-XXXX-XXXX format",
+    masksCase("내 번호: 010-1234-5678", "010-1234-5678", "010-****-****", "전화번호"));
 
   it("masks multiple phone numbers", () => {
     const { masked } = maskSensitiveData("010-1111-2222 and 010-3333-4444");
@@ -103,12 +96,8 @@ describe("maskSensitiveData — 전화번호 (Korean 010)", () => {
 });
 
 describe("maskSensitiveData — 이메일 (email)", () => {
-  it("preserves domain while masking local part", () => {
-    const { masked, detections } = maskSensitiveData("이메일: user@example.com");
-    expect(masked).not.toContain("user@example.com");
-    expect(masked).toContain("***@example.com");
-    expect(detections).toContain("이메일");
-  });
+  it("preserves domain while masking local part",
+    masksCase("이메일: user@example.com", "user@example.com", "***@example.com", "이메일"));
 
   it("masks email in plain text context", () => {
     const { masked } = maskSensitiveData("contact admin@company.co.kr for help");

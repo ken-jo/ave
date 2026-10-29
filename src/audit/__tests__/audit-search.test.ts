@@ -10,6 +10,10 @@ import { AuditLogger, type AuditEntry } from "../audit-logger.js";
 let testHome: string;
 let auditDir: string;
 
+function searchAudit(options: Parameters<AuditLogger["search"]>[0]) {
+  return new AuditLogger().search(options);
+}
+
 function makeEntry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   return {
     timestamp: new Date().toISOString(),
@@ -46,8 +50,7 @@ describe("AuditLogger.search()", () => {
   it("returns all entries when no filter", async () => {
     writeJsonl("2026-04-17.jsonl", [makeEntry({ type: "turn" }), makeEntry({ type: "tool_call" })]);
     writeJsonl("2026-04-18.jsonl", [makeEntry({ type: "error" })]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({});
+    const { entries, total } = await searchAudit({});
     expect(total).toBe(3);
     expect(entries).toHaveLength(3);
   });
@@ -58,8 +61,7 @@ describe("AuditLogger.search()", () => {
       makeEntry({ type: "tool_call" }),
       makeEntry({ type: "turn" }),
     ]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ type: "tool_call" });
+    const { entries, total } = await searchAudit({ type: "tool_call" });
     expect(total).toBe(1);
     expect(entries[0].type).toBe("tool_call");
   });
@@ -69,8 +71,7 @@ describe("AuditLogger.search()", () => {
     writeJsonl("2026-04-14.jsonl", [makeEntry({ type: "warn", timestamp: "2026-04-14T12:00:00.000Z" })]);
     writeJsonl("2026-04-17.jsonl", [makeEntry({ type: "turn", timestamp: "2026-04-17T12:00:00.000Z" })]);
     writeJsonl("2026-04-20.jsonl", [makeEntry({ type: "error", timestamp: "2026-04-20T12:00:00.000Z" })]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-04-16", dateTo: "2026-04-18" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-04-16", dateTo: "2026-04-18" });
     expect(total).toBe(1);
     expect(entries[0].type).toBe("turn");
   });
@@ -80,8 +81,7 @@ describe("AuditLogger.search()", () => {
       makeEntry({ input: "secret token abc" }),
       makeEntry({ input: "normal message" }),
     ]);
-    const logger = new AuditLogger();
-    const { total } = await logger.search({ textSearch: "SECRET" });
+    const { total } = await searchAudit({ textSearch: "SECRET" });
     expect(total).toBe(1);
   });
 
@@ -101,8 +101,7 @@ describe("AuditLogger.search()", () => {
   });
 
   it("returns empty when no files exist", async () => {
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({});
+    const { entries, total } = await searchAudit({});
     expect(total).toBe(0);
     expect(entries).toHaveLength(0);
   });
@@ -110,8 +109,7 @@ describe("AuditLogger.search()", () => {
   it("skips malformed JSON lines gracefully", async () => {
     const path = join(auditDir, "2026-04-17.jsonl");
     writeFileSync(path, `${JSON.stringify(makeEntry())}\nNOT_JSON\n${JSON.stringify(makeEntry())}\n`, "utf-8");
-    const logger = new AuditLogger();
-    const { total } = await logger.search({});
+    const { total } = await searchAudit({});
     expect(total).toBe(2);
   });
 
@@ -140,8 +138,7 @@ describe("AuditLogger.search()", () => {
     };
     setImmediate(tick);
 
-    const logger = new AuditLogger();
-    const result = await logger.search({ offset: 49_990, limit: 5 });
+    const result = await searchAudit({ offset: 49_990, limit: 5 });
     scanning = false;
 
     expect(result.total).toBe(totalRows);
@@ -250,8 +247,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
     writeJsonl("2026-06-16.jsonl", [
       makeEntry({ timestamp: "2026-06-16T10:00:00.000Z", input: "local-evening" }),
     ]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
     expect(total).toBe(2);
     expect(entries.map((e) => e.input).sort()).toEqual(["after-local-midnight", "local-evening"]);
   });
@@ -266,8 +262,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
       makeEntry({ timestamp: "2026-06-15T03:59:59.000Z", input: "previous-local-day" }),
       makeEntry({ timestamp: "2026-06-15T12:00:00.000Z", input: "local-morning" }),
     ]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-06-15", dateTo: "2026-06-15" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-06-15", dateTo: "2026-06-15" });
     expect(total).toBe(2);
     expect(entries.map((e) => e.input).sort()).toEqual(["local-evening", "local-morning"]);
   });
@@ -282,8 +277,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
       makeEntry({ timestamp: "2026-06-16T14:59:59.999Z", input: "to-last-instant" }),
       makeEntry({ timestamp: "2026-06-16T15:00:00.000Z", input: "after-to" }),
     ]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-06-15", dateTo: "2026-06-16" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-06-15", dateTo: "2026-06-16" });
     expect(total).toBe(2);
     expect(entries.map((e) => e.input).sort()).toEqual(["from-first-instant", "to-last-instant"]);
   });
@@ -298,8 +292,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
       makeEntry({ timestamp: "2026-06-16T14:59:59.999Z", input: "to-last-instant" }),
       makeEntry({ timestamp: "2026-06-16T15:00:00.000Z", input: "after-to" }),
     ]);
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-06-15", dateTo: "2026-06-16" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-06-15", dateTo: "2026-06-16" });
     expect(total).toBe(2);
     expect(entries.map((e) => e.input).sort()).toEqual(["after-to", "to-last-instant"]);
   });
@@ -313,8 +306,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
       tool: "read_file",
     } as unknown as AuditEntry;
     writeJsonl("2026-06-15.permission-audit.jsonl", [permissionRow]);
-    const logger = new AuditLogger();
-    const { total } = await logger.search({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
+    const { total } = await searchAudit({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
     expect(total).toBe(1);
   });
 
@@ -356,8 +348,7 @@ describe("AuditLogger.search() — newest-first across a day's channel files", (
 
   it("returns one monotonically descending run, not one per channel file", async () => {
     writeDayChannels();
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
     expect(total).toBe(5);
     expect(entries.map((e) => e.input)).toEqual([
       "turn-last",
@@ -391,8 +382,7 @@ describe("AuditLogger.search() — newest-first across a day's channel files", (
     writeJsonl("2026-06-16.sandbox.jsonl", [
       makeEntry({ timestamp: "2026-06-16T04:00:00.000Z", input: "third-read" }),
     ]);
-    const logger = new AuditLogger();
-    const { entries } = await logger.search({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
+    const { entries } = await searchAudit({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
     expect(entries.map((e) => e.input)).toEqual(["first-read", "second-read", "third-read"]);
   });
 
@@ -473,8 +463,7 @@ describe("AuditLogger — quarantined unverified rows", () => {
 
   it("search never returns them", async () => {
     writeVerifiedAndQuarantined();
-    const logger = new AuditLogger();
-    const { entries, total } = await logger.search({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
+    const { entries, total } = await searchAudit({ dateFrom: "2026-06-16", dateTo: "2026-06-16" });
     expect(total).toBe(1);
     expect(entries.map((e) => e.input)).toEqual(["sealed"]);
   });

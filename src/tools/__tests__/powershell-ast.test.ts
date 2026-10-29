@@ -58,7 +58,16 @@ describe("native PowerShell AST facts", () => {
     { ...command("Get-Content"), commands: [{ name: "Get-Content", text: "Get-Content", arguments: [{ kind: "literal", text: "x" }] }] },
     { ...command("Get-Content"), redirections: [null] },
     { ...command("Get-Content"), commands: [{ name: "Get-Content", text: "Get-Content", arguments: [{ kind: "parameter", text: "-Path", name: "Path", argument: { kind: "parameter", text: "-x", name: "x" } }] }] },
+    { ...command("Get-Content"), commands: [{ name: "Get-Content", text: "Get-Content", arguments: [{ kind: "literal", text: "x", value: "x", start: 3 }] }] },
+    { ...command("Get-Content"), commands: [{ name: "Get-Content", text: "Get-Content", arguments: [{ kind: "literal", text: "x", value: "x", start: 4, end: 3 }] }] },
+    { ...command("Get-Content"), commands: [{ name: "Get-Content", text: "Get-Content", arguments: [{ kind: "literal", text: "x", value: "x", start: -1, end: 0 }] }] },
   ])("rejects malformed native summary %j", (raw) => {
     expect(() => normalizePowerShellAstSummary(raw)).toThrow("PowerShell AST");
+  });
+
+  it("keeps parser element offsets", () => {
+    const raw = command("Get-Content", [{ kind: "parameter", name: "Path", text: "-Path:x", start: 12, end: 19,
+      argument: { kind: "literal", text: "x", value: "x", start: 18, end: 19 } }]);
+    expect(normalizePowerShellAstSummary(raw).commands[0]!.arguments[1]).toEqual(raw.commands[0]!.arguments[1]);
   });
 });

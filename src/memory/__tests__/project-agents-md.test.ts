@@ -26,6 +26,15 @@ import {
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { holdSandboxGitWrites } from "../../shared/host-git.js";
 
+function initIgnoredBuild(project: string, patterns: string, layout: "nested" | "recursive" | "plain") {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+  execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
+  writeFileSync(join(project, ".gitignore"), patterns);
+  if (layout !== "plain") mkdirSync(layout === "nested" ? join(project, "build", "out") : join(project, "build"), { recursive: true });
+  else mkdirSync(join(project, "build"));
+  writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+}
+
 describe("discoverProjectAgentsMd", () => {
   let root: string;
 
@@ -358,22 +367,14 @@ describe("discoverDirectoryInstructions", () => {
   });
 
   it("skips instruction files git ignores", () => {
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-    execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
-    writeFileSync(join(project, ".gitignore"), "build/\nsrc/api/CLAUDE.md\n");
-    mkdirSync(join(project, "build", "out"), { recursive: true });
-    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    initIgnoredBuild(project, "build/\nsrc/api/CLAUDE.md\n", "nested");
     writeFileSync(join(project, "build", "out", "AGENTS.md"), "generated nested rule");
     expect(discoverDirectoryInstructions(project, join("build", "out", "x.js"), new Set())).toEqual([]);
     const layers = discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
     expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
   });
   it("asks git once per path for the session's repeated touches", () => {
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-    execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
-    writeFileSync(join(project, ".gitignore"), "build/\n");
-    mkdirSync(join(project, "build"), { recursive: true });
-    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    initIgnoredBuild(project, "build/\n", "recursive");
     const verdicts = new Map<string, boolean>();
     const before = gitCalls.checkIgnore;
     for (let touch = 0; touch < 3; touch++) {
@@ -387,11 +388,7 @@ describe("discoverDirectoryInstructions", () => {
   });
 
   it("defers workspace Git queries until sandbox cleanup releases the hold without caching the temporary answer", () => {
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-    execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
-    writeFileSync(join(project, ".gitignore"), "build/\n");
-    mkdirSync(join(project, "build"));
-    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    initIgnoredBuild(project, "build/\n", "plain");
     const verdicts = new Map<string, boolean>();
     const before = gitCalls.checkIgnore;
     const release = holdSandboxGitWrites([join(project, "build")]);

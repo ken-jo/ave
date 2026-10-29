@@ -5,7 +5,6 @@ import {
   splitPluginToolUiMeta,
 } from "../plugin-runtime-delegate.js";
 import { RAW_RESULT_META } from "../protocol-constants.js";
-import { PluginMcpHost } from "../plugin-mcp-host.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import {
   ManifestIntegrityError,
@@ -14,21 +13,11 @@ import {
 import type { PluginRuntime } from "../../plugins/runtime.js";
 import type { PluginManifest } from "../../plugins/types.js";
 import { sessionContext } from "../../engine/session-context.js";
-import { testLoopbackHost } from "./plugin-mcp-test-helpers.js";
+import { publishTestHost, testLoopbackHost } from "./plugin-mcp-test-helpers.js";
 
 beforeEach(() => manifestIntegrityState.resetForTests());
 
 const PLUGIN_ID = "com.example.notes";
-
-async function publishTestHost(
-  host: PluginMcpHost,
-  pluginId: string,
-  registry: ToolRegistry,
-): Promise<void> {
-  const tools = await host.prepareTools();
-  registry.reservePluginReplacement(pluginId, tools, []).publish();
-  host.publishPrepared(tools);
-}
 
 // Keep runtime admission real; only the activation state is controlled by the fixture.
 function fakeRuntime(over: Partial<Pick<PluginRuntime, "isPluginEnabled" | "isSessionActivated" | "call">>): PluginRuntime {

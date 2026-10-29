@@ -21,11 +21,16 @@ import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
-import { mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
+import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
+import { POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL } from "../../shared/powershell-recursive-traversal.js";
 import { t } from "../../i18n/index.js";
 
 let dir: string;
 let manager: PermissionManager;
+const recursionDeny = {
+  decision: "deny", reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL, layer: 0,
+  denyReasons: [{ layer: 0, reason: "shell-path-policy", source: "directory-policy" }],
+};
 // Audit writes are queued, not awaited, by the code under test; teardown must
 // drain them before removing the directory they write into.
 const auditLoggers: AuditLogger[] = [];
@@ -156,27 +161,97 @@ describe("shell confinement and escape rules", () => {
     const pinned = isPowerShellStartupPinned();
     const startupAsk = { decision: "ask", layer: 2, forceModal: true, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
 
-    it("asks before a recursive traversal and keeps the confined allow otherwise", () => {
-      expect(checkPowerShell("Get-ChildItem -Recurse src")).toEqual(pinned
-        ? { decision: "ask", layer: 2, forceModal: true, reason: t("be_permissionManager.mxcRecursiveTraversalReason") } : startupAsk);
+    // The unproven floor or the MXC lane asks for the undecidable remainder; neither lets it run unasked.
+    it("asks before an undecidable traversal and keeps the confined allow otherwise", () => {
+      expect(checkPowerShell("node walker.js src")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
       expect(checkPowerShell("Get-ChildItem src")).toEqual(pinned ? { decision: "allow", layer: 3, reason: t("be_permissionManager.shellSandboxedReason") } : startupAsk);
     });
 
     it.each([
       "Get-ChildItem -Recurse src", "gci -r src", "ls -Rec src", "dir -recurs src", "Get-ChildItem src -s",
       "Get-ChildItem src -Depth 2", "gci src -de 1", "Get-ChildItem src -Recurse:$true",
+      "gci -d 1 src", "tar --cr x.tar src", "tar --ap x.tar src", "tar --up x.tar src",
+      "findstr /si term src", "findstr -si term src", "findstr /s/i term src", "findstr -s term src",
+      "findstr -sic:probe src", "findstr /sic:probe src", "xcopy src out /s/d:01-01-2020",
+      "xcopy src out /se", "xcopy src out /s/e", "xcopy src out /t",
+      "xcopy src out /s/m", "xcopy src out /e/d", "xcopy src out /e/x", "xcopy src out /s/-y", "findstr /s/offline term src",
+      "tar --lz4 -cf out.tar src", "tar --verb -czf out.tgz src", "tar --bzip2 -cf out.tbz src", "zip -r:$x a.zip src",
+      "tar --file -t -c src", "tar --lz4 --file -t -c src", "tar -f -t -c src",
+      "robocopy src out -s", "robocopy src out -e", "robocopy src out -mir",
       "Get-ChildItem -r src | Select-String term", "Select-String term -Path (Get-ChildItem -Recurse src)",
       "if ($true) { gci -Recurse src }", "$files = gci -r src; Select-String term $files",
-      "Remove-Item -Recurse build", "Copy-Item src out -Recurse", "robocopy src out /E", "tree src", "rg term",
-      "iex 'Get-ChildItem'", "& $cmd src", "Get-ChildItem @options", "Get-ChildItem 'unterminated",
-    ])("treats %s as traversal", command => {
+      "Remove-Item -Recurse build", "Copy-Item src out -Recurse", "robocopy src out /E",
+      "tar cf x.tar d", "tar -czf x.tar d", "tar --create -f x.tar d", "tar -rf x.tar d", "tar -uf x.tar d", "& tar c .",
+      "7z a x.7z d", "7za u x.7z d", "zip -r a.zip d", "zip -qr a.zip d",
+      "Compress-Archive -Path d/ -DestinationPath a.zip", "Compress-Archive *.txt a.zip", "Compress-Archive -Path:src/* a.zip",
+    ])("denies definite traversal %s with the host block's reason", command => {
+      expect(definitelyTraversesPowerShellRecursively(command)).toBe(true);
+      expect(mayTraversePowerShellRecursively(command)).toBe(true);
+      expect(checkPowerShell(command)).toEqual(recursionDeny);
+    });
+
+    it.each([
+      "tree src", "rg term", "node walker.js src", "cmd /c dir /s", "iex 'Get-ChildItem'", "& $cmd src",
+      "Get-ChildItem @options", "Get-ChildItem 'unterminated",
+      "tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
+      "tar --c x.tar", "tar --a x.tar", "tar --u x.tar", "tar --lz4 -t -f x.tar",
+      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "xcopy $from out", "robocopy src out $flags",
+      "robocopy --% a b /e", "xcopy --% a b /s", "findstr --% /s term src", "$env:X='/e'; robocopy --% a b %X%", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
+    ])("keeps the forced ask for undecidable traversal %s", command => {
+      expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
       expect(checkPowerShell(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     });
 
-    it.each(["Get-ChildItem src", "Get-ChildItem -Directory src", "Get-Content notes.txt", "Select-String term notes.txt",
-      "$a = 1; Write-Output $a", "foreach ($n in 1..3) { Write-Output $n }"])("treats %s as flat", command => {
+    // Listing and extraction read the archive, not a tree; extraction writes belong to the write policy.
+    it.each(["tar -tf x.tar", "tar -xf x.tar", "tar xf x.tar", "7z l x.7z", "7z x x.7z", "7z e x.7z", "7z t x.7z", "unzip x.zip", "Expand-Archive x.zip d"])
+    ("does not deny archive listing or extraction %s as traversal", command => {
+      expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(false);
+      expect(checkPowerShell(command).decision).not.toBe("deny");
+    });
+
+    it.each(["Get-ChildItem src", "Get-ChildItem -Directory src", "Get-Content notes.txt", "Select-String term notes.txt",
+      "gci -ad src", "gc notes.txt -re 10", "gc f.csv -De ','", "xcopy src out -s", "xcopy src out /exclude:s", "robocopy src out /se", "findstr /c:s term src",
+      "xcopy src out /exclude:C:/lists/exclude.txt", "findstr /c:a/s notes.txt", "findstr /d:C:/src needle notes.txt",
+      "xcopy src out /noclone", "xcopy src out /sparse", "xcopy src out /-sparse", "findstr /off term notes.txt",
+      "Copy-Item src -De out", "Remove-Item src -d",
+      "$a = 1; Write-Output $a", "foreach ($n in 1..3) { Write-Output $n }", "Copy-Item -Recurse:$false src out",
+      "Get-ChildItem -Recurse: $false src"])("treats %s as flat", command => {
+      expect(mayTraversePowerShellRecursively(command)).toBe(false);
+      expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
+    });
+  });
+
+  describe("definite PowerShell recursion on every host route", () => {
+    const routes = {
+      mxc: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" }),
+      asrt: () => buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { kind: "asrt", confidence: "verified", platform: "linux", reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } } }),
+      "approved host": () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: windowsProxyOnlyCapability() }),
+    };
+    const forms = (operand: string) => [
+      `Get-ChildItem -Recurse '${operand}'`, `gci -r '${operand}'`, `gci -s '${operand}'`, `Get-ChildItem -Depth 2 '${operand}'`,
+      `Copy-Item -Recurse:$true '${operand}' out`, `gci -r '${operand}' | Select-String x`,
+    ];
+
+    it.each(Object.keys(routes) as (keyof typeof routes)[])("denies each form through a junction and a directory link on the %s route", (route) => {
+      const outside = join(dir, "outside");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "notes.txt"), "fixture");
+      const junction = join(dir, "via-junction");
+      const directoryLink = join(dir, "via-link");
+      symlinkSync(outside, junction, "junction");
+      symlinkSync(outside, directoryLink, "dir");
+      const hostShellExecutionPlan = routes[route]();
+      for (const link of [junction, directoryLink]) {
+        for (const command of forms(link.replace(/\\/g, "/"))) {
+          expect(manager.checkDetailed("powershell", "builtin", "shell", null, {
+            ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: dir },
+            hostShellExecutionPlan,
+            shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed, pathPolicyRelaxations: [] },
+          }), command).toEqual(recursionDeny);
+        }
+      }
     });
   });
 

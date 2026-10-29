@@ -1,7 +1,11 @@
 // Each shell command gets its own container, filesystem policy and kernel-bound proxy listener; deny/read-only entries outrank write grants, but missing read-only targets do not protect future paths. Killing the launcher tears down descendants, and containers cannot terminate host processes (docs/architecture/architecture.md).
 // Use the signed CLI to relay stdio/exit while the embedded runtime lacks required native support. Plugin workers retain their separate sandbox because proxy mode forbids direct loopback control; terminals remain user-owned and need background descendants to survive.
 import { win32 as winPath } from "node:path";
+import type { ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
+import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
+import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 
 import { errorMessage } from "../shared/error-message.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
@@ -176,7 +180,7 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   });
   let dryRun: MxcRunResult;
   try {
-    dryRun = await deps.run(wxcExec, ["--dry-run", ...mxcRequestArgs(request)], MXC_PROBE_TIMEOUT_MS);
+    dryRun = await deps.run(wxcExec, ["--dry-run", ...mxcRequestArgs(request, wxcExec, ["--dry-run"])], MXC_PROBE_TIMEOUT_MS);
   } catch (error) {
     return unavailable("probe-failed", errorMessage(error));
   }
@@ -213,7 +217,7 @@ export async function probeMxcPowerShellStart(deps: DetectMxcSupportDeps): Promi
   });
   let started: MxcRunResult;
   try {
-    started = await deps.run(wxcExec, mxcRequestArgs(startRequest), MXC_START_PROBE_TIMEOUT_MS + 5_000);
+    started = await deps.run(wxcExec, mxcRequestArgs(startRequest, wxcExec), MXC_START_PROBE_TIMEOUT_MS + 5_000);
   } catch (error) {
     return unavailable("powershell-start-failed", errorMessage(error));
   }
@@ -273,11 +277,15 @@ function dedupe(paths: readonly string[]): string[] {
 
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
 export function rankMxcFilesystem(policy: ShellFilesystemPolicy, exists: (path: string) => boolean): MxcFilesystemGrants {
+  // POSIX-rooted floor rows must not turn into current-drive paths.
+  const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
+  const protectedFloor = windowsPaths(policy.protectedFloor);
+  const denyWrite = windowsPaths(policy.denyWrite);
   const pierces = policy.floorPierces ?? [];
   const floored = (path: string): boolean =>
-    policy.protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
+    protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
     !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce));
-  const writeDenied = (path: string): boolean => policy.denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
+  const writeDenied = (path: string): boolean => denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
 
   const writeGrants = dedupe(policy.allowWrite).filter((path) => exists(path) && !floored(path));
   const readwrite = writeGrants.filter((path) => !writeDenied(path));
@@ -286,19 +294,37 @@ export function rankMxcFilesystem(policy: ShellFilesystemPolicy, exists: (path: 
 
   const readonlyOut: string[] = [...readGrants, ...demoted];
   const denied: string[] = [];
-  for (const deny of dedupe(policy.denyWrite)) {
+  for (const deny of dedupe(denyWrite)) {
     if (!readwrite.some((grant) => strictlyUnder(deny, grant))) continue;
     if (exists(deny)) readonlyOut.push(deny);
     else denied.push(deny);
   }
   const allGrants = [...readwrite, ...readonlyOut];
-  for (const deny of dedupe([...policy.denyRead, ...policy.protectedFloor])) {
+  for (const deny of dedupe([...windowsPaths(policy.denyRead), ...protectedFloor])) {
     if (allGrants.some((grant) => strictlyUnder(deny, grant))) denied.push(deny);
   }
+  const raised = denied.map((deny) => {
+    if (exists(deny)) return deny;
+    let firstMissing = winPath.normalize(deny);
+    for (;;) {
+      const parent = winPath.dirname(firstMissing);
+      if (exists(parent)) break;
+      if (parent === firstMissing) throw new Error(`Windows sandbox policy cannot resolve missing deny: ${deny}`);
+      firstMissing = parent;
+    }
+    if (foldPath(firstMissing) === foldPath(deny)) return deny;
+    if (allGrants.some((grant) => foldPath(firstMissing) === foldPath(grant)) ||
+        !readwrite.some((grant) => strictlyUnder(firstMissing, grant))) {
+      throw new Error(`Windows sandbox policy cannot raise missing deny within a writable grant: ${deny}`);
+    }
+    // The shell cannot create this directory this spawn; recompute precise denies next spawn. Approved file tools can still create it.
+    return firstMissing;
+  });
   return {
     readwrite,
     readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))),
-    denied: dedupe(denied),
+    denied: dedupe(raised).filter((path, index, paths) =>
+      !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))),
   };
 }
 
@@ -384,9 +410,56 @@ export function buildMxcShellRequest(input: MxcShellRequestInput): MxcContainerR
   };
 }
 
-// The `wxc-exec.exe` arguments carrying a request (no temp file, nothing secret in it).
-export function mxcRequestArgs(request: MxcContainerRequest): string[] {
-  return ["--config-base64", Buffer.from(JSON.stringify(request), "utf8").toString("base64")];
+export const MXC_REQUEST_CHARACTER_LIMIT = 1024 * 1024;
+
+function policyTooLarge(length: number, limit: number, cause?: unknown): Error {
+  return new Error(`Windows sandbox policy is too large: ${length} characters, limit ${limit}`, { cause });
+}
+
+function serializeMxcRequest(request: MxcContainerRequest): string {
+  const json = JSON.stringify(request);
+  if (json.length > MXC_REQUEST_CHARACTER_LIMIT) throw policyTooLarge(json.length, MXC_REQUEST_CHARACTER_LIMIT);
+  return json;
+}
+
+function base64RequestArgs(json: string): string[] {
+  return ["--config-base64", Buffer.from(json, "utf8").toString("base64")];
+}
+
+// Probes remain inline and fail before spawn if their complete command line cannot fit.
+export function mxcRequestArgs(request: MxcContainerRequest, launcher: string, prefix: readonly string[] = []): string[] {
+  const args = base64RequestArgs(serializeMxcRequest(request));
+  const length = windowsCommandLineLength(launcher, [...prefix, ...args]);
+  if (length + WINDOWS_COMMAND_LINE_MARGIN >= WINDOWS_COMMAND_LINE_LIMIT) {
+    throw policyTooLarge(length, WINDOWS_COMMAND_LINE_LIMIT - WINDOWS_COMMAND_LINE_MARGIN - 1);
+  }
+  return args;
+}
+
+export interface MxcRequestTransport {
+  readonly args: readonly string[];
+  bindChild(child: ChildProcess): void;
+  release(): Promise<void>;
+}
+
+export async function openMxcRequestTransport(request: MxcContainerRequest, launcher: string): Promise<MxcRequestTransport> {
+  const json = serializeMxcRequest(request);
+  const inline = base64RequestArgs(json);
+  const length = windowsCommandLineLength(launcher, inline);
+  if (length + WINDOWS_COMMAND_LINE_MARGIN < WINDOWS_COMMAND_LINE_LIMIT) {
+    return { args: inline, bindChild: () => {}, release: async () => {} };
+  }
+  const limit = WINDOWS_COMMAND_LINE_LIMIT - WINDOWS_COMMAND_LINE_MARGIN - 1;
+  const pipe = String.raw`\\.\pipe\ave-mxc-${randomBytes(16).toString("hex")}`;
+  const args = ["--config", pipe];
+  if (windowsCommandLineLength(launcher, args) + WINDOWS_COMMAND_LINE_MARGIN >= WINDOWS_COMMAND_LINE_LIMIT) {
+    throw policyTooLarge(length, limit);
+  }
+  try {
+    return { args, ...await openMxcPolicyPipe(Buffer.from(json, "utf8"), pipe) };
+  } catch (error) {
+    throw new Error(`Windows sandbox policy pipe could not be opened: ${errorMessage(error)}`, { cause: error });
+  }
 }
 
 // The container command line for one PowerShell command. `-EncodedCommand` carries the command as UTF-16LE base64, so no quoting of the command's own text can change how the line splits.

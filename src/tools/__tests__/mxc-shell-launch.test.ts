@@ -23,6 +23,8 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
 }));
 
 import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
+import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
+import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 
 const WS = String.raw`C:\work\repo`;
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
@@ -116,5 +118,26 @@ describe("prepareMxcShellLaunch", () => {
     expect(server).toBeDefined();
     expect(server?.listening).toBe(false);
     expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it("closes preparation resources when the policy exceeds the delivery cap", async () => {
+    h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
+    const listen = vi.spyOn(net.Server.prototype, "listen");
+    await expect(prepareMxcShellLaunch({ ...INPUT, commandLine: "x".repeat(MXC_REQUEST_CHARACTER_LIMIT) }))
+      .rejects.toThrow(/^Windows sandbox policy is too large:/);
+    const server = listen.mock.contexts[0] as net.Server;
+    expect(server.listening).toBe(false);
+    expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform !== "win32")("releases an unused policy pipe with the invocation listener", async () => {
+    const release = vi.fn(async () => {});
+    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockResolvedValue({ bindChild: () => {}, release });
+    h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
+    const launch = await prepareMxcShellLaunch({ ...INPUT, commandLine: "x".repeat(25_000) });
+    expect(launch.argv[1]).toBe("--config");
+    await launch.release();
+    expect(release).toHaveBeenCalledOnce();
+    expect(await portAccepts(launch.proxyPort)).toBe(false);
   });
 });

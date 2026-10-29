@@ -634,6 +634,13 @@ function assertBefore(a: string, b: string) {
   ).toBeLessThan(ib);
 }
 
+function bootWithWindow(
+  window: Parameters<typeof bootstrap>[1],
+  mode: Parameters<typeof bootstrap>[3],
+) {
+  return bootstrap("/tmp/ave-boot-test/project", window, () => window, mode, createBootHostFixture());
+}
+
 describe("bootstrap() integration lock", () => {
   let services: AppServices;
   let savedSandboxEnv: string | undefined;
@@ -644,13 +651,7 @@ describe("bootstrap() integration lock", () => {
     savedSandboxEnv = process.env["AVE_SANDBOX_ENABLED"];
     delete process.env["AVE_SANDBOX_ENABLED"];
     const win = fakeWindow();
-    services = await bootstrap(
-      "/tmp/ave-boot-test/project",
-      win,
-      () => win,
-      "interactive",
-      createBootHostFixture(),
-    );
+    services = await bootWithWindow(win, "interactive");
   }, 180_000);
 
   afterAll(() => {
@@ -944,13 +945,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     vi.mocked(wireModelCatalogRefresh).mockClear();
     h.order.length = 0;
     (h.captured["shutdownHooks"] as string[]).length = 0;
-    headlessServices = await bootstrap(
-      "/tmp/ave-boot-test/project",
-      null,
-      () => null,
-      "headless",
-      createBootHostFixture(),
-    );
+    headlessServices = await bootWithWindow(null, "headless");
   }, 180_000);
 
   afterAll(() => {

@@ -20,6 +20,8 @@ export const TOOL_TIMEOUT_POLICY = {
   windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
   windowsAclRequestMs: 15_000,
+  // Bound policy delivery even when the container launcher never connects.
+  mxcRequestTransportMs: 15_000,
   // Share the exact workload-identity handshake budget with the protocol.
   workloadBrokerPreEffectHandshakeMs: 15_000,
   // Receipt transport grace does not extend the operation deadline.

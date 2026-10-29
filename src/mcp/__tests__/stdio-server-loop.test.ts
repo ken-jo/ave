@@ -151,10 +151,10 @@ describe("stdio-framing", () => {
 });
 
 describe("StdioServerLoop — subprocess serving core over real streams", () => {
-  function wire(delegate: PluginToolDelegate) {
+  function wire(handler: PluginToolDelegate | StdioRequestHandler) {
     const clientToServer = new PassThrough();
     const serverToClient = new PassThrough();
-    const server = new PluginMcpServer(MANIFEST, delegate);
+    const server = typeof handler === "function" ? new PluginMcpServer(MANIFEST, handler) : handler;
     new StdioServerLoop(clientToServer, serverToClient, server, LINE_MAX).start();
     return { clientToServer, serverToClient };
   }
@@ -201,9 +201,7 @@ describe("StdioServerLoop — subprocess serving core over real streams", () => 
         throw new Error("kaboom");
       }),
     };
-    const clientToServer = new PassThrough();
-    const serverToClient = new PassThrough();
-    new StdioServerLoop(clientToServer, serverToClient, handler, LINE_MAX).start();
+    const { clientToServer, serverToClient } = wire(handler);
 
     const pending = nextResponse(serverToClient);
     clientToServer.write(frameMessage({ jsonrpc: "2.0", id: 5, method: "tools/list" }));

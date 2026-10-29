@@ -29,6 +29,15 @@ function makeMemoryManager() {
   };
 }
 
+function makeIdleScheduler(listenerRef: { current?: IdleStateChangeListener }) {
+  return {
+    addStateChangeListener: vi.fn((handler: IdleStateChangeListener) => {
+      listenerRef.current = handler;
+      return () => undefined;
+    }),
+  };
+}
+
 describe("PreferenceRefreshService", () => {
   it("refreshes user-preferences.md with preferences only", async () => {
     const memoryManager = makeMemoryManager();
@@ -163,12 +172,7 @@ describe("PreferenceRefreshService", () => {
 
   it("does not run idle refresh unless the user opted in", async () => {
     const listenerRef: { current?: IdleStateChangeListener } = {};
-    const idleScheduler = {
-      addStateChangeListener: vi.fn((handler: IdleStateChangeListener) => {
-        listenerRef.current = handler;
-        return () => undefined;
-      }),
-    };
+    const idleScheduler = makeIdleScheduler(listenerRef);
     const memoryManager = makeMemoryManager();
     const memoryReviewer = createMemoryReviewer(async () => "# User Preferences");
 
@@ -187,12 +191,7 @@ describe("PreferenceRefreshService", () => {
 
   it("runs refresh when the opted-in idle scheduler enters IDLE_SCAN", async () => {
     const listenerRef: { current?: IdleStateChangeListener } = {};
-    const idleScheduler = {
-      addStateChangeListener: vi.fn((handler: IdleStateChangeListener) => {
-        listenerRef.current = handler;
-        return () => undefined;
-      }),
-    };
+    const idleScheduler = makeIdleScheduler(listenerRef);
     const memoryManager = makeMemoryManager();
     const memoryReviewer = createMemoryReviewer(async () => `# User Preferences
 ## Summary
@@ -216,12 +215,7 @@ describe("PreferenceRefreshService", () => {
 
   it("does not spend the success idle budget when an idle refresh fails", async () => {
     const listenerRef: { current?: IdleStateChangeListener } = {};
-    const idleScheduler = {
-      addStateChangeListener: vi.fn((handler: IdleStateChangeListener) => {
-        listenerRef.current = handler;
-        return () => undefined;
-      }),
-    };
+    const idleScheduler = makeIdleScheduler(listenerRef);
     const memoryManager = makeMemoryManager();
     const memoryReviewer = { review: vi.fn<MemoryReviewer["review"]>()
       .mockRejectedValueOnce(new Error("provider down"))

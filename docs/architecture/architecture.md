@@ -1199,7 +1199,7 @@ which is what every caller but the sidebar wants.
 | `main` | main | chat glyph, the conversation's title | the conversation, in the focused tile |
 | `routine` | main (`sessionKind: "routine"`) | routine glyph, the run's title | the run, through the same session-load path the routine panel uses |
 | `work-board` | sub-agent (origin names an item) | work glyph, the item's title | the board item, newest run transcript expanded |
-| `side-chat` | side-chat | side-chat glyph, indented under its conversation | the conversation, then that tile's side-chat tab showing this side chat |
+| `side-chat` | side-chat | side-chat glyph, indented under its conversation | the bound live terminal or page and its pane chat; with no live pane binding, the conversation and its side-chat tab |
 
 A sub-agent session that is not an item's run has no family and is not listed:
 it is already reachable inside its parent conversation's sub-agent tab, and a
@@ -1230,7 +1230,14 @@ side-chat store. A pane's turn binds its session to the pane's tab
 tab (`paneTabId`), so a restart reopens each restored pane on its conversation
 (restored tabs keep their ids). A turn from a conversation's side panel runs
 on the side loop in the session its view shows; a conversation a pane holds
-is refused there (`session-open-in-pane`). Reopening a pane's chat reads its
+is refused there (`session-open-in-pane`). The refusal names its owning pane tab
+only in that pane's window; the renderer checks the live tab inventory before
+offering Open, independently of the conversation list's current page or filter.
+Explicit host refusals are operation notices; unknown execution or transport
+failures remain stream errors even before the first stream frame.
+Hiding or unmounting a pane chat
+does not abort its turn. Its renderer transcript subscription follows the tab's
+lifetime; returning to the chat reattaches to that transcript. Reopening a pane's chat reads its
 history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh
 and the pane's close ends it (`ave:sidechat:end-pane-chat`), stopping only
 that pane's turn and archiving a closed pane's conversation. A pane that ends
@@ -2659,6 +2666,32 @@ in its directory.
   grant wins over a denied parent, a missing `denied` file path still blocks its
   creation, and a missing `readonly` directory does not block its creation, so
   a `denyWrite` path that does not exist is written as `denied`.
+  Missing nested denies are raised to the first missing component strictly
+  inside a writable grant; raising onto a grant root or outside all writable
+  grants fails closed. The shell cannot create that missing directory during
+  this spawn. Denies are recomputed each spawn, restoring precise entries once
+  it exists; an approved file tool can still create the directory.
+- **Policy transport.** Requests that exceed the inline command-line budget
+  use a random 128-bit named pipe served by the existing path-kind helper.
+  The helper has two host-only roles: path classification/facts and policy
+  delivery. Both use the same packaged-resource resolver, never PATH lookup.
+  Policy bytes arrive over private stdin. The pipe's protected descriptor
+  grants access only to the current user; the pipe rejects remote clients,
+  and its first instance must be new. Four instances fill the fixed instance limit
+  before readiness, leaving listeners available during PID binding and the
+  launcher's back-to-back opens. Each connection's kernel-reported PID must
+  match the spawned launcher, whose process handle remains open during
+  delivery. Impostors receive no policy and consume none of the two reads;
+  the authenticated-read budget is atomic across all instances.
+  Message-type instances retain byte-read mode and send a zero-length message
+  after the payload drains, giving read-to-end clients a clean EOF without
+  closing an instance handle. A discard-read loop over duplex access waits for
+  the client to close before disconnect; client writes are discarded and cannot change policy bytes.
+  The delivery deadline and process teardown also bound blocked I/O and
+  clients that never close. All four handles remain reserved until teardown.
+  Spawn failure, owner EOF, release and the bounded delivery deadline close
+  the server; teardown waits for helper close, and delivery failure also
+  terminates a bound launcher.
 - **Outbound connections and identity.** Each command gets its own loopback
   proxy listener (`egress-invocation-listener.ts`). The container's only
   outbound connection path is that port: MXC's per-container WFP filter, with

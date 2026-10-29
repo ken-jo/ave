@@ -1,9 +1,10 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { AssistantCard } from "../components/AssistantCard.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
+import { PaneChatNavigationProvider } from "../context/PaneChatNavigationContext.js";
 
 type AssistantEntry = Extract<ChatEntry, { kind: "assistant" }>;
 
@@ -137,6 +138,45 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
     expect(
       container.querySelector("[data-testid='assistant-restored-notice-badge']"),
     ).toBeNull();
+  });
+
+  it("labels a session operation refusal separately from a response stream failure", () => {
+    const { container } = renderCard(makeEntry({
+      text: "This chat is open in another pane.",
+      systemNotice: "operation-error",
+    }));
+    expect(container.textContent).toContain("시스템 알림 — 요청을 완료할 수 없음");
+    expect(container.textContent).not.toContain("응답 스트림 오류");
+  });
+
+  it("opens the live pane named by an operation refusal", () => {
+    const openPaneChat = vi.fn();
+    const { getByRole, container } = render(
+      <TooltipProvider>
+        <PaneChatNavigationProvider value={{
+          resolvePane: (tabId) => tabId === "terminal-tab" ? { tabId: "terminal-tab", name: "터미널 1" } : undefined,
+          openPaneChat,
+        }}>
+          <AssistantCard entry={makeEntry({ systemNotice: "operation-error", noticePaneTabId: "terminal-tab" })} />
+        </PaneChatNavigationProvider>
+      </TooltipProvider>,
+    );
+    expect(container.textContent).toContain("이 대화는 터미널 1에 열려 있습니다.");
+    expect(container.textContent).not.toContain("line1");
+    expect(container.textContent).not.toContain("응답 스트림 오류");
+    fireEvent.click(getByRole("button", { name: "열기" }));
+    expect(openPaneChat).toHaveBeenCalledExactlyOnceWith("terminal-tab");
+  });
+
+  it("offers no pane action after the bound surface has closed", () => {
+    const { queryByRole } = render(
+      <TooltipProvider>
+        <PaneChatNavigationProvider value={{ resolvePane: () => undefined, openPaneChat: vi.fn() }}>
+          <AssistantCard entry={makeEntry({ systemNotice: "operation-error", noticePaneTabId: "closed-pane-session" })} />
+        </PaneChatNavigationProvider>
+      </TooltipProvider>,
+    );
+    expect(queryByRole("button", { name: "열기" })).toBeNull();
   });
 
   it("softens a restored stream-error banner and shows the previous-session badge", () => {

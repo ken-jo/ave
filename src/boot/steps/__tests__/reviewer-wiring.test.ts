@@ -69,6 +69,15 @@ const PARENT_ADJUDICATION = {
 
 const CHAT_LLM = () => ({ provider: "openai" as const, model: "gpt-4o-mini" });
 
+function llmDenySettings() {
+  return {
+    mode: "llm",
+    fallbackOnError: "deny",
+    interactive: { autoApprove: "low" },
+    parentAdjudication: PARENT_ADJUDICATION,
+  } as const;
+}
+
 describe("Permission policy P4 reviewer-wiring", () => {
   // An unconfigured chat model leaves the following reviewer unconfigured.
   it("reports an empty active chat model as unconfigured without building a provider", () => {
@@ -330,12 +339,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: () => ({
-        mode: "llm",
-        fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
-      }),
+      readSettings: llmDenySettings,
       streamProviderFor: () => null,
       verdictCachePath: join(tmpDir, "cache-degrade-null.jsonl"),
       deferredQueuePath: join(tmpDir, "queue-degrade-null.jsonl"),
@@ -353,12 +357,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: () => ({
-        mode: "llm",
-        fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
-      }),
+      readSettings: llmDenySettings,
       streamProviderFor: () => null,
       verdictCachePath: join(tmpDir, "cache-degrade-fa.jsonl"),
       deferredQueuePath: join(tmpDir, "queue-degrade-fa.jsonl"),
@@ -401,12 +400,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: () => ({
-        mode: "llm",
-        fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
-      }),
+      readSettings: llmDenySettings,
       streamProviderFor: () => null,
       verdictCachePath: join(tmpDir, "cache-heal-1.jsonl"),
       deferredQueuePath: join(tmpDir, "queue-heal-1.jsonl"),
@@ -421,12 +415,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: () => ({
-        mode: "llm",
-        fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
-      }),
+      readSettings: llmDenySettings,
       streamProviderFor: () => provider,
       verdictCachePath: join(tmpDir, "cache-heal-2.jsonl"),
       deferredQueuePath: join(tmpDir, "queue-heal-2.jsonl"),

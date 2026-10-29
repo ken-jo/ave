@@ -1277,6 +1277,85 @@ satisfy dynamic, recursive and guest path-boundary uncertainty, but it retains
 the host shell grammar, structural and sensitive-path checks before spawning in
 that already-confined process.
 
+#### Recursive PowerShell traversal
+
+Two classifiers answer different questions about PowerShell traversal:
+
+- **Definite** ([powershell-recursive-traversal.ts](../../src/shared/powershell-recursive-traversal.ts)):
+  the command certainly walks a tree. It covers:
+  - a `-Recurse` or `-Depth` name prefix on a filesystem cmdlet that takes one.
+    A colon-bound dynamic value counts as enabled; only a literal false does
+    not;
+  - Get-ChildItem's `-s`;
+  - the robocopy/xcopy/findstr recursive switches;
+  - archive creation that reads an operand tree (below).
+
+  Measured runtime binding in PowerShell 5.1 and 7 resolves `gci -d 1 src` to Depth, while `-ad` and `-Directory` remain flat directory filters.
+  The filesystem cmdlets with recursion parameters are Copy-Item and Remove-Item
+  (`-Recurse`), and Get-ChildItem (`-Recurse`, `-Depth`). Prefixes bind against
+  that cmdlet's parameters, with declared parameters taking precedence over
+  common and provider parameters; an ambiguous prefix alone is not traversal.
+  Native recursive switches include findstr's `/s` (bundled, as in `/si` or
+  `/s/offline`, or dash-prefixed),
+  xcopy's `/s`, `/e`, `/t` (slash prefixes only; a bundle such as `/s/m` or
+  `/se` counts whatever its other letters; the named `/exclude`, `/compress`,
+  `/[-]sparse` and `/noclone` do not), and
+  robocopy's `/s`, `/e`, `/mir` (also dash-prefixed, without bundles). A colon
+  starts an option's value (`/exclude:C:/x.txt`, `/c:a/s`), which is not read
+  as switches. Since a dynamic argument to these commands may carry a switch,
+  and so may the verbatim text after `--%` (which expands `%VAR%` at run
+  time), the may-traverse check keeps the forced ask for both.
+
+  The host PowerShell block (`validatePowerShellAst`, including the Remove-Item
+  recursive-and-forced check) and the permission decision both import it.
+- **May** (`mayTraversePowerShellRecursively`): a fail-closed superset.
+  Unknown, launcher and dynamic command names, archivers whose mode or operand
+  is undecidable, unresolved Get-ChildItem operands and unparsed input count as
+  walking. Only the permission decision
+  uses it, and only on the MXC route, where it keeps the forced modal ask for
+  the undecidable remainder. It is never a host-block rule.
+
+Archivers are classified by mode, because listing or extracting an archive does
+not walk an existing tree:
+
+| Class | Forms | Result |
+|---|---|---|
+| Definite | tar create, append or update: `c`/`r`/`u` in a bundled first argument (`tar cf`) or a dash bundle (`-czf`), or `--create`/`--append`/`--update` and unique long-option prefixes of any length (`--cr`, `--ap`, `--up`), skipping the value word of an option that takes one (`--file -t -c`, `-f -t -c`); 7z, 7za or 7zr `a`/`u`; `zip -r` (also bundled, as in `-qr`, and `--recurse-paths`); Compress-Archive whose `-Path` (by prefix or position) is a wildcard, or whose `-Path`/`-LiteralPath` is directory-shaped (`.`, `..`, or a trailing separator) | denied on both layers |
+| Not traversal | tar `-t`/`-x`, 7z `l`/`x`/`e`/`t`, unzip, Expand-Archive | not a traversal; extraction writes belong to the write policy |
+| Undecidable | a tar long option that is ambiguous or unknown to the GNU option table, when no later static mode decides (Windows ships bsdtar, whose options differ; a word after such an option may be its value, so only a create mode then decides); every 7z command other than `a`/`u`/`l`/`x`/`e`/`t`; a mode that is not static: a dynamic first argument, bundled flags from a variable or splat, a dynamic 7z command, zip with a dynamic argument and no `-r`; Compress-Archive with a dynamic path, a path from the pipeline, or a literal non-wildcard path not shaped as a directory | not definite, so the host does not refuse it; `may`, so MXC keeps the forced ask |
+
+A literal Compress-Archive path such as `src` may be a file or a directory.
+The shared classifier reads no filesystem state, so both layers see the same
+answer: undecidable, not denied.
+
+Definite recursion is refused on every host route: MXC, ASRT, the pinned or
+explicitly approved host shell, and the Windows plain child. The only exception
+is the disposable container, whose grant relaxes `dynamic-path`. The reason is
+that the host block is the final layer before spawn. The MXC link-traversal
+measurement (T6) covered only non-recursive reads through links inside MXC. The
+permission decision therefore denies definite recursion up front, at layer 0
+with the host block's exact refusal text, wherever the selected route does not
+relax `dynamic-path`. A user never sees an ask that execution then refuses.
+
+Enabling recursive PowerShell on MXC later would need two things. First, a
+container-layer measurement of the recursive forms through junctions and
+directory links. Second, a deliberate change to the host block. The decision
+follows the shared classifier and the route fact, so it needs no separate edit.
+
+The route fact is one value. `executionPlanPathPolicyRelaxations(plan)` derives
+the relaxations a grant for the selected plan would carry. The executor passes
+that value for the plan it selected before authorization as
+`shellExecution.pathPolicyRelaxations`; an absent value means none. Grant
+issuance recomputes it from the final, possibly rebuilt plan. If it differs
+from what the decision saw, issuance refuses with an internal-contract error,
+so nothing runs under a decision made for another route. Consumption compares
+the grant's relaxations with the same function and fails closed on a mismatch.
+A rebuild from host to `analysis-required` keeps the empty set and is
+unaffected.
+Every route other than a disposable container (host, workspace sandbox,
+approval-required) is also re-observed at the final handler boundary, so a
+newly available disposable route cannot reuse that decision's empty relaxations.
+
 The host-native broker route has a different boundary. The controller cannot
 open the workload filesystem directly, and the workload is created without
 host binds, devices, Compose secrets/configs, added Linux capabilities or

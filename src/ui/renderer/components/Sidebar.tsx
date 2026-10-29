@@ -166,6 +166,8 @@ export interface SidebarProps {
    * loaded into a tile the way a conversation is.
    */
   onOpenSideChat?: (sideChatSessionId: string, originSessionId?: string) => void;
+  /** Open the live terminal or page and its own chat panel. */
+  onOpenPaneChat?: (tabId: string) => void;
   /** Start a new main-chat session scoped to the selected project root. */
   onNewChatForProject?: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
   /** Re-fetch the workspace project list (after a context-menu mutation e.g. remove). */
@@ -1129,6 +1131,7 @@ function ProjectSessionList({
   onLoadSession,
   onOpenWorkBoardItem,
   onOpenSideChat,
+  onOpenPaneChat,
   onNewChatForProject,
   onRefreshProjects,
   onProjectError,
@@ -1152,6 +1155,8 @@ function ProjectSessionList({
   currentSessionId?: string;
   onOpenWorkBoardItem?: (itemId: number) => void;
   onOpenSideChat?: (sideChatSessionId: string, originSessionId?: string) => void;
+  /** Open the live terminal or page and its own chat panel. */
+  onOpenPaneChat?: (tabId: string) => void;
   /**
    * Whether a CONVERSATION is what the window is showing.
    *
@@ -1367,6 +1372,9 @@ function ProjectSessionList({
           ? undefined
           : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
       case "side-chat":
+        if (session.paneTabId && surfaces.some((surface) => surface.tabId === session.paneTabId)) {
+          return () => onOpenPaneChat?.(session.paneTabId!);
+        }
         return () => onOpenSideChat?.(session.id, session.originSessionId);
     }
   };
@@ -1811,6 +1819,7 @@ export function Sidebar({
   onLoadSession,
   onOpenWorkBoardItem,
   onOpenSideChat,
+  onOpenPaneChat,
   onRefreshProjects,
   onProjectError,
   mainSurfaces = [],
@@ -2304,6 +2313,7 @@ export function Sidebar({
                     onLoadSession={onLoadSession}
                     onOpenWorkBoardItem={onOpenWorkBoardItem}
                     onOpenSideChat={onOpenSideChat}
+                    onOpenPaneChat={onOpenPaneChat}
                     onNewChatForProject={onNewChatForProject}
                     onRefreshProjects={onRefreshProjects}
                     onProjectError={onProjectError}

@@ -481,4 +481,9 @@ export const ko: Record<SeedMessageKey, string> = {
   "startupTab.shutdownTimeoutSecondsDefault": "{seconds}초 (기본)",
   "startupTab.launchRegisterFailedBody":
     "이 시스템에서 로그인 시 자동 실행을 등록하지 못했습니다. 설정에서 다시 시도하세요.",
+  "app.paneChatUnavailable": "이 터미널 또는 페이지는 이 창에서 더 이상 사용할 수 없습니다.",
+  "app.paneChatOpenFailed": "터미널 또는 페이지를 열 수 없습니다. 작업 공간에서 해당 화면을 선택한 뒤 다시 시도해 주세요.",
+  "assistantCard.systemNoticeOperationError": "시스템 알림 — 요청을 완료할 수 없음",
+  "assistantCard.conversationOpenInPane": "이 대화는 {surface}에 열려 있습니다.",
+  "assistantCard.openPaneChat": "열기",
 };
