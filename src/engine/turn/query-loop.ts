@@ -38,7 +38,7 @@ import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
 import { nextToolTrustOrigin, rationaleProvenanceFor } from "./trust-origin.js";
-import { noteToolResultsReturnedToModel } from "../../tools/host-terminal-turn.js";
+import { noteOtherPrincipalGuidance } from "../../tools/host-terminal-turn.js";
 import { contextBudgetForCurrentRuntime, warnUnstatedReasoningOnce } from "./compaction.js";
 import { markStaleToolResults, evictAgedToolResultImages, isContextLengthError } from "../auto-compact.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
@@ -338,7 +338,10 @@ export async function queryLoop(
       && bounds.a2aCausalContext.recipientChildSessionId === effectiveSessionId
         ? bounds.a2aCausalContext
         : undefined;
-    if (activeA2ACausalContext) toolTrustOrigin = "agent-message";
+    if (activeA2ACausalContext) {
+      noteOtherPrincipalGuidance();
+      toolTrustOrigin = "agent-message";
+    }
 
     let assistantRoundsRun = 0;
     // Count progress outside history because compaction must not make a long turn appear short.
@@ -475,6 +478,8 @@ export async function queryLoop(
           .find((parsed) => parsed !== null);
         if (stagedGuidance) {
           bounds.onMemoryCaptureTaint?.("staged-guidance");
+          // Another principal speaks in this turn from here on: host typing ends, whatever the trust origin later becomes.
+          noteOtherPrincipalGuidance();
           stagedOrigin = stagedGuidance.source;
           toolTrustOrigin = stagedGuidance.kind.inputOrigin;
         }
@@ -497,6 +502,7 @@ export async function queryLoop(
           );
           if (mergedCausalContext) {
             activeA2ACausalContext = mergedCausalContext;
+            noteOtherPrincipalGuidance();
             toolTrustOrigin = "agent-message";
           }
         }
@@ -1808,8 +1814,6 @@ export async function queryLoop(
         recordProviderUsage(rationaleBatch.rationaleUsage, false);
       }
       toolTrustOrigin = nextToolTrustOrigin(toolTrustOrigin, toolUsesForExecutor, toolResults);
-      // Whatever the tools were, their results now reach the model: a host terminal command later in this turn needs a fresh card.
-      if (toolResults.length > 0) noteToolResultsReturnedToModel();
 
       for (let i = 0; i < toolUsesForExecutor.length; i++) {
         allToolCalls.push({

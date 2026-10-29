@@ -5,6 +5,7 @@ import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
 import { isBoundedSkillReadResult } from "../main/skill-overlay.js";
 import { normalizeLocalUserContentParts } from "../main/subscription-attachment-input.js";
+import { noteToolResultsReturnedToModel } from "../tools/host-terminal-turn.js";
 
 export interface ConversationHistoryOptions {
   maxMessages?: number;
@@ -50,8 +51,11 @@ export class ConversationHistory {
     return this.appendAt(message, index);
   }
 
+  /** The one point where a row enters the history. A tool result entering it during a user turn marks that turn as having fed the model
+   * content the user did not type (host terminal commands then need a fresh card), whichever path appended it. */
   private appendAt(message: GenericMessage, index: number): StoredMessage {
     const stored = stampMessageId(stampCreatedAt(applyToolResultCap(message)));
+    if (stored.role === "tool_result") noteToolResultsReturnedToModel();
     this.messages.splice(index, 0, stored);
     this.trim();
     this.appendObserver?.(stored);

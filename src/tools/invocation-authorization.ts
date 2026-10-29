@@ -636,11 +636,11 @@ export async function authorizeToolInvocation(
       } else {
         const hostTurn = currentHostTerminalTurn(hostTerminalScope.sessionId);
         hostTerminalAfterExternalContent = hostTurn?.externalContentSeen() === true;
-        // A file read earlier in the turn is external content like any other tool result (the turn fact below); staged app, plugin or agent
-        // guidance is another speaker, and refuses.
+        // A file read earlier in the turn is external content like any other tool result (the turn fact below). Staged app, plugin or agent
+        // guidance is another speaker and refuses for the rest of the turn, even once a later file read reports `file-content`.
         const trusted = isUntaintedToolTrustOrigin(invocationPermissionContext.trustOrigin)
           || (invocationPermissionContext.trustOrigin === "file-content" && hostTerminalAfterExternalContent);
-        if (!trusted || hostTurn?.turnId !== hostTerminalScope.turnId) {
+        if (!trusted || hostTurn?.turnId !== hostTerminalScope.turnId || hostTurn.otherPrincipalGuidance()) {
           // Only the user turn that asked, still speaking for the user, may type here.
           permissionResult = { decision: "deny", reason: "Host terminal typing is available only to the user's own turn in its pane chat", layer: 2 };
         } else if (permissionResult.decision === "allow" && !isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager)) {

@@ -78,6 +78,7 @@ function fakeTurn(turnId = TURN) {
     turnId,
     isCurrent: () => current,
     externalContentSeen: () => false,
+    otherPrincipalGuidance: () => false,
     onEnd: (listener: () => void) => { if (!current) { listener(); return () => {}; } listeners.add(listener); return () => { listeners.delete(listener); }; },
     end: () => { current = false; for (const listener of [...listeners]) listener(); listeners.clear(); },
   };

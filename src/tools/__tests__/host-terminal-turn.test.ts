@@ -1,6 +1,6 @@
 // The host-terminal turn capability: readable only inside the turn that issued it, for its own conversation, masked for nested runs.
 import { describe, expect, it } from "vitest";
-import { currentHostTerminalTurn, noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../host-terminal-turn.js";
+import { currentHostTerminalTurn, noteOtherPrincipalGuidance, noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../host-terminal-turn.js";
 import { buildHostTerminalRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
 
 describe("host-terminal turn capability", () => {
@@ -59,6 +59,22 @@ describe("host-terminal turn capability", () => {
     });
     await runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn-2" }, async () => {
       expect(currentHostTerminalTurn("pane")!.externalContentSeen()).toBe(false);
+    });
+  });
+
+  it("records, for the rest of the turn only, that guidance from another principal arrived, independent of external content", async () => {
+    noteOtherPrincipalGuidance();
+    await runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn-1" }, async () => {
+      const turn = currentHostTerminalTurn("pane")!;
+      expect(turn.otherPrincipalGuidance()).toBe(false);
+      await runWithHostTerminalTurn(undefined, async () => { noteOtherPrincipalGuidance(); });
+      expect(turn.otherPrincipalGuidance()).toBe(false);
+      noteOtherPrincipalGuidance();
+      expect(turn.otherPrincipalGuidance()).toBe(true);
+      expect(turn.externalContentSeen()).toBe(false);
+    });
+    await runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn-2" }, async () => {
+      expect(currentHostTerminalTurn("pane")!.otherPrincipalGuidance()).toBe(false);
     });
   });
 

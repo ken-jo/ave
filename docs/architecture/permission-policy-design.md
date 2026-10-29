@@ -1882,11 +1882,16 @@ one command into that terminal. Main owns the boundary
   guidance behind it, and never a sub-agent (which runs with the capability
   masked). A routine, plugin or app message, or any other turn, is refused
   before a card. The turn id is sealed into the approval; the authorization
-  step also requires that same turn, still speaking for the user (staged app,
-  plugin or agent guidance refuses). The turn also records, irreversibly,
-  once any tool result has returned to the model in it, whatever the tool (a
-  file, a page, a plugin's, a browser's or a sub-agent's text, a command's
-  output). After that, every host command in the turn needs a fresh person's
+  step also requires that same turn, still speaking for the user. Staged app,
+  plugin or agent guidance arriving mid-turn sets a second irreversible turn
+  fact at the point it is staged; from then on every host command in the turn
+  is refused with no card, even when a later file read changes the tool trust
+  origin. The turn also records, irreversibly, once any tool result has
+  entered the conversation history in it, whatever produced it (a file, a
+  page, a plugin's, a browser's or a sub-agent's text, a command's output, an
+  invalid-argument error, a refusal, or a tool search or plugin request). The
+  fact is set at the history's single insertion point, so no path that
+  appends a tool result can skip it. After that, every host command in the turn needs a fresh person's
   approval: the card is forced, a saved exact `HostTerminal` rule and
   remembered approvals do not apply, the card offers no lasting allow and
   says so, and it stays desktop-only. In a clean turn an exact rule still runs
