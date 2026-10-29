@@ -50,7 +50,7 @@ describe("App sidebar overlay", () => {
     const { aside } = await mountShell(view.container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     const first = view.container.querySelector('[data-testid="sidebar-resize-handle"]') as HTMLElement;
-    const last = view.container.querySelector('[data-testid="sidebar-hide"]') as HTMLElement;
+    const last = view.container.querySelector('[data-testid="sidebar-settings"]') as HTMLElement;
     expect(first).toBeTruthy();
     expect(last).toBeTruthy();
     (shift ? first : last).focus();

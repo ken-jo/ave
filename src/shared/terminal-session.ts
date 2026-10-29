@@ -1,4 +1,5 @@
 import type { TerminalBlock, TerminalBlockSummary } from "./terminal-blocks.js";
+import type { TerminalFileReviewSnapshot } from "./terminal-file-review.js";
 
 export type TerminalIntegrationUnavailableReason = "unsupported-shell" | "missing-home" | "custom-launch" | "setup-failed";
 
@@ -25,7 +26,8 @@ export interface TerminalSpawnRequest extends TerminalRef {
 }
 export type TerminalMutationResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type TerminalSpawnResult =
-  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo }
+  /** `blockMarkerToken` authenticates block ids on forwarded C markers (see TERMINAL_VIEW_TOKEN_FIELD); renderer-only. */
+  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo; readonly blockMarkerToken: string }
   | { readonly ok: false; readonly reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals" | "still-closing" | "no-terminal" | "unauthorized-frame"; readonly message: string };
 export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };
@@ -38,12 +40,18 @@ export interface TerminalApi {
   resize(ref: TerminalSessionRef, cols: number, rows: number): Promise<TerminalMutationResult>;
   /** Trusted tab closure cancels and terminates only the host terminal. */
   kill(tabId: string): Promise<TerminalMutationResult>;
+  /** User display only; never grants model access to host terminal commands. */
+  preview(tabId: string): Promise<{ readonly ok: true; readonly command: string | null } | { readonly ok: false; readonly error: string }>;
   listBlocks(ref: TerminalSessionRef): Promise<
     | { readonly ok: true; readonly session: TerminalSessionInfo; readonly integrated: boolean; readonly blocks: TerminalBlockSummary[] }
     | { readonly ok: false; readonly error: string }
   >;
   getBlock(ref: TerminalSessionRef, blockId: number): Promise<
     | { readonly ok: true; readonly session: TerminalSessionInfo; readonly block: TerminalBlock }
+    | { readonly ok: false; readonly error: string }
+  >;
+  listFileReviews(ref: TerminalSessionRef): Promise<
+    | { readonly ok: true; readonly snapshot: TerminalFileReviewSnapshot }
     | { readonly ok: false; readonly error: string }
   >;
   onData(handler: (event: TerminalDataEvent) => void): () => void;

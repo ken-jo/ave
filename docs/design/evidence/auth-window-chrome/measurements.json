@@ -1,0 +1,151 @@
+{
+  "sourceHashes": {
+    "src/main/auth-window-content.ts": "7ca71545cfb1d70e12966903c0ade5d10aee1e5c30bb416ad748b5c102d06b63",
+    "src/main/window-titlebar-shell.ts": "febb4dea7145f567be7abba12fccd5b22f7540ac70c04b52df8cf167e32e5040",
+    "test/e2e/window/auth-window-chrome.spec.ts": "542b42feb793de235dfd497afee353a10a0a34ddd7814958e9121fc15d41eaa2"
+  },
+  "rowHeight": 36,
+  "capturePresentation": "Only the isolated task windows were temporarily floated to avoid the OS thumbnail transform; production window options were unchanged.",
+  "captures": [
+    {
+      "file": "macos-window-long-host.png",
+      "size": {
+        "width": 1343,
+        "height": 768
+      },
+      "sheetOffset": {
+        "x": 823,
+        "y": 38
+      },
+      "scale": 1,
+      "buttons": [
+        {
+          "bounds": {
+            "x": 12,
+            "y": 11,
+            "right": 26,
+            "bottom": 25
+          },
+          "centerY": 18
+        },
+        {
+          "bounds": {
+            "x": 35,
+            "y": 11,
+            "right": 49,
+            "bottom": 25
+          },
+          "centerY": 18
+        },
+        {
+          "bounds": {
+            "x": 58,
+            "y": 11,
+            "right": 72,
+            "bottom": 25
+          },
+          "centerY": 18
+        }
+      ],
+      "display": "attacker-example.io",
+      "url": "http://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "uri": {
+        "x": 104,
+        "y": 10.5,
+        "width": 120,
+        "height": 15,
+        "top": 10.5,
+        "right": 224,
+        "bottom": 25.5,
+        "left": 104
+      },
+      "suffix": {
+        "x": 202.03125,
+        "y": 10.5,
+        "width": 21.96875,
+        "height": 15,
+        "top": 10.5,
+        "right": 224,
+        "bottom": 25.5,
+        "left": 202.03125
+      },
+      "elided": false,
+      "drag": "no-drag",
+      "direction": "rtl",
+      "copied": "http://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "security": "http"
+    },
+    {
+      "file": "macos-window-long-label.png",
+      "size": {
+        "width": 1343,
+        "height": 768
+      },
+      "sheetOffset": {
+        "x": 823,
+        "y": 38
+      },
+      "scale": 1,
+      "buttons": [
+        {
+          "bounds": {
+            "x": 12,
+            "y": 11,
+            "right": 26,
+            "bottom": 25
+          },
+          "centerY": 18
+        },
+        {
+          "bounds": {
+            "x": 35,
+            "y": 11,
+            "right": 49,
+            "bottom": 25
+          },
+          "centerY": 18
+        },
+        {
+          "bounds": {
+            "x": 58,
+            "y": 11,
+            "right": 72,
+            "bottom": 25
+          },
+          "centerY": 18
+        }
+      ],
+      "display": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "url": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "uri": {
+        "x": 104,
+        "y": 10.5,
+        "width": 404,
+        "height": 15,
+        "top": 10.5,
+        "right": 508,
+        "bottom": 25.5,
+        "left": 104
+      },
+      "suffix": {
+        "x": 478.703125,
+        "y": 10.5,
+        "width": 29.296875,
+        "height": 15,
+        "top": 10.5,
+        "right": 508,
+        "bottom": 25.5,
+        "left": 478.703125
+      },
+      "elided": true,
+      "drag": "no-drag",
+      "direction": "rtl",
+      "copied": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "security": "http"
+    }
+  ],
+  "allCentered": true,
+  "noSecurityOrAddressOverlap": true,
+  "nativePlatform": "darwin",
+  "otherPlatformCoverage": "Renderer insets tested; Windows/Linux native visuals require a manual check."
+}

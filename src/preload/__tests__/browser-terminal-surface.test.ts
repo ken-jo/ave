@@ -67,8 +67,13 @@ describe("private browser and terminal preload boundaries", () => {
   it("preserves lane and incarnation on writes and rejects unaddressed stream bytes", async () => {
     const api = buildTerminalApiSurface();
     const ref = { tabId: "terminal:1", lane: "manual" as const, terminalSessionId: "incarnation-2" };
+    await api.preview(ref.tabId);
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.preview, { tabId: ref.tabId });
     await api.input(ref, "echo hello\r");
     expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.input, { ...ref, data: "echo hello\r" });
+    await api.listFileReviews(ref);
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.fileReviews, ref);
+    expect("reviewFiles" in api).toBe(false);
     const receive = vi.fn();
     const off = api.onData(receive);
     listeners.get(CHANNELS.terminal.data)!(undefined, { ...ref, chunk: "hello" });

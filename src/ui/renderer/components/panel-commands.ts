@@ -6,7 +6,8 @@ export type PanelCommandId =
   | "pane.moveDown"
   | "pane.toggleMaximize"
   | "surface.reopenClosed"
-  | "terminal.jumpToUnread";
+  | "terminal.jumpToUnread"
+  | "sidebar.toggleVisibility";
 
 interface PanelChord {
   /** `KeyboardEvent.key`, compared case-insensitively. */
@@ -26,6 +27,7 @@ export interface PanelCommand {
 }
 
 export const PANEL_COMMANDS: readonly PanelCommand[] = [
+  { id: "sidebar.toggleVisibility", labelKey: "mainToolbar.toggleSidebar", chord: { key: "b", primary: true, shift: true, alt: false }, hint: "⌘⇧B" },
   { id: "pane.moveLeft", labelKey: "mainPanels.command.moveLeft", chord: { key: "ArrowLeft", primary: true, shift: true, alt: true }, hint: "⌥⌘⇧←" },
   { id: "pane.moveRight", labelKey: "mainPanels.command.moveRight", chord: { key: "ArrowRight", primary: true, shift: true, alt: true }, hint: "⌥⌘⇧→" },
   { id: "pane.moveUp", labelKey: "mainPanels.command.moveUp", chord: { key: "ArrowUp", primary: true, shift: true, alt: true }, hint: "⌥⌘⇧↑" },

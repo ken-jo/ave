@@ -7,10 +7,11 @@ import {
   setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
   terminalOwnedBy,
 } from "../../main/terminal/pty-manager.js";
-import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../../main/terminal/terminal-blocks.js";
+import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../../main/terminal/terminal-blocks.js";
 import { isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
 
 const log = createLogger("terminal-ipc");
 
@@ -78,6 +79,21 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     killTerminal(payload.tabId);
     return { ok: true };
   });
+  ipcMain.handle(CHANNELS.terminal.preview, async (event, payload) => {
+    if (!authorized(event, CHANNELS.terminal.preview)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    if (event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.terminal.preview, event);
+      return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    }
+    if (!payload || typeof payload.tabId !== "string" || !payload.tabId || Object.keys(payload).some((key) => key !== "tabId")) return { ok: false, error: "invalid-params" };
+    const ownerWindowId = senderWindowId(event);
+    if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
+    const entry = listTerminalBlockTabs(ownerWindowId).find(({ session }) => session.tabId === payload.tabId && session.lane === "manual");
+    const recorded = entry?.tracker.list().find((block) => block.source === "osc133" && block.command.trim())?.command;
+    const firstLine = recorded?.split(/[\r\n]/u, 1)[0];
+    const command = firstLine ? (firstLine.length > 200 ? `${firstLine.slice(0, 199)}…` : firstLine) : null;
+    return { ok: true, command };
+  });
   for (const operation of ["blocks", "block"] as const) {
     ipcMain.handle(CHANNELS.terminal[operation], async (event, payload) => {
       if (!authorized(event, CHANNELS.terminal[operation])) return { ok: false, error: UNAUTHORIZED_FRAME.error };
@@ -93,4 +109,28 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       return block ? { ok: true, session, block } : { ok: false, error: "block-not-found" };
     });
   }
+  ipcMain.handle(CHANNELS.terminal.fileReviews, async (event, payload) => {
+    if (!authorized(event, CHANNELS.terminal.fileReviews)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    const liveOwner = (): boolean => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      return !!window && !window.isDestroyed() && !event.sender.isDestroyed()
+        && event.senderFrame === event.sender.mainFrame
+        && (deps.getAppWindows?.() ?? [deps.getMainWindow()]).some(owner => owner === window && owner.webContents === event.sender);
+    };
+    if (!liveOwner()) {
+      auditUnauthorized(auditLogger, CHANNELS.terminal.fileReviews, event);
+      return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    }
+    if (!isTerminalSessionRef(payload) || payload.lane !== "manual") return { ok: false, error: "invalid-params" };
+    const ownerWindowId = senderWindowId(event);
+    if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
+    const tracker = getWindowTerminalBlockTracker(payload, ownerWindowId);
+    const session = getWindowTerminalBlockSession(payload, ownerWindowId);
+    if (!tracker || !session) return { ok: false, error: "stale-terminal-session" };
+    const snapshot = await terminalFileEvidence.snapshot(session.currentCwd ?? session.initialCwd, tracker.list(), session.terminalSessionId);
+    // Filesystem reads yield; closing or replacing the terminal revokes the response.
+    if (!liveOwner() || !terminalOwnedBy(payload.tabId, ownerWindowId)
+      || getWindowTerminalBlockTracker(payload, ownerWindowId) !== tracker) return { ok: false, error: "stale-terminal-session" };
+    return { ok: true, snapshot };
+  });
 }

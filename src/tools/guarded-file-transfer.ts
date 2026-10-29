@@ -1,3 +1,4 @@
+import { terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { constants, createReadStream, read, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -23,6 +24,8 @@ type OwnedEntry = {
   parentIdentity: FileIdentity;
   explicit: boolean;
   handle?: OwnedHandle;
+  /** A created file's identity from its own descriptor, for changed-file evidence. */
+  written?: WrittenFileIdentity;
 };
 type TransferRequest = {
   sourcePath: string;
@@ -330,6 +333,8 @@ class OwnedTransfer {
         const stats = await handle.stat({ bigint: true });
         if (!stats.isFile() || stats.nlink !== 1n) throw transferError(`Created file changed: ${path}`);
         entry.identity = { dev: stats.dev, ino: stats.ino };
+        const written = writtenFileIdentity(stats);
+        if (written) entry.written = written;
       }
     } catch (error) {
       if (hasErrno(error, "EEXIST")) throw new FileTransferError("destination-exists", `Destination already exists: ${path}`, { cause: error });
@@ -623,6 +628,12 @@ class OwnedTransfer {
         await this.verifyOwned(entry);
       }
       this.check();
+      const sessionId = this.context.metadata?.sessionId;
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        for (const entry of this.ledger) if (entry.kind === "file") {
+          await terminalFileEvidence.recordWrite(sessionId, join(this.summary.destinationPath, entry.relativePath), null, entry.written);
+        }
+      }
       return { ok: true, summary: this.summary };
     } catch (error) {
       this.accepting = false;

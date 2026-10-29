@@ -1,3 +1,4 @@
+import { terminalFileEvidence } from "../main/terminal/changed-file-evidence.js";
 import { createHash } from "node:crypto";
 import { watch, type BigIntStats, type FSWatcher } from "node:fs";
 import { lstat } from "node:fs/promises";
@@ -465,6 +466,10 @@ export class DocumentObservationAdapter {
       this.invalidate(view);
       return;
     }
+    signal.throwIfAborted();
+    if (!this.current(view) || version !== view.version) return;
+    // The document app wrote the file, not a descriptor Ave holds, so the evidence has no identity and no diff.
+    await terminalFileEvidence.recordWrite(proof.identity.sessionId, view.registration.path, undefined, undefined);
     signal.throwIfAborted();
     if (!this.current(view) || version !== view.version) return;
     this.publishDiff(view, document);

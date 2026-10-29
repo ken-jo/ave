@@ -43,6 +43,16 @@ function context(extraAllowedDirectories: string[] = []): ToolExecutionContext {
   return { cwd: workspace, extraAllowedDirectories, metadata: {} };
 }
 
+function observeCheckpointSave() {
+  const rename = fsPromises.rename;
+  let saved = false;
+  const spy = vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
+    await rename(from, to);
+    if (to === join(root, "state/code-checkpoints/turns.json")) saved = true;
+  });
+  return { wasSaved: () => saved, restore: () => spy.mockRestore() };
+}
+
 function executorFor(tool: CopyPathTool | ExtractArchiveTool) {
   const registry = new ToolRegistry();
   registry.register(tool);
@@ -79,14 +89,14 @@ describe("structured transfer registration and permission routing", () => {
     const destination = join(parent, "copy.bin");
     const lstat = fsPromises.lstat;
     let swapped = false;
-    let destinationSnapshots = 0;
     try {
       const turn = createCodeCheckpointTurn(() => "copy-swapped-parent");
       await turn("copy-turn", async () => {
+        const checkpoint = observeCheckpointSave();
         const statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
           try { return await lstat(path, options); }
           catch (error) {
-            if (path === destination && ++destinationSnapshots === 2) {
+            if (path === destination && checkpoint.wasSaved() && !swapped) {
               swapped = true;
               renameSync(parent, join(workspace, "original-target"));
               symlinkSync(outside, parent, "junction");
@@ -102,6 +112,7 @@ describe("structured transfer registration and permission routing", () => {
             )))).rejects.toThrow("escaped project roots");
         } finally {
           statSpy.mockRestore();
+          checkpoint.restore();
           syncBuiltinESMExports();
         }
       });
@@ -117,14 +128,16 @@ describe("structured transfer registration and permission routing", () => {
     const source = join(workspace, "source.bin");
     const destination = join(workspace, "copy.bin");
     const lstat = fsPromises.lstat;
-    let snapshots = 0;
+    let replaced = false;
     try {
       const turn = createCodeCheckpointTurn(() => "copy-source-kind");
       await turn("copy-turn", async () => {
+        const checkpoint = observeCheckpointSave();
         const statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
           try { return await lstat(path, options); }
           catch (error) {
-            if (path === destination && ++snapshots === 2) {
+            if (path === destination && checkpoint.wasSaved() && !replaced) {
+              replaced = true;
               renameSync(source, join(workspace, "original-source.bin"));
               if (replacement === "directory") {
                 mkdirSync(source);
@@ -147,10 +160,11 @@ describe("structured transfer registration and permission routing", () => {
             : "Copy source changed after checkpoint admission");
         } finally {
           statSpy.mockRestore();
+          checkpoint.restore();
           syncBuiltinESMExports();
         }
       });
-      expect(snapshots).toBeGreaterThanOrEqual(2);
+      expect(replaced).toBe(true);
       expect(existsSync(destination)).toBe(false);
     } finally {
       vi.unstubAllEnvs();
@@ -164,12 +178,12 @@ describe("structured transfer registration and permission routing", () => {
     const source = join(workspace, "source.bin");
     const destination = join(parent, "copy.bin");
     const lstat = fsPromises.lstat;
-    let snapshots = 0;
     let captured = false;
     let swapped = false;
     try {
       const turn = createCodeCheckpointTurn(() => "copy-transfer-parent");
       await turn("copy-turn", async () => {
+        const checkpoint = observeCheckpointSave();
         const statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
           try {
             const info = await lstat(path, options);
@@ -180,7 +194,7 @@ describe("structured transfer registration and permission routing", () => {
             }
             return info;
           } catch (error) {
-            if (path === destination && ++snapshots === 2) captured = true;
+            if (path === destination && checkpoint.wasSaved()) captured = true;
             throw error;
           }
         });
@@ -194,6 +208,7 @@ describe("structured transfer registration and permission routing", () => {
           expect(result.output).toContain("escaped project roots");
         } finally {
           statSpy.mockRestore();
+          checkpoint.restore();
           syncBuiltinESMExports();
         }
       });

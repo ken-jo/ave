@@ -69,7 +69,7 @@ import { ChatComposerDock } from "./components/ChatComposerDock.js";
 import { ComposerContextNotice } from "./components/ComposerContextNotice.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
-import { usePrefersReducedMotion } from "./hooks/use-prefers-reduced-motion.js";
+import { DockedPanelColumn, useDockedPanelMotion } from "./components/DockedWorkPanel.js";
 import { formatTokensExact } from "../../lib/cost-format.js";
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
@@ -152,7 +152,6 @@ export interface ChatViewProps {
   onProjectError?: ProjectErrorReporter;
 }
 
-const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
 export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
   const { t } = useTranslation();
@@ -247,11 +246,25 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId });
   savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId };
   const sidePanelVisibleRef = useRef(false);
+  // A tab that moved away and left the panel empty takes the panel with it: an open panel with no tabs is the workspace
+  // launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
+  const releasedTabRef = useRef(false);
+  useEffect(() => {
+    if (!releasedTabRef.current) return;
+    releasedTabRef.current = false;
+    if (workspaceTabs.tabs.length === 0) openSidePanelRef.current(false);
+  }, [workspaceTabs.tabs]);
   useEffect(() => {
     if (chatGroupId === undefined) return undefined;
     const unregister = registerSideTabsSink(chatGroupId, {
       adopt: adoptTab,
-      release: releaseTab,
+      // Whether the move emptied the panel is decided once the tab list commits (below), not from this render's list:
+      // a tab adopted in the same batch keeps the panel open.
+      release: (tabId) => {
+        const tab = releaseTab(tabId);
+        if (tab) releasedTabRef.current = true;
+        return tab;
+      },
       open: () => openSidePanelRef.current(true),
       activate: (tabId) => {
         if (!hasTab(tabId)) return false;
@@ -315,14 +328,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   useEffect(() => {
     emitMainLayoutChange();
   }, [savedTabsKey, workspaceTabs.activeTabId, dockedPanelShouldOpen, hidden]);
-  const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
+  const dockedPanelMotion = useDockedPanelMotion(dockedPanelShouldOpen);
+  const { present: dockedPanelPresent, expanded: dockedPanelExpanded } = dockedPanelMotion;
   // Keep side-chat and agent-browser tabs mounted while hidden to preserve pending gates and working pages.
   const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>
     (tab.kind === "side-chat" && !tab.content) || tab.agentRequestId !== undefined);
-  // Start collapsed even for a persisted open panel so the opening transition can run.
-  const [dockedPanelExpanded, setDockedPanelExpanded] = useState(false);
   const [sidePanelResizing, setSidePanelResizing] = useState(false);
-  const reduceMotion = usePrefersReducedMotion();
   useAgentDocumentPanel({
     api: window.ave?.preview, sessionId: currentSessionId ?? undefined, workspaceTabs,
     panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth && !revealedPanelOverlay,
@@ -333,40 +344,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     openPanel: () => onSidePanelOpenChange(true),
   });
 
-  // Resizing must disable transitions without retriggering mount expansion.
+  // A closing panel stops any resize in progress.
   useEffect(() => {
-    if (dockedPanelShouldOpen) {
-      setDockedPanelPresent(true);
-      if (reduceMotion) {
-        setDockedPanelExpanded(true);
-        return;
-      }
-      setDockedPanelExpanded(false);
-      // Two animation frames ensure the collapsed state paints; one may coalesce with mount.
-      let expansionFrame = 0;
-      const mountFrame = window.requestAnimationFrame(() => {
-        expansionFrame = window.requestAnimationFrame(() => {
-          setDockedPanelExpanded(true);
-        });
-      });
-      return () => {
-        window.cancelAnimationFrame(mountFrame);
-        if (expansionFrame) window.cancelAnimationFrame(expansionFrame);
-      };
-    }
-
-    setDockedPanelExpanded(false);
-    setSidePanelResizing(false);
-    if (reduceMotion) {
-      setDockedPanelPresent(false);
-      return;
-    }
-    const timer = window.setTimeout(
-      () => setDockedPanelPresent(false),
-      SIDE_PANEL_LAYOUT_TRANSITION_MS,
-    );
-    return () => window.clearTimeout(timer);
-  }, [dockedPanelShouldOpen, reduceMotion]);
+    if (!dockedPanelShouldOpen) setSidePanelResizing(false);
+  }, [dockedPanelShouldOpen]);
 
   const handleSidePanelWidthChange = useCallback(
     (px: number) => {
@@ -976,44 +957,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         // would remount the whole panel (a portal and a host element are different fiber kinds).
         if (inFrame && !panelHost) return null;
         const wrapper = (
-        <div
+        <DockedPanelColumn
           ref={dockedPanelMotionRef}
           id="chat-side-panel"
-          data-testid="chat-side-panel-motion"
-          data-panel-mode={panelLayout.mode}
-          aria-hidden={!dockedPanelExpanded}
-          inert={!dockedPanelExpanded}
-          style={{
-            order: 2,
-            width: dockedPanelExpanded ? `${dockedPanelWidth}px` : "0px",
-            maxWidth: dockedPanelShouldOpen ? dockedPanelWidth : 0,
-            // Closed and settled, but kept for the side chat it holds: out of the layout entirely, not a collapsed sliver of padding.
-            ...(dockedPanelPresent ? {} : { display: "none" }),
-          }}
-          className={[
-            // Use the sidebar's pixel inset tokens for both floating-card edges and transcript reserve; font scaling must not change
-            // the host's pixel reserve.
-            "z-40 flex min-w-0 shrink-0 origin-right justify-end pt-(--shell-card-inset) pr-(--shell-card-inset) pb-(--shell-card-inset-bottom) pl-(--shell-card-inset) will-change-[width,opacity,transform]",
-            panelLayout.mode === "overlay" ? "absolute inset-y-0 right-0" : "relative self-stretch",
-            sidePanelResizing
-              ? "transition-none"
-              : "transition-[width,opacity,transform] duration-[var(--motion-layout)] ease-[var(--motion-ease-out)] motion-reduce:transition-none",
-            dockedPanelExpanded
-              ? "pointer-events-auto translate-x-0 overflow-visible opacity-100"
-              : "pointer-events-none translate-x-2 overflow-hidden opacity-0",
-          ].join(" ")}
-          onTransitionEnd={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              event.propertyName === "width" &&
-              !dockedPanelShouldOpen
-            ) {
-              setDockedPanelPresent(false);
-            }
-          }}
-          onTransitionCancel={() => {
-            if (!dockedPanelShouldOpen) setDockedPanelPresent(false);
-          }}
+          testId="chat-side-panel-motion"
+          motion={dockedPanelMotion}
+          shouldOpen={dockedPanelShouldOpen}
+          width={dockedPanelWidth}
+          mode={panelLayout.mode}
+          resizing={sidePanelResizing}
         >
           <ChatSidePanel
             api={api}
@@ -1047,7 +999,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             onAttachText={attachFromSidePanel}
             className="relative flex shrink-0"
           />
-        </div>
+        </DockedPanelColumn>
         );
         // Inside a frame the panel is the tile's guest, not this view's — see `PaneFrame`'s panel slot.
         return panelHost ? createPortal(wrapper, panelHost) : wrapper;

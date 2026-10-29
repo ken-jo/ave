@@ -164,3 +164,23 @@ describe("findPaneSession", () => {
     expect(mm.findPaneSession("terminal:w-2")).toBeUndefined();
   });
 });
+
+
+describe("conversation row previews", () => {
+  it("carries the last saved message rather than the conversation title across namespaces", async () => {
+    await mm.saveSession(SESSION, [
+      { role: "user", content: "First request" },
+      { role: "assistant", content: "Build completed successfully" },
+    ]);
+    const listed = mm.listSessions().find((entry) => entry.id === SESSION)!;
+    expect(toSessionListRow("main", listed)?.preview).toBe("Build completed successfully");
+    expect(toSessionListRow("side-chat", listed)?.preview).toBe("Build completed successfully");
+    expect(toSessionListRow("main", { ...listed, sessionKind: "routine" })?.preview).toBe("Build completed successfully");
+  });
+
+  it("bounds display summaries and omits unavailable summaries", () => {
+    const listed = mm.listSessions().find((entry) => entry.id === SESSION)!;
+    expect(toSessionListRow("main", { ...listed, preview: "x".repeat(300) })?.preview).toHaveLength(200);
+    expect(toSessionListRow("main", { ...listed, preview: "" })).not.toHaveProperty("preview");
+  });
+});

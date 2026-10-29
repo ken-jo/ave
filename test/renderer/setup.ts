@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
+import { _clearTerminalFileReviewForTest } from "../../src/ui/renderer/preview/terminal-file-review.js";
 import { clearComposerDrafts } from "../../src/ui/renderer/state/composer-draft-store.js";
 
 const stubbedGlobals = new Map<string, unknown>();
@@ -39,6 +40,7 @@ const intersectionStates = new Map<Element, boolean>();
 
 afterEach(() => {
   cleanup();
+  _clearTerminalFileReviewForTest();
   // Clear parked drafts so unmounting one test cannot seed the next composer.
   clearComposerDrafts();
   intersectionStates.clear();

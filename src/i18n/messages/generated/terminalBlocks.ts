@@ -1,6 +1,5 @@
 // Source: terminal block controls and explicit user attachments.
 export const en = {
-  "terminalBlocks.toggle": "Blocks",
   "terminalBlocks.toggleTitle": "Show command blocks for this terminal",
   "terminalBlocks.listLabel": "Command blocks",
   "terminalBlocks.searchPlaceholder": "Search command history",
@@ -26,7 +25,6 @@ export const en = {
   "terminalBlocks.cwdUnknown": "unknown",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
-  "terminalBlocks.toggle": "블록",
   "terminalBlocks.toggleTitle": "이 터미널의 명령 블록 보기",
   "terminalBlocks.listLabel": "명령 블록",
   "terminalBlocks.searchPlaceholder": "명령 기록 검색",
