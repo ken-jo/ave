@@ -201,12 +201,17 @@ it("renders the sealed native image for the second shell dialect without changin
   expect(identity.command).toBe("bash --noprofile --norc -p -c 'printf ready'");
 });
 
-function completedChild(output: string, beforeClose?: () => void, errorOutput = "") {
+function controlledChild() {
   const child = new EventEmitter();
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   Object.assign(child, { stdin, stdout, stderr, exitCode: null, signalCode: null, pid: undefined, killed: false, kill: vi.fn(() => true) });
+  return { child, stdin, stdout, stderr };
+}
+
+function completedChild(output: string, beforeClose?: () => void, errorOutput = "") {
+  const { child, stdout, stderr } = controlledChild();
   queueMicrotask(() => {
     stdout.end(output); stderr.end(errorOutput);
     beforeClose?.();
@@ -216,13 +221,23 @@ function completedChild(output: string, beforeClose?: () => void, errorOutput = 
   return child as ReturnType<typeof childProcess.spawn>;
 }
 
+function parsedCommandResponse(command: string, argv: string[]) {
+  return { errors: [], redirections: [], unsupported: [], commands: [{ name: argv[0], text: command,
+    arguments: argv.map((value) => ({ kind: "literal", text: value, value })) }] };
+}
+
+function sandboxTransport() {
+  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
+  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
+  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+}
+
 it.each(["bash --noprofile --norc -p -c 'printf ready'", "git log 'HEAD'"])("keeps raw %s at the second shell parser gate and binds its final workload", async (command) => {
   const { cwd, executable, identity } = fixture(false, command);
   const verifiedShellCommand = prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
   expect(verifiedShellCommand).toBeDefined();
   const argv = command.startsWith("git ") ? ["git", "log", "HEAD"] : ["bash", "--noprofile", "--norc", "-p", "-c", "printf ready"];
-  const parsed = { errors: [], redirections: [], unsupported: [], commands: [{ name: argv[0], text: identity.command,
-    arguments: argv.map((value) => ({ kind: "literal", text: value, value })) }] };
+  const parsed = parsedCommandResponse(identity.command, argv);
   const received: string[] = [];
   const spawned = vi.spyOn(childProcess, "spawn");
   spawned.mockImplementationOnce(() => {
@@ -299,13 +314,10 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   const sessionId = "quarantined-ref-result";
   const previews: string[] = [];
   let workloadStarted = false;
-  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
-  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
-  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  sandboxTransport();
   const spawned = vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
     if (dialect === "powershell" && !workloadStarted && (invocation as string[]).at(-1)?.includes("Parser")) {
-      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
-        arguments: ["git", "rev-parse", "--verify", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+      return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "rev-parse", "--verify", "HEAD"])));
     }
     workloadStarted = true;
     if (width === 64) writeFileSync(join(cwd, ".git", "config"),
@@ -346,19 +358,12 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => ["abort", "error"
   const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
   expect(verifiedShellCommand).toBeDefined();
   const controller = new AbortController();
-  const child = new EventEmitter();
-  const stdin = new PassThrough();
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  Object.assign(child, { stdin, stdout, stderr, exitCode: null, signalCode: null, pid: undefined, killed: false, kill: vi.fn(() => true) });
+  const { child, stdout, stderr } = controlledChild();
   let started = false;
-  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
-  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
-  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  sandboxTransport();
   vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
     if (dialect === "powershell" && !started && (invocation as string[]).at(-1)?.includes("Parser")) {
-      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
-        arguments: ["git", "log", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+      return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
     }
     started = true;
     return child as ReturnType<typeof childProcess.spawn>;
@@ -395,14 +400,11 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   const { cwd, identity } = fixture(sandboxed, command);
   const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
   expect(verifiedShellCommand).toBeDefined();
-  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
-  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
-  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  sandboxTransport();
   let inspectionsAtSpawn: number | undefined;
   vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
     if (dialect === "powershell" && (invocation as string[]).at(-1)?.includes("Parser")) {
-      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
-        arguments: ["git", "log", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+      return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
     }
     inspectionsAtSpawn = vi.mocked(inspectGitRepository).mock.calls.length;
     if (changed) {
@@ -439,9 +441,7 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   const { cwd, identity } = fixture(sandboxed, command);
   const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
   expect(verifiedShellCommand).toBeDefined();
-  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
-  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
-  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  sandboxTransport();
   const daemon = new ObservationDaemon();
   const adapter = new TerminalObservationAdapter(daemon);
   const delivered: TerminalObservationEvent[] = [];
@@ -452,8 +452,7 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   let started = false;
   vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
     if (dialect === "powershell" && !started && (invocation as string[]).at(-1)?.includes("Parser")) {
-      return completedChild(JSON.stringify({ errors: [], redirections: [], unsupported: [], commands: [{ name: "git", text: command,
-        arguments: ["git", "log", "HEAD"].map((value) => ({ kind: "literal", text: value, value })) }] }));
+      return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
     }
     started = true;
     return completedChild("checked private log\n", () => {

@@ -134,6 +134,10 @@ function context(toolUseId: string): ToolExecutionContext {
   };
 }
 
+function executePowerShell(toolContext: ToolExecutionContext, command = "Write-Output hi") {
+  return new PowerShellTool().execute({ command, timeoutSeconds: 7 }, toolContext);
+}
+
 describe("builtin shell — Windows MXC containers", () => {
   beforeEach(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
@@ -180,7 +184,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-observed-")));
     try {
       const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
-        () => new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 },
+        () => executePowerShell(
           { ...context(identity.toolUseId), cwd, metadata: { ...context(identity.toolUseId).metadata, sessionId: identity.sessionId } })));
       expect(result.isError).toBe(false);
       expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
@@ -195,9 +199,8 @@ describe("builtin shell — Windows MXC containers", () => {
   it("runs a PowerShell command through wxc-exec with this invocation's token and closes its listener after", async () => {
     bootMxcShells();
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-workspace-")));
-    const result = await new PowerShellTool().execute(
-      { command: "Write-Output hi", timeoutSeconds: 7 }, { ...context("ps-mxc-1"), cwd },
-    ).finally(() => rmSync(cwd, { recursive: true, force: true }));
+    const result = await executePowerShell({ ...context("ps-mxc-1"), cwd })
+      .finally(() => rmSync(cwd, { recursive: true, force: true }));
 
     expect(result).toMatchObject({ isError: false, metadata: { returncode: 0, sandboxed: true } });
     expect(result.output).toContain(CONTAINER_OUTPUT);
@@ -245,7 +248,7 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(response.length).toBe(16_861);
     childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[]) =>
       fakeChild(args.includes(PARSER_REQUEST) ? response : CONTAINER_OUTPUT, 0));
-    const result = await new PowerShellTool().execute({ command, timeoutSeconds: 7 }, context("large-parser-response"));
+    const result = await executePowerShell(context("large-parser-response"), command);
     expect(result, result.output).toMatchObject({ isError: false, metadata: { returncode: 0, sandboxed: true } });
     expect(result.output).toBe(CONTAINER_OUTPUT);
     expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
@@ -254,7 +257,7 @@ describe("builtin shell — Windows MXC containers", () => {
   it("refuses an oversized internal response before launching caller text", async () => {
     bootMxcShells();
     childProcessMock.spawn.mockImplementation(() => fakeChild(" ".repeat(MAX_POWERSHELL_PARSER_RESPONSE_BYTES + 1), 0));
-    const result = await new PowerShellTool().execute({ command: "Write-Output a;".repeat(100), timeoutSeconds: 7 }, context("oversized-parser-response"));
+    const result = await executePowerShell(context("oversized-parser-response"), "Write-Output a;".repeat(100));
     expect(result.isError).toBe(true);
     expect(result.output).toContain("PowerShell parser response exceeds the internal byte limit");
     expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(1);
@@ -265,7 +268,7 @@ describe("builtin shell — Windows MXC containers", () => {
   it("refuses an untrusted image before preparing either parser or caller container", async () => {
     bootMxcShells();
     installationMock.resolve.mockReturnValue(null);
-    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("missing-trusted-image"));
+    const result = await executePowerShell(context("missing-trusted-image"));
     expect(result.isError).toBe(true);
     expect(result.output).toContain("trusted system installation is unavailable");
     expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
@@ -282,10 +285,7 @@ describe("builtin shell — Windows MXC containers", () => {
       writeFileSync(join(workspace, ".git", "config"), "[core]\n");
       mkdirSync(join(workspace, ".vscode"));
       bootMxcShells();
-      const result = await new PowerShellTool().execute(
-        { command: "Write-Output hi", timeoutSeconds: 7 },
-        { ...context("ps-mxc-floor"), cwd: workspace, extraAllowedDirectories: [workspace] },
-      );
+      const result = await executePowerShell({ ...context("ps-mxc-floor"), cwd: workspace, extraAllowedDirectories: [workspace] });
       expect(result.isError).toBe(false);
       const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [{ filesystem: { allowWrite: string[]; denyWrite: string[]; allowRead: string[]; denyRead: string[]; floorPierces?: string[] } }];
       const { filesystem } = launch;
@@ -314,7 +314,7 @@ describe("builtin shell — Windows MXC containers", () => {
   it("reports a launch that cannot be prepared as unsandboxed and spawns nothing", async () => {
     bootMxcShells();
     mxcLaunchMock.prepare.mockRejectedValueOnce(new Error("the sandbox proxy is not running"));
-    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-2"));
+    const result = await executePowerShell(context("ps-mxc-2"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toContain("the sandbox proxy is not running");
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
@@ -325,9 +325,7 @@ describe("builtin shell — Windows MXC containers", () => {
     mxcLaunchMock.prepare.mockResolvedValueOnce({ argv: [WXC_EXEC, "--config-base64", PARSER_REQUEST], proxyPort: 51234, bindChild: mxcLaunchMock.bindChild, release: mxcLaunchMock.release });
     const message = "Windows sandbox policy is too large: 40324 characters, limit 24574";
     mxcLaunchMock.prepare.mockRejectedValueOnce(new Error(message));
-    const result = await new PowerShellTool().execute(
-      { command: "Write-Output hi", timeoutSeconds: 7 }, { ...context("policy-delivery-failure"), headless },
-    );
+    const result = await executePowerShell({ ...context("policy-delivery-failure"), headless });
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toBe(`PowerShell spawn failed: ${message}`);
     expect(childProcessMock.spawn).toHaveBeenCalledTimes(1);
@@ -341,7 +339,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const previous = roots.map(key => process.env[key]);
     try {
       for (const key of roots) vi.stubEnv(key, undefined);
-      const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("missing-system-root"));
+      const result = await executePowerShell(context("missing-system-root"));
       expect(result.isError).toBe(true);
       expect(result.output).toMatch(/system root/i);
       expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
@@ -366,7 +364,7 @@ describe("builtin shell — Windows MXC containers", () => {
       queueMicrotask(() => child.emit("error", Object.assign(new Error("spawn wxc-exec.exe ENOENT"), { code: "ENOENT" })));
       return child;
     });
-    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-enoent"));
+    const result = await executePowerShell(context("ps-mxc-enoent"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toContain("ENOENT");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
@@ -433,7 +431,7 @@ describe("builtin shell — Windows MXC containers", () => {
   it("settles with the error and still releases the launch and HOME when egress release throws", async () => {
     bootMxcShells();
     const container = failCommandContainerRelease({ egressThrows: new Error("listener close threw") });
-    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-egress-throws"));
+    const result = await executePowerShell(context("ps-mxc-egress-throws"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
     expect(result.output).toContain(CONTAINER_OUTPUT);
     expect(result.output).toContain("listener close threw");
@@ -445,7 +443,7 @@ describe("builtin shell — Windows MXC containers", () => {
   it("settles with the error and still releases egress and HOME when the launch release rejects", async () => {
     bootMxcShells();
     const container = failCommandContainerRelease({ launchRejects: new Error("relay close rejected") });
-    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-launch-rejects"));
+    const result = await executePowerShell(context("ps-mxc-launch-rejects"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
     expect(result.output).toContain("relay close rejected");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
@@ -457,10 +455,7 @@ describe("builtin shell — Windows MXC containers", () => {
     bootMxcShells();
     const container = failCommandContainerRelease({});
     const progress = { write: () => {}, end: () => { throw new Error("progress sink closed"); } };
-    const result = await new PowerShellTool().execute(
-      { command: "Write-Output hi", timeoutSeconds: 7 },
-      { ...context("ps-mxc-collector-throws"), metadata: { toolUseId: "ps-mxc-collector-throws", toolOutputProgress: progress } },
-    );
+    const result = await executePowerShell({ ...context("ps-mxc-collector-throws"), metadata: { toolUseId: "ps-mxc-collector-throws", toolOutputProgress: progress } });
     expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
     expect(result.output).toContain("progress sink closed");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
