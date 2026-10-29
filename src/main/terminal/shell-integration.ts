@@ -348,7 +348,6 @@ export const PWSH_PROFILE_STARTUP = [
  * refuses it (`no-bracketed-paste`); markers still attest prompts, directories and exits for the user's own command blocks. */
 export function generatePwshHostHooks(): string {
   return [
-    "# Generated authenticated terminal hooks.",
     "if (-not $global:__ave_nonce) { return }",
     "function global:__ave_encode([string]$text) {",
     "  $out = [System.Text.StringBuilder]::new()",

@@ -1762,9 +1762,10 @@ approval** (see [Host command control](#host-command-control)). It uses real HOM
 the configured native interpreter/profile and a validated initial directory. zsh
 and bash use a per-PTY temporary rc directory and nonce-authenticated hooks,
 sourcing the actual startup files before hooks and restoring the original ZDOTDIR
-for user startup files. pwsh launches with `-NoProfile -NoExit` and an owned
-wrapper that dot-sources the user's profiles in PowerShell's own order before the
-hooks. On Windows that wrapper's directory is a fresh child of the private Ave
+for user startup files. pwsh launches with `-NoProfile -NoExit -Command` and inline
+startup that dot-sources the user's profiles in PowerShell's own order before the
+hooks. Only user profiles obey script execution policy; no owned script file is sourced.
+On Windows the nonce directory is a fresh child of the private Ave
 home, created owner-only and inheritance-protected by the home's own protection
 helper and verified on read-back before the nonce is written; a temporary
 directory would inherit its parent's DACL. If the home is not private, pwsh
@@ -1773,7 +1774,7 @@ interpreters or integration failure preserve the normal user shell and report wh
 integration is unavailable; unverified current directory/exit state stays unknown.
 Integration is not authority to type, read host output or claim native support.
 
-The first owned startup step (zsh's temporary `.zshenv`, bash's rcfile, pwsh's wrapper) reads
+The first owned startup step (zsh's temporary `.zshenv`, bash's rcfile, pwsh's inline startup) reads
 the nonce into an unexported shell variable and deletes its file before any user
 startup file runs, so a user rc or a loader it starts cannot read the file and
 forge markers. Residual limit: user startup files run in the same shell and can
@@ -1897,8 +1898,9 @@ zsh, bash and pwsh (PowerShell 7) have it; Windows PowerShell, cmd, fish and nu
 do not and receive no agent-typing claim. pwsh integration attests prompts,
 directories and exits, but PSReadLine documents no bracketed paste, so its
 prompts report `Paste=0` and agent typing refuses them (`no-bracketed-paste`).
-On Windows the host shell is `COMSPEC`; pwsh integration applies when it names
-`pwsh.exe`.
+On Windows the host shell selects the first `pwsh.exe` resolving to a file from
+drive-letter PATH entries, then `ProgramFiles\PowerShell\7`, otherwise `COMSPEC`
+or system cmd. pwsh integration applies whenever the selected shell is `pwsh.exe`.
 
 Existing one-shot shell tools retain their explicit approved host/outside-sandbox
 execution route. Their inline badge reflects the actual execution mode: an
