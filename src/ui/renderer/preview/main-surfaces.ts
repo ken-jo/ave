@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InstanceViewKey } from "../../../shared/view-key.js";
 import { mintTabId } from "./workspace-tabs.js";
+import { terminalOrdinal } from "./terminal-ordinal.js";
 import { publishLiveWebTabs, webSurfaceLocation, withdrawLiveWebTabs } from "./web-surfaces.js";
 
 /** Move surface records between stores without moving tab-id-keyed PTYs or guests; pane content independently chooses which
@@ -40,8 +41,7 @@ export const VIEW_OF_SURFACE_KIND: Record<MainSurfaceKind, InstanceViewKey> = {
   browser: "web",
 };
 
-// Window-wide, like tab ids: two main terminals never share a label.
-const nextMainOrdinal: Record<MainSurfaceKind, number> = { terminal: 1, browser: 1 };
+let nextMainBrowserOrdinal = 1;
 
 export interface MainSurfacesStore {
   surfaces: readonly MainSurface[];
@@ -82,16 +82,18 @@ export function useMainSurfaces(): MainSurfacesStore {
   const get = useCallback((tabId: string) => surfacesRef.current.find((surface) => surface.tabId === tabId), []);
 
   const create = useCallback((kind: MainSurfaceKind, url: string | null = null, cwd: string | null = null) => {
-    const surface: MainSurface = { tabId: mintTabId(kind), kind, ordinal: nextMainOrdinal[kind]++, url, cwd };
+    const tabId = mintTabId(kind);
+    const ordinal = kind === "terminal" ? terminalOrdinal(tabId) : nextMainBrowserOrdinal++;
+    const surface: MainSurface = { tabId, kind, ordinal, url, cwd };
     commit([...surfacesRef.current, surface]);
     return surface;
   }, [commit]);
 
   const adopt = useCallback((surface: MainSurface) => {
     if (surfacesRef.current.some((each) => each.tabId === surface.tabId)) return;
-    // It keeps its number; a surface created later must not take it again.
-    if (nextMainOrdinal[surface.kind] <= surface.ordinal) nextMainOrdinal[surface.kind] = surface.ordinal + 1;
-    commit([...surfacesRef.current, surface]);
+    // A moved tab keeps its number; colliding restored terminal labels are reassigned.
+    if (surface.kind === "browser" && nextMainBrowserOrdinal <= surface.ordinal) nextMainBrowserOrdinal = surface.ordinal + 1;
+    commit([...surfacesRef.current, surface.kind === "terminal" ? { ...surface, ordinal: terminalOrdinal(surface.tabId, surface.ordinal) } : surface]);
   }, [commit]);
 
   const release = useCallback((tabId: string) => {

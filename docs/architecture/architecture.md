@@ -1199,7 +1199,7 @@ which is what every caller but the sidebar wants.
 | `main` | main | chat glyph, the conversation's title | the conversation, in the focused tile |
 | `routine` | main (`sessionKind: "routine"`) | routine glyph, the run's title | the run, through the same session-load path the routine panel uses |
 | `work-board` | sub-agent (origin names an item) | work glyph, the item's title | the board item, newest run transcript expanded |
-| `side-chat` | side-chat | side-chat glyph, indented under its conversation | the bound live terminal or page and its pane chat; with no live pane binding, the conversation and its side-chat tab |
+| `side-chat` | side-chat | side-chat glyph, nested under its live pane or listed ordinarily | the bound live terminal or page and its pane chat; with no live pane binding, the conversation and its side-chat tab |
 
 A sub-agent session that is not an item's run has no family and is not listed:
 it is already reachable inside its parent conversation's sub-agent tab, and a
@@ -1213,9 +1213,27 @@ behaviour; archiving hides a row, and a family never did.
 
 A side chat records the conversation it was started beside as its
 `originSessionId`, written by the host on the turn that first gives the side
-chat a file. The sidebar draws the row under that conversation. A side chat
-whose conversation is not in the list — a page that did not reach it, a
-conversation since deleted — is listed in its own right rather than dropped.
+chat a file. The ordinary side-chat row uses that origin when it opens. A side chat whose
+conversation is not in the list remains reachable in its own right.
+
+A pane chat is nested beneath its terminal or page row only when its host-recorded
+`paneTabId` matches the live surface inventory and the host's current,
+window-scoped session binding snapshot. It is excluded from the independent
+General and project conversation lists. Creator ownership may place the surface
+inside a project; the pane chat still belongs beneath that surface. Closing the
+surface ends the live binding and the host archives its chat. The retained row
+appears in its ordinary project or General location only under Show archived,
+with a localized former-terminal or former-page caption. It remains openable
+through the ordinary side-chat route. The archive toggle remains reachable even
+when all archived rows belong to projects. Stored pane identity is provenance,
+not authority to reopen a closed surface. Starting a new pane chat clears the
+previous chat’s pane identity.
+
+Until the first valid host binding snapshot arrives, pane-bound session rows are
+omitted. Unarchived pane chats without a matching live surface and binding in
+this window are also omitted: the global session list can include chats active
+in another window. A window-local absence never establishes that a binding has
+ended; the former-chat caption requires the host’s persisted archival state.
 
 A terminal or web pane opens the side chat in its own panel (the header's
 panel toggle), beside the page or terminal, as that pane's own conversation.

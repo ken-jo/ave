@@ -191,9 +191,8 @@ describe("PtyTerminalView tab identity across groups", () => {
     act(() => groupB.result.current.addTab("terminal"));
     const tabA = groupA.result.current.tabs[0]!;
     const tabB = groupB.result.current.tabs[0]!;
-    // Both read "Terminal 1" to the user, but main keys PTYs by id window-wide.
-    expect(tabA.ordinal).toBe(1);
-    expect(tabB.ordinal).toBe(1);
+    // Labels and PTY identities are distinct across groups.
+    expect(tabA.ordinal).not.toBe(tabB.ordinal);
     expect(tabA.id).not.toBe(tabB.id);
 
     const { api } = makeMockAveApi();
@@ -201,8 +200,8 @@ describe("PtyTerminalView tab identity across groups", () => {
     const ave = { ...api, terminal };
     render(
       <>
-        <PtyTerminalView api={ave as never} location="pane:a" tabId={tabA.id} tabLabel="Terminal 1" />
-        <PtyTerminalView api={ave as never} location="pane:b" tabId={tabB.id} tabLabel="Terminal 1" />
+        <PtyTerminalView api={ave as never} location="pane:a" tabId={tabA.id} tabLabel={`Terminal ${tabA.ordinal}`} />
+        <PtyTerminalView api={ave as never} location="pane:b" tabId={tabB.id} tabLabel={`Terminal ${tabB.ordinal}`} />
       </>,
     );
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));

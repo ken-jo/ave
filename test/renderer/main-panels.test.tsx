@@ -51,6 +51,11 @@ function shownSurfaces(container: HTMLElement): Array<{ kind: string | null; tab
     .map((pane) => ({ kind: pane.getAttribute("data-surface-kind"), tabId: pane.getAttribute("data-tab-id") }));
 }
 
+async function publishPaneBinding(api: unknown, sessionId: string, tabId: string) {
+  const browser = api as { browserTabs: { emitSessionBindingsChanged: (bindings: { sessionId: string; browserTabIds: string[]; terminalTabIds: string[] }[]) => void } };
+  await act(async () => browser.browserTabs.emitSessionBindingsChanged([{ sessionId, browserTabIds: [], terminalTabIds: [tabId] }]));
+}
+
 describe("main-area terminal and web panels", () => {
   it.each(["web", "terminal"])("retargets an unchanged side browser selected from the sidebar after a main %s surface", async (view) => {
     const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
@@ -707,7 +712,8 @@ describe("main-area terminal and web panels", () => {
       const el = [...railChat.querySelectorAll("button")].find((button) => button.textContent === "열기");
       expect(el).toBeDefined(); return el!;
     });
-    expect(railChat.textContent).toContain("이 대화는 터미널 1에 열려 있습니다.");
+    const paneLabel = container.querySelector(`[data-testid="sidebar-surface-${tabId}"]`)!.textContent;
+    expect(railChat.textContent).toContain(`이 대화는 ${paneLabel}에 열려 있습니다.`);
     expect(container.querySelector('[data-testid^="sidebar-session-"]')).toBeNull();
     await act(async () => { fireEvent.click(open); });
     await waitFor(() => expect(container.querySelector(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`)).not.toBeNull());
@@ -726,10 +732,11 @@ describe("main-area terminal and web panels", () => {
       surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
-    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true,
       sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", family: "side-chat", paneTabId: tabId }],
       settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
     });
+    await publishPaneBinding(api, sessionId, tabId);
     const row = await waitFor(() => {
       expect(shownSurfaces(container)[0]?.tabId).toBe(tabId);
       const el = container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`); expect(el).not.toBeNull(); return el!;
@@ -758,11 +765,12 @@ describe("main-area terminal and web panels", () => {
       surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
-    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true,
       sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", family: "side-chat", paneTabId: tabId }],
       settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
     });
     await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    await publishPaneBinding(api, sessionId, tabId);
     refuseReveal = true;
     await act(async () => { fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`)!); });
     await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
@@ -779,10 +787,11 @@ describe("main-area terminal and web panels", () => {
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
     const { container, api } = await renderApp({
-      hasApiKey: true, terminal: true, sideChat: true,
+      hasApiKey: true, terminal: true, sideChat: true, browserTabs: true,
       sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", title: "terminal conversation", family: "side-chat", paneTabId: tabId }],
       settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
     });
+    await publishPaneBinding(api, sessionId, tabId);
     const sideChat = (api as unknown as { sideChat: { load: ReturnType<typeof vi.fn>; paneHistory: ReturnType<typeof vi.fn> } }).sideChat;
     await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
     await clickSidebarNavRow("features", "toolbar-work-board");
@@ -815,10 +824,11 @@ describe("main-area terminal and web panels", () => {
       sideTabs: { main: [{ kind: "browser", tabId: "browser:abcd1234-2", ordinal: 1, cwd: null, url: null }] },
     };
     const { container, api } = await renderApp({
-      hasApiKey: true, terminal: true, sideChat: true,
+      hasApiKey: true, terminal: true, sideChat: true, browserTabs: true,
       sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", title: "moving terminal conversation", family: "side-chat", paneTabId: tabId }],
       settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
     });
+    await publishPaneBinding(api, sessionId, tabId);
     const sideChat = (api as unknown as { sideChat: Record<"send" | "load" | "abort" | "endPaneChat" | "onStream", ReturnType<typeof vi.fn>> }).sideChat;
     const listeners = new Set<(event: ChatStreamEvent) => void>();
     sideChat.onStream.mockImplementation((listener: (event: ChatStreamEvent) => void) => {

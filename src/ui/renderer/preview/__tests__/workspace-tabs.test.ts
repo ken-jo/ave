@@ -3,9 +3,38 @@ import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceTabs } from "../workspace-tabs.js";
+import { useMainSurfaces, type MainSurface } from "../main-surfaces.js";
 import { clearActiveSurface, getActiveSurface, showActiveSurface } from "../active-surface.js";
 
 describe("useWorkspaceTabs", () => {
+  it("gives terminals distinct numbers across main and side stores while preserving moves", () => {
+    const main = renderHook(() => useMainSurfaces());
+    const sideA = renderHook(() => useWorkspaceTabs());
+    const sideB = renderHook(() => useWorkspaceTabs());
+    let surface!: MainSurface;
+    act(() => { surface = main.result.current.create("terminal"); });
+    act(() => sideA.result.current.addTab("terminal"));
+    act(() => sideB.result.current.ensureContainerTab("terminal"));
+    const terminals = [surface.ordinal, sideA.result.current.tabs[0]!.ordinal, sideB.result.current.tabs[0]!.ordinal];
+    expect(new Set(terminals).size).toBe(3);
+    expect(new Set([surface.tabId, sideA.result.current.tabs[0]!.id, sideB.result.current.tabs[0]!.id]).size).toBe(3);
+    act(() => { main.result.current.release(surface.tabId); });
+    act(() => sideA.result.current.adoptTab({ id: surface.tabId, kind: "terminal", ordinal: surface.ordinal }, null));
+    expect(sideA.result.current.tabs.find((tab) => tab.id === surface.tabId)?.ordinal).toBe(surface.ordinal);
+  });
+
+  it("repairs colliding restored terminal numbers across stores before displaying them", () => {
+    const main = renderHook(() => useMainSurfaces());
+    const side = renderHook(() => useWorkspaceTabs());
+    const tabId = "terminal:restored-main";
+    act(() => main.result.current.adopt({ tabId, kind: "terminal", ordinal: 1, url: null }));
+    act(() => side.result.current.adoptTab({ id: "terminal:restored-side", kind: "terminal", ordinal: 1 }, null));
+    expect(main.result.current.get(tabId)?.ordinal).not.toBe(side.result.current.tabs[0]!.ordinal);
+    const restoredOrdinal = side.result.current.tabs[0]!.ordinal;
+    act(() => side.result.current.addTab("terminal"));
+    expect(side.result.current.tabs[1]!.ordinal).toBeGreaterThan(restoredOrdinal);
+  });
+
   it.each(["tab", "container"])("forgets the active surface on a store-level %s close", (method) => {
     const { result, unmount } = renderHook(() => useWorkspaceTabs());
     act(() => result.current.addTab("browser"));
@@ -166,8 +195,9 @@ describe("useWorkspaceTabs", () => {
     act(() => result.current.addTab("browser"));
     act(() => result.current.addTab("terminal"));
     act(() => result.current.addTab("browser"));
-    const kinds = result.current.tabs.map((tab) => `${tab.kind}:${tab.ordinal}`);
-    expect(kinds).toEqual(["browser:1", "terminal:1", "browser:2"]);
+    expect(result.current.tabs.map((tab) => tab.kind)).toEqual(["browser", "terminal", "browser"]);
+    expect(result.current.tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.ordinal)).toEqual([1, 2]);
+    expect(result.current.tabs[1]!.ordinal).toBeGreaterThan(0);
     const ids = result.current.tabs.map((tab) => tab.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
