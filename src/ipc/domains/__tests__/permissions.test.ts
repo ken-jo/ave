@@ -89,7 +89,6 @@ function makeDeps(options: {
   auditAppendError?: Error;
   queue?: Record<string, unknown> | null;
   mode?: string;
-  interactiveAutoApprove?: "off" | "low" | "medium";
   hasReviewer?: boolean;
   workspaceLifecycleAvailable?: boolean;
   durableApprovalRecordAllowed?: boolean;
@@ -127,8 +126,8 @@ function makeDeps(options: {
     },
   ];
   const permissionManager = {
+    getPolicyEpoch: vi.fn(() => "0:0:default"),
     getMode: vi.fn(() => options.mode ?? "default"),
-    getInteractiveAutoApprove: vi.fn(() => options.interactiveAutoApprove ?? "off"),
     hasReviewer: vi.fn(() => options.hasReviewer ?? false),
     setMode: vi.fn(),
     setModePersist: vi.fn(async () => undefined),
@@ -173,6 +172,8 @@ function makeDeps(options: {
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
+      beginApprovalRuleSave: vi.fn(() => Object.freeze({})),
+      completeApprovalRuleSave: vi.fn(),
       listPendingRendererRequests: vi.fn(() => []),
       canAccessRendererRequest: vi.fn(() => true),
       // #799 + CRITICAL-2 ralph iter 4: server-side ApprovalRequest binding. userApprovalRecord handler reads identity, raw args, and
@@ -330,7 +331,6 @@ describe("permissions IPC handlers", () => {
   it("suggests LLM permission review after repeated default-mode approvals", async () => {
     const { appWindows } = await setup({
       mode: "default",
-      interactiveAutoApprove: "off",
       hasReviewer: false,
     });
 
@@ -383,7 +383,6 @@ describe("permissions IPC handlers", () => {
   it("suggests LLM permission review immediately after allow-always in default mode", async () => {
     const { appWindows } = await setup({
       mode: "default",
-      interactiveAutoApprove: "off",
       hasReviewer: false,
     });
 
@@ -403,7 +402,6 @@ describe("permissions IPC handlers", () => {
   it("does not suggest review switching when ApprovalGate forces the response to deny", async () => {
     const { deps, appWindows } = await setup({
       mode: "default",
-      interactiveAutoApprove: "off",
       hasReviewer: false,
     });
     deps.approvalGate.resolveFromDesktopRenderer.mockReturnValueOnce({
@@ -425,10 +423,9 @@ describe("permissions IPC handlers", () => {
     }
   });
 
-  it("does not suggest review switching when LLM auto-review is already active", async () => {
+  it("does not suggest review switching when automatic mode is already active", async () => {
     const { appWindows } = await setup({
-      mode: "default",
-      interactiveAutoApprove: "low",
+      mode: "auto",
       hasReviewer: true,
     });
 
@@ -1128,7 +1125,7 @@ describe("rules recorded from live approval cards", () => {
   it("stores an edited wildcard allow and warns that it applies only to sandboxed runs", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
-      .toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
+      .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });

@@ -246,8 +246,6 @@ export type ApprovalRequestInput = Omit<
   readonly abortSignal?: AbortSignal;
   // Host-tracked child provenance forces one-shot human approval and stays off renderer requests.
   readonly childProvenance?: ChildAgentProvenance;
-  // Host-only caller metadata; child provenance always requires a human answer.
-  readonly parentAdjudicationEligible?: boolean;
 };
 
 // The sub-agent run behind an approval ask. Every field is host-owned: the ids come from the run registry and the summary from the parent's own spawn input.
@@ -436,7 +434,15 @@ export function consumeHostApprovedOneShotExecutionBinding(
   return sameHostShellExecutionPermitBinding(actual, expected);
 }
 
+interface ApprovalPolicyTransition {
+  readonly from: string;
+  to: string;
+  valid: boolean;
+  saving: boolean;
+}
+
 interface PendingEntry {
+  ruleSaveTransition?: ApprovalPolicyTransition;
   resolve: (decision: ApprovalDecision) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -707,6 +713,49 @@ export type ApprovalSurfaceResolver = (
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
+  private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
+  private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
+
+  /** Capture a live card before its host-validated rule save. Tokens never cross IPC. */
+  beginApprovalRuleSave(requestId: string, before: string): object | undefined {
+    const entry = this.pending.get(requestId);
+    if (!entry) return undefined;
+    const transition = entry.ruleSaveTransition ??= { from: before, to: before, valid: true, saving: false };
+    if (transition.saving || transition.to !== before) transition.valid = false;
+    transition.saving = true;
+    const token = Object.freeze({});
+    this.ruleSaveTokens.set(token, { requestId, entry, before });
+    return token;
+  }
+
+  /** Complete only a successful, validated allow save; any other mutation breaks the chain. */
+  completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "project" | "always"): void {
+    if (!token) return;
+    const saved = this.ruleSaveTokens.get(token);
+    this.ruleSaveTokens.delete(token);
+    if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
+    const transition = saved.entry.ruleSaveTransition!;
+    transition.saving = false;
+    const beforeParts = saved.before.split(":");
+    const afterParts = after.split(":");
+    const generation = Number(beforeParts[0]);
+    const revision = Number(beforeParts[1]);
+    // Rule saves increment the manager generation once and, for project rules,
+    // the project revision once. Concurrent policy changes cannot join this receipt.
+    if (scope === undefined || beforeParts.length !== 3 || afterParts.length !== 3 ||
+      !Number.isSafeInteger(generation) || !Number.isSafeInteger(revision) || generation < 0 || revision < 0 ||
+      afterParts[0] !== String(generation + 1) ||
+      afterParts[1] !== String(revision + (scope === "project" ? 1 : 0)) ||
+      afterParts[2] !== beforeParts[2]) transition.valid = false;
+    transition.to = after;
+  }
+
+  /** Consume the exact authenticated answer's same-card policy transition once. */
+  allowsPolicyTransition(decision: ApprovalDecision, before: string, current: string): boolean {
+    const transition = this.approvedPolicyTransitions.get(decision);
+    this.approvedPolicyTransitions.delete(decision);
+    return transition !== undefined && transition.from === before && transition.to === current;
+  }
   private readonly lifetime = new AbortController();
   // Renderers that displayed a pending card, including a former owner after a conversation move. Settlement removes stale cards from each of them.
   private readonly refetchedBy = new Map<string, Set<WebContents>>();
@@ -877,7 +926,6 @@ export class ApprovalGate {
       scopeTargetFilePaths,
       abortSignal,
       childProvenance,
-      parentAdjudicationEligible,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
@@ -1611,6 +1659,11 @@ export class ApprovalGate {
         : decision;
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
+    const transition = entry.ruleSaveTransition;
+    if (nativeRenderer && transition?.valid && !transition.saving && transition.from !== transition.to &&
+      (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always")) {
+      this.approvedPolicyTransitions.set(resolvedDecision, { from: transition.from, to: transition.to });
+    }
     if (
       entry.hostShellExecutionPermitBinding !== undefined &&
       (resolvedDecision.choice === "allow-once" ||

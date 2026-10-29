@@ -304,7 +304,7 @@ export function HelloStage({ demo }: { demo: HelloDemo }) {
                   </div>
                 </div>
                 <div className="hw-foot">
-                  <span>Confirm writes outside the project</span>
+                  <span>Allow writes</span>
                   <span>local-model</span>
                 </div>
               </div>

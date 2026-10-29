@@ -141,12 +141,12 @@ function registerProbe(
 }
 
 function reviewerPermissionManager(directory: string, classify = vi.fn(() => ({
-  level: "medium" as const,
+  level: "high" as const,
   reason: "requires rationale",
 }))): PermissionManager {
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("low");
+
   setReviewerForTest(manager, {
     classifier: { classify },
     cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
@@ -171,6 +171,8 @@ function rationaleOptions(runtime: RationaleHostRuntime) {
 
 describe("ToolExecutor rationale conversation batches", () => {
   it("keeps the existing completed-result path when no anchored runtime is present", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-rationale-read-batch-"));
+    try {
     const registry = new ToolRegistry();
     const first = vi.fn(async () => "first");
     const second = vi.fn(async () => "second");
@@ -186,7 +188,7 @@ describe("ToolExecutor rationale conversation batches", () => {
       execute: second,
       parallelSafe: true,
     });
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, undefined, new PermissionManager(join(directory, "permissions.json")));
 
     const outcome = await executor.executeConversationBatch(
       [
@@ -207,6 +209,9 @@ describe("ToolExecutor rationale conversation batches", () => {
     ]);
     expect(first).toHaveBeenCalledOnce();
     expect(second).toHaveBeenCalledOnce();
+    } finally {
+      await cleanupTmpDir(directory);
+    }
   });
 
   it("returns a separate control, preserves the completed prefix, and cancels later siblings", async () => {
@@ -269,7 +274,8 @@ describe("ToolExecutor rationale conversation batches", () => {
       expect(candidate.finalInput).toEqual({ payload: "post-hook-raw" });
       expect(candidate.permission).toMatchObject({
         decision: "ask",
-        layer: 5,
+        layer: 6,
+        reasonCode: "reviewer-human-required",
         reviewer: { route: "foreground-auto", outcome: "fresh" },
       });
       expect(candidate.allowedDirectories.length).toBeGreaterThan(0);
@@ -289,7 +295,7 @@ describe("ToolExecutor rationale conversation batches", () => {
       const execute = vi.fn(async () => "must-not-run");
       registerProbe(registry, { name: "cache_write", category: "write", execute });
       const classify = vi.fn(() => ({
-        level: "medium" as const,
+        level: "high" as const,
         reason: "requires rationale",
       }));
       const executor = new ToolExecutor(

@@ -395,7 +395,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setMode("auto");
     wireJudgeForTest(manager);
-    manager.setInteractiveAutoApprove("low");
+
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
     const nativeWebContents = {

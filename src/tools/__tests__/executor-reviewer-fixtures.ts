@@ -15,7 +15,7 @@ export function makePermissionManager(
 ): PermissionManager {
   const permMgr = new PermissionManager(join(dir, "permissions.json"));
   permMgr.setMode(mode);
-  permMgr.setInteractiveAutoApprove("low");
+
   setReviewerForTest(permMgr, {
     classifier: { classify: classifySpy },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),

@@ -62,10 +62,10 @@ function harness(
   const permissionsFile = join(dir, "permissions.json");
   const permMgr = new PermissionManager(permissionsFile);
   permMgr.setMode("auto");
-  permMgr.setInteractiveAutoApprove("low");
-  // Only a non-LOW verdict reaches the approval modal that persists an always-grant.
+
+  // A HIGH reviewer result reaches the normal card that persists an exact grant.
   setReviewerForTest(permMgr, {
-    classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "needs confirmation" })) },
+    classifier: { classify: vi.fn(() => ({ level: "high" as const, reason: "needs confirmation" })) },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
     recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
   });

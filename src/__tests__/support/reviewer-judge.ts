@@ -47,7 +47,7 @@ export function reviewerJudgeOutcomeForTest(
   fallback?: JudgeFailureKind,
 ): Extract<JudgeOutcome, { judged: true }> {
   return {
-    judged: true, mode: "active", decision, applied: true, defer: false,
+    judged: true, mode: "active", decision, applied: true,
     source: fallback ? "fallback" : "judge", rationale, breakerTripped: false,
     ...(fallback ? { fallback } : {}),
   };

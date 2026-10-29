@@ -136,7 +136,7 @@ function hostRuntime(): RationaleHostRuntime {
 const reviewerManager = (directory: string): PermissionManager =>
   makePermissionManager(
     directory,
-    vi.fn(() => ({ level: "medium" as const, reason: "requires rationale" })),
+    vi.fn(() => ({ level: "high" as const, reason: "requires rationale" })),
     "auto",
   );
 
@@ -385,12 +385,13 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(f.execute).toHaveBeenCalledOnce();
       expect(f.approvalGate.requestAndWait).not.toHaveBeenCalled();
       expect(f.order).toEqual([
+        "script-pre",
+        "script-pre",
         "current-identity",
         "permission-hook",
         "permission-ask-audit",
         "receipt-load",
         "receipt-auth",
-        "script-pre",
         "audit-writable",
         "start-cas",
         "start-consume",

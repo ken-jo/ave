@@ -18,6 +18,9 @@ import type { ApprovalMemory } from "../../shared/permissions-events.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createDynamicTool, type ToolExecutionContext } from "../base.js";
 import { ToolExecutor } from "../executor.js";
+import { BashTool } from "../shell-tools.js";
+import * as invocationExecution from "../invocation-execution.js";
+import * as hostShellPermits from "../../permissions/host-shell-execution-permit.js";
 import { WriteFileTool } from "../file-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { createTestRequestAnchor, rationaleResponseFor } from "../pipeline/__tests__/rationale-fixtures.js";
@@ -56,13 +59,13 @@ async function subject(sessionId = SESSION_ID) {
   const manager = new PermissionManager(join(root, "permissions.json"));
   const cache = resources.makeVerdictCache(join(root, "verdicts.jsonl"));
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("medium");
+
   manager.setReviewer({
     classifier: new LlmRiskClassifier({ complete }, "review-model", "deny", {}, {
       maxAttempts: 1, baseDelayMs: 0, jitterPct: 0,
     }),
     cache,
-    recentlyDenied: makeRecentlyDeniedStore(join(root, "deferred.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(root, "recently-denied.json")),
   });
   manager.setJudge({
     settings: {
@@ -77,7 +80,7 @@ async function subject(sessionId = SESSION_ID) {
     sessionId, source: "builtin", category: "write", pathFields: ["path"],
     finalInput: input, executionCwd: root, allowedDirectories: [root],
     sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
-  }, undefined, { defer: "none" });
+  });
   const pause = async () => {
     level = "high";
     for (let index = 0; index < 3; index += 1) {
@@ -100,12 +103,12 @@ function corruptAuditTail(audit: AuditLogger) {
 
 async function rationaleContinuation(surface: "native" | "unavailable" = "native") {
   const current = await subject("ef975fd1-380d-4acf-8e50-7f1535885ebc");
-  current.setLevel("medium");
-  current.manager.setInteractiveAutoApprove("low");
+  current.setLevel("high");
+
   const execute = vi.fn(async () => "sealed write completed");
   const registry = new ToolRegistry();
   registry.register(makeWriteProbeTool(execute));
-  const { hooks, reached, release } = heldPreToolUse();
+  const hooks = new ScriptHookManager();
   const { gate, cards, approve } = manualGate();
   const invocationAudits: InvocationAuditRecord[] = [];
   const scopeComplete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
@@ -132,7 +135,6 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
     sessionId: current.sessionId, executionCwd: current.root,
     permissionContext: userPermissionContext({
       trustOrigin: "llm-tool-arg", additionalDirectories: [current.root],
-      ...(surface === "unavailable" ? { approvalSurface: "unavailable" as const } : {}),
     }),
   };
   const initial = await executor.executeConversationBatch([
@@ -151,7 +153,10 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
   const sealed = await coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: control.eligibilityContext });
   if (!sealed) throw new Error("Expected authentic coordinator resume");
   expect(ticketStore.isAuthenticConsumedAllowOnceReceipt(sealed.hostConsumedAllowOnceReceipt, Date.now())).toBe(true);
-  const resumeOptions = { ...options, rationaleResumeRuntime: coordinator };
+  const { reached, release } = heldPreToolUse(hooks);
+  const resumeOptions = { ...options, rationaleResumeRuntime: coordinator, permissionContext: { ...options.permissionContext,
+    ...(surface === "unavailable" ? { approvalSurface: "unavailable" as const } : {}),
+  } };
   return { ...current, execute, hooks, reached, release, gate, cards, approve, invocationAudits, executor, sealed, resumeOptions };
 }
 
@@ -170,8 +175,30 @@ function manualGate() {
   return { gate, cards, approve };
 }
 
-function heldPreToolUse() {
-  const hooks = new ScriptHookManager();
+function heldHandlerFinalizers(toolUseId: string, count: number) {
+  const waits = Array.from({ length: count }, () => {
+    let enter!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    return { enter, release, reached, held };
+  });
+  const execute = invocationExecution.executeAuthorizedToolInvocation;
+  let attempts = 0;
+  let observed: invocationExecution.ExecutionStageContext | undefined;
+  vi.spyOn(invocationExecution, "executeAuthorizedToolInvocation").mockImplementation(context => {
+    if (context.toolUse.id !== toolUseId) return execute(context);
+    observed = context;
+    return execute({ ...context, finalizeExecutionRouteGrant: async () => {
+      const wait = waits[attempts++];
+      if (wait) { wait.enter(); await wait.held; }
+      return context.finalizeExecutionRouteGrant?.();
+    } });
+  });
+  return { waits, observed: () => observed };
+}
+
+function heldPreToolUse(hooks = new ScriptHookManager()) {
   const runPreToolUse = hooks.runPreToolUse.bind(hooks);
   let enter!: () => void;
   let release!: () => void;
@@ -193,7 +220,7 @@ function denyingGate() {
       if (channel !== "ave:approval:request") return;
       cards.push(request);
       queueMicrotask(() => gate.resolveFromDesktopRenderer(request.id, {
-        requestId: request.id, choice: "deny-once",
+        requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
       }, nativeWebContents as never));
     },
   };
@@ -344,34 +371,22 @@ describe("executor automated approval pause", () => {
     expect(controller.signal.aborted).toBe(interruption === "caller abort");
   });
 
-  it.each(["native", "unavailable"] as const)("rechecks a real coordinator receipt after sibling reviews pause during PreToolUse with %s approval", async (surface) => {
+  it.each(["native", "unavailable"] as const)("refuses a sealed resume when sibling reviews pause before fresh permission with %s approval", async (surface) => {
     const f = await rationaleContinuation(surface);
     const pending = f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
     await f.reached;
     expect(f.execute).not.toHaveBeenCalled();
     await f.pause();
     f.release();
-    if (surface === "native") {
-      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
-      expect(f.execute).not.toHaveBeenCalled();
-      expect(f.cards[0]).toMatchObject({ kind: "tool", isReadOnly: false, allowedChoices: ["allow-once", "deny-once"] });
-      expect(f.cards[0].reason).toMatch(/3/);
-      f.approve(f.cards[0]);
-      expect((await pending).is_error).toBeUndefined();
-      expect(f.execute).toHaveBeenCalledOnce();
-      expect(f.invocationAudits.map((record) => record.state)).toEqual(["authorized", "started", "completed"]);
-      const replay = await f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
-      expect(replay.is_error).toBe(true);
-      expect(f.execute).toHaveBeenCalledOnce();
-      expect(f.cards).toHaveLength(1);
-    } else {
-      const result = await pending;
-      expect(result.is_error).toBe(true);
-      expect(result.content).toMatch(/3/);
-      expect(f.execute).not.toHaveBeenCalled();
-      expect(f.cards).toHaveLength(0);
-      expect(f.manager.isAutomatedApprovalPaused(f.sessionId)).toBe(true);
-    }
+    const result = await pending;
+    expect(result.is_error).toBe(true);
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.cards).toHaveLength(0);
+    expect(f.manager.isAutomatedApprovalPaused(f.sessionId)).toBe(true);
+    expect(f.invocationAudits.some((record) => record.state === "started" || record.state === "completed")).toBe(false);
+    const replay = await f.executor.executeSealedRationaleResume(f.sealed.resumeRequest, f.resumeOptions);
+    expect(replay.is_error).toBe(true);
+    expect(f.execute).not.toHaveBeenCalled();
   });
 
   it.each(["policy", "remembered", "reviewer", "rationale", "fresh native", "late native"] as const)("applies the common final audit gate to %s approval", async (source) => {
@@ -408,17 +423,12 @@ describe("executor automated approval pause", () => {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
     });
-    if (source === "fresh native") {
-      await vi.waitFor(() => expect(cards).toHaveLength(1));
-      approve(cards[0]);
-    }
     await reached;
-    const expectedProviderCalls = source === "policy" || source === "remembered" ? 0 : 1;
-    expect(f.complete).toHaveBeenCalledTimes(expectedProviderCalls);
+    expect(f.complete).not.toHaveBeenCalled();
     if (source === "late native") await f.pause();
     order.push("pre-hook-finished");
     release();
-    if (source === "late native") {
+    if (source === "late native" || source === "fresh native") {
       await vi.waitFor(() => expect(cards).toHaveLength(1));
       expect(execute).not.toHaveBeenCalled();
       order.push("late-card-approved");
@@ -491,7 +501,7 @@ describe("executor automated approval pause", () => {
     expect(cards).toHaveLength(1);
   });
 
-  it("requires a native approval when sibling reviews pause an auto-approved write during PreToolUse", async () => {
+  it("requires native approval when sibling reviews pause before fresh permission evaluation", async () => {
     const current = await subject();
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
@@ -504,14 +514,14 @@ describe("executor automated approval pause", () => {
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
     });
     await reached;
-    expect(current.complete).toHaveBeenCalledOnce();
+    expect(current.complete).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
     await current.pause();
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(execute).not.toHaveBeenCalled();
     expect(cards[0]).toMatchObject({ sessionId: SESSION_ID, toolName: "write_probe", isReadOnly: false });
-    expect(cards[0].reason).toMatch(/3/);
+    expect(cards[0].reason).toBe("Automated approval is paused for this turn; human approval is required.");
     const auditLines = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n");
     expect(verifyChain(current.auditSecret, auditLines)).toEqual({ ok: true });
     expect(auditLines.map((line) => JSON.parse(line))).toContainEqual(expect.objectContaining({
@@ -522,7 +532,7 @@ describe("executor automated approval pause", () => {
     expect(result.is_error).toBeUndefined();
     expect(execute).toHaveBeenCalledOnce();
     expect(hooks.runPreToolUse).toHaveBeenCalledOnce();
-    expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(false);
+    expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
   it("honors a PermissionRequest denial before showing a late pause card", async () => {
@@ -556,7 +566,7 @@ describe("executor automated approval pause", () => {
     expect(lifecycle.mock.calls.filter(([event]) => event === "PostToolUseFailure")).toHaveLength(0);
     expect(lifecycle.mock.calls.find(([event]) => event === "PermissionDenied")).toMatchObject([
       "PermissionDenied", SESSION_ID, "user-keyboard",
-      { toolName: "write_probe", denyReason: { layer: 5, source: "tool-executor", reason: denyReason } },
+      { toolName: "write_probe", denyReason: { layer: 6, source: "tool-executor", reason: denyReason } },
     ]);
     const rows = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     expect(rows).toContainEqual(expect.objectContaining({
@@ -610,18 +620,18 @@ describe("executor automated approval pause", () => {
       }),
     });
     await reached;
-    expect(current.complete).toHaveBeenCalledOnce();
+    expect(current.complete).not.toHaveBeenCalled();
     await current.pause();
     release();
     const [result] = await pending;
     expect(result.is_error).toBe(true);
-    expect(result.content).toMatch(/3/);
+    expect(result.content).toContain("do not retry");
     expect(execute).not.toHaveBeenCalled();
     expect(cards).toHaveLength(0);
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
-  it("retains a genuine manual approval when sibling reviews pause automation during PreToolUse", async () => {
+  it("retains a genuine manual approval when sibling reviews pause while its card is pending", async () => {
     const current = await subject();
     current.setLevel("high");
     const execute = vi.fn(async () => "wrote");
@@ -634,11 +644,11 @@ describe("executor automated approval pause", () => {
       sessionId: SESSION_ID, executionCwd: current.root,
       permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
     });
-    await vi.waitFor(() => expect(cards).toHaveLength(1));
-    approve(cards[0]);
     await reached;
-    await current.pause();
     release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    await current.pause();
+    approve(cards[0]);
     const [result] = await pending;
     expect(result.is_error).toBeUndefined();
     expect(execute).toHaveBeenCalledOnce();
@@ -646,7 +656,93 @@ describe("executor automated approval pause", () => {
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
-  it("counts one invocation once when a remembered medium path grant needs a high scope review and ordinary cached review", async () => {
+  it.each(["approved", "policy changed"] as const)("rechecks a host permit paused during final routing and keeps its late card normal: %s", async outcome => {
+    const f = await subject();
+    const command = "printf late-card";
+    await f.manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
+    await f.manager.loadRulesFromFile();
+    f.manager.setMode("auto");
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    const mint = vi.spyOn(hostShellPermits, "mintHostShellExecutionPermit");
+    const held = heldHandlerFinalizers("late-host-permit", 2);
+    const { gate, cards, approve } = manualGate();
+    const request = vi.spyOn(gate, "requestAndWait");
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "late-host-permit", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await held.waits[0].reached;
+    expect(held.observed()?.permissionResult).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(mint.mock.results[0]?.value).toBeDefined();
+    expect(cards).toHaveLength(0);
+    await f.pause();
+    held.waits[0].release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    expect(execute).not.toHaveBeenCalled();
+    expect(request.mock.calls[0]?.[0]).toMatchObject({
+      approvalCacheKey: expect.any(String),
+      evaluationContext: expect.objectContaining({ executionCwd: f.root }),
+      hostShellExecutionPermitBinding: expect.any(Object),
+    });
+    expect(request.mock.calls[0]?.[0].verifiedShellCommand).toBe(held.observed()?.verifiedShellCommand);
+    expect(request.mock.calls[0]?.[0].forceExplicit).toBeUndefined();
+    expect(request.mock.calls[0]?.[0].durableApprovalRecordAllowed).toBeUndefined();
+    expect(cards[0].allowedChoices).toBeUndefined();
+    expect(cards[0]).toMatchObject({ exactRecordAllowed: true,
+      shellRule: expect.objectContaining({ sessionAllowed: true, persistentAllowed: true, exactRule: `Bash(${command})` }),
+    });
+    approve(cards[0]);
+    await held.waits[1].reached;
+    if (outcome === "policy changed") {
+      await f.manager.addRulePersist({ pattern: `Bash(${command})`, action: "deny" }, { kind: "user" });
+    }
+    held.waits[1].release();
+    const [result] = await pending;
+    if (outcome === "approved") {
+      expect(result.is_error, result.content).toBeUndefined();
+      expect(result.content).toContain("late-card");
+      expect(execute).toHaveBeenCalledOnce();
+      expect(mint).toHaveBeenCalledTimes(2);
+    } else {
+      expect(result.is_error).toBe(true);
+      expect(result.content).toBe("Permission policy changed before execution.");
+      expect(execute).not.toHaveBeenCalled();
+    }
+    expect(cards).toHaveLength(1);
+    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("rejects a new deny rule after normal human consent while final routing is held", async () => {
+    const f = await subject();
+    f.setLevel("high");
+    const execute = vi.fn(async () => "must-not-run");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const held = heldHandlerFinalizers("normal-human-policy-race", 1);
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "normal-human-policy-race", name: "write_probe", input: { path: join(f.root, "approved.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    approve(cards[0]);
+    await held.waits[0].reached;
+    expect(held.observed()?.approvedPolicyEpoch).toBe(f.manager.getPolicyEpoch());
+    f.manager.setRules([{ pattern: "write_probe", action: "deny" }]);
+    held.waits[0].release();
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(result.content).toBe("Permission policy changed before execution.");
+    expect(execute).not.toHaveBeenCalled();
+    expect(cards).toHaveLength(1);
+  });
+
+  it("counts repeated classification of one invocation once after grant escalation", async () => {
     const previousHome = process.env.AVE_HOME;
     const isolatedHome = resources.makeTmpDir("ave-pause-state-");
     process.env.AVE_HOME = isolatedHome;
@@ -654,8 +750,9 @@ describe("executor automated approval pause", () => {
       const current = await subject();
       const tool = new WriteFileTool();
       const execute = vi.spyOn(tool, "execute");
-      // The app-data leaf is admitted outside the project, where ordinary reviewer routing still applies.
-      const input = { path: join(isolatedHome, "remembered.txt"), content: "approved" };
+      // An ordinary outside target exercises scope review without the protected home floor.
+      const outsideRoot = resources.makeTmpDir("ave-pause-outside-");
+      const input = { path: join(outsideRoot, "remembered.txt"), content: "approved" };
       const identity = await approvalIdentityFor(tool, input, current.root);
       expect(identity.approvalMemory).toMatchObject({ kind: "key", scope: { kind: "path", path: input.path } });
       await approvals.recordApproval(tool.name, approvals.canonicalStringify(input), "builtin", {
@@ -674,14 +771,18 @@ describe("executor automated approval pause", () => {
         permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
       });
       expect(result.is_error).toBe(true);
-      expect(current.complete).toHaveBeenCalledOnce();
+      expect(current.complete).not.toHaveBeenCalled();
       expect(cards).toHaveLength(1);
       expect(execute).not.toHaveBeenCalled();
+      expect(dispatch).toHaveBeenCalledOnce();
+      const initialInput = dispatch.mock.calls[0][1];
+      const firstAssessment = await dispatch.mock.results[0].value;
+      expect(firstAssessment.outcome).toBe("host-determined");
+      const repeated = await current.manager.dispatchReviewer(tool.name, initialInput, undefined, { purpose: "approval-scope" });
+      expect(repeated.outcome).toBe("host-determined");
       expect(dispatch).toHaveBeenCalledTimes(2);
-      expect(dispatch.mock.calls[0][3]).toMatchObject({ purpose: "approval-scope" });
-      expect(dispatch.mock.calls[1][1].invocationId).toBe(dispatch.mock.calls[0][1].invocationId);
-      const assessments = await Promise.all(dispatch.mock.results.map((result) => result.value));
-      expect(assessments.map((assessment) => assessment.outcome)).toEqual(["fresh", "cache"]);
+      expect(dispatch.mock.calls[1][3]).toMatchObject({ purpose: "approval-scope" });
+      expect(dispatch.mock.calls[1][1].invocationId).toBe(initialInput.invocationId);
       expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 1, total: 1, open: false });
     } finally {
       if (previousHome === undefined) delete process.env.AVE_HOME;
@@ -723,11 +824,11 @@ describe("executor automated approval pause", () => {
     expect(blocked.is_error).toBe(true);
     expect(execute).toHaveBeenCalledOnce();
     expect(cards).toHaveLength(1);
-    expect(cards[0].reason).toMatch(/3/);
+    expect(cards[0].reason).toBe("Automated approval is paused for this turn; human approval is required.");
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
-  it("puts a paused read reviewer request on the real approval card instead of the read shortcut", async () => {
+  it("keeps other-principal reads once-only before and after the reviewer pauses", async () => {
     const current = await subject();
     const execute = vi.fn(async () => ({ output: "read", isError: false }));
     const registry = new ToolRegistry();
@@ -742,17 +843,17 @@ describe("executor automated approval pause", () => {
       approvalReasonPrefix: "[Sub-Agent: reader]",
       permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [current.root] }),
     };
-    const [allowed] = await executor.executeAll([{ id: "read-before-pause", name: "read_probe", input: {} }], options);
-    expect(allowed.is_error).toBeUndefined();
-    expect(execute).toHaveBeenCalledOnce();
-    expect(cards).toHaveLength(0);
+    const [first] = await executor.executeAll([{ id: "read-before-pause", name: "read_probe", input: {} }], options);
+    expect(first.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(cards).toHaveLength(1);
     await current.pause();
     const [blocked] = await executor.executeAll([{ id: "read-after-pause", name: "read_probe", input: {} }], options);
     expect(blocked.is_error).toBe(true);
-    expect(execute).toHaveBeenCalledOnce();
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ toolCategory: "read", isReadOnly: false });
-    expect(cards[0].reason).toMatch(/3/);
+    expect(execute).not.toHaveBeenCalled();
+    expect(cards).toHaveLength(2);
+    expect(cards[1]).toMatchObject({ toolCategory: "read", isReadOnly: false });
+    expect(cards[1]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"], requireExplicit: true });
   });
 
   it("propagates a fresh memory review's missing-engine contract error", async () => {

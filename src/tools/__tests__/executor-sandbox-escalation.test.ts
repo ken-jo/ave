@@ -135,6 +135,33 @@ it("denies a headless host escalation without a second native effect", async () 
   expect(result).toMatchObject({ tool_use_id: "headless-sandbox-call", is_error: true, content: expect.stringContaining(NO_APPROVER_MESSAGE) });
 });
 
+it("requires a normal card before expanding sandbox filesystem scope", async () => {
+  const outside = realpathSync.native(mkdtempSync(join(tmpdir(), "executor-sandbox-outside-")));
+  try {
+    const command = `mkdir '${join(outside, "new-folder")}'`;
+    const native = new BashTool();
+    const execute = vi.spyOn(native, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
+    const registry = new ToolRegistry(); registry.register(native);
+    const cards: ApprovalRequest[] = [];
+    let gate: ApprovalGate;
+    const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      cards.push(request);
+      expect(execute).not.toHaveBeenCalled();
+      expect(request.allowedChoices).toBeUndefined();
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac }, contents as never);
+    } };
+    gate = new ApprovalGate(contents as never);
+    const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate);
+    const [result] = await invoke(executor, "outside-sandbox-scope", "bash", { command });
+    expect(result?.is_error).toBe(true);
+    expect(cards).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+  } finally {
+    await cleanupTmpDir(outside);
+  }
+});
+
 it("reviews a headless auto host escalation before permitting its single host effect", async () => {
   const permission = manager(); permission.setMode("auto");
   const classify = vi.fn(() => ({ level: "low" as const, reason: "Bounded controlled host command" }));
@@ -142,7 +169,7 @@ it("reviews a headless auto host escalation before permitting its single host ef
     classifier: { classify }, cache: reviewResources.makeVerdictCache(join(directory, "reviewer-cache.jsonl")),
     recentlyDenied: makeRecentlyDeniedStore(join(directory, "recently-denied.jsonl")),
   });
-  permission.setInteractiveAutoApprove("low");
+
   const native = new BashTool();
   const execute = vi.spyOn(native, "execute").mockImplementation(async (raw, context) => {
     if ((raw as Record<string, unknown>).executionMode !== "host") return blockedResult("mkdir ordinary", context.cwd);

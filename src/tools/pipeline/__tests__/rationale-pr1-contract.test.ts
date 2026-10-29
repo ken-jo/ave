@@ -54,10 +54,10 @@ const eligibilityContext = {
   headless: false, forceModal: false, approvalReasonPrefix: null,
 } as const;
 const permission = {
-  decision: "ask", reason: "reviewer medium", layer: 5,
+  decision: "ask", reason: "Automatic review requires human approval.", layer: 6, reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
-    verdict: { level: "medium", reason: "bounded workspace deletion" },
+    verdict: { level: "high", reason: "bounded workspace deletion" },
     outcome: "fresh",
   },
 } as const satisfies PermissionCheckResult;
@@ -381,7 +381,7 @@ describe("reviewer-owned scope reevaluation", () => {
     expect(reevaluation.ticketNamespace).toBe("rationale-ticket/" + control.ticketId);
     expect(reevaluation.cachePolicy).toBe("bypass-base-cache");
     expect(reevaluation.baseCacheWrite).toBe("forbidden");
-    expect(reevaluation.effectiveVerdict.level).toBe("medium");
+    expect(reevaluation.effectiveVerdict.level).toBe("high");
     expect(reevaluation.modalFallbackRequired).toBe(false);
     expect(validateReviewerScopeReevaluation(reevaluation, control, NOW)).toBe(true);
 
@@ -430,7 +430,7 @@ describe("reviewer-owned scope reevaluation", () => {
 
   it("composes effectiveVerdict with the reviewer authority's maxVerdict on same-level ties", () => {
     const control = fixture();
-    const reevaluatedVerdict = { level: "medium", reason: "same level, fresh reviewer text" } as const;
+    const reevaluatedVerdict = { level: "high", reason: "same level, fresh reviewer text" } as const;
     const reevaluation = createReviewerScopeReevaluation({
       control, outcome: "fresh", scopeAlignment: "aligned",
       scopeReasons: ["sealed targets match the request"],
@@ -494,7 +494,7 @@ describe("isReviewerAutoApproveEligible", () => {
       now: NOW,
     });
     expect(reevaluation.reevaluatedVerdict.level).toBe("low");
-    expect(reevaluation.effectiveVerdict.level).toBe("medium");
+    expect(reevaluation.effectiveVerdict.level).toBe("high");
     expect(reevaluation.effectiveVerdict).not.toEqual(reevaluation.reevaluatedVerdict);
     expect(isReviewerAutoApproveEligible(reevaluation)).toBe(true);
   });
@@ -665,9 +665,10 @@ describe("invocation audit and sealed resume", () => {
       .join("\n")
       .replace(/\r\n/g, "\n");
     expect(FOREGROUND_RATIONALE_PRODUCTION_ENABLED).toBe(true);
-    expect(RATIONALE_SECURITY_SUFFIX_VERSION).toBe(3);
+    expect(RATIONALE_SECURITY_SUFFIX_VERSION).toBe(4);
     expect(RATIONALE_SECURITY_SUFFIX).toEqual([
       "resume-cas-validate",
+      "script-pre-tool-use",
       "current-invocation-scope-revalidate",
       "current-policy-mode-revalidate",
       "current-permission-revalidate",
@@ -675,7 +676,6 @@ describe("invocation audit and sealed resume", () => {
       "permission-request-hook",
       "permission-ask-audit",
       "approval-allow-once-cas-consume",
-      "script-pre-tool-use",
       "rate-limit",
       "permission-audit-writable-fail-closed",
       "host-invocation-start-cas",
@@ -691,13 +691,13 @@ describe("invocation audit and sealed resume", () => {
       "tool-end-emit",
     ]);
     const sourceMarkers = [
+      ["script-pre-tool-use", "    : await runScriptHook(\n        services.scriptHookManager,\n        \"pre\","],
       ["current-invocation-scope-revalidate", "createInvocationContext(permissionContext, executionCwd)"],
       ["current-policy-mode-revalidate", "policyMode: services.permissionManager?.getMode?.()"],
       ["current-permission-revalidate", "services.permissionManager.checkDetailed("],
-      ["current-sandbox-capability-revalidate", "!services.sandboxFsContainedProvider(tool)"],
+      ["current-sandbox-capability-revalidate", "if (!sandboxCapability || !sandboxExecutionPlan)"],
       ["permission-request-hook", "const permHook = await runScriptHook("],
       ["permission-ask-audit", "await auditCurrentPermissionAsk("],
-      ["script-pre-tool-use", "    : await runScriptHook(\n        services.scriptHookManager,\n        \"pre\","],
       ["rate-limit", "services.rateLimiter.check(toolUse.name, trust)"],
       ["permission-audit-writable-fail-closed", "services.auditLogger.assertPermissionAuditWritable()"],
       ["tool-start-emit-boundary", "    emitToolStart(callbacks, toolUse.name, finalInput, meta);\n\n    // ── Step 6: Execute"],
@@ -726,16 +726,16 @@ describe("invocation audit and sealed resume", () => {
       {
         phase: "resume-cas-validate",
         beforePhase: null,
-        afterPhase: "current-invocation-scope-revalidate",
+        afterPhase: "script-pre-tool-use",
         lowerSourceMarker: "const target = extractSealedRationaleExecutionTarget(request);",
-        upperSourceMarker: "createInvocationContext(permissionContext, executionCwd)",
+        upperSourceMarker: "    : await runScriptHook(\n        services.scriptHookManager,\n        \"pre\",",
       },
       {
         phase: "approval-allow-once-cas-consume",
         beforePhase: "permission-ask-audit",
-        afterPhase: "script-pre-tool-use",
-        lowerSourceMarker: "? `parent agent approved approval request (${decision.choice})`",
-        upperSourceMarker: "    : await runScriptHook(\n        services.scriptHookManager,\n        \"pre\",",
+        afterPhase: "rate-limit",
+        lowerSourceMarker: "const authorized = await authorizeRationaleResume(",
+        upperSourceMarker: "services.rateLimiter.check(toolUse.name, trust)",
       },
       {
         phase: "host-invocation-start-cas",
@@ -785,7 +785,7 @@ describe("invocation audit and sealed resume", () => {
     const fresh = createReviewerScopeReevaluation({
       control, outcome: "fresh", scopeAlignment: "aligned",
       scopeReasons: ["sealed action matches"],
-      reevaluatedVerdict: { level: "medium", reason: "same risk" }, now: NOW,
+      reevaluatedVerdict: { level: "high", reason: "same risk" }, now: NOW,
     });
     const review = createRationaleReviewRequiredRecord(control, NOW);
     const requested = transitionRationaleTicket(review, event(control, "request-rationale"));
@@ -1186,7 +1186,7 @@ describe("invocation audit and sealed resume", () => {
       scopeAlignment: "aligned",
       rationaleStatus: "ready", terminalReason: "allowed-once",
     });
-    expect(projection.effectiveVerdict.level).toBe("medium");
+    expect(projection.effectiveVerdict.level).toBe("high");
   });
 
   it("supports failed rationale only through modal fallback and sealed allow-once", () => {

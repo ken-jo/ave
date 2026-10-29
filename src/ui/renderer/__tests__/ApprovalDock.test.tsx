@@ -7,13 +7,14 @@ import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../compon
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
+import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../shared/permission-reviewer-framework.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { selectDecision } from "../components/__tests__/support/decision-bar.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
     version: "permission-evaluation-context/v1",
-    reviewerFrameworkVersion: "permission-reviewer-framework/v3",
+    reviewerFrameworkVersion: PERMISSION_REVIEWER_FRAMEWORK_VERSION,
     policyMode: "auto",
     headless: false,
     source: "builtin",
@@ -819,7 +820,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("검증 환경 / 샌드박스 평가");
       expect(document.body.textContent).toContain("permission-evaluation-context/v1");
-      expect(document.body.textContent).toContain("permission-reviewer-framework/v3");
+      expect(document.body.textContent).toContain(PERMISSION_REVIEWER_FRAMEWORK_VERSION);
       expect(document.body.textContent).toContain("C:\\Users\\example\\workspace\\ave-project\\ave");
     });
   });

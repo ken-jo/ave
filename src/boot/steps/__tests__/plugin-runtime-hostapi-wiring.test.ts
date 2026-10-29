@@ -173,7 +173,7 @@ type ConfigHostApi = {
     | { ok: true; exposure: "lease"; vendor: string; leaseId: string; release: () => Promise<void>; onClosed: (listener: (reason: "revoked" | "peer-gone") => void) => () => void }
     | { ok: true; exposure: "raw"; vendor: string; key: string; release: () => Promise<void> }
   >;
-  hostFetch: (input: string, init?: { method?: string; auth?: { lease: string }; headers?: HeadersInit }) => Promise<Response>;
+  hostFetch: (input: string, init?: RequestInit & { auth?: { lease: string } }) => Promise<Response>;
   spawnWorker: (spec: { workerId: string; command: string }) => Promise<{
     socketPath: string | null;
     pid: number | undefined;

@@ -111,7 +111,7 @@ describe("confined shell reviewer invocation", () => {
     setReviewerForTest(manager, { classifier: { classify },
       cache: reviewResources.makeVerdictCache(join(directory, "reviewer-cache.jsonl")),
       recentlyDenied: makeRecentlyDeniedStore(join(directory, "deferred.jsonl")) });
-    manager.setInteractiveAutoApprove("medium");
+
     const check = vi.spyOn(manager, "checkDetailed");
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "reviewed", isError: false });
@@ -159,7 +159,7 @@ describe("shell review requires a risk judgment", () => {
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
     const manager = new PermissionManager(join(directory, "permissions.json"));
-    manager.setMode("auto"); manager.setInteractiveAutoApprove(disabled ? "medium" : "low");
+    manager.setMode("auto");
     setReviewerForTest(manager, { classifier: disabled ? new DisabledRiskClassifier() : new RuleBasedRiskClassifier(),
       cache: reviewResources.makeVerdictCache(join(directory, "judgment-cache.jsonl")),
       recentlyDenied: makeRecentlyDeniedStore(join(directory, "judgment-queue.jsonl")) });

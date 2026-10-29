@@ -27,12 +27,12 @@ import { inspectPowerShellCommand, inspectPowerShellPermissionPaths, parsePowerS
 import type { DisposablePathPolicyRelaxation } from "./execution-router.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
-import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
 import { decidePermission, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isHostNetworkSubject } from "./host-network-subject.js";
+import { canonicalEgressHost, isValidEgressPort } from "./egress-grants.js";
 import {
   DisabledRiskClassifier,
   RuleBasedRiskClassifier,
@@ -136,7 +136,7 @@ export interface PermissionRule extends ShellRuleVersion {
   tier?: GrantTier;
 }
 
-// Layer 5 reviewer routing lane. Distinguishes the two automatic-approval lanes the builtin judge maps verdicts for: `headless` (background/routine turns — non-low denies) and `foreground-auto` (interactive auto-review opt-in — verdicts through the configured inclusive threshold allow, higher verdicts ask). Shared by the `reviewer.route` marker and the reviewer-dispatch callsites so the lane union has a single source of truth.
+// Reviewer routes retain their foreground or headless audit identity. Automatic review permits LOW/MEDIUM; HIGH asks in foreground and denies when no approval surface is available.
 export type ReviewerLane = "foreground-auto" | "headless";
 
 export type ReviewerDispatchOutcome =
@@ -224,15 +224,15 @@ export interface PermissionCheckContext {
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-issued per-invocation substrate, sealed before permission evaluation.
   hostShellExecutionPlan?: HostShellExecutionPlan;
-  // Background/routine turns are not direct user gestures. Mutating tools must still ask even when an allow rule or auto mode would otherwise permit them.
+  // No human approval surface is available; the pipeline denies any human fallback.
   headless?: boolean;
-  // The headless turn is the local owner's own command-line gesture (native `--exec`), not a background routine. Layers 3 and 5 — the owner's allow rules and "Allow always" grants — apply before the reviewer lane does.
+  // The app remains open while its owner is away; cards wait using the configured owner-away limit.
   ownerUnattended?: boolean;
   // Permission policy — full approval-cache identity for authority-sensitive tools. When present, user allow rules / allow-always entries match this key instead of the bare tool name so a benign prior approval cannot silently authorize a later call with a broader argument scope.
   approvalCacheKey?: string;
   // Host-owned remote-controller provenance; bypasses every remembered allow.
   remoteControllerAuthority?: RemoteControllerAuthority;
-  // Tool-author `decisionOverride` for `meta`-category builtin tools, carried from the executor so the post-computation guard owns re-elevation (V1 SOT). A foreground `"ask"` meta invocation uses the same reviewer route as write/shell/network when interactive auto-review is enabled; otherwise it remains a per-invocation `forceModal` ask. `"always-allow-with-audit"` is short-circuited before checkDetailed runs. Non-meta callers pass `undefined`.
+  // Tool-author `decisionOverride` for `meta`-category builtin tools, carried from the executor so the post-computation guard owns re-elevation (V1 SOT). A foreground `"ask"` meta invocation uses the same reviewer route as write/shell/network in automatic execution mode; otherwise it remains a per-invocation `forceModal` ask. `"always-allow-with-audit"` is short-circuited before checkDetailed runs. Non-meta callers pass `undefined`.
   decisionOverride?: "ask" | "always-allow-with-audit";
   // Host-built rule subject. Native file subjects retain the sealed path snapshot; mediated fetches and MCP use actual destination/tool identity. Shell dialects share floors; Bash rules match only the bash dialect.
   ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string } | ScopedRuleSubject;
@@ -465,6 +465,13 @@ export function consumeIssuedShellAllowRuleDecision(
 
 // Where a `Network(...)` rule is stored: the user rules, a project's rules, or a conversation's "This session" rules.
 export type NetworkRuleScope = "user" | "project" | "session";
+export interface NetworkPermissionEvaluation {
+  permission: PermissionCheckResult;
+  identity: string;
+  reasonKey: string;
+  destination: Readonly<{ host: string; port: number }>;
+  rule?: { decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope };
+}
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
@@ -496,7 +503,6 @@ export class PermissionManager {
   // Runtime degrade flag — true when the persisted reviewer mode is "llm" but boot wiring could not instantiate the LLM provider adapter (fresh install: no chat provider/key configured) and fell back to the rule classifier. Surfaced to the renderer (PermissionsTab banner) so the user understands the reviewer is running rule-only until they configure a provider. Reset to false on every successful "llm" wiring.
   private reviewerDegradedToRule = false;
   // Retained persisted reviewer preference for settings round trips; mode owns routing.
-  private interactiveAutoApprove: ReviewerInteractiveAutoApprove = "off";
   private blockReadsOutsideWorkingDirectories = false;
   private policyGeneration = 0;
   // Optional broadcast for memory-hit auto-approve disclosure.
@@ -631,16 +637,7 @@ export class PermissionManager {
   }
 
   // Boot propagates the persisted reviewer preference without creating another routing policy.
-  setInteractiveAutoApprove(autoApprove: ReviewerInteractiveAutoApprove): void {
-    if (this.interactiveAutoApprove !== autoApprove) this.policyGeneration += 1;
-    this.interactiveAutoApprove = autoApprove;
-  }
-
-  getInteractiveAutoApprove(): ReviewerInteractiveAutoApprove {
-    return this.interactiveAutoApprove;
-  }
-
-  // Re-fence read-tier path operands to the allowed directories. Boot reads `permissions.blockReadsOutsideWorkingDirectories` from `~/.ave/config/settings.json` and pushes it here, the same way the reviewer's interactive policy arrives, so the enforcement path never re-reads the file per tool call. It ships OFF: a read reaches any path Layer 0 permits.
+  // Re-fence read-tier path operands to the allowed directories. Boot reads `permissions.blockReadsOutsideWorkingDirectories` from `~/.ave/config/settings.json` and pushes it here, alongside other permission settings, so the enforcement path never re-reads the file per tool call. It ships OFF: a read reaches any path Layer 0 permits.
   setBlockReadsOutsideWorkingDirectories(value: boolean): void {
     if (this.blockReadsOutsideWorkingDirectories !== value) this.policyGeneration += 1;
     this.blockReadsOutsideWorkingDirectories = value;
@@ -725,7 +722,7 @@ export class PermissionManager {
 
   // Monotonic host policy identity for sealed rationale revalidation.
   getPolicyEpoch(): string {
-    return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}:${this.interactiveAutoApprove}`;
+    return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
   }
 
   setRules(rules: PermissionRule[]): void {
@@ -952,6 +949,43 @@ export class PermissionManager {
     return undefined;
   }
 
+  // Every actual connection has its own request; an enclosing shell's rule or grant is not network consent.
+  async checkNetworkPermission(
+    destination: { host: string; port: number; source: ToolSource; network: "public" | "local" | "unverified"; ruleScopes?: readonly NetworkRuleScope[] },
+    context: PermissionCheckContext = {},
+  ): Promise<NetworkPermissionEvaluation> {
+    const canonicalHost = canonicalEgressHost(destination.host);
+    const valid = canonicalHost !== undefined && isValidEgressPort(destination.port);
+    const host = canonicalHost ?? destination.host;
+    const exactDestination = Object.freeze({ host, port: destination.port });
+    const identity = canonicalStringify({ kind: "network", ...exactDestination, source: destination.source });
+    let admissionDenial = context.admissionDenial;
+    let rule: NetworkPermissionEvaluation["rule"];
+    if (!valid) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
+    else {
+      try {
+        const matched = await this.networkRuleDecision({ host, port: destination.port, sessionId: context.sessionId, projectCwd: context.projectRulesCwd });
+        if (matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope)) rule = matched;
+      } catch (error) {
+        if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+        admissionDenial ??= { code: "policy-unreadable", reason: error.message };
+      }
+    }
+    const base = this.evaluatePermission("sandbox_network", destination.source, "network", undefined, {
+      headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
+      sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,
+      remoteControllerAuthority: context.remoteControllerAuthority, floor: context.floor, paths: context.paths,
+      manualRerun: context.manualRerun, admissionDenial, approvalCacheKey: identity,
+    });
+    const issued = this.pipelineRequests.get(base);
+    if (!issued) throw new Error("Network permission request was not issued");
+    const permission = rule === undefined ? base : this.pipelineResult({
+      ...issued.request, rules: { ...issued.request.rules, [rule.decision]: rule.pattern },
+    });
+    if (permission.reasonCode === undefined) throw new Error("Network permission decision has no reason code");
+    return { permission, identity, destination: exactDestination, reasonKey: permission.reasonCode, ...(rule ? { rule } : {}) };
+  }
+
   // Re-check actual destinations at the host fetch boundary, including redirects.
   async checkNetworkRules(url: string, projectCwd: string, privateNetwork = false): Promise<ScopedRuleEvaluation> {
     await this.projectRuleScopes.ensureLoaded(projectCwd);
@@ -1100,7 +1134,7 @@ export class PermissionManager {
       file = await readPermissionsFile(this.permissionsFilePath);
     } catch (error) {
       if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
-      // Boot continues so the user can see and fix the problem, but nothing the file may have denied can be assumed allowed: checkDetailed fails closed to a forced ask that names the file.
+      // Boot continues so the user can fix the policy; admission denies until the unread rules can be loaded.
       console.error(`[permission] ${error.message}`);
       this.rulesLoadError = error;
       this.policyGeneration += 1;
@@ -1193,7 +1227,10 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest): PermissionCheckResult {
-    const request: PermissionDecisionRequest = Object.freeze({ ...evidence,
+    const { automationPause: _previousPause, ...currentEvidence } = evidence;
+    const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
+    const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
+      ...(pause ? { automationPause: Object.freeze({ kind: pause, reason: "Automated approval is paused for this turn; human approval is required." }) } : {}),
       tool: Object.freeze({ ...evidence.tool }),
       ...(evidence.paths ? { paths: Object.freeze(evidence.paths.map((path) => Object.freeze({ ...path }))) } : {}),
       ...(evidence.rules ? { rules: Object.freeze({ ...evidence.rules }) } : {}),
@@ -1218,11 +1255,42 @@ export class PermissionManager {
     return result;
   }
 
+  recheckPermission(result: PermissionCheckResult): PermissionCheckResult {
+    const issued = this.pipelineRequests.get(result);
+    if (!issued) throw new JudgeContractError("Permission recheck requires an issued pipeline request");
+    this.pipelineRequests.delete(result);
+    const stale = issued.policyEpoch !== this.getPolicyEpoch();
+    const refreshed = this.pipelineResult({ ...issued.request,
+      ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed before execution." } } : {}),
+    });
+    const shellRule = issuedShellAllowRuleDecisions.get(result);
+    issuedShellAllowRuleDecisions.delete(result);
+    if (!stale) {
+      if (result.reviewer) refreshed.reviewer = result.reviewer;
+      if (result.denyReasons) refreshed.denyReasons = result.denyReasons;
+      if (shellRule && refreshed.decision === "allow" && refreshed.reasonCode === "rule-allow") {
+        issuedShellAllowRuleDecisions.set(refreshed, shellRule);
+      }
+    }
+    return refreshed;
+  }
+
   resolveReviewedPermission(result: PermissionCheckResult, review: ReviewerDispatchResult): PermissionCheckResult {
     const issued = this.pipelineRequests.get(result);
     if (!issued || !result.reviewer) throw new Error("Permission review requires an issued pipeline request");
-    this.pipelineRequests.delete(result);
     const judge = review.judge;
+    if (!judge || typeof judge !== "object" || typeof judge.judged !== "boolean" ||
+        (judge.judged ?
+          !["allow", "ask", "deny"].includes(judge.decision) ||
+          !["active", "shadow"].includes(judge.mode) || typeof judge.applied !== "boolean" ||
+          !["judge", "hook", "fallback", "breaker"].includes(judge.source) ||
+          typeof judge.rationale !== "string" || typeof judge.breakerTripped !== "boolean" ||
+          judge.fallback !== undefined && !["timeout", "error", "unparseable", "unavailable"].includes(judge.fallback) ||
+          judge.pause !== undefined && judge.pause !== "consecutive" && judge.pause !== "total"
+        : !["judge-off", "rule-decided", "strict-mode", "capability-grant", "remote-controller", "category-not-judged", "category-disabled", "breaker-open"].includes(judge.skip))) {
+      throw new JudgeContractError("Permission review requires valid judge evidence");
+    }
+    this.pipelineRequests.delete(result);
     const stale = issued.policyEpoch !== this.getPolicyEpoch();
     const failed = stale || !isReviewerAutoDecisionOutcome(review.outcome) || judge.judged && judge.fallback !== undefined;
     const level = judge.judged && judge.decision !== "allow" ? "high" : review.verdict.level;
@@ -1356,6 +1424,7 @@ export class PermissionManager {
     })));
     const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && isReadOnlyCommand(command));
     const request: PermissionDecisionRequest = {
+      sessionId: context.sessionId,
       tool: { name: toolName, source, kind: source === "mcp" ? "mcp" : context.fileWritePolicy ? "file-write" : category, readOnlyHint: context.mcpReadOnlyHint },
       mode: this.toolModeOverrides.get(toolName) ?? this.mode,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),

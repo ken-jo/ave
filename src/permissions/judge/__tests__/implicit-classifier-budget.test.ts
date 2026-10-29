@@ -27,7 +27,6 @@ function subject(provider: LlmReviewerProvider) {
     recentlyDenied: makeRecentlyDeniedStore(join(root, "denied.json")),
   });
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("medium");
   return { root, manager, classifier, audit };
 }
 

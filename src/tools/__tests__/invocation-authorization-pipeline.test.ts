@@ -26,7 +26,7 @@ function fixture(options: {
 } = {}) {
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setMode(options.mode ?? "allow");
-  const requestAndWait = vi.fn(async (_request: unknown): Promise<ApprovalDecision> => ({ choice: "deny-once", approved: false }));
+  const requestAndWait = vi.fn(async (request: { id: string }): Promise<ApprovalDecision> => ({ requestId: request.id, choice: "deny-once" }));
   const memorySkip = vi.fn(async () => null);
   const tool: Tool = {
     name: "inspect_resource", description: "Inspect a resource", version: "1.0.0",
@@ -110,9 +110,9 @@ describe("invocation permission pipeline orchestration", () => {
   it("rejects a card answer after permission policy changes", async () => {
     const { context, manager, requestAndWait } = fixture({ category: "write", mode: "strict" });
     context.finalInput = Object.freeze({ path: join(directory, "resource.txt"), content: "unchanged input" });
-    requestAndWait.mockImplementation(async () => {
+    requestAndWait.mockImplementation(async (request) => {
       manager.setRules([{ pattern: context.toolUse.name, action: "deny" }]);
-      return { choice: "allow-once", approved: true };
+      return { requestId: request.id, choice: "allow-once" };
     });
     const result = await authorizeToolInvocation(context);
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed") });
@@ -137,7 +137,7 @@ describe("invocation permission pipeline orchestration", () => {
     const { context, requestAndWait } = fixture({ category: "write", mode: "strict" });
     context.directoryAuthorization = { permission: { decision: "allow", reason: "approved exact write", layer: 6 }, humanApproved: true };
     context.rationaleResumeContext = {} as NonNullable<typeof context.rationaleResumeContext>;
-    const blocked = { tool_use_id: "inspect", content: "resume blocked", is_error: true };
+    const blocked = { tool_use_id: "inspect", content: "resume blocked", is_error: true, durationMs: 0 };
     const refuseResume = vi.fn(async () => blocked);
     context.returnRationaleResumeBlock = refuseResume;
     expect(await authorizeToolInvocation(context)).toBe(blocked);

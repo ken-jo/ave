@@ -35,6 +35,7 @@ export class ProjectRuleScopes {
   private readonly states = new Map<string, ProjectRuleState>();
   private readonly stamps = new Map<string, FileStamp>();
   private readonly policyVersions = new Map<string, PersistedPolicyVersion | undefined>();
+  private readonly pendingLoads = new Map<string, Promise<ProjectRuleState>>();
   private revision = 0;
 
   constructor(private readonly baseDir: string) {}
@@ -54,9 +55,20 @@ export class ProjectRuleScopes {
   // Load the rule file of the project `projectCwd` belongs to, re-reading it whenever its mtime changed (a hand edit or another window's write). A corrupt file is recorded, not thrown: non-read decisions for that project then fail closed with the file's error as the visible reason.
   async ensureLoaded(projectCwd: string): Promise<ProjectRuleState> {
     const location = projectRulesLocation(this.baseDir, projectCwd);
-    const cached = this.states.get(location.identity);
-    if (cached && this.stamps.get(location.identity) === await fileStamp(location.filePath)) return cached;
-    return this.reload(projectCwd);
+    const pending = this.pendingLoads.get(location.identity);
+    if (pending) return pending;
+    const load = (async () => {
+      const stamp = await fileStamp(location.filePath);
+      const cached = this.states.get(location.identity);
+      if (cached && this.stamps.get(location.identity) === stamp) return cached;
+      return this.reload(projectCwd);
+    })();
+    this.pendingLoads.set(location.identity, load);
+    try {
+      return await load;
+    } finally {
+      this.pendingLoads.delete(location.identity);
+    }
   }
 
   async reload(projectCwd: string): Promise<ProjectRuleState> {

@@ -79,8 +79,8 @@ describe("ordered admission, floors and explicit rules", () => {
     }
   }
   for (const [index, mode] of MODES.entries()) {
-    it(`explicit outside read boundary precedes read and grants in ${mode}`, () => {
-      const result = decidePermission(request({ mode, rules: { ask: "Outside read boundary.", allow: "Tool grant.", remembered: "Prior grant." } }));
+    it(`ordinary ask rules reach mode handling before read and grants in ${mode}`, () => {
+      const result = decidePermission(request({ mode, rules: { ask: "Ask before reading.", allow: "Tool grant.", remembered: "Prior grant." } }));
       expect(result.outcome).toBe(["ask", "ask", "ask", "allow"][index]);
       expect(result.reviewRequired).toBe(mode === "auto" ? true : undefined);
     });
@@ -156,5 +156,69 @@ describe("classification boundaries", () => {
   });
   it("secret evidence overrides an external read-only hint", () => {
     expect(decidePermission(request({ secretRead: true, tool: { ...READ, source: "mcp", readOnlyHint: true } })).outcome).toBe("ask");
+  });
+});
+
+describe("rest-of-turn human routing", () => {
+  const pauses = [
+    { kind: "consecutive", reason: "Consecutive review limit reached." },
+    { kind: "total", reason: "Turn review limit reached." },
+  ] as const;
+
+  for (const automationPause of pauses) {
+    for (const row of ACTION_ROWS) {
+      for (const mode of MODES) {
+        for (const headless of [false, true]) {
+          it(`${automationPause.kind} pause, ${row.name}, ${mode}, headless=${headless}`, () => {
+            const result = decidePermission(request({ ...row.evidence, mode, headless, sessionId: "paused-session", automationPause }));
+            if (headless) {
+              expect(result).toEqual({ outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE });
+            } else if (row.evidence.floor) {
+              expect(result).toEqual({ outcome: "ask-forced", reasonCode: row.evidence.floor.code, reason: row.evidence.floor.reason });
+            } else {
+              expect(result).toEqual({ outcome: "ask", reasonCode: "automation-paused", reason: automationPause.reason });
+            }
+            expect(result.reviewRequired).toBeUndefined();
+            expect(result.requiresCodeCheckpoint).toBeUndefined();
+          });
+        }
+      }
+    }
+
+    for (const mode of MODES) {
+      for (const headless of [false, true]) {
+        for (const grant of ["allow", "remembered"] as const) {
+          it(`${automationPause.kind} pause overrides ${grant} in ${mode}, headless=${headless}`, () => {
+            expect(decidePermission(request({ mode, headless, automationPause, rules: { [grant]: "Explicit prior approval." } })))
+              .toEqual(headless ? { outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE }
+                : { outcome: "ask", reasonCode: "automation-paused", reason: automationPause.reason });
+          });
+        }
+
+        it(`${automationPause.kind} pause cannot override admission or rule deny in ${mode}, headless=${headless}`, () => {
+          const evidence = request({ mode, headless, automationPause, rules: { deny: "Explicit deny.", allow: "Prior allow." }, floor: { code: "protected-path", reason: "Protected target." } });
+          expect(decidePermission(evidence)).toEqual({ outcome: "deny", reasonCode: "rule-deny", reason: "Explicit deny." });
+          expect(decidePermission({ ...evidence, admissionDenial: { code: "credential-store", reason: "Host credential admission." } }))
+            .toEqual({ outcome: "deny", reasonCode: "credential-store", reason: "Host credential admission." });
+        });
+      }
+    }
+
+    for (const level of ["low", "medium"] as const) {
+      for (const headless of [false, true]) {
+        it(`${automationPause.kind} pause overrides successful ${level} review, headless=${headless}`, () => {
+          const result = decidePermission(request({ mode: "auto", headless, secretRead: true, automationPause, reviewer: { status: "success", level } }));
+          expect(result).toEqual(headless ? { outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE }
+            : { outcome: "ask", reasonCode: "automation-paused", reason: automationPause.reason });
+        });
+      }
+    }
+  }
+
+  it("pause evidence applies only to the supplied request and never infers session state", () => {
+    const paused = request({ sessionId: "paused-session", automationPause: { kind: "total", reason: "Turn review limit reached." } });
+    expect(decidePermission(paused).outcome).toBe("ask");
+    expect(decidePermission(request({ sessionId: "paused-session" })).outcome).toBe("allow");
+    expect(decidePermission(request({ sessionId: "another-session" })).outcome).toBe("allow");
   });
 });

@@ -1,4 +1,5 @@
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { raceWithAbort } from "../shared/abortable-deadline.js";
 import type { Tool } from "./base.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ToolCategory, ToolSource } from "./types.js";
@@ -90,7 +91,13 @@ export async function runScriptHook(
   toolOutput?: string,
   isError?: boolean,
   generationOwned = false,
+  abortSignal?: AbortSignal,
 ): Promise<HookDispatchResult> {
+  const inherited = turnExtensionPolicyContext.getStore();
+  const callerSignals = [...new Set([abortSignal, inherited?.abortSignal].filter((signal): signal is AbortSignal => signal !== undefined))];
+  const callerSignal = callerSignals.length > 1 ? AbortSignal.any(callerSignals) : callerSignals[0];
+  const cancelled = (): HookDispatchResult => ({ decision: "deny", reason: "Hook execution cancelled", results: [] });
+  if (callerSignal?.aborted) return cancelled();
   if (!scriptHookManager) {
     if (generationOwned) {
       throw new Error(
@@ -111,15 +118,29 @@ export async function runScriptHook(
     ...(toolOutput !== undefined ? { toolOutput } : {}),
     ...(isError !== undefined ? { isError } : {}),
   };
-  const inherited = turnExtensionPolicyContext.getStore();
-  return turnExtensionPolicyContext.run({
+  const controller = new AbortController();
+  const onAbort = (): void => controller.abort(callerSignal?.reason);
+  callerSignal?.addEventListener("abort", onAbort, { once: true });
+  if (callerSignal?.aborted) onAbort();
+  const operation = turnExtensionPolicyContext.run({
     ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false && context.remoteControllerAuthority === undefined,
     headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
     remoteControllerAuthority: context.remoteControllerAuthority,
+    abortSignal: controller.signal,
     floor: context.floor ?? (context.otherPrincipal ? { code: "other-principal", reason: "This principal requires local approval for the action." } : inherited?.floor),
-  }, () => {
-    if (hookType === "pre") return scriptHookManager.runPreToolUse(payload);
-    if (hookType === "post") return scriptHookManager.runPostToolUse(payload);
-    return scriptHookManager.runPermissionRequest(payload);
+  }, async () => {
+    controller.signal.throwIfAborted();
+    const options = { abortSignal: controller.signal };
+    if (hookType === "pre") return scriptHookManager.runPreToolUse(payload, options);
+    if (hookType === "post") return scriptHookManager.runPostToolUse(payload, options);
+    return scriptHookManager.runPermissionRequest(payload, options);
   });
+  try {
+    return await raceWithAbort(operation, controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) return cancelled();
+    throw error;
+  } finally {
+    callerSignal?.removeEventListener("abort", onAbort);
+  }
 }

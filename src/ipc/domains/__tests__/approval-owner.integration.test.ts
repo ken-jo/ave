@@ -18,6 +18,7 @@ import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { ToolExecutor } from "../../../tools/executor.js";
 import { ToolRegistry } from "../../../tools/registry.js";
+import { BashTool } from "../../../tools/shell-tools.js";
 import { makeWriteProbeTool } from "../../../tools/__tests__/approval-memory-test-fixtures.js";
 import { userPermissionContext } from "../../../tools/__tests__/tool-context-fixture.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -82,7 +83,7 @@ async function subject(mode: "auto" | "default" = "auto") {
   }));
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode(mode);
-  manager.setInteractiveAutoApprove(mode === "auto" ? "medium" : "off");
+
   manager.setReviewer({
     classifier: new LlmRiskClassifier({ complete }, "review-model", "deny", {}, { maxAttempts: 1, baseDelayMs: 0, jitterPct: 0 }),
     cache: resources.makeVerdictCache(join(root, "verdicts.jsonl")),
@@ -120,7 +121,7 @@ async function subject(mode: "auto" | "default" = "auto") {
         invocationId: randomUUID(), sessionId: SESSION_ID, source: "builtin", category: "write", pathFields: ["path"],
         finalInput: { path: join(root, `blocked-${index}.txt`) }, executionCwd: root, allowedDirectories: [root],
         sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
-      }, undefined, { defer: "none" });
+      }, undefined, { lane: "foreground-auto" });
     }
     level = "low";
     expect(manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
@@ -167,10 +168,161 @@ async function subject(mode: "auto" | "default" = "auto") {
     pending.push(result);
     return { request, result };
   };
-  return { root, auditLog, windowA, windowB, gate, manager, execute, complete, selectComplete, pause, start, cards, waitForCard, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
+  return { root, auditLog, windowA, windowB, gate, manager, registry, executor, execute, complete, selectComplete, pause, start, cards, waitForCard, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
 
 describe("live native approval ownership", () => {
+  it.each(["session", "project"] as const)("accepts only the exact policy delta for a %s card rule", async (scope) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const { request, result } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
+    const card = await f.waitForCard();
+    expect(card).not.toHaveProperty("ruleSaveTransition");
+    const before = f.manager.getPolicyEpoch();
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: request.id, args: JSON.stringify(request.args), decision: "allow", scope: scope === "session" ? "session" : "persistent", verdictAtApproval: "low",
+      rule: { action: "allow", scope, pattern: "Bash(printf *)" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const answer = await result;
+    expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(true);
+    expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+  });
+
+  it("burns a policy receipt on a mismatched consumption attempt", async () => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const { request, result } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
+    const card = await f.waitForCard();
+    const before = f.manager.getPolicyEpoch();
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: request.id, args: JSON.stringify(request.args), decision: "allow", scope: "persistent", verdictAtApproval: "low",
+      rule: { action: "allow", scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const answer = await result;
+    expect(f.gate.allowsPolicyTransition(answer, "forged-epoch", f.manager.getPolicyEpoch())).toBe(false);
+    expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+  });
+
+  it.each(["parallel saves", "answer while saving", "invalid signature"] as const)("never grants a transition for %s", async (scenario) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const { request, result } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
+    const card = await f.waitForCard();
+    const before = f.manager.getPolicyEpoch();
+    const save = () => invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: request.id, args: JSON.stringify(request.args), decision: "allow", scope: "persistent", verdictAtApproval: "low",
+      rule: { action: "allow", scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    });
+    if (scenario === "invalid signature") {
+      expect(await save()).toMatchObject({ ok: true });
+      invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), hmac: "invalid" });
+      const answer = await result;
+      expect(answer.choice).toBe("deny-once");
+      expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+      return;
+    }
+    let release!: () => void;
+    let reached!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { reached = resolve; });
+    const add = f.manager.addRulePersist.bind(f.manager);
+    vi.spyOn(f.manager, "addRulePersist").mockImplementationOnce(async (...args) => { reached(); await held; await add(...args); });
+    const saving = save();
+    try {
+      await entered;
+      if (scenario === "parallel saves") {
+        expect(await save()).toMatchObject({ ok: true });
+        release();
+        expect(await saving).toMatchObject({ ok: true });
+        invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+      } else {
+        invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+        release();
+        expect(await saving).toMatchObject({ ok: true });
+      }
+      const answer = await result;
+      expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+    } finally {
+      release();
+      await saving;
+    }
+  });
+
+  it.each(["one save", "sequential saves", "before", "during", "between", "after", "failed save", "deny save"] as const)("binds policy transition proof to its exact card: %s", async (scenario) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const { request, result } = f.queueCard({ toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
+    const card = await f.waitForCard();
+    const before = f.manager.getPolicyEpoch();
+    const save = (pattern = "Bash(printf *)", action: "allow" | "deny" = "allow") => invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: request.id, args: JSON.stringify(request.args), decision: action, scope: "persistent", verdictAtApproval: "low",
+      rule: { action, scope: "always", pattern }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    });
+    if (scenario === "before") f.manager.setRules([]);
+    if (scenario === "during") {
+      const add = f.manager.addRulePersist.bind(f.manager);
+      vi.spyOn(f.manager, "addRulePersist").mockImplementation(async (...args) => { await add(...args); f.manager.setRules([]); });
+    }
+    if (scenario === "deny save") expect(await save("Bash(printf *)", "deny")).toMatchObject({ ok: true });
+    else if (scenario === "failed save") expect(await save("Bash(unrelated *)")).toMatchObject({ ok: false });
+    else expect(await save()).toMatchObject({ ok: true });
+    if (scenario === "between" || scenario === "after") f.manager.setRules([]);
+    if (scenario === "between" || scenario === "sequential saves") expect(await save("Bash(printf ready)")).toMatchObject({ ok: true });
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const answer = await result;
+    expect(f.gate.allowsPolicyTransition({ ...answer }, before, f.manager.getPolicyEpoch())).toBe(false);
+    const allowed = scenario === "one save" || scenario === "sequential saves";
+    expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(allowed);
+    expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["own save", "unrelated before", "unrelated during", "unrelated after"] as const)("checks the exact host shell action after a prefix save: %s", async (scenario) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute");
+    f.registry.register(bash);
+    const running = f.executor.executeAll([{
+      id: "prefix-host-action", name: "bash",
+      input: { command: "printf prefix-proof", executionMode: "host", justification: "Print one local value", timeoutSeconds: 1 },
+    }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    cleanup.push(async () => { f.gate.disposeAll(); await running; });
+    const card = await f.waitForCard();
+    expect(execute).not.toHaveBeenCalled();
+    expect(card.shellRule?.persistentAllowed).toBe(true);
+    const epochBefore = f.manager.getPolicyEpoch();
+    if (scenario === "unrelated before") f.manager.setRules([]);
+    if (scenario === "unrelated during") {
+      const add = f.manager.addRulePersist.bind(f.manager);
+      vi.spyOn(f.manager, "addRulePersist").mockImplementation(async (...args) => { await add(...args); f.manager.setRules([]); });
+    }
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "always", pattern: "Bash(printf *)" },
+      intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    expect(f.manager.getPolicyEpoch()).not.toBe(epochBefore);
+    if (scenario === "unrelated after") f.manager.setRules([]);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const [result] = await running;
+    if (scenario === "own save") {
+      expect(result.is_error, JSON.stringify(result)).toBeUndefined();
+      expect(result.content).toBe("prefix-proof");
+      expect(execute).toHaveBeenCalledOnce();
+    } else {
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("Permission policy changed");
+      expect(execute).not.toHaveBeenCalled();
+    }
+  });
+
   it("lets only the current owner record a durable exact approval from a pending card", async () => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
@@ -295,11 +447,12 @@ describe("live native approval ownership", () => {
     }
     const card = await f.waitForCard();
     const decision = allowOnceCardAnswer(card);
+    const breakerBefore = f.manager.getJudgeBreaker().snapshot(SESSION_ID);
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), decision);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
-    expect(f.manager.resumeAutomatedApproval(SESSION_ID, decision)).toBe(false);
+    expect(f.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual(breakerBefore);
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(lane !== "ordinary default");
     expect(f.auditLog).toHaveBeenCalledWith(expect.objectContaining({
       type: "approval", sessionId: SESSION_ID, output: expect.stringContaining("approval:surface-owner-required"),
@@ -309,7 +462,7 @@ describe("live native approval ownership", () => {
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     expect((await pending)[0].is_error).toBeUndefined();
     expect(f.execute).toHaveBeenCalledOnce();
-    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(false);
+    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(lane !== "ordinary default");
     if (lane === "ordinary default") expect(f.complete).not.toHaveBeenCalled();
   });
 
@@ -330,7 +483,7 @@ describe("live native approval ownership", () => {
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
     expect((await pending)[0].is_error).toBeUndefined();
     expect(f.execute).toHaveBeenCalledOnce();
-    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(false);
+    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
   it("fails closed while the pending session has no live owner", async () => {
@@ -381,13 +534,15 @@ describe("live native approval ownership", () => {
     await f.pause();
     const [result] = await f.start(true);
     expect(result.is_error).toBe(true);
-    expect(result.content).toMatch(/3/);
+    expect(result.content).toContain("Nobody can approve this request; do not retry.");
     expect(f.cards(f.windowA)).toHaveLength(0);
     expect(f.cards(f.windowB)).toHaveLength(0);
     expect(f.gate.pendingCount).toBe(0);
     expect(f.execute).not.toHaveBeenCalled();
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowA))).toEqual([]);
-    expect(f.manager.resumeAutomatedApproval(SESSION_ID, { requestId: "headless", choice: "allow-once" })).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { requestId: "headless", choice: "allow-once" });
+    expect(f.gate.pendingCount).toBe(0);
+    expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 });

@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("rationale policy epoch", () => {
-  it("tracks PermissionManager mode, threshold, reviewer, rule, and override mutations but not stable setters", () => {
+  it("tracks PermissionManager mode, reviewer, rule, and override mutations but not stable setters", () => {
     const permissionManager = new PermissionManager("unused-permissions.json");
     const common = {
       permissionManager,
@@ -52,7 +52,6 @@ describe("rationale policy epoch", () => {
     };
 
     changes(() => permissionManager.setMode("auto"));
-    changes(() => permissionManager.setInteractiveAutoApprove("low"));
     changes(() => setReviewerForTest(permissionManager, {
       classifier: { classify: vi.fn() } as never,
       cache: {} as never,
@@ -65,7 +64,7 @@ describe("rationale policy epoch", () => {
 
     const stable = epoch(common);
     permissionManager.setMode("auto");
-    permissionManager.setInteractiveAutoApprove("low");
+
     permissionManager.setToolModeOverride("bash", "strict");
     expect(epoch(common)).toBe(stable);
   });

@@ -990,7 +990,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
-    errors: ["effect-boundary-denied", ],
+    errors: ["effect-boundary-denied"],
   },
   "config.onChange": {
     params: ["key", "callback"],

@@ -331,9 +331,9 @@ describe("shell egress uses the common decision pipeline", () => {
     permissionManager.setMode("auto");
     const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("medium"));
     const { gate, wc } = makeGate();
-    await expect(createRequester(gate, permissionManager)(egressRequest({ headless: true, approvalSurface: "unavailable" }))).resolves.toEqual({ allow: true, scope: "once" });
+    await expect(createRequester(gate, permissionManager)(egressRequest({ headless: true, approvalSurface: "unavailable" }))).resolves.toEqual({ allow: true, scope: "once", oneConnection: true });
     expect(review).toHaveBeenCalledOnce();
-    expect(review.mock.calls[0][1].finalInput).toEqual({ url: "https://github.com:443/" });
+    expect(review.mock.calls[0][1].finalInput).toEqual({ url: "https://github.com:443/", network: "public" });
     expect(review.mock.calls[0][3]?.lane).toBe("headless");
     expect(sentApprovalCards(wc)).toEqual([]);
   });

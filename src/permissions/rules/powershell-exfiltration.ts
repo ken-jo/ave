@@ -676,6 +676,48 @@ function positionalValues(stage: StaticStage): string[] {
   return values;
 }
 
+// Filesystem evidence resolves parameter prefixes before selecting positional paths.
+// An ambiguous binding retains candidates and uncertainty instead of hiding later targets.
+function filesystemArgumentBindings(stage: StaticStage): {
+  named: Map<string, string[]>;
+  positional: string[];
+  unproven: boolean;
+} {
+  const policy = stage.name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[stage.name];
+  const parameters = (policy?.parameters ?? []).map((specification) => ({
+    name: specification.replace(/[?*]$/, "").toLowerCase(),
+    switch: specification.endsWith("?"),
+  }));
+  const named = new Map<string, string[]>();
+  const positional: string[] = [];
+  let unproven = false;
+  for (let index = 1; index < stage.visible.length; index += 1) {
+    const value = stage.visible[index];
+    if (value === undefined) { unproven = true; continue; }
+    const option = optionName(value);
+    if (!option.startsWith("-") || /^["']/.test(stage.raw[index] ?? "")) { positional.push(value); continue; }
+    const spelling = option.slice(1).split(":", 1)[0]!;
+    const exact = parameters.find((parameter) => parameter.name === spelling);
+    const aliasesRecurse = stage.name === "get-childitem" && spelling === "s";
+    const matches = exact ? [exact] : aliasesRecurse ? parameters.filter((parameter) => parameter.name === "recurse")
+      : parameters.filter((parameter) => parameter.name.startsWith(spelling));
+    const colon = value.indexOf(":");
+    if (matches.length !== 1) {
+      unproven = true;
+      if (colon >= 0 && colon + 1 < value.length) positional.push(value.slice(colon + 1));
+      continue;
+    }
+    const parameter = matches[0]!;
+    if (parameter.switch) continue;
+    const argument = colon >= 0 && colon + 1 < value.length ? value.slice(colon + 1) : stage.visible[++index];
+    if (argument === undefined) { unproven = true; continue; }
+    const values = named.get(parameter.name) ?? [];
+    values.push(argument);
+    named.set(parameter.name, values);
+  }
+  return { named, positional, unproven };
+}
+
 function isUncPath(text: string): boolean {
   const path = text.replace(/^[^:]+::/, "");
   return /^(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(path);
@@ -954,15 +996,16 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     const effects = policy.effects;
     if (!effects.some((effect) => ["read", "file-write", "provider-write", "cwd-write"].includes(effect))) continue;
     const effect = effects.some((effect) => ["file-write", "provider-write", "cwd-write"].includes(effect)) ? "write" : "read";
+    const bindings = filesystemArgumentBindings(stage);
+    unproven ||= bindings.unproven;
     const parameters = new Set(["path", "literalpath", "filepath", "destination", "newname", "workingdirectory", ...(policy.destination?.parameters ?? [])]);
     for (const name of parameters) {
-      const value = parameterValue(stage.visible, name);
-      if (value !== undefined) add(value, stage.name === "copy-item" && ["path", "literalpath"].includes(name) ? "read" : effect, stage.name === "remove-item");
+      for (const value of bindings.named.get(name) ?? []) add(value, stage.name === "copy-item" && ["path", "literalpath"].includes(name) ? "read" : effect, stage.name === "remove-item");
     }
-    const positional = positionalValues(stage);
-    const values = stage.name === "select-string" ? positional.slice(1) : positional;
+    const values = stage.name === "select-string" ? bindings.positional.slice(1) : bindings.positional;
     const count = ["copy-item", "move-item", "rename-item"].includes(stage.name!) ? 2 : 1;
-    for (const [index, value] of values.slice(0, count).entries()) add(value, stage.name === "copy-item" && index === 0 ? "read" : effect, stage.name === "remove-item");
+    const candidates = bindings.unproven ? values : values.slice(0, count);
+    for (const [index, value] of candidates.entries()) add(value, stage.name === "copy-item" && index === 0 ? "read" : effect, stage.name === "remove-item");
     if (stage.argv.some((value) => value === undefined)) unproven = true;
   }
   return { paths, unproven, credentialStore };

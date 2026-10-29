@@ -1,6 +1,7 @@
 // Unknown/unvouched identities deny; workers reach only declared/model endpoints, never prompt or inherit shell grants. Shells require a matching grant or explicit foreground approval; disabled asks and unattended calls deny. Terminal asks use their tab and deny when unanswered.
 // Decide by name before DNS/routing, then recheck the resolved destination class; changed classes require fresh consent. Match origin in both phases so shell/tab grants cannot cross. Exceptions and every value except literal true deny; audit each final decision with its reason.
 import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
+import type { NetworkPermissionEvaluation } from "./permission-manager.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
@@ -8,7 +9,7 @@ import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../au
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
-import type { EgressInvocationOwner, ShellEgressOwner, TerminalEgressOwner } from "./egress-invocations.js";
+import type { EgressInvocationOwner, ShellEgressContext, ShellEgressOwner, TerminalEgressOwner } from "./egress-invocations.js";
 import {
   canonicalEgressHost,
   egressDestinationNetwork,
@@ -34,6 +35,9 @@ export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon 
   readonly headless?: boolean;
   readonly ownerUnattended?: boolean;
   readonly toolApprovalWait?: ToolApprovalWait;
+  readonly permissionContext?: ShellEgressContext["permissionContext"];
+  readonly onNoApprover?: () => void;
+  readonly evaluation?: ShellNetworkPermissionEvaluation;
   readonly approvalSurface?: "interactive" | "unavailable";
   readonly origin: "shell";
   readonly sessionId: string | undefined;
@@ -65,10 +69,25 @@ const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 
 // What the person answered. A deny carries why (their choice, a timeout, no surface).
 export type EgressApprovalAnswer =
-  | { readonly allow: true; readonly scope: EgressGrantScope }
+  | { readonly allow: true; readonly scope: EgressGrantScope; readonly oneConnection?: true }
   | { readonly allow: false; readonly reason: string };
 
 export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
+
+export interface ShellNetworkPermissionRequest {
+  readonly destination: EgressDestination;
+  readonly context: ShellEgressContext;
+  readonly network: EgressGrantNetwork;
+  readonly scopes: readonly EgressGrantScope[];
+  readonly rememberedGrant?: EgressGrantScope;
+}
+
+export interface ShellNetworkPermissionEvaluation extends NetworkPermissionEvaluation {
+  readonly policyEpoch: string;
+  readonly approvalIdentity: string;
+}
+
+export type ShellNetworkPermissionEvaluator = (request: ShellNetworkPermissionRequest) => Promise<ShellNetworkPermissionEvaluation>;
 
 export interface EgressAskDeps {
   // The identity strength of this kind of process on this host (`egressIdentityStrength`).
@@ -80,11 +99,9 @@ export interface EgressAskDeps {
   // The hosts a worker may reach: its extension's declared domains plus the model endpoints the host configured, as ASRT-style patterns (`d`, `*.d`, optionally `:port`). `undefined` pluginId is a worker no extension owns.
   readonly workerAllowedDomains: (pluginId: string | undefined) => readonly string[];
   readonly grants: EgressGrantStore;
-  // The `Network(...)` host rule deciding a shell's or terminal's destination (`PermissionManager.networkRuleDecision`), consulted before grants: a deny refuses, an ask skips the grants and asks, an allow (public destinations only) lets it through.
-  // Host rules are shell-origin: a terminal tab never consults them, as a shell grant never covers a terminal. An allow is honored only at a lifetime the
-  // connection's identity may hold (a shared identity uses no user or project rule, as it uses no persistent grant); a deny or ask always applies.
-  readonly networkRule: (subject: { host: string; port: number; sessionId?: string; projectCwd?: string }) => Promise<{ decision: "deny" | "ask" | "allow"; pattern: string; scope: "user" | "project" | "session" } | undefined>;
-  // `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked.
+  // Every actual shell connection re-enters the common pipeline before any standing host grant can authorize it.
+  readonly evaluateShellPermission: ShellNetworkPermissionEvaluator;
+  // Human-card availability; agent shells still apply rules, grants and automatic review before a no-approver fallback.
   readonly shellAskEnabled: () => boolean;
   // The approval surface, once the conversation layer has one; undefined before.
   readonly requester: () => EgressApprovalRequester | undefined;
@@ -125,6 +142,9 @@ interface HeldAnswer {
   readonly scopes: readonly EgressGrantScope[];
   readonly network: Exclude<EgressDestinationNetwork, "reserved">;
   readonly at: number;
+  readonly oneConnection?: true;
+  readonly policyEpoch?: string;
+  readonly approvalIdentity?: string;
 }
 
 // How long a held answer waits for its resolved phase, and how many are kept.
@@ -140,7 +160,7 @@ const provisional = (basis: EgressDecisionBasis, scope: EgressGrantScope | null)
 
 // A person's answer, before it becomes a grant: the scope chosen among those offered.
 type AskAnswer =
-  | { readonly allow: true; readonly scope: EgressGrantScope; readonly scopes: readonly EgressGrantScope[] }
+  | { readonly allow: true; readonly scope: EgressGrantScope; readonly scopes: readonly EgressGrantScope[]; readonly oneConnection?: true; readonly policyEpoch?: string; readonly approvalIdentity?: string }
   | { readonly allow: false; readonly decision: Decision };
 
 // Whether `host:port` matches one allowlist entry, by ASRT's own `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*` anything, an optional `:port` suffix), so a worker reaches exactly what the shared allowlist let it reach before the lists were split per extension.
@@ -202,18 +222,19 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
     strength: EgressIdentityStrength,
+    evaluation?: ShellNetworkPermissionEvaluation,
   ): Promise<AskAnswer | typeof ASK_AGAIN> => {
     // One card (or banner) per (invocation, destination, class): a client that opens several connections to one host while it is up waits on the same answer. A terminal tab's shell is one invocation, so this coalesces per tab.
-    const key = `${token}\n${destination.host}\n${destination.port}\n${network}\n${strength}`;
+    const key = `${token}\n${destination.host}\n${destination.port}\n${network}\n${strength}\n${evaluation?.policyEpoch ?? ""}\n${evaluation?.approvalIdentity ?? ""}`;
     let pending = pendingAsks.get(key);
     if (pending === undefined) {
-      const entry = { answer: startAsk(token, owner, destination, network, strength).finally(() => pendingAsks.delete(key)), onceTaken: false };
+      const entry = { answer: startAsk(token, owner, destination, network, strength, evaluation).finally(() => pendingAsks.delete(key)), onceTaken: false };
       pendingAsks.set(key, entry);
       pending = entry;
     }
     const answer = await pending.answer;
     // A terminal's "Allow once" is one connection, never a standing grant: the first waiter takes it, any other connection that waited on the same banner goes back to asking.
-    if (owner.kind === "terminal" && answer.allow && answer.scope === "once") {
+    if (answer.allow && answer.scope === "once" && (owner.kind === "terminal" || answer.oneConnection)) {
       if (pending.onceTaken) return ASK_AGAIN;
       pending.onceTaken = true;
     }
@@ -226,9 +247,14 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
     strength: EgressIdentityStrength,
+    evaluation?: ShellNetworkPermissionEvaluation,
   ): Promise<AskAnswer> => {
     const requester = deps.requester();
-    if (requester === undefined) return { allow: false, decision: deny("prompt", owner.kind === "shell" && (owner.context.headless || owner.context.approvalSurface === "unavailable") ? NO_APPROVER_MESSAGE : EGRESS_DENY_REASONS.noSurface) };
+    if (requester === undefined) {
+      const noApprover = owner.kind === "shell" && (owner.context.headless || owner.context.approvalSurface === "unavailable" || !deps.shellAskEnabled());
+      if (noApprover && owner.kind === "shell") owner.context.onNoApprover?.();
+      return { allow: false, decision: deny("prompt", noApprover ? NO_APPROVER_MESSAGE : EGRESS_DENY_REASONS.noSurface) };
+    }
     const subject = grantSubject(token, owner);
     const origin: EgressAskOrigin = owner.kind;
     const scopes = egressScopesForNetwork(egressGrantScopesFor(strength, origin), network).filter((scope) =>
@@ -247,7 +273,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         headless: owner.context.headless === true,
         ownerUnattended: owner.context.ownerUnattended === true,
         ...(owner.context.toolApprovalWait ? { toolApprovalWait: owner.context.toolApprovalWait } : {}),
-        approvalSurface: owner.context.approvalSurface,
+        ...(owner.context.permissionContext ? { permissionContext: owner.context.permissionContext } : {}),
+        ...(owner.context.onNoApprover ? { onNoApprover: owner.context.onNoApprover } : {}),
+        ...(evaluation ? { evaluation } : {}),
+        approvalSurface: deps.shellAskEnabled() ? owner.context.approvalSurface : "unavailable",
         destination,
         scopes,
         network,
@@ -280,7 +309,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (!answer.allow) return { allow: false, decision: deny("prompt", answer.reason) };
     // A scope the card did not offer is the requester's bug, not a grant.
     if (!scopes.includes(answer.scope)) throw new Error(`egress grant: scope ${answer.scope} was not offered`);
-    return { allow: true, scope: answer.scope, scopes };
+    if (evaluation?.permission.forceModal && answer.scope !== "once") throw new Error("Forced network approval cannot create a standing grant");
+    return { allow: true, scope: answer.scope, scopes,
+      ...(answer.oneConnection || evaluation?.permission.forceModal ? { oneConnection: true as const } : {}),
+      ...(evaluation ? { policyEpoch: evaluation.policyEpoch, approvalIdentity: evaluation.approvalIdentity } : {}) };
   };
 
   // Make the grant a person's answer chose, and allow.
@@ -290,9 +322,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     destination: EgressGrantDestination,
     scope: EgressGrantScope,
     scopes: readonly EgressGrantScope[],
+    oneConnection?: true,
   ): Promise<Decision> => {
     // A terminal's "Allow once" is spent on the connection that asked; it is never held.
-    if (owner.kind === "terminal" && scope === "once") return allow("prompt", "once");
+    if (scope === "once" && (owner.kind === "terminal" || oneConnection)) return allow("prompt", "once");
     const subject = grantSubject(token, owner);
     await deps.grants.grant(scope, scopes, subject, destination);
     deps.grants.noteUse(scope, subject, destination);
@@ -361,39 +394,45 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         const grantDestination = { ...destination, network };
         const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
         const key = holdKey(token, destination, strength);
-        const ruled = owner.kind !== "shell" ? undefined : await deps.networkRule({
-          host: destination.host,
-          port: destination.port,
-          ...(owner.context.sessionId !== undefined ? { sessionId: owner.context.sessionId } : {}),
-          ...(owner.context.workspaceRoot !== undefined ? { projectCwd: owner.context.workspaceRoot } : {}),
-        });
-        if (ruled?.decision === "deny") return { owner, decision: deny("rule", `${EGRESS_DENY_REASONS.denyRule} ${ruled.pattern}`) };
-        // A host rule lets through public destinations only, as a persistent grant does: a name that resolves to this machine, a private network or an unchecked address is asked about instead.
-        const ruleLifetime: EgressGrantScope | undefined = ruled === undefined ? undefined : ruled.scope === "user" ? "always" : ruled.scope;
-        if (ruled?.decision === "allow" && network === "public" && ruleLifetime !== undefined && eligibleScopes.includes(ruleLifetime)) {
-          return { owner, decision: pass(allow("rule", null)) };
+        const granted = await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
+        const evaluation = owner.kind === "shell" ? await deps.evaluateShellPermission({ destination,
+          context: deps.shellAskEnabled() ? owner.context : { ...owner.context, approvalSurface: "unavailable" },
+          network, scopes: eligibleScopes, ...(granted === undefined ? {} : { rememberedGrant: granted }) }) : undefined;
+        if (evaluation?.permission.decision === "deny") {
+          if (evaluation.permission.reasonCode === "no-approver" && owner.kind === "shell") owner.context.onNoApprover?.();
+          const ruleDenied = evaluation.rule?.decision === "deny";
+          return { owner, decision: deny(ruleDenied ? "rule" : "policy", ruleDenied ? `${EGRESS_DENY_REASONS.denyRule} ${evaluation.rule!.pattern}` : evaluation.permission.reason) };
         }
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
           const held = takeHeldAnswer(key);
-          if (held !== undefined && held.network === network) {
-            return { owner, decision: await grantAnswer(token, owner, grantDestination, held.scope, held.scopes) };
+          if (held !== undefined && held.network === network && (owner.kind === "terminal"
+            || held.policyEpoch === evaluation?.policyEpoch && held.approvalIdentity === evaluation?.approvalIdentity)) {
+            return { owner, decision: await grantAnswer(token, owner, grantDestination, held.scope, held.scopes, held.oneConnection) };
           }
         }
-        for (;;) {
-          // An ask rule is a per-connection card: no grant stands in for it.
-          const granted = ruled?.decision === "ask" ? undefined : await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
-          if (granted !== undefined) {
+        if (owner.kind === "shell" && evaluation?.permission.decision === "allow") {
+          if (granted !== undefined && evaluation.permission.reasonCode === "remembered-approval") {
             if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
             return { owner, decision: pass(allow("grant", granted)) };
           }
-          if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
+          return { owner, decision: pass(allow(evaluation.rule?.decision === "allow" ? "rule" : "policy", null)) };
+        }
+        for (;;) {
+          // Physical terminal grants remain outside agent policy. Shell grants have already passed the common pipeline.
+          if (owner.kind === "terminal" && granted !== undefined) {
+            if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
+            return { owner, decision: pass(allow("grant", granted)) };
+          }
+          if (owner.kind === "terminal" && !deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
-          const answer = await ask(token, owner, destination, network, strength);
-          if (answer === ASK_AGAIN) continue;
+          const answer = await ask(token, owner, destination, network, strength, evaluation);
+          if (answer === ASK_AGAIN) return decide(host, port, context);
           if (!answer.allow) return { owner, decision: answer.decision };
-          if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes) };
-          holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime() });
+          if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, answer.oneConnection) };
+          holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime(),
+            ...(answer.oneConnection ? { oneConnection: true as const } : {}),
+            ...(answer.policyEpoch ? { policyEpoch: answer.policyEpoch, approvalIdentity: answer.approvalIdentity } : {}) });
           return { owner, decision: provisional("prompt", answer.scope) };
         }
       }

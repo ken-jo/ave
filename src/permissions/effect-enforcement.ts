@@ -63,19 +63,28 @@ export interface EffectGateContext {
 
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
+const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
 
 // Run `fn` with an effect-gate context bound for the async chain of one tool invocation. A fresh `allow-once` grant set is minted per call so once-grants never leak across invocations. AsyncLocalStorage propagates through the loopback transport (the same path the effect ledger relies on), so the per-plugin hostApi closures see this context when they reach a gated effect.
 export function runWithEffectGateContext<T>(
   context: Omit<EffectGateContext, "onceGrants">,
   fn: () => Promise<T>,
   onAuthorizationRequired?: () => void,
+  onNoApprover?: () => void,
 ): Promise<T> {
   const frame: EffectGateContext = { ...context, onceGrants: new Set<string>() };
   if (onAuthorizationRequired) {
     // Keep the host-owned terminal latch off the context returned by currentEffectGateContext. An in-process adapter may inspect that context, but cannot manufacture a terminal control without reaching an actual host-classified write chokepoint.
     authorizationRequiredLatch.set(frame, onAuthorizationRequired);
   }
+  if (onNoApprover) noApproverLatch.set(frame, onNoApprover);
   return gateContextStorage.run(frame, fn);
+}
+
+/** Capture the host denial signal for a socket callback that outlives this async frame. */
+export function captureEffectNoApprover(): (() => void) | undefined {
+  const frame = gateContextStorage.getStore();
+  return frame === undefined ? undefined : noApproverLatch.get(frame);
 }
 
 // Read the ambient effect-gate context, or `undefined` outside a gated invocation.
@@ -318,6 +327,7 @@ export async function gateMutatingEffect(params: {
   }
   if (permission.decision === "deny" || headless) {
     const absentApprover = permission.reasonCode === "no-approver";
+    if (absentApprover) noApproverLatch.get(ctx)?.();
     if (absentApprover && !ctx.headless && ctx.approvalSurface === "unavailable") authorizationRequiredLatch.get(ctx)?.();
     throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target,
       absentApprover ? ctx.headless ? "headless" : "approval-unavailable" : "denied", permission.reason);
@@ -362,6 +372,7 @@ export async function gateMutatingEffect(params: {
   if (policyEpoch !== manager.getPolicyEpoch()) throw new Error("Permission policy changed during effect approval");
   assertEffectPaths(paths);
   if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
+    noApproverLatch.get(ctx)?.();
     throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
   }
   switch (decision.choice) {

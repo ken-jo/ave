@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PermissionManager, type PermissionCheckContext, type ReviewerDispatchResult } from "../permission-manager.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
+import { JudgeContractError } from "../judge/judge-contract.js";
 import { issueHostNetworkSubject } from "../host-network-subject.js";
 import { DisabledRiskClassifier, RuleBasedRiskClassifier } from "../reviewer/risk-classifier.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
@@ -20,6 +21,60 @@ describe("permission manager pipeline integration", () => {
     manager = new PermissionManager(join(directory, "permissions.json"));
   });
   afterEach(() => cleanupTmpDir(directory));
+
+  function pauseSession(sessionId: string): void {
+    for (let index = 0; index < 3; index += 1) manager.getJudgeBreaker().record(sessionId, "ask", `block-${index}`);
+  }
+
+  it("rechecks late pauses centrally and clears their evidence only for a new turn", () => {
+    const sessionId = "late-pause";
+    const initial = manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId });
+    expect(initial.decision).toBe("allow");
+    pauseSession(sessionId);
+    const paused = manager.recheckPermission(initial);
+    expect(paused).toMatchObject({ decision: "ask", reasonCode: "automation-paused", pipelineRequest: { sessionId, automationPause: { kind: "consecutive" } } });
+    expect(paused.forceModal).toBeUndefined();
+    expect(paused.reviewer).toBeUndefined();
+    expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId: "other-session" }).decision).toBe("allow");
+    manager.beginPermissionTurn(sessionId);
+    const resumed = manager.recheckPermission(paused);
+    expect(resumed.decision).toBe("allow");
+    expect(resumed.pipelineRequest).not.toHaveProperty("automationPause");
+  });
+
+  it("normalizes network session pauses and denies without an approver", async () => {
+    manager.setMode("allow");
+    const sessionId = "network-pause";
+    pauseSession(sessionId);
+    const evaluated = await manager.checkNetworkPermission({ host: "example.test", port: 443, source: "builtin", network: "public" }, { sessionId, headless: true });
+    expect(evaluated.permission).toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE, pipelineRequest: { sessionId, automationPause: { kind: "consecutive" } } });
+  });
+
+  it("keeps deny and mandatory floor precedence during a paused turn", () => {
+    manager.setMode("allow");
+    const sessionId = "priority-pause";
+    pauseSession(sessionId);
+    manager.setRules([{ pattern: "deny_probe", action: "deny" }]);
+    const denied = manager.checkDetailed("deny_probe", "builtin", "write", undefined, { sessionId });
+    expect(manager.recheckPermission(denied)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    const floor = manager.checkDetailed("floor_probe", "builtin", "write", undefined, { sessionId, floor: { code: "protected-path", reason: "Control file" } });
+    expect(manager.recheckPermission(floor)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+  });
+
+  it("requires issued recheck identity and clears reviewer metadata after an epoch change", () => {
+    manager.setMode("auto");
+    const pending = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: "review-session" });
+    const verdict = { level: "low" as const, reason: "Reviewed" };
+    const allowed = manager.resolveReviewedPermission(pending, { verdict, outcome: "fresh", cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } });
+    expect(() => manager.recheckPermission({ ...allowed })).toThrow(JudgeContractError);
+    const current = manager.recheckPermission(allowed);
+    expect(current.reviewer).toEqual(allowed.reviewer);
+    expect(() => manager.recheckPermission(allowed)).toThrow(JudgeContractError);
+    manager.setMode("strict");
+    const stale = manager.recheckPermission(current);
+    expect(stale).toMatchObject({ decision: "deny", reasonCode: "policy-changed" });
+    expect(stale.reviewer).toBeUndefined();
+  });
 
   it("allows ordinary reads in the initial strict mode", () => {
     expect(manager.getMode()).toBe("strict");
@@ -129,6 +184,15 @@ describe("permission manager pipeline integration", () => {
     expect(manager.resolveReviewedPermission(pending, review).decision).toBe("allow");
     expect(() => manager.resolveReviewedPermission(pending, review)).toThrow("issued pipeline request");
   });
+
+  it.each([undefined, null, {}, { judged: "false" }, { judged: false, skip: "unknown" }, { judged: true, decision: "allow" }])(
+    "rejects invalid judge evidence before resolving a reviewed permission: %j", judge => {
+      manager.setMode("auto");
+      const pending = manager.checkDetailed("web_fetch", "builtin", "network");
+      const review = { verdict: { level: "low", reason: "Incomplete evidence cannot authorize" }, outcome: "fresh", cacheReason: "miss-not-found", judge };
+      expect(() => manager.resolveReviewedPermission(pending, review as ReviewerDispatchResult)).toThrow(JudgeContractError);
+    },
+  );
 
   it.each(["auto", "allow"] as const)("keeps credential-bearing fetches forced in %s despite allow rules", async (mode) => {
     await manager.ensureProjectRulesLoaded(directory);

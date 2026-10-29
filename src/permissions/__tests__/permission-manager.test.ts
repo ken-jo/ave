@@ -67,7 +67,6 @@ describe("host shell rule policy epochs", () => {
     ["tool mode", (manager) => manager.setToolModeOverride("bash", "strict")],
     ["cleared tool mode", (manager) => manager.clearToolModeOverride("bash")],
     ["published tool modes", (manager) => manager.prepareToolModeOverrides(["bash"], []).publish()],
-    ["interactive review settings", (manager) => manager.setInteractiveAutoApprove("medium")],
     ["path settings", (manager) => manager.setBlockReadsOutsideWorkingDirectories(true)],
     ["rule reload", (manager) => manager.loadRulesFromFile()],
     ["allow removal", (manager) => manager.removeRule("Bash(echo epoch)", "allow")],
@@ -535,7 +534,7 @@ describe("PermissionManager — overlay-trigger origin override", () => {
 
   it("forces ASK on ask-meta through the same overlay authority gate", () => {
     pm.setMode("auto");
-    pm.setInteractiveAutoApprove("medium");
+
     const r = pm.checkDetailed(
       "authority_probe",
       "builtin",

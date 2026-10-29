@@ -9,10 +9,8 @@ import type {
   ExecutionMode,
   HookTrustRow,
   MemoryCaptureMode,
-  ParentAdjudicationBackgroundEscalation,
-  ParentAdjudicationMaxVerdict,
-  ParentAdjudicationModelSource,
   PermissionRule,
+  PermissionReviewerSettings,
   PluginContributionTrustRow,
   PluginPerfStats,
   RemoteA2AActionStatus,
@@ -28,11 +26,7 @@ import type {
   ApprovalRequest as GateApprovalRequest,
 } from "../../../permissions/approval-gate.js";
 import type { PermissionRule as HostPermissionRule } from "../../../permissions/permission-manager.js";
-import type {
-  ParentAdjudicationBackgroundEscalation as HostParentAdjudicationBackgroundEscalation,
-  ParentAdjudicationMaxVerdict as HostParentAdjudicationMaxVerdict,
-  ParentAdjudicationModelSource as HostParentAdjudicationModelSource,
-} from "../../../permissions/permission-settings-store.js";
+import type { ReviewerSettingsBlock } from "../../../permissions/permission-settings-store.js";
 import type { HookTrustRow as HostHookTrustRow } from "../../../hooks/hook-trust-commands.js";
 import type { ScriptHookType } from "../../../hooks/script-hook-types.js";
 import type { PluginPerfStats as HostPluginPerfStats } from "../../../plugins/runtime/index.js";
@@ -72,9 +66,7 @@ describe("renderer types are the owner types", () => {
     expectTypeOf<ApprovalDecision>().toEqualTypeOf<GateApprovalDecision>();
     expectTypeOf<ApprovalChoice>().toEqualTypeOf<GateApprovalChoice>();
     expectTypeOf<PermissionRule>().toEqualTypeOf<HostPermissionRule>();
-    expectTypeOf<ParentAdjudicationMaxVerdict>().toEqualTypeOf<HostParentAdjudicationMaxVerdict>();
-    expectTypeOf<ParentAdjudicationBackgroundEscalation>().toEqualTypeOf<HostParentAdjudicationBackgroundEscalation>();
-    expectTypeOf<ParentAdjudicationModelSource>().toEqualTypeOf<HostParentAdjudicationModelSource>();
+    expectTypeOf<PermissionReviewerSettings>().toEqualTypeOf<ReviewerSettingsBlock>();
   });
 
   it("plugin, hook and remote-A2A rows are the host row types", () => {

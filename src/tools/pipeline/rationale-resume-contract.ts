@@ -437,10 +437,11 @@ export function createRationaleApprovalDisplayFromProjection(
   });
 }
 
-export const RATIONALE_SECURITY_SUFFIX_VERSION = 3 as const;
+export const RATIONALE_SECURITY_SUFFIX_VERSION = 4 as const;
 
 export const RATIONALE_SECURITY_SUFFIX = Object.freeze([
   "resume-cas-validate",
+  "script-pre-tool-use",
   "current-invocation-scope-revalidate",
   "current-policy-mode-revalidate",
   "current-permission-revalidate",
@@ -448,7 +449,6 @@ export const RATIONALE_SECURITY_SUFFIX = Object.freeze([
   "permission-request-hook",
   "permission-ask-audit",
   "approval-allow-once-cas-consume",
-  "script-pre-tool-use",
   "rate-limit",
   "permission-audit-writable-fail-closed",
   "host-invocation-start-cas",

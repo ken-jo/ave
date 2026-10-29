@@ -14,6 +14,7 @@ import { openHostEgressListener } from "../egress-host-listener.js";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
 import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } from "../egress-runtime.js";
+import { PermissionManager } from "../permission-manager.js";
 import type { EgressGrantScope } from "../../shared/egress-grant-scopes.js";
 
 const DESTINATION = { host: "8.8.8.8", port: 443 };
@@ -95,7 +96,10 @@ async function startRuntime(answerScope: () => EgressGrantScope = () => "session
     choice: "allow-once",
     egressScope: answerScope(),
   }));
+  const permissionManager = new PermissionManager(join(policyFixture(), "permissions.json"));
+  permissionManager.setMode("strict");
   const callback = createEgressAskRuntimeCallback({
+    permissionManager,
     approvalGate: { requestAndWait },
     shellAskEnabled: () => true,
   });

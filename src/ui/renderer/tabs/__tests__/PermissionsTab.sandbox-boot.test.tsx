@@ -9,7 +9,7 @@
  * gate is not reported as either.
  */
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,8 +56,6 @@ function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined)
         settings: {
           mode: "rule" as const,
           fallbackOnError: "deny" as const,
-          parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-          interactive: { autoApprove: "low" as const },
         },
         reviewerDegradedToRule: false,
       })),

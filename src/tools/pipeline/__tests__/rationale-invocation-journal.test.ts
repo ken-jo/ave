@@ -200,11 +200,11 @@ function authorized(
     },
     permission: {
       decision: "ask",
-      reason: "reviewer medium",
-      layer: 5,
+      reason: "Automatic review requires human approval.",
+      layer: 6, reasonCode: "reviewer-human-required",
       reviewer: {
         route: "foreground-auto",
-        verdict: { level: "medium", reason: "bounded command" },
+        verdict: { level: "high", reason: "bounded command" },
         outcome: "fresh",
       },
     },

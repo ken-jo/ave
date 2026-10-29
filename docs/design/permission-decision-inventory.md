@@ -192,7 +192,7 @@ Default is the displayed name of stored `strict`; Allow writes is stored `defaul
 7. “Secret read asks” is the kind's mode/human route, not an absolute override of an explicit allow mode or applicable rule; S1 credential-store protection and S2 protected-control floors still win. The brief's explicit stage order resolves that shorthand. Strict allows ordinary reads; secret reads remain mode/human.
 8. The prerequisite project-write change (#312) is not in this snapshot. Its in-project checkpoint allow, single outside card, template exception, patch memory and depth removal must be preserved after the lead authorizes Phase 1. Do not reconstruct them independently in this phase.
 9. The user-typed terminal prerequisite (#308) may change terminal authority seams. Physical user commands stay outside this tree. This inventory records the current terminal_run subject only; it does not authorize converting physical typing into agent requests.
-10. Existing delegated away answers and parent adjudication predate the requested owner-away wait/other-principal one-shot behavior. Their authentication and liveness checks remain; automatic answers must not bypass the new S2/S5 result.
+10. Historical delegated away answers and parent-model adjudication are retired in the current implementation, including their configuration and controls. Trusted child/session identity and liveness checks remain admission/effect boundaries; there is no remaining parent/away automatic decision tier.
 
 ### Credential-store separation
 
@@ -253,96 +253,107 @@ Reconciliation results:
 - J07: preserved O capability/transport and workflow consent is separate from tool execution; explicit callers are recorded in its row.
 - K03/K04: native secret-deny projection is preserved and worker grants are never widened. Trusted native filesystem-denial attribution currently works only with the macOS monitor. Installed Linux diagnostic-attempt records are deliberately rejected; no trusted Linux supervisor exists for this bridge, so Linux retains the original failure. The 7/7 executor cases use controlled issued evidence, including a simulated Linux environment, and prove policy orchestration rather than native Linux attribution. Owner decision remains pending: accept this limitation or require a trusted Linux supervisor before delivery.
 
+C14/C15/Q04 also account for the retired public `off/low/medium` interactive-review axis. The approved auto behavior is fixed: LOW/MEDIUM permits and HIGH/error uses the ordinary human fallback. Legacy `permissions.reviewer.interactive` data is ignored on read and omitted on canonical save; the removed interactive slash command is rejected instead of becoming a successful no-op. The four stored execution modes remain unchanged.
+
+D03/D05/G04 retain mandatory-floor and no-approver denial metadata across nested authorization/effect boundaries. H06/H07 reevaluate current shell-egress policy before cached rules/grants and phase continuation. F04 retains actual path effects through parameter abbreviations and quoted flag-like operands; ambiguous bindings remain uncertain rather than erasing later targets.
+
+Current accepted boundary clarifications:
+
+- The rest-of-turn breaker is a final normal-ask overlay on every automatic authority source, including ordinary reads, remembered grants, explicit allow rules, successful review and Allow mode. Admission denies and existing forced floors retain their outcomes. Human consent answers only the current request and does not reopen automation for that turn; missing approvers deny.
+- Resolution 4's configured outside-read restriction is an S1 admission deny when no admitted root covers the target. This is an explicit changed cell from the baseline outside-read approval route: modes, reviewer and remembered tool approval cannot authorize an uncovered read or create its missing directory authority.
+- A sandboxed shell that requests filesystem scope outside its admitted roots enters the escalated mode/human route before scope expansion. Being sandboxed alone cannot auto-grant the wider scope. The current outside-scope regression requires a normal card.
+- Parent-model adjudication and delegated away deciders are retired, including their public configuration/controls. Baseline J03/I05 entries below the original snapshot heading describe removed code, not supported deciders. Child escalation follows its forced user-consent floor; transport/workflow consent classified O remains separate.
+
 The [validation record](permission-pipeline-validation.md) separates targeted results, built-app evidence and pending delivery gates.
 
 All 97 sites now map to the central decision owner or an explicit retained E/O boundary. This is a source reconciliation plus the cited targeted evidence, not a claim that all native backends, rendered flows or every referenced suite were rerun. External source drift and the Linux native-attribution delivery decision remain pending owner confirmation.
 
 | ID | Current source anchor | Disposition and preserved boundary | Focused test reference |
 | --- | --- | --- | --- |
-| A01 | `src/tools/invocation-runner.ts:559` | S4 effective category remains normalized caller evidence. | [Native][inventory-native] |
-| A02 | `src/tools/invocation-runner.ts:517` | S1 registry/generation/server identity admission retained. | [Executor][inventory-executor] |
-| A03 | `src/tools/invocation-runner.ts:636` | S1 hidden-tool origin allowlist retained. | [Executor][inventory-executor] |
-| A04 | `src/tools/invocation-runner.ts:675` | S1 root cwd and missing host trust reject. | [Executor][inventory-executor] |
-| A05 | `src/tools/invocation-runner.ts:703` | S1 revoked/excluded controller capabilities reject; eligible controller requests become a floor. | [Auth][inventory-auth] |
-| A06 | `src/tools/invocation-runner.ts:777` | S1 argument hooks finalize input before script hook and permission. | [Native][inventory-native] |
-| A07 | `src/tools/invocation-runner.ts:825` | S1 governed operation/principal binding retained; execution consumes exact capability. | [Plugin][inventory-plugin] |
-| A08 | `src/tools/invocation-runner.ts:912` | S1 sealed input mismatch refuses resume. | [Auth][inventory-auth] |
-| A09 | `src/permissions/permission-manager.ts:1359` | S4 normalized kind preserves MCP read-only hint. | [Native][inventory-native] |
-| A10 | `src/tools/invocation-runner.ts:363` | S1/E selected route remains frozen and capability-bound; guest operands remain guest paths. | [Executor][inventory-executor] |
-| A11 | `src/tools/invocation-runner.ts:1162` | S1 identity derivation remains tied to final input; memory later redecides minted evidence. | [Auth][inventory-auth] |
-| A12 | `src/tools/invocation-runner.ts:1227` | S1 remote explicit-host capability denied independently of ordinary host-shell mode. | [Auth][inventory-auth] |
-| A13 | `src/permissions/permission-manager.ts:1274` | S1 corrupt policy store normalizes admission denial; exact deny lookup retained. | [Manager][inventory-manager] |
-| B01 | `src/tools/invocation-runner.ts:1926` | S1/E path/parser checks retained; dynamic/recursive uncertainty reaches central policy. Trusted native filesystem blocks re-enter the full pipeline as a fresh exact host request. | [Paths][inventory-paths] |
+| A01 | `src/tools/invocation-runner.ts:561` | S4 effective category remains normalized caller evidence. | [Native][inventory-native] |
+| A02 | `src/tools/invocation-runner.ts:519` | S1 registry/generation/server identity admission retained. | [Executor][inventory-executor] |
+| A03 | `src/tools/invocation-runner.ts:638` | S1 hidden-tool origin allowlist retained. | [Executor][inventory-executor] |
+| A04 | `src/tools/invocation-runner.ts:677` | S1 root cwd and missing host trust reject. | [Executor][inventory-executor] |
+| A05 | `src/tools/invocation-runner.ts:705` | S1 revoked/excluded controller capabilities reject; eligible controller requests become a floor. | [Auth][inventory-auth] |
+| A06 | `src/tools/invocation-runner.ts:779` | S1 argument hooks finalize input before script hook and permission. | [Native][inventory-native] |
+| A07 | `src/tools/invocation-runner.ts:827` | S1 governed operation/principal binding retained; execution consumes exact capability. | [Plugin][inventory-plugin] |
+| A08 | `src/tools/invocation-runner.ts:914` | S1 sealed input mismatch refuses resume. | [Auth][inventory-auth] |
+| A09 | `src/permissions/permission-manager.ts:1428` | S4 normalized kind preserves MCP read-only hint. | [Native][inventory-native] |
+| A10 | `src/tools/invocation-runner.ts:365` | S1/E selected route remains frozen and capability-bound; guest operands remain guest paths. | [Executor][inventory-executor] |
+| A11 | `src/tools/invocation-runner.ts:1166` | S1 identity derivation remains tied to final input; memory later redecides minted evidence. | [Auth][inventory-auth] |
+| A12 | `src/tools/invocation-runner.ts:1231` | S1 remote explicit-host capability denied independently of ordinary host-shell mode. | [Auth][inventory-auth] |
+| A13 | `src/permissions/permission-manager.ts:971` | S1 corrupt policy store normalizes admission denial; exact deny lookup retained. | [Manager][inventory-manager] |
+| B01 | `src/tools/invocation-runner.ts:1855` | S1/E path/parser checks retained; dynamic/recursive uncertainty reaches central policy. Trusted native filesystem blocks re-enter the full pipeline as a fresh exact host request. | [Paths][inventory-paths] |
 | B02 | `src/tools/shell-path-policy.ts:1397` | S2/S4 lexical/canonical effect and delete-intent evidence, including partial uncertain input. | [Paths][inventory-paths] |
-| B03 | `src/tools/invocation-runner.ts:1879` | S1/E exact final command prepared under actual dialect and plan. | [Executor][inventory-executor] |
-| B04 | `src/permissions/permission-manager.ts:590` | S1 credential admission versus S2/S4 path evidence separated; runner collects all edit targets. | [Native][inventory-native] |
-| B05 | `src/permissions/permission-manager.ts:1283` | S1 retained credential stores; ordinary secret evidence reaches kind/mode pipeline. | [Native][inventory-native] |
-| B06 | `src/tools/invocation-runner.ts:2294` | S3 authenticated directory result reused for exact call; no second category card. | [Native][inventory-native] |
-| B07 | `src/tools/invocation-runner.ts:1384` | S4/S5/S7 one combined full-argument directory/invocation result. | [Native][inventory-native] |
-| B08 | `src/tools/invocation-runner.ts:416` | R one runner history capture replaces removed directory deferred append. | [History][inventory-history] |
-| B09 | `src/tools/invocation-runner.ts:2153` | S1 per-turn plugin allowlist retained; no permission bypass via skill load. | [Plugin][inventory-plugin] |
+| B03 | `src/tools/invocation-runner.ts:1808` | S1/E exact final command prepared under actual dialect and plan. | [Executor][inventory-executor] |
+| B04 | `src/permissions/permission-manager.ts:596` | S1 credential admission versus S2/S4 path evidence separated; runner collects all edit targets. | [Native][inventory-native] |
+| B05 | `src/permissions/permission-manager.ts:1351` | S1 retained credential stores; ordinary secret evidence reaches kind/mode pipeline. | [Native][inventory-native] |
+| B06 | `src/tools/invocation-runner.ts:1901` | S3 authenticated directory result reused for exact call; no second category card. | [Native][inventory-native] |
+| B07 | `src/tools/invocation-runner.ts:1389` | S4/S5/S7 one combined full-argument directory/invocation result. | [Native][inventory-native] |
+| B08 | `src/tools/invocation-runner.ts:418` | R one runner history capture replaces removed directory deferred append. | [History][inventory-history] |
+| B09 | `src/tools/invocation-runner.ts:2086` | S1 per-turn plugin allowlist retained; no permission bypass via skill load. | [Plugin][inventory-plugin] |
 | B10 | `src/tools/pipeline/scoped-rule-subject.ts:9` | S3 scoped subject derives all edit targets and foreign-tool identity. | [Rules][inventory-rules] |
-| C01 | `src/permissions/permission-manager.ts:1185` | S1-S6 normalized manager request delegates to one pure decision owner. | [Manager][inventory-manager] |
-| C02 | `src/permissions/permission-manager.ts:1314` | S2/S4 dialect/path/uncertainty evidence; analysis limit is not a second mode matrix. | [Paths][inventory-paths] |
-| C03 | `src/permissions/permission-manager.ts:1344` | S1/S3 deny/ask/allow inputs composed before central decision. | [Manager][inventory-manager] |
-| C04 | `src/permissions/permission-manager.ts:1276` | S1 excluded remote capability; other-principal forced evidence retained. | [Auth][inventory-auth] |
-| C05 | `src/permissions/permission-manager.ts:1274` | S1 untrusted rule store denies every category; no reviewer/allow override. | [Manager][inventory-manager] |
-| C06 | `src/permissions/permission-manager.ts:1317` | S2 recognized exfil/protected/critical/escape floors remain forced. Opaque embedded command text with no typed exfil signal remains ordinary unproven evidence; direct upload and headless regressions cover the distinction. | [Risk][inventory-risk] |
-| C07 | `src/permissions/decision-pipeline.ts:66` | S3 ask-before-allow follows forced floors; ordinary asks are no longer automatically forced. | [Golden][inventory-golden] |
-| C08 | `src/permissions/permission-manager.ts:1279` | S2 staged/controller/other-agent origin evidence precedes reusable authority. | [Auth][inventory-auth] |
-| C09 | `src/permissions/decision-pipeline.ts:81` | S4/S5 ordinary reads pass in strict; strict mutation asks. | [Golden][inventory-golden] |
-| C10 | `src/permissions/decision-pipeline.ts:87` | S4 shell sandbox/read-only/unproven/destructive/escalation facts drive shared result. | [Golden][inventory-golden] |
-| C11 | `src/permissions/permission-manager.ts:1363` | S4 checkpoint-backed file writes normalize to central file-write kind; no named local-memory category escape. | [Native][inventory-native] |
-| C12 | `src/permissions/permission-manager.ts:1349` | S3 authenticated grants and ordinary host-shell rules enter shared pipeline; no local exact-only host result. | [Manager][inventory-manager] |
-| C13 | `src/permissions/permission-manager.ts:1368` | S1 meta validation and E exact host execution receipt remain; receipt does not replace pipeline decision. | [Auth][inventory-auth] |
+| C01 | `src/permissions/permission-manager.ts:1219` | S1-S6 normalized manager request delegates to one pure decision owner. | [Manager][inventory-manager] |
+| C02 | `src/permissions/permission-manager.ts:1382` | S2/S4 dialect/path/uncertainty evidence; analysis limit is not a second mode matrix. | [Paths][inventory-paths] |
+| C03 | `src/permissions/permission-manager.ts:1412` | S1/S3 deny/ask/allow inputs composed before central decision. | [Manager][inventory-manager] |
+| C04 | `src/permissions/permission-manager.ts:1344` | S1 excluded remote capability; other-principal forced evidence retained. | [Auth][inventory-auth] |
+| C05 | `src/permissions/permission-manager.ts:971` | S1 untrusted rule store denies every category; no reviewer/allow override. | [Manager][inventory-manager] |
+| C06 | `src/permissions/permission-manager.ts:1385` | S2 recognized exfil/protected/critical/escape floors remain forced. Opaque embedded command text with no typed exfil signal remains ordinary unproven evidence; direct upload and headless regressions cover the distinction. | [Risk][inventory-risk] |
+| C07 | `src/permissions/decision-pipeline.ts:67` | S3 ask-before-allow follows forced floors; ordinary asks are no longer automatically forced. | [Golden][inventory-golden] |
+| C08 | `src/permissions/permission-manager.ts:1347` | S2 staged/controller/other-agent origin evidence precedes reusable authority. | [Auth][inventory-auth] |
+| C09 | `src/permissions/decision-pipeline.ts:82` | S4/S5 ordinary reads pass in strict; strict mutation asks. | [Golden][inventory-golden] |
+| C10 | `src/permissions/decision-pipeline.ts:88` | S4 shell sandbox/read-only/unproven/destructive/escalation facts drive shared result. | [Golden][inventory-golden] |
+| C11 | `src/permissions/permission-manager.ts:1432` | S4 checkpoint-backed file writes normalize to central file-write kind; no named local-memory category escape. | [Native][inventory-native] |
+| C12 | `src/permissions/permission-manager.ts:1417` | S3 authenticated grants and ordinary host-shell rules enter shared pipeline; no local exact-only host result. | [Manager][inventory-manager] |
+| C13 | `src/permissions/permission-manager.ts:1272` | S1 meta validation and E exact host execution receipt remain; receipt does not replace pipeline decision. | [Auth][inventory-auth] |
 | C14 | `src/permissions/category-registry.ts:62` | S4/S5 category descriptor delegates non-meta outcomes; metadata no longer owns parallel matrix. | [Golden][inventory-golden] |
-| C15 | `src/permissions/decision-pipeline.ts:26` | S5 ordinary auto asks identify asynchronous review; configured chain does not turn default into auto. | [Golden][inventory-golden] |
-| C16 | `src/permissions/permission-manager.ts:1221` | S6 exact minted result is consumed once, adding review evidence and redeciding against current policy. | [Manager][inventory-manager] |
-| C17 | `src/permissions/permission-manager.ts:706` | R display store accessor replaces queue coupling; dispatch no longer appends deferred grants. | [History][inventory-history] |
-| D01 | `src/tools/invocation-authorization.ts:369` | S1-S6 authorization gathers facts and calls manager; unavailable manager remains failure. | [Auth][inventory-auth] |
+| C15 | `src/permissions/decision-pipeline.ts:28` | S5 ordinary auto asks identify asynchronous review; configured chain does not turn default into auto. | [Golden][inventory-golden] |
+| C16 | `src/permissions/permission-manager.ts:1278` | S6 exact minted result is consumed once, adding review evidence and redeciding against current policy. | [Manager][inventory-manager] |
+| C17 | `src/permissions/permission-manager.ts:703` | R display store accessor replaces queue coupling; dispatch no longer appends deferred grants. | [History][inventory-history] |
+| D01 | `src/tools/invocation-authorization.ts:373` | S1-S6 authorization gathers facts and calls manager; unavailable manager remains failure. | [Auth][inventory-auth] |
 | D02 | `src/tools/invocation-authorization.ts:18` | S3/S4 ordinary host-shell result binds live exact execution; exact-only caller gate removed. | [Auth][inventory-auth] |
-| D03 | `src/tools/invocation-authorization.ts:322` | S2 remote/cross-agent/user-owned browser facts supplied before outcome, no read auto-pass rewrite. | [Auth][inventory-auth] |
+| D03 | `src/tools/invocation-authorization.ts:326` | S2 remote/cross-agent/user-owned browser facts supplied before outcome, no read auto-pass rewrite. | [Auth][inventory-auth] |
 | D04 | `src/tools/invocation-authorization.ts:151` | S1/E governed capability handled without local result replacement. | [Plugin][inventory-plugin] |
-| D05 | `src/permissions/effect-enforcement.ts:282` | S1/S4 each actual plugin effect re-enters central policy; caller read/write/private-store result overrides removed. | [Plugin][inventory-plugin] |
-| D06 | `src/tools/invocation-authorization.ts:455` | S6 reviewer orchestration consumes evidence through manager, not caller mode mapping. | [Auth][inventory-auth] |
-| D07 | `src/tools/invocation-authorization.ts:448` | S3 remembered authority redecides exact minted evidence; fresh manual rerun skips lookup. | [Auth][inventory-auth] |
-| D08 | `src/tools/invocation-runner.ts:416` | S5 no-approver denial captured once as history; no deferred approval result. | [History][inventory-history] |
-| D09 | `src/tools/invocation-authorization.ts:216` | S1/S7 sealed rationale checks remain; consumed directory result cannot resume a different sealed action. | [Auth][inventory-auth] |
-| D10 | `src/tools/invocation-authorization.ts:1079` | S7 selected central decision renders native card; forced other-principal requests skip reviewer/memory. | [Auth][inventory-auth] |
-| D11 | `src/tools/invocation-authorization.ts:878` | S7/E policy-epoch race rejects card authority; exact permit retains identity; human consent does not reopen turn breaker. | [Auth][inventory-auth] |
+| D05 | `src/permissions/effect-enforcement.ts:291` | S1/S4 each actual plugin effect re-enters central policy; caller read/write/private-store result overrides removed. | [Plugin][inventory-plugin] |
+| D06 | `src/tools/invocation-authorization.ts:459` | S6 reviewer orchestration consumes evidence through manager, not caller mode mapping. | [Auth][inventory-auth] |
+| D07 | `src/tools/invocation-authorization.ts:452` | S3 remembered authority redecides exact minted evidence; fresh manual rerun skips lookup. | [Auth][inventory-auth] |
+| D08 | `src/tools/invocation-runner.ts:418` | S5 no-approver denial captured once as history; no deferred approval result. | [History][inventory-history] |
+| D09 | `src/tools/invocation-authorization.ts:220` | S1/S7 sealed rationale checks remain; consumed directory result cannot resume a different sealed action. | [Auth][inventory-auth] |
+| D10 | `src/tools/invocation-authorization.ts:1084` | S7 selected central decision renders native card; forced other-principal requests skip reviewer/memory. | [Auth][inventory-auth] |
+| D11 | `src/tools/invocation-authorization.ts:886` | S7/E policy-epoch race rejects card authority; exact permit retains identity; human consent does not reopen turn breaker. | [Auth][inventory-auth] |
 | F01 | `src/permissions/rules/scoped-rule-matcher.ts:73` | S1/S2/S3 all-target deny/ask, protected/escape floor and allow coverage remain evidence. | [Rules][inventory-rules] |
 | F02 | `src/permissions/allowed-directories.ts:6` | S4/S7/E roots/grant sanitization rejects host admission paths; ordinary secrets are not blanket ungrantable. | [Paths][inventory-paths] |
 | F03 | `src/permissions/sensitive-paths.ts:554` | S1 credential subset, S2 exact protected controls/escape, S4 ordinary secrets separated. Native confinement projection remains E; trusted shell block escalation re-enters policy without changing worker grants. | [Native][inventory-native] |
-| F04 | `src/permissions/rules/powershell-exfiltration.ts:912` | S2/S4 separate dialect path/delete/credential evidence. Direct recognized exfil stays forced; opaque unproven payload text does not invent another forced floor. | [Risk][inventory-risk] |
+| F04 | `src/permissions/rules/powershell-exfiltration.ts:954` | S2/S4 separate dialect path/delete/credential evidence. Direct recognized exfil stays forced; opaque unproven payload text does not invent another forced floor. | [Risk][inventory-risk] |
 | F05 | `src/permissions/reviewer/risk-classifier.ts:1903` | S6 classifier remains risk evidence. Framework v4 removes obsolete configuration routing prose. Typed risk-floor suite passes 449 cases, separating recognized direct effects from opaque unproven payloads. | [Risk][inventory-risk] |
 | F06 | `src/permissions/user-approval-store.ts:353` | S1/S3/S7 exact source/trust/cwd scope and deny persistence retained; forced/manual rerun cannot reuse grant. | [History][inventory-history] |
-| G01 | `src/tools/invocation-runner.ts:925` | S1 script PreToolUse moved before permission/cards; target hook exit2 regression exercises zero cards/effects. | [Native][inventory-native] |
-| G02 | `src/tools/invocation-execution.ts:8` | S1/E audit integrity/rate budget retained before handler; no approval repairs unwritable required audit. | [Executor][inventory-executor] |
+| G01 | `src/tools/invocation-runner.ts:927` | S1 script PreToolUse moved before permission/cards; target hook exit2 regression exercises zero cards/effects. | [Native][inventory-native] |
+| G02 | `src/tools/invocation-execution.ts:14` | S1/E audit integrity/rate budget retained before handler; no approval repairs unwritable required audit. | [Executor][inventory-executor] |
 | G03 | `src/tools/file-access-policy.ts:24` | E native file execution checks admission subset, exact directory and links; approved ordinary native secret reads execute. Native OS filesystem refusals use the fresh host-request bridge rather than lifting the deny in place. | [Native][inventory-native] |
-| G04 | `src/tools/invocation-execution.ts:813` | E abort/audit/controller/route/account/exact permit binding retained at effects. | [Executor][inventory-executor] |
+| G04 | `src/tools/invocation-execution.ts:841` | E abort/audit/controller/route/account/exact permit binding retained at effects. | [Executor][inventory-executor] |
 | G05 | `src/tools/guarded-file-transfer.ts:90` | S1/E both transfer endpoints, reached entries and absent-destination ownership remain retained. | [Transfers][inventory-transfers] |
-| G06 | `src/tools/invocation-execution.ts:847` | S6 late breaker uses ordinary card/no-approver denial; fresh human response does not resume automation for turn. | [Gate][inventory-gate] |
-| G07 | `src/tools/invocation-execution.ts:15` | E reached canonical fetch destination/rules remain rechecked; new consent uses owning effect route. | [Egress][inventory-egress] |
-| G08 | `src/tools/invocation-execution.ts:88` | S5/E runtime no-surface outcomes remain terminal and audited; handler result is not permission replay. | [Executor][inventory-executor] |
+| G06 | `src/tools/invocation-execution.ts:898` | S6 late breaker uses ordinary card/no-approver denial; fresh human response does not resume automation for turn. | [Gate][inventory-gate] |
+| G07 | `src/tools/invocation-execution.ts:21` | E reached canonical fetch destination/rules remain rechecked; new consent uses owning effect route. | [Egress][inventory-egress] |
+| G08 | `src/tools/invocation-execution.ts:95` | S5/E runtime no-surface outcomes remain terminal and audited; handler result is not permission replay. | [Executor][inventory-executor] |
 | H01 | `src/mcp/mcp-tool-adapter.ts:37` | S4 discovery annotation preserved on host Tool and reaches normalized MCP kind. | [Native][inventory-native] |
 | H02 | `src/permissions/reviewer/host-risk-inspector.ts:211` | S4 host effective category remains evidence; it cannot create independent mode authority. | [Plugin][inventory-plugin] |
-| H03 | `src/permissions/effect-enforcement.ts:242` | S1-S7 per-actual-effect policy with exact payload/path identity, not enclosing tool grant. | [Plugin][inventory-plugin] |
+| H03 | `src/permissions/effect-enforcement.ts:251` | S1-S7 per-actual-effect policy with exact payload/path identity, not enclosing tool grant. | [Plugin][inventory-plugin] |
 | H04 | `src/plugins/isolation/host-api-dispatcher.ts:869` | S1/E manifest/account/generation/capability checks retained independently of permission outcome. | [Plugin][inventory-plugin] |
 | H05 | `src/main/host-fetch-guard.ts:220` | S1/E destination/redirect/SSRF/credential lease checks retained; actual network effect uses central policy. | [Egress][inventory-egress] |
-| H06 | `src/permissions/egress-ask.ts:223` | S1/S3/E network identity and destination-class guards retained; agent requester carries headless/owner-away; physical terminal remains O. | [Egress][inventory-egress] |
-| H07 | `src/permissions/egress-approval.ts:29` | S7 agent-network adapter consults central manager/reviewer; destination/class grants retain identity and lifetime. | [Egress][inventory-egress] |
-| I01 | `src/permissions/approval-gate.ts:861` | S7/E gate validates signed choice/plan identity; no blanket secret re-deny or reviewer-HIGH forced rewrite. | [Gate][inventory-gate] |
+| H06 | `src/permissions/egress-ask.ts:244` | S1/S3/E network identity and destination-class guards retained; agent requester carries headless/owner-away; physical terminal remains O. | [Egress][inventory-egress] |
+| H07 | `src/permissions/egress-approval.ts:55` | S7 agent-network adapter consults central manager/reviewer; destination/class grants retain identity and lifetime. | [Egress][inventory-egress] |
+| I01 | `src/permissions/approval-gate.ts:910` | S7/E gate validates signed choice/plan identity; no blanket secret re-deny or reviewer-HIGH forced rewrite. | [Gate][inventory-gate] |
 | I02 | `src/permissions/approval-gate.ts:20` | S7 missing live surface denies; gate no longer independently auto-allows read-only asks. | [Gate][inventory-gate] |
-| I03 | `src/tools/pipeline/reviewer-dispatch.ts:53` | S6 central reviewer result mapping; ordinary HIGH/error fallback is normal card; queue append deleted. | [Auth][inventory-auth] |
+| I03 | `src/tools/pipeline/reviewer-dispatch.ts:58` | S6 central reviewer result mapping; ordinary HIGH/error fallback is normal card; queue append deleted. | [Auth][inventory-auth] |
 | I04 | `src/permissions/judge/judge-breaker.ts:88` | S6 counters reset at active turn, 3 consecutive/20 total; manual-resume module deleted. | [Gate][inventory-gate] |
-| I05 | `src/permissions/approval-gate.ts:730` | S5/S7 away-authority implementation/API/UI removed; owner-away solely waits for actual human. | [Gate][inventory-gate] |
-| I06 | `src/permissions/approval-gate.ts:1239` | S7 zero owner-away timeout means unlimited; configured N minutes denies with no-retry; integrity stays. | [Gate][inventory-gate] |
+| I05 | `src/permissions/approval-gate.ts:779` | S5/S7 away-authority implementation/API/UI removed; owner-away solely waits for actual human. | [Gate][inventory-gate] |
+| I06 | `src/permissions/approval-gate.ts:1287` | S7 zero owner-away timeout means unlimited; configured N minutes denies with no-retry; integrity stays. | [Gate][inventory-gate] |
 | I07 | `src/permissions/reviewer/recently-denied.ts:21` | R old queue module removed; capped redacted history with one-use live callbacks or non-executable references to existing saved transcript calls. The replay resolver revalidates digest/root/tool/schema before fresh admission. | [History][inventory-history] |
-| I08 | `src/ipc/domains/permissions.ts:877` | R guarded native user rerun, no stored-entry approval or grant mint. | [History][inventory-history] |
+| I08 | `src/ipc/domains/permissions.ts:876` | R guarded native user rerun, no stored-entry approval or grant mint. | [History][inventory-history] |
 | J01 | `src/engine/turn/query-loop.ts:1586` | S5 host owner-away no longer sets headless by itself; root turn begins breaker scope. | [Gate][inventory-gate] |
-| J02 | `src/tools/invocation-authorization.ts:322` | S1/S2 intercepted privileged actions preserve remote capability and other-principal one-shot checks. | [Auth][inventory-auth] |
+| J02 | `src/tools/invocation-authorization.ts:326` | S1/S2 intercepted privileged actions preserve remote capability and other-principal one-shot checks. | [Auth][inventory-auth] |
 | J03 | `src/permissions/approval-gate.ts:248` | S2/S7 child escalation remains native one-shot; parent automatic adjudication removed, ancestry/liveness retained. | [Gate][inventory-gate] |
-| J04 | `src/permissions/approval-gate.ts:868` | R old child deferred append removed; app-open owner-away waits, headless denies. | [History][inventory-history] |
+| J04 | `src/permissions/approval-gate.ts:917` | R old child deferred append removed; app-open owner-away waits, headless denies. | [History][inventory-history] |
 | J05 | `src/hooks/hook-command-policy.ts:51` | S1-S7 hook command uses actual plan/argv/cwd, dispatches and consumes reviewer evidence, then binds fresh policy/effect/cwd identity before spawn. Signed allow-once/session/always answers issue the same one-use exact host receipt. | [Hooks][inventory-hooks] |
 | J06 | `src/tools/skill-load.ts:64` | S1/S7/E existing content-hash scoped skill approval remains; no broad permission from loading instructions. Not newly refactored by this lane. | [Skills][inventory-skills] |
 | J07 | `src/permissions/agent-action-approver.ts:34` | O preserved transport/capability consent, not tool execution: local-api-server.ts:246 and :265 adapt explicit external mutation/boot consent; a2a-remote-runtime.ts:179 binds message credential/lineage consent; core/work-board-engine.ts:472 approves the workflow plan. These do not replace any tool pipeline result. | [Actions][inventory-actions] |
@@ -351,11 +362,11 @@ All 97 sites now map to the central decision owner or an explicit retained E/O b
 | Q01 | `src/shared/ipc-channels.ts:101` | R list/rerun/changed channels replace old queue API across shared/preload/main/renderer. | [Channels][inventory-channels] |
 | Q02 | `src/ui/renderer/dialogs/RecentlyDeniedDialog.tsx:5` | R old queue dialog/panel removed; history closes before the fresh rerun card. Restart rerun may resolve a saved transcript reference; missing or changed references remain unavailable. | [HistoryUI][inventory-historyui] |
 | Q03 | `src/i18n/messages/generated/recentlyDenied.ts:2` | R history namespace/generated barrels replace queue fragments; IPC error mapping localized. | [HistoryUI][inventory-historyui] |
-| Q04 | `src/ui/renderer/tabs/PermissionsTab.tsx:323` | S5/S7 stable modes, zero/unlimited setting and informational history; no parent auto-answer controls. | [Modes][inventory-modes] |
+| Q04 | `src/ui/renderer/tabs/PermissionsTab.tsx:307` | S5/S7 stable modes, zero/unlimited setting and informational history; no parent auto-answer controls. | [Modes][inventory-modes] |
 | K01 | `src/tools/file-read-core.ts:49` | E native approved secret read/explicit root grep/list executes; unapproved broad secret descendants and credential stores remain filtered. | [Native][inventory-native] |
 | K02 | `src/main/browser/browser-upload.ts:245` | Retained E/O selected upload/instruction import identity and secret restrictions; not an automatic secret-discovery grant or mode bypass. | [Browser][inventory-browser] |
 | K03 | `src/plugins/isolation/out-of-process-plugin.ts:124` | E preserved worker capability envelope and broad native sensitive projection; ordinary approval never widens worker grants. Forged plugin/MCP metadata cannot request host replay. Actual native block attribution is macOS-only; controlled Linux executor cases do not certify a Linux native bridge. Owner acceptance or a trusted Linux supervisor remains pending. | [Plugin][inventory-plugin] |
-| K04 | `src/tools/invocation-runner.ts:2504` | E executable expansion retains sensitive-path omission. The macOS native monitor can issue command/cwd-bound evidence for one fresh host request. Installed Linux diagnostic attempts are rejected, so Linux keeps the original failure; no native Linux coverage is claimed from controlled executor tests. Owner acceptance or trusted Linux supervisor remains pending. | [Escalation][inventory-escalation] |
+| K04 | `src/tools/invocation-runner.ts:2447` | E executable expansion retains sensitive-path omission. The macOS native monitor can issue command/cwd-bound evidence for one fresh host request. Installed Linux diagnostic attempts are rejected, so Linux keeps the original failure; no native Linux coverage is claimed from controlled executor tests. Owner acceptance or trusted Linux supervisor remains pending. | [Escalation][inventory-escalation] |
 
 Test references identify relevant behavioral suites; they do not assert every case was rerun. The earlier three Risk failures were resolved by the typed-effect-versus-opaque-payload cases described above; the latest risk suite passes 449/449. Other integrated results and rendered/native verification are recorded separately.
 
@@ -386,7 +397,7 @@ Persisted history references: [resolver](../../src/permissions/reviewer/recently
 
 ## Decision-owner branch accounting
 
-The measurement uses syntax-tree counts of `IfStatement`, `ConditionalExpression` and `SwitchCase`, including nested statements, over ten complete unique legacy decision-owner functions at baseline `89acbc0d0`. The legacy sum is **732** (379 if statements, 339 conditional expressions and 14 switch cases). The current `src/permissions/decision-pipeline.ts` module contains **23** (20 if statements, 3 conditional expressions and no switch cases). These are AST branch-node counts, not diagram nodes or cyclomatic-complexity scores.
+The measurement uses syntax-tree counts of `IfStatement`, `ConditionalExpression` and `SwitchCase`, including nested statements, over ten complete unique legacy decision-owner functions at baseline `89acbc0d0`. The legacy sum is **732** (379 if statements, 339 conditional expressions and 14 switch cases). The current `src/permissions/decision-pipeline.ts` module contains **24** (21 if statements, 3 conditional expressions and no switch cases). These are AST branch-node counts, not diagram nodes or cyclomatic-complexity scores.
 
 | Baseline file | Complete function | Baseline lines | If | Conditional | Switch case | Total |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -401,4 +412,4 @@ The measurement uses syntax-tree counts of `IfStatement`, `ConditionalExpression
 | `src/permissions/egress-ask.ts` | `createEgressAskCallback` | 161–429 | 34 | 23 | 3 | 60 |
 | `src/tools/pipeline/reviewer-dispatch.ts` | `resolveDispatchedJudge` | 34–62 | 3 | 9 | 0 | 12 |
 
-The old functions include admission, effect binding, transport and orchestration guards as well as permission choices; the new count covers the decision-owner module alone. Evidence collection, audit, execution checks and orchestration remain outside that module. The figures therefore describe concentration of decision ownership and are not an equivalent whole-system before/after reduction or proof that 709 checks disappeared. The 97-site table accounts for retained E/O boundaries separately.
+The old functions include admission, effect binding, transport and orchestration guards as well as permission choices; the new count covers the decision-owner module alone. Evidence collection, audit, execution checks and orchestration remain outside that module. The figures therefore describe concentration of decision ownership and are not an equivalent whole-system before/after reduction or proof that 708 checks disappeared. The 97-site table accounts for retained E/O boundaries separately.

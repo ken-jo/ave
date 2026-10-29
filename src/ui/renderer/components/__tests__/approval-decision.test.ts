@@ -38,6 +38,7 @@ describe("approval decision models", () => {
     expect(offeredChoices(model)).toEqual(["deny-always", "allow-session", "allow-project", "allow-everywhere"]);
     expect(Object.values(model.options).every((option) => option.rule === "Bash(npm test)" && option.editing === "inline")).toBe(true);
     expect(model.warnsOnWildcardAllow).toBe(true);
+    expect(wildcardWarningKey(model)).toBe("toolApprovalDialog.wildcardAllowBroaderScope");
     expect(defaultAllowChoice(model)).toBe("allow-session");
   });
 

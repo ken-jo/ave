@@ -31,6 +31,8 @@ import {
 import { A2A_AGENT_MAX_TRACKED_TREES } from "../a2a-agent-message-envelope.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { deferred } from "../../__tests__/support/deferred.js";
@@ -120,16 +122,19 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   let tmpHome: string;
   let prevAveHome: string | undefined;
   let memoryStores: MemoryManager[];
+  let approvalGates: ApprovalGate[];
 
   beforeEach(() => {
     prevAveHome = process.env.AVE_HOME;
     tmpHome = mkdtempSync(join(tmpdir(), "ave-subagent-resume-"));
     process.env.AVE_HOME = tmpHome;
     memoryStores = [];
+    approvalGates = [];
     loopAuditLoggers = [];
   });
 
   afterEach(async () => {
+    for (const gate of approvalGates) gate.disposeAll();
     await Promise.all(loopAuditLoggers.map((logger) => logger.close()));
     for (const store of memoryStores) store.closeSearchIndex();
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
@@ -378,6 +383,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     );
     const parentDeps = {
       ...buildLoopDeps(toolRegistry),
+      permissionManager: new PermissionManager(join(tmpHome, "project-permissions.json")),
       getDefaultProject: () => ({
         projectRoot: defaultRoot,
         projectName: "workspace",
@@ -805,55 +811,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restore();
     }
     expect(historyLenAtResumeEntry).toBe(spawnHistoryLen);
-  });
-
-  it("releases the run's parent-adjudication state when each run ends", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const forgetChildRun = vi.fn();
-    const runner = new SubAgentRunner({
-      parentDeps: {
-        ...buildLoopDeps(toolRegistry),
-        approvalGate: { requestAndWait: vi.fn(), forgetChildRun } as never,
-      },
-      toolRegistry,
-      subAgentMemoryManager: makeSubStore(),
-    });
-
-    let restore = patchProvider(
-      new ScriptedProvider([
-        [
-          { type: "tool_call", id: "tu-release", name: "noop", input: {} },
-          { type: "message_complete", stopReason: "tool_use" },
-        ],
-        [
-          { type: "tool_call", id: "tu-release-wait", name: "noop", input: {} },
-          { type: "message_complete", stopReason: "tool_use" },
-        ],
-      ]),
-    );
-    const spawn = await runner.spawn({
-      title: "release",
-      instructions: "do work",
-      toolScope: exactToolScope(["noop"]),
-      maxRounds: 5,
-    });
-    restore();
-    expect(spawn.ok).toBe(true);
-    // Budget and denial streaks belong to one run and reset when that run ends.
-    expect(forgetChildRun.mock.calls).toEqual([[spawn.childSessionId]]);
-
-    restore = patchProvider(new ScriptedProvider(endTurnScript("resumed")));
-    try {
-      const resumed = await runner.resume(spawn.childSessionId, "continue", "release");
-      expect(resumed.ok).toBe(true);
-    } finally {
-      restore();
-    }
-    expect(forgetChildRun.mock.calls).toEqual([
-      [spawn.childSessionId],
-      [spawn.childSessionId],
-    ]);
   });
 
   it("scopes the resumed child to exactly meta.sourceTools (write tool absent)", async () => {
@@ -1689,13 +1646,20 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         execute,
       }),
     );
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const contents = makeMockWebContents();
+    const approvalGate = new ApprovalGate(contents as never);
+    approvalGates.push(approvalGate);
+    const requestAndWait = vi.spyOn(approvalGate, "requestAndWait");
+    contents.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      queueMicrotask(() => approvalGate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
+      }, contents as never));
+    });
     const parentDeps = {
       ...buildLoopDeps(toolRegistry),
-      approvalGate: { requestAndWait, forgetChildRun: vi.fn() } as never,
+      permissionManager: new PermissionManager(join(tmpHome, "question-security-permissions.json")),
+      approvalGate,
     };
     const subStore = makeSubStore();
     const runner = new SubAgentRunner({
@@ -3198,7 +3162,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       isOriginActive: (origin) => runner.isSubAgentOriginActive(origin),
     });
     runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
+      parentDeps: { ...buildLoopDeps(toolRegistry), permissionManager: new PermissionManager(join(tmpHome, "question-commit-permissions.json")) },
       toolRegistry,
       subAgentMemoryManager: subStore,
       agentMessageBus: bus,
@@ -3271,7 +3235,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       isOriginActive: (origin) => runner.isSubAgentOriginActive(origin),
     });
     runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
+      parentDeps: { ...buildLoopDeps(toolRegistry), permissionManager: new PermissionManager(join(tmpHome, "question-fallback-permissions.json")) },
       toolRegistry,
       subAgentMemoryManager: subStore,
       agentMessageBus: bus,

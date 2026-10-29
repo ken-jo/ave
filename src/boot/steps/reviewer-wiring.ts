@@ -27,12 +27,6 @@ import {
   UnavailableRationaleScopeReviewer,
   type RationaleScopeReviewer,
 } from "../../permissions/reviewer/rationale-scope-reviewer.js";
-import {
-  LlmParentAdjudicator,
-  UnavailableParentAdjudicator,
-  type ParentAdjudicationTargetResolver,
-  type ParentAdjudicator,
-} from "../../permissions/parent-adjudicator.js";
 
 const log = createLogger("reviewer-wiring");
 
@@ -99,8 +93,6 @@ export interface WireReviewerDeps {
   /** Optional display-history store; retained across reviewer rewiring. */
   recentlyDenied?: RecentlyDeniedStore;
   onRecentlyDeniedChanged?: (summary: { total: number }) => void;
-  /** Resolve the parent session target per ask so newly configured providers work; absent targets escalate to the user. */
-  resolveParentSessionAdjudicationTarget?: ParentAdjudicationTargetResolver;
 }
 
 /** Runtime mode may degrade from model review to rules; diagnostics consume it, but settings never persist it. */
@@ -117,10 +109,6 @@ export interface WireReviewerResult {
   rationaleScopeReviewer: RationaleScopeReviewer;
   /** Resolve approval sentences only onto pending scopes, using the reviewer identity; modes without a provider propose nothing. */
   approvalSentenceSelector: ApprovalSentenceSelector;
-  /** Provider-backed parent adjudication shares reviewer identity; without a provider it escalates to the user. */
-  parentAdjudicator: ParentAdjudicator;
-  /** Parent-session adjudication follows chat independently of reviewer mode; missing targets escalate per ask. */
-  parentSessionAdjudicator: ParentAdjudicator;
   cache: VerdictCache;
   recentlyDenied: RecentlyDeniedStore;
   /** Settings after normalization. */
@@ -163,13 +151,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     new UnavailableRationaleScopeReviewer();
   let approvalSentenceSelector: ApprovalSentenceSelector =
     new UnavailableApprovalSentenceSelector();
-  let parentAdjudicator: ParentAdjudicator = new UnavailableParentAdjudicator();
-  // Disabled review supplies unassessed LOW verdicts, so it cannot authorize parent-session adjudication below a risk ceiling.
-  const parentSessionAdjudicator: ParentAdjudicator =
-    deps.resolveParentSessionAdjudicationTarget === undefined ||
-    settings.mode === "disabled"
-      ? new UnavailableParentAdjudicator()
-      : new LlmParentAdjudicator(deps.resolveParentSessionAdjudicationTarget);
   // Only model-to-rule degradation differs from persisted mode.
   let runtimeMode: RuntimeReviewerMode = settings.mode;
   let degradedToRule = false;
@@ -226,10 +207,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
         adapter,
         effectiveSettings.model,
       );
-      parentAdjudicator = new LlmParentAdjudicator(
-        adapter,
-        effectiveSettings.model,
-      );
       log.info(
         "boot: reviewer wired (mode=llm provider=%s model=%s fallback=%s)",
         effectiveSettings.provider,
@@ -254,8 +231,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       provider: effectiveSettings.provider,
       model: effectiveSettings.model,
       fallbackOnError: settings.fallbackOnError,
-      // Auto-approval changes must invalidate verdicts produced under different policy.
-      interactiveAutoApprove: settings.interactive.autoApprove,
       // Endpoint or project changes must invalidate verdicts from another upstream deployment.
       providerBaseUrl: effectiveSettings.baseUrl ?? null,
       marketplaceProviderPresetId: effectiveSettings.marketplaceProviderPresetId ?? null,
@@ -263,24 +238,10 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       vertexLocation: effectiveSettings.vertexLocation ?? null,
     },
   });
-  // Apply foreground auto-approval policy to the manager during rewiring.
-  deps.permissionManager.setInteractiveAutoApprove(settings.interactive.autoApprove);
-
-  // Strict mode returns before reviewer routing; allow mode bypasses review and makes interactive.autoApprove ineffective.
-  // Warn when allow mode makes the configured threshold misleading.
-  if (deps.permissionManager.getMode() === "allow") {
-    log.warn(
-      "exec mode=allow — reviewer (and reviewer.interactive.autoApprove) is " +
-      "bypassed for all non-hard-blocked tools. `interactive.autoApprove` " +
-      "setting has no effect under allow mode.",
-    );
-  }
   return {
     classifier,
     rationaleScopeReviewer,
     approvalSentenceSelector,
-    parentAdjudicator,
-    parentSessionAdjudicator,
     cache,
     recentlyDenied,
     appliedSettings: settings,

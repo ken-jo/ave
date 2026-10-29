@@ -536,7 +536,7 @@ describe("permission card (status-row permission cell)", () => {
     expect(getByTestId("permission-quick-picker-option:strict").textContent).toContain("기본");
   });
 
-  it("persists a pick through setMode and the tab's two reviewer dispatches, then closes", async () => {
+  it("persists a pick and enables the reviewer before closing", async () => {
     const { getByTestId, findByTestId, queryByTestId } = renderBar({
       statusRow: { ...defaultStatusRow, permissionMode: "default" },
     });
@@ -544,8 +544,8 @@ describe("permission card (status-row permission cell)", () => {
     await findByTestId("permission-quick-picker");
     fireEvent.click(getByTestId("permission-quick-picker-option:auto"));
     await waitFor(() => expect(setMode).toHaveBeenCalledWith("auto"));
-    await waitFor(() => expect(reviewerDispatch).toHaveBeenCalledTimes(2));
-    expect(reviewerDispatch.mock.calls.map((c) => c[0])).toEqual(["mode llm", "interactive medium"]);
+    await waitFor(() => expect(reviewerDispatch).toHaveBeenCalledTimes(1));
+    expect(reviewerDispatch.mock.calls.map((c) => c[0])).toEqual(["mode llm"]);
     await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
   });
 

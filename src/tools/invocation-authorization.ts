@@ -156,6 +156,8 @@ export interface AuthorizedInvocation {
   outcome: "authorized";
   /** True only after this action consumed verified native human consent. */
   humanApproved: boolean;
+  approvedPolicyEpoch?: string;
+  permissionRecheckResult?: PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -211,6 +213,8 @@ export async function authorizeToolInvocation(
   // The directory lane has already consumed this exact invocation's central
   // policy and, when required, its human card. Carry that authority once.
   let humanApproved = context.directoryAuthorization?.humanApproved ?? false;
+  let approvedPolicyEpoch = humanApproved ? services.permissionManager?.getPolicyEpoch() : undefined;
+  let permissionRecheckResult: PermissionCheckResult | undefined;
   if (context.directoryAuthorization !== undefined) {
     if (rationaleResumeContext !== undefined) {
       return returnRationaleResumeBlock("Directory authorization cannot resume a sealed rationale action", finalInput, context.directoryAuthorization.permission);
@@ -421,8 +425,8 @@ export async function authorizeToolInvocation(
     // precedence when it incorporates a matching grant.
     const ordinaryRequest = permissionResult.pipelineRequest;
     if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
-        !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined &&
-        ordinaryRequest.manualRerun !== true && rationaleResumeContext === undefined &&
+        !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined && ordinaryRequest.rules?.ask === undefined &&
+        ordinaryRequest.manualRerun !== true && ordinaryRequest.automationPause === undefined && rationaleResumeContext === undefined &&
         rationaleBatchContext === undefined && services.permissionManager !== undefined) {
       const memorySkip = await services.tryUserApprovalMemorySkip(
         toolUse.name,
@@ -799,7 +803,9 @@ export async function authorizeToolInvocation(
           undefined,
           undefined,
           tool.pluginGeneration !== undefined,
+          abortSignal,
         );
+        if (abortSignal?.aborted) return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
         if (permHook.decision === "deny") {
           return returnRationaleResumeBlock(
             "permission-request hook denied the sealed action: " +
@@ -846,7 +852,9 @@ export async function authorizeToolInvocation(
           );
         }
         rationaleResumeContext.authorized = authorized.value;
+        permissionRecheckResult = permissionResult;
         permissionResult = {
+          ...permissionResult,
           decision: "allow",
           reason: "host-authentic rationale allow-once receipt consumed",
           layer: permissionResult.layer,
@@ -933,19 +941,14 @@ export async function authorizeToolInvocation(
           reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
           // Hard policy/A2A asks are per invocation. A reviewer failure alone
           // remains an ordinary human decision that may be remembered exactly.
-          ...((permissionResult.layer <= 2 ||
-              (permissionResult.forceModal === true && permissionResult.reviewer === undefined) ||
-              approvalReasonPrefix !== undefined)
+          ...(permissionResult.forceModal === true
             ? { durableApprovalRecordAllowed: false as const } : {}),
           ...(approvalPurpose ? { approvalPurpose } : {}),
           args: finalInput,
           reason: approvalReasonPrefix
             ? `${approvalReasonPrefix} ${permissionResult.reason}`
             : permissionResult.reason,
-          // Also carried structurally: the tier-2 adjudication evidence needs
-          // "this call was raised under another agent's influence" as a FACT,
-          // and recovering it by splitting the prefixed `reason` above would
-          // be parsing prose the host just finished composing.
+          // Preserve the originating principal separately from display text.
           ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
           source: source as ToolSource,
           createdAt: Date.now(),
@@ -997,7 +1000,9 @@ export async function authorizeToolInvocation(
           undefined,
           undefined,
           tool.pluginGeneration !== undefined,
+          abortSignal,
         );
+        if (abortSignal?.aborted) return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
         if (permHook.decision === "deny") {
           const msg = t("be_executor.hookPermissionBlock", {
             reason: permHook.reason,
@@ -1149,7 +1154,8 @@ export async function authorizeToolInvocation(
         // share revoke that won while the modal was visible must beat the
         // newly returned allow-once before it can reach the execution stage.
         const approvalInvalidationReason = services.permissionManager !== undefined &&
-            approvalPolicyEpoch !== services.permissionManager.getPolicyEpoch()
+            approvalPolicyEpoch !== services.permissionManager.getPolicyEpoch() &&
+            !services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, services.permissionManager.getPolicyEpoch())
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerAuthorityCurrent(invocationPermissionContext.remoteControllerAuthority)
             ? "remote-controller-revoked" : undefined;
@@ -1245,7 +1251,9 @@ export async function authorizeToolInvocation(
         // Out-of-directory approvals are handled earlier by invocation-runner
         // and retain their explicit reviewed-parent persistence contract.
         humanApproved = manuallyApproved;
+        approvedPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         permissionResult = {
+          ...permissionResult,
           decision: "allow",
           reason: `user approved approval request (${decision.choice})`,
           layer: permissionResult.layer,
@@ -1318,6 +1326,8 @@ export async function authorizeToolInvocation(
   return {
     outcome: "authorized",
     humanApproved,
+    approvedPolicyEpoch,
+    permissionRecheckResult,
     permissionResult,
     hostShellApprovalDecision,
     // Only while no later lane replaced the rule decision: a reviewer, hook or

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
+import { sanitizeAllowedDirectories } from "../../../permissions/allowed-directories.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { JudgeContractError, JudgeFailure, type JudgeDecision, type JudgeFailureKind, type PermissionJudge } from "../../../permissions/judge/judge-contract.js";
@@ -21,10 +22,10 @@ afterEach(async () => {
 function subject(judge?: PermissionJudge | null, classifier: RiskClassifier = new RuleBasedRiskClassifier()) {
   const root = resources.makeTmpDir("ave-reviewer-delegation-");
   const manager = new PermissionManager(join(root, "permissions.json"));
-  const queue = makeRecentlyDeniedStore(join(root, "deferred.jsonl"));
+  const queue = makeRecentlyDeniedStore(join(root, "recently-denied.json"));
   const audit = collectingAudit();
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("low");
+
   manager.setReviewer({ classifier, cache: resources.makeVerdictCache(join(root, "cache.jsonl")), recentlyDenied: queue });
   const stage = scriptedStage("decision-provider");
   const settings = judgeSettings({ chain: judge === undefined ? [] : [stage] });
@@ -39,14 +40,16 @@ type Subject = ReturnType<typeof subject>;
 type Lane = "foreground-auto" | "headless";
 
 async function dispatch(current: Subject, lane: Lane, callbacks?: ToolExecutorCallbacks, abortSignal?: AbortSignal): Promise<PermissionCheckResult> {
+  await current.manager.ensureProjectRulesLoaded(current.root);
+  const allowedDirectories = sanitizeAllowedDirectories([current.root]);
   const evaluation = buildPermissionEvaluationContext({
     policyMode: "auto", headless: lane === "headless", source: "builtin", category: "write",
-    trustOrigin: "user-keyboard", executionCwd: current.root, allowedDirectories: [current.root],
+    trustOrigin: "user-keyboard", executionCwd: current.root, allowedDirectories,
     pathFields: ["path"], targetFilePaths: [join(current.root, "file.txt")], sensitivePathsAdjacent: [],
   });
   const args: Parameters<typeof dispatchReviewerForHeadless> = [
-    current.manager, "write_probe", "builtin", "write", ["path"],
-    { path: join(current.root, "file.txt") }, [current.root], [],
+    current.manager, "write_file", "builtin", "write", ["path"],
+    { path: join(current.root, "file.txt"), content: "bounded write" }, allowedDirectories, [],
     { trustOrigin: "user-keyboard", headless: lane === "headless" }, evaluation, {}, callbacks,
     { groupId: "decision-group", toolUseId: "decision-call", displayOrder: 0 },
     undefined, undefined, abortSignal, undefined, SESSION_ID,
@@ -71,7 +74,8 @@ describe("reviewer dispatch consumes chain decisions", () => {
       const judge = deciding(decision);
       const current = subject(judge);
       const result = await dispatch(current, lane);
-      expect(result).toMatchObject({ decision, layer: 5, reviewer: { route: lane } });
+      expect(result).toMatchObject({ decision: decision === "allow" ? "allow" : lane === "headless" ? "deny" : "ask", layer: 6, reviewer: { route: lane } });
+      expect(result.forceModal).toBeUndefined();
       expect(judge.judge).toHaveBeenCalledOnce();
       const reviewedRequest = vi.mocked(judge.judge).mock.calls[0]?.[0];
       expect(reviewedRequest).toBeDefined();
@@ -79,7 +83,7 @@ describe("reviewer dispatch consumes chain decisions", () => {
       expect(current.audit.chained).toEqual([expect.objectContaining({
         decision: "judge", judgeRecord: expect.objectContaining({ decision, source: "judge" }),
       })]);
-      expect((await current.queue.list())).toHaveLength(lane === "headless" && decision === "deny" ? 1 : 0);
+      expect((await current.queue.list())).toHaveLength(0);
       if (lane === "headless" && decision === "deny") {
         expect(result.reason).toContain("do not retry");
       }
@@ -92,11 +96,12 @@ describe("reviewer dispatch consumes chain decisions", () => {
       };
       const current = subject(judge);
       const result = await dispatch(current, lane);
-      expect(result).toMatchObject({ decision: lane === "headless" ? "deny" : "ask", forceModal: true });
+      expect(result).toMatchObject({ decision: lane === "headless" ? "deny" : "ask" });
+      expect(result.forceModal).toBeUndefined();
       expect(current.audit.chained).toEqual([expect.objectContaining({
         judgeRecord: expect.objectContaining({ fallback: kind, source: "fallback" }),
       })]);
-      expect((await current.queue.list())).toHaveLength(lane === "headless" ? 1 : 0);
+      expect((await current.queue.list())).toHaveLength(0);
       expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 0, total: 0, open: false });
     });
 
@@ -104,28 +109,28 @@ describe("reviewer dispatch consumes chain decisions", () => {
       const current = subject();
       const original = current.manager.dispatchReviewer.bind(current.manager);
       vi.spyOn(current.manager, "dispatchReviewer").mockImplementation(async (...args) => {
-        const { judge: _judge, ...withoutJudge } = await original(...args);
-        return withoutJudge;
+        const result = await original(...args);
+        Reflect.deleteProperty(result, "judge");
+        return result;
       });
       await expect(dispatch(current, lane)).rejects.toBeInstanceOf(JudgeContractError);
     });
 
     it(`${lane} treats caller cancellation as terminal without deferring or granting`, async () => {
       const abort = new AbortController();
+      const abortReason = new Error("Caller cancelled review");
       const current = subject(undefined, {
         classify: () => {
-          abort.abort(new Error("Caller cancelled review"));
+          abort.abort(abortReason);
           return { level: "low", reason: "late classifier verdict" };
         },
       });
       const statuses: string[] = [];
-      const result = await dispatch(current, lane, {
+      await expect(dispatch(current, lane, {
         onPermissionReview: (event) => statuses.push(event.status),
-      }, abort.signal);
-      expect(result.decision).toBe("deny");
+      }, abort.signal)).rejects.toBe(abortReason);
       expect((await current.queue.list())).toHaveLength(0);
       expect(statuses).toEqual(["reviewing", "failed"]);
-      if (lane === "foreground-auto") expect(result.reviewer).toBeUndefined();
     });
   }
 });

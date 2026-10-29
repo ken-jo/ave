@@ -53,14 +53,14 @@ describe("per-action approval and the authorized scope", () => {
     await cleanupTmpDir(aveHomeDir);
   });
 
-  /** A reviewer that grades everything MEDIUM with interactive auto-approve on: an ordinary ask never reaches a
+  /** A reviewer that grades everything MEDIUM in auto mode: an ordinary ask never reaches a
    * card. Each card that does appear is answered "remember for the session" when the host allows remembering. */
-  function harness(tools: Tool[], autoApprove: "off" | "medium" = "medium") {
+  function harness(tools: Tool[], mode: "auto" | "default" = "auto") {
     const registry = new ToolRegistry();
     for (const tool of tools) registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.setMode("auto");
-    manager.setInteractiveAutoApprove(autoApprove);
+    manager.setMode(mode);
+
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
     const classify = vi.fn(() => ({ level: "medium" as const, reason: "stub medium" }));
     setReviewerForTest(manager, {
@@ -151,7 +151,7 @@ describe("per-action approval and the authorized scope", () => {
     const { tool, seen } = probe({ perAction: (input) => input.owner === "user", scoped: true });
     const { cards, recorded, run } = harness([tool]);
 
-    // The ordinary input is answered by the MEDIUM-threshold reviewer without a card.
+    // The ordinary input is answered by the MEDIUM reviewer without a card.
     await run(BROWSER_TOOL.click, { owner: "agent" });
     expect(cards).toHaveLength(0);
 
@@ -169,7 +169,7 @@ describe("per-action approval and the authorized scope", () => {
   it("a remembered session approval for the agent scope never answers a per-action call", async () => {
     // Nothing is auto-answered: every ask reaches a card.
     const { tool, seen } = probe({ perAction: (input) => input.owner === "user", scoped: true });
-    const { cards, recorded, run } = harness([tool], "off");
+    const { cards, recorded, run } = harness([tool], "default");
 
     await run(BROWSER_TOOL.click, { owner: "agent", n: 1 });
     expect(cards).toHaveLength(1);

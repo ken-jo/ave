@@ -174,8 +174,8 @@ describe("browser tools", () => {
     const registry = new ToolRegistry();
     for (const tool of browserTools) registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.setMode(options.mode ?? "auto");
-    manager.setInteractiveAutoApprove("off");
+    manager.setMode(options.mode ?? "default");
+
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
     setReviewerForTest(manager, {
       classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "stub medium" })) },
@@ -377,8 +377,8 @@ describe("browser tools", () => {
   it.each([
     [BROWSER_TOOL.navigate, "allow"], [BROWSER_TOOL.navigate, "ask"],
     [BROWSER_TOOL.tabNew, "allow"], [BROWSER_TOOL.tabNew, "ask"],
-  ] as const)("retains site approval for %s with a domain %s rule", async (name, action) => {
-    const { run, cards, agentTab, manager, ops, tabs } = harness({ mode: action === "ask" ? "allow" : "default" });
+  ] as const)("retains default-mode site approval for %s with a domain %s rule", async (name, action) => {
+    const { run, cards, agentTab, manager, ops, tabs } = harness({ mode: "default" });
     const tab = await agentTab("https://example.com/");
     await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action }, { kind: "user" });
     const initialOps = ops.length;
@@ -556,8 +556,13 @@ describe("browser tools", () => {
       expect(result.isError, url).toBe(true);
     }
     expect(page.calls).toEqual([]);
-    // A scheme the tools refuse is refused without first asking the user about it.
-    expect(cards.filter((card) => card.toolName === BROWSER_TOOL.navigate)).toEqual([]);
+    // Even after one-shot consent, invalid navigation never reaches the page.
+    const invalidNavigationCards = cards.filter((card) => card.toolName === BROWSER_TOOL.navigate);
+    expect(invalidNavigationCards).toHaveLength(5);
+    for (const card of invalidNavigationCards) {
+      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(card.persistentAllowAllowed).toBe(false);
+    }
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
     expect(refused.output).toContain("file:, javascript:, data: and other schemes are denied");
 

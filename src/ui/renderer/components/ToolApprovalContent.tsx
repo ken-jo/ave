@@ -384,8 +384,7 @@ function RationaleApprovalCard({
   );
 }
 
-/** Dock label for every cause the parent-adjudication stage can end on. Keyed by the host's own union, so a cause added there fails to compile until this dock
- * has a sentence for it. That is deliberate: the band exists because the user never saw the stage run, and an unlabelled cause would leave exactly that gap open. */
+/** Display the shared child-escalation cause without deriving a permission decision in the renderer. */
 const PARENT_ESCALATION_CAUSE_KEY: Record<ParentEscalationCause, string> = {
   "parent-escalated": "toolApprovalDialog.parentEscalationCauseParentEscalated",
   timeout: "toolApprovalDialog.parentEscalationCauseTimeout",

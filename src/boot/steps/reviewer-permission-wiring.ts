@@ -12,12 +12,11 @@ import {
   canUseLlmVendorWithoutApiKey,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
-import { LlmReviewerProviderAdapter, wireReviewerAgent } from "./reviewer-wiring.js";
+import { wireReviewerAgent } from "./reviewer-wiring.js";
 import { readJudgeSettings, readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { wireJudgeAgent } from "./judge-wiring.js";
-import type { ParentAdjudicationTarget } from "../../permissions/parent-adjudicator.js";
 import {
   bindManifestIntegrityAudit,
   manifestIntegrityState,
@@ -60,7 +59,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       return subscriptionProviderFactory(activeChatRuntime);
     }
 
-    // Parent-session adjudication uses this same factory, so an unresolved API selection cannot answer an approval through another host key.
+    // An unresolved active provider selection cannot use another host credential.
     if (llmSettings.retiredProvider) return null;
 
     const llmVendor = isLLMVendor(vendor) ? vendor : null;
@@ -183,19 +182,6 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       } : {}),
     };
   };
-  /** Resolve the parent chat identity per ask; missing configuration escalates to the user without substituting another model.
-   * Session IDs are reserved for future per-session identity; current settings apply globally. */
-  const resolveParentSessionAdjudicationTarget = (
-    _parentSessionId: string,
-  ): ParentAdjudicationTarget | null => {
-    const identity = readActiveReviewerLlm();
-    const upstream = reviewerStreamProviderFor(identity.provider);
-    if (!upstream) return null;
-    return {
-      provider: new LlmReviewerProviderAdapter(upstream),
-      model: identity.model,
-    };
-  };
   const rewireReviewerAgent = (): void => {
     // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
     permissionManager.setBlockReadsOutsideWorkingDirectories(
@@ -228,7 +214,6 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
         ? (vendor) => reviewerStreamProviderFor(vendor, selectedReviewerModel.model)
         : reviewerStreamProviderFor,
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
-      resolveParentSessionAdjudicationTarget,
       onRecentlyDeniedChanged: (summary) => {
         for (const window of ctx.host.desktop?.getAppWindows() ?? [getMainWindow()]) {
           sendToWindow(window, PERMISSIONS.recentlyDeniedChanged, summary, log);
@@ -253,9 +238,6 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;
     ctx.approvalSentenceSelector = reviewerResult.approvalSentenceSelector;
-    // Resolve through an accessor because rewiring replaces the adjudicator; captured instances would remain unavailable after login.
-    ctx.parentAdjudicator = reviewerResult.parentAdjudicator;
-    ctx.parentSessionAdjudicator = reviewerResult.parentSessionAdjudicator;
     // Broadcast configuration changes after rewiring so open settings views stop showing stale degradation.
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
   };

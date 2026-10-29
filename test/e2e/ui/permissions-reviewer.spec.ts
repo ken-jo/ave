@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 import { TEST_IDS, execModeTestId } from "../../../src/shared/test-ids.js";
 

@@ -28,7 +28,7 @@ describe("settings model chooser", () => {
 
     const view = render(
       <TooltipProvider>
-        <SettingsContent api={api as never} chatGroupId="main" onSaved={() => {}} initialTab="llm" />
+        <SettingsContent api={api as never} onSaved={() => {}} initialTab="llm" />
       </TooltipProvider>,
     );
     const trigger = await view.findByTestId(TEST_IDS.llmModelSelect);

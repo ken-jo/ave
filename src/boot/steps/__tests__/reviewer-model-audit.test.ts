@@ -41,7 +41,7 @@ describe("implicit reviewer model audit", () => {
       };
       const reviewer = wireReviewerAgent({
         permissionManager: manager,
-        readSettings: () => ({ ...defaults, mode, interactive: { autoApprove: "medium" } }),
+        readSettings: () => ({ ...defaults, mode }),
         readActiveLlm: () => ({ provider: "openai", model: "selected-reviewer-model" }),
         selectedModel: { label: "openai/selected-reviewer-model", available: true },
         streamProviderFor: () => provider,
@@ -69,7 +69,7 @@ describe("implicit reviewer model audit", () => {
         source: "builtin", category: "shell", pathFields: [],
         finalInput: { command: "echo reviewed" }, executionCwd: directory,
         allowedDirectories: [directory], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
-      }, undefined, { defer: "none" });
+      }, undefined, { lane: "foreground-auto" });
       expect(result).toMatchObject({ outcome: "fresh", verdict: { level: "low" }, judge: { decision: "allow", applied: true } });
       const records = readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n").map((line) => JSON.parse(line));
       expect(records).toHaveLength(1);

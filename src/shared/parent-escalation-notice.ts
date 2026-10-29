@@ -1,9 +1,12 @@
-import type { ParentAdjudicationEscalationCause } from "../permissions/parent-adjudicator.js";
-
-/** The gate owns repetition escalation because the adjudicator sees only one call at a time. */
+/** Stable provenance values retained in child escalation records and presentation. */
 export type ParentEscalationCause =
-  | ParentAdjudicationEscalationCause
-  /** Repeated parent denials escalate to the user rather than sustaining the child denial loop. */
+  | "parent-escalated"
+  | "timeout"
+  | "malformed-output"
+  | "rate-limited"
+  | "adjudicator-unavailable"
+  | "llm-error"
+  | "turn-aborted"
   | "repeated-denial";
 
 /** Keep the renderer payload separate from the approval gate runtime and its signing keys. */

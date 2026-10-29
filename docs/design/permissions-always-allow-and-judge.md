@@ -7,9 +7,9 @@ This page carries the owner-approved direction for issue #28 into the repository
 - **P1:** make "Always allow" usable through structural command rules and scoped saved approvals, while keeping hard floors.
 - **P2:** reserve one pluggable judge-model slot for automated review.
 
-The [permission-policy contract](../architecture/permission-policy-design.md)
-owns current execution and approval behavior. Implementation gaps against this
-design must be reported explicitly.
+The [permission decision tree](../architecture/permission-decision-tree.md)
+owns current execution, approval and child-escalation behavior. Parent model
+adjudication is retired. This document retains the structural rules and judge-slot design rationale.
 
 ## Decisions
 
@@ -487,7 +487,7 @@ Only a verified allow answer to the current signed card from a registered
 application window's exact main frame can establish fresh consent and resume
 the paused breaker. Rules, peers, agents and headless outcomes cannot do so.
 The renderer supplies the answer; the host alone mints its provenance and supplies
-`remoteControllerOrigin` and parent-adjudication facts. Subframes, webviews,
+`remoteControllerOrigin` and host-tracked child provenance. Subframes, webviews,
 plugin, `render_html`, MCP-app and other non-app origins or partitions remain
 rejected.
 

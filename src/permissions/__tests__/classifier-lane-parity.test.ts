@@ -64,6 +64,7 @@ describe("both lanes classify the same object", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-lane-parity-"));
     dirs.push(dir);
     const pm = new PermissionManager(join(dir, "permissions.json"));
+    pm.setMode("auto");
     const seen: Array<Record<string, unknown>> = [];
     setReviewerForTest(pm, {
       classifier: {
@@ -165,7 +166,7 @@ describe("DLP is preserved at the sinks", () => {
         allowedDirectories: [],
         sensitivePathsAdjacent: [],
         trustOrigin: "llm-tool-arg",
-      }, undefined, { defer: "medium-high" });
+      }, undefined, { lane: "headless" });
       expect(result.verdict.reason).not.toContain("alice@example.com");
       expect(result.verdict.reason).toContain("***@example.com");
       // Reviewer assessment alone does not create executable authority or denial history.

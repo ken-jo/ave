@@ -185,14 +185,14 @@ export function allowRefusalKey(model: ApprovalDecisionModel): string | null {
   return model.options[model.variant === "path-grant" ? "allow-everywhere" : "allow-session"].reasonKey;
 }
 
-/** True for a rule text the host saves with the `wildcard-allow-sandboxed-only` warning, matching its rule grammar: a shell rule ending in the ` *` wildcard (`Bash(git *)`, `PowerShell(Get-Item *)`) or a host rule naming subdomains (`Network(*.example.com)`). */
+/** True for a rule text whose matching scope needs a warning before saving: a shell rule ending in the ` *` wildcard (`Bash(git *)`, `PowerShell(Get-Item *)`) or a host rule naming subdomains (`Network(*.example.com)`). */
 export function isWildcardRuleText(text: string): boolean {
   return /^\s*(?:bash|powershell)\s*\((?:.*\s)?\*\s*\)\s*$/i.test(text) || /^\s*network\s*\(\s*\*\./i.test(text);
 }
 
 /** The i18n key of the wildcard-allow warning for a card's rule kind. */
 export function wildcardWarningKey(model: ApprovalDecisionModel): string {
-  return model.variant === "network" ? "toolApprovalDialog.wildcardHostAllowSandboxedOnly" : "toolApprovalDialog.wildcardAllowSandboxedOnly";
+  return model.variant === "network" ? "toolApprovalDialog.wildcardHostAllowSandboxedOnly" : "toolApprovalDialog.wildcardAllowBroaderScope";
 }
 
 /** The card rule a remembering choice stores: Always deny is user-global; allows are saved for the conversation, the project or everywhere. */

@@ -15,7 +15,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { approvalCacheKeyIdentity, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { ToolPermissionContext } from "../../tools/executor-contract.js";
-import type { Tool, ToolExecutionContext } from "../../tools/base.js";
+import type { Tool } from "../../tools/base.js";
 
 function schema(name = "update"): McpToolSchema {
   return { name, description: "Changes a catalog item", inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } };
@@ -43,7 +43,7 @@ describe("external tool remembered identity", () => {
     const registered = mcpToolToTool("catalog", "mcp_catalog_original", original, call);
     original.name = "replacement";
     expect(registered.approvalMemoryScope?.({})).toEqual({ kind: "mcp-tool", serverId: "catalog", toolName: "original" });
-    await registered.execute({ value: "first" }, {} as ToolExecutionContext);
+    await registered.execute({ value: "first" }, { cwd: "/workspace", extraAllowedDirectories: [], metadata: {} });
     expect(call).toHaveBeenCalledWith("original", { value: "first" });
     const left = mcpToolToTool("a:b", "entry", schema("c"), call);
     const right = mcpToolToTool("a", "entry", schema("b:c"), call);
@@ -52,7 +52,7 @@ describe("external tool remembered identity", () => {
 
   it("rejects an execution scope from another tool or server", async () => {
     const entry = tool();
-    const result = await entry.tool.execute({ value: "first" }, { metadata: { approvalMemoryScope: { kind: "mcp-tool", serverId: "other", toolName: "update" } } } as ToolExecutionContext);
+    const result = await entry.tool.execute({ value: "first" }, { cwd: "/workspace", extraAllowedDirectories: [], metadata: { approvalMemoryScope: { kind: "mcp-tool", serverId: "other", toolName: "update" } } });
     expect(result.isError).toBe(true);
     expect(entry.call).not.toHaveBeenCalled();
   });

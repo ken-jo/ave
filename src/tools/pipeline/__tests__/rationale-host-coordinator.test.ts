@@ -48,11 +48,11 @@ const eligibilityContext = {
 } as const;
 const permission = {
   decision: "ask",
-  reason: "reviewer medium",
-  layer: 5,
+  reason: "Automatic review requires human approval.",
+  layer: 6, reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
-    verdict: { level: "medium", reason: "bounded destructive action" },
+    verdict: { level: "high", reason: "bounded destructive action" },
     outcome: "fresh",
   },
 } as const satisfies PermissionCheckResult;

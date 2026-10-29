@@ -45,17 +45,6 @@ export function sessionRow(seed: SessionSeed): SessionSummary {
   };
 }
 
-/** Persisted default of `permissions.reviewer.parentAdjudication`. The Permissions tab renders the
- * block unconditionally, so every mock of `reviewerDispatch("show")` has to carry it; main always does. */
-export const MOCK_REVIEWER_PARENT_ADJUDICATION = {
-  maxVerdict: "medium",
-  timeoutMs: 30_000,
-  maxPerChildRun: 200,
-  includeParentContextTurns: 0,
-  backgroundEscalation: "deferred",
-  model: "reviewer",
-} as const;
-
 /** `PERMISSIONS.judgeGet` for a home with no `permissions.judge` block (judge off, reviewer model unset) unless overridden. The
  * Permissions tab renders the judge section unconditionally, so a tab mock without it shows a read-failure status the real host never does. */
 export function mockJudgeGet(overrides: {
@@ -517,7 +506,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         settings: {
           mode: "disabled",
           fallbackOnError: "deny",
-          parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
         },
       })),
       auditShow: vi.fn(async () => ({ ok: true, entries: [], total: 0, summary: { files: 0, bytes: 0 } })),

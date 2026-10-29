@@ -1,11 +1,11 @@
-import { test, expect } from "./fixtures";
+import { test, expect } from "./fixtures.js";
 import { type ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
-import { makeTestT } from "./i18n";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
+import { makeTestT } from "./i18n.js";
 
 // This independently seeded harness uses Korean regardless of the shared fixture locale.
 const t = makeTestT("ko");

@@ -18,14 +18,6 @@ export const en = {
   "permissionsTab.sandboxRestartUnsupported": "Restart is unavailable in this host. Restart Ave manually.",
   "permissionsTab.sandboxRestartFailed": "Ave could not restart. Try again.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "The Windows sandbox helper failed its integrity check. Ave blocked it from running. Reinstall Ave to restore the verified helper.",
-  // Reviewer interactive options
-  "permissionsTab.interactiveAutoApproveLabel": "Automatic approval threshold",
-  "permissionsTab.interactiveOffLabel": "Off",
-  "permissionsTab.interactiveOffDescription": "Always shows the foreground approval dock before a tool runs.",
-  "permissionsTab.interactiveLowLabel": "Auto-approve low risk",
-  "permissionsTab.interactiveLowDescription": "Actions judged as low risk are automatically allowed without confirmation. Medium and high risk still require a decision in the foreground approval dock.",
-  "permissionsTab.interactiveMediumLabel": "Auto-approve medium risk",
-  "permissionsTab.interactiveMediumDescription": "Actions judged as low or medium risk are automatically allowed without confirmation. High risk still requires confirmation.",
 
   // Reviewer mode options
   "permissionsTab.reviewerModeDisabledLabel": "Validation off (auto-pass)",
@@ -110,6 +102,7 @@ export const en = {
 
   // Policy section
   "permissionsTab.policyTitle": "Permission Policy",
+  "permissionsTab.autoReviewBehavior": "auto uses a fixed review policy: low and medium risk allow; high risk, errors and cancellation ask a person. Protected actions skip the reviewer and need one-time approval.",
   "permissionsTab.policyDescription": "Default allows ordinary reads and proven read-only sandboxed commands; other actions ask. Allow writes also allows recoverable project edits and safe sandboxed commands. auto reviews other actions. Allow still enforces deny rules and one-time approval for protected actions.",
   "permissionsTab.policyAriaLabel": "Select permission policy",
 
@@ -129,14 +122,9 @@ export const en = {
   "permissionsTab.llmProviderManagedNote": "Provider, model, API key, baseUrl, and Vertex project/region changes are managed in Intelligence Settings.",
 
   // Auto-approve low risk
-  "permissionsTab.autoApproveLowRiskLabel": "Auto-approve low risk",
-  "permissionsTab.autoApproveLowRiskDescription": "Tool executions judged as low risk are automatically allowed without confirmation. Medium and high risk executions always require a decision in the foreground approval dock.",
-  "permissionsTab.autoApproveLowRiskAriaLabel": "Auto-approve low risk setting",
 
   // Inline warning banners
-  "permissionsTab.warnReviewerDisabledAutoApproveInactive": "⚠ The permission reviewer is off, so auto-approve low risk is not active. Enable the reviewer with \"Rule-based validation\" or \"LLM validation\".",
   "permissionsTab.warnAutoModeAutoApproveOff": "⚠ Auto-approve low risk is off in \"Auto-validate\" mode. To allow low-risk actions without confirmation, enable \"Auto-approve low risk\" above.",
-  "permissionsTab.warnStrictLowContradiction": "Default asks before non-read actions. Turn off low-risk automatic approval.",
   "permissionsTab.warnAllowModeReviewerIgnored": "Allow mode bypasses automatic review. Deny rules and one-time approval for protected actions remain in effect.",
   "permissionsTab.warnReviewerLlmDegradedToRule": "⚠ LLM validation is inactive (no LLM provider/API key configured) — currently running on rule-based validation. Configure a chat LLM provider to enable LLM validation; it switches on automatically.",
 
@@ -387,13 +375,6 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.sandboxRestartUnsupported": "이 호스트에서는 다시 시작할 수 없습니다. Ave를 직접 다시 시작해 주세요.",
   "permissionsTab.sandboxRestartFailed": "Ave를 다시 시작하지 못했습니다. 다시 시도해 주세요.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "Windows 샌드박스 도우미의 무결성 검사에 실패하여 Ave가 실행을 차단했습니다. Ave를 다시 설치하여 검증된 도우미를 복원하세요.",
-  "permissionsTab.interactiveAutoApproveLabel": "자동 허용 위험도",
-  "permissionsTab.interactiveOffLabel": "끔",
-  "permissionsTab.interactiveOffDescription": "도구가 실행되기 전 항상 전경 승인 도크를 표시합니다.",
-  "permissionsTab.interactiveLowLabel": "저위험 자동 허용",
-  "permissionsTab.interactiveLowDescription": "저위험으로 판단된 작업은 확인 없이 자동으로 허용합니다. 중·고위험은 전경 승인 도크에서 사용자 결정을 요구합니다.",
-  "permissionsTab.interactiveMediumLabel": "중위험까지 자동 허용",
-  "permissionsTab.interactiveMediumDescription": "저위험과 중위험으로 판단된 작업은 확인 없이 자동으로 허용합니다. 고위험은 계속 확인이 필요합니다.",
 
   "permissionsTab.reviewerModeDisabledLabel": "검증 끔 (자동 통과)",
   "permissionsTab.reviewerModeDisabledDescription": "권한 리뷰어를 끄고 카테고리 기본 정책만 적용합니다. 도구별 차단/허용 규칙은 그대로 유지됩니다.",
@@ -462,6 +443,7 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.summaryCloseDenies": "Escape 키는 거부 처리",
 
   "permissionsTab.policyTitle": "권한 정책",
+  "permissionsTab.autoReviewBehavior": "auto의 검증 기준은 고정됩니다. 저·중위험은 허용하고, 고위험, 오류와 검증 중단은 사용자에게 확인합니다. 보호 대상은 리뷰어를 거치지 않고 이번 한 번 승인이 필요합니다.",
   "permissionsTab.policyDescription": "기본은 일반 읽기와 입증된 읽기 전용 샌드박스 명령을 허용하고 나머지는 확인합니다. 쓰기 허용은 복구 가능한 프로젝트 변경과 안전한 샌드박스 명령도 허용합니다. auto는 나머지 작업을 리뷰어가 검증하며, 허용도 거부 규칙과 보호 대상의 이번 한 번 승인은 유지합니다.",
   "permissionsTab.policyAriaLabel": "권한 정책 선택",
 
@@ -478,13 +460,8 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.errorHandlingLabel": "오류 처리",
   "permissionsTab.llmProviderManagedNote": "공급자, 모델, API 키, baseUrl, Vertex 프로젝트/리전 변경은 지능 설정에서 관리합니다.",
 
-  "permissionsTab.autoApproveLowRiskLabel": "저위험 자동 허용",
-  "permissionsTab.autoApproveLowRiskDescription": "위험도가 낮다고 판단된 도구 실행은 확인 없이 자동으로 허용합니다. 중간·높은 위험도의 실행은 전경 승인 도크에서 항상 사용자 결정을 요구합니다.",
-  "permissionsTab.autoApproveLowRiskAriaLabel": "저위험 자동 허용 설정",
 
-  "permissionsTab.warnReviewerDisabledAutoApproveInactive": "⚠ 권한 리뷰어가 꺼져 있어 저위험 자동 허용이 동작하지 않습니다. 권한 리뷰어를 \"규칙 기반 검증\" 또는 \"LLM 검증\"으로 켜세요.",
   "permissionsTab.warnAutoModeAutoApproveOff": "⚠ \"자동 검증\" 모드에서 저위험 자동 허용이 꺼져 있습니다. 저위험 작업을 확인 없이 허용하려면 위에서 \"저위험 자동 허용\"을 켜세요.",
-  "permissionsTab.warnStrictLowContradiction": "기본 모드에서는 읽기 외 작업을 확인합니다. 저위험 자동 허용을 끄세요.",
   "permissionsTab.warnAllowModeReviewerIgnored": "허용 모드에서는 자동 검증을 생략합니다. 거부 규칙과 보호 대상의 이번 한 번 승인은 유지합니다.",
   "permissionsTab.warnReviewerLlmDegradedToRule": "⚠ LLM 검증이 비활성 상태입니다 (LLM 공급자/API 키 미구성) — 현재 규칙 기반 검증으로 동작 중입니다. 채팅 LLM 공급자를 구성하면 LLM 검증이 자동으로 켜집니다.",
 

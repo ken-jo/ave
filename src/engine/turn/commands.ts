@@ -346,13 +346,12 @@ export async function handlePermissionCommand(
         self.deps.rewireReviewerAgent,
       );
       if (!result.ok) return t("be_conversationLoop.permissionReviewerError", { error: result.error });
-      const { mode, fallbackOnError, interactive } = result.settings;
+      const { mode, fallbackOnError } = result.settings;
       return [
         t("be_conversationLoop.permissionReviewerSettings"),
         `mode=${mode}`,
         "provider/model=active LLM settings",
         `fallbackOnError=${fallbackOnError}`,
-        `interactiveAutoApprove=${interactive.autoApprove}`,
       ].join("\n");
     }
     if (outcome.kind === "audit") {

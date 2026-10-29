@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
+import { enforceMutatingEffects, EffectBoundaryDeniedError } from "../../permissions/effect-enforcement.js";
 import { ApprovalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -65,10 +66,69 @@ async function subject() {
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
   }, sender as never);
-  return { root, storageRoot, historyFile, history, manager, classify, hooks, preHook, cards, execute, input, originalAbort, denyHeadless, approve, executor, registry };
+  return { root, storageRoot, historyFile, history, manager, classify, hooks, preHook, cards, execute, input, originalAbort, denyHeadless, approve, executor, registry, gate, surfaces, sender };
 }
 
 describe("executor denial history and manual rerun", () => {
+  it.each(["headless", "owner-away-skip"] as const)("keeps a caught nested %s write denial terminal despite an enclosing allow rule", async (lane) => {
+    const current = await subject();
+    const pluginId = "nested-effect-provider";
+    const toolName = "nested_write_probe";
+    const target = join(current.root, "nested.json");
+    const writeEffect = vi.fn(async (relativePath: string, contents: unknown) => {
+      writeFileSync(join(current.root, relativePath), String(contents));
+    });
+    const api = enforceMutatingEffects({ storage: { write: writeEffect } }, {
+      pluginId, approvalGate: current.gate, permissionManager: current.manager,
+      resolveStoragePath: (relativePath) => join(current.root, relativePath), assertActive: vi.fn(),
+    });
+    const caught: unknown[] = [];
+    const handler = vi.fn(async () => {
+      try { await api.storage.write("nested.json", current.input.password); }
+      catch (error) { caught.push(error); }
+      return { output: "handler caught the rejection", isError: false };
+    });
+    current.registry.register(createDynamicTool({ name: toolName, source: "plugin", pluginId,
+      description: "Performs a bounded nested write.", category: "write", pathFields: [], jsonSchema: { type: "object" }, execute: handler,
+    }));
+    await current.manager.addAlwaysAllowedPersist(toolName);
+    const checks = vi.spyOn(current.manager, "checkDetailed");
+    if (lane === "owner-away-skip") {
+      current.surfaces.register(SESSION_ID, current.sender as never);
+      current.gate.setOwnerAwayAutoSkipMinutes(1);
+      vi.useFakeTimers();
+    }
+    try {
+      const pending = current.executor.executeAll([{ id: "caught-nested-write", name: toolName, input: current.input }], {
+        sessionId: SESSION_ID, executionCwd: current.root,
+        permissionContext: userPermissionContext(lane === "headless" ? { headless: true } : { headless: false, ownerUnattended: true }),
+      });
+      if (lane === "owner-away-skip") {
+        await vi.waitFor(() => expect(current.cards).toHaveLength(1));
+        await vi.advanceTimersByTimeAsync(60_001);
+      }
+      const [result] = await pending;
+      expect(handler).toHaveBeenCalledOnce();
+      expect(caught).toHaveLength(1);
+      expect(caught[0]).toBeInstanceOf(EffectBoundaryDeniedError);
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("Nobody can approve this request; do not retry.");
+      expect(writeEffect).not.toHaveBeenCalled();
+      expect(existsSync(target)).toBe(false);
+      expect(current.classify).not.toHaveBeenCalled();
+      if (lane === "headless") expect(current.cards).toHaveLength(0);
+      const effectIndex = checks.mock.calls.findIndex(([name]) => name === "effect_storage_write");
+      expect(effectIndex).toBeGreaterThanOrEqual(0);
+      const effectDecision = checks.mock.results[effectIndex];
+      if (effectDecision.type !== "return") throw new Error("Effect policy did not return a decision");
+      expect(effectDecision.value.pipelineRequest?.floor).toBeUndefined();
+      const [entry] = await current.history.list();
+      expect(entry).toMatchObject({ toolName, source: "plugin", reason: "Nobody can approve this request; do not retry." });
+      expect(entry.inputSummary).not.toContain(current.input.password);
+      expect(readFileSync(current.historyFile, "utf8")).not.toContain(current.input.password);
+    } finally { if (lane === "owner-away-skip") vi.useRealTimers(); }
+  });
+
   it("records a headless terminal denial with redacted display data and no persisted replay", async () => {
     const current = await subject();
     const [result] = await current.denyHeadless();

@@ -13,28 +13,27 @@ afterEach(() => resources.cleanup());
 type DecisionCase = {
   name: string;
   lane: "headless" | "foreground";
-  threshold: "low" | "medium";
   verdict: RiskVerdict;
   decision: "allow" | "ask" | "deny";
 };
 
 const CASES: DecisionCase[] = [
-  { name: "headless low allows", lane: "headless", threshold: "low", verdict: { level: "low", reason: "low risk" }, decision: "allow" },
-  { name: "headless medium allows", lane: "headless", threshold: "medium", verdict: { level: "medium", reason: "medium risk" }, decision: "allow" },
-  { name: "headless high denies", lane: "headless", threshold: "medium", verdict: { level: "high", reason: "high risk" }, decision: "deny" },
-  { name: "foreground low allows", lane: "foreground", threshold: "low", verdict: { level: "low", reason: "low risk" }, decision: "allow" },
-  { name: "foreground medium allows independently of legacy threshold", lane: "foreground", threshold: "low", verdict: { level: "medium", reason: "medium risk" }, decision: "allow" },
-  { name: "foreground medium allows at the inclusive medium threshold", lane: "foreground", threshold: "medium", verdict: { level: "medium", reason: "medium risk" }, decision: "allow" },
-  { name: "foreground medium allows ordinary reviewed actions", lane: "foreground", threshold: "medium", verdict: { level: "medium", reason: "explicit approval required", requiresExplicitApproval: true }, decision: "allow" },
-  { name: "foreground high asks", lane: "foreground", threshold: "medium", verdict: { level: "high", reason: "high risk" }, decision: "ask" },
+  { name: "headless low allows", lane: "headless", verdict: { level: "low", reason: "low risk" }, decision: "allow" },
+  { name: "headless medium allows", lane: "headless", verdict: { level: "medium", reason: "medium risk" }, decision: "allow" },
+  { name: "headless high denies", lane: "headless", verdict: { level: "high", reason: "high risk" }, decision: "deny" },
+  { name: "foreground low allows", lane: "foreground", verdict: { level: "low", reason: "low risk" }, decision: "allow" },
+  { name: "foreground medium allows", lane: "foreground", verdict: { level: "medium", reason: "medium risk" }, decision: "allow" },
+  { name: "foreground medium allows with a fresh review", lane: "foreground", verdict: { level: "medium", reason: "medium risk" }, decision: "allow" },
+  { name: "foreground medium allows ordinary reviewed actions", lane: "foreground", verdict: { level: "medium", reason: "explicit approval required", requiresExplicitApproval: true }, decision: "allow" },
+  { name: "foreground high asks", lane: "foreground", verdict: { level: "high", reason: "high risk" }, decision: "ask" },
 ];
 
 describe("PermissionManager builtin judge decisions", () => {
-  it.each(CASES)("$name with preserved verdict and audit evidence", async ({ lane, threshold, verdict, decision }) => {
+  it.each(CASES)("$name with preserved verdict and audit evidence", async ({ lane, verdict, decision }) => {
     const root = resources.makeTmpDir("ave-manager-judge-decision-");
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("auto");
-    manager.setInteractiveAutoApprove(threshold);
+
     const queue = makeRecentlyDeniedStore(join(root, "deferred.jsonl"));
     const audit = setReviewerForTest(manager, {
       classifier: { classify: () => verdict },

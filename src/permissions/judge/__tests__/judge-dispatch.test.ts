@@ -53,7 +53,6 @@ function makeSubject(classifier: RiskClassifier = new RuleBasedRiskClassifier())
   const queue = makeRecentlyDeniedStore(join(root, "denied.json"));
   const audit = collectingAudit();
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("medium");
   setReviewerForTest(manager, { classifier, cache, recentlyDenied: queue });
   return { root, manager, cache, queue, audit };
 }
@@ -162,7 +161,7 @@ function llm(level: RiskVerdict["level"], failure?: "error" | "malformed" | "tim
   };
 }
 
-function builtin(subject: Subject, classifier: TracingRiskClassifier, stage: JudgeStageSettings = { provider: "builtin-llm", id: "reviewer" }) {
+function builtin(classifier: TracingRiskClassifier, stage: JudgeStageSettings = { provider: "builtin-llm", id: "reviewer" }) {
   return {
     settings: stage,
     judge: new BuiltinLlmJudge(classifier, stage.model ? `${stage.model.vendor}/${stage.model.model}` : undefined),
@@ -421,7 +420,7 @@ describe("configured judge dispatch lanes", () => {
     const first = answering({ decision: "allow", rationale: "uncertain", confidence: 0.2 });
     wire(subject, [
       { settings: scriptedStage("selector", 0.8), judge: first.judge },
-      builtin(subject, reviewer.classifier),
+      builtin(reviewer.classifier),
     ]);
     expect(await checkAndDispatch(subject)).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
     expect(first.requests).toHaveLength(1);
@@ -607,11 +606,10 @@ describe("configured judge dispatch lanes", () => {
     expect(judgeRecords(subject.audit)).toHaveLength(0);
   });
 
-  it("keeps auto-mode review active independently of the legacy threshold preference", async () => {
+  it("keeps shadow observation subordinate to active auto-mode review", async () => {
     const reviewer = llm("low");
     const subject = makeSubject(reviewer.classifier);
     subject.manager.setMode("auto");
-    subject.manager.setInteractiveAutoApprove("off");
     const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
     const result = await checkAndDispatch(subject, { ruleSubject: { kind: "shell", dialect: "bash", command: "echo hello", cwd: subject.root } });
     expect(result).toMatchObject({ decision: "allow", reviewer: { route: "foreground-auto" } });
@@ -702,8 +700,7 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
       });
       const subject = makeSubject(classifier);
       subject.manager.setMode("auto");
-      subject.manager.setInteractiveAutoApprove("low");
-      if (configured) wire(subject, [builtin(subject, classifier)]);
+      if (configured) wire(subject, [builtin(classifier)]);
       return { ...subject, calls: () => calls };
     });
     const baseline = subjects[0]!;
@@ -731,14 +728,8 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
   });
 
   const decisions = {
-    foreground: {
-      low: { low: "allow", medium: "allow", high: "ask" },
-      medium: { low: "allow", medium: "allow", high: "ask" },
-    },
-    headless: {
-      low: { low: "allow", medium: "allow", high: "deny" },
-      medium: { low: "allow", medium: "allow", high: "deny" },
-    },
+    foreground: { low: "allow", medium: "allow", high: "ask" },
+    headless: { low: "allow", medium: "allow", high: "deny" },
   } as const;
 
   it.each(["foreground", "headless"] as const)("consumes the builtin adapter decision on the legacy %s lane", async (lane) => {
@@ -768,39 +759,36 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
   });
 
   for (const lane of ["foreground", "headless"] as const) {
-    for (const threshold of ["low", "medium"] as const) {
-      it.each(["low", "medium", "high"] as const)(`${lane} / ${threshold}: preserves %s decisions, provenance and cache hits`, async (level) => {
-        const original = llm(level);
-        const configured = llm(level);
-        const baseline = makeSubject(original.classifier);
-        const judged = makeSubject(configured.classifier);
-        for (const subject of [baseline, judged]) {
-          subject.manager.setMode("auto");
-          subject.manager.setInteractiveAutoApprove(threshold);
+    it.each(["low", "medium", "high"] as const)(`${lane}: preserves %s decisions, provenance and cache hits`, async (level) => {
+      const original = llm(level);
+      const configured = llm(level);
+      const baseline = makeSubject(original.classifier);
+      const judged = makeSubject(configured.classifier);
+      for (const subject of [baseline, judged]) {
+        subject.manager.setMode("auto");
+      }
+      wire(judged, [builtin(configured.classifier)]);
+      for (let call = 0; call < 2; call++) {
+        const before = await dispatch(baseline, lane);
+        const after = await dispatch(judged, lane);
+        expect(before.decision).toBe(decisions[lane][level]);
+        expect(after.decision).toBe(before.decision);
+        expect(after.reviewer?.verdict).toEqual(before.reviewer?.verdict);
+        expect(after.reviewer?.outcome).toBe(call === 0 ? "fresh" : "cache");
+        expect((await judged.queue.list())).toEqual([]);
+        expect(Boolean(after.reviewer?.approvalBasis)).toBe(Boolean(before.reviewer?.approvalBasis));
+        if (lane === "foreground") {
+          expect(after.reviewer?.approvalBasis).toMatchObject({
+            outcome: call === 0 ? "fresh" : "cache",
+            ruleVerdict: before.reviewer?.approvalBasis?.ruleVerdict,
+            workingDirectory: { path: canonicalizePathForMatch(judged.root) },
+          });
         }
-        wire(judged, [builtin(judged, configured.classifier)]);
-        for (let call = 0; call < 2; call++) {
-          const before = await dispatch(baseline, lane);
-          const after = await dispatch(judged, lane);
-          expect(before.decision).toBe(decisions[lane][threshold][level]);
-          expect(after.decision).toBe(before.decision);
-          expect(after.reviewer?.verdict).toEqual(before.reviewer?.verdict);
-          expect(after.reviewer?.outcome).toBe(call === 0 ? "fresh" : "cache");
-          expect((await judged.queue.list())).toEqual([]);
-          expect(Boolean(after.reviewer?.approvalBasis)).toBe(Boolean(before.reviewer?.approvalBasis));
-          if (lane === "foreground") {
-            expect(after.reviewer?.approvalBasis).toMatchObject({
-              outcome: call === 0 ? "fresh" : "cache",
-              ruleVerdict: before.reviewer?.approvalBasis?.ruleVerdict,
-              workingDirectory: { path: canonicalizePathForMatch(judged.root) },
-            });
-          }
-        }
-        expect(original.calls()).toBe(1);
-        expect(configured.calls()).toBe(1);
-        expect((await judged.queue.list()).length).toBe((await baseline.queue.list()).length);
-      });
-    }
+      }
+      expect(original.calls()).toBe(1);
+      expect(configured.calls()).toBe(1);
+      expect((await judged.queue.list()).length).toBe((await baseline.queue.list()).length);
+    });
   }
 
   it.each(["error", "malformed", "timeout"] as const)("preserves failed %s decisions without caching and defers configured headless failures", async (failure) => {
@@ -809,7 +797,7 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
       const configured = llm("low", failure);
       const baseline = makeSubject(original.classifier);
       const judged = makeSubject(configured.classifier);
-      wire(judged, [builtin(judged, configured.classifier)]);
+      wire(judged, [builtin(configured.classifier)]);
       for (let call = 0; call < 2; call++) {
         const before = await dispatch(baseline, lane);
         const after = await dispatch(judged, lane);
@@ -836,11 +824,11 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
     const selectedStage: JudgeStageSettings = {
       provider: "builtin-llm", id: "reviewer", model: { vendor: "openai-compatible", model: "selected-model" },
     };
-    wire(subject, [builtin(subject, current.classifier)]);
+    wire(subject, [builtin(current.classifier)]);
     expect((await dispatch(subject, "foreground")).decision).toBe("allow");
-    wire(subject, [builtin(subject, current.classifier)]);
+    wire(subject, [builtin(current.classifier)]);
     expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "cache" } });
-    wire(subject, [builtin(subject, selected.classifier, selectedStage)]);
+    wire(subject, [builtin(selected.classifier, selectedStage)]);
     expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "ask", reviewer: { outcome: "fresh", verdict: { level: "high" } } });
     expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "ask", reviewer: { outcome: "cache" } });
     expect(current.calls()).toBe(1);
@@ -857,7 +845,7 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
         return { ruleVerdict: verdict, finalVerdict: verdict, llmVerdict: verdict, outcome: "fresh" };
       },
     };
-    wire(subject, [builtin(subject, classifier)], {}, undefined, {
+    wire(subject, [builtin(classifier)], {}, undefined, {
       beforeJudge: () => ({ action: "continue", redactInputKeys: ["command"] }),
     });
     const first = await dispatch(subject, "foreground", "session-root", "echo first");
@@ -880,7 +868,7 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
         return { ruleVerdict: low, finalVerdict: low, llmVerdict: low, outcome: "fresh" };
       },
     };
-    wire(subject, [builtin(subject, classifier)], {}, undefined, {
+    wire(subject, [builtin(classifier)], {}, undefined, {
       beforeJudge: () => ({ action: "continue", redactInputKeys: ["command"] }),
     });
     const command = `rm -rf ${join(subject.root, "generated")}`;
@@ -922,7 +910,7 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
       classifier: reviewer.classifier, cache: subject.cache, recentlyDenied: subject.queue,
       unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
     });
-    wire(subject, [builtin(subject, stageModel.classifier, {
+    wire(subject, [builtin(stageModel.classifier, {
       provider: "builtin-llm", id: "override", model: { vendor: "openai-compatible", model: "stage-model" },
     })]);
     expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
@@ -937,7 +925,7 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
       classifier: reviewer.classifier, cache: subject.cache, recentlyDenied: subject.queue,
       unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
     });
-    wire(subject, [builtin(subject, reviewer.classifier)]);
+    wire(subject, [builtin(reviewer.classifier)]);
     const result = await dispatch(subject, "foreground");
     expect(result).toMatchObject({ decision: "ask" });
     expect(reviewer.calls()).toBe(0);
@@ -951,7 +939,7 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
       classifier: reviewer.classifier, cache: subject.cache, recentlyDenied: subject.queue,
       unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
     });
-    wire(subject, [builtin(subject, reviewer.classifier)], {}, undefined, {
+    wire(subject, [builtin(reviewer.classifier)], {}, undefined, {
       beforeJudge: () => ({ action: "continue", redactInputKeys: ["command"] }),
     });
     const result = await dispatch(subject, "foreground");
@@ -970,7 +958,6 @@ describe("automatic review pause and evidence", () => {
     }, "sequence-reviewer");
     const subject = makeSubject(classifier);
     subject.manager.setMode("auto");
-    subject.manager.setInteractiveAutoApprove("low");
     external(subject, { decision: "deny", rationale: "shadow observation" }, { mode: "shadow" });
     for (let call = 1; call <= 39; call += 1) {
       const result = await dispatch(subject, lane, "session-root", `echo total-${call}`);
@@ -1078,7 +1065,6 @@ describe("shadow baseline isolation", () => {
 it("denies a paused foreground request when no user approval surface is available", async () => {
   const subject = makeSubject(llm("high").classifier);
   subject.manager.setMode("auto");
-  subject.manager.setInteractiveAutoApprove("low");
   for (let call = 1; call <= 3; call += 1) await dispatch(subject, "foreground", "session-root", `echo unavailable-${call}`);
   const result = await dispatch(subject, "foreground", "session-root", "echo unavailable-next", undefined, "unavailable");
   expect(result).toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE });

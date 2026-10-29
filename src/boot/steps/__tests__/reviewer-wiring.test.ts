@@ -30,10 +30,6 @@ import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 import { readPermissionSettings } from "../../../permissions/permission-settings-store.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
-import {
-  LlmParentAdjudicator,
-  UnavailableParentAdjudicator,
-} from "../../../permissions/parent-adjudicator.js";
 
 let tmpDir: string;
 
@@ -57,24 +53,12 @@ function stubProvider(events: StreamEvent[]): LLMProvider {
 }
 
 
-/** Reuse the shipped parent-adjudication default; these cases leave that policy inert. */
-const PARENT_ADJUDICATION = {
-  maxVerdict: "medium",
-  timeoutMs: 30_000,
-  maxPerChildRun: 200,
-  includeParentContextTurns: 0,
-  backgroundEscalation: "deferred",
-  model: "reviewer",
-} as const;
-
 const CHAT_LLM = () => ({ provider: "openai" as const, model: "gpt-4o-mini" });
 
 function llmDenySettings() {
   return {
     mode: "llm",
     fallbackOnError: "deny",
-    interactive: { autoApprove: "low" },
-    parentAdjudication: PARENT_ADJUDICATION,
   } as const;
 }
 
@@ -106,8 +90,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "rule",
         fallbackOnError: "rule",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
     });
@@ -115,44 +97,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
     expect(setReviewerSpy).toHaveBeenCalledOnce();
     expect(pm.hasReviewer()).toBe(true);
-  });
-
-  it("the parent-session adjudicator follows the chat model, but not into mode=disabled", () => {
-    // Rule review supplies a real ceiling; disabled review supplies unassessed LOW and must escalate parent adjudication to the user.
-    const target = {
-      provider: { complete: async () => ({ text: "", tokensIn: 0, tokensOut: 0, costUsd: 0 }) },
-      model: "chat-model",
-    };
-    const settingsFor = (mode: "rule" | "disabled") => () => ({
-      mode,
-      fallbackOnError: "deny" as const,
-      interactive: { autoApprove: "off" as const },
-      parentAdjudication: PARENT_ADJUDICATION,
-    });
-
-    const ruled = wireReviewerAgent({
-      readActiveLlm: CHAT_LLM,
-      networkFetch: unusedNetworkFetch,
-      permissionManager: new PermissionManager(join(tmpDir, "permissions-rule.json")),
-      readSettings: settingsFor("rule"),
-      resolveParentSessionAdjudicationTarget: () => target,
-      verdictCachePath: join(tmpDir, "cache-parent-session.jsonl"),
-    });
-    expect(ruled.parentSessionAdjudicator).toBeInstanceOf(LlmParentAdjudicator);
-    // Reviewer and parent-session adjudicator availability are independent.
-    expect(ruled.parentAdjudicator).toBeInstanceOf(UnavailableParentAdjudicator);
-
-    const disabled = wireReviewerAgent({
-      readActiveLlm: CHAT_LLM,
-      networkFetch: unusedNetworkFetch,
-      permissionManager: new PermissionManager(join(tmpDir, "permissions-disabled.json")),
-      readSettings: settingsFor("disabled"),
-      resolveParentSessionAdjudicationTarget: () => target,
-      verdictCachePath: join(tmpDir, "cache-parent-session-off.jsonl"),
-    });
-    expect(disabled.parentSessionAdjudicator).toBeInstanceOf(
-      UnavailableParentAdjudicator,
-    );
   });
 
   it("settings mode=disabled wires DisabledRiskClassifier", () => {
@@ -164,8 +108,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "disabled",
         fallbackOnError: "rule",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
     });
@@ -193,8 +135,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "llm",
         fallbackOnError: "rule",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       streamProviderFor: factorySpy,
       verdictCachePath: join(tmpDir, "cache.jsonl"),
@@ -236,8 +176,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "llm",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       readActiveLlm: () => ({
         provider: "openai-compatible",
@@ -282,8 +220,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "llm",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       readActiveLlm: () => ({
         provider: "vertex-ai",
@@ -316,8 +252,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         readSettings: () => ({
           mode: "llm",
           fallbackOnError: "deny",
-          interactive: { autoApprove: "low" },
-          parentAdjudication: PARENT_ADJUDICATION,
         }),
         verdictCachePath: join(tmpDir, "cache-degrade.jsonl"),
       }),
@@ -340,8 +274,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(pm.isReviewerDegradedToRule()).toBe(true);
   });
 
-  it("degraded wiring still applies interactive.autoApprove — foreground-auto stays enabled", () => {
-    // Apply reviewer and auto-approval wiring on the common path so rule degradation still honors foreground LOW auto-approval.
+  it("degraded wiring keeps the reviewer available", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const result = wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
@@ -353,7 +286,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
     });
     expect(result.runtimeMode).toBe("llm-degraded-to-rule");
     expect(pm.hasReviewer()).toBe(true);
-    expect(pm.getInteractiveAutoApprove()).toBe("low");
   });
 
   it("logs a boot warn on llm→rule degrade", () => {
@@ -367,8 +299,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         readSettings: () => ({
           mode: "llm",
           fallbackOnError: "deny",
-          interactive: { autoApprove: "low" },
-          parentAdjudication: PARENT_ADJUDICATION,
         }),
         streamProviderFor: () => null,
         verdictCachePath: join(tmpDir, "cache-degrade-warn.jsonl"),
@@ -432,8 +362,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
     return {
       mode: "llm" as const,
       fallbackOnError: "deny" as const,
-      interactive: { autoApprove: "low" as const },
-      parentAdjudication: PARENT_ADJUDICATION,
     };
   }
 
@@ -539,8 +467,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
           reviewer: {
             mode: "rule",
             fallbackOnError: "deny",
-            interactive: { autoApprove: "off" },
-            parentAdjudication: PARENT_ADJUDICATION,
           },
         },
       }),
@@ -553,8 +479,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "rule",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
     });
@@ -562,7 +486,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(result.appliedSettings.fallbackOnError).toBe("deny");
   });
 
-  it("pushes interactive.autoApprove onto the live PermissionManager instance (round-3 test-engineer MAJOR-1)", () => {
+  it("wires the selected classifier into the live permission manager", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
@@ -571,16 +495,13 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "rule",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
     });
-    // Rewiring must apply persisted auto-approval policy to the live manager without a restart.
-    expect(pm.getInteractiveAutoApprove()).toBe("low");
+    expect(pm.hasReviewer()).toBe(true);
   });
 
-  it("does not warn when mode=auto + interactive.autoApprove=off", () => {
+  it("does not warn for automatic execution mode", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     pm.setMode("auto");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -592,8 +513,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         readSettings: () => ({
           mode: "rule",
           fallbackOnError: "deny",
-          interactive: { autoApprove: "off" },
-          parentAdjudication: PARENT_ADJUDICATION,
         }),
         verdictCachePath: join(tmpDir, "cache-warn-auto-off.jsonl"),
       });
@@ -606,7 +525,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     }
   });
 
-  it.each(["low", "medium"] as const)("does not warn for mode=strict + interactive.autoApprove=%s", (autoApprove) => {
+  it("does not warn for strict execution mode", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     pm.setMode("strict");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -618,8 +537,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         readSettings: () => ({
           mode: "rule",
           fallbackOnError: "deny",
-          interactive: { autoApprove },
-          parentAdjudication: PARENT_ADJUDICATION,
         }),
         verdictCachePath: join(tmpDir, "cache-warn-strict.jsonl"),
       });
@@ -632,7 +549,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     }
   });
 
-  it("re-rewiring with a different interactive.autoApprove updates the live state (round-3 test-engineer MAJOR-1)", () => {
+  it("rewiring preserves recently denied history", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
@@ -641,12 +558,9 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "rule",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache-1.jsonl"),
     });
-    expect(pm.getInteractiveAutoApprove()).toBe("low");
     const history = pm.getRecentlyDenied();
     expect(history).not.toBeNull();
     wireReviewerAgent({
@@ -656,12 +570,9 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: () => ({
         mode: "rule",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "off" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache-2.jsonl"),
     });
-    expect(pm.getInteractiveAutoApprove()).toBe("off");
     expect(pm.getRecentlyDenied()).toBe(history);
   });
 });
@@ -732,8 +643,6 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
             reviewer: {
               mode: "llm",
               fallbackOnError: "rule",
-              interactive: { autoApprove: "off" },
-              parentAdjudication: PARENT_ADJUDICATION,
             },
           };
         }
@@ -872,8 +781,6 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
             reviewer: {
               mode: "llm",
               fallbackOnError: "rule",
-              interactive: { autoApprove: "off" },
-              parentAdjudication: PARENT_ADJUDICATION,
             },
           };
         }
@@ -1031,8 +938,6 @@ describe("user-selected permission reviewer model", () => {
   const llmSettings = () => ({
     mode: "llm" as const,
     fallbackOnError: "rule" as const,
-    interactive: { autoApprove: "medium" as const },
-    parentAdjudication: PARENT_ADJUDICATION,
   });
 
   it.each([
@@ -1054,7 +959,6 @@ describe("user-selected permission reviewer model", () => {
     expect(result.runtimeMode).toBe("llm-model-unavailable");
     expect(pm.isReviewerDegradedToRule()).toBe(false);
     expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
-    expect(result.parentAdjudicator).toBeInstanceOf(UnavailableParentAdjudicator);
     expect(setReviewer.mock.lastCall?.[0].unavailableReason).toBe(
       `Selected permission reviewer model ${selectedModel.label} is unavailable`,
     );

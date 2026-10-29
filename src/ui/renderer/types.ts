@@ -129,9 +129,10 @@ export type { AppSettings, MemoryCaptureMode };
 // ApprovalRequest crosses the IPC boundary — see approval-gate.ts IPC_APPROVAL_REQUEST).
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
-import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
+import type { ApprovalRuleSaveResult } from "../../permissions/approval-rule-save.js";
+import type { ReviewerSettingsBlock, ReviewerMode, ReviewerFallbackOnError } from "../../permissions/permission-settings-store.js";
 import type { PreviewReadDocumentResult } from "../../shared/preview-document.js";
-export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
+export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule };
 
 export type PluginUiExtension = PluginUiExtensionView;
 export type PluginManifestUiExtensionSummary = PluginUiExtensionView["extension"];
@@ -1430,7 +1431,7 @@ export type AveUserApprovalApi = {
     trustOrigin?: string;
     /** Propagate cache key for record/lookup key symmetry. */
     approvalCacheKey?: string;
-  }) => Promise<{ ok: boolean; error?: string; message?: string; warning?: "wildcard-allow-sandboxed-only" }>;
+  }) => Promise<{ ok: boolean; error?: string; message?: string; warning?: Extract<ApprovalRuleSaveResult, { ok: true }>["warning"] }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
   listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{
@@ -1459,32 +1460,14 @@ export type RemoveRuleResult =
 
 export type { RecentlyDeniedEntry } from "../../shared/recently-denied.js";
 
-export type PermissionReviewerMode = "disabled" | "rule" | "llm" | "strict";
-export type PermissionReviewerFallbackOnError = "deny" | "rule";
-/** Issue #690 — interactive reviewer auto-approve scope. */
-export type PermissionReviewerInteractiveAutoApprove = "off" | "low" | "medium";
-
-interface PermissionReviewerParentAdjudication {
-  maxVerdict: ParentAdjudicationMaxVerdict;
-  timeoutMs: number;
-  maxPerChildRun: number;
-  /** Parent conversation turns quoted into the evidence. `0` sends none. */
-  includeParentContextTurns: number;
-  backgroundEscalation: ParentAdjudicationBackgroundEscalation;
-  model: ParentAdjudicationModelSource;
-}
-
-export interface PermissionReviewerSettings {
-  mode: PermissionReviewerMode;
-  fallbackOnError: PermissionReviewerFallbackOnError;
-  interactive: { autoApprove: PermissionReviewerInteractiveAutoApprove };
-  parentAdjudication: PermissionReviewerParentAdjudication;
-}
+export type PermissionReviewerMode = ReviewerMode;
+export type PermissionReviewerFallbackOnError = ReviewerFallbackOnError;
+export type PermissionReviewerSettings = ReviewerSettingsBlock;
 
 export type PermissionReviewerDispatchResult =
   | {
       ok: true;
-      verb: "show" | "mode" | "fallback" | "interactive" | "adjudication";
+      verb: "show" | "mode" | "fallback";
       settings: PermissionReviewerSettings;
       /**
        * Runtime degrade flag — true when the persisted reviewer mode is "llm"

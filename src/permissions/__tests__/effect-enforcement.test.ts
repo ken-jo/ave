@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
 let permissionManager: PermissionManager;
 
-import type { ApprovalChoice, ApprovalDecision, ApprovalGate, ApprovalRequest,
+import type { ApprovalChoice, ApprovalDecision, ApprovalGate, ApprovalRequest, ApprovalRequestInput,
 } from "../approval-gate.js";
 import {
   enforceMutatingEffects,
@@ -42,13 +42,13 @@ beforeEach(() => {
 // A stub ApprovalGate that records every request and answers with a fixed choice.
 function makeGate(choice: ApprovalChoice | ApprovalChoice[]): {
   gate: ApprovalGate;
-  requests: Array<Omit<ApprovalRequest, "requireExplicit">>;
+  requests: Array<ApprovalRequestInput>;
 } {
-  const requests: Array<Omit<ApprovalRequest, "requireExplicit">> = [];
+  const requests: Array<ApprovalRequestInput> = [];
   const answers = Array.isArray(choice) ? [...choice] : null;
   const gate = {
     requestAndWait: async (
-      req: Omit<ApprovalRequest, "requireExplicit">,
+      req: ApprovalRequestInput,
     ): Promise<ApprovalDecision> => {
       requests.push(req);
       const next = answers ? (answers.shift() ?? "deny-once") : (choice as ApprovalChoice);
@@ -187,7 +187,7 @@ describe("foreground write permission at the actual effect", () => {
     const log: string[] = [];
     let approve!: (decision: ApprovalDecision) => void;
     const gate = {
-      requestAndWait: (request: Omit<ApprovalRequest, "requireExplicit">) =>
+      requestAndWait: (request: ApprovalRequestInput) =>
         new Promise<ApprovalDecision>((resolve) => {
           approve = resolve;
         }).then((decision) => ({ ...decision, requestId: request.id })),
@@ -746,7 +746,7 @@ describe("exact action grants avoid method-wide approval", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0].sourcePluginId).toBe("p1");
     expect(requests[1].sourcePluginId).toBe("p2");
-    expect(requests[0].args).toMatchObject(requests[1].args);
+    expect(requests[0].args).toEqual(requests[1].args);
     expect(log).toEqual(["spawnWorker", "spawnWorker"]);
   });
 

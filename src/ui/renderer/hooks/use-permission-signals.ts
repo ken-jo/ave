@@ -144,10 +144,6 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
       if (!reviewerResult?.ok) {
         throw new Error(reviewerResult?.error ?? "reviewer mode change failed");
       }
-      const interactiveResult = await api.permission.reviewerDispatch("interactive low");
-      if (!interactiveResult?.ok) {
-        throw new Error(interactiveResult?.error ?? "interactive reviewer change failed");
-      }
       const modeResult = await api.permission.setMode("auto");
       if (!modeResult?.ok) {
         throw new Error(modeResult?.message ?? modeResult?.error ?? "mode change failed");

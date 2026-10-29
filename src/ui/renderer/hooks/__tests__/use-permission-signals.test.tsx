@@ -84,8 +84,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
   });
 
   it("enables the reviewer before switching the mode that relies on it", async () => {
-    // Order is the whole safety of the gesture: `auto` mode with no reviewer configured would auto-approve through nothing at
-    // all.
+    // Configure review before enabling the mode that uses its fixed low/medium policy.
     const { permission, fire } = permissionApi();
     const { result } = renderHook(() => usePermissionSignals());
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
@@ -96,9 +95,9 @@ describe("usePermissionSignals — reviewer suggestion", () => {
     });
 
     expect(permission.reviewerDispatch).toHaveBeenNthCalledWith(1, "mode llm");
-    expect(permission.reviewerDispatch).toHaveBeenNthCalledWith(2, "interactive low");
+    expect(permission.reviewerDispatch).toHaveBeenCalledTimes(1);
     expect(permission.setMode).toHaveBeenCalledWith("auto");
-    expect(permission.reviewerDispatch.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(permission.reviewerDispatch.mock.invocationCallOrder[0]).toBeLessThan(
       permission.setMode.mock.invocationCallOrder[0],
     );
     expect(result.current.reviewerSuggestion).toBeNull();

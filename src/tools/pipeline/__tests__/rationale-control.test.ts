@@ -25,11 +25,11 @@ import { createTestRequestAnchor } from "./rationale-fixtures.js";
 
 const eligiblePermission: PermissionCheckResult = {
   decision: "ask",
-  reason: "reviewer medium",
-  layer: 5,
+  reason: "Automatic review requires human approval.",
+  layer: 6, reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
-    verdict: { level: "medium", reason: "bounded shell write" },
+    verdict: { level: "high", reason: "bounded shell write" },
     outcome: "fresh",
   },
 };
@@ -112,7 +112,7 @@ function createControl() {
     permission: eligiblePermission as PermissionCheckResult & {
       reviewer: {
         route: "foreground-auto";
-        verdict: { level: "medium"; reason: string };
+        verdict: { level: "high"; reason: string };
         outcome: "fresh";
       };
     },
@@ -247,7 +247,7 @@ describe("foreground rationale contract", () => {
       permission: eligiblePermission as PermissionCheckResult & {
         reviewer: {
           route: "foreground-auto";
-          verdict: { level: "medium"; reason: string };
+          verdict: { level: "high"; reason: string };
           outcome: "fresh";
         };
       },
@@ -357,6 +357,16 @@ describe("foreground rationale contract", () => {
 
     expect(check("fresh")).toBe(true);
     expect(check("cache")).toBe(true);
+    // A fabricated ask cannot turn an automatically allowed verdict into a rationale pause.
+    expect(check("fresh", {
+      permission: {
+        ...eligiblePermission,
+        reviewer: {
+          ...eligiblePermission.reviewer!,
+          verdict: { level: "medium", reason: "bounded shell write" },
+        },
+      },
+    })).toBe(false);
     for (const outcome of [
       "approval-memory",
       "unavailable",

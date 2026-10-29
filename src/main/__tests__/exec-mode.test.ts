@@ -91,7 +91,7 @@ function makeDeps(overrides: {
   const stderr = collectingStream();
   const approvalGate = "approvalGate" in overrides
     ? overrides.approvalGate
-    : new ApprovalGate(null, undefined, undefined, undefined, undefined, undefined, {
+    : new ApprovalGate(null, undefined, undefined, undefined, undefined, {
       onDenied: (requestId, toolName) => {
         stderr.stream.write(`exec: auto-denied approval ${requestId} tool=${toolName}\n`);
       },

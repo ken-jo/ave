@@ -29,7 +29,6 @@ import type {
   ExecutionMode,
   HookTrustRow,
   PermissionReviewerMode,
-  PermissionReviewerInteractiveAutoApprove,
   PermissionReviewerSettings,
   ScopedPermissionRule,
   ScopedPermissionRuleError,
@@ -59,16 +58,6 @@ import { errorMessage } from "../../../shared/error-message.js";
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
   fallbackOnError: "deny",
-  interactive: { autoApprove: "off" },
-  // Placeholder for the pre-load render only; the persisted block arrives with the first `reviewerDispatch("show")` and replaces this wholesale.
-  parentAdjudication: {
-    maxVerdict: "medium",
-    timeoutMs: 30_000,
-    maxPerChildRun: 200,
-    includeParentContextTurns: 0,
-    backgroundEscalation: "deferred",
-    model: "reviewer",
-  },
 };
 
 /** What the Windows install click led to, as the panel shows it. */
@@ -276,14 +265,9 @@ function preserveSettingsScrollPosition(): () => void {
  * its items inherit it, rather than each item pinning `text-sm` and the menu reading a size larger than the field it belongs to. */
 const DENSE_SELECT_POPUP = "text-[11px]";
 
-/** The reviewer settings that follow an execution mode. `auto` is the only mode whose verdicts a reviewer produces, so choosing it turns the LLM reviewer on and lets it auto-approve interactive low/medium risk; every other mode
- * turns both off. This tab and the composer's permission picker send the same two `reviewerDispatch` verbs after a successful `setMode`, derived from here, so the two surfaces cannot leave the reviewer in different states for one mode. */
+/** Selecting auto enables the reviewer; every other mode disables automatic review. */
 export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMode {
   return m === "auto" ? "llm" : "disabled";
-}
-
-export function interactiveAutoApproveForExecMode(m: ExecutionMode): PermissionReviewerInteractiveAutoApprove {
-  return m === "auto" ? "medium" : "off";
 }
 
 export function PermissionsTab({
@@ -593,11 +577,8 @@ export function PermissionsTab({
 
   const handleModeChange = async (m: ExecutionMode) => {
     const targetReviewerMode = reviewerModeForExecMode(m);
-    const targetInteractive = interactiveAutoApproveForExecMode(m);
     if (
-      (m === mode &&
-        reviewer.mode === targetReviewerMode &&
-        reviewer.interactive.autoApprove === targetInteractive) ||
+      (m === mode && reviewer.mode === targetReviewerMode) ||
       modeBusy
     ) {
       return;
@@ -625,42 +606,8 @@ export function PermissionsTab({
           return;
         }
       }
-      if (reviewer.interactive.autoApprove !== targetInteractive) {
-        if (!modeChanged) return;
-        const interactiveRes = await window.ave.permission.reviewerDispatch(
-          `interactive ${targetInteractive}`,
-        );
-        if (interactiveRes.ok) {
-          setReviewer(interactiveRes.settings);
-        } else {
-          showBanner("error", formatReviewerDispatchError(interactiveRes.error));
-          return;
-        }
-      }
     } catch (e) {
       showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
-    } finally {
-      setModeBusy(false);
-    }
-  };
-
-  const handleInteractiveAutoApproveChange = async (
-    value: PermissionReviewerInteractiveAutoApprove,
-  ) => {
-    if (modeBusy || reviewer.interactive.autoApprove === value) return;
-    setModeBusy(true);
-    try {
-      const result = await window.ave.permission.reviewerDispatch(`interactive ${value}`);
-      if (result.ok) {
-        setReviewer(result.settings);
-      } else {
-        showBanner("error", formatReviewerDispatchError(result.error));
-      }
-    } catch (error) {
-      showBanner(
-        "error",
-        t("permissionsTab.errorModeChangeError", { message: thrownErrorText("reviewer mode change", error) }),
-      );
     } finally {
       setModeBusy(false);
     }
@@ -1127,45 +1074,10 @@ export function PermissionsTab({
                   {opt.value === "auto" && mode === "auto" && (
                     <>
                       <span
-                        className="mt-2 flex min-w-0 flex-col gap-2 rounded-md border bg-background/(--opacity-stronger) px-3 py-2"
-                        data-testid="interactive-auto-approve-control"
-                        onClick={(event) => event.stopPropagation()}
+                        className="mt-2 block rounded-md border bg-background/(--opacity-stronger) px-3 py-2 text-[11px] text-muted-foreground"
+                        data-testid="auto-review-behavior"
                       >
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[11px] font-semibold">
-                            {t("permissionsTab.interactiveAutoApproveLabel")}
-                          </span>
-                          <span className="block text-[10px] text-muted-foreground">
-                            {reviewer.interactive.autoApprove === "medium"
-                              ? t("permissionsTab.interactiveMediumDescription")
-                              : reviewer.interactive.autoApprove === "low"
-                                ? t("permissionsTab.interactiveLowDescription")
-                                : t("permissionsTab.interactiveOffDescription")}
-                          </span>
-                        </span>
-                        <Select
-                          value={reviewer.interactive.autoApprove}
-                          disabled={modeBusy}
-                          onValueChange={(value) =>
-                            void handleInteractiveAutoApproveChange(
-                              value as PermissionReviewerInteractiveAutoApprove,
-                            )
-                          }
-                        >
-                          <SelectTrigger
-                            className="h-8 w-full text-[11px]"
-                            data-testid="interactive-auto-approve-select"
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent className={DENSE_SELECT_POPUP}>
-                            <SelectItem value="off">{t("permissionsTab.interactiveOffLabel")}</SelectItem>
-                            <SelectItem value="low">{t("permissionsTab.interactiveLowLabel")}</SelectItem>
-                            <SelectItem value="medium">
-                              {t("permissionsTab.interactiveMediumLabel")}
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
+                        {t("permissionsTab.autoReviewBehavior")}
                       </span>
                       <details
                         className="mt-2 rounded-md border bg-muted/(--opacity-light)"

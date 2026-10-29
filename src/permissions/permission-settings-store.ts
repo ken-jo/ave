@@ -7,14 +7,6 @@ import { createLogger } from "../lib/logger.js";
 import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 import { parseConfigurationObject } from "../shared/configuration-document.js";
 import { readAveHomeConfigurationFile, resolveConfigurationFile, tryWithAveHomeConfigurationWrite, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
-import {
-  PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
-  PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
-  PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MAX,
-  PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MIN,
-  PARENT_ADJUDICATION_TIMEOUT_MS_MAX,
-  PARENT_ADJUDICATION_TIMEOUT_MS_MIN,
-} from "../shared/parent-adjudication-bounds.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
@@ -38,47 +30,10 @@ async function withPermissionSettingsWrite<T>(path: string, callback: (filePath:
 export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
 export type ReviewerFallbackOnError = "deny" | "rule";
 
-// Interactive auto-approve policy —. - "off" : reviewer never auto-approves in interactive (foreground) flow. Every ask hits the approval dock. - "low" : reviewer's LOW verdict in interactive flow silently allows the call without showing the prompt. MEDIUM/HIGH ask. - "medium": reviewer LOW and MEDIUM verdicts in interactive flow silently allow the call without showing the prompt. HIGH still asks. This inclusive threshold applies only to the foreground reviewer route. Headless review remains fail-closed for MEDIUM and HIGH.
-export type ReviewerInteractiveAutoApprove = "off" | "low" | "medium";
-
-export interface ReviewerInteractiveBlock {
-  autoApprove: ReviewerInteractiveAutoApprove;
-}
-
-// Highest reviewer verdict a parent agent is allowed to adjudicate for its own child (tier 2 of the sub-agent approval chain). `"high"` is deliberately absent from the type, not merely absent from the default: a HIGH verdict is the class of call the user asked to see, and a ceiling the settings file could raise to `"high"` would let a hand-edited file hand the whole class to an agent. The host checks this ceiling before the parent is asked at all, so no parent answer can exceed it.
-export type ParentAdjudicationMaxVerdict = "low" | "medium";
-
-// Deferred escalation denies immediately and notifies only when the host knows nobody can answer: hidden/minimized background runs or armed away authority. Foreground users still get the dock; the queue cannot replay ended calls.
-export type ParentAdjudicationBackgroundEscalation = "deferred" | "modal";
-
-// Which model answers the tier-2 side turn. - `"reviewer"` — the permission reviewer's own adapter. It is already wired, already trusted with risk classification, and costs nothing extra to reach. - `"parent-session"` — the chat provider/model the parent's own loop runs on. It reasons about the parent's task with the parent's own model, and it is available even in reviewer modes that wire no LLM at all. COST: `"parent-session"` bills one extra call on the (usually larger) chat model for every adjudicated sub-agent tool call, bounded by `maxPerChildRun` per child run. `"reviewer"` is the cheaper default for that reason.
-export type ParentAdjudicationModelSource = "reviewer" | "parent-session";
-
-// Bounds for the numeric fields of ReviewerParentAdjudicationBlock live in shared/parent-adjudication-bounds.ts — the settings form mirrors the same ceilings it types values against, so they cannot be declared per layer.
-
-// Tier-2 (parent-adjudication) policy for sub-agent tool approvals. Every field is a ceiling on what the lane may do, never a widening: the lane is skipped entirely unless the feature flag is on AND the request is eligible, and each of these only narrows it further. Reachable through ReviewerSettingsBlock.parentAdjudication, and read by the approval gate's tier-2 stage through the policy accessor it is wired with — the gate reads the live block per request rather than a value captured at boot, so a narrowed ceiling takes effect on the next ask.
-export interface ReviewerParentAdjudicationBlock {
-  // Verdict ceiling enforced by the host before the parent is asked.
-  maxVerdict: ParentAdjudicationMaxVerdict;
-  // How long one adjudication may take, measured from the moment it enters the queue rather than from the moment it starts, so a queue behind a slow adjudication cannot push a later request past this bound before it escalates to the user.
-  timeoutMs: number;
-  // Adjudications a single child run may consume. Past it the lane escalates to the user, so a child cannot spend the parent's judgement as a resource to exhaust.
-  maxPerChildRun: number;
-  // Parent conversation context is opt-in, default zero: it may leave for the reviewer's provider/endpoint rather than the chat provider. Bound, DLP-mask and quote it as data; never include child reports.
-  includeParentContextTurns: number;
-  // Where a tier-3 escalation goes for a background child run.
-  backgroundEscalation: ParentAdjudicationBackgroundEscalation;
-  // Which model answers the side turn. See the type for the cost note.
-  model: ParentAdjudicationModelSource;
-}
-
-// Permission policy `permissions.reviewer` block. The reviewer's model is not stored here: it is `permissions.judge.model` (unset follows the active chat model). Files written by older builds may still carry `provider`/`model` keys; the read normalizer drops them and the next save writes the block without them. Defaults: fallbackOnError="deny", interactive.autoApprove="medium".
+// Permission policy `permissions.reviewer` block. The reviewer's model is not stored here: it is `permissions.judge.model` (unset follows the active chat model). Files written by older builds may still carry `provider`/`model` keys; the read normalizer drops them and the next save writes the block without them. Defaults: fallbackOnError="deny".
 export interface ReviewerSettingsBlock {
   mode: ReviewerMode;
   fallbackOnError: ReviewerFallbackOnError;
-  interactive: ReviewerInteractiveBlock;
-  // Tier-2 policy for sub-agent asks a parent agent may decide.
-  parentAdjudication: ReviewerParentAdjudicationBlock;
   // migration marker — ISO-8601 timestamp recorded the first time a pre-`mode:"disabled"` setting was rewritten to `mode:"strict"`. Pre-builds wired `disabled` as "defer-all-HIGH" (fail-closed), so an existing user file with `mode:"disabled"` and no marker represents a fail-closed posture the user actively chose. The normalization flipped `disabled` to pass-through-LOW; without this migration that flip would be a silent post-deploy security downgrade. The presence of `disabledMigratedAt` makes the migration idempotent — subsequent loads do not re-write.
   disabledMigratedAt?: string;
 }
@@ -136,32 +91,11 @@ export class PermissionSettingsUnreadableError extends Error {
 }
 
 const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
-  // Default to model review; absent provider credentials visibly degrade to rules and rewire back after configuration. Foreground auto mode permits LOW/MEDIUM while HIGH blocks; headless thresholds stay unchanged. Host-proven sandbox-contained plugin writes remain LOW in either classifier.
+  // Default to model review; absent provider credentials visibly degrade to rules and rewire back after configuration. Automatic review permits LOW/MEDIUM; HIGH requires a human approval surface. Host-proven sandbox-contained plugin writes remain LOW in either classifier.
   mode: "llm",
   fallbackOnError: "deny",
-  interactive: { autoApprove: "medium" },
-  // Parent adjudication never reaches HIGH; its ceiling tracks the interactive band one level lower. Bound wait and volume, default parent context off to avoid unrequested disclosure, and defer unattended escalation rather than waiting on an unseen modal.
-  parentAdjudication: {
-    maxVerdict: "medium",
-    timeoutMs: 30_000,
-    maxPerChildRun: 200,
-    includeParentContextTurns: 0,
-    backgroundEscalation: "deferred",
-    model: "reviewer",
-  },
 };
 
-const REVIEWER_INTERACTIVE_AUTO_APPROVES: ReadonlySet<ReviewerInteractiveAutoApprove> =
-  new Set(["off", "low", "medium"]);
-
-const PARENT_ADJUDICATION_MAX_VERDICTS: ReadonlySet<ParentAdjudicationMaxVerdict> =
-  new Set(["low", "medium"]);
-
-const PARENT_ADJUDICATION_BACKGROUND_ESCALATIONS: ReadonlySet<ParentAdjudicationBackgroundEscalation> =
-  new Set(["deferred", "modal"]);
-
-export const PARENT_ADJUDICATION_MODEL_SOURCES: ReadonlySet<ParentAdjudicationModelSource> =
-  new Set(["reviewer", "parent-session"]);
 
 const DEFAULT_FILE: PermissionSettingsFile = {
   permissions: {
@@ -411,93 +345,16 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     REVIEWER_FALLBACKS.has(obj.fallbackOnError as ReviewerFallbackOnError)
       ? (obj.fallbackOnError as ReviewerFallbackOnError)
       : DEFAULT_REVIEWER.fallbackOnError;
-  const interactive = normalizeInteractiveBlock(obj.interactive);
-  const parentAdjudication = normalizeParentAdjudicationBlock(obj.parentAdjudication);
   const disabledMigratedAt =
     typeof obj.disabledMigratedAt === "string" && obj.disabledMigratedAt.length > 0
       ? obj.disabledMigratedAt
       : undefined;
-  // Only the known keys are carried, so the retired `provider`/`model` keys an older build wrote are dropped here and leave the file on the next save.
+  // Only the known keys are carried, so the retired `provider`/`model`/`interactive`/`parentAdjudication` keys an older build wrote are dropped here and leave the file on the next save.
   return {
     mode,
     fallbackOnError,
-    interactive,
-    parentAdjudication,
     disabledMigratedAt,
   };
-}
-
-// Clamp rather than reject out-of-range numbers: the settings file is an external boundary a user may hand-edit, and both fields are ceilings whose clamped value is still a safe posture. A non-finite or non-numeric value has no clamped meaning at all, so it falls back to the default.
-function clampParentAdjudicationNumber(
-  value: unknown,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(value)));
-}
-
-function normalizeParentAdjudicationBlock(
-  parsed: unknown,
-): ReviewerParentAdjudicationBlock {
-  const fallback = DEFAULT_REVIEWER.parentAdjudication;
-  if (!parsed || typeof parsed !== "object") return { ...fallback };
-  const obj = parsed as Record<string, unknown>;
-  const maxVerdict =
-    typeof obj.maxVerdict === "string" &&
-    PARENT_ADJUDICATION_MAX_VERDICTS.has(obj.maxVerdict as ParentAdjudicationMaxVerdict)
-      ? (obj.maxVerdict as ParentAdjudicationMaxVerdict)
-      : fallback.maxVerdict;
-  const backgroundEscalation =
-    typeof obj.backgroundEscalation === "string" &&
-    PARENT_ADJUDICATION_BACKGROUND_ESCALATIONS.has(
-      obj.backgroundEscalation as ParentAdjudicationBackgroundEscalation,
-    )
-      ? (obj.backgroundEscalation as ParentAdjudicationBackgroundEscalation)
-      : fallback.backgroundEscalation;
-  const model =
-    typeof obj.model === "string" &&
-    PARENT_ADJUDICATION_MODEL_SOURCES.has(obj.model as ParentAdjudicationModelSource)
-      ? (obj.model as ParentAdjudicationModelSource)
-      : fallback.model;
-  return {
-    maxVerdict,
-    timeoutMs: clampParentAdjudicationNumber(
-      obj.timeoutMs,
-      fallback.timeoutMs,
-      PARENT_ADJUDICATION_TIMEOUT_MS_MIN,
-      PARENT_ADJUDICATION_TIMEOUT_MS_MAX,
-    ),
-    maxPerChildRun: clampParentAdjudicationNumber(
-      obj.maxPerChildRun,
-      fallback.maxPerChildRun,
-      PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MIN,
-      PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MAX,
-    ),
-    // Clamped like the other numbers, and to a deliberately short range: each turn is a chunk of the user's conversation leaving the machine, so the upper bound is a property of the feature rather than a matter of taste.
-    includeParentContextTurns: clampParentAdjudicationNumber(
-      obj.includeParentContextTurns,
-      fallback.includeParentContextTurns,
-      PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
-      PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
-    ),
-    backgroundEscalation,
-    model,
-  };
-}
-
-function normalizeInteractiveBlock(parsed: unknown): ReviewerInteractiveBlock {
-  if (!parsed || typeof parsed !== "object") {
-    return { ...DEFAULT_REVIEWER.interactive };
-  }
-  const obj = parsed as Record<string, unknown>;
-  const autoApprove =
-    typeof obj.autoApprove === "string" &&
-    REVIEWER_INTERACTIVE_AUTO_APPROVES.has(obj.autoApprove as ReviewerInteractiveAutoApprove)
-      ? (obj.autoApprove as ReviewerInteractiveAutoApprove)
-      : DEFAULT_REVIEWER.interactive.autoApprove;
-  return { autoApprove };
 }
 
 // Preserve untouched top-level/permission keys, write canonical directories and normalize reviewer settings on every mutation. The deprecated allowedDirectories alias is ignored by readers and preserved by writers; do not revive write-time cleanup.
@@ -559,8 +416,6 @@ export async function writePermissionSettings(
 const REVIEWER_BLOCK_KEYS: ReadonlySet<string> = new Set([
   "mode",
   "fallbackOnError",
-  "interactive",
-  "parentAdjudication",
   "disabledMigratedAt",
 ] satisfies ReadonlyArray<keyof ReviewerSettingsBlock>);
 
@@ -580,15 +435,6 @@ function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBl
   if (!REVIEWER_FALLBACKS.has(patch.fallbackOnError)) {
     throw new Error(
       `permissions.reviewer.fallbackOnError invalid: '${patch.fallbackOnError}'. Allowed: ${[...REVIEWER_FALLBACKS].join("|")}`,
-    );
-  }
-  if (
-    !patch.interactive ||
-    !REVIEWER_INTERACTIVE_AUTO_APPROVES.has(patch.interactive.autoApprove)
-  ) {
-    throw new Error(
-      `permissions.reviewer.interactive.autoApprove invalid: '${patch.interactive?.autoApprove}'. ` +
-      `Allowed: ${[...REVIEWER_INTERACTIVE_AUTO_APPROVES].join("|")}`,
     );
   }
   return patch;

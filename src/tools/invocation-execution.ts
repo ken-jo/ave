@@ -1,6 +1,12 @@
+import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
 import { isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
+import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
+import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
+import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
+import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
 import type { ApprovalDecision, ApprovalRequestInput } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
@@ -33,7 +39,7 @@ import { createLogger } from "../lib/logger.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import type { Tool } from "./base.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
-import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import type { ExecutionGrant } from "../permissions/execution-router.js";
 import type {
   ToolCategory,
@@ -55,6 +61,7 @@ import {
 } from "./pipeline/rationale-resume-runner.js";
 import {
   runScriptHook,
+  currentApprovalMode,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
 import {
@@ -90,7 +97,7 @@ import {
 const log = createLogger("executor");
 
 class HandlerPausedError extends Error {
-  constructor(readonly pause: "consecutive" | "total") {
+  constructor() {
     super("Handler admission is paused");
     this.name = "HandlerPausedError";
   }
@@ -173,6 +180,8 @@ export interface ExecutionStageContext {
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   permissionResult: PermissionCheckResult | undefined;
   humanApproved: boolean;
+  approvedPolicyEpoch?: string;
+  permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
@@ -192,6 +201,14 @@ export interface ExecutionStageContext {
   toolResultChunkReader: ExecuteOptions["toolResultChunkReader"];
   toolOutputCaptureFactory?: ExecuteOptions["toolOutputCaptureFactory"];
   executionCwd: string;
+  evaluationContext: PermissionEvaluationContext;
+  approvalCacheKey: string | undefined;
+  approvalPurpose: ApprovalPurposeSuggestion | undefined;
+  targetFilePaths: string[];
+  sensitivePathPattern: string | null;
+  invocationAllowedScope: { directories: string[] };
+  hostShellExecutionPlanAudit: HostShellExecutionPlanAuditProjection | undefined;
+  approvalReasonPrefix: string | undefined;
   parentEffectLedger: EffectLedger | undefined;
   effectLedger: EffectLedger;
   targetFilePath: string | undefined;
@@ -244,6 +261,14 @@ export async function executeAuthorizedToolInvocation(
     toolResultChunkReader,
     toolOutputCaptureFactory,
     executionCwd,
+    evaluationContext,
+    approvalCacheKey,
+    approvalPurpose,
+    targetFilePaths,
+    sensitivePathPattern,
+    invocationAllowedScope,
+    hostShellExecutionPlanAudit,
+    approvalReasonPrefix,
     parentEffectLedger,
     effectLedger,
     targetFilePath,
@@ -258,6 +283,8 @@ export async function executeAuthorizedToolInvocation(
     throw new Error("Handler admission is missing human approval provenance");
   }
   let humanApproved = initialHumanApproved;
+  let approvedPolicyEpoch = context.approvedPolicyEpoch;
+  let permissionRecheckResult = context.permissionRecheckResult;
 
 
   // ── Step 5: Rate Limit (trust별) ────────────────
@@ -420,6 +447,7 @@ export async function executeAuthorizedToolInvocation(
   let image: ToolResultImage | undefined;
   let authorizationRequired: AuthorizationRequiredControl | undefined;
   let effectAuthorizationRequired: AuthorizationRequiredControl | undefined;
+  let effectNoApprover = false;
   let latePermissionHookChain: import("../audit/audit-schema.js").HookResult[] | undefined;
   let handlerAdmissionBlocked = true;
   let outputArtifact: ToolOutputArtifactInfo | undefined;
@@ -822,10 +850,24 @@ export async function executeAuthorizedToolInvocation(
         throw new Error(t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(error) }));
       }
     }
-    const pause = !humanApproved
-      ? services.permissionManager?.getAutomatedApprovalPauseReason(sessionId)
-      : undefined;
-    if (pause !== undefined) throw new HandlerPausedError(pause);
+    if (humanApproved && services.permissionManager &&
+        approvedPolicyEpoch !== services.permissionManager.getPolicyEpoch()) {
+      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution.", layer: permissionResult?.layer ?? 6 };
+      throw new Error(permissionResult.reason);
+    }
+    const recheckTarget = permissionRecheckResult ?? permissionResult;
+    if (!humanApproved && recheckTarget?.pipelineRequest && services.permissionManager) {
+      const refreshed = services.permissionManager.recheckPermission(recheckTarget);
+      if (permissionRecheckResult) permissionRecheckResult = refreshed;
+      const paused = refreshed.decision === "ask" && refreshed.pipelineRequest?.automationPause !== undefined;
+      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.manualRerun === true;
+      if (!permissionRecheckResult || refreshed.decision === "deny" || paused || forced) permissionResult = refreshed;
+      if (refreshed.decision === "deny" || forced) throw new Error(refreshed.reason);
+      if (paused) throw new HandlerPausedError();
+      // The sealed rationale receipt remains separate authority when its
+      // original issued request still asks under unchanged policy.
+      if (!permissionRecheckResult && refreshed.decision !== "allow") throw new Error(refreshed.reason);
+    }
     if (pluginOperationPrincipal && operationExecutionDomain) {
       services.pluginOperationGrants.assertExecutionAuthorized(
         pluginOperationPrincipal,
@@ -844,58 +886,123 @@ export async function executeAuthorizedToolInvocation(
     signal.throwIfAborted();
   };
 
+  let pausedApprovalPolicyEpoch: string | undefined;
+  const assertPausedPolicyCurrent = (): void => {
+    const manager = services.permissionManager;
+    if (manager && pausedApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
+      if (permissionResult?.pipelineRequest) permissionResult = manager.recheckPermission(permissionResult);
+      throw new Error(permissionResult?.reason ?? "Permission policy changed before execution.");
+    }
+  };
+
   const preparePausedApproval = async (
-    pause: "consecutive" | "total",
     signal: AbortSignal,
   ): Promise<ApprovalRequestInput & { sessionId: string }> => {
+    if (permissionResult?.decision !== "ask" || !permissionResult.pipelineRequest?.automationPause) {
+      throw new Error("Paused approval requires an issued human approval decision");
+    }
+    const reason = permissionResult.reason;
     const userAvailable = invocationPermissionContext.headless !== true &&
       invocationPermissionContext.approvalSurface !== "unavailable" && services.approvalGate !== undefined;
-    const reason = t(pause === "consecutive"
-      ? userAvailable ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
-      : userAvailable ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal");
-    permissionResult = { decision: userAvailable ? "ask" : "deny", reason, layer: 5, forceModal: false };
     emitPermissionReview(callbacks, {
       status: userAvailable ? "needs_approval" : "failed", toolName: toolUse.name,
       toolCategory: invocationCategory, source, reason, ...meta,
     });
-    if (!userAvailable) throw new Error(reason);
+    if (!userAvailable) throw new Error(NO_APPROVER_MESSAGE);
     if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
+    pausedApprovalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
     const permHook = await runScriptHook(
       services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
       finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
       undefined, undefined, tool.pluginGeneration !== undefined,
+      signal,
     );
     signal.throwIfAborted();
     latePermissionHookChain = hookChainFromDispatch("perm", permHook);
+    assertPausedPolicyCurrent();
     if (permHook.decision === "deny") {
-      permissionResult = { decision: "deny", reason: permHook.reason, layer: 5, forceModal: true };
+      permissionResult = { ...permissionResult, decision: "deny", reason: permHook.reason };
       throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
     }
     await services.auditWriter.auditPermissionAsk(
       toolUse.name, source, invocationCategory, finalInput,
-      { decision: "ask", reason, layer: 5, forceModal: true }, executionCwd,
+      permissionResult, executionCwd,
       invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
     );
     signal.throwIfAborted();
+    assertPausedPolicyCurrent();
+    const ruleAssessment = permissionResult.reviewer?.verdict === undefined
+      ? classifyApprovalRuleVerdict({
+          toolName: toolUse.name, source, category: invocationCategory,
+          pathFields: tool.pathFields ?? [], finalInput, approvalCacheKey, executionCwd,
+          allowedDirectories: invocationAllowedScope.directories,
+          sensitivePathsAdjacent: sensitivePathPattern ? [sensitivePathPattern] : [],
+          context: invocationPermissionContext,
+          sandboxAttestation: { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) },
+          mcpServerId: tool.mcpServerId, workerId: tool.workerId, pluginId: tool.pluginId,
+          hostShellExecutionPlan,
+        }) : undefined;
     return {
       id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: toolUse.name,
       toolCategory: invocationCategory, source, trustOrigin: invocationPermissionContext.trustOrigin,
-      args: finalInput, reason, createdAt: Date.now(), abortSignal,
-      forceExplicit: true, isReadOnly: false, durableApprovalRecordAllowed: false,
-      parentAdjudicationEligible: false, allowedChoices: ["allow-once", "deny-once"],
+      args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
+      ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
+      createdAt: Date.now(), abortSignal,
+      isReadOnly: invocationCategory === "read", mode: currentApprovalMode(services.permissionManager),
+      ownerUnattended: invocationPermissionContext.ownerUnattended === true,
+      ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
+      scopeTargetFilePaths: targetFilePaths,
+      sensitivePathPattern, evaluationContext,
+      ...(approvalCacheKey ? { approvalCacheKey } : {}),
+      ...(invocationPermissionContext.approvalMemory ? { approvalMemory: invocationPermissionContext.approvalMemory } : {}),
+      ...(approvalPurpose ? { approvalPurpose } : {}),
+      ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
+      ...(hostShellExecutionPermitBinding ? { hostShellExecutionPermitBinding } : {}),
+      reviewerVerdict: permissionResult.reviewer?.verdict,
+      reviewerOutcome: permissionResult.reviewer?.outcome,
+      reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
+      ...(ruleAssessment ? { ruleVerdict: ruleAssessment.verdict, approvalRuleBasis: ruleAssessment.basis } : {}),
+      ...(hostShellExecutionPlanAudit && invocationPermissionContext.disposableSubstrate === undefined
+        ? { executionPlan: hostShellExecutionPlanAudit }
+        : { sandboxCapability: invocationPermissionContext.disposableSubstrate
+            ? disposableContainerCapability(invocationPermissionContext.disposableSubstrate)
+            : resolveReviewerSandboxCapability(source, toolUse.name, tool.mcpServerId, tool.workerId, tool.pluginId, hostShellExecutionPlan) }),
     };
   };
 
   const requestPausedApproval = async (request: ApprovalRequestInput & { sessionId: string }): Promise<void> => {
     abortSignal?.throwIfAborted();
+    if (permissionResult?.decision !== "ask" || !permissionResult.pipelineRequest?.automationPause) {
+      throw new Error("Paused approval requires an issued human approval decision");
+    }
+    assertPausedPolicyCurrent();
     const decision = await services.approvalGate!.requestAndWait(request);
     abortSignal?.throwIfAborted();
+    const currentEpoch = services.permissionManager?.getPolicyEpoch();
+    if (pausedApprovalPolicyEpoch !== currentEpoch &&
+        (pausedApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
+          !services.approvalGate!.allowsPolicyTransition(decision, pausedApprovalPolicyEpoch, currentEpoch))) {
+      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
+      throw new Error(permissionResult.reason);
+    }
+    const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
+    if (failure) {
+      permissionResult = failure.permission;
+      throw new Error(failure.content);
+    }
     humanApproved = decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     if (!humanApproved) {
-      permissionResult = { decision: "deny", reason: request.reason, layer: 5, forceModal: true };
+      permissionResult = { ...permissionResult, decision: "deny", reason: request.reason };
       throw new Error(request.reason);
     }
-    permissionResult = { decision: "allow", reason: "user approved approval request (allow-once)", layer: 5 };
+    permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
+    approvedPolicyEpoch = currentEpoch;
+    if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
+      const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,
+        permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });
+      if (hostShellRequiresExplicitApproval && !permit) throw new Error("Host shell approval receipt is unavailable");
+      executionContext.hostShellExecutionPermit = permit;
+    }
   };
 
   const attemptHandler = async (signal: AbortSignal): Promise<Awaited<ReturnType<Tool["execute"]>>> => {
@@ -939,6 +1046,7 @@ export async function executeAuthorizedToolInvocation(
                 reason: "approval-surface-unavailable",
               });
             },
+            () => { effectNoApprover = true; },
           ),
         ),
       );
@@ -946,7 +1054,7 @@ export async function executeAuthorizedToolInvocation(
       if (error instanceof HandlerPausedError) {
         // Hook and required ask-audit work retain the attempt's cancellation
         // and settlement ownership. Only waiting for the person moves outside.
-        const request = await preparePausedApproval(error.pause, signal);
+        const request = await preparePausedApproval(signal);
         throw new HandlerApprovalRequiredError(request);
       }
       throw error;
@@ -1034,14 +1142,15 @@ export async function executeAuthorizedToolInvocation(
     });
     indeterminateAuditPersisted = true;
   }
-  if (effectAuthorizationRequired) {
+  if (effectAuthorizationRequired || effectNoApprover) {
     // The host effect boundary latched this before blocking the mutation. A
     // plugin may catch that thrown denial, but it cannot clear this outer
     // invocation state or turn the missing approval UI into a retryable result.
     authorizationRequired = effectAuthorizationRequired;
-    content =
-      "Authorization required: this plugin effect requires explicit approval, "
-      + "but this host has no approval surface. The turn has stopped and will not retry automatically.";
+    content = effectAuthorizationRequired
+      ? "Authorization required: this plugin effect requires explicit approval, "
+      + "but this host has no approval surface. The turn has stopped and will not retry automatically."
+      : NO_APPROVER_MESSAGE;
     isError = true;
     terminationReason = "error";
   } else if (outcome.ok) {
@@ -1346,6 +1455,7 @@ export async function executeAuthorizedToolInvocation(
       content,
       isError,
       tool.pluginGeneration !== undefined,
+      abortSignal,
     );
     if (isError) {
       const failureHooks = await services.auditWriter.fireLifecycleEvent(
@@ -1444,11 +1554,11 @@ export async function executeAuthorizedToolInvocation(
     hookChainFromDispatch("post", scriptPost),
     latePermissionHookChain,
   );
-  const auditedPermissionResult = authorizationRequired
+  const auditedPermissionResult = authorizationRequired || effectNoApprover
     ? {
         ...(permissionResult ?? { layer: 6 }),
         decision: "deny" as const,
-        reason: "authorization required but approval surface unavailable",
+        reason: effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable",
       }
     : permissionResult;
   await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, auditContent, isError, startTime, auditedPermissionResult, rateResult.remaining, invocationPermissionContext, invocationCategory, executionCwd, targetFilePath, terminationReason, successHookChain);

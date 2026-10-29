@@ -1140,7 +1140,8 @@ export function isRationaleEligible(input: {
   const now = input.now ?? Date.now();
   return (
     input.permission.decision === "ask" &&
-    input.permission.layer === 5 &&
+    input.permission.reasonCode === "reviewer-human-required" &&
+    reviewer?.verdict?.level === "high" &&
     reviewer?.route === "foreground-auto" &&
     (reviewer.outcome === "fresh" || reviewer.outcome === "cache") &&
     reviewer.verdict !== undefined &&

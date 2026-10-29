@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -47,14 +47,13 @@ function policyGetPayload(loaded: {
 }
 
 function reviewerResult(
-  verb: "show" | "mode" | "fallback" | "interactive",
+  verb: "show" | "mode" | "fallback",
   mode: "disabled" | "llm",
   fallbackOnError: "deny" | "rule",
-  autoApprove: "off" | "low" | "medium",
 ) {
   return {
     ok: true as const, verb,
-    settings: { mode, fallbackOnError, parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION, interactive: { autoApprove } },
+    settings: { mode, fallbackOnError },
   };
 }
 
@@ -96,22 +95,16 @@ function installApi(
       })),
       reviewerDispatch: vi.fn(async (rawArgs: string) => {
         if (rawArgs === "show") {
-          return reviewerResult("show", "disabled", "deny", "off");
+          return reviewerResult("show", "disabled", "deny");
         }
         if (rawArgs === "mode llm") {
-          return reviewerResult("mode", "llm", "deny", "off");
+          return reviewerResult("mode", "llm", "deny");
         }
         if (rawArgs === "mode disabled") {
-          return reviewerResult("mode", "disabled", "deny", "off");
+          return reviewerResult("mode", "disabled", "deny");
         }
         if (rawArgs === "fallback rule") {
-          return reviewerResult("fallback", "llm", "rule", "off");
-        }
-        if (rawArgs === "interactive low" || rawArgs === "interactive medium") {
-          return reviewerResult("interactive", "llm", "deny", rawArgs === "interactive medium" ? "medium" : "low");
-        }
-        if (rawArgs === "interactive off") {
-          return reviewerResult("interactive", "disabled", "deny", "off");
+          return reviewerResult("fallback", "llm", "rule");
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
@@ -414,8 +407,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    // Round-2 test-engineer MAJOR; exec-mode-auto must ALSO fire the `interactive medium` dispatch so the global LOW+MEDIUM threshold stays coupled to the legacy `auto` UX.
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("interactive medium");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
     expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
       api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
     );
@@ -428,10 +420,10 @@ describe("PermissionsTab hook quarantine notice", () => {
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "llm", "deny", "off");
+        return reviewerResult("show", "llm", "deny");
       }
       if (rawArgs === "mode disabled") {
-        return reviewerResult("mode", "disabled", "deny", "off");
+        return reviewerResult("mode", "disabled", "deny");
       }
       throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
     });
@@ -520,7 +512,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     });
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("interactive medium");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-fallback-select")).toBeNull();
@@ -649,18 +641,21 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
-  it("renders the off/low/medium threshold control when the stored mode is auto", async () => {
+  it("shows the fixed low/medium policy without a threshold control in auto", async () => {
     const api = installApi([[]]);
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "llm", "deny", "off");
+        return reviewerResult("show", "llm", "deny");
       }
       throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
     });
 
     await renderPermissionsTab();
-    expect(screen.getByTestId("interactive-auto-approve-select")).toBeTruthy();
+    expect(screen.queryByTestId("interactive-auto-approve-select")).toBeNull();
+    expect(screen.getByTestId("auto-review-behavior")).toHaveTextContent("저·중위험은 허용");
+    expect(screen.getByTestId("auto-review-behavior")).toHaveTextContent("고위험, 오류와 검증 중단은 사용자에게 확인");
+    expect(api.permission.reviewerDispatch).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
     expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
@@ -670,7 +665,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     const api = installApi([[]]);
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny", "off");
+        return reviewerResult("show", "disabled", "deny");
       }
       if (rawArgs === "mode llm") {
         return { ok: false as const, error: "reviewer-rewire-failed: missing provider" };
@@ -842,10 +837,9 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByText("/tmp/project/.git")).toBeTruthy();
   });
 
-  it("renders only the prompt panel when mode=auto + interactive.autoApprove=off", async () => {
+  it("renders fixed review behavior and the prompt panel for auto", async () => {
     const api = installApi([[]]);
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
-    // reviewerDispatch("show") default returns interactive.autoApprove="off".
     await renderPermissionsTab();
     expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
@@ -1238,7 +1232,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           userAdditions: [],
           effective: [],
         })),
-        reviewerDispatch: vi.fn(async () => (reviewerResult("show", "disabled", "deny", "off"))),
+        reviewerDispatch: vi.fn(async () => (reviewerResult("show", "disabled", "deny"))),
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
@@ -2112,7 +2106,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const api = installApi([[]]);
     mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny", "off");
+        return reviewerResult("show", "disabled", "deny");
       }
       return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
     });

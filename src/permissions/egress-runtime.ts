@@ -7,7 +7,7 @@ import type { PermissionManager } from "./permission-manager.js";
 import type { ApprovalGate } from "./approval-gate.js";
 import { closeEgressConnections, normalizeUnionForAsrt } from "./asrt-sandbox.js";
 import type { ListedEgressGrant, RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
-import { createApprovalGateEgressRequester } from "./egress-approval.js";
+import { createApprovalGateEgressRequester, createShellNetworkPermissionEvaluator } from "./egress-approval.js";
 import { createEgressAskCallback } from "./egress-ask.js";
 import { EgressGrantStore, egressGrantFilePath } from "./egress-grants.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -103,10 +103,7 @@ export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): Sand
     abortSignalOf: egressInvocationAbortSignal,
     workerAllowedDomains: workerEgressAllowedDomains,
     grants: egressGrantStore(),
-    // Host rules live in the permission manager; without one no rule exists to consult.
-    networkRule: deps.permissionManager === undefined
-      ? async () => undefined
-      : (subject) => deps.permissionManager!.networkRuleDecision(subject),
+    evaluateShellPermission: createShellNetworkPermissionEvaluator(deps.permissionManager),
     shellAskEnabled: deps.shellAskEnabled,
     requester: () => requester,
     audit: (entry) => {

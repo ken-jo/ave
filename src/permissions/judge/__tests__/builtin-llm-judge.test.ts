@@ -43,7 +43,7 @@ function tracing(trace: Partial<LlmRiskClassificationTrace> & { finalVerdict: Ri
 }
 
 describe("BuiltinLlmJudge", () => {
-  it("maps a fresh MEDIUM under autoApprove medium to allow and forwards the signal", async () => {
+  it("maps a fresh medium verdict to allow and forwards the signal", async () => {
     const classifier = tracing({ finalVerdict: { level: "medium", reason: "build" } });
     const judge = new BuiltinLlmJudge(classifier);
     const signal = new AbortController().signal;
@@ -100,7 +100,6 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
             cache: new VerdictCache(join(dir, "cache.jsonl")),
             recentlyDenied: makeRecentlyDeniedStore(join(dir, "queue.jsonl")),
           });
-          pm.setInteractiveAutoApprove("medium");
           const evaluationContext = buildPermissionEvaluationContext({
             policyMode: "unmanaged",
             headless: lane === "headless",

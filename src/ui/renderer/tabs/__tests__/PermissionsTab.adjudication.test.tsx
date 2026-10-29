@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { cleanup, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,18 +13,14 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 
-function reviewerSettings(
-  parentAdjudication: Record<string, unknown> = { ...MOCK_REVIEWER_PARENT_ADJUDICATION },
-) {
+function reviewerSettings() {
   return {
     mode: "llm" as const,
     fallbackOnError: "deny" as const,
-    interactive: { autoApprove: "low" as const },
-    parentAdjudication,
   };
 }
 
-function installApi(opts: { featureEnabled?: boolean } = {}) {
+function installApi() {
   const ave = {
     permission: {
       recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
@@ -55,7 +51,7 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
         if (rawArgs === "show") {
           return { ok: true as const, verb: "show" as const, settings: reviewerSettings() };
         }
-        return { ok: true as const, verb: "adjudication" as const, settings: reviewerSettings() };
+        throw new Error(`Unexpected reviewer command: ${rawArgs}`);
       }),
       sandboxCapability: vi.fn(async () => ({
         platform: "darwin" as NodeJS.Platform,
@@ -102,7 +98,6 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
     settings: {
       features: {
         osToolSandbox: false,
-        subAgentParentAdjudication: opts.featureEnabled ?? true,
       },
     },
   });

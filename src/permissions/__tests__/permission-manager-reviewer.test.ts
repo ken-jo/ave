@@ -58,16 +58,6 @@ function makeManager(): {
   return { pm, cache, queue, classifier };
 }
 
-// Tier-2 parent-adjudication policy is inert for these cases; every reviewer settings literal reuses the shipped default so the block stays one value.
-const PARENT_ADJUDICATION = {
-  maxVerdict: "medium",
-  timeoutMs: 30_000,
-  maxPerChildRun: 200,
-  includeParentContextTurns: 0,
-  backgroundEscalation: "deferred",
-  model: "reviewer",
-} as const;
-
 describe("PermissionManager.dispatchReviewer", () => {
   let pm: PermissionManager;
   let cache: VerdictCache;
@@ -88,7 +78,7 @@ describe("PermissionManager.dispatchReviewer", () => {
     ["eval 'printf ready'", "medium"],
   ] as const)("reuses scoped approval while retaining the fresh risk of %s", async (command, expectedRisk) => {
     pm.setMode("auto");
-    pm.setInteractiveAutoApprove("medium");
+
     const classify = vi.fn(() => ({ level: "medium" as const, reason: "reviewed once" }));
     setReviewerForTest(pm, { classifier: { classify }, cache, recentlyDenied: queue });
     const cwd = process.cwd();
@@ -868,7 +858,7 @@ describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.
 });
 
 describe("#664 flood guard — degraded rule reviewer does not over-defer headless sandbox writes", () => {
-  it("headless plugin sandbox write under llm-degraded-to-rule → LOW, no deferred-queue entry", async () => {
+  it("allows a low-risk headless plugin sandbox write without denial history", async () => {
     // Without configured credentials, model review degrades to rules; host-proven own-data writes must still classify LOW rather than defer.
     const { wireReviewerAgent } = await import("../../boot/steps/reviewer-wiring.js");
     const { detectSandboxCapability } = await import("../sandbox-capability.js");
@@ -876,7 +866,6 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
 
     const pm = new PermissionManager(tmpFile("permissions.json"));
     pm.setMode("auto");
-  pm.setMode("auto");
     const wiring = wireReviewerAgent({
       permissionManager: pm,
       // Degrades to the rule classifier — no adapter is built and nothing is ever fetched, so the transport is the tripwire.
@@ -884,8 +873,6 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
       readSettings: () => ({
         mode: "llm",
         fallbackOnError: "deny",
-        interactive: { autoApprove: "low" },
-        parentAdjudication: PARENT_ADJUDICATION,
       }),
       readActiveLlm: () => ({ provider: "openai", model: "gpt-4o-mini" }),
       // Factory present (boot contract honored) but the user has not configured an API key → provider unconfigured → degrade to rule.

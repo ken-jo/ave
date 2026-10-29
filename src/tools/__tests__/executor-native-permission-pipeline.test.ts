@@ -304,7 +304,7 @@ describe("native invocation permission evidence", () => {
     expect(process.cwd()).not.toBe(project);
     const check = vi.spyOn(manager, "checkDetailed");
     const execute = vi.spyOn(readTool, "execute");
-    const [result] = await run(executor(), "read_file", { path }, undefined, [root]);
+    const [result] = await run(executor(), "read_file", { path }, { additionalDirectories: [root] });
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();

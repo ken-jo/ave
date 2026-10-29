@@ -2,6 +2,8 @@
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
 import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { raceWithAbort } from "../shared/abortable-deadline.js";
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import {
   resolveShell,
   shellEnvForChild,
@@ -58,6 +60,7 @@ export interface RunOneHookOptions {
   cwd?: string;
   // Host-owned admission for a trusted user command; enrollment is not permission.
   authorizeCommand?: HookCommandAuthorizer;
+  abortSignal?: AbortSignal;
 }
 
 // Legacy scripts and config argv share the same fail-closed runner, environment and timeout gates.
@@ -140,6 +143,8 @@ export async function runOneHookScript(
   const confinement = runnable.confinement;
   const cwd = confinement?.generationRoot ?? options.cwd ?? process.cwd();
   const start = Date.now();
+  const inherited = turnExtensionPolicyContext.getStore();
+  const abortSignal = options.abortSignal ?? inherited?.abortSignal;
 
   // Every result carries origin and the trusted script or argv hash for forensic attribution.
   const forensics = {
@@ -159,6 +164,7 @@ export async function runOneHookScript(
     durationMs: Date.now() - start,
     ...extra,
   });
+  if (abortSignal?.aborted) return deny("Hook execution cancelled");
 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
     return deny("hook timeout must be a positive supported timer delay");
@@ -178,7 +184,10 @@ export async function runOneHookScript(
   let assertCommandAllowed: (() => void) | undefined;
   if (!confinement && options.authorizeCommand) {
     try {
-      const admission = await options.authorizeCommand(runnable, payload, cwd);
+      const admission = await raceWithAbort(turnExtensionPolicyContext.run({
+        ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false, abortSignal,
+      }, () => options.authorizeCommand!(runnable, payload, cwd)), abortSignal);
+      if (abortSignal?.aborted) return deny("Hook execution cancelled");
       if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
       admittedPlan = admission.plan;
       assertCommandAllowed = admission.assertAllowed;
@@ -188,6 +197,7 @@ export async function runOneHookScript(
         return deny("hook shell execution policy changed during approval");
       }
     } catch (error) {
+      if (abortSignal?.aborted) return deny("Hook execution cancelled");
       return deny(`hook command admission failed: ${(error as Error).message}`);
     }
   }
@@ -222,6 +232,7 @@ export async function runOneHookScript(
     spawnEnv = childEnvBase;
   }
 
+  if (abortSignal?.aborted) return deny("Hook execution cancelled");
   assertManagedChildProcessAdmissionOpen("hook:script");
   if (confinement) {
     try {
@@ -260,6 +271,7 @@ export async function runOneHookScript(
         allowWrite: confinement ? [confinement.dataDir] : [cwd],
         egressOwner: hookEgressOwner,
         assertStillValid: () => {
+          abortSignal?.throwIfAborted();
           if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
             || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
             throw new Error("Hook shell execution policy changed before spawn");
@@ -309,6 +321,12 @@ export async function runOneHookScript(
     }
   }
 
+  if (abortSignal?.aborted) {
+    if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");
+    wrappedEgress?.release();
+    cleanupWrap?.();
+    return deny("Hook execution cancelled");
+  }
   if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
     || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook shell policy changed");
@@ -404,6 +422,7 @@ export async function runOneHookScript(
 
     let settled = false;
     let timedOut = false;
+    let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timeoutFallback: ReturnType<typeof setTimeout> | undefined;
 
@@ -413,9 +432,15 @@ export async function runOneHookScript(
       cleanupWrap?.();
       if (timer) clearTimeout(timer);
       if (timeoutFallback) clearTimeout(timeoutFallback);
+      abortSignal?.removeEventListener("abort", onAbort);
       const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
       const stderr = Buffer.concat(stderrChunks).toString("utf-8");
       const durationMs = Date.now() - start;
+
+      if (cancelled) {
+        resolve(deny("Hook execution cancelled", { rawStdout: stdout, exitCode: code ?? undefined }));
+        return;
+      }
 
       if (timedOut) {
         log.warn("hook timeout: %s (%dms)", runnable.id, timeoutMs);
@@ -488,6 +513,7 @@ export async function runOneHookScript(
       cleanupWrap?.();
       if (timer) clearTimeout(timer);
       if (timeoutFallback) clearTimeout(timeoutFallback);
+      abortSignal?.removeEventListener("abort", onAbort);
       resolve({
         ...forensics,
         decision: "deny",
@@ -498,12 +524,26 @@ export async function runOneHookScript(
       });
     });
 
+    const onAbort = (): void => {
+      if (settled) return;
+      cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(timeoutFallback);
+      void forceKillManagedChildProcess(child, "hook caller aborted");
+    };
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+    if (abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+
     try {
       hookStdin?.write(stdinJson);
       hookStdin?.end();
     } catch (err) {
       settled = true;
       clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", onAbort);
       forceKillManagedChildProcess(child, "hook stdin write failed");
       cleanupWrap?.();
       resolve({

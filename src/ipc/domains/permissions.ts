@@ -191,7 +191,6 @@ function createPermissionReviewSuggestionTracker() {
       const pm = deps.conversationLoop.permissionManager;
       if (!pm) return;
       if (pm.getMode() !== "default") return;
-      if (pm.getInteractiveAutoApprove() !== "off" && pm.hasReviewer()) return;
 
       const now = Date.now();
       samples = samples
@@ -1031,7 +1030,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {
         return { ok: false, error: "not-request-owner", message: "This request is answered from the window that owns its terminal tab" };
       }
-      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, conversationLoop.permissionManager);
+      const manager = conversationLoop.permissionManager;
+      const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
+      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager);
+      if (manager !== undefined) {
+        approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), saved.ok && saved.action === "allow" ? saved.scope : undefined);
+      }
       if (!saved.ok) return saved;
       auditLogger.log({
         timestamp: new Date().toISOString(),

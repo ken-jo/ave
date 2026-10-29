@@ -517,7 +517,7 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "request-floor", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },

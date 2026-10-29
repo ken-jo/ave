@@ -7,7 +7,9 @@ export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
   mode: "strict" | "default" | "auto" | "allow";
   headless: boolean;
+  sessionId?: string;
   ownerAway?: boolean;
+  automationPause?: { kind: "consecutive" | "total"; reason: string };
   paths?: readonly { lexical: string; canonical: string; effect: "read" | "write" }[];
   admissionDenial?: { code: string; reason: string };
   floor?: { code: PermissionFloorCode; reason: string };
@@ -49,8 +51,7 @@ function applyMode(request: PermissionDecisionRequest, reasonCode: string, reaso
   return askHuman(request, "reviewer-human-required", "Automatic review requires human approval.");
 }
 
-/** Applies the ordered stages in docs/architecture/permission-decision-tree.md to host-normalized evidence. */
-export function decidePermission(request: PermissionDecisionRequest): PermissionPipelineDecision {
+function decideBasePermission(request: PermissionDecisionRequest): PermissionPipelineDecision {
   if (request.admissionDenial) {
     return { outcome: "deny", reasonCode: request.admissionDenial.code, reason: request.admissionDenial.reason };
   }
@@ -92,4 +93,11 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
     return applyMode(request, "shell-approval", "This shell action requires approval.");
   }
   return applyMode(request, "tool-approval", "This action requires approval.");
+}
+
+/** Applies the ordered stages and the rest-of-turn human routing in docs/architecture/permission-decision-tree.md. */
+export function decidePermission(request: PermissionDecisionRequest): PermissionPipelineDecision {
+  const decision = decideBasePermission(request);
+  if (!request.automationPause || decision.outcome === "deny" || decision.outcome === "ask-forced") return decision;
+  return askHuman(request, "automation-paused", request.automationPause.reason);
 }

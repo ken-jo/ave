@@ -71,7 +71,7 @@ Fields depend on the dispatch site; an unavailable optional field is omitted. Pr
 
 The [permission decision tree](../architecture/permission-decision-tree.md) owns ordering. In-process argument hooks finish rewriting before authorization. The user script `PreToolUse` hook runs in admission before the target tool's permission checks and approval card. A blocked target creates no target approval card. The hook command's own shell authority remains separately enforced.
 
-Script decisions are block-only: `allow` means no objection and cannot grant the target tool permission, bypass a card or change its input. Permission-request hooks can also block, never elevate a decision.
+Script decisions are block-only: `allow` means no objection and cannot grant the target tool permission, bypass a card or change its input. Permission-request hooks can also block, never elevate a decision. Cancelling the turn interrupts pending hook admission and terminates only that hook’s managed process group; a late hook answer cannot start the tool.
 
 ## Results and failures
 

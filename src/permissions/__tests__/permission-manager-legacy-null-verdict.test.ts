@@ -70,7 +70,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     __resetSessionStoreForTest();
     emitSandboxAuditMock.mockClear();
     ({ pm } = makeManager());
-    pm.setInteractiveAutoApprove("medium");
+
   });
 
   afterEach(() => {

@@ -50,6 +50,11 @@ async function dispatchReview(args: ReviewArguments, headless: boolean): Promise
     ...(context.disposableSubstrate ? { disposableSubstrate: context.disposableSubstrate } : {}),
   }, { allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
     additionalDirectories: context.additionalDirectories ?? [] }, { lane: headless ? "headless" : "foreground-auto", abortSignal });
+  if (abortSignal?.aborted) {
+    emitPermissionReview(callbacks, { status: "failed", toolName, toolCategory: category, source, ...meta,
+      reason: "Permission review cancelled.", ...(approvalPurpose ? { approvalPurpose } : {}) });
+    abortSignal.throwIfAborted();
+  }
   const decision = manager.resolveReviewedPermission(initial, review);
   emitPermissionReview(callbacks, { status: decision.decision === "allow" ? "auto_approved" : "needs_approval",
     toolName, toolCategory: category, source, ...meta, verdictLevel: review.verdict.level, reason: decision.reason,

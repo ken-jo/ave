@@ -89,7 +89,7 @@ import { openEgressInvocation, type ShellEgressContext } from "../permissions/eg
 import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
-import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
+import { captureEffectNoApprover, currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
 import {
   getHostShellExecutionPlan,
@@ -2302,6 +2302,8 @@ function ambientShellEgressContext(): ShellEgressContext {
     headless: gate?.headless === true,
     ownerUnattended: gate?.permissionContext?.ownerUnattended === true,
     toolApprovalWait: captureToolApprovalWait(),
+    onNoApprover: captureEffectNoApprover(),
+    permissionContext: gate?.permissionContext,
     workspaceRoot: currentToolExecutionCwd(),
     approvalSurface: gate !== undefined && !gate.headless && gate.approvalSurface !== "unavailable" ? "interactive" : "unavailable",
   };

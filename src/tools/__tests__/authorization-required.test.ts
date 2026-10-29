@@ -1,15 +1,22 @@
-import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
+import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { t } from "../../i18n/index.js";
 import {
   PermissionManager,
   type ReviewerDispatchOutcome,
 } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
+import { LlmRiskClassifier, ReviewerDispatchError, RuleBasedRiskClassifier } from "../../permissions/reviewer/risk-classifier.js";
+import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -24,6 +31,7 @@ import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
 const temporaryDirectories: string[] = [];
+const verdictCaches: VerdictCache[] = [];
 
 function tempDirectory(prefix: string): string {
   const path = mkdtempSync(join(tmpdir(), prefix));
@@ -31,20 +39,50 @@ function tempDirectory(prefix: string): string {
   return path;
 }
 
+function verdictCache(path: string): VerdictCache {
+  const cache = new VerdictCache(path);
+  verdictCaches.push(cache);
+  return cache;
+}
+
 function askingPermissionManager(): PermissionManager {
   const manager = new PermissionManager(join(tempDirectory("ave-auth-required-"), "permissions.json"));
-  manager.checkDetailed = () => ({
-    decision: "ask",
-    reason: "fixture requires explicit approval",
-    layer: 3,
-    forceModal: true,
-  });
+  manager.setMode("strict");
+  return manager;
+}
+
+function reviewingPermissionManager(outcome: "low" | "high" | "unavailable" | "error" | "timeout" | "malformed" | "no-reviewer"): PermissionManager {
+  const root = tempDirectory("ave-auth-reviewed-");
+  const manager = new PermissionManager(join(root, "permissions.json"));
+  manager.setMode("auto");
+  if (outcome === "no-reviewer") {
+    wireJudgeForTest(manager);
+  } else {
+    const classifier = new LlmRiskClassifier({
+      async complete() {
+        if (outcome === "error") throw new Error("Review provider failed");
+        if (outcome === "timeout") throw new ReviewerDispatchError("timeout", "Review provider timed out");
+        return {
+          text: outcome === "malformed" ? "invalid verdict" : JSON.stringify({ level: outcome === "high" ? "high" : "low", reason: "Completed review" }),
+          tokensIn: 1, tokensOut: 1, costUsd: 0,
+        };
+      },
+    }, "review-model", "deny", {}, { maxAttempts: 1, baseDelayMs: 0, jitterPct: 0 });
+    const cache = verdictCache(join(root, "review-cache.jsonl"));
+    setReviewerForTest(manager, {
+      classifier, cache, recentlyDenied: makeRecentlyDeniedStore(join(root, "recently-denied.json")),
+      ...(outcome === "unavailable" ? { unavailableReason: "Selected reviewer unavailable" } : {}),
+    });
+  }
+  vi.spyOn(manager, "dispatchReviewer");
   return manager;
 }
 
 afterEach(async () => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
+  for (const cache of verdictCaches.splice(0)) await cache.flush();
+  vi.restoreAllMocks();
   for (const path of temporaryDirectories.splice(0)) await cleanupTmpDir(path);
 });
 
@@ -169,27 +207,11 @@ describe("ToolExecutor authorization-required control", () => {
       description: "Reviewed write probe",
       source: "builtin",
       category: "write",
-      jsonSchema: { type: "object", properties: {} },
+      pathFields: ["path"],
+      jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
       execute,
     }));
-    const permissionManager = new PermissionManager(
-      join(tempDirectory("ave-auth-reviewed-"), "permissions.json"),
-    );
-    permissionManager.setInteractiveAutoApprove("low");
-    permissionManager.checkDetailed = () => ({
-      decision: "ask",
-      reason: "review before execution",
-      layer: 5,
-      reviewer: {
-        route: "foreground-auto",
-        verdict: { level: "low", reason: "fixture says low risk" },
-      },
-    });
-    permissionManager.dispatchReviewer = vi.fn(async () => ({
-      verdict: { level: "low" as const, reason: "fixture says low risk" },
-      outcome: "fresh" as const,
-      judge: reviewerJudgeOutcomeForTest("allow", "fixture says low risk"),
-    })) as never;
+    const permissionManager = reviewingPermissionManager("low");
     const requestAndWait = vi.fn();
     const executor = new ToolExecutor(
       registry,
@@ -200,7 +222,7 @@ describe("ToolExecutor authorization-required control", () => {
     );
 
     const [result] = await executor.executeAll(
-      [{ id: "reviewed-allow", name: "reviewed_write_probe", input: {} }],
+      [{ id: "reviewed-allow", name: "reviewed_write_probe", input: { path: "authorization-result.txt" } }],
       {
         sessionId: "reviewed-without-surface",
         permissionContext: userPermissionContext({ approvalSurface: "unavailable" }),
@@ -222,36 +244,15 @@ describe("ToolExecutor authorization-required control", () => {
       description: "High-risk reviewed probe",
       source: "builtin",
       category: "write",
-      jsonSchema: { type: "object", properties: {} },
+      pathFields: ["path"],
+      jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
       execute,
     }));
-    const permissionDirectory = tempDirectory("ave-auth-high-review-");
-    const permissionManager = new PermissionManager(
-      join(permissionDirectory, "permissions.json"),
-    );
-    setReviewerForTest(permissionManager, {
-      classifier: {} as never,
-      cache: {} as never,
-      recentlyDenied: makeRecentlyDeniedStore(join(permissionDirectory, "deferred.jsonl")),
-    });
-    permissionManager.checkDetailed = () => ({
-      decision: "ask",
-      reason: "headless review required",
-      layer: 5,
-      reviewer: {
-        route: "headless",
-        verdict: { level: "high", reason: "fixture says high risk" },
-      },
-    });
-    permissionManager.dispatchReviewer = vi.fn(async () => ({
-      verdict: { level: "high" as const, reason: "fixture says high risk" },
-      outcome: "fresh" as const,
-      judge: reviewerJudgeOutcomeForTest("deny", "fixture says high risk"),
-    })) as never;
+    const permissionManager = reviewingPermissionManager("high");
     const executor = new ToolExecutor(registry, undefined, permissionManager);
 
     const [result] = await executor.executeAll(
-      [{ id: "reviewed-high", name: "reviewed_high_probe", input: {} }],
+      [{ id: "reviewed-high", name: "reviewed_high_probe", input: { path: "authorization-result.txt" } }],
       {
         sessionId: "reviewed-high-without-surface",
         permissionContext: userPermissionContext({
@@ -276,31 +277,15 @@ describe("ToolExecutor authorization-required control", () => {
       description: "Foreground high-risk probe",
       source: "builtin",
       category: "write",
-      jsonSchema: { type: "object", properties: {} },
+      pathFields: ["path"],
+      jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
       execute,
     }));
-    const permissionManager = new PermissionManager(
-      join(tempDirectory("ave-auth-foreground-high-"), "permissions.json"),
-    );
-    permissionManager.setInteractiveAutoApprove("low");
-    permissionManager.checkDetailed = () => ({
-      decision: "ask",
-      reason: "foreground review required",
-      layer: 5,
-      reviewer: {
-        route: "foreground-auto",
-        verdict: { level: "high", reason: "fixture says high risk" },
-      },
-    });
-    permissionManager.dispatchReviewer = vi.fn(async () => ({
-      verdict: { level: "high" as const, reason: "fixture says high risk" },
-      outcome: "fresh" as const,
-      judge: reviewerJudgeOutcomeForTest("ask", "fixture says high risk"),
-    })) as never;
+    const permissionManager = reviewingPermissionManager("high");
     const executor = new ToolExecutor(registry, undefined, permissionManager);
 
     const [result] = await executor.executeAll(
-      [{ id: "foreground-high", name: "foreground_high_probe", input: {} }],
+      [{ id: "foreground-high", name: "foreground_high_probe", input: { path: "authorization-result.txt" } }],
       {
         sessionId: "foreground-high-without-surface",
         permissionContext: userPermissionContext({ approvalSurface: "unavailable" }),
@@ -320,9 +305,8 @@ describe("ToolExecutor authorization-required control", () => {
     "error",
     "timeout",
     "malformed",
-    "sandbox-state-changed",
   ] satisfies ReviewerDispatchOutcome[])(
-    "keeps foreground reviewer %s as an ordinary failure on a windowless host",
+    "returns normal human-fallback authorization for foreground reviewer %s on a windowless host",
     async (outcome) => {
       const execute = vi.fn(async () => ({ output: "executed", isError: false }));
       const registry = new ToolRegistry();
@@ -331,35 +315,16 @@ describe("ToolExecutor authorization-required control", () => {
         description: "Foreground reviewer failure probe",
         source: "builtin",
         category: "write",
-        jsonSchema: { type: "object", properties: {} },
+        pathFields: ["path"],
+        jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
         execute,
       }));
-      const permissionManager = new PermissionManager(
-        join(tempDirectory(`ave-auth-foreground-${outcome}-`), "permissions.json"),
-      );
-      permissionManager.setInteractiveAutoApprove("low");
-      permissionManager.checkDetailed = () => ({
-        decision: "ask",
-        reason: "foreground review required",
-        layer: 5,
-        reviewer: {
-          route: "foreground-auto",
-          verdict: { level: "high", reason: "review required" },
-        },
-      });
-      permissionManager.dispatchReviewer = vi.fn(async () => ({
-        verdict: { level: "high" as const, reason: `fallback after ${outcome}` },
-        outcome,
-        judge: reviewerJudgeOutcomeForTest(
-          "ask", `foreground reviewer ${outcome} — explicit approval required`,
-          outcome === "sandbox-state-changed" ? "unavailable" : outcome === "malformed" ? "unparseable" : outcome,
-        ),
-      })) as never;
+      const permissionManager = reviewingPermissionManager(outcome);
       const executor = new ToolExecutor(registry, undefined, permissionManager);
       const permissionReviewEvents: Array<{ status: string; reason?: string }> = [];
 
       const [result] = await executor.executeAll(
-        [{ id: `foreground-${outcome}`, name: "foreground_reviewer_failure_probe", input: {} }],
+        [{ id: `foreground-${outcome}`, name: "foreground_reviewer_failure_probe", input: { path: "authorization-result.txt" } }],
         {
           sessionId: `foreground-${outcome}-without-surface`,
           permissionContext: userPermissionContext({ approvalSurface: "unavailable" }),
@@ -371,16 +336,17 @@ describe("ToolExecutor authorization-required control", () => {
 
       expect(execute).not.toHaveBeenCalled();
       expect(result.is_error).toBe(true);
-      expect(result.authorizationRequired).toBeUndefined();
-      expect(result.content).toContain(`foreground reviewer ${outcome}`);
+      expect(authorizationRequiredStateOf(result.authorizationRequired)).toMatchObject({
+        kind: "tool", toolName: "foreground_reviewer_failure_probe", reason: "approval-surface-unavailable",
+      });
+      expect(result.content).toBe(NO_APPROVER_MESSAGE);
       expect(result.content).not.toContain("Authorization required");
       expect(permissionReviewEvents.map((event) => event.status)).toEqual([
         "reviewing",
-        "failed",
+        "needs_approval",
       ]);
-      expect(permissionReviewEvents.at(-1)?.reason).toContain(
-        `foreground reviewer ${outcome}`,
-      );
+      expect(permissionReviewEvents.at(-1)?.reason).toBe(NO_APPROVER_MESSAGE);
+      await expect(vi.mocked(permissionManager.dispatchReviewer).mock.results[0]?.value).resolves.toMatchObject({ outcome });
     },
   );
 
@@ -394,38 +360,15 @@ describe("ToolExecutor authorization-required control", () => {
         description: "Reviewer failure probe",
         source: "builtin",
         category: "write",
-        jsonSchema: { type: "object", properties: {} },
+        pathFields: ["path"],
+        jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
         execute,
       }));
-      const permissionDirectory = tempDirectory(`ave-auth-${failure}-`);
-      const permissionManager = new PermissionManager(
-        join(permissionDirectory, "permissions.json"),
-      );
-      if (failure === "timeout") {
-        setReviewerForTest(permissionManager, {
-          classifier: {} as never,
-          cache: {} as never,
-          recentlyDenied: makeRecentlyDeniedStore(join(permissionDirectory, "deferred.jsonl")),
-        });
-        permissionManager.dispatchReviewer = vi.fn(async () => ({
-          verdict: { level: "high" as const, reason: "fallback after timeout" },
-          outcome: "timeout" as const,
-          judge: reviewerJudgeOutcomeForTest("deny", "fallback after timeout", "timeout"),
-        })) as never;
-      }
-      permissionManager.checkDetailed = () => ({
-        decision: "ask",
-        reason: "headless review required",
-        layer: 5,
-        reviewer: {
-          route: "headless",
-          verdict: { level: "high", reason: "review required" },
-        },
-      });
+      const permissionManager = reviewingPermissionManager(failure);
       const executor = new ToolExecutor(registry, undefined, permissionManager);
 
       const [result] = await executor.executeAll(
-        [{ id: `reviewer-${failure}`, name: "reviewer_failure_probe", input: {} }],
+        [{ id: `reviewer-${failure}`, name: "reviewer_failure_probe", input: { path: "authorization-result.txt" } }],
         {
           sessionId: `reviewer-${failure}-without-surface`,
           permissionContext: userPermissionContext({
@@ -439,10 +382,8 @@ describe("ToolExecutor authorization-required control", () => {
       expect(result.is_error).toBe(true);
       expect(result.authorizationRequired).toBeUndefined();
       expect(result.content).not.toContain("Authorization required");
-      expect(result.content).toContain("reviewer_failure_probe");
-      if (failure === "timeout") {
-        expect(result.content).toContain("fallback after timeout");
-      }
+      expect(result.content).toBe(NO_APPROVER_MESSAGE);
+      await expect(vi.mocked(permissionManager.dispatchReviewer).mock.results[0]?.value).resolves.toMatchObject({ outcome: failure === "timeout" ? "timeout" : "unavailable" });
     },
   );
 
@@ -484,7 +425,7 @@ describe("ToolExecutor authorization-required control", () => {
     expect(result.content).not.toContain("Authorization required");
   });
 
-  it("returns a directory authorization control instead of calling a hidden gate", async () => {
+  it("returns the unified tool authorization control for an outside write without calling a hidden gate", async () => {
     const execute = vi.fn(async () => ({ output: "executed", isError: false }));
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -506,9 +447,10 @@ describe("ToolExecutor authorization-required control", () => {
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
+    permissionManager.setMode("strict");
     setReviewerForTest(permissionManager, {
-      classifier: {} as never,
-      cache: {} as never,
+      classifier: new RuleBasedRiskClassifier(),
+      cache: verdictCache(join(permissionDirectory, "review-cache.jsonl")),
       recentlyDenied,
     });
     const executor = new ToolExecutor(
@@ -533,9 +475,9 @@ describe("ToolExecutor authorization-required control", () => {
     expect(result.content).not.toContain(outside);
     const terminalState = authorizationRequiredStateOf(result.authorizationRequired);
     expect(terminalState).toMatchObject({
-      kind: "directory",
+      kind: "tool",
       toolName: "out_of_scope_write",
-      reason: "directory-authorization-required",
+      reason: "approval-surface-unavailable",
     });
     const pending = (await recentlyDenied.list());
     expect(pending).toHaveLength(1);
@@ -566,9 +508,10 @@ describe("ToolExecutor authorization-required control", () => {
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
+    permissionManager.setMode("strict");
     setReviewerForTest(permissionManager, {
-      classifier: {} as never,
-      cache: {} as never,
+      classifier: new RuleBasedRiskClassifier(),
+      cache: verdictCache(join(permissionDirectory, "review-cache.jsonl")),
       recentlyDenied,
     });
     const executor = new ToolExecutor(
@@ -753,5 +696,46 @@ describe("ToolExecutor authorization-required control", () => {
     };
 
     expect(authorizationRequiredStateOf(forged)).toBeUndefined();
+  });
+
+  it("keeps caller cancellation terminal and rejects foreign or late signed-card responses", async () => {
+    const execute = vi.fn(async () => ({ output: "executed", isError: false }));
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "cancelled_write_probe", description: "Cancellable write", source: "builtin", category: "write",
+      jsonSchema: { type: "object", properties: {} }, execute,
+    }));
+    const surface = makeMockWebContents();
+    const foreignSurface = makeMockWebContents();
+    const shown = deferred<ApprovalRequest>();
+    surface.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) shown.resolve(request);
+    });
+    const gate = new ApprovalGate(surface as never);
+    const caller = new AbortController();
+    const executor = new ToolExecutor(registry, undefined, askingPermissionManager(), undefined, gate);
+    const running = executor.executeAll([{ id: "cancelled-write", name: "cancelled_write_probe", input: {} }], {
+      sessionId: "cancelled-authorization", abortSignal: caller.signal,
+      permissionContext: userPermissionContext({ approvalSurface: "interactive" }),
+    });
+    try {
+      const card = await shown.promise;
+      const response = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
+      expect(gate.resolveFromDesktopRenderer(card.id, response, foreignSurface as never)).toBeNull();
+      expect(gate.pendingCount).toBe(1);
+      expect(execute).not.toHaveBeenCalled();
+      caller.abort(new Error("owner stopped"));
+      const [result] = await running;
+      expect(result.is_error).toBe(true);
+      expect(result.content).toBe(t("be_executor.toolExecutionCancelled"));
+      expect(result.authorizationRequired).toBeUndefined();
+      expect(gate.pendingCount).toBe(0);
+      expect(gate.resolveFromDesktopRenderer(card.id, response, surface as never)).toBeNull();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      caller.abort();
+      gate.disposeAll();
+      await running;
+    }
   });
 });
