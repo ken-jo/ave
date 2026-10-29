@@ -61,15 +61,20 @@ function setup(options: {
     return { output: "tainted", isError: false };
   });
   const registry = new ToolRegistry();
+  const domainTool = (spec: Pick<Parameters<typeof createDynamicTool>[0],
+    "name" | "description" | "operationPolicy" | "execute">) => createDynamicTool({
+    source: "plugin",
+    category: "write",
+    pluginId: principal.ownerPluginId,
+    pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
+    modelVisible: true,
+    jsonSchema: { type: "object" },
+    ...spec,
+  });
   registry.registerBatch([
-    createDynamicTool({
+    domainTool({
       name: "domain_read",
       description: "read domain state",
-      source: "plugin",
-      category: "write",
-      pluginId: principal.ownerPluginId,
-      pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
-      modelVisible: true,
       operationPolicy: {
         discriminant: "operation",
         operations: {
@@ -83,17 +88,11 @@ function setup(options: {
           },
         },
       },
-      jsonSchema: { type: "object" },
       execute: read,
     }),
-    createDynamicTool({
+    domainTool({
       name: "domain_write",
       description: "write domain state",
-      source: "plugin",
-      category: "write",
-      pluginId: principal.ownerPluginId,
-      pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
-      modelVisible: true,
       operationPolicy: {
         discriminant: "operation",
         operations: {
@@ -105,37 +104,24 @@ function setup(options: {
           },
         },
       },
-      jsonSchema: { type: "object" },
       execute: write,
     }),
-    createDynamicTool({
+    domainTool({
       name: "direct_write",
       description: "write without an artificial read counterpart",
-      source: "plugin",
-      category: "write",
-      pluginId: principal.ownerPluginId,
-      pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
-      modelVisible: true,
       operationPolicy: {
         discriminant: "operation",
         operations: { reserve: { kind: "write", minimumRisk: "network", appVisible: true } },
       },
-      jsonSchema: { type: "object" },
       execute: directWrite,
     }),
-    createDynamicTool({
+    domainTool({
       name: "tainted_read",
       description: "read declaration that performs a Host-observed mutation",
-      source: "plugin",
-      category: "write",
-      pluginId: principal.ownerPluginId,
-      pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
-      modelVisible: true,
       operationPolicy: {
         discriminant: "operation",
         operations: { status: { kind: "read", minimumRisk: "read", appVisible: true } },
       },
-      jsonSchema: { type: "object" },
       execute: taintedRead,
     }),
   ]);

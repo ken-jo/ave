@@ -43,26 +43,36 @@ function makeGate(choice: ApprovalChoice): {
   return { gate, requests };
 }
 
+function makeTrackedTool(
+  spy: { ran: boolean },
+  output: string,
+  spec: Omit<Parameters<typeof createDynamicTool>[0], "execute" | "jsonSchema"> & { jsonSchema?: object },
+): Tool {
+  return createDynamicTool({
+    pathFields: [],
+    jsonSchema: { type: "object", properties: {} },
+    ...spec,
+    execute: async () => {
+      spy.ran = true;
+      return { output, isError: false };
+    },
+  });
+}
+
 // Force a pre-execution ask in both flag states to isolate relaxation from category classification.
 function makePluginNoEffectTool(
   spy: { ran: boolean },
   ids: { readonly pluginId?: string; readonly workerId?: string } = {},
 ): Tool {
   const pluginId = ids.pluginId ?? "p-read";
-  return createDynamicTool({
+  return makeTrackedTool(spy, "noeffect-ok", {
     name: "plugin_noeffect",
     description: "A plugin tool that performs no host-mediated effect.",
     source: "plugin",
     pluginId,
     ...(ids.workerId ? { workerId: ids.workerId } : {}),
     category: "write",
-    pathFields: [],
     isReadOnly: () => false,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => {
-      spy.ran = true;
-      return { output: "noeffect-ok", isError: false };
-    },
   });
 }
 
@@ -128,71 +138,49 @@ function makePluginOpenUrlTool(
 
 // A host-classified read auto-allows at layer 6, bypassing the ask-relaxation block.
 function makePluginReadTool(spy: { ran: boolean }): Tool {
-  return createDynamicTool({
+  return makeTrackedTool(spy, "reader-ok", {
     name: "plugin_reader",
     description: "A plugin tool the host inspector classifies as a read.",
     source: "plugin",
     pluginId: "p-reader",
     category: "read",
-    pathFields: [],
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",
       properties: { command: { type: "string" } },
     },
-    execute: async () => {
-      spy.ran = true;
-      return { output: "reader-ok", isError: false };
-    },
   });
 }
 
 function makeMcpTool(spy: { ran: boolean }): Tool {
-  return createDynamicTool({
+  return makeTrackedTool(spy, "mcp-ok", {
     name: "mcp_tool",
     description: "An external MCP tool.",
     source: "mcp",
     mcpServerId: "srv-1",
     category: "network",
-    pathFields: [],
     isReadOnly: () => false,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => {
-      spy.ran = true;
-      return { output: "mcp-ok", isError: false };
-    },
   });
 }
 
 function makeBuiltinWriteTool(spy: { ran: boolean }): Tool {
-  return createDynamicTool({
+  return makeTrackedTool(spy, "builtin-ok", {
     name: "builtin_write",
     description: "A builtin write tool.",
     source: "builtin",
     category: "write",
-    pathFields: [],
     isReadOnly: () => false,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => {
-      spy.ran = true;
-      return { output: "builtin-ok", isError: false };
-    },
   });
 }
 
 function makeBuiltinReadTool(spy: { ran: boolean }): Tool {
-  return createDynamicTool({
+  return makeTrackedTool(spy, "builtin-read-ok", {
     name: "builtin_read",
     description: "A builtin read tool.",
     source: "builtin",
     category: "read",
-    pathFields: [],
     isReadOnly: () => true,
     jsonSchema: { type: "object", properties: { command: { type: "string" } } },
-    execute: async () => {
-      spy.ran = true;
-      return { output: "builtin-read-ok", isError: false };
-    },
   });
 }
 

@@ -60,6 +60,12 @@ function shellProbe(execute: (ctx: import("../types.js").ToolExecutionContext) =
   return tool;
 }
 
+function shellProbeRegistry(execute: Parameters<typeof shellProbe>[0]): ToolRegistry {
+  const registry = new ToolRegistry();
+  registry.register(shellProbe(execute));
+  return registry;
+}
+
 function dynamicShellProbe(execute: (ctx: import("../types.js").ToolExecutionContext) => void): Tool {
   return createDynamicTool({
     name: "bash",
@@ -157,8 +163,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     if (sandbox === "active") fullDarwinAsrt();
     else explicitlySandboxOff("darwin");
     const executed = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(executed));
+    const registry = shellProbeRegistry(executed);
     let gate: ApprovalGate;
     const send = vi.fn((channel: string, request: ApprovalRequest) => {
       if (channel !== "ave:approval:request") return;
@@ -183,8 +188,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it("does not turn a hard denial into explicit host approval", async () => {
     fullDarwinAsrt();
     const executed = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(executed));
+    const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once");
     const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "deny", reason: "hard policy denial", layer: 1 }), undefined, gate);
     const result = await executor.executeAll([{ id: "explicit-host-deny", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext() });
@@ -196,8 +200,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it.each(["headless", "remote"])("rejects %s host requests before a prerequisite directory prompt", async (origin) => {
     fullDarwinAsrt();
     const executed = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(executed));
+    const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once");
     const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", layer: 6 }), undefined, gate);
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
@@ -213,8 +216,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     fullDarwinAsrt();
     const audit = recordingAuditLogger();
     const executed = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(executed));
+    const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once", audit.auditLogger);
     const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", layer: 3 }), undefined, gate, undefined, audit.auditLogger);
     const result = await executor.executeAll([{ id: "headless-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext({ headless: true }) });
@@ -287,8 +289,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it.each(["default", "auto", "allow"] as const)("asks for a Plan B shell in %s mode without consulting the reviewer", async (mode) => {
     partialWindowsAsrt();
     const execute = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b.json");
     pm.setMode(mode);
     pm.setInteractiveAutoApprove("medium");
@@ -320,8 +321,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it.each(["default", "allow"] as const)("sends a Plan B shell card that offers the session, project and always saves in %s mode", async (mode) => {
     partialWindowsAsrt();
     const execute = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-card.json");
     pm.setMode(mode);
     let gate: ApprovalGate;
@@ -365,8 +365,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     partialWindowsAsrt();
     let observedPermit: unknown;
     const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
     pm.setMode(mode);
     pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
@@ -390,8 +389,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     partialWindowsAsrt();
     let observedPermit: unknown;
     const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-headless.json");
     pm.setMode("allow");
     pm.setRules(withRule ? [{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }] : [{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
@@ -430,8 +428,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it("does not run a headless Plan B shell on an allow that only looks like the exact-rule lane", async () => {
     partialWindowsAsrt();
     const execute = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const requestAndWait = vi.fn();
     const result = await new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "allow rules Bash(echo no-run)", layer: 3 }), undefined, { requestAndWait } as never).executeAll(
       [{ id: "partial-shell-lookalike", name: "bash", input: { command: "echo no-run" } }],
@@ -560,8 +557,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it("preserves the Plan-B projection across ask, deny terminal audit, and telemetry", async () => {
     partialWindowsAsrt();
     const executed = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(executed));
+    const registry = shellProbeRegistry(executed);
     const audit = recordingAuditLogger();
     const { gate } = gateResolving("deny-once", audit.auditLogger);
 
@@ -618,8 +614,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it("keeps the safe projection on a permitless requested-sandbox error", async () => {
     partialWindowsAsrt();
     const execute = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     let request: ApprovalRequest | undefined;
     // This imitates an untrusted/stale gate response: it says allow-once but carries no host-issued receipt bound to the private action description.
     const requestAndWait = vi.fn(async (pending: ApprovalRequest) => {
@@ -661,8 +656,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it("fails closed when neither PermissionManager nor ApprovalGate is present", async () => {
     partialWindowsAsrt();
     const execute = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const executor = new ToolExecutor(registry, undefined, undefined, undefined, undefined);
 
     const result = await executor.executeAll(
@@ -698,8 +692,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   it("fails closed before strict headless reviewer dispatch", async () => {
     partialWindowsAsrt();
     const execute = vi.fn();
-    const registry = new ToolRegistry();
-    registry.register(shellProbe(execute));
+    const registry = shellProbeRegistry(execute);
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-headless.json");
     pm.setMode("strict");
     const requestAndWait = vi.fn();
