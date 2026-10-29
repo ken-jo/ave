@@ -106,18 +106,6 @@ function successfulRun(output = "broker output") {
   } as const;
 }
 
-function runningBrokerShell(executionId: string) {
-  return { output: "", isError: false, executionId, offset: 0, status: "running" };
-}
-
-function brokerShellRead(executionId: string, output: string, nextOffset: number) {
-  return { executionId, offset: 0, nextOffset, output, isError: false, running: true, truncated: false, status: "running" };
-}
-
-function cancelledBrokerShell(executionId: string, output: string, nextOffset: number, isError = true) {
-  return { ...terminalResult("cancelled"), executionId, nextOffset, output, isError, truncated: false };
-}
-
 function issueBrokerShellGrant(input: {
   command: string;
   cwd: string;
@@ -187,6 +175,18 @@ function terminalResult(
     ownedResourcesZero: status !== "cleanup-unproven",
     receiptDigest: RECEIPT_DIGEST,
   } as const;
+}
+
+function runningBrokerShell(executionId: string) {
+  return { output: "", isError: false, executionId, offset: 0, status: "running" };
+}
+
+function brokerShellRead(executionId: string, output: string, nextOffset: number) {
+  return { executionId, offset: 0, nextOffset, output, isError: false, running: true, truncated: false, status: "running" };
+}
+
+function cancelledBrokerShell(executionId: string, output: string, nextOffset: number, isError = true) {
+  return { ...terminalResult("cancelled"), executionId, nextOffset, output, isError, truncated: false };
 }
 
 beforeEach(() => {

@@ -203,11 +203,10 @@ it("renders the sealed native image for the second shell dialect without changin
 
 function controlledChild() {
   const child = new EventEmitter();
-  const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  Object.assign(child, { stdin, stdout, stderr, exitCode: null, signalCode: null, pid: undefined, killed: false, kill: vi.fn(() => true) });
-  return { child, stdin, stdout, stderr };
+  Object.assign(child, { stdin: new PassThrough(), stdout, stderr, exitCode: null, signalCode: null, pid: undefined, killed: false, kill: vi.fn(() => true) });
+  return { child, stdout, stderr };
 }
 
 function completedChild(output: string, beforeClose?: () => void, errorOutput = "") {
