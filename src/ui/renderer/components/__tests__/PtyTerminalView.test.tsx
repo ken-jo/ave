@@ -304,10 +304,8 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const view = render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 15" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual" }));
-    expect(screen.queryByTestId("terminal-lane-agent")).toBeNull();
-    expect(screen.queryByTestId("terminal-lane-manual")).toBeNull();
-    expect(screen.getByTestId("terminal-host-identity").textContent).toContain(t("ptyTerminal.hostLabel"));
-    expect(screen.getByTestId("terminal-host-identity").textContent).toContain(t("ptyTerminal.noAgentAccess"));
+    expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadge"));
+    expect(screen.queryAllByRole("button", { pressed: true })).toHaveLength(0);
     expect(terminals).toHaveLength(1);
     view.unmount();
     expect(terminal.kill).not.toHaveBeenCalled();

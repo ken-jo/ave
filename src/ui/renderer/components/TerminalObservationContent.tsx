@@ -55,7 +55,6 @@ function elapsedSeconds(command: TerminalObservedCommand, now: number): number {
 export function useTerminalObservation(sessionId: string | undefined, observe: boolean) {
   const [view, setView] = useState<TerminalObservationView | null>(null);
   const [subscriptionError, setSubscriptionError] = useState<{ sessionId: string; code: ObservationError } | null>(null);
-  const [now, setNow] = useState(Date.now);
   const acknowledged = useRef("");
 
   useEffect(() => {
@@ -140,14 +139,6 @@ export function useTerminalObservation(sessionId: string | undefined, observe: b
   const current = view?.sessionId === sessionId ? view : null;
   const error = current?.error ?? (subscriptionError && subscriptionError.sessionId === sessionId ? subscriptionError.code : undefined);
   const commands = useMemo(() => current?.commands ?? [], [current?.commands]);
-  const running = commands.findLast((command) => command.status === "running");
-
-  useEffect(() => {
-    if (!running || !observe) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, [running?.id, observe]);
 
   useEffect(() => {
     if (!current) return;
@@ -162,7 +153,19 @@ export function useTerminalObservation(sessionId: string | undefined, observe: b
       sessionId: current.sessionId, seq: current.seq }).then((result) => { if (!result.ok) fail(); }, fail);
   }, [current?.binding.targetId, current?.sessionId, current?.seq]);
 
-  return useMemo(() => ({ sessionId, commands, error, now }), [sessionId, commands, error, now]);
+  return useMemo(() => ({ sessionId, commands, error }), [sessionId, commands, error]);
+}
+
+/** A one-second clock local to the command list, so a running command's elapsed time never re-renders the whole transcript. */
+function useRunningClock(runningId: string | undefined): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (runningId === undefined) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [runningId]);
+  return now;
 }
 
 export type TerminalObservationState = ReturnType<typeof useTerminalObservation>;
@@ -172,8 +175,9 @@ export function TerminalObservationCommands({ observation, commands = observatio
   observation: TerminalObservationState; commands?: TerminalObservedCommand[];
 }) {
   const { t } = useTranslation();
-  const { sessionId, error, now } = observation;
+  const { sessionId, error } = observation;
   const running = commands.findLast((command) => command.status === "running");
+  const now = useRunningClock(running?.id);
   const latest = running ?? commands.at(-1);
   if (!sessionId || (!latest && !error)) return null;
   return (

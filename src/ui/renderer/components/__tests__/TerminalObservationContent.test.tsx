@@ -265,6 +265,27 @@ describe("conversation-owned inline terminal commands", () => {
     expect(rows[1]!.querySelector("summary")!.textContent).toContain("/workspace/project");
   });
 
+  it("releases while hidden, subscribes afresh when shown again and keeps expanded rows", async () => {
+    const view = (observe: boolean) => <TooltipProvider><TranscriptRenderer entries={entries} streaming={false} currentSessionId={SESSION} observeTerminal={observe} /></TooltipProvider>;
+    const subscriptions = () => acknowledge.mock.calls.filter(([request]) => request.action === "subscribe-terminal").length;
+    const { rerender } = render(view(true));
+    await waitFor(() => expect(subscriptions()).toBe(1));
+    await emit(snapshot(1, [command({ command: "first-command", status: "completed", exitCode: 0, outputTail: "kept output\n" })]));
+    const row = screen.getByTestId("terminal-observation-command-row") as HTMLDetailsElement;
+    fireEvent.click(row.querySelector("summary")!);
+    expect(row.open).toBe(true);
+    rerender(view(false));
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 }));
+    expect(listeners.size).toBe(0);
+    rerender(view(true));
+    await waitFor(() => expect(subscriptions()).toBe(2));
+    await emit(snapshot(2, [command({ command: "first-command", status: "completed", exitCode: 0, outputTail: "kept output\n" })]));
+    const shown = screen.getByTestId("terminal-observation-command-row") as HTMLDetailsElement;
+    expect(shown).toBe(row);
+    expect(shown.open).toBe(true);
+    expect(within(shown).getByTestId("terminal-observation-output").textContent).toContain("kept output");
+  });
+
   it("labels confined and explicitly approved host commands with their actual execution domain", async () => {
     await open();
     await emit(snapshot(1, [command(), command({ id: "host", toolUseId: "host-tool", command: "approved-host-command", sandbox: { mode: "unconfined", detail: "approved host execution" } })]));

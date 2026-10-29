@@ -269,8 +269,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       data-testid="chat-side-panel-pty-terminal"
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
-        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary">{t("ptyTerminal.hostLabel")}</span>
-        <span className="text-muted-foreground">{t("ptyTerminal.noAgentAccess")}</span>
+        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t("ptyTerminal.hostBadge")}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
           {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
         </span>
