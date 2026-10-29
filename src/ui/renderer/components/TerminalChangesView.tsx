@@ -74,7 +74,7 @@ export function TerminalChangesView({ api, tabId, visible }: { api: AveApi; tabI
           selectedId={null}
           onSelect={ignoreSelection}
           revealRequest={revealRequest}
-          defaultFilter="changed"
+          matchedOnly
           revealOpensDetail
           emptyDetail={t("terminalFileReview.diffUnavailable")}
         />

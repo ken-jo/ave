@@ -263,7 +263,7 @@ describe("TerminalChangesView", () => {
     await waitFor(() => expect(annotationFor(1)).not.toBeNull());
     const changes = screen.getByTestId("terminal-changes-view");
     expect(within(changes).getByTestId("terminal-changes-caption")).toHaveTextContent("에이전트가 이 세션에서 바꾼 파일 · 최근 사용: bash run.sh");
-    expect(within(changes).getByTestId("chat-side-panel-file-filter-changed")).toHaveAttribute("aria-pressed", "true");
+    expect(within(changes).getByTestId("chat-side-panel-matched-files")).toBeTruthy();
     fireEvent.click(within(annotationFor(1)!).getByRole("button", { name: "[변경 보기]" }));
     const detail = await within(changes).findByTestId("turn-change-detail");
     expect(detail).toHaveTextContent("run.sh");
@@ -272,6 +272,24 @@ describe("TerminalChangesView", () => {
     expect(within(changes).getByTestId("terminal-changes-advisory")).toHaveAccessibleName(t("terminalFileReview.advisory"));
     expect(changes.textContent).not.toContain(t("terminalFileReview.advisory"));
     expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("lists only the files main matched: no 전체 filter, no folder browsing, no workspace listing", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    const workspace = (window as unknown as { ave: { workspace: Record<string, unknown> } }).ave.workspace;
+    const listRoots = vi.fn(async () => ({ ok: true, defaultRoot: "/repo", roots: [{ path: "/repo", isDefault: true }] }));
+    const listDir = vi.fn(async (path: string) => ({ ok: true, path, entries: [{ name: "secret.env", path: "/repo/secret.env", type: "file" }], truncated: false }));
+    Object.assign(workspace, { listRoots, listDir });
+    render(<TooltipProvider>{view(reviewApi(), 0, fakeAnchors())}<TerminalChangesView api={changesApi()} tabId={session.tabId} visible /></TooltipProvider>);
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
+    const changes = screen.getByTestId("terminal-changes-view");
+    const list = await within(changes).findByTestId("chat-side-panel-matched-files");
+    expect(within(list).getAllByTestId("chat-side-panel-fs-file").map((row) => row.getAttribute("title"))).toEqual(evidence().files.map((file) => file.path));
+    expect(within(changes).queryByTestId("chat-side-panel-file-filter-all")).toBeNull();
+    expect(within(changes).queryByTestId("chat-side-panel-fs-folder")).toBeNull();
+    expect(changes.textContent).not.toContain("secret.env");
+    expect(listRoots).not.toHaveBeenCalled();
+    expect(listDir).not.toHaveBeenCalled();
   });
 
   it("opens straight to the clicked file's diff in a narrow work panel, where the tree and the diff take turns", async () => {

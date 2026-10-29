@@ -434,6 +434,27 @@ describe("host execution provenance", () => {
     });
   });
 
+  it("treats a word too long to be a file name as no file, rather than failing the snapshot", async () => {
+    const path = await changed("run.sh", `${"x".repeat(5_000)}\n`);
+    const snapshot = await evidence.snapshot(directory, [block("./run.sh")]);
+    expect(snapshot.warnings[0]?.files).toEqual([path]);
+  });
+
+  it("bounds the review text a snapshot carries in all, listing the files past the budget without a review", async () => {
+    // Six files of nearly 1 MiB each: every one is within the per-file bound, together they are not.
+    const names = ["a.sh", "b.sh", "c.sh", "d.sh", "e.sh", "f.sh"];
+    for (const name of names) {
+      const path = await file(name, `# ${"x".repeat(1_000_000)}\n`);
+      await evidence.recordWrite("session-a", path, null, await heldIdentity(path));
+    }
+    const snapshot = await evidence.snapshot(directory, [block(names.map(name => `./${name}`).join("; "))]);
+    expect(snapshot.files).toHaveLength(names.length);
+    const reviewed = snapshot.files.filter(item => item.review);
+    expect(reviewed.length).toBeGreaterThan(0);
+    expect(reviewed.length).toBeLessThan(names.length);
+    expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(4 * 1_048_576 + 64 * 1024);
+  });
+
   it("caps text reads and distinguishes absent files from unavailable text", async () => {
     const oversized = await file("large", "x".repeat(1_048_577));
     expect(await readTerminalReviewText(oversized)).toBeUndefined();

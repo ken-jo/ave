@@ -777,9 +777,51 @@ function ProjectRootsBrowser({
   );
 }
 
+/**
+ * The files a view's changes list, as the workspace tree's file rows, built from nothing but those changes: no root
+ * or directory is listed, so nothing outside the set can appear or be opened from here.
+ */
+function MatchedFileList({ files, changes, query, selectedPath, onOpenFile }: {
+  files: readonly WorkspaceFileItem[];
+  changes: WorkspaceChanges;
+  query: string;
+  selectedPath: string | null;
+  onOpenFile: (path: string, file?: WorkspaceFileItem, root?: string) => void;
+}) {
+  const { t } = useTranslation();
+  const root = changes.workspaceRoot ?? null;
+  const rows = useMemo(() => {
+    const tree = buildWorkspaceTree({ root, roots: root ? [root] : [], childrenByPath: {}, files, changes: changes.changedFiles, filter: "changed", query,
+      ...(changes.workspaceRoot ? { workspaceRoot: changes.workspaceRoot } : {}) });
+    const flat: WorkspaceTreeNode[] = [];
+    const walk = (nodes: readonly WorkspaceTreeNode[]) => { for (const node of nodes) node.type === "file" ? flat.push(node) : walk(node.children); };
+    walk(tree.nodes);
+    walk(tree.outsideNodes);
+    return flat;
+  }, [root, files, changes.changedFiles, changes.workspaceRoot, query]);
+  const selected = selectedPath ? normalizeWorkspaceTreePath(selectedPath, root) : null;
+  if (rows.length === 0) return <EmptyState>{t("chatPreviewRail.emptyState")}</EmptyState>;
+  return <div role="list" data-testid="chat-side-panel-matched-files">
+    {rows.map((node) => {
+      const opened = node.path === selected;
+      const label = root && node.path.startsWith(`${root.replace(/\/$/, "")}/`) ? node.path.slice(root.replace(/\/$/, "").length + 1) : node.path;
+      return <button key={node.path} type="button" role="listitem" aria-current={opened ? true : undefined} title={node.path}
+        data-testid="chat-side-panel-fs-file" onClick={() => onOpenFile(node.path, node.file, root ?? undefined)}
+        className={cn("flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs outline-none hover:bg-muted/(--opacity-muted) focus-visible:ring-1 focus-visible:ring-ring", opened && FILE_CHANGE_SELECTED_CLASS)}>
+        {createElement(fileIcon(node.name), { className: "h-3 w-3 shrink-0 text-muted-foreground" })}
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {node.change ? <>
+          <span className="shrink-0 font-mono text-[11px]" data-testid="chat-side-panel-file-change-counts"><span className={FILE_CHANGE_ADDED_CLASS}>+{node.change.countsKnown ? node.change.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{node.change.countsKnown ? node.change.removed : "—"}</span></span>
+          <span title={t("chatPreviewRail.fileOperation." + node.change.operation)} data-testid="chat-side-panel-file-change-operation" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold", fileChangeBadgeClass(node.change.operation))}>{fileChangeLetter(node.change.operation)}</span>
+        </> : null}
+      </button>;
+    })}
+  </div>;
+}
+
 export function FileBrowserWorkspace({
   api, sessionId, visible, files, targetById, selectedId, onSelect,
-  changes: providedChanges, revealRequest, onReference, onFileReference, defaultFilter = "all", emptyDetail, revealOpensDetail = false,
+  changes: providedChanges, revealRequest, onReference, onFileReference, matchedOnly = false, emptyDetail, revealOpensDetail = false,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -792,8 +834,11 @@ export function FileBrowserWorkspace({
   revealRequest?: FileWorkspaceReveal | null;
   onReference?: (reference: FileMentionReference) => void;
   onFileReference?: (path: string) => void;
-  /** The filter the tree opens with. */
-  defaultFilter?: WorkspaceFileFilter;
+  /**
+   * Show only the files `changes` lists, with no filter, no directory browsing and no workspace listing: a view whose
+   * file set is exactly what main delivered (a terminal's matched agent-changed files) never lists anything else.
+   */
+  matchedOnly?: boolean;
   /** Shown instead of any file preview when a selection has no reviewable change: a view whose files may only be read
    * through its own change review (a terminal's agent-changed files) never falls back to reading the file. */
   emptyDetail?: string;
@@ -802,6 +847,7 @@ export function FileBrowserWorkspace({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const defaultFilter: WorkspaceFileFilter = matchedOnly ? "changed" : "all";
   const [filter, setFilter] = useState<WorkspaceFileFilter>(defaultFilter);
   const [fsPath, setFsPath] = useState<string | null>(null);
   const [fsRoot, setFsRoot] = useState<string | null>(null);
@@ -873,20 +919,21 @@ export function FileBrowserWorkspace({
       style={{ width: narrow ? "100%" : actualTreeWidth }} data-testid="chat-side-panel-file-tree">
       <div className="shrink-0 space-y-2 p-2">
         <SearchInput query={query} setQuery={setQuery} placeholder={t("chatPreviewRail.searchPlaceholder")} />
-        <div role="group" aria-label={t("chatPreviewRail.fileFilterLabel")} className="flex gap-0.5 rounded-lg bg-muted p-0.5">
+        {matchedOnly ? null : <div role="group" aria-label={t("chatPreviewRail.fileFilterLabel")} className="flex gap-0.5 rounded-lg bg-muted p-0.5">
           {(["all", "changed", "session"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value}
             data-testid={`chat-side-panel-file-filter-${value}`} onClick={() => setFilter(value)}
             className={cn("h-7 min-w-0 flex-1 rounded-md px-1 text-[11px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring", filter === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
             {t(value === "all" ? "chatPreviewRail.fileFilterAll" : value === "changed" ? "chatPreviewRail.fileFilterChanged" : "chatPreviewRail.fileFilterSession")}
             {value !== "all" ? <span className="ml-1 tabular-nums">{value === "changed" ? changes.changedFiles.length : changes.sessionFiles.length}</span> : null}
           </button>)}
-        </div>
+        </div>}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2" onKeyDown={(event) => {
         if (event.key === "F6" && previewTarget && !narrow) { event.preventDefault(); detailRef.current?.focus(); }
       }}>
-        <ProjectRootsBrowser files={files} changes={changes} filter={filter} query={query} selectedPath={selectedPath}
-          onOpenFile={openFile} revealRequest={revealRequest} focusSelectedToken={focusSelectedToken} />
+        {matchedOnly ? <MatchedFileList files={files} changes={changes} query={query} selectedPath={selectedPath} onOpenFile={openFile} />
+          : <ProjectRootsBrowser files={files} changes={changes} filter={filter} query={query} selectedPath={selectedPath}
+            onOpenFile={openFile} revealRequest={revealRequest} focusSelectedToken={focusSelectedToken} />}
       </div>
     </div>
     {!narrow ? <div role="separator" aria-orientation="vertical" aria-label={t("chatPreviewRail.resizeFileColumns")} tabIndex={0}

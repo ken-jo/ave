@@ -12,6 +12,8 @@ import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-pat
 
 const MAX_INFERENCE_BYTES = 1_048_576;
 const MAX_INFERENCE_STEPS = 128;
+/** Review text one snapshot may carry in all; files past it are listed without a review. */
+const MAX_SNAPSHOT_REVIEW_BYTES = 4 * MAX_INFERENCE_BYTES;
 /**
  * The invocation forms that provably run their operand. A runner matches only when every option before the operand
  * is listed for it, and an option that takes a value gets one this validates. Anything else (a version or help flag,
@@ -84,9 +86,10 @@ interface ChangedFile {
 }
 interface ExecutionEvidence { paths: Set<string>; unresolved: boolean; steps: number; visited: Set<string> }
 
+/** No file is at the path; a name too long for the filesystem cannot name one either. */
 function missing(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
-  return code === "ENOENT" || code === "ENOTDIR";
+  return code === "ENOENT" || code === "ENOTDIR" || code === "ENAMETOOLONG";
 }
 export function isTerminalReviewUnavailable(error: unknown): boolean {
   return ["EACCES", "EPERM", "ELOOP", "EBUSY", "ESTALE", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
@@ -439,9 +442,14 @@ export class TerminalFileEvidence {
     // The files this terminal's commands used: the same set the badge counts and the changes view lists.
     const relevant = new Set(warnings.flatMap(warning => warning.files));
     const files: TerminalReviewFile[] = [];
+    let reviewBytes = 0;
     for (const file of this.files.values()) {
       if (!relevant.has(file.path)) continue;
-      const review = await this.review(file);
+      let review = await this.review(file);
+      // Each file's text is bounded on its own; the response is bounded as a whole, so many large files cannot add up.
+      const bytes = review ? review.hunks.reduce((total, hunk) => total + Buffer.byteLength(hunk.oldText, "utf8") + Buffer.byteLength(hunk.newText, "utf8"), 0) : 0;
+      if (review && reviewBytes + bytes > MAX_SNAPSHOT_REVIEW_BYTES) review = undefined;
+      else reviewBytes += bytes;
       files.push({ path: file.path, sessionIds: [...file.sessionIds], lastUsed: file.lastUsed, ...(review ? { review } : {}) });
     }
     const latestBlockId = blocks.reduce<number | null>((latest, block) => latest === null || block.id > latest ? block.id : latest, null);
