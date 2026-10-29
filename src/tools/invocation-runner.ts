@@ -78,6 +78,7 @@ import {
 import {
   isDisposablePathPolicyRelaxation,
   getExecutionGrantCorrelationAuthority,
+  type DisposablePathPolicyRelaxation,
   type ExecutionGrant,
   type ExecutionPlan,
   type ExecutionPlanAuditProjection,
@@ -344,6 +345,8 @@ export async function runToolInvocation(
     let hostShellExecutionPlanAudit: HostShellExecutionPlanAuditProjection | undefined;
     let executionRouteAudit: ExecutionPlanAuditProjection | undefined;
     let executionRoutePlan: ExecutionPlan | undefined;
+    // Relaxations of the current route plan; the permission decision and grant issuance both read them.
+    let executionRoutePathPolicyRelaxations: readonly DisposablePathPolicyRelaxation[] | undefined;
     let executionRouteGrant: ExecutionGrant | undefined;
     let finalizeExecutionRouteGrant:
       | (() => Promise<ExecutionGrant | undefined>)
@@ -996,6 +999,7 @@ export async function runToolInvocation(
       });
       executionRouteRequirementKind = unresolvedRequirementKind;
       executionRoutePlan = route.plan;
+      executionRoutePathPolicyRelaxations = router.executionPlanPathPolicyRelaxations(route.plan);
       executionRouteAudit = route.audit;
     };
     const returnExecutionRouteFailure = async (error: unknown): Promise<ToolResult> => {
@@ -2223,6 +2227,7 @@ export async function runToolInvocation(
       hostShellRequiresExplicitApproval,
       hostShellExecutionPlan,
       hostShellExecutionPlanAudit,
+      hostShellPathPolicyRelaxations: executionRoutePathPolicyRelaxations,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
       verifiedShellCommand,
@@ -2260,6 +2265,7 @@ export async function runToolInvocation(
     permissionResult = authorization.permissionResult;
     hostShellApprovalDecision = authorization.hostShellApprovalDecision;
     hostShellAllowRuleDecision = authorization.hostShellAllowRuleDecision;
+    const decidedPathPolicyRelaxations = executionRoutePathPolicyRelaxations ?? [];
 
     if (brokeredFileRouteSelected &&
         (canonicalFileTool !== undefined || canonicalBrokerLifecycleTool !== undefined)) {
@@ -2294,6 +2300,7 @@ export async function runToolInvocation(
           executionRouteGrant = router.issueExecutionGrant(executionRoutePlan, {
             toolUseId: toolUse.id,
             toolName: hostShellToolName!,
+            decidedPathPolicyRelaxations,
           });
         } catch (error) {
           return await returnExecutionRouteFailure(error);
@@ -2312,10 +2319,18 @@ export async function runToolInvocation(
           executionRouteGrant = router.issueExecutionGrant(executionRoutePlan, {
             toolUseId: toolUse.id,
             toolName: hostShellToolName!,
+            decidedPathPolicyRelaxations,
           });
           return executionRouteGrant;
         };
       }
+    } else if (executionRoutePlan !== undefined && hostShellToolName !== undefined) {
+      finalizeExecutionRouteGrant = async () => {
+        await updateExecutionRoute(executionRouteRequirementKind);
+        const router = await import("../permissions/execution-router.js");
+        router.assertDecidedPathPolicyRelaxations(executionRoutePlan!, decidedPathPolicyRelaxations);
+        return undefined;
+      };
     }
 
     return await executeAuthorizedToolInvocation({

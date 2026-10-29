@@ -11,7 +11,8 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { decodeWindowsAclScript, withWindowsAclScript, windowsCommandLineLength } from "../../__tests__/support/windows-acl-launch.js";
+import { decodeWindowsAclScript, withWindowsAclScript } from "../../__tests__/support/windows-acl-launch.js";
+import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 import {
   assertCodexExecutableLocation,
   assertCodexLocations,
@@ -38,7 +39,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 const HOST = process.platform;
-const WINDOWS_COMMAND_LINE_MARGIN = 8192;
 const roots: string[] = [];
 // Windows fixtures answer each ACL host request here, at the request level.
 const aclRequest = vi.fn(async (_request: WindowsAclRequest, _launch: WindowsAclHostLaunch, _limits: WindowsAclLimits): Promise<string> => {
@@ -950,7 +950,7 @@ describe("native access-rule admission", () => {
     expect(systemRoot.length).toBeLessThanOrEqual(512);
     const length = windowsCommandLineLength(command, args);
     process.stdout.write(`ACL command-line evidence ${JSON.stringify({ systemRootLength: systemRoot.length, length, margin: WINDOWS_COMMAND_LINE_MARGIN })}\n`);
-    expect(length + WINDOWS_COMMAND_LINE_MARGIN).toBeLessThan(32_767);
+    expect(length + WINDOWS_COMMAND_LINE_MARGIN).toBeLessThan(WINDOWS_COMMAND_LINE_LIMIT);
     // The only variable command-line input is the system root. Request paths and principals stay in stdin.
     await assertCodexExecutableLocation("C:\\Tools\\" + "x".repeat(240) + ".exe", "native");
     expect(aclRequest.mock.calls[1]![1].args).toEqual(args);
@@ -975,7 +975,7 @@ describe("native access-rule admission", () => {
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
     expect(args).toHaveLength(5);
-    expect(windowsCommandLineLength(command, args) + WINDOWS_COMMAND_LINE_MARGIN).toBeLessThan(32_767);
+    expect(windowsCommandLineLength(command, args) + WINDOWS_COMMAND_LINE_MARGIN).toBeLessThan(WINDOWS_COMMAND_LINE_LIMIT);
     const script = decodeWindowsAclScript(args);
     // `exit` in the private runspace would not end the host; failures stay terminating errors, which exit 1.
     expect(script).not.toMatch(/\bexit\b/i);

@@ -16,6 +16,7 @@ const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
 const NEW = new Date("2026-02-01T00:00:00Z");
 const LAUNCHER = windowsJobLauncherPath("x64");
+const PATH_KIND = join("resources", "windows-path-kind", "x64", "ave-path-kind.exe");
 
 function write(root: string, relative: string, time: Date): void {
   mkdirSync(dirname(join(root, relative)), { recursive: true });
@@ -29,6 +30,8 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
   for (const source of ["scripts/build-windows-job.ps1", "native/windows-job/launcher.cpp", "native/windows-job/README.md"]) {
     write(root, source, OLD);
   }
+  write(root, "native/windows-path-kind/main.cpp", OLD);
+  write(root, PATH_KIND, NEW);
   if (launcher) write(root, LAUNCHER, launcher);
   return root;
 }
@@ -36,7 +39,7 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
 function buildStub(root: string, calls: string[][]) {
   return (command: string, args: string[]) => {
     calls.push([command, ...args]);
-    write(root, LAUNCHER, new Date());
+    write(root, args.includes("path-kind") ? PATH_KIND : LAUNCHER, new Date());
     return { status: 0 };
   };
 }
@@ -86,7 +89,7 @@ describe("prepareWindowsJob", () => {
     });
     expect(found.state).toBe("missing");
     expect(calls).toEqual([["bun.exe", "run", "build:windows-job", "-Arch", "x64"]]);
-    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (missing)`]);
+    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (missing)`, `[windows-path-kind] up to date: ${PATH_KIND}`]);
   });
 
   it("rebuilds a stale launcher and names the newer source", () => {
@@ -96,7 +99,7 @@ describe("prepareWindowsJob", () => {
     const lines: string[] = [];
     prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), log: (line) => lines.push(line) });
     expect(calls).toHaveLength(1);
-    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (older than ${join("native", "windows-job", "launcher.cpp")})`]);
+    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (older than ${join("native", "windows-job", "launcher.cpp")})`, `[windows-path-kind] up to date: ${PATH_KIND}`]);
   });
 
   it("skips a fresh launcher without looking for the build tools", () => {
@@ -109,7 +112,7 @@ describe("prepareWindowsJob", () => {
     });
     expect(found.state).toBe("fresh");
     expect(calls).toEqual([]);
-    expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`]);
+    expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-path-kind] up to date: ${PATH_KIND}`]);
   });
 
   it("does nothing off Windows", () => {
@@ -118,6 +121,25 @@ describe("prepareWindowsJob", () => {
     const lines: string[] = [];
     expect(prepareWindowsJob({ root, platform: "darwin", arch: "arm64", runSync: buildStub(root, calls), log: (line) => lines.push(line) }).state).toBe("skip");
     expect([calls, lines]).toEqual([[], []]);
+  });
+
+  it.each(["missing", "source", "script"])("prepares a path classifier with %s changes independently of the job launcher", (change) => {
+    const root = fixtureRoot({ launcher: new Date("2026-04-01T00:00:00Z") });
+    if (change === "missing") rmSync(join(root, PATH_KIND));
+    else write(root, change === "script" ? "scripts/build-windows-job.ps1" : "native/windows-path-kind/include/path.h", new Date("2026-03-01T00:00:00Z"));
+    const calls: string[][] = [];
+    prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), log: () => {} });
+    expect(calls).toEqual([["bun.exe", "run", "build:windows-job", "--", "-Helper", "path-kind", "-Arch", "x64"]]);
+  });
+
+  it("refuses a missing path classifier without build tools or a successful build", () => {
+    const root = fixtureRoot({ launcher: NEW });
+    rmSync(join(root, PATH_KIND));
+    const options = { root, platform: "win32" as const, arch: "x64", log: () => {} };
+    expect(() => prepareWindowsJob({ ...options, findBuildTools: () => false }))
+      .toThrow("run: bun run build:windows-job -- -Helper path-kind");
+    expect(() => prepareWindowsJob({ ...options, findBuildTools: () => true, runSync: () => ({ status: 0 }) }))
+      .toThrow(`did not produce an up-to-date ${PATH_KIND}`);
   });
 
   it("fails without the C++ build tools, naming the toolchain and the command, and does not build", () => {

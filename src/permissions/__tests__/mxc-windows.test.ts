@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 
 import {
   MXC_BASH_UNAVAILABLE_MESSAGE,
@@ -115,6 +116,11 @@ describe("detectMxcSupport", () => {
     const d = deps();
     await expect(detectMxcSupport(d)).resolves.toEqual({ state: "available", windowsBuild: "10.0.26300" });
     expect(d.calls.map((c) => c[0])).toEqual(["--probe", "--dry-run", "--config-base64"]);
+    for (const args of d.calls.slice(1)) {
+      expect(args).toContain("--config-base64");
+      expect(windowsCommandLineLength(wxcExecPathFor(d.resourcePath, d.arch)!, args) + WINDOWS_COMMAND_LINE_MARGIN)
+        .toBeLessThan(WINDOWS_COMMAND_LINE_LIMIT);
+    }
     // The dry run validates the request Ave launches: proxy mode, no DACL fallback.
     const encoded = d.calls[1]![d.calls[1]!.indexOf("--config-base64") + 1]!;
     const request = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
@@ -299,7 +305,7 @@ describe("buildMxcShellRequest", () => {
 
   it("round-trips through the base64 argument", () => {
     const request = buildMxcShellRequest(base);
-    const [flag, value] = mxcRequestArgs(request);
+    const [flag, value] = mxcRequestArgs(request, "C:\\Ave\\wxc-exec.exe");
     expect(flag).toBe("--config-base64");
     expect(JSON.parse(Buffer.from(value!, "base64").toString("utf8"))).toEqual(request);
   });

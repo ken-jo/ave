@@ -625,9 +625,39 @@ function relaxationsForAuthority(
     : NO_PATH_POLICY_RELAXATIONS;
 }
 
+/** The path-policy relaxations a grant for this plan carries; the permission decision reads the same value. */
+export function executionPlanPathPolicyRelaxations(
+  plan: ExecutionPlan,
+): readonly DisposablePathPolicyRelaxation[] {
+  const planState = issuedPlans.has(plan) ? executionPlanStates.get(plan) : undefined;
+  if (planState === undefined) throw new Error("Execution plan was not issued by the host");
+  return plan.route === "disposable-container"
+    ? relaxationsForAuthority(planState.disposableAuthority)
+    : NO_PATH_POLICY_RELAXATIONS;
+}
+
+export const PATH_POLICY_DECISION_MISMATCH_ERROR =
+  "Execution route contract violated: path-policy relaxations differ from the permission decision";
+
+/** Refuses a final plan whose relaxations differ from those the permission decision saw. */
+export function assertDecidedPathPolicyRelaxations(
+  plan: ExecutionPlan,
+  decided: readonly DisposablePathPolicyRelaxation[],
+): void {
+  const actual = executionPlanPathPolicyRelaxations(plan);
+  if (actual.length !== decided.length || actual.some((kind) => !decided.includes(kind))) {
+    throw new Error(PATH_POLICY_DECISION_MISMATCH_ERROR);
+  }
+}
+
 export function issueExecutionGrant(
   plan: ExecutionPlan,
-  binding: { readonly toolUseId: string; readonly toolName: "bash" | "powershell" },
+  binding: {
+    readonly toolUseId: string;
+    readonly toolName: "bash" | "powershell";
+    // What the permission decision saw for this invocation's route.
+    readonly decidedPathPolicyRelaxations: readonly DisposablePathPolicyRelaxation[];
+  },
 ): ShellExecutionGrant {
   if (!issuedPlans.has(plan)) throw new Error("Execution plan was not issued by the host");
   if (plan.capabilityGeneration !== getSandboxGeneration()) {
@@ -637,6 +667,7 @@ export function issueExecutionGrant(
     throw new Error("Execution plan requires another decision before a grant can be issued");
   }
   assertValidToolUseId(binding.toolUseId, "execution grant tool use ID");
+  assertDecidedPathPolicyRelaxations(plan, binding.decidedPathPolicyRelaxations);
   const planState = executionPlanStates.get(plan);
   if (!planState) throw new Error("Execution plan state is unavailable");
   if (
@@ -671,9 +702,7 @@ export function issueExecutionGrant(
         ? null
         : disposableAuthorityGeneration(disposableAuthority),
     route: plan.route,
-    pathPolicyRelaxations: plan.route === "disposable-container"
-      ? relaxationsForAuthority(disposableAuthority)
-      : NO_PATH_POLICY_RELAXATIONS,
+    pathPolicyRelaxations: executionPlanPathPolicyRelaxations(plan),
   } as const;
   const grant: ShellExecutionGrant = Object.freeze({
     ...fields,
@@ -714,11 +743,7 @@ export function consumeExecutionGrantForShellInvocation(input: {
     grant.capabilityGeneration !== plan.capabilityGeneration ||
     grant.route !== plan.route ||
     grant.effectDigest !== plan.effectDigest ||
-    grant.pathPolicyRelaxations !== (
-      grant.route === "disposable-container"
-        ? relaxationsForAuthority(planState.disposableAuthority)
-        : NO_PATH_POLICY_RELAXATIONS
-    )
+    grant.pathPolicyRelaxations !== executionPlanPathPolicyRelaxations(plan)
   ) {
     return null;
   }

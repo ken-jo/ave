@@ -650,6 +650,12 @@ jobs:
           src/permissions/__tests__/verified-shell-command.test.ts
           src/main/__tests__/document-open.test.ts
           src/permissions/__tests__/asrt-deny-absent.test.ts
+          src/permissions/__tests__/mxc-policy-pipe.test.ts
+          src/permissions/__tests__/mxc-windows-missing-denies.test.ts
+          src/permissions/__tests__/mxc-windows-transport.test.ts
+          src/tools/__tests__/mxc-shell-launch.test.ts
+          src/tools/__tests__/mxc-link-traversal.integration.test.ts
+          src/tools/__tests__/mxc-pipe-lifetime.integration.test.ts
           src/permissions/__tests__/asrt-deny-absent-native.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts
           src/permissions/__tests__/allowed-directories.test.ts

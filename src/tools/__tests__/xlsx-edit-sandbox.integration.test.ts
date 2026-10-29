@@ -1,24 +1,24 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as XLSX from "xlsx";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import * as policyHome from "../../shared/policy-home.js";
 import { hostScriptRuntimePaths } from "../../main/host-script-runtime.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { parseTableDocument } from "../table-document-reader.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn, setAgentObservationSink } from "../agent-observation-context.js";
 import type { DocumentEditJournalRecord } from "../../shared/document-edit-journal.js";
-
-const quotePowerShell = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 // Unsupported host tiers carry a per-test skip reason; integrity, probe and execution failures remain failures.
 describe("native governed XLSX command", () => {
@@ -39,6 +39,10 @@ describe("native governed XLSX command", () => {
     try {
       if (process.platform === "win32") {
         const started = await requireMxcCapability(testContext.skip);
+        // Anchor the credential floor to a fixture home: the stamp guard refuses real-account deny targets.
+        const policyFixture = join(directory, "policy-home");
+        mkdirSync(policyFixture);
+        vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture]);
         await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
         const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
           mxc: { state: "available" }, windowsBuild: started.windowsBuild, srtWinReady: false });
@@ -120,10 +124,18 @@ describe("native governed XLSX command", () => {
       const protectedDirectory = join(fixtureResources, "skill-scripts");
       mkdirSync(protectedDirectory, { recursive: true });
       const probe = join(protectedDirectory, "write-probe.cjs");
-      const source = "try { require('node:fs').writeFileSync(__filename, 'changed'); console.log('unexpected-write'); } catch (error) { console.log('write-denied:' + error.code); }";
+      // The escaped probe keeps the script ASCII; only its output is non-ASCII.
+      const source = "console.log('utf8:\\u00e9\\ud55c\\uae00\\u{1f600}'); try { require('node:fs').writeFileSync(__filename, 'changed'); console.log('unexpected-write'); } catch (error) { console.log('write-denied:' + error.code); }";
       writeFileSync(probe, source);
       writeFileSync(join(protectedDirectory, "manifest.json"), JSON.stringify({ version: 1,
         scripts: { "write-probe.cjs": createHash("sha256").update(source).digest("hex") } }));
+      if (windows) {
+        // A packaged root also ships the container launcher and the policy pipe's helper.
+        for (const binary of [join("mxc", process.arch, "wxc-exec.exe"), join("windows-path-kind", process.arch, "ave-path-kind.exe")]) {
+          mkdirSync(dirname(join(fixtureResources, binary)), { recursive: true });
+          copyFileSync(resolve("resources", binary), join(fixtureResources, binary));
+        }
+      }
       configureHostResources({ resourcePath: fixtureResources, isPackaged: true });
       const probeCommand = windows
         ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${[runtime.javascriptRuntime, probe].map(quotePowerShell).join(" ")}`
@@ -132,10 +144,12 @@ describe("native governed XLSX command", () => {
       expect(nativeWrite.isError, nativeWrite.output).toBe(false);
       expect(nativeWrite.metadata?.sandboxed).toBe(true);
       expect(nativeWrite.output).toMatch(/(?:^|\n)write-denied:(?:EACCES|EPERM|EROFS)(?:\n|$)/);
+      expect(nativeWrite.output).toMatch(/(?:^|\n)utf8:é한글\u{1f600}(?:\n|$)/u);
       expect(readFileSync(probe, "utf8")).toBe(source);
     } finally {
       setAgentObservationSink(undefined);
       await resetAsrtSandbox();
+      vi.restoreAllMocks();
       __resetActiveSandboxCapabilityForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetWindowsSandboxSubstrateForTest();

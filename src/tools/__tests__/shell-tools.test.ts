@@ -18,6 +18,7 @@ import { mintOneShotHostShellPermit } from "../../__tests__/support/host-shell-a
 import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { powerShellLiteral as psLiteral } from "../../__tests__/support/powershell-ast.js";
+import { POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL } from "../../shared/powershell-recursive-traversal.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -36,7 +37,9 @@ import {
   PowerShellToolInputSchema,
   resolvePowerShellExecutable,
   validatePowerShellAst,
+  validatePowerShellAstStructure,
   validatePowerShellCommand,
+  awaitedHostScriptCommand,
   type PowerShellAstSummary,
   findPowerShellAstPathViolation,
   _spawnPowerShellForTest,
@@ -766,6 +769,182 @@ describe("powershell tool", () => {
       expect(validatePowerShellAst(ast([{ name: "dir", arguments: [psLiteral("dir"), psParameter("r"), psLiteral(".")] }]))).toContain(
         "recursive shell filesystem traversal",
       );
+    });
+
+    const listing = (...parameters: PowerShellArgument[]) =>
+      validatePowerShellAst(ast([{ name: "Get-ChildItem", arguments: [psLiteral("Get-ChildItem"), psLiteral("."), ...parameters] }]));
+
+    it.each([
+      ["-r", [psParameter("r")]],
+      ["-Re", [psParameter("Re")]],
+      ["-Rec", [psParameter("Rec")]],
+      ["-Recu", [psParameter("Recu")]],
+      ["-Recur", [psParameter("Recur")]],
+      ["-Recurs", [psParameter("Recurs")]],
+      ["-RECURSE", [psParameter("RECURSE")]],
+      ["-Recur:$true", [psParameter("Recur", psLiteral("true", "$true"))]],
+      ["-s alias", [psParameter("s")]],
+      ["-Depth 0", [psParameter("Depth"), psLiteral("0")]],
+      ["-Depth:0", [psParameter("Depth", psLiteral("0"))]],
+      ["-Depth:$false", [psParameter("Depth", psLiteral("false", "$false"))]],
+      ["-Dep 2", [psParameter("Dep"), psLiteral("2")]],
+      ["-Dept 1", [psParameter("Dept"), psLiteral("1")]],
+      ["-d 1", [psParameter("d"), psLiteral("1")]],
+    ] as const)("blocks recursion spelled %s", (_, parameters) => {
+      expect(listing(...parameters)).toContain("recursive shell filesystem traversal");
+    });
+
+    it.each([
+      ["-Recurse:$false", [psParameter("Recurse", psLiteral("false", "$false"))]],
+      ["-Rec:$false", [psParameter("Rec", psLiteral("false", "$false"))]],
+      ["-s:$false", [psParameter("s", psLiteral("false", "$false"))]],
+      ["-Directory", [psParameter("Directory")]],
+      ["-File", [psParameter("File")]],
+      ["-Force", [psParameter("Force")]],
+      ["-Recursive", [psParameter("Recursive")]],
+      ["-Depths", [psParameter("Depths")]],
+    ] as const)("allows non-recursive %s", (_, parameters) => {
+      expect(listing(...parameters)).toBeNull();
+    });
+
+    it("scopes the -s Recurse alias to Get-ChildItem", () => {
+      expect(validatePowerShellAst(ast([{ name: "Get-Content", arguments: [psLiteral("Get-Content"), psLiteral("./x"), psParameter("s")] }]))).toBeNull();
+    });
+
+    const removal = (...parameters: PowerShellArgument[]) =>
+      validatePowerShellAstStructure(ast([{ name: "Remove-Item", arguments: [psLiteral("Remove-Item"), psLiteral("./x"), ...parameters] }]));
+
+    it.each([
+      ["-Rec -Forc", [psParameter("Rec"), psParameter("Forc")]],
+      ["-Recur -For", [psParameter("Recur"), psParameter("For")]],
+      ["-Recurs:$true -Fo", [psParameter("Recurs", psLiteral("true", "$true")), psParameter("Fo")]],
+    ] as const)("blocks recursive forced deletion spelled %s", (_, parameters) => {
+      expect(removal(...parameters)).toBe("recursive forced deletion is not allowed");
+    });
+
+    it.each([
+      ["-Recu -Force:$false", [psParameter("Recu"), psParameter("Force", psLiteral("false", "$false"))]],
+      ["-Recu:$false -Forc", [psParameter("Recu", psLiteral("false", "$false")), psParameter("Forc")]],
+      ["-Recurse -f (ambiguous with -Filter)", [psParameter("Recurse"), psParameter("f")]],
+      ["-Force alone", [psParameter("Force")]],
+      // Remove-Item has no -Depth in PowerShell 5.1 or 7, so binding fails before anything is removed.
+      ["-Depth 1 -Force", [psParameter("Depth"), psLiteral("1"), psParameter("Force")]],
+    ] as const)("does not report forced recursive deletion for %s", (_, parameters) => {
+      expect(removal(...parameters)).toBeNull();
+    });
+
+    describe("definite recursion shared with the permission decision", () => {
+      const command = (name: string, ...rest: PowerShellArgument[]) => ({ name, arguments: [psLiteral(name), ...rest] });
+      const refusal = (summary: PowerShellAstSummary) => {
+        const reason = validatePowerShellAst(summary);
+        return reason === null ? null : `PowerShell command blocked: ${reason}`;
+      };
+
+      it.each([
+        ["Get-ChildItem -Recurse dir", [command("Get-ChildItem", psParameter("Recurse"), psLiteral("dir"))]],
+        ["gci -r dir", [command("gci", psParameter("r"), psLiteral("dir"))]],
+        ["gci -s dir", [command("gci", psParameter("s"), psLiteral("dir"))]],
+        ["gci -d 1 src", [command("gci", psParameter("d"), psLiteral("1"), psLiteral("src"))]],
+        ...["--cr", "--ap", "--up"].map(option => [`tar ${option} x.tar src`, [command("tar", psLiteral(option), psLiteral("x.tar"), psLiteral("src"))]] as const),
+        ...["/si", "-si", "/s/i", "-s"].map(option => [`findstr ${option} term src`, [command("findstr", option.startsWith("-") ? psParameter(option.slice(1)) : psLiteral(option), psLiteral("term"), psLiteral("src"))]] as const),
+        ["findstr -sic:probe src", [command("findstr", psParameter("sic", psLiteral("probe")), psLiteral("src"))]],
+        ["findstr /sic:probe src", [command("findstr", psLiteral("/sic:probe"), psLiteral("src"))]],
+        ...["/se", "/s/e", "/t"].map(option => [`xcopy src out ${option}`, [command("xcopy", psLiteral("src"), psLiteral("out"), psLiteral(option))]] as const),
+        ["xcopy src out /s/d:01-01-2020", [command("xcopy", psLiteral("src"), psLiteral("out"), psLiteral("/s/d:01-01-2020"))]],
+        ...["/s/m", "/e/d", "/e/x", "/s/-y"].map(option => [`xcopy src out ${option}`, [command("xcopy", psLiteral("src"), psLiteral("out"), psLiteral(option))]] as const),
+        ["findstr /s/offline term src", [command("findstr", psLiteral("/s/offline"), psLiteral("term"), psLiteral("src"))]],
+        ...["--lz4", "--verb", "--bzip2"].map(option => [`tar ${option} -cf x.tar src`, [command("tar", psLiteral(option), psParameter("cf"), psLiteral("x.tar"), psLiteral("src"))]] as const),
+        ["zip -r:$x a.zip src", [command("zip", psParameter("r", psDynamic("$x")), psLiteral("a.zip"), psLiteral("src"))]],
+        ["tar --file -t -c src", [command("tar", psLiteral("--file"), psParameter("t"), psParameter("c"), psLiteral("src"))]],
+        ["tar -f -t -c src", [command("tar", psParameter("f"), psParameter("t"), psParameter("c"), psLiteral("src"))]],
+        ...["-s", "-e", "-mir"].map(option => [`robocopy src out ${option}`, [command("robocopy", psLiteral("src"), psLiteral("out"), psParameter(option.slice(1)))]] as const),
+        ["Get-ChildItem -Depth 2 dir", [command("Get-ChildItem", psParameter("Depth"), psLiteral("2"), psLiteral("dir"))]],
+        ["Copy-Item -Recurse:$true dir dest", [command("Copy-Item", psParameter("Recurse", psLiteral("true", "$true")), psLiteral("dir"), psLiteral("dest"))]],
+        ["Copy-Item -Recurse:$x dir dest", [command("Copy-Item", psParameter("Recurse", psDynamic("$x")), psLiteral("dir"), psLiteral("dest"))]],
+        ["gci -r dir | Select-String x", [command("gci", psParameter("r"), psLiteral("dir")), command("Select-String", psLiteral("x"))]],
+        ["robocopy dir dest /S", [command("robocopy", psLiteral("dir"), psLiteral("dest"), psLiteral("/S"))]],
+        ["tar -cf out.tar dir", [command("tar", psLiteral("-cf"), psLiteral("out.tar"), psLiteral("dir"))]],
+        // Archive shapes follow the native parser: `-czf` is a parameter, `cf` and `--create` are literals.
+        ["tar cf x.tar d", [command("tar", psLiteral("cf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar -czf x.tar d", [command("tar", psParameter("czf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar --create -f x.tar d", [command("tar", psLiteral("--create"), psParameter("f"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar -rf x.tar d", [command("tar", psParameter("rf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["tar -uf x.tar d", [command("tar", psParameter("uf"), psLiteral("x.tar"), psLiteral("d"))]],
+        ["7z a x.7z d", [command("7z", psLiteral("a"), psLiteral("x.7z"), psLiteral("d"))]],
+        ["7za u x.7z d", [command("7za", psLiteral("u"), psLiteral("x.7z"), psLiteral("d"))]],
+        ["zip -r a.zip d", [command("zip", psParameter("r"), psLiteral("a.zip"), psLiteral("d"))]],
+        ["Compress-Archive -Path d/ -DestinationPath a.zip", [command("Compress-Archive", psParameter("Path"), psLiteral("d/"), psParameter("DestinationPath"), psLiteral("a.zip"))]],
+        ["Compress-Archive *.txt a.zip", [command("Compress-Archive", psLiteral("*.txt"), psLiteral("a.zip"))]],
+      ] as const)("refuses %s with the decision's reason", (_, commands) => {
+        const summary = ast([...commands]);
+        expect(refusal(summary)).toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
+        expect(findPowerShellAstPathViolation(summary, process.cwd(), process.cwd(), [], false))
+          .toEqual({ kind: "dynamic-path", reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL });
+      });
+
+      it("keeps a literal -Recurse:$false non-traversal", () => {
+        expect(validatePowerShellAst(ast([command("Copy-Item", psParameter("Recurse", psLiteral("false", "$false")), psLiteral("dir"), psLiteral("dest"))]))).toBeNull();
+        expect(validatePowerShellAst(ast([command("robocopy", psLiteral("dir"), psLiteral("dest"))]))).toBeNull();
+      });
+
+      it.each([
+        ["tar -tf x.tar", [command("tar", psParameter("tf"), psLiteral("x.tar"))]],
+        ...["ad", "Directory"].map(option => [`gci -${option} src`, [command("gci", psParameter(option), psLiteral("src"))]] as const),
+        ["gc notes.txt -re 10", [command("gc", psLiteral("notes.txt"), psParameter("re"), psLiteral("10"))]],
+        ["gc f.csv -De ','", [command("gc", psLiteral("f.csv"), psParameter("De"), psLiteral(","))]],
+        ["Copy-Item src -De out", [command("Copy-Item", psLiteral("src"), psParameter("De"), psLiteral("out"))]],
+        ["Remove-Item src -d", [command("Remove-Item", psLiteral("src"), psParameter("d"))]],
+        ...["--c", "--a", "--u"].map(option => [`tar ${option} x.tar`, [command("tar", psLiteral(option), psLiteral("x.tar"))]] as const),
+        ...["t", "e", "b", "d", "h", "i", "rn", "unknown"].map(mode => [`7z ${mode} x.7z`, [command("7z", psLiteral(mode), psLiteral("x.7z"))]] as const),
+        ...[["xcopy", "-s"], ["xcopy", "/exclude:s"], ["robocopy", "/se"], ["findstr", "/c:s"], ["xcopy", "/exclude:C:/lists/exclude.txt"],
+          ["findstr", "/c:a/s"], ["findstr", "/d:C:/src"], ["xcopy", "/noclone"], ["xcopy", "/sparse"], ["xcopy", "/-sparse"], ["findstr", "/off"]].map(([name, option]) => [`${name} ${option}`, [command(name!, psLiteral(option!))]] as const),
+        ["tar -xf x.tar", [command("tar", psParameter("xf"), psLiteral("x.tar"))]],
+        ["7z l x.7z", [command("7z", psLiteral("l"), psLiteral("x.7z"))]],
+        ["7z x x.7z", [command("7z", psLiteral("x"), psLiteral("x.7z"))]],
+        ["Expand-Archive x.zip d", [command("Expand-Archive", psLiteral("x.zip"), psLiteral("d"))]],
+        // Undecidable: the decision asks, and the host block does not refuse.
+        ["tar $mode x.tar", [command("tar", psDynamic("$mode"), psLiteral("x.tar"))]],
+        ["Compress-Archive src a.zip", [command("Compress-Archive", psLiteral("src"), psLiteral("a.zip"))]],
+        // PowerShell 5.1 and 7 both parse `--%` as a literal followed by one literal holding the verbatim rest.
+        ...[["robocopy", "a b /e"], ["xcopy", "a b /s"], ["findstr", "/s term src"]].map(([name, rest]) => [`${name} --% ${rest}`, [command(name!, psLiteral("--%"), psLiteral(rest!))]] as const),
+      ] as const)("does not refuse %s as traversal", (_, commands) => {
+        const summary = ast([...commands]);
+        expect(validatePowerShellAst(summary)).toBeNull();
+        expect(findPowerShellAstPathViolation(summary, process.cwd(), process.cwd(), [], false)?.reason).not.toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
+      });
+    });
+
+    describe("awaited host script command", () => {
+      const at = (source: string, text: string, from = 0): PowerShellValueArgument => {
+        const start = source.indexOf(text, from);
+        return { kind: "literal", text, value: text.slice(1, -1), start, end: start + text.length };
+      };
+
+      it("sets UTF-8 output, inserts the flag after the runtime extent with single spaces, and awaits the child", () => {
+        const source = "$env:ELECTRON_RUN_AS_NODE='1'; & 'C:\\rt\\electron.exe' 'C:\\s\\édit.cjs'\n";
+        const runtime = at(source, "'C:\\rt\\electron.exe'");
+        expect(awaitedHostScriptCommand(source, { name: runtime.text, text: source.slice(31).trim(),
+          arguments: [runtime, at(source, "'C:\\s\\édit.cjs'")] })).toBe(
+          "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);" +
+          "$env:ELECTRON_RUN_AS_NODE='1'; & 'C:\\rt\\electron.exe' --preserve-symlinks-main 'C:\\s\\édit.cjs'" +
+          " | Microsoft.PowerShell.Core\\Out-Default; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE",
+        );
+      });
+
+      it("uses the runtime element's extent, not an earlier textual match", () => {
+        const source = "$env:ELECTRON_RUN_AS_NODE='1'; & 'rt' 'rt'";
+        const first = at(source, "'rt'");
+        expect(awaitedHostScriptCommand(source, { name: "rt", text: "& 'rt' 'rt'",
+          arguments: [first, at(source, "'rt'", first.end)] })).toContain("& 'rt' --preserve-symlinks-main 'rt' |");
+      });
+
+      it("fails closed without a matching parser extent", () => {
+        const source = "$env:ELECTRON_RUN_AS_NODE='1'; & 'rt' 'script'";
+        const runtime = at(source, "'rt'");
+        expect(awaitedHostScriptCommand(source, { name: "rt", text: "& 'rt' 'script'", arguments: [psLiteral("rt", "'rt'")] })).toBeNull();
+        expect(awaitedHostScriptCommand(source, { name: "rt", text: "& 'rt' 'script'",
+          arguments: [{ ...runtime, start: runtime.start! + 1, end: runtime.end! + 1 }] })).toBeNull();
+      });
     });
 
     it("blocks process-detach aliases from the AST summary", () => {

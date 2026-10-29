@@ -97,7 +97,8 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
     expect(powershell("gci src", false)).toMatchObject({ decision: "ask" });
     expect(powershell("GET-CHILDITEM src", false)).toMatchObject(ORDINARY_ASK);
     // Any other argument, a second command or an expansion is not covered.
-    expect(powershell("Get-ChildItem src -Recurse", false)).toMatchObject({ decision: "ask" });
+    expect(powershell("Get-ChildItem src -Force", false)).toMatchObject({ decision: "ask" });
+    expect(powershell("Get-ChildItem src -Recurse", false)).toMatchObject({ decision: "deny", layer: 0 });
     expect(powershell("Get-ChildItem Src", false)).toMatchObject({ decision: "ask" });
     expect(powershell("Get-ChildItem src; Get-ChildItem src", false)).toMatchObject(EXACT_ALLOW);
     expect(powershell("Get-ChildItem src; Remove-Item x", false)).toMatchObject({ decision: "ask" });
@@ -129,7 +130,7 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
 
   it("denies on a matching deny rule, wildcard included, and asks when a deny rule cannot inspect the input", () => {
     manager.setRules(([{ pattern: "PowerShell(remove-item *)", action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("Remove-Item -Recurse build", true)).toMatchObject({ decision: "deny", layer: 1 });
+    expect(powershell("Remove-Item -Force build", true)).toMatchObject({ decision: "deny", layer: 1 });
     expect(powershell("ri build", false)).toMatchObject({ decision: "deny", layer: 1 });
     expect(powershell("$p = 'build'; Remove-Item $p", true)).toMatchObject({ decision: "deny", layer: 1 });
     expect(powershell("$p = 'build'; Write-Output $p", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
