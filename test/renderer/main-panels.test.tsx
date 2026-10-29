@@ -426,10 +426,11 @@ describe("main-area terminal and web panels", () => {
     const manual = terminalSessionFixture(shownSurfaces(container)[0]!.tabId!, "manual");
     await waitFor(() => expect(terminalApi.listBlocks).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", terminalSessionId: manual.terminalSessionId })));
     expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
-    expect(container.textContent).toContain(t("ptyTerminal.manualEnvironment"));
+    // A main-area pane is a workspace terminal: its pane chat may ask for approved commands, and the mount says so.
+    expect(container.textContent).toContain(t("ptyTerminal.workspaceEnvironment"));
     expect(container.textContent).toContain(t("ptyTerminal.initialCwd", { cwd: manual.initialCwd }));
     // A launch directory is not evidence of the current directory.
-    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual" });
+    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual", purpose: "workspace" });
     expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
     const spawnsBeforeClose = terminalApi.spawn.mock.calls.length;
 

@@ -72,7 +72,7 @@ test("keeps a requested blank tab mounted through its first navigation", async (
     if (!terminalTabId) throw new Error("Visible terminal identity unavailable");
     const manual = await ctx.page.evaluate(async (tabId) => {
       const api = window.aveApi.terminal!;
-      const spawned = await api.spawn({ tabId, lane: "manual" });
+      const spawned = await api.spawn({ tabId, lane: "manual", purpose: "workspace" });
       if (!spawned.ok) throw new Error(spawned.message);
       const session = spawned.session;
       const output = await new Promise<string>((resolve, reject) => {

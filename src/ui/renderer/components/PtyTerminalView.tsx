@@ -9,7 +9,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
-import { sameTerminalSession, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
+import { sameTerminalSession, type HostTerminalControlState, type TerminalControlAction, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
@@ -82,12 +82,14 @@ export function PtyTerminalView({
       </div>
     );
   }
-  return <AttachedPtyTerminal key={props.tabId} {...props} />;
+  return <AttachedPtyTerminal key={props.tabId} {...props} purpose={location === "side-panel" ? "side-panel" : "workspace"} />;
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true }: PtyTerminalViewProps) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
+  const [control, setControl] = useState<HostTerminalControlState | null>(null);
+  const [controlNotice, setControlNotice] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
   const initialCwdRef = useRef(initialCwd ?? null);
@@ -186,13 +188,17 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     };
     const offData = terminalApi.onData(acceptEvent);
     const offExit = terminalApi.onExit(acceptEvent);
+    // Main owns control; the strip only shows the latest state for this incarnation.
+    const offControl = terminalApi.onControl((event) => {
+      if (!disposed && liveRef && sameTerminalSession(liveRef, event)) setControl(event.control);
+    });
 
     setTerminalReplaying(tabId, true);
     const restored = takeRestoredTerminal(tabId);
     if (restored) term.write(diagnostic(t("ptyTerminal.restored")));
     const startCwd = restored ? restored.cwd : initialCwdRef.current;
     const spawnAt = (cwd: string | null) =>
-      terminalApi.spawn({ tabId, lane: "manual", cols, rows, ...(cwd ? { cwd } : {}) });
+      terminalApi.spawn({ tabId, lane: "manual", purpose, cols, rows, ...(cwd ? { cwd } : {}) });
     const start = async () => {
       let result = await spawnAt(startCwd);
       if (!result.ok && restored && startCwd && !disposed && (result.reason === "bad-request" || result.reason === "spawn-failed")) {
@@ -207,6 +213,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       }
       liveRef = result.session;
       setSession(result.session);
+      const current = await terminalApi.control(result.session, "get");
+      if (!disposed && current.ok && liveRef && sameTerminalSession(liveRef, result.session)) setControl(current.control);
       for (const event of pending) if (sameTerminalSession(result.session, event)) renderEvent(event);
       pending = [];
       pendingBytes = 0;
@@ -241,12 +249,24 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       inputSub.dispose();
       offData();
       offExit();
+      offControl();
+      setControl(null);
       termRef.current = null;
       term.dispose();
       // NOTE: PTY is intentionally NOT killed here — it survives unmount and is torn down on tab close (closeWorkspaceTab →
       // terminal.kill).
     };
-  }, [api, tabId]);
+  }, [api, tabId, purpose]);
+
+  const changeControl = (action: TerminalControlAction): void => {
+    const terminalApi = api.terminal;
+    if (!terminalApi || !session) return;
+    setControlNotice(null);
+    void terminalApi.control(session, action).then((result) => {
+      if (result.ok) setControl(result.control);
+      else setControlNotice(t(result.error === "prompt-not-ready" ? "ptyTerminal.handBackNotReady" : "ptyTerminal.controlFailed"));
+    }, () => setControlNotice(t("ptyTerminal.controlFailed")));
+  };
 
   // Focus moving to or from this terminal's pane.
   useEffect(() => {
@@ -268,14 +288,29 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       data-testid="chat-side-panel-pty-terminal"
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
-        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t("ptyTerminal.hostBadge")}</span>
+        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t(purpose === "workspace" ? "ptyTerminal.hostBadgeWorkspace" : "ptyTerminal.hostBadge")}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
           {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
         </span>
       </div>
       <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-        {t("ptyTerminal.manualEnvironment")}
+        {t(purpose === "workspace" ? "ptyTerminal.workspaceEnvironment" : "ptyTerminal.manualEnvironment")}
       </p>
+      {control?.mode === "agent" ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-warning border-border bg-warning/(--opacity-subtle) px-2 py-1 text-xs" data-testid="terminal-agent-control" role="status">
+          <span className="min-w-0 flex-1 truncate font-medium" title={control.command}>
+            {t(control.typed ? "ptyTerminal.agentRunning" : "ptyTerminal.agentTyping", { command: control.command ?? "" })}
+          </span>
+          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-take-over" onClick={() => changeControl("take-over")}>{t("ptyTerminal.takeOver")}</button>
+          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-stop-agent" onClick={() => changeControl("stop")}>{t("ptyTerminal.stop")}</button>
+        </div>
+      ) : control?.mode === "taken-over" ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-user-control" role="status">
+          <span className="min-w-0 flex-1">{t("ptyTerminal.takenOver")}</span>
+          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-hand-back" onClick={() => changeControl("hand-back")}>{t("ptyTerminal.handBack")}</button>
+        </div>
+      ) : null}
+      {controlNotice ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-destructive" data-testid="terminal-control-notice" role="alert">{controlNotice}</p> : null}
       {session?.integrationUnavailableReason ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-integration-unavailable">
         {t(INTEGRATION_UNAVAILABLE_KEYS[session.integrationUnavailableReason])}
       </p> : null}

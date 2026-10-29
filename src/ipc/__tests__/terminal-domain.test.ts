@@ -68,10 +68,10 @@ describe("terminal IPC between two windows", () => {
   it("registers the exact native terminal owner before spawn and refuses ownership theft", async () => {
     const tabId = "terminal:0000000a-1";
     const spawn = handlers.get(CHANNELS.terminal.spawn)!;
-    expect(await spawn(from(windowOne), { tabId, lane: "manual" })).toMatchObject({ ok: true });
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace" })).toMatchObject({ ok: true });
     expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBe(windowOne.webContents);
     owners.set(tabId, 1);
-    expect(await spawn(from(windowTwo), { tabId, lane: "manual" })).toMatchObject({ ok: false, reason: "not-owner" });
+    expect(await spawn(from(windowTwo), { tabId, lane: "manual", purpose: "workspace" })).toMatchObject({ ok: false, reason: "not-owner" });
     expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBe(windowOne.webContents);
     updateApprovalSurface({ kind: "release-terminal", tabId });
   });
@@ -79,7 +79,7 @@ describe("terminal IPC between two windows", () => {
   it("never registers a terminal approval owner from a trusted-URL subframe", async () => {
     const tabId = "terminal:0000000a-2";
     const event = { ...from(windowOne), senderFrame: { url: "file:///Applications/Ave.app/dist/index.html" } };
-    expect(await handlers.get(CHANNELS.terminal.spawn)!(event as IpcMainInvokeEvent, { tabId, lane: "manual" }))
+    expect(await handlers.get(CHANNELS.terminal.spawn)!(event as IpcMainInvokeEvent, { tabId, lane: "manual", purpose: "workspace" }))
       .toMatchObject({ ok: false, reason: "unauthorized-frame" });
     expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBeNull();
   });

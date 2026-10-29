@@ -53,7 +53,8 @@ import { prepareHostShellIntegration } from "./host-shell-integration.js";
 import { resolveManualShell } from "./manual-shell.js";
 import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
 import { t } from "../../i18n/index.js";
-import { isTerminalLane, sameTerminalSession, terminalLaneKey, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
+import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
+import { HostTerminalControl, type HostAgentLease, type HostTerminalDisclosure } from "./host-terminal-control.js";
 
 const log = createLogger("ave");
 
@@ -88,8 +89,8 @@ export type SpawnTerminalResult = TerminalSpawnResult;
 /** main→renderer emitter. Registered ONCE by the terminal IPC domain, which fans out to the app window(s) via
  * safe-send. Kept as an injected sink so this module stays free of `electron` imports (unit-testable in node). */
 export type TerminalEmit = (
-  event: "data" | "exit",
-  payload: TerminalDataEvent | TerminalExitEvent,
+  event: "data" | "exit" | "control",
+  payload: TerminalDataEvent | TerminalExitEvent | TerminalControlEvent,
   /** The window that owns the terminal; the only one its output goes to (null: no window). */
   ownerWindowId: number | null,
 ) => void;
@@ -134,6 +135,8 @@ interface TerminalSession {
   /** Private lifetime token: observations disclose decisions, never proxy authority. */
   egressToken?: string;
   observation?: TerminalCommandObservation;
+  /** Host terminals only: who controls the shell and what an approved agent command disclosed. */
+  control?: HostTerminalControl;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   cleanupIntegration?: () => void;
   closing: boolean;
@@ -210,7 +213,7 @@ function cancelInFlightSpawn(owner: TerminalSpawnInFlight): void {
   owner.cleanupResources?.();
 }
 
-interface LogicalTerminalTab { ownerWindowId: number | null; initialCwd?: string }
+interface LogicalTerminalTab { ownerWindowId: number | null; initialCwd?: string; purpose?: TerminalPurpose }
 const logicalTabs = new Map<string, LogicalTerminalTab>();
 interface ConversationTerminal { readonly tabId: string; readonly ownerWindowId: number | null; readonly initialCwd?: string }
 /** Main-only ownership. Internal terminal ids never identify workspace tabs. */
@@ -231,7 +234,7 @@ function allocateConversationTerminalId(): string {
 }
 
 /** Only host output is delivered over the terminal renderer bridge. */
-function emitTerminal(event: "data" | "exit", payload: TerminalDataEvent | TerminalExitEvent, ownerWindowId: number | null): void {
+function emitTerminal(event: "data" | "exit" | "control", payload: TerminalDataEvent | TerminalExitEvent | TerminalControlEvent, ownerWindowId: number | null): void {
   terminalInspectionForTest?.(event, payload, ownerWindowId);
   if (payload.lane === "manual") _emit(event, payload, ownerWindowId);
 }
@@ -353,6 +356,9 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
   const record = options.lane === "agent" ? conversationForTerminal(tabId) : logicalTabs.get(tabId);
   if (options.lane === "agent" && !record) return Promise.resolve({ ok: false, reason: "no-terminal", message: "terminal has no owning conversation" });
   if (options.lane === "manual" && isConversationTerminalId(tabId)) return Promise.resolve({ ok: false, reason: "bad-request", message: "terminal identity is reserved for a conversation" });
+  if (options.lane === "manual" ? !isTerminalPurpose(options.purpose) : options.purpose !== undefined) {
+    return Promise.resolve({ ok: false, reason: "bad-request", message: "a host terminal mount declares its purpose; a conversation terminal has none" });
+  }
   // A tab another window owns is not this window's to attach to: tab ids are unique per window by construction, so a clash is a contract violation.
   const ownerWindowId = options.ownerWindowId ?? null;
   if (record && record.ownerWindowId !== ownerWindowId) {
@@ -372,6 +378,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
     if (logicalTabs.size >= MAX_HOST_TERMINALS) return Promise.resolve({ ok: false, reason: "too-many-terminals", message: "too many terminal tabs" });
     logicalTabs.set(tabId, { ownerWindowId, ...(options.cwd !== undefined ? { initialCwd: options.cwd } : {}) });
   }
+  if (options.lane === "manual") setTerminalPurpose(tabId, options.purpose!);
 
   // A shell still closing under this id (its window closed, and that window's saved layout is now being restored) is waited out, then a new one starts: replaying the dying one would
   // attach the tab to a shell about to exit. The wait is held under its window, so the window closing (or the tab closing) during it cancels it rather than starting a shell for no one.
@@ -844,8 +851,12 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
       resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, hostNotices: [],
       disposeData: () => {}, disposeExit: () => {},
       cleanupIntegration: integration.cleanup,
+      control: new HostTerminalControl(),
       forceKillTimer: null, closing: false, exited: false, gone, markGone,
     };
+    session.control!.onChange((control) => {
+      if (sessions.get(key) === session) emitTerminal("control", { tabId: session.info.tabId, lane: session.info.lane, terminalSessionId: session.info.terminalSessionId, control }, session.ownerWindowId);
+    });
     const dataSub = pty.onData((chunk) => {
       const display = session.blocks.recordOutput(chunk);
       if (!display) return;
@@ -855,6 +866,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     disposeData = session.disposeData = () => dataSub.dispose();
     const exitSub = pty.onExit(({ exitCode, signal }) => {
       session.exited = true;
+      session.control?.revoke("closed");
       session.blocks.recordExit();
       integration?.cleanup();
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
@@ -1017,9 +1029,206 @@ export function writeTerminal(ref: TerminalSessionRef, data: string): TerminalMu
   if (typeof data !== "string" || Buffer.byteLength(data, "utf-8") > MAX_INPUT_BYTES) return { ok: false, error: "invalid-params" };
   const generation = session.blocks.userInputGeneration();
   session.blocks.recordInput(data);
-  if (session.blocks.userInputGeneration() !== generation) revokeTerminalObservation(session);
+  if (session.blocks.userInputGeneration() !== generation) {
+    revokeTerminalObservation(session);
+    // The user's keystroke takes control before it reaches the shell: the agent lease, its queued bytes and its output span end here.
+    session.control?.revoke("user-input");
+  }
   session.pty.write(data);
   return { ok: true };
+}
+
+/** A tab's current mount purpose, declared by the trusted host renderer on every spawn or replay. Moving a tab to the side panel
+ * revokes any agent lease on it: a side panel terminal has no agent read or write authority. */
+function setTerminalPurpose(tabId: string, purpose: TerminalPurpose): void {
+  const tab = logicalTabs.get(tabId);
+  if (!tab || tab.purpose === purpose) return;
+  tab.purpose = purpose;
+  if (purpose === "side-panel") sessions.get(terminalLaneKey({ tabId, lane: "manual" }))?.control?.revoke("purpose");
+}
+
+/** The host terminal `ref` names, live and owned by `ownerWindowId`, or undefined. */
+function hostSession(ref: TerminalSessionRef, ownerWindowId: number | null): TerminalSession | undefined {
+  if (ref.lane !== "manual") return undefined;
+  const session = sessions.get(terminalLaneKey(ref));
+  return session && !session.exited && !session.closing && session.ownerWindowId === ownerWindowId
+    && sameTerminalSession(session.info, ref) && session.info.lane === "manual" && session.control !== undefined ? session : undefined;
+}
+
+/** The live host terminal of a workspace tab, for agent typing: its purpose must be `workspace` now. */
+export function hostTerminalSession(tabId: string, ownerWindowId: number): TerminalSessionInfo | undefined {
+  const tab = logicalTabs.get(tabId);
+  if (!tab || tab.ownerWindowId !== ownerWindowId || tab.purpose !== "workspace") return undefined;
+  const session = sessions.get(terminalLaneKey({ tabId, lane: "manual" }));
+  return session && hostSession(session.info, ownerWindowId) === session ? sessionInfo(session) : undefined;
+}
+
+/** The program name of a live host terminal's shell (`zsh`, `bash`, `pwsh`), which host rules are scoped to. */
+export function hostTerminalShellName(ref: TerminalSessionRef, ownerWindowId: number): string | undefined {
+  return hostSession(ref, ownerWindowId)?.shellName;
+}
+
+export function hostTerminalControlState(ref: TerminalSessionRef, ownerWindowId: number): HostTerminalControlState | undefined {
+  return hostSession(ref, ownerWindowId)?.control?.state();
+}
+
+/** Check a host terminal's shell against the operating system. Unlike a conversation's confined shell, a legitimate host shell need not be
+ * the only holder of its terminal (a user's background job may share it); its foreground process and directory must still be its own. */
+export async function verifyHostTerminalShell(ref: TerminalSessionRef, ownerWindowId: number, reportedCwd: string): Promise<VerifyTerminalShellResult> {
+  const session = hostSession(ref, ownerWindowId);
+  if (!session) return { ok: false, reason: "no-terminal", message: `no running host terminal with tabId ${JSON.stringify(ref.tabId)} in this window` };
+  return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.pty.pid, session.shellName, reportedCwd);
+}
+
+/** Take over, stop or hand back a host terminal (the user's visible controls), or read its control state. */
+export function controlTerminal(ref: TerminalSessionRef, ownerWindowId: number | null, action: TerminalControlAction): TerminalControlResult {
+  const session = hostSession(ref, ownerWindowId);
+  const control = session?.control;
+  if (!session || !control) return { ok: false, error: "stale-terminal-session" };
+  if (action === "take-over") control.revoke("take-over");
+  else if (action === "stop") stopHostAgentCommand(session, control);
+  else if (action === "hand-back") {
+    const quiet = session.blocks.promptState() === "ready" && !session.blocks.typedSincePromptEnd();
+    const handed = control.handBack(quiet);
+    if (!handed.ok) return { ok: false, error: handed.reason, message: handed.message };
+  }
+  return { ok: true, control: control.state() };
+}
+
+/** Stop revokes the lease, then interrupts only the command it owns: one Ctrl-C while that very block is still the running one.
+ * Before Enter, revoking is enough (Enter is never pressed). A late Stop, after the lease ended, writes nothing. */
+function stopHostAgentCommand(session: TerminalSession, control: HostTerminalControl): void {
+  const owned = control.state();
+  const blockId = owned.mode === "agent" && owned.typed === true ? runningLeaseBlock(session) : undefined;
+  const revoked = control.revoke("stop");
+  if (revoked && blockId !== undefined && session.blocks.promptState() === "command-running" && runningLeaseBlock(session) === blockId) {
+    session.pty.write("\u0003");
+  }
+}
+
+function runningLeaseBlock(session: TerminalSession): number | undefined {
+  const open = session.blocks.list().find((block) => block.status === "running");
+  return open?.source === "osc133" ? open.id : undefined;
+}
+
+/** The output span an approved host command disclosed to the conversation that requested it; any other conversation gets nothing. */
+export function hostTerminalDisclosure(ref: TerminalSessionRef, ownerWindowId: number, requestingSessionId: string, blockId: number): HostTerminalDisclosure | undefined {
+  if (ref.lane !== "manual") return undefined;
+  const session = sessions.get(terminalLaneKey(ref));
+  if (!session || session.ownerWindowId !== ownerWindowId || !sameTerminalSession(session.info, ref)) return undefined;
+  return session.control?.disclosure(requestingSessionId, blockId);
+}
+
+/** Resolve when the disclosure for `blockId` is no longer running, `waitMs` passes, or `signal` aborts. */
+export function waitForHostTerminalDisclosure(
+  ref: TerminalSessionRef, ownerWindowId: number, requestingSessionId: string, blockId: number, waitMs: number, signal?: AbortSignal,
+): Promise<HostTerminalDisclosure | undefined> {
+  const read = (): HostTerminalDisclosure | undefined => hostTerminalDisclosure(ref, ownerWindowId, requestingSessionId, blockId);
+  const session = sessions.get(terminalLaneKey(ref));
+  const control = session?.control;
+  const now = read();
+  if (!control || now === undefined || now.state !== "running" || waitMs <= 0 || signal?.aborted) return Promise.resolve(now);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener("abort", finish);
+      resolve(read());
+    };
+    const timer = setTimeout(finish, waitMs);
+    const unsubscribe = control.onChange(() => { if (read()?.state !== "running") finish(); });
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+}
+
+/** Type one approved command into a workspace host terminal for the conversation bound to it. Acquire the lease first; every byte the
+ * typing protocol writes (Ctrl-C reset, buffer query, bracketed paste, Enter) passes the lease check at the PTY write, and a revoked lease
+ * stops the protocol at its next step. Output is disclosed from the authenticated block Enter opens, while the lease holds. */
+export async function typeHostTerminalCommand(
+  ref: TerminalSessionRef,
+  ownerWindowId: number,
+  requestingSessionId: string,
+  line: string,
+  expectedCwd: string,
+  signal?: AbortSignal,
+): Promise<TypeTerminalCommandResult> {
+  const session = hostSession(ref, ownerWindowId);
+  const control = session?.control;
+  const missing = `no running host terminal with tabId ${JSON.stringify(ref.tabId)} in this window`;
+  if (!session || !control || logicalTabs.get(ref.tabId)?.purpose !== "workspace") return { ok: false, reason: "no-terminal", message: missing };
+  const admitted = control.admit(requestingSessionId, line.trim(), canonicalizePathForMatch(expectedCwd));
+  if (!admitted.ok) return { ok: false, reason: "pending-input", message: admitted.message };
+  const lease = admitted.lease;
+  const cancel = signal === undefined ? lease.signal : AbortSignal.any([signal, lease.signal]);
+  const live = (): boolean => hostSession(ref, ownerWindowId) === session && control.holds(lease)
+    && logicalTabs.get(ref.tabId)?.purpose === "workspace";
+  const result = await typeLineAtPrompt(
+    {
+      signal: cancel,
+      blocks: session.blocks,
+      isLive: live,
+      // The final PTY write chokepoint for agent bytes: nothing reaches the shell once the lease is gone.
+      write: (data) => { if (!cancel.aborted && live()) session.pty.write(data); },
+      verify: () => verifyHostTerminalShell(ref, ownerWindowId, expectedCwd),
+      onBeforeEnter: (blockId) => {
+        if (!live()) throw new Error("Host terminal agent lease ended before Enter.");
+        control.beginDisclosure(lease, blockId, (append) => attachLeaseOutput(session, control, lease, blockId, append));
+      },
+      missing,
+    },
+    line,
+    () => log.info({ tabId: ref.tabId, terminalSessionId: ref.terminalSessionId, chars: line.length }, "terminal: typed an approved host command"),
+  );
+  if (!result.ok) {
+    const revoked = lease.signal.aborted;
+    control.abandon(lease);
+    if (revoked && !signal?.aborted) {
+      return { ok: false, reason: "aborted", message: "the user took control of the terminal; nothing further was typed" };
+    }
+  }
+  return result;
+}
+
+/** Feed block `blockId`'s output to the lease's span while it holds, checking the shell's own record of the command and directory; close
+ * the span at the authenticated exit marker. Returns the detach the control calls on completion (flush) or revocation (discard). */
+function attachLeaseOutput(
+  session: TerminalSession,
+  control: HostTerminalControl,
+  lease: HostAgentLease,
+  blockId: number,
+  append: (text: string) => void,
+): (flush: boolean) => void {
+  let checked = false;
+  const authentic = (): boolean => {
+    const block = session.blocks.get(blockId);
+    if (!block) return true;
+    if (checked) return true;
+    if (block.source !== "osc133" || block.command.trim() !== lease.command || block.cwd === null
+      || canonicalizePathForMatch(block.cwd) !== lease.cwd) {
+      control.mismatch(lease);
+      return false;
+    }
+    checked = true;
+    return true;
+  };
+  const subscription = session.blocks.subscribeBlockOutput(blockId, (text) => {
+    if (control.holds(lease) && authentic()) append(text);
+  });
+  const unsubscribe = session.blocks.subscribe(() => {
+    if (!control.holds(lease)) return;
+    const block = session.blocks.get(blockId);
+    if (block && !authentic()) return;
+    if (session.blocks.hasExited()) control.revoke("closed");
+    else if (block?.status === "done") control.complete(lease, block.exitCode);
+  });
+  return (flush) => {
+    unsubscribe();
+    if (flush) subscription.flush();
+    subscription.dispose();
+  };
 }
 
 type TerminalNotTypedReason =
@@ -1554,6 +1763,7 @@ function killTerminalLane(key: string): void {
   if (inFlight) cancelInFlightSpawn(inFlight);
   const session = sessions.get(key);
   if (!session || session.closing) return;
+  session.control?.revoke("closed");
   session.closing = true;
   stopTerminalObservation(session);
   // The tab is closing: its banners go now, not when the shell has exited.
@@ -1605,6 +1815,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
   // give an existing shell extra runtime just because another tab is still resolving its wrapper/native module.
   const sessionsToKill = [...sessions.entries()].filter(([, session]) => !session.exited);
   for (const [tabId, session] of sessionsToKill) {
+    session.control?.revoke("closed");
     session.closing = true;
     unregisterTerminalBlockTracker(session.info);
     stopTerminalObservation(session);

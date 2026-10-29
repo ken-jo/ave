@@ -4,7 +4,7 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
-import type { TerminalSessionInfo, TerminalSpawnRequest, TerminalDataEvent, TerminalExitEvent } from "../../../../shared/terminal-session.js";
+import type { TerminalControlAction, TerminalControlEvent, TerminalControlResult, TerminalSessionInfo, TerminalSessionRef, TerminalSpawnRequest, TerminalDataEvent, TerminalExitEvent } from "../../../../shared/terminal-session.js";
 import { PtyTerminalView } from "../PtyTerminalView.js";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
@@ -70,6 +70,8 @@ function terminalApi() {
     kill: vi.fn(async () => ({ ok: true as const })),
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
+    onControl: vi.fn((_handler: (event: TerminalControlEvent) => void) => () => {}),
+    control: vi.fn(async (_ref: TerminalSessionRef, _action: TerminalControlAction): Promise<TerminalControlResult> => ({ ok: true, control: { mode: "available", generation: 0 } })),
     listBlocks: vi.fn(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: session.shellIntegration, blocks: [] as unknown[] })),
     getBlock: vi.fn(async (_session: TerminalSessionInfo, _id: number) => ({ ok: false as const, error: "block-not-found" })),
   };
@@ -309,5 +311,41 @@ describe("PtyTerminalView environment and session boundaries", () => {
     expect(terminals).toHaveLength(1);
     view.unmount();
     expect(terminal.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("PtyTerminalView host control strip", () => {
+  it("declares the workspace purpose, shows the agent's period with Take over and Stop, then Hand back after a take-over", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    let announce: ((event: TerminalControlEvent) => void) | undefined;
+    terminal.onControl.mockImplementation((handler: (event: TerminalControlEvent) => void) => { announce = handler; return () => { announce = undefined; }; });
+    terminal.control.mockImplementation(async (_ref: TerminalSessionRef, action: TerminalControlAction): Promise<TerminalControlResult> =>
+      action === "hand-back" ? { ok: false, error: "prompt-not-ready" }
+        : { ok: true, control: { mode: action === "get" ? "available" : "taken-over", generation: 3 } });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:21" tabLabel="Terminal 21" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:21" }), "get"));
+    expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", purpose: "workspace" }));
+    expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadgeWorkspace"));
+    const session = terminalSessionFixture("terminal:21", "manual");
+    act(() => announce!({ ...session, control: { mode: "agent", generation: 1, command: "npm test", typed: true } }));
+    expect(screen.getByTestId("terminal-agent-control")).toHaveTextContent(t("ptyTerminal.agentRunning", { command: "npm test" }));
+    fireEvent.click(screen.getByTestId("terminal-take-over"));
+    await waitFor(() => expect(screen.getByTestId("terminal-user-control")).toHaveTextContent(t("ptyTerminal.takenOver")));
+    expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:21" }), "take-over");
+    fireEvent.click(screen.getByTestId("terminal-hand-back"));
+    expect(await screen.findByTestId("terminal-control-notice")).toHaveTextContent(t("ptyTerminal.handBackNotReady"));
+    // Another incarnation's announcement does not change this view.
+    act(() => announce!({ ...session, terminalSessionId: "other", control: { mode: "agent", generation: 9, command: "rm -rf x" } }));
+    expect(screen.queryByTestId("terminal-agent-control")).toBeNull();
+  });
+
+  it("keeps the side panel terminal private and without agent controls", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:22" tabLabel="Terminal 22" />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ purpose: "side-panel" })));
+    expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadge"));
+    expect(screen.getByText(t("ptyTerminal.manualEnvironment"))).toBeTruthy();
   });
 });
