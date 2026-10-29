@@ -1738,6 +1738,15 @@ still read that variable, and system startup files read before the wrapper
 (such as `/etc/zshenv`) run before the nonce exists. Same-user processes are not
 an isolation boundary.
 
+A system zshrc that runs `compinit` (Ubuntu's `/etc/zsh/zshrc` does) runs while
+ZDOTDIR is the temporary directory, so its completion dump is written there and
+rebuilt for every host terminal, which slows startup; the user's own
+`.zcompdump` is neither read nor changed. Pointing the dump at the real HOME
+would write there, so it is accepted as a startup-cost limit; the dump is
+removed with the temporary directory when the terminal closes. A user who
+calls `compinit` from their own `.zshrc` runs it with their real ZDOTDIR
+restored.
+
 For a bash login launch, the wrapper explicitly sources the system profile and
 first readable user login profile before hooks using an interactive rc launch.
 The shell's read-only `login_shell` flag remains false, and automatic logout-file

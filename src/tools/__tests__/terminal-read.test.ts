@@ -242,8 +242,16 @@ it("refuses host output and stale incarnations, including continuation-shaped re
     expect(result.output).not.toContain("HOST-SECRET");
   }
   const listing = await tool.execute({}, ctx);
-  expect((bodyOf(listing.output as string, false).terminals as unknown[])).toHaveLength(1);
+  const listed = bodyOf(listing.output as string, false).terminals as Array<Record<string, unknown>>;
+  expect(listed).toHaveLength(1);
   expect(listing.output).not.toContain("human");
-  const isolated = await tool.execute({ tabId: "terminal:1", terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
-  expect(bodyOf(isolated.output as string, false)).toMatchObject({ lane: "agent", block: { command: "agent", output: "ISOLATED" } });
+  // Every identity field the listing shows is one terminal_read accepts, so copying it back stays a valid read.
+  expect(listed[0]).not.toHaveProperty("lane");
+  const copied = Object.fromEntries(Object.entries(listed[0]!).filter(([key]) => key === "tabId" || key === "terminalSessionId"));
+  expect(copied).toEqual({ tabId: "terminal:1", terminalSessionId: "terminal:1/agent" });
+  const isolated = await tool.execute({ ...copied, blockId: 1 }, ctx);
+  expect(isolated.isError).toBeFalsy();
+  const read = bodyOf(isolated.output as string, false);
+  expect(read).toMatchObject({ tabId: "terminal:1", terminalSessionId: "terminal:1/agent", block: { command: "agent", output: "ISOLATED" } });
+  expect(read).not.toHaveProperty("lane");
 });

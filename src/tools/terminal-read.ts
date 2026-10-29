@@ -2,7 +2,7 @@
  * Frame command/output records as sanitized untrusted data; this ordinary permission-checked read cannot type or spawn. */
 import { createDynamicTool, type Tool } from "./base.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../main/terminal/terminal-blocks.js";
-import { sameTerminalSession, type TerminalSessionRef } from "../shared/terminal-session.js";
+import { sameTerminalSession, type TerminalSessionInfo, type TerminalSessionRef } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
@@ -40,11 +40,12 @@ const TERMINAL_OUTPUT_FENCE_OPEN = '<terminal-output trust="untrusted-terminal-d
 
 /** Frame a result as untrusted terminal data. Everything in it; command text, output, directories; is whatever programs printed, so no field may close the frame: a
  * forged `</terminal-output>` is neutralized in every string before the JSON is built (afterwards, the inserted backslash could form an invalid JSON escape such as `\ `). */
-export function fenceTerminalData(payload: unknown) {
+export function fenceTerminalData(payload: unknown, options: { isolated?: boolean } = {}) {
   const notice = terminalSandboxWindowNotice();
   const record = payload !== null && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
-  const agentSession = record?.lane === "agent" || (Array.isArray(record?.terminals)
-    && record.terminals.some(session => session !== null && typeof session === "object" && session.lane === "agent"));
+  // Model-facing terminal tool results name no lane; their callers say when the data comes from an isolated shell.
+  const agentSession = options.isolated ?? (record?.lane === "agent" || (Array.isArray(record?.terminals)
+    && record.terminals.some(session => session !== null && typeof session === "object" && session.lane === "agent")));
   const annotated = notice !== undefined && agentSession ? { ...record, sandboxNotice: notice } : payload;
   return {
     output: [
@@ -64,6 +65,12 @@ function neutralizeStrings(value: unknown): unknown {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, neutralizeStrings(entry)]));
   }
   return value;
+}
+
+/** The session as the model sees it: no `lane`, which terminal_read does not accept, so a copied identity stays a valid input. */
+function readableSession(session: TerminalSessionInfo): Omit<TerminalSessionInfo, "lane"> {
+  const { lane: _lane, ...rest } = session;
+  return rest;
 }
 
 export function withOutputBudget(blocks: readonly TerminalBlock[]) {
@@ -134,12 +141,12 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         const tracker = owned?.lane === "agent" ? getWindowTerminalBlockTracker(owned, windowId) : undefined;
         const session = owned?.lane === "agent" ? getWindowTerminalBlockSession(owned, windowId) : undefined;
         const terminals = tracker && session?.lane === "agent" ? [{
-          ...session, exited: tracker.hasExited(), recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
+          ...readableSession(session), exited: tracker.hasExited(), recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
         }] : [];
         return fenceTerminalData({
           terminals,
           ...(terminals.length === 0 ? { note: t("be_terminalRead.noTerminals") } : {}),
-        });
+        }, { isolated: terminals.length > 0 });
       }
 
       if (typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
@@ -163,13 +170,13 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
         if (!block) return terminalToolFailure(`no block ${String(input.blockId)} in terminal ${tabId}`, ref.lane);
-        return fenceTerminalData({ ...session, block: withOutputBudget([block])[0] });
+        return fenceTerminalData({ ...readableSession(session), block: withOutputBudget([block])[0] }, { isolated: true });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
       return fenceTerminalData({
-        ...session,
+        ...readableSession(session),
         blocks: withOutputBudget(tracker.recent(limit)),
-      });
+      }, { isolated: true });
     },
   });
 }

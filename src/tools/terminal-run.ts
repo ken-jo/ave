@@ -298,7 +298,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
     if (block === null) {
       return {
-        ...fenceTerminalData({ tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }),
+        ...fenceTerminalData({ tabId: scope.tabId, terminalSessionId: scope.terminalSessionId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }, { isolated: true }),
         isError: true,
       };
     }
@@ -312,22 +312,22 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       });
       return {
         ...fenceTerminalData({
-          tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
+          tabId: scope.tabId, terminalSessionId: scope.terminalSessionId,
           typed: true,
           error: t("be_terminalRun.ranDifferentCommand", { tabId: scope.tabId }),
           finished,
           block: withOutputBudget([block])[0],
-        }),
+        }, { isolated: true }),
         isError: true,
       };
     }
     return fenceTerminalData({
-      tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
+      tabId: scope.tabId, terminalSessionId: scope.terminalSessionId,
       typed: true,
       finished,
       block: withOutputBudget([block])[0],
       ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }), continuation: { tabId: scope.tabId, terminalSessionId: scope.terminalSessionId, blockId: block.id } }),
-    });
+    }, { isolated: true });
   };
 
   const tool = createDynamicTool({

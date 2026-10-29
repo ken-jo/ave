@@ -59,6 +59,9 @@ describe("host shell startup", () => {
       [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"].map((name) => `${name}:${home}:${dotdir}`),
     );
     for (const [name, text] of originals) expect(readFileSync(join(dotdir, name), "utf8")).toBe(text);
+    // A global zshrc's compinit runs while ZDOTDIR is the temporary directory and leaves its dump there; cleanup removes it with the directory.
+    writeFileSync(join(temporary, ".zcompdump"), "#files: 0\n");
+    expect(existsSync(join(dotdir, ".zcompdump"))).toBe(false);
     integration.cleanup();
     integration.cleanup();
     expect(existsSync(temporary)).toBe(false);

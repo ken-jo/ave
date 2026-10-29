@@ -71,7 +71,6 @@ export function PtyTerminalView({
 }) {
   const { t } = useTranslation();
   const mount = useSurfaceMount(props.tabId, location);
-  // The name its egress card in the approval lane and Settings use for it.
   if (!mount.owned) {
     return (
       <div

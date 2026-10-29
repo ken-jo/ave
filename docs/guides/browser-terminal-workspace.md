@@ -188,6 +188,11 @@ a loader it starts cannot find the file. Your startup files run in the same
 shell, so they can still read that variable; system-wide startup files that the
 shell reads before the wrapper (for example `/etc/zshenv`) run before the nonce
 exists.
+
+On systems whose global zshrc runs `compinit` (Ubuntu does), that completion
+setup runs while the temporary directory is active, so its cache is rebuilt
+there for each terminal and discarded when the terminal closes. Startup is
+slower than a native shell; your own `~/.zcompdump` is not changed.
 Unverified current directory or exit status remains unknown. Host integration
 alone never enables agent typing or automatic output access.
 
