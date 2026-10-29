@@ -1,6 +1,5 @@
 /** Verify natural-name plugin tool registration and delegated calls through the production loopback host. */
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { PluginMcpHost } from "../plugin-mcp-host.js";
 import { LoopbackTransport } from "../loopback-transport.js";
 import { META_CLIENT_INFO } from "../protocol-constants.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -15,7 +14,7 @@ import {
   resolveReviewerSandboxCapability,
   setActiveSandboxCapability,
 } from "../../permissions/sandbox-capability.js";
-import { testLoopbackHost } from "./plugin-mcp-test-helpers.js";
+import { publishTestHost, testLoopbackHost } from "./plugin-mcp-test-helpers.js";
 
 const UNKNOWN_META_PREFIX = "xyz.example/";
 
@@ -44,17 +43,6 @@ const MANIFEST: PluginManifest = {
     },
   ],
 };
-
-async function publishTestHost(
-  host: PluginMcpHost,
-  pluginId: string,
-  registry: ToolRegistry,
-): Promise<string[]> {
-  const tools = await host.prepareTools();
-  registry.reservePluginReplacement(pluginId, tools, []).publish();
-  host.publishPrepared(tools);
-  return tools.map((tool) => tool.name);
-}
 
 describe("PluginMcpHost — first-party loopback registration + round-trip", () => {
   afterEach(() => {
