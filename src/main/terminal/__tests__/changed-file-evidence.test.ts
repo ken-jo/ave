@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TerminalFileEvidence, inferExecutedPaths, readTerminalReviewText } from "../changed-file-evidence.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
+import { reviewChange as change } from "../../../__tests__/support/terminal-session-fixtures.js";
+
 
 // Pass-through fs, with a hook that runs before each path call, to replay filesystem races deterministically.
 type HookedCall = "lstat" | "open" | "realpath";
@@ -53,8 +55,8 @@ describe("host execution provenance", () => {
     await file("user.sh");
     const result = await evidence.snapshot(directory, [block("./user.sh")]);
     expect(result.warnings).toEqual([]);
-    expect(result.files).toHaveLength(1);
-    expect(result.files[0]?.lastUsed).toBeNull();
+    // Only files this terminal's commands used are listed.
+    expect(result.files).toEqual([]);
   });
 
   it("does not call a script argument to a data command an execution", async () => {
@@ -134,25 +136,28 @@ describe("host execution provenance", () => {
     expect((await evidence.snapshot(directory, [block("make build")])).warnings).toEqual([{ blockId: 1, command: "make build", files: [makefile] }]);
   });
 
-  it("lists every changed file for as long as the session runs, with the diff following the current content", async () => {
+  it("lists only the changed files this terminal's commands used, with the review following the current content", async () => {
     const path = await changed("run.sh");
     await changed("other.sh");
-    expect((await evidence.snapshot(directory, [])).files.map(item => item.path)).toEqual([path, join(directory, "other.sh")]);
+    expect((await evidence.snapshot(directory, [])).files).toEqual([]);
+    expect((await evidence.snapshot(directory, [block("./run.sh")])).files.map(item => item.path)).toEqual([path]);
     await writeFile(path, "echo changed again\n");
-    const again = await evidence.snapshot(directory, []);
-    expect(again.files).toHaveLength(2);
-    expect(again.files[0]?.diff).toEqual({ before: "", after: "echo changed again\n" });
-    expect(Object.keys(again.files[0]!).sort()).toEqual(["diff", "lastUsed", "path", "sessionIds"]);
+    const again = await evidence.snapshot(directory, [block("./run.sh", 2)]);
+    expect(again.files).toHaveLength(1);
+    expect(change(again.files[0])).toEqual({ operation: "create", hunks: [["", "echo changed again\n"]] });
+    expect(again.files[0]?.review).toMatchObject({ path, added: 1, removed: 0, countsKnown: true, referenceable: false });
+    expect(Object.keys(again.files[0]!).sort()).toEqual(["lastUsed", "path", "review", "sessionIds"]);
   });
 
   it("retains provenance through delete and restore", async () => {
     const path = await changed("run.sh");
     await unlink(path);
-    const removed = (await evidence.snapshot(directory, [])).files[0];
-    expect(removed?.path).toBe(path);
-    expect(removed?.diff).toBeUndefined();
+    expect((await evidence.snapshot(directory, [block("./run.sh")])).files).toEqual([]);
     await writeFile(path, "echo restored\n");
-    expect((await evidence.snapshot(directory, [block("./run.sh")])).warnings[0]?.files).toEqual([path]);
+    const restored = await evidence.snapshot(directory, [block("./run.sh", 2)]);
+    expect(restored.warnings[0]?.files).toEqual([path]);
+    // The user's recreated file is not the one the agent wrote.
+    expect(restored.files[0]?.review).toBeUndefined();
   });
 
   it("retains the historical path and the destination after an attributed rename", async () => {
@@ -160,15 +165,17 @@ describe("host execution provenance", () => {
     const destination = join(directory, "renamed.sh");
     await rename(old, destination);
     await evidence.recordWrite("session-a", destination);
-    const result = await evidence.snapshot(directory, [block("./renamed.sh")]);
-    expect(result.files.map(item => item.path)).toEqual([old, destination]);
-    expect(result.warnings[0]?.files).toEqual([destination]);
+    const result = await evidence.snapshot(directory, [block("./renamed.sh"), block("./old.sh", 2)]);
+    expect(result.files.map(item => item.path)).toEqual([destination]);
+    expect(result.warnings.map(warning => warning.files)).toEqual([[destination]]);
+    await writeFile(old, "echo user\n");
+    expect((await evidence.snapshot(directory, [block("./old.sh", 3)])).files.map(item => item.path)).toEqual([old]);
   });
 
   it("records each contributing session without duplicate physical paths", async () => {
     const path = await changed("run.sh");
     await evidence.recordWrite("session-b", path);
-    expect((await evidence.snapshot(directory, [])).files[0]?.sessionIds).toEqual(["session-a", "session-b"]);
+    expect((await evidence.snapshot(directory, [block("./run.sh")])).files[0]?.sessionIds).toEqual(["session-a", "session-b"]);
   });
 
   it("does not retroactively attribute commands preceding an agent write", async () => {
@@ -189,16 +196,16 @@ describe("host execution provenance", () => {
   it("returns a bounded real baseline and the current contents", async () => {
     const path = await file("run.sh", "after\n");
     await evidence.recordWrite("session-a", path, "before\n");
-    const snapshot = await evidence.snapshot(directory, []);
-    expect(snapshot.files[0]?.diff).toEqual({ before: "before\n", after: await readFile(path, "utf8") });
+    const snapshot = await evidence.snapshot(directory, [block("./run.sh")]);
+    expect(change(snapshot.files[0])).toEqual({ operation: "modify", hunks: [["before\n", await readFile(path, "utf8")]] });
     await writeFile(path, Buffer.from([0, 1]));
-    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toBeUndefined();
+    expect((await evidence.snapshot(directory, [block("./run.sh", 2)])).files[0]?.review).toBeUndefined();
   });
 
   it("keeps an unknown baseline explicitly unavailable", async () => {
     const path = await file("run.sh");
     await evidence.recordWrite("session-a", path);
-    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toBeUndefined();
+    expect((await evidence.snapshot(directory, [block("./run.sh")])).files[0]?.review).toBeUndefined();
   });
 
   it.each(["pnpm exec tool", "bun x tool", "npm exec -- tool", "npx --no-install tool"])("matches local bin entry points through an execution wrapper: %s", async (command) => {
@@ -228,8 +235,8 @@ describe("host execution provenance", () => {
     await unlink(bad);
     await symlink(bad, bad);
     const result = await evidence.snapshot(directory, [block("./bad.sh && ./good.sh")]);
-    expect(result.files.find(item => item.path === bad)?.diff).toBeUndefined();
-    expect(result.files.find(item => item.path === good)?.diff).toEqual({ before: "", after: "echo changed\n" });
+    expect(result.files.find(item => item.path === bad)).toBeUndefined();
+    expect(change(result.files.find(item => item.path === good))).toEqual({ operation: "create", hunks: [["", "echo changed\n"]] });
     expect((await inferExecutedPaths("./bad.sh && ./good.sh", directory)).unresolved).toBe(true);
     expect(result.warnings[0]?.files).toEqual([good]);
   });
@@ -241,7 +248,7 @@ describe("host execution provenance", () => {
       "precmd_functions=(${precmd_functions:#*starship*}); PROMPT='demo % '", "make build"];
     const result = await evidence.snapshot(directory, commands.map((command, index) => block(command, index + 1)));
     expect(result.warnings).toEqual([]);
-    expect(result.files[0]?.lastUsed).toBeNull();
+    expect(result.files).toEqual([]);
   });
 
   it("keeps one warning per matching block and none for the commands between them", async () => {
@@ -299,15 +306,16 @@ describe("host execution provenance", () => {
   it("never reads through a parent directory swapped for a link after the write was recorded", async () => {
     const recorded = await file("scripts/run.sh", "agent\n");
     await evidence.recordWrite("session-a", recorded, "before\n");
-    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toEqual({ before: "before\n", after: "agent\n" });
+    expect(change((await evidence.snapshot(directory, [block("./scripts/run.sh")])).files[0])).toEqual({ operation: "modify", hunks: [["before\n", "agent\n"]] });
     const outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
     try {
       await writeFile(join(outside, "run.sh"), "host secret\n");
       await rename(join(directory, "scripts"), join(directory, "scripts.moved"));
       await symlink(outside, join(directory, "scripts"));
-      const swapped = await evidence.snapshot(directory, []);
-      expect(swapped.files.map(item => item.path)).toEqual([recorded]);
-      expect(swapped.files[0]?.diff).toBeUndefined();
+      // The command now runs the host file, which is not the recorded one: no match, and nothing of it is shown.
+      const swapped = await evidence.snapshot(directory, [block("./scripts/run.sh", 2)]);
+      expect(swapped.files).toEqual([]);
+      expect(swapped.warnings).toEqual([]);
       expect(JSON.stringify(swapped)).not.toContain("host secret");
       expect(await readTerminalReviewText(recorded)).toBeUndefined();
     } finally { await rm(outside, { recursive: true, force: true }); }
@@ -331,16 +339,16 @@ describe("host execution provenance", () => {
       // Replays the race: every path check (realpath) sees the original directory, while each lstat and the open
       // see the external link, so string and lstat comparisons alone would all agree on the external file.
       fsHooks.before = async (call, path) => { if (path === recorded) await swap(call !== "realpath"); };
-      const raced = await evidence.snapshot(directory, []);
+      const raced = await evidence.snapshot(directory, [block("./scripts/run.sh")]);
       expect(raced.files.map(item => item.path)).toEqual([recorded]);
-      expect(raced.files[0]?.diff).toBeUndefined();
+      expect(raced.files[0]?.review).toBeUndefined();
       expect(JSON.stringify(raced)).not.toContain("host secret");
     } finally {
       fsHooks.before = null;
       await swap(false);
       await rm(outside, { recursive: true, force: true });
     }
-    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toEqual({ before: "before\n", after: "agent\n" });
+    expect(change((await evidence.snapshot(directory, [block("./scripts/run.sh", 2)])).files[0])).toEqual({ operation: "modify", hunks: [["before\n", "agent\n"]] });
   });
 
   it("shows no diff once a save replaces the recorded inode, until the agent writes the path again", async () => {
@@ -349,10 +357,10 @@ describe("host execution provenance", () => {
     const replacement = join(directory, "run.sh.tmp");
     await writeFile(replacement, "saved elsewhere\n");
     await rename(replacement, path);
-    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toBeUndefined();
+    expect((await evidence.snapshot(directory, [block("./run.sh")])).files[0]?.review).toBeUndefined();
     await writeFile(path, "agent again\n");
     await evidence.recordWrite("session-a", path);
-    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toEqual({ before: "before\n", after: "agent again\n" });
+    expect(change((await evidence.snapshot(directory, [block("./run.sh", 2)])).files[0])).toEqual({ operation: "modify", hunks: [["before\n", "agent again\n"]] });
   });
 
   it("caps text reads and distinguishes absent files from unavailable text", async () => {

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /** Terminal and web panes in the main area: the store that owns their records and the pane body each kind draws. */
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { t } from "../../../../i18n/index.js";
 import { SurfacePane, directoryName, webPanelTitle } from "../MainSurfacePanels.js";
 import type { SideChatRuntime } from "../SideChatView.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../../shared/processing-display-level.js";
@@ -17,7 +18,7 @@ const CHAT_RUNTIME: SideChatRuntime = {
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.js";
 import { getWebSurfaces, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
@@ -48,7 +49,7 @@ function terminalApi() {
     onData: vi.fn(() => () => {}),
     onExit: vi.fn(() => () => {}),
     listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
-    listBlocks: vi.fn(async () => ({ ok: true as const, integrated: true, blocks: [] as unknown[] })),
+    listBlocks: vi.fn(async (session: unknown) => ({ ok: true as const, session, integrated: true, blocks: [] as unknown[] })),
     getBlock: vi.fn(async () => ({ ok: false as const, error: "block-not-found" })),
   };
 }
@@ -184,9 +185,61 @@ describe("SurfacePane", () => {
         <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
       </TooltipProvider>,
     );
-    expect(screen.getByTestId("pane-header").textContent).toMatch(/ 2$/);
+    expect(screen.getByTestId("pane-header").querySelector("h2")?.textContent).toMatch(/ 2$/);
     await act(async () => { await Promise.resolve(); });
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:908" }));
+    // One header row, as a conversation pane has: the host chip and block controls sit in it, with the environment
+    // sentence on the chip's tooltip; nothing stacks between the header and the output.
+    const header = screen.getByTestId("pane-header");
+    await waitFor(() => expect(within(header).getByTestId("terminal-pane-host-chip")).toHaveTextContent("호스트"));
+    expect(within(header).getByTestId("terminal-pane-host-chip")).toHaveAttribute("title", expect.stringContaining(t("ptyTerminal.manualEnvironment")));
+    await waitFor(() => expect(within(header).getByTestId("terminal-blocks-toggle")).toBeTruthy());
+    const body = screen.getByTestId("surface-pane");
+    expect(within(body).queryByTestId("terminal-host-identity")).toBeNull();
+    expect(within(body).queryByTestId("terminal-blocks-bar")).toBeNull();
+    expect(body.textContent).not.toContain(t("ptyTerminal.manualEnvironment"));
+  });
+
+  it("opens the terminal's work panel on 변경 파일 from the badge: a docked panel beside the terminal, as a chat pane has", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    const previousAve = window.ave;
+    (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
+    try {
+      const { api } = makeMockAveApi();
+      const terminal = terminalApi();
+      terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: { cwd: "/repo", latestBlockId: 1, files: [
+        { path: "/repo/Makefile", sessionIds: ["conversation"], lastUsed: { command: "make build", when: 1 }, review: {
+          path: "/repo/Makefile", bytes: 20, lineCount: 2, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: false,
+          hunks: [{ id: "h", oldText: "\tbun run vitest\n", newText: "\tbash scripts/test.sh\n", oldStartLine: 2, newStartLine: 2, startLine: 2, endLine: 2 }] } },
+      ], warnings: [{ blockId: 1, command: "make build", files: ["/repo/Makefile"] }] } } as never);
+      const onChatOpenChange = vi.fn();
+      const ui = (open: boolean) => (
+        <TooltipProvider>
+          <SurfacePane chatOpen={open} onChatOpenChange={onChatOpenChange} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        </TooltipProvider>
+      );
+      const view = render(ui(false));
+      const badge = await screen.findByTestId("terminal-tab-file-review-badge");
+      expect(within(screen.getByTestId("pane-header")).getByTestId("terminal-tab-file-review-badge")).toBe(badge);
+      fireEvent.click(badge);
+      expect(onChatOpenChange).toHaveBeenCalledWith(true);
+      view.rerender(ui(true));
+      const panel = await screen.findByTestId("pane-work-panel");
+      // The same docked column and card as a conversation's work panel, the tile's guest beside the terminal's body.
+      expect(screen.getByTestId("pane-work-panel-motion")).toHaveAttribute("data-panel-mode", "docked");
+      expect(panel).toHaveClass("ave-surface-raised");
+      expect(screen.getByTestId("surface-pane")).not.toContainElement(panel);
+      expect(screen.getByTestId("pane-panel-slot")).toContainElement(panel);
+      expect(within(panel).getByTestId("pane-work-panel-tab-changes")).toHaveAttribute("aria-selected", "true");
+      expect(within(panel).getByTestId("pane-work-panel-tab-changes")).toHaveTextContent(`${t("terminalFileReview.tab")}1`);
+      expect(await within(panel).findByTestId("turn-change-detail")).toHaveTextContent("bash scripts/test.sh");
+      fireEvent.click(within(panel).getByTestId("pane-work-panel-tab-chat"));
+      expect(within(panel).queryByTestId("terminal-changes-view")).toBeNull();
+      expect(within(panel).getByTestId("pane-chat")).toHaveAttribute("data-tab-id", "terminal:908");
+    } finally {
+      (window as unknown as { ave: unknown }).ave = previousAve;
+      vi.restoreAllMocks();
+    }
   });
 
   it("draws an empty web pane until an address is entered, and validates the address", async () => {

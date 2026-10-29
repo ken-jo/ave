@@ -1,8 +1,11 @@
+import type { TurnReviewFile } from "./turn-change-review.js";
+
 /** Advisory provenance; these records never confer file or terminal authority. */
 export interface TerminalReviewFile {
   readonly path: string;
   readonly sessionIds: string[];
-  readonly diff?: { readonly before: string; readonly after: string };
+  /** The change against the recorded baseline, read only from the file the agent write left; absent when unknown. */
+  readonly review?: TurnReviewFile;
   readonly lastUsed: { readonly command: string; readonly when: number } | null;
 }
 
@@ -19,6 +22,7 @@ export interface TerminalFileReviewSnapshot {
   readonly cwd: string;
   /** Most recent command block; a warning is current only while its block is the latest command. */
   readonly latestBlockId: number | null;
+  /** The agent-changed files this terminal's commands used. */
   readonly files: TerminalReviewFile[];
   readonly warnings: TerminalExecutionWarning[];
 }

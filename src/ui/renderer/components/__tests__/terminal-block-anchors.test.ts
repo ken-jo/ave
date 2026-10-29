@@ -6,12 +6,25 @@ import { XtermBlockAnchors, viewBlockId } from "../terminal-block-anchors.js";
 
 const NONCE = "n0nce-for-anchor-test";
 
+/** A buffer row as xterm keeps it: one cell per column, a wide character's second cell empty with width 0. */
+function bufferLine(text: string, cols: number) {
+  const cells: { chars: string; width: number }[] = [];
+  for (const char of text) {
+    const wide = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uff00-\uff60]/u.test(char);
+    cells.push({ chars: char, width: wide ? 2 : 1 });
+    if (wide) cells.push({ chars: "", width: 0 });
+  }
+  while (cells.length < cols) cells.push({ chars: "", width: 1 });
+  return { length: cols, translateToString: () => text,
+    getCell: (x: number) => cells[x] ? { getChars: () => cells[x]!.chars, getWidth: () => cells[x]!.width } : undefined };
+}
+
 function fakeTerm(commandRow: string, cols = 80) {
   const disposeMarker: Array<() => void> = [];
   const decorations: { options: Record<string, unknown>; disposed: boolean }[] = [];
   const term = {
     cols,
-    buffer: { active: { getLine: () => ({ translateToString: () => commandRow }) } },
+    buffer: { active: { getLine: () => bufferLine(commandRow, cols) } },
     registerMarker: vi.fn((offset: number) => {
       const listeners: Array<() => void> = [];
       const marker = { line: 10 + offset, isDisposed: false, onDispose: (listener: () => void) => { listeners.push(listener); return { dispose() {} }; },
@@ -81,20 +94,31 @@ describe("terminal block anchors", () => {
     anchors.noteCommandStart(7);
     expect(raw.registerMarker).toHaveBeenCalledTimes(1);
     expect(raw.registerMarker).toHaveBeenCalledWith(-1);
-    const container = anchors.attach(7);
-    expect(container).not.toBeNull();
-    expect(anchors.attach(7)).toBe(container);
+    const slot = anchors.attach(7);
+    expect(slot?.columns).toBe(59);
+    expect(anchors.attach(7)).toBe(slot);
     expect(decorations).toHaveLength(1);
     expect(decorations[0]!.options).toMatchObject({ x: 21, width: 59, height: 1, layer: "top" });
     expect(anchors.attach(8)).toBeNull();
   });
 
-  it("keeps a minimum annotation width on a long command row", () => {
-    const { term, decorations } = fakeTerm("x".repeat(78));
+  it.each([
+    ["a long command", "x".repeat(70), 72, 8],
+    ["wide characters, by the cells they take", "한글".repeat(10), 42, 38],
+  ])("never draws over the command text: %s", (_case, command, x, width) => {
+    const { term, decorations } = fakeTerm(command);
     const anchors = new XtermBlockAnchors(term);
     anchors.noteCommandStart(1);
-    anchors.attach(1);
-    expect(decorations[0]!.options).toMatchObject({ x: 56, width: 24 });
+    expect(anchors.attach(1)?.columns).toBe(width);
+    expect(decorations[0]!.options).toMatchObject({ x, width });
+  });
+
+  it("gives no annotation slot on a row the command fills", () => {
+    const { term, decorations } = fakeTerm("x".repeat(79));
+    const anchors = new XtermBlockAnchors(term);
+    anchors.noteCommandStart(1);
+    expect(anchors.attach(1)).toBeNull();
+    expect(decorations).toEqual([]);
   });
 
   it("drops the annotation when its row leaves the scrollback and notifies the view", () => {

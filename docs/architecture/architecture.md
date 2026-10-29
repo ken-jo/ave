@@ -1449,8 +1449,13 @@ and fail-closed behavior when the backend is unavailable. Host startup/user outp
 is private; only explicit user-selected block attachments share host context.
 Host terminals annotate a command positively matched to tracked agent-changed
 files with a non-blocking inline warning on its own row (a renderer decoration,
-never PTY input or buffer text), and show an agent-changed file count on the
-header badge that opens a side panel with each file's use and diff. The side-work-panel
+never PTY input or buffer text, never over the command text), and show an
+agent-changed file count on the header badge. Both open the terminal's 변경 파일
+view in its work panel, built from the conversation's change UI. A terminal
+pane has one header row, like a conversation pane: a compact host chip, whose
+tooltip carries the environment note, the shell-reported directory, block
+history and attach-last, the badge, and the same work-panel toggle. Its chat and
+changes open in the same docked work panel a conversation pane uses. The side-work-panel
 host terminal has the same advisory changed-file UI while retaining no agent access.
 Successful write provenance uses canonical physical paths and the identity of the
 written file, which alone the diff may read; it is never permission authority.

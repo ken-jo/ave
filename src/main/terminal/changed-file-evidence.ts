@@ -1,8 +1,11 @@
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath, stat, type FileHandle } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 import type { TerminalFileReviewSnapshot, TerminalExecutionWarning, TerminalReviewFile } from "../../shared/terminal-file-review.js";
+import type { TurnReviewFile } from "../../shared/turn-change-review.js";
+import { countFileChangeLines } from "../../shared/file-change-counts.js";
+import { countTurnReviewLines, createTurnReviewHunks } from "../../memory/turn-review-diff.js";
 import { tokenizeShell } from "../../shared/shell-tokenizer.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 
@@ -85,10 +88,6 @@ function missing(error: unknown): boolean {
 }
 export function isTerminalReviewUnavailable(error: unknown): boolean {
   return ["EACCES", "EPERM", "ELOOP", "EBUSY", "ESTALE", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
-}
-function within(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 function textBytes(bytes: Buffer): string | undefined {
   if (bytes.includes(0)) return undefined;
@@ -409,6 +408,26 @@ export class TerminalFileEvidence {
       before: before === null || before !== undefined && Buffer.byteLength(before, "utf8") <= MAX_INFERENCE_BYTES && !before.includes("\0") ? before : undefined, lastUsed: null, recordedAt: Date.now() });
   }
 
+  /**
+   * The change against the recorded baseline, in the chat's review shape. Only the recorded file is read; an unknown
+   * baseline, or current content that is not the recorded file's text, has no review.
+   */
+  private async review(file: ChangedFile): Promise<TurnReviewFile | undefined> {
+    if (file.before === undefined || !file.identity) return undefined;
+    const after = await readRecordedText(file.path, file.identity);
+    if (typeof after !== "string") return undefined;
+    const before = file.before ?? "";
+    const counts = countFileChangeLines(before, after);
+    return {
+      path: file.path, bytes: Buffer.byteLength(after, "utf8"), lineCount: countTurnReviewLines(after),
+      added: counts.added, removed: counts.removed, countsKnown: counts.exact,
+      operation: file.before === null ? "create" : "modify",
+      // Terminal provenance offers no chat line references.
+      referenceable: false,
+      hunks: createTurnReviewHunks(before, after, file.before === null, file.path),
+    };
+  }
+
   async snapshot(cwd: string, blocks: readonly TerminalBlockSummary[], terminalSessionId = ""): Promise<TerminalFileReviewSnapshot> {
     const physicalCwd = resolvePhysicalFilesystemPath(cwd, process.cwd(), 64);
     const warnings: TerminalExecutionWarning[] = [];
@@ -430,14 +449,13 @@ export class TerminalFileEvidence {
       if (warning === null) continue;
       warnings.push(warning);
     }
+    // The files this terminal's commands used: the same set the badge counts and the changes view lists.
     const relevant = new Set(warnings.flatMap(warning => warning.files));
     const files: TerminalReviewFile[] = [];
     for (const file of this.files.values()) {
-      if (!within(physicalCwd, file.path) && !relevant.has(file.path)) continue;
-      // Current text for the diff only; absent, oversized, binary or unreadable content has no text diff.
-      const after = file.before === undefined || !file.identity ? undefined : await readRecordedText(file.path, file.identity);
-      files.push({ path: file.path, sessionIds: [...file.sessionIds], lastUsed: file.lastUsed,
-        ...(file.before !== undefined && typeof after === "string" ? { diff: { before: file.before ?? "", after } } : {}) });
+      if (!relevant.has(file.path)) continue;
+      const review = await this.review(file);
+      files.push({ path: file.path, sessionIds: [...file.sessionIds], lastUsed: file.lastUsed, ...(review ? { review } : {}) });
     }
     const latestBlockId = blocks.reduce<number | null>((latest, block) => latest === null || block.id > latest ? block.id : latest, null);
     return { cwd: physicalCwd, latestBlockId, files, warnings };

@@ -1,14 +1,23 @@
-import type { IDecoration, IMarker, Terminal } from "@xterm/xterm";
+import type { IBufferLine, IDecoration, IMarker, Terminal } from "@xterm/xterm";
 import { TERMINAL_VIEW_BLOCK_FIELD, TERMINAL_VIEW_TOKEN_FIELD } from "../../../shared/terminal-blocks.js";
 
-/** Columns kept free after the command text before an annotation starts, and the narrowest annotation worth drawing. */
+/** Columns kept free after the command text before an annotation starts. */
 const ANNOTATION_GAP = 2;
-const MIN_ANNOTATION_COLUMNS = 24;
+/** The narrowest annotation drawn: a warning glyph that opens the changes. */
+const MIN_ANNOTATION_COLUMNS = 2;
+
+/** Where one annotation renders: after the command text on its row, never over it. */
+export interface TerminalAnnotationSlot {
+  readonly container: HTMLElement;
+  /** Terminal columns free for the annotation, from its start to the row's end. */
+  readonly columns: number;
+}
 
 /** Where a block annotation renders: a container inside an xterm decoration on the block's command row. */
 export interface TerminalBlockAnchors {
-  /** The annotation container for a block, or null when its command row is unknown or left the scrollback. */
-  attach(blockId: number): HTMLElement | null;
+  /** The annotation slot for a block, or null when its command row is unknown, left the scrollback, or the command
+   * text leaves no free columns on it. */
+  attach(blockId: number): TerminalAnnotationSlot | null;
   subscribe(listener: () => void): () => void;
   version(): number;
 }
@@ -32,9 +41,19 @@ export function viewBlockId(oscData: string, viewToken: string | null): number |
  * text. Nothing is written to the PTY or the xterm buffer, so rows, scrollback and what the shell sees are unchanged;
  * the decoration scrolls with its block and disappears when the row leaves the scrollback (or `clear` erases it).
  */
+/** Cells the row's text occupies, wide characters counting two, trailing blanks not at all. */
+function usedColumns(line: IBufferLine | undefined): number {
+  if (!line) return 0;
+  for (let x = line.length - 1; x >= 0; x--) {
+    const cell = line.getCell(x);
+    if (cell && cell.getChars().trim() !== "") return x + Math.max(1, cell.getWidth());
+  }
+  return 0;
+}
+
 export class XtermBlockAnchors implements TerminalBlockAnchors {
   private readonly markers = new Map<number, IMarker>();
-  private readonly annotations = new Map<number, { decoration: IDecoration; container: HTMLElement }>();
+  private readonly annotations = new Map<number, { decoration: IDecoration; slot: TerminalAnnotationSlot }>();
   private readonly listeners = new Set<() => void>();
   private revision = 0;
 
@@ -55,15 +74,16 @@ export class XtermBlockAnchors implements TerminalBlockAnchors {
     this.bump();
   }
 
-  attach(blockId: number): HTMLElement | null {
+  attach(blockId: number): TerminalAnnotationSlot | null {
     const existing = this.annotations.get(blockId);
-    if (existing) return existing.container;
+    if (existing) return existing.slot;
     const marker = this.markers.get(blockId);
     if (!marker || marker.isDisposed) return null;
-    const line = this.term.buffer.active.getLine(marker.line)?.translateToString(true) ?? "";
     const cols = this.term.cols;
-    const width = Math.min(cols, MIN_ANNOTATION_COLUMNS);
-    const x = Math.max(0, Math.min(line.length + ANNOTATION_GAP, cols - width));
+    // Starts after the command text, in cells; a command that fills its row gets no annotation there (the header badge
+    // still counts the files), never one drawn over what the user typed.
+    const x = usedColumns(this.term.buffer.active.getLine(marker.line)) + ANNOTATION_GAP;
+    if (cols - x < MIN_ANNOTATION_COLUMNS) return null;
     const decoration = this.term.registerDecoration({ marker, x, width: cols - x, height: 1, layer: "top" });
     if (!decoration) return null;
     const container = document.createElement("div");
@@ -78,8 +98,9 @@ export class XtermBlockAnchors implements TerminalBlockAnchors {
       container.remove();
       if (this.annotations.get(blockId)?.decoration === decoration) this.annotations.delete(blockId);
     });
-    this.annotations.set(blockId, { decoration, container });
-    return container;
+    const slot = { container, columns: cols - x };
+    this.annotations.set(blockId, { decoration, slot });
+    return slot;
   }
 
   subscribe(listener: () => void): () => void {

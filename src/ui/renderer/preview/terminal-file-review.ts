@@ -1,29 +1,48 @@
 import { useSyncExternalStore } from "react";
+import type { TerminalFileReviewSnapshot } from "../../../shared/terminal-file-review.js";
 
-interface TerminalFileReviewState { readonly changed: number; readonly requested: boolean; readonly refreshFailed: boolean }
+/** A request to show the changes view on `path`; `token` makes each click a new request. */
+interface TerminalChangesReveal { readonly token: number; readonly path: string | null }
+interface TerminalFileReviewState {
+  /** The agent-changed files this terminal's commands used: the badge's count and the changes view's list. */
+  readonly snapshot: TerminalFileReviewSnapshot | null;
+  readonly changed: number;
+  readonly refreshFailed: boolean;
+  readonly reveal: TerminalChangesReveal | null;
+}
 const listeners = new Set<() => void>();
 let snapshot: ReadonlyMap<string, TerminalFileReviewState> = new Map();
+let revealTokens = 0;
 
-function update(tabId: string, state: TerminalFileReviewState): void {
+function update(tabId: string, patch: Partial<Omit<TerminalFileReviewState, "changed">>): void {
   const previous = snapshot.get(tabId);
-  if (previous?.changed === state.changed && previous.requested === state.requested && previous.refreshFailed === state.refreshFailed) return;
-  snapshot = new Map(snapshot).set(tabId, state);
+  const review = patch.snapshot !== undefined ? patch.snapshot : previous?.snapshot ?? null;
+  const next: TerminalFileReviewState = {
+    snapshot: review,
+    changed: review?.files.length ?? 0,
+    refreshFailed: patch.refreshFailed ?? previous?.refreshFailed ?? false,
+    reveal: patch.reveal !== undefined ? patch.reveal : previous?.reveal ?? null,
+  };
+  if (previous && previous.snapshot === next.snapshot && previous.refreshFailed === next.refreshFailed && previous.reveal === next.reveal) return;
+  snapshot = new Map(snapshot).set(tabId, next);
   for (const listener of [...listeners]) listener();
 }
 
-/** The mounted view's count of agent-changed files and whether its last refresh failed; the header badge is their only display. */
-export function publishTerminalFileReview(tabId: string, changed: number, refreshFailed = false): void {
-  update(tabId, { changed, requested: snapshot.get(tabId)?.requested ?? false, refreshFailed });
+/** The latest evidence for a terminal and whether its last refresh failed; the badge and the changes view read it. */
+export function publishTerminalFileReview(tabId: string, review: TerminalFileReviewSnapshot, refreshFailed = false): void {
+  const previous = snapshot.get(tabId)?.snapshot;
+  // An equal refresh keeps the same object, so views do not re-render on every poll.
+  const same = previous !== undefined && previous !== null && JSON.stringify(previous) === JSON.stringify(review);
+  update(tabId, { snapshot: same ? previous : review, refreshFailed });
 }
 
-export function requestTerminalFileReview(tabId: string): void {
-  const previous = snapshot.get(tabId);
-  update(tabId, { changed: previous?.changed ?? 0, requested: true, refreshFailed: previous?.refreshFailed ?? false });
+export function publishTerminalFileReviewFailure(tabId: string): void {
+  update(tabId, { refreshFailed: true });
 }
 
-export function consumeTerminalFileReviewRequest(tabId: string): void {
-  const previous = snapshot.get(tabId);
-  update(tabId, { changed: previous?.changed ?? 0, requested: false, refreshFailed: previous?.refreshFailed ?? false });
+/** Show this terminal's changes view, with `path` selected (the first changed file when null). */
+export function requestTerminalFileReview(tabId: string, path: string | null = null): void {
+  update(tabId, { reveal: { token: ++revealTokens, path } });
 }
 
 export function forgetTerminalFileReview(tabId: string): void {
@@ -36,7 +55,7 @@ export function forgetTerminalFileReview(tabId: string): void {
   for (const listener of [...listeners]) listener();
 }
 
-/** Presentation summaries never admit terminal/file reads or grant permission. */
+/** Presentation state never admits terminal/file reads or grants permission. */
 export function useTerminalFileReviewState(tabId: string): TerminalFileReviewState | undefined {
   return useSyncExternalStore((listener) => {
     listeners.add(listener);
@@ -88,7 +107,7 @@ export function observeTerminalFileReview(api: TerminalReviewObserver["api"], se
           forgetTerminalFileReview(session.tabId);
           return;
         }
-        publishTerminalFileReview(session.tabId, result.snapshot.files.length);
+        publishTerminalFileReview(session.tabId, result.snapshot);
       } catch {
         // A transport interruption leaves the last observed count; the next poll retries.
       } finally { current.running = false; }

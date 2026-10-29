@@ -427,8 +427,13 @@ describe("main-area terminal and web panels", () => {
     const manual = terminalSessionFixture(shownSurfaces(container)[0]!.tabId!, "manual");
     await waitFor(() => expect(terminalApi.listBlocks).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", terminalSessionId: manual.terminalSessionId })));
     expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
-    expect(container.textContent).toContain(t("ptyTerminal.manualEnvironment"));
-    expect(container.textContent).toContain(t("ptyTerminal.initialCwd", { cwd: manual.initialCwd }));
+    // What the shell is and where it started are on the header's host chip, not stacked rows over the output.
+    const chip = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-testid="pane-header"] [data-testid="terminal-pane-host-chip"]');
+      expect(el?.getAttribute("title")).toContain(t("ptyTerminal.initialCwd", { cwd: manual.initialCwd }));
+      return el!;
+    });
+    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.manualEnvironment"));
     // A launch directory is not evidence of the current directory.
     expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual" });
     expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
@@ -484,8 +489,9 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(sideChat.send).toHaveBeenCalled());
     expect(sideChat.send.mock.calls.at(-1)![4]).toEqual({ kind: "terminal", tabId: terminal });
 
+    // It closes with the work panel's transition, then leaves.
     await act(async () => { fireEvent.click(toggle()); });
-    expect(pane().querySelector('[data-testid="pane-chat"]')).toBeNull();
+    await waitFor(() => expect(pane().querySelector('[data-testid="pane-chat"]')).toBeNull());
   });
 
   it("keeps each pane's chat its own conversation: apart from the other pane's, back when reopened, ended with its pane", async () => {
@@ -524,7 +530,7 @@ describe("main-area terminal and web panels", () => {
     expect(sideChat.send.mock.calls.map((call) => (call[4] as { tabId: string }).tabId)).toEqual([first, second]);
 
     await toggle(first!);
-    expect(chat(first!)).toBeNull();
+    await waitFor(() => expect(chat(first!)).toBeNull());
     await toggle(first!);
     await waitFor(() => expect(transcript(first!)).toContain("first pane question"));
     expect(transcript(first!)).not.toContain("second pane question");
@@ -605,7 +611,7 @@ describe("main-area terminal and web panels", () => {
       return tab;
     });
     // Each tab owns its toggle: a newly shown page starts closed.
-    expect(chat()).toBeNull();
+    await waitFor(() => expect(chat()).toBeNull());
     await act(async () => { fireEvent.click(pane().querySelector('[data-testid="pane-action-surface.chat"]')!); });
     const pageChat = await waitFor(() => {
       const el = pane().querySelector<HTMLElement>(`[data-testid="pane-chat"][data-tab-id="${page}"]`);
@@ -663,7 +669,8 @@ describe("main-area terminal and web panels", () => {
     act(() => { sideInput.focus(); });
 
     const attach = await waitFor(() => {
-      const el = container.querySelector<HTMLButtonElement>('[data-testid="surface-pane"] [data-testid="terminal-blocks-attach-last"]');
+      // The block controls are in the terminal pane's header row.
+      const el = container.querySelector<HTMLButtonElement>('[data-testid="pane-header"] [data-testid="terminal-blocks-attach-last"]');
       expect(el).not.toBeNull();
       return el!;
     });

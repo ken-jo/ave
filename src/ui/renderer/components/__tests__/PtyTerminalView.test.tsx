@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { TerminalSessionInfo, TerminalSpawnRequest, TerminalDataEvent, TerminalExitEvent } from "../../../../shared/terminal-session.js";
 import { PtyTerminalView } from "../PtyTerminalView.js";
+import { SidePanelTerminal } from "../SidePanelTerminal.js";
+import { forgetTerminalFileReview, requestTerminalFileReview } from "../../preview/terminal-file-review.js";
+import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
+import { useState } from "react";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
 import { terminalCwd } from "../../preview/main-layout-restore.js";
@@ -13,12 +18,12 @@ import { surfaceMountLocation } from "../../preview/surface-mounts.js";
 import { ThemeProvider } from "../../theme/ThemeProvider.js";
 import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
   options: { theme?: unknown };
+  commandRow: string;
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
   written: string[];
@@ -52,7 +57,13 @@ vi.mock("@xterm/xterm", () => ({
     host: HTMLElement | null = null;
     markers: { offset: number; marker: FakeMarker }[] = [];
     decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[] = [];
-    buffer = { active: { getLine: (_line: number) => ({ translateToString: () => "~/demo ❯ make build" }) } };
+    /** The text on the command row, as the shell echoed it. */
+    commandRow = "~/demo ❯ make build";
+    buffer = { active: { getLine: (_line: number) => {
+      const text = this.commandRow;
+      return { length: this.cols, translateToString: () => text,
+        getCell: (x: number) => ({ getChars: () => text[x] ?? "", getWidth: () => 1 }) };
+    } } };
     registerMarker(offset = 0): FakeMarker {
       const marker = { line: this.cursorLine + offset, isDisposed: false, onDispose: () => ({ dispose() {} }), dispose() {} };
       this.markers.push({ offset, marker });
@@ -380,6 +391,28 @@ describe("PtyTerminalView changed-file annotation", () => {
     expect(xtermHost).toHaveClass("flex-1");
   });
 
+  it("never draws a warning over a long command: it shrinks to the free columns after it", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: {
+      cwd: "/workspace", latestBlockId: 1,
+      files: [{ path: "/workspace/Makefile", sessionIds: ["conversation"], lastUsed: { command: "make build", when: 1_000 } }],
+      warnings: [{ blockId: 1, command: "make build", files: ["/workspace/Makefile"] }],
+    } } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:long" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    const term = terminals[0]!;
+    term.commandRow = `~/demo ❯ make build ${"VERBOSE=1 ".repeat(4)}`.trimEnd();
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    await act(async () => {});
+    act(() => { term.oscHandlers.get(133)!("C;ave-block=1;ave-view=view-token"); });
+    const annotation = await screen.findByTestId("terminal-file-warning");
+    const start = term.commandRow.length + 2;
+    expect(term.decorations[0]!.options).toMatchObject({ x: start, width: 80 - start });
+    expect(annotation).toHaveAttribute("data-form", "compact");
+    expect(annotation.textContent).toBe("⚠[변경 보기]");
+  });
+
   it("ignores a C marker without a main-assigned, token-proven block id", async () => {
     const { api } = makeMockAveApi();
     render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:plain" tabLabel="Terminal 1" />);
@@ -485,5 +518,35 @@ describe("PtyTerminalView keyboard focus", () => {
     await act(async () => {});
     expect(terminals[0]!.focusCount).toBe(2);
     expect(terminal.input).not.toHaveBeenCalled();
+  });
+});
+
+describe("SidePanelTerminal", () => {
+  function Harness({ ave }: { ave: never }) {
+    const [showChanges, setShowChanges] = useState(false);
+    return <TooltipProvider><SidePanelTerminal api={ave} tabId="terminal:side" tabLabel="Terminal 1" visible showChanges={showChanges} onShowChanges={setShowChanges} /></TooltipProvider>;
+  }
+
+  it("shows the side-panel terminal's 변경 파일 view in the work panel on [view changes], and returns to the same shell", async () => {
+    const previousAve = window.ave;
+    (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
+    try {
+      const { api } = makeMockAveApi();
+      const terminal = terminalApi();
+      render(<Harness ave={{ ...api, terminal } as never} />);
+      await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("terminal-changes-view")).toBeNull();
+      act(() => { requestTerminalFileReview("terminal:side", "/workspace/Makefile"); });
+      expect(await screen.findByTestId("terminal-changes-view")).toBeTruthy();
+      expect(screen.queryByTestId("terminal-xterm-host")).toBeNull();
+      // The PTY outlives the view switch, as it outlives a tab switch.
+      expect(terminal.kill).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId("terminal-changes-back"));
+      expect(await screen.findByTestId("terminal-xterm-host")).toBeTruthy();
+      expect(terminal.kill).not.toHaveBeenCalled();
+    } finally {
+      (window as unknown as { ave: unknown }).ave = previousAve;
+      forgetTerminalFileReview("terminal:side");
+    }
   });
 });

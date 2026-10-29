@@ -8,6 +8,7 @@ import { checkpointFileMutation, markCodeCheckpointUnavailable, withCodeCheckpoi
 import { copyPath } from "../../tools/guarded-file-transfer.js";
 import { MoveFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import type { ToolExecutionContext } from "../../tools/types.js";
+import { reviewChange as change } from "../../__tests__/support/terminal-session-fixtures.js";
 
 let directory: string;
 let sessionId: string;
@@ -20,14 +21,18 @@ beforeEach(async () => {
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });
 const turn = <T>(run: () => Promise<T>) => withCodeCheckpoint({ sessionId, messageId: randomUUID() }, run);
-const snapshot = () => terminalFileEvidence.snapshot(directory, []);
+/** The files this terminal used, after one command that runs every script these tests write. */
+const snapshot = () => terminalFileEvidence.snapshot(directory, [{ id: 1, command: "./run.sh; ./user.sh; ./new.sh; ./copied.sh; ./unreported.sh",
+  cwd: directory, startedAt: Date.now() + 1_000, endedAt: null, exitCode: null, status: "running", source: "osc133", outputChars: 0, truncated: false }]);
 
 describe("successful native mutation provenance", () => {
   it("records a successful native file write with real original bytes", async () => {
     const path = join(directory, "run.sh");
     await writeFile(path, "before\n");
     await turn(() => checkpointFileMutation([{ path, content: "after\n" }], () => writeFile(path, "after\n")));
-    expect((await snapshot()).files.find(file => file.path === path)).toMatchObject({ sessionIds: [sessionId], diff: { before: "before\n", after: "after\n" } });
+    const entry = (await snapshot()).files.find(file => file.path === path);
+    expect(entry?.sessionIds).toEqual([sessionId]);
+    expect(change(entry)).toEqual({ operation: "modify", hunks: [["before\n", "after\n"]] });
   });
 
   it("does not attribute failed mutations", async () => {
@@ -50,13 +55,13 @@ describe("successful native mutation provenance", () => {
       await markCodeCheckpointUnavailable();
       await checkpointFileMutation([{ path, content: "created\n" }], () => writeFile(path, "created\n"));
     });
-    expect((await snapshot()).files.find(file => file.path === path)?.diff).toEqual({ before: "", after: "created\n" });
+    expect(change((await snapshot()).files.find(file => file.path === path))).toEqual({ operation: "create", hunks: [["", "created\n"]] });
   });
 
   it("records real tool writes outside a restore turn and ignores rejected overwrites", async () => {
     const path = join(directory, "run.sh");
     expect((await new WriteFileTool().execute({ path, content: "created\n" }, context)).isError).toBe(false);
-    expect((await snapshot()).files.find(file => file.path === path)?.diff).toEqual({ before: "", after: "created\n" });
+    expect(change((await snapshot()).files.find(file => file.path === path))).toEqual({ operation: "create", hunks: [["", "created\n"]] });
     const unknown = join(directory, "user.sh");
     await writeFile(unknown, "user\n");
     expect((await new WriteFileTool().execute({ path: unknown, content: "refused\n" }, context)).isError).toBe(true);
@@ -77,16 +82,15 @@ describe("successful native mutation provenance", () => {
       await checkpointFileMutation([{ path, content: "agent\n" }], () => writeFile(path, "agent\n"));
       await checkpointFileMutation([{ path, content: null }], () => unlink(path));
     });
-    const removed = (await snapshot()).files.find(file => file.path === path);
-    expect(removed?.sessionIds).toHaveLength(1);
-    expect(removed?.diff).toBeUndefined();
-    // A file recreated outside the agent is not the file its write left: still listed, never diffed.
+    // Nothing can run a deleted file.
+    expect((await snapshot()).files.find(file => file.path === path)).toBeUndefined();
+    // A file recreated outside the agent keeps the path's history but is not the file its write left: never reviewed.
     await writeFile(path, "restored\n");
     const restored = (await snapshot()).files.find(file => file.path === path);
     expect(restored?.sessionIds).toHaveLength(1);
-    expect(restored?.diff).toBeUndefined();
+    expect(restored?.review).toBeUndefined();
     await turn(() => checkpointFileMutation([{ path, content: "agent again\n" }], () => writeFile(path, "agent again\n")));
-    expect((await snapshot()).files.find(file => file.path === path)?.diff).toEqual({ before: "", after: "agent again\n" });
+    expect(change((await snapshot()).files.find(file => file.path === path))).toEqual({ operation: "create", hunks: [["", "agent again\n"]] });
   });
 
   it("attributes each successful owned transfer file without inferring directory descendants", async () => {
@@ -94,7 +98,9 @@ describe("successful native mutation provenance", () => {
     const destinationPath = join(directory, "copied.sh");
     await writeFile(sourcePath, "copied bytes\n");
     expect((await copyPath({ sourcePath, destinationPath }, context)).ok).toBe(true);
-    expect((await snapshot()).files.find(file => file.path === destinationPath)).toMatchObject({ sessionIds: [sessionId], diff: { before: "", after: "copied bytes\n" } });
+    const entry = (await snapshot()).files.find(file => file.path === destinationPath);
+    expect(entry?.sessionIds).toEqual([sessionId]);
+    expect(change(entry)).toEqual({ operation: "create", hunks: [["", "copied bytes\n"]] });
   });
 
   it("does not manufacture concrete evidence for unreported subprocess effects", async () => {

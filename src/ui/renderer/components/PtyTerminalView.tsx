@@ -1,11 +1,13 @@
 /** One host shell per tab. Unmount detaches the view; tab close owns the PTY. */
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
-import { TerminalFileReview } from "./TerminalFileReview.js";
+import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
+import { TerminalPaneHeader } from "./TerminalPaneHeader.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
@@ -56,6 +58,11 @@ interface PtyTerminalViewProps {
   /** Whether the user is looking at this terminal when it is on screen: a side panel's front tab is (default); a main pane is
    * while it has focus, so a terminal in the other half of a split still rings. */
   attended?: boolean;
+  /** A pane's header, where the terminal's identity and block controls go as one row instead of rows over the output.
+   * Absent: they are drawn above the output (a side panel's tab). Null: the pane header has not committed yet. */
+  headerSlot?: HTMLElement | null;
+  /** The directory the shell last reported (never the launch directory), for a header that shows it. */
+  onCwd?: (cwd: string) => void;
 }
 
 /**
@@ -100,7 +107,7 @@ function focusAttendedTerminal(term: Terminal, root: HTMLElement): void {
   if (free) term.focus();
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true }: PtyTerminalViewProps) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd }: PtyTerminalViewProps) {
   const { t } = useTranslation();
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -294,12 +301,32 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     term.options.theme = terminalTheme(host);
   }, [appliedRevision]);
 
+  // Only a directory the shell reported is the current one; the launch directory is not evidence of it.
+  const reportedCwd = session?.currentCwd ?? null;
+  useEffect(() => {
+    if (reportedCwd) onCwd?.(reportedCwd);
+  }, [reportedCwd, onCwd]);
+  const inlineChrome = headerSlot === undefined;
+  const blocksBar = (variant: "bar" | "header") => api.terminal && session ? (
+    <TerminalBlocksBar
+      terminalApi={api.terminal}
+      key={`${session.lane}/${session.terminalSessionId}`}
+      session={session}
+      tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
+      revision={blockRevision}
+      variant={variant}
+      {...(onAttachText ? { onAttachText } : {})}
+      onSession={setSession}
+    />
+  ) : null;
+
   return (
     <div
       ref={rootRef}
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
+      {inlineChrome ? <>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
         <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t("ptyTerminal.hostBadge")}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
@@ -309,25 +336,17 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
         {t("ptyTerminal.manualEnvironment")}
       </p>
+      </> : headerSlot ? createPortal(<TerminalPaneHeader blocks={blocksBar("header")}
+        cwdNote={session && !session.currentCwd ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : null} />, headerSlot) : null}
       {session?.integrationUnavailableReason ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-integration-unavailable">
         {t(INTEGRATION_UNAVAILABLE_KEYS[session.integrationUnavailableReason])}
       </p> : null}
-      {api.terminal && session ? (
-        <TerminalBlocksBar
-          terminalApi={api.terminal}
-          key={`${session.lane}/${session.terminalSessionId}`}
-          session={session}
-          tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
-          revision={blockRevision}
-          {...(onAttachText ? { onAttachText } : {})}
-          onSession={setSession}
-        />
-      ) : null}
+      {inlineChrome ? blocksBar("bar") : null}
       {/* Warnings are xterm decorations on their command's row; only the review side panel overlays this area, so the
           xterm host stays its only in-flow child and no rows are taken. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
         <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
-        {api.terminal && session ? <TerminalFileReview key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={anchors} /> : null}
+        {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={anchors} /> : null}
       </div>
     </div>
   );

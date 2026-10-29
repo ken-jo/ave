@@ -779,7 +779,7 @@ function ProjectRootsBrowser({
 
 export function FileBrowserWorkspace({
   api, sessionId, visible, files, targetById, selectedId, onSelect,
-  changes: providedChanges, revealRequest, onReference, onFileReference,
+  changes: providedChanges, revealRequest, onReference, onFileReference, defaultFilter = "all", emptyDetail,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -792,10 +792,15 @@ export function FileBrowserWorkspace({
   revealRequest?: FileWorkspaceReveal | null;
   onReference?: (reference: FileMentionReference) => void;
   onFileReference?: (path: string) => void;
+  /** The filter the tree opens with. */
+  defaultFilter?: WorkspaceFileFilter;
+  /** Shown instead of any file preview when a selection has no reviewable change: a view whose files may only be read
+   * through its own change review (a terminal's agent-changed files) never falls back to reading the file. */
+  emptyDetail?: string;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<WorkspaceFileFilter>("all");
+  const [filter, setFilter] = useState<WorkspaceFileFilter>(defaultFilter);
   const [fsPath, setFsPath] = useState<string | null>(null);
   const [fsRoot, setFsRoot] = useState<string | null>(null);
   const [detailVisible, setDetailVisible] = useState(false);
@@ -843,7 +848,7 @@ export function FileBrowserWorkspace({
   useEffect(() => {
     if (!revealRequest) providedChanges?.onRefresh?.();
   }, [providedChanges?.onRefresh, sessionId, revealRequest]);
-  useEffect(() => { setFsPath(null); setFsRoot(null); setQuery(""); setFilter("all"); setDetailVisible(false); }, [sessionId]);
+  useEffect(() => { setFsPath(null); setFsRoot(null); setQuery(""); setFilter(defaultFilter); setDetailVisible(false); }, [sessionId, defaultFilter]);
   useEffect(() => {
     if (!revealRequest || (appliedRevealRef.current?.token === revealRequest.token && appliedRevealRef.current.path === revealRequest.path)) return;
     appliedRevealRef.current = revealRequest;
@@ -894,7 +899,8 @@ export function FileBrowserWorkspace({
       }}>
       {narrow ? <button type="button" className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-left text-xs text-primary" onClick={goBack} data-testid="chat-side-panel-file-back"><ArrowLeft className="h-3.5 w-3.5" />{t("chatPreviewRail.fileTreeBack")}</button> : null}
       {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference} />
-        : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} visible={visible} /></div>
+        : emptyDetail !== undefined ? <EmptyState>{selectedPath ? emptyDetail : t("chatPreviewRail.emptyState")}</EmptyState>
+          : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} visible={visible} /></div>
           : <EmptyState>{t("chatPreviewRail.emptyState")}</EmptyState>}
     </div>
   </div>;

@@ -1919,18 +1919,29 @@ view, together with a per-terminal view token it hands only to the renderer and
 never to the shell; the renderer anchors nothing without that token, so program
 output cannot forge an anchor in any OSC encoding. Nothing is written to the
 shell, the PTY or the terminal buffer, so no rows are taken and the annotation
-scrolls with its block until its row leaves the scrollback. Only the latest
-command's annotation offers [view changes]; once another
-command runs it remains as dim history text. The changed-file panel carries one
-static note that detection is best-effort; subprocess writes without concrete
-path evidence and dynamic indirection are not claimed covered. Provenance is
-advisory and is never permission or terminal authority.
+scrolls with its block until its row leaves the scrollback. The annotation
+starts after the command text, measured in cells, and never covers it: on a
+long command row it shrinks to the warning and its button, then to the warning
+glyph alone, and a row the command fills gets none (the badge still counts the
+file). Only the latest command that matched offers [view changes]; earlier
+matches remain as dim history text, and later commands that matched nothing
+leave the button where it is. The changes view carries one static note that
+detection is best-effort; subprocess writes without concrete path evidence and
+dynamic indirection are not claimed covered. Provenance is advisory and is
+never permission or terminal authority.
 
-The agent-changed badge appears once, in the terminal's header or tab, counts
-the agent-changed files currently attributed to this terminal's sessions, and
-opens the changed-file panel beside the output. Each entry shows its latest
-known command use or that no execution use was observed, and opens a diff
-against the recorded baseline. There is no review or acknowledgement state:
+The agent-changed badge appears once, in the terminal's header or tab, and
+counts the agent-changed files this terminal's commands used. The badge and
+[view changes] open the terminal's 변경 파일 (changed files) view with the clicked
+file selected; no panel is drawn inside the terminal's output. In a workspace
+pane the view is a tab of the pane's work panel, next to the pane's chat: the
+same docked column, card and push-aside layout as a conversation pane's work
+panel. A side-work-panel terminal shows it in place of the shell, with a way
+back; the PTY outlives the switch. The view reuses the conversation's change
+UI (the workspace file tree, `TurnChangeDetail` and `FileEditDiff`). Main sends
+each file's change as a turn-review entry built against the recorded
+baseline, and a file without one shows that its diff is unavailable: this view
+never falls back to reading the file. There is no review or acknowledgement state:
 the change has already happened, so the count follows the set of changed files
 and never drops on a user action. Canonical physical paths retain session
 attribution across symlink aliases and delete/restore. Each attributed write

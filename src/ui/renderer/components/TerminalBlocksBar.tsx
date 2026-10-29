@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Blocks, ClipboardCopy, MessageSquarePlus } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
+import { HEADER_BUTTON_CLASS } from "./PaneFrame.js";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
@@ -31,6 +33,7 @@ export function TerminalBlocksBar({
   revision,
   onAttachText,
   onSession,
+  variant = "bar",
 }: {
   terminalApi: TerminalApi;
   session: TerminalSessionInfo;
@@ -40,6 +43,8 @@ export function TerminalBlocksBar({
   onAttachText?: (text: string) => AttachTextResult;
   /** The directory the shell last reported, from the newest block that has one. */
   onSession?: (session: TerminalSessionInfo) => void;
+  /** `bar`: a row of its own above the output. `header`: two controls in a pane's header row, the list in a popover. */
+  variant?: "bar" | "header";
 }): ReactElement {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -114,42 +119,7 @@ export function TerminalBlocksBar({
     [onAttachText, t, withBlock],
   );
 
-  return (
-    <div className="flex min-h-0 shrink-0 flex-col border-b border-border" data-testid="terminal-blocks-bar">
-      <div className="flex h-8 items-center gap-1 px-1">
-        <Button
-          type="button"
-          size="sm"
-          variant={open ? "secondary" : "ghost"}
-          className="h-6 gap-1 px-2"
-          aria-expanded={open}
-          title={t("terminalBlocks.toggleTitle")}
-          onClick={() => setOpen((value) => !value)}
-          data-testid="terminal-blocks-toggle"
-        >
-          <Blocks className="h-3.5 w-3.5" aria-hidden />
-          {t("terminalBlocks.toggle")}
-          <span className="tabular-nums text-muted-foreground">{blocks.length}</span>
-        </Button>
-        {onAttachText && latestDone ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-6 gap-1 px-2"
-            title={t("terminalBlocks.attachLastTitle")}
-            onClick={() => attach(latestDone.id)}
-            data-testid="terminal-blocks-attach-last"
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden />
-            {attachedId === latestDone.id ? t("terminalBlocks.attached") : t("terminalBlocks.attachLast")}
-          </Button>
-        ) : null}
-        {notice ? (
-          <span className="min-w-0 truncate text-xs text-destructive" role="status">{notice}</span>
-        ) : null}
-      </div>
-      {open ? (
+  const list = (
         <div className="flex max-h-56 min-h-0 flex-col gap-1 px-1 pb-1">
           <input
             type="search"
@@ -246,7 +216,69 @@ export function TerminalBlocksBar({
             )}
           </ul>
         </div>
-      ) : null}
+  );
+
+  if (variant === "header") {
+    return (
+      <span className="flex shrink-0 items-center gap-(--chrome-gap-tight)" data-testid="terminal-blocks-bar" data-variant="header">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" className={`${HEADER_BUTTON_CLASS} w-auto gap-1 px-1`}
+              aria-expanded={open} aria-label={t("terminalBlocks.toggleTitle")} title={t("terminalBlocks.toggleTitle")} data-testid="terminal-blocks-toggle">
+              <Blocks className="h-4 w-4" aria-hidden />
+              <span className="text-[11px] tabular-nums">{blocks.length}</span>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent side="bottom" align="end" className="w-80 p-1" aria-label={t("terminalBlocks.listLabel")}>{list}</PopoverContent>
+        </Popover>
+        {onAttachText && latestDone ? (
+          <Button type="button" variant="ghost" size="icon" className={HEADER_BUTTON_CLASS}
+            aria-label={attachedId === latestDone.id ? t("terminalBlocks.attached") : t("terminalBlocks.attachLast")}
+            title={notice ?? t("terminalBlocks.attachLastTitle")} onClick={() => attach(latestDone.id)} data-testid="terminal-blocks-attach-last">
+            <MessageSquarePlus className={cn("h-4 w-4", attachedId === latestDone.id && "text-success", notice && "text-destructive")} aria-hidden />
+          </Button>
+        ) : null}
+        {notice ? <span className="sr-only" role="status">{notice}</span> : null}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 shrink-0 flex-col border-b border-border" data-testid="terminal-blocks-bar">
+      <div className="flex h-8 items-center gap-1 px-1">
+        <Button
+          type="button"
+          size="sm"
+          variant={open ? "secondary" : "ghost"}
+          className="h-6 gap-1 px-2"
+          aria-expanded={open}
+          title={t("terminalBlocks.toggleTitle")}
+          onClick={() => setOpen((value) => !value)}
+          data-testid="terminal-blocks-toggle"
+        >
+          <Blocks className="h-3.5 w-3.5" aria-hidden />
+          {t("terminalBlocks.toggle")}
+          <span className="tabular-nums text-muted-foreground">{blocks.length}</span>
+        </Button>
+        {onAttachText && latestDone ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-6 gap-1 px-2"
+            title={t("terminalBlocks.attachLastTitle")}
+            onClick={() => attach(latestDone.id)}
+            data-testid="terminal-blocks-attach-last"
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden />
+            {attachedId === latestDone.id ? t("terminalBlocks.attached") : t("terminalBlocks.attachLast")}
+          </Button>
+        ) : null}
+        {notice ? (
+          <span className="min-w-0 truncate text-xs text-destructive" role="status">{notice}</span>
+        ) : null}
+      </div>
+      {open ? list : null}
     </div>
   );
 }
