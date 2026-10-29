@@ -51,17 +51,27 @@ function elapsedSeconds(command: TerminalObservedCommand, now: number): number {
   return Math.max(0, Math.floor((command.status === "running" ? now - command.startedAt : command.durationMs) / 1_000));
 }
 
-/** One authenticated subscription per visible conversation transcript. */
-export function useTerminalObservation(sessionId: string | undefined, observe: boolean) {
+/** One authenticated subscription per visible conversation transcript. `retryKey` changes as the conversation moves on (its transcript grows). A subscription main refused because no window hosts the
+ * conversation yet (a pane chat restored before its first turn) shows nothing, not an error, and is tried again on the next change. */
+export function useTerminalObservation(sessionId: string | undefined, observe: boolean, retryKey: number = 0) {
   const [view, setView] = useState<TerminalObservationView | null>(null);
   const [subscriptionError, setSubscriptionError] = useState<{ sessionId: string; code: ObservationError } | null>(null);
+  // The conversation main last refused as not hosted; a ref, so recording or clearing it never resubscribes by itself.
+  const notHosted = useRef<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
   const acknowledged = useRef("");
 
   useEffect(() => {
     setView(null);
     setSubscriptionError(null);
+    notHosted.current = null;
     acknowledged.current = "";
   }, [sessionId]);
+
+  // Retry only while main refuses this conversation as not hosted, so transcript growth never tears a hosted subscription down.
+  useEffect(() => {
+    if (sessionId !== undefined && notHosted.current === sessionId) setRetryToken((token) => token + 1);
+  }, [retryKey, sessionId]);
 
   useEffect(() => {
     if (!sessionId || !observe) return;
@@ -120,7 +130,12 @@ export function useTerminalObservation(sessionId: string | undefined, observe: b
       }
     });
     void preview.acknowledgeObservation({ action: "subscribe-terminal", sessionId }).then((result) => {
+      if (!result.ok && result.error === "unauthorized") {
+        if (!disposed) notHosted.current = sessionId;
+        return;
+      }
       if (!result.ok || !result.observation || result.observation.sessionId !== sessionId) { fail(); return; }
+      if (!disposed) notHosted.current = null;
       if (disposed) { release(result.observation); return; }
       const owner = result.observation;
       binding = owner;
@@ -134,7 +149,7 @@ export function useTerminalObservation(sessionId: string | undefined, observe: b
       pending = [];
       if (binding) release(binding);
     };
-  }, [sessionId, observe]);
+  }, [sessionId, observe, retryToken]);
 
   const current = view?.sessionId === sessionId ? view : null;
   const error = current?.error ?? (subscriptionError && subscriptionError.sessionId === sessionId ? subscriptionError.code : undefined);

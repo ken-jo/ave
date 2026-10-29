@@ -34,9 +34,14 @@ export interface TerminalSpawnRequest extends TerminalRef {
 /** Who controls a host terminal: the user (`available` for the next approved command, or `taken-over` until they hand it back), or
  * one approved agent command (`agent`). Main owns it; the renderer only shows it and asks for a change. */
 export type HostTerminalControlMode = "available" | "agent" | "taken-over";
+export type HostTerminalAgentInput = "supported" | "powershell" | "unsupported";
+const AGENT_INPUTS: ReadonlySet<string> = new Set(["supported", "powershell", "unsupported"]);
 export interface HostTerminalControlState {
   readonly mode: HostTerminalControlMode;
   readonly generation: number;
+  /** Whether this shell can take agent typing at all: `supported` (integrated zsh or bash), `powershell` (pwsh has no bracketed paste), or
+   * `unsupported` (any other shell, or no shell integration). */
+  readonly agentInput: HostTerminalAgentInput;
   /** The approved command holding the lease (agent mode only). */
   readonly command?: string;
   /** Enter was pressed for it. */
@@ -121,11 +126,11 @@ export function parseTerminalControlEvent(value: unknown): TerminalControlEvent 
   if (!ref || typeof value !== "object" || value === null || !("control" in value)) return null;
   const control = value.control as Record<string, unknown> | null;
   if (typeof control !== "object" || control === null || typeof control.mode !== "string" || !CONTROL_MODES.has(control.mode)
-    || !Number.isInteger(control.generation)
+    || !Number.isInteger(control.generation) || typeof control.agentInput !== "string" || !AGENT_INPUTS.has(control.agentInput)
     || (control.command !== undefined && typeof control.command !== "string")
     || (control.typed !== undefined && typeof control.typed !== "boolean")) return null;
   return { ...ref, control: {
-    mode: control.mode as HostTerminalControlMode, generation: control.generation as number,
+    mode: control.mode as HostTerminalControlMode, generation: control.generation as number, agentInput: control.agentInput as HostTerminalAgentInput,
     ...(typeof control.command === "string" ? { command: control.command } : {}),
     ...(typeof control.typed === "boolean" ? { typed: control.typed } : {}),
   } };

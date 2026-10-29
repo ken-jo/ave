@@ -83,6 +83,7 @@ async function approvalMemoryFor(
         lane: scope.lane,
         terminalSessionId: scope.terminalSessionId,
         sessionId: scope.sessionId,
+        turnId: scope.turnId,
         shell: scope.shell,
         physicalCwd: scope.physicalCwd,
         cwdDevice: scope.cwdDevice,

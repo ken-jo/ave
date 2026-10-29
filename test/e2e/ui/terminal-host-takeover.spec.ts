@@ -104,6 +104,8 @@ if (process.platform !== "win32") test("the user takes over an approved host com
       window.aveApi.terminal!.onData((event) => { if (event.tabId === id && event.lane === "manual") state.hostOutput += event.chunk; });
     }, tabId);
     const hostOutput = () => page!.evaluate(() => (window as unknown as { hostOutput: string }).hostOutput);
+    // The restored pane chat observes its own agent terminal activity: its live strip never shows a subscription error.
+    const observationFailed = page.getByTestId("terminal-observation-live-strip").filter({ hasText: "Agent terminal activity could not be displayed" });
     await page.getByTestId(`sidebar-surface-${tabId}`).click();
     await page.getByTestId(`sidebar-session-${sideId}`).click();
     const pane = page.locator(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`);
@@ -111,6 +113,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect(paneChat).toBeVisible();
     await expect(pane.getByTestId("terminal-host-badge")).toHaveText("My terminal (host) · Agent commands need your approval");
     await expect(pane.locator(".xterm")).toBeVisible();
+    await expect(observationFailed).toHaveCount(0);
 
     const composer = paneChat.getByTestId("composer-textarea");
     await composer.fill("Run the slow check in my terminal.");
@@ -118,6 +121,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     const approval = page.getByTestId(TEST_IDS.approvalDock).first();
     await expect(approval.getByTestId(TEST_IDS.approveButton)).toBeVisible({ timeout: 30_000 });
     await expect(approval).toContainText("your real shell");
+    await expect(observationFailed).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-approval-card.png") });
     await approval.getByTestId(TEST_IDS.approveButton).click();
 
@@ -126,6 +130,8 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     // Enter was pressed and the command printed its own line (the echoed command text has a literal backslash after the marker, never a line end).
     await expect(agentStrip).toContainText("The agent is running an approved command", { timeout: 20_000 });
     await expect.poll(hostOutput, { timeout: 20_000 }).toMatch(/agent-period-marker\r?\n/u);
+    await expect(pane.getByTestId("terminal-take-over-hint")).toHaveText("Typing takes over.");
+    await expect(observationFailed).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-agent-typing.png") });
 
     await agentStrip.getByTestId("terminal-take-over").click();
@@ -139,6 +145,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await page.keyboard.press("Enter");
     await expect.poll(async () => (await hostOutput()).split(userSentinel).length, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
     await expect(pane.locator(".xterm-rows")).toContainText(userSentinel);
+    await expect(observationFailed).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-user-takeover.png") });
 
     await expect.poll(() => modelCalls, { timeout: 30_000 }).toBe(2);

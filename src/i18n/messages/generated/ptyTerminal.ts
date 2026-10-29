@@ -24,7 +24,15 @@ export const en = {
   "ptyTerminal.stop": "Stop",
   "ptyTerminal.handBack": "Hand back",
   "ptyTerminal.takenOver": "You have control. Nothing you do here reaches the agent. Clear or run the line, then hand it back to let the agent run its next approved command.",
-  "ptyTerminal.handBackNotReady": "Hand back needs an empty prompt: clear or run the line first.",
+  "ptyTerminal.handBackPendingInput": "Hand back needs an empty prompt: clear or run the line first.",
+  "ptyTerminal.handBackCommandRunning": "A command is still running. Wait for it to finish, or stop it, then hand back.",
+  "ptyTerminal.handBackWaitingForPrompt": "The shell has not shown its prompt yet. Hand back once it does.",
+  "ptyTerminal.handBackNoIntegration": "This terminal has no shell integration, so it cannot be handed back to the agent.",
+  "ptyTerminal.handBackExited": "The shell has exited.",
+  "ptyTerminal.hostBadgeNoAgentInput": "My terminal (host) · No agent input",
+  "ptyTerminal.agentInputPowerShell": "PowerShell does not support agent input, so the agent cannot type here. Your shell works as usual.",
+  "ptyTerminal.agentInputUnsupported": "This shell does not support agent input, so the agent cannot type here. Your shell works as usual.",
+  "ptyTerminal.typingTakesOver": "Typing takes over.",
   "ptyTerminal.controlFailed": "The terminal control could not be changed."
 } as const;
 export const ko: Record<keyof typeof en, string> = {
@@ -52,6 +60,14 @@ export const ko: Record<keyof typeof en, string> = {
   "ptyTerminal.stop": "중지",
   "ptyTerminal.handBack": "제어 돌려주기",
   "ptyTerminal.takenOver": "지금은 사용자가 제어합니다. 여기서 하는 작업은 에이전트에 전달되지 않습니다. 입력 줄을 지우거나 실행한 뒤 제어를 돌려주면 에이전트가 다음 승인된 명령을 실행할 수 있습니다.",
-  "ptyTerminal.handBackNotReady": "제어를 돌려주려면 프롬프트가 비어 있어야 합니다. 먼저 입력 줄을 지우거나 실행하세요.",
+  "ptyTerminal.handBackPendingInput": "제어를 돌려주려면 프롬프트가 비어 있어야 합니다. 먼저 입력 줄을 지우거나 실행하세요.",
+  "ptyTerminal.handBackCommandRunning": "명령이 아직 실행 중입니다. 끝날 때까지 기다리거나 중지한 뒤 제어를 돌려주세요.",
+  "ptyTerminal.handBackWaitingForPrompt": "셸이 아직 프롬프트를 표시하지 않았습니다. 프롬프트가 나타나면 제어를 돌려주세요.",
+  "ptyTerminal.handBackNoIntegration": "이 터미널에는 셸 통합이 없어 에이전트에 제어를 돌려줄 수 없습니다.",
+  "ptyTerminal.handBackExited": "셸이 종료되었습니다.",
+  "ptyTerminal.hostBadgeNoAgentInput": "내 터미널 (호스트) · 에이전트 입력 없음",
+  "ptyTerminal.agentInputPowerShell": "PowerShell은 에이전트 입력을 지원하지 않습니다. 에이전트는 여기에 입력할 수 없으며, 셸은 평소처럼 사용할 수 있습니다.",
+  "ptyTerminal.agentInputUnsupported": "이 셸은 에이전트 입력을 지원하지 않습니다. 에이전트는 여기에 입력할 수 없으며, 셸은 평소처럼 사용할 수 있습니다.",
+  "ptyTerminal.typingTakesOver": "입력하면 제어를 가져옵니다.",
   "ptyTerminal.controlFailed": "터미널 제어를 바꾸지 못했습니다."
 };

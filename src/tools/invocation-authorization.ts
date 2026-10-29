@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { currentHostTerminalTurn } from "./host-terminal-turn.js";
+import { HOST_TERMINAL_SANDBOX_CAPABILITY } from "../permissions/sandbox-capability.js";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
@@ -32,6 +34,7 @@ import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
+  isUntaintedToolTrustOrigin,
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
@@ -103,14 +106,6 @@ type AuditPermissionAsk = (
  */
 
 
-/** What the approval card reports for a command typed into the user's own host terminal: no confinement of any kind. */
-const HOST_TERMINAL_CAPABILITY = Object.freeze({
-  kind: "none" as const,
-  confidence: "verified" as const,
-  platform: process.platform,
-  reason: "typed into the user's own host terminal; runs with the user's permissions and no isolation",
-  confines: Object.freeze({ filesystem: false, process: false, network: false }),
-});
 
 export function deriveApprovalIsReadOnly(opts: {
   invocationCategory: ToolCategory;
@@ -483,7 +478,10 @@ export async function authorizeToolInvocation(
       ? {
           runsSandboxed: hostShellExecutionPlan.sandboxed || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
-        } : terminalScope !== undefined ? { runsSandboxed: false } : undefined;
+        } : terminalScope !== undefined
+          // The user's host terminal decides on its sealed host route's relaxations (none); the isolated terminal keeps its own.
+          ? { runsSandboxed: false, ...(terminalScope.lane === "manual" ? { pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [] } : {}) }
+          : undefined;
     const scopedSubjectCandidate = scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets);
     // Guest file paths belong to the workload namespace, never to host Edit scopes.
     const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
@@ -633,6 +631,10 @@ export async function authorizeToolInvocation(
         permissionResult = { decision: "deny", reason: "Host terminal typing is unavailable to remote-controller requests", layer: 2 };
       } else if (invocationPermissionContext.headless === true) {
         permissionResult = { decision: "deny", reason: "Host terminal typing needs its pane chat and a person at this desktop; it is unavailable here", layer: permissionResult.layer };
+      } else if (!isUntaintedToolTrustOrigin(invocationPermissionContext.trustOrigin)
+        || currentHostTerminalTurn(hostTerminalScope.sessionId)?.turnId !== hostTerminalScope.turnId) {
+        // Only the user turn that asked, its arguments still the model's own (no staged app, plugin or agent guidance, no file content), may type here.
+        permissionResult = { decision: "deny", reason: "Host terminal typing is available only to the user's own turn in its pane chat", layer: 2 };
       } else if (permissionResult.decision === "allow" && !isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager)) {
         throw new Error("Host terminal command was allowed without an exact host terminal rule");
       } else if (permissionResult.decision === "ask") {
@@ -1678,6 +1680,8 @@ export async function authorizeToolInvocation(
                   workerId: tool.workerId,
                   pluginId: tool.pluginId,
                   hostShellExecutionPlan,
+                  // The user's own host shell runs unconfined, whatever confines the isolated terminals.
+                  ...(hostTerminalScope === undefined ? {} : { sandboxCapability: HOST_TERMINAL_SANDBOX_CAPABILITY }),
                 }).verdict,
               }
             : {}),
@@ -1741,7 +1745,7 @@ export async function authorizeToolInvocation(
           // A command typed into the user's own host terminal runs with no
           // isolation at all, whatever confines the isolated terminals.
           ...(hostTerminalScope !== undefined
-            ? { sandboxCapability: HOST_TERMINAL_CAPABILITY }
+            ? { sandboxCapability: HOST_TERMINAL_SANDBOX_CAPABILITY }
             : hostShellExecutionPlanAudit === undefined
             ? {
                 sandboxCapability: resolveReviewerSandboxCapability(

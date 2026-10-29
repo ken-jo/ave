@@ -213,7 +213,7 @@ function makeTerminalDouble() {
     }),
     onExit: vi.fn(() => () => {}),
     onControl: vi.fn(() => () => {}),
-    control: vi.fn(async () => ({ ok: true, control: { mode: "available", generation: 0 } })),
+    control: vi.fn(async () => ({ ok: true, control: { mode: "available", generation: 0, agentInput: "supported" } })),
     listBlocks: vi.fn(async (ref: TerminalSessionRef) => ({ ok: true, session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId), blocks: [], integrated: false })),
     getBlock: vi.fn(async () => ({ ok: false, error: "no-block" })),
     /** Not part of the surface: what the main process's PTY output would do. */

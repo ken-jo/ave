@@ -1101,7 +1101,7 @@ export function ToolApprovalContent({
   const originLabel = trustOriginLabel(request.trustOrigin);
   const category = request.toolCategory ?? "meta";
   // finalVerdict already computed above (before the null-check guard); use it here.
-  const badgeClassName = levelBadgeClass(finalVerdict as RiskLevel);
+  const badgeClassName = levelBadgeClass(request?.shellRule?.hostTerminal !== undefined ? "high" : finalVerdict as RiskLevel);
   // Rationale cards render the sealed table and out-of-dir cards render the path-grant evidence rows;
   // neither consumes the generic review rows, so skip computing them. The frame around that evidence is shared.
   const rows = isRationaleApproval || isOutOfDir
@@ -1152,7 +1152,10 @@ export function ToolApprovalContent({
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <Badge variant="outline" className={`${badgeClassName} shrink-0`}>
-                      {riskLevelKoLabel(finalVerdict as RiskLevel)}
+                      {/* A command for the user's own terminal is never graded or auto-reviewed: the person is the only check. */}
+                      {request?.shellRule?.hostTerminal !== undefined
+                        ? <span data-testid="approval-no-automatic-review">{tHook("toolApprovalDialog.noAutomaticReview")}</span>
+                        : riskLevelKoLabel(finalVerdict as RiskLevel)}
                     </Badge>
                     <code
                       className="min-w-0 flex-1 break-all font-mono text-xs font-semibold"

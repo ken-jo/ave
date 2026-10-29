@@ -372,6 +372,15 @@ export function __resetWrappedPluginWorkersForTest(): void {
 
 // Resolve the actual per-call substrate, never global capability: exact shell tools use their shell plan; external servers/workers require their own local wrap marker plus live verified runtime. Worker IDs must come from a host-owned descriptor, never manifest metadata.
 // Unwrapped/unknown/in-process calls stay none so reviewer relaxation cannot authorize unconfined effects. Broker-selected disposable substrate takes precedence over host-shell and canonical file defaults because that is where effects actually land.
+/** A command typed into the user's own host terminal: no confinement of any kind, whatever confines the isolated terminals. */
+export const HOST_TERMINAL_SANDBOX_CAPABILITY: SandboxCapability = Object.freeze({
+  kind: "none" as const,
+  confidence: "verified" as const,
+  platform: process.platform,
+  reason: "typed into the user's own host terminal; runs with the user's permissions and no isolation",
+  confines: Object.freeze({ filesystem: false, process: false, network: false }),
+});
+
 export function resolveReviewerSandboxCapability(
   source: ToolSource,
   toolName: string,

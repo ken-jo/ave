@@ -165,9 +165,12 @@ export async function setupWorkflowStores(
         const liveOriginSessionId = (sessionId: string): string | undefined =>
           subAgentRunnerRef.fn?.liveOriginSessionId(sessionId);
         // A host terminal lease is authority for one pane chat: any binding change in the window ends leases whose conversation lost it.
-        browserTabRegistry.onBindingsChanged((windowId) => revokeUnboundHostTerminalLeases(windowId, (tabId, sessionId) => {
+        // A move to the side panel in main's own layout record ends it the same way.
+        browserTabRegistry.onBindingsChanged((windowId) => revokeUnboundHostTerminalLeases(windowId, (tabId) => {
+          const sessionId = browserTabRegistry.paneConversation(windowId, tabId);
+          if (sessionId === undefined || browserTabRegistry.surfacePlacement(windowId, tabId) !== "workspace") return undefined;
           const surface = browserTabRegistry.conversationSurface(windowId, sessionId);
-          return surface?.kind === "terminal" && surface.tabId === tabId;
+          return surface?.kind === "terminal" && surface.tabId === tabId ? sessionId : undefined;
         }));
         return {
           terminalRead: {
@@ -186,6 +189,7 @@ export async function setupWorkflowStores(
             verifyShell: verifyAgentTerminalShell,
             host: {
               session: hostTerminalSession,
+              placement: (windowId: number, tabId: string) => browserTabRegistry.surfacePlacement(windowId, tabId),
               shellName: hostTerminalShellName,
               control: hostTerminalControlState,
               verifyShell: verifyHostTerminalShell,

@@ -104,7 +104,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
     const scope = {
       kind: "terminal-command" as const, lane: "manual" as const, commandSha256: "0".repeat(64), tabId: "terminal:0000c0de-1",
       terminalSessionId: "host", sessionId: "11111111-1111-4111-8111-111111111111", shell: "zsh" as const, cwd: process.cwd(),
-      physicalCwd: process.cwd(), cwdDevice: "1", cwdInode: "2", controlGeneration: 0, cwdForMatch: process.cwd(),
+      physicalCwd: process.cwd(), cwdDevice: "1", cwdInode: "2", turnId: "turn-1", controlGeneration: 0, cwdForMatch: process.cwd(),
     };
     const approvalMemory = { kind: "key" as const, key: "terminal_run:host", scope };
     const approvalCacheKey = "terminal_run:host-command";

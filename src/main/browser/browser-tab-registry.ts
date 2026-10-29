@@ -277,6 +277,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!this.bindingPersistence || this.restoredBindingWindows.has(windowId)) return;
     const layout = this.bindingPersistence.load(windowId);
     if (!layout) { this.restoredBindingWindows.add(windowId); return; }
+    this.recordPlacements(windowId, layout);
     let changed = false;
     for (const surface of [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()]) {
       const binding = this.workspaceBinding(windowId, { kind: surface.kind, tabId: surface.tabId });
@@ -319,6 +320,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   // Main decorates renderer geometry; renderer-supplied ownership is never accepted.
   prepareLayoutBindings(windowId: number, layout: MainLayoutSnapshot): MainLayoutSnapshot {
     this.restoreBindings(windowId);
+    if (this.recordPlacements(windowId, layout)) this.notifyBindingListeners(windowId);
     const surfaces = [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()];
     const ids = new Set(surfaces.map((surface) => surface.tabId));
     for (const surface of surfaces) {
@@ -387,6 +389,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private readonly bindingListeners = new Set<(windowId: number) => void>();
+  private readonly placements = new Map<string, "workspace" | "side-panel">();
 
   // Called after any pane binding of `windowId` changes, so holders of binding-scoped authority (a host terminal's agent lease) recheck it.
   onBindingsChanged(listener: (windowId: number) => void): () => void {
@@ -394,9 +397,37 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return () => { this.bindingListeners.delete(listener); };
   }
 
+  private notifyBindingListeners(windowId: number): void {
+    for (const listener of [...this.bindingListeners]) listener(windowId);
+  }
+
+  // Where the window's own layout record places each tab: a workspace pane, or the side panel. Kept by main from the layout it stores, so
+  // a renderer's per-mount claim alone cannot put a tab in the workspace. Returns whether any placement changed.
+  private recordPlacements(windowId: number, layout: MainLayoutSnapshot): boolean {
+    const next = new Map<string, "workspace" | "side-panel">();
+    for (const surface of Object.values(layout.surfaces)) next.set(windowTabKey(windowId, surface.tabId), "workspace");
+    for (const surface of Object.values(layout.sideTabs).flat()) next.set(windowTabKey(windowId, surface.tabId), "side-panel");
+    let changed = false;
+    for (const [key, placement] of this.placements) {
+      if (!key.startsWith(`${windowId}\u0000`)) continue;
+      if (next.get(key) !== placement) { changed = true; this.placements.delete(key); }
+    }
+    for (const [key, placement] of next) {
+      if (this.placements.get(key) !== placement) changed = true;
+      this.placements.set(key, placement);
+    }
+    return changed;
+  }
+
+  // The placement of `tabId` in `windowId`'s stored layout, if the layout names it.
+  surfacePlacement(windowId: number, tabId: string): "workspace" | "side-panel" | undefined {
+    this.restoreBindings(windowId);
+    return this.placements.get(windowTabKey(windowId, tabId));
+  }
+
   private bindingsChanged(windowId: number): void {
     this.publishBindings(windowId);
-    for (const listener of [...this.bindingListeners]) listener(windowId);
+    this.notifyBindingListeners(windowId);
     const persistence = this.bindingPersistence;
     const layout = persistence?.load(windowId);
     if (!persistence || !layout) return;
@@ -1018,6 +1049,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     for (const key of this.userOwnedTabs) if (key.startsWith(`${windowId}\u0000`)) this.userOwnedTabs.delete(key);
     for (const key of this.retiredWorkspaceTabs) if (key.startsWith(`${windowId}\u0000`)) this.retiredWorkspaceTabs.delete(key);
+    for (const key of this.placements.keys()) if (key.startsWith(`${windowId}\u0000`)) this.placements.delete(key);
     this.activeSurface.delete(windowId);
     this.activePopup.delete(windowId);
     this.settlePending((op) => op.windowId === windowId, { ok: false, error: "no-window-renderer" });

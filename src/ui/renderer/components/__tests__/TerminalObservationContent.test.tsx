@@ -12,8 +12,8 @@ import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js
 import type { EgressDecisionBasis } from "../../../../audit/sandbox-audit.js";
 import { ko } from "../../../../i18n/messages/ko.js";
 
-function TerminalObservationHarness({ sessionId, observe }: { sessionId?: string; observe: boolean }) {
-  const observation = useTerminalObservation(sessionId, observe);
+function TerminalObservationHarness({ sessionId, observe, retryKey }: { sessionId?: string; observe: boolean; retryKey?: number }) {
+  const observation = useTerminalObservation(sessionId, observe, retryKey);
   return <TerminalObservationCommands observation={observation} />;
 }
 
@@ -198,8 +198,26 @@ describe("agent terminal observation view", () => {
     expect(listeners.size).toBe(0);
   });
 
-  it("shows localized subscription, host status and render acknowledgement failures in the same slot", async () => {
+  it("shows nothing, not an error, while main does not yet host the conversation, and subscribes once the transcript moves on", async () => {
     acknowledge.mockResolvedValueOnce({ ok: false, error: "unauthorized" });
+    const restored = render(<TerminalObservationHarness sessionId={SESSION} observe retryKey={0} />);
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "subscribe-terminal", sessionId: SESSION }));
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByTestId("terminal-observation-live-strip")).toBeNull();
+    const subscribes = (): number => acknowledge.mock.calls.filter(([request]) => (request as { action: string }).action === "subscribe-terminal").length;
+    expect(subscribes()).toBe(1);
+    restored.rerender(<TerminalObservationHarness sessionId={SESSION} observe retryKey={1} />);
+    await waitFor(() => expect(subscribes()).toBe(2));
+    // Once hosted, transcript growth never tears the subscription down.
+    restored.rerender(<TerminalObservationHarness sessionId={SESSION} observe retryKey={2} />);
+    await act(async () => {});
+    expect(subscribes()).toBe(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows localized subscription, host status and render acknowledgement failures in the same slot", async () => {
+    acknowledge.mockResolvedValueOnce({ ok: false, error: "bad-request" });
     const failed = render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await screen.findByRole("alert");
     expect(screen.getByRole("alert").textContent).toBe("에이전트 터미널 활동을 표시하지 못했습니다");

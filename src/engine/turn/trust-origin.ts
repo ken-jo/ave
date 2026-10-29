@@ -1,5 +1,5 @@
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
-import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
+import { isUntaintedToolTrustOrigin, isUserKeyboardOrigin } from "../../shared/chat-origin.js";
 import { stagedOriginForInput } from "../../shared/staged-origins.js";
 import { MCP_RESOURCE_FENCE_OPEN } from "../../shared/mcp-resource-bounds.js";
 import type { ToolTrustOrigin } from "../../tools/types.js";
@@ -41,9 +41,7 @@ export function rationaleProvenanceFor(
   startedFromUserKeyboard: boolean,
   current: ToolTrustOrigin,
 ): RationaleEligibilityProvenance {
-  const taint = current === "llm-tool-arg" || current === "user-keyboard"
-    ? "none"
-    : current;
+  const taint = isUntaintedToolTrustOrigin(current) ? "none" : current;
   return { startedFromUserKeyboard, taint };
 }
 

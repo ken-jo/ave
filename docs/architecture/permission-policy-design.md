@@ -1875,14 +1875,28 @@ one command into that terminal. Main owns the boundary
 ([host-terminal-control.ts](../../src/main/terminal/host-terminal-control.ts),
 [terminal-run.ts](../../src/tools/terminal-run.ts)):
 
-- **Target.** The mount must declare purpose `workspace`; every spawn and replay
-  declares `workspace` or `side-panel`, and a move to the side panel revokes any
-  lease. Trust limit: the purpose comes from the host renderer, which already
-  holds raw-input authority over that PTY. The shell must be zsh or bash with
-  authenticated integration; a shell with no prompt marker yet (for example while
-  `compinit` runs) refuses with that reason. Typing needs a fresh attested empty
-  prompt with bracketed paste, the exact incarnation, the pane binding and the
-  control lease below.
+- **User turn.** Only the model query of a turn the user typed at the keyboard
+  in that pane chat carries the host-terminal turn capability
+  ([host-terminal-turn.ts](../../src/tools/host-terminal-turn.ts)): no remote
+  controller, unattended authority, agent message, attachment or staged
+  guidance behind it, and never a sub-agent (which runs with the capability
+  masked). A routine, plugin or app message, or any other turn, is refused
+  before a card. The turn id is sealed into the approval; the authorization
+  step also requires the `user-keyboard` trust origin and that same turn. The
+  final PTY write, the disclosed span and its `terminal_read` continuation are
+  bound to it, and the turn's end ends the lease (`turn-ended`).
+- **Target.** Two records must both say workspace: the mount's declared purpose
+  (every spawn and replay declares `workspace` or `side-panel`) and main's own
+  layout record of the window, where the tab sits in a workspace pane rather than
+  the side panel ([browser-tab-registry.ts](../../src/main/browser/browser-tab-registry.ts)
+  `surfacePlacement`). A renderer purpose that contradicts the layout record
+  grants nothing, and a placement change in that record is a binding change. The
+  shell must be zsh or bash with authenticated integration; a shell with no
+  prompt marker yet (for example while `compinit` runs) refuses with that reason.
+  pwsh integration attests directory and exit status, but agent typing into pwsh
+  is refused (no bracketed paste) and its strip says so. Typing needs a fresh
+  attested empty prompt with bracketed paste, the exact incarnation, the pane
+  binding and the control lease below.
 - **Decision.** The command is the bash rule subject in the shell's physical
   directory, checked against the operating system (device and inode). Bash
   deny/ask rules and every floor apply unchanged. No `Bash(...)` allow, mode,
@@ -1892,27 +1906,50 @@ one command into that terminal. Main owns the boundary
   one, a person decides in every mode, on a desktop-only card that names the
   terminal, shell and directory and warns that output returns to the model. The
   card is never offered to remote or away responders, a non-native answer is
-  rejected, a timeout denies once, and headless refuses. Its lasting choice saves
-  only that exact `HostTerminal` rule; there is no session allow and no approval
-  memory. An allow reaching the host path without that plain-shell exact decision
-  is a contract error.
-- **Execution recheck.** Before typing, main rechecks the session, binding,
-  incarnation, shell, control generation, the shell's reported directory and its
-  device/inode. Any change refuses.
+  rejected, a timeout denies once, and headless refuses. Its one lasting allow,
+  **Always allow this exact command in this folder**, saves only that exact
+  `HostTerminal` rule; there is no session or project allow and no approval
+  memory. Its lasting deny saves a `Bash(...)` rule, which the card says applies
+  in every shell and folder. The risk classifier judges the command with no
+  sandbox (the host terminal's own capability), and the card claims no
+  automatic review. An allow reaching the host path without that plain-shell
+  exact decision is a contract error.
+- **Execution recheck.** Before typing, main rechecks the session, turn, binding,
+  placement, incarnation, shell, control generation, the shell's reported
+  directory and its device/inode. Any change refuses. The invocation runner
+  seals the host shell execution route the permission decision saw (route
+  `host`, its path-policy relaxations); a host that would now route shell
+  effects elsewhere is refused before the card.
+- **Final effect check.** At each check before an agent write (the reset, the
+  paste, Enter), the typing protocol re-proves the sealed directory identity
+  (reported directory, realpath, device and inode) and rebuilds the execution
+  route: a relaxation or route that differs from the decision fails with the
+  path-policy mismatch error. Either refusal writes nothing further; after the
+  paste it clears the line with one Ctrl-C while the lease holds.
 - **Control lease.** Admission takes one generation-bound agent lease. Every
   agent byte passes the lease check at the final PTY write. Any user input
-  (except an exact emulator reply), **Take over**, **Stop**, a purpose change, a
-  lost binding or the shell's exit revokes it synchronously, before the user's
-  bytes reach the shell. Stop also sends one Ctrl-C, only while the lease's block
-  is still running. After a take-over the agent cannot type again until the user
-  presses **Hand back** at an empty attested prompt after a quiet period; hand
-  back resumes nothing.
+  (except an exact emulator reply), **Take over**, **Stop**, a purpose or
+  placement change, a changed binding, the turn's end or the shell's exit
+  revokes it synchronously, before the user's bytes reach the shell. User input,
+  Take over, Stop, a purpose or binding change move the control generation even
+  with no lease, so a card still pending for that terminal types nothing once
+  approved. Stop sends one Ctrl-C only for the lease's own block: at once while
+  it runs, or, when Enter was pressed but the shell has not started it yet, once
+  when it starts (unless the user acts or a new prompt comes first, within 10
+  seconds). A turn stopped after the paste but before Enter clears the line with
+  one Ctrl-C while the lease holds. After a take-over the agent cannot type again
+  until the user presses **Hand back** at an empty, quiet attested prompt; vi
+  mode, a right-hand prompt or a not-found handler do not block it. A refusal
+  names the prompt's state (unsent input, a running command, waiting for a
+  prompt, no integration, exited). Hand back resumes nothing, and a side panel
+  mount shows no hand-back strip.
 - **Disclosure.** Output is attributed at PTY receipt: only bytes that arrive
   while the lease holds enter that command's span, at most 96K characters (the
   newest kept), and a revocation drops the undelivered parser tail. The exit code
   is returned only when the authenticated exit marker arrived under the lease.
-  The span returns only to the requesting conversation (`terminal_read`
-  continuations by block id); at most 8 spans are kept per incarnation. If the
+  The span returns only to the requesting conversation in the user turn that ran
+  it (`terminal_read` continuations by block id); at most 8 spans are kept per
+  incarnation. If the
   shell runs a different command or directory than approved, disclosure stops,
   the mismatch is audited and the terminal is taken over. Bytes already written
   to the operating system cannot be retracted.

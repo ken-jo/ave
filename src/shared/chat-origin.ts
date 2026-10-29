@@ -161,6 +161,12 @@ export function isUserKeyboardOrigin(origin: ChatInputOrigin): boolean {
   return origin === "user-keyboard";
 }
 
+/** A tool invocation's trust origin carries no content provenance: the arguments are the model's own (`llm-tool-arg`) or the user's
+ * keyboard. Any staged, agent, file or surface origin is a taint. */
+export function isUntaintedToolTrustOrigin(origin: ChatInputOrigin): origin is "llm-tool-arg" | "user-keyboard" {
+  return origin === "llm-tool-arg" || origin === "user-keyboard";
+}
+
 /** Non-renderer turns need transcript echo; renderer submissions already create optimistic rows. */
 export function isExternalSurfaceInputOrigin(
   origin: string | undefined,

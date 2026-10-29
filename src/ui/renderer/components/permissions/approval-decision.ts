@@ -16,7 +16,7 @@ export type ApprovalCardChoice =
 /** A choice a dropdown holds. */
 export type RememberingChoice = Exclude<ApprovalCardChoice, "deny-once" | "allow-once">;
 
-export const ALLOW_MENU_CHOICES = ["allow-session", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
+const ALLOW_MENU_CHOICES = ["allow-session", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
 
 /** How "Edit rule" edits a selected choice's rule: in the card (a rule the host checks against the card's grammar), in Settings (an exact tool approval), or not at all. */
 type RuleEditing = "inline" | "settings" | null;
@@ -32,6 +32,8 @@ interface DecisionOption {
   readonly needsEdit: boolean;
   /** i18n key of the choice's label. */
   readonly labelKey: string;
+  /** i18n key of what an offered choice covers, when the label alone would mislead (a host terminal card's Always deny saves a broad Bash rule). */
+  readonly noteKey?: string;
 }
 
 export interface ApprovalDecisionModel {
@@ -40,6 +42,8 @@ export interface ApprovalDecisionModel {
   readonly options: Readonly<Record<RememberingChoice, DecisionOption>>;
   /** An edited allow that is a wildcard runs only sandboxed commands; the card says so while the rule is edited. */
   readonly warnsOnWildcardAllow: boolean;
+  /** The lasting allows this card lists, in order; absent means every one of {@link ALLOW_MENU_CHOICES}. */
+  readonly allowChoices?: readonly RememberingChoice[];
 }
 
 export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> = {
@@ -76,8 +80,9 @@ export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionMod
     return {
       variant: "shell",
       options: {
+        // Always deny saves a `Bash(...)` rule, which denies the command in every shell and folder: the card says so.
         "deny-always": rule.denyAllowed
-          ? offered(rule.denyRule, "inline", label("deny-always"), rule.denyRule === null)
+          ? { ...offered(rule.denyRule, "inline", label("deny-always"), rule.denyRule === null), noteKey: "toolApprovalDialog.hostTerminalDenyScope" }
           : refused("toolApprovalDialog.persistentUnavailableOneShot", label("deny-always")),
         "allow-session": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-session")),
         "allow-project": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-project")),
@@ -86,6 +91,8 @@ export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionMod
           : offered(exact, null, HOST_TERMINAL_ALLOW_LABEL_KEY),
       },
       warnsOnWildcardAllow: false,
+      // No session or project allow exists here, so the card lists only the one lasting allow it can save.
+      allowChoices: ["allow-everywhere"],
     };
   }
   const allow = (choice: RememberingChoice, allowed: boolean): DecisionOption =>
@@ -197,13 +204,18 @@ export function oneShotDecisionModel(reasonKey: string): ApprovalDecisionModel {
 
 /** What the middle button does with nothing selected: the first allow its dropdown offers (Allow for session when offered). */
 export function defaultAllowChoice(model: ApprovalDecisionModel): RememberingChoice | null {
-  return ALLOW_MENU_CHOICES.find((choice) => model.options[choice].offered) ?? null;
+  return allowMenuChoices(model).find((choice) => model.options[choice].offered) ?? null;
+}
+
+/** The lasting allows `model`'s card lists. */
+export function allowMenuChoices(model: ApprovalDecisionModel): readonly RememberingChoice[] {
+  return model.allowChoices ?? ALLOW_MENU_CHOICES;
 }
 
 /** Why the middle button cannot allow anything, or null when it can: a folder card's reason is its folder's; every other card's is its session allow's. */
 export function allowRefusalKey(model: ApprovalDecisionModel): string | null {
   if (defaultAllowChoice(model) !== null) return null;
-  return model.options[model.variant === "path-grant" ? "allow-everywhere" : "allow-session"].reasonKey;
+  return model.options[allowMenuChoices(model)[0] === "allow-everywhere" || model.variant === "path-grant" ? "allow-everywhere" : "allow-session"].reasonKey;
 }
 
 /** True for a rule text the host saves with the `wildcard-allow-sandboxed-only` warning, matching its rule grammar: a shell rule ending in the ` *` wildcard (`Bash(git *)`, `PowerShell(Get-Item *)`) or a host rule naming subdomains (`Network(*.example.com)`). */

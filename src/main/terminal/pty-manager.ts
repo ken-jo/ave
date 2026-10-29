@@ -53,8 +53,9 @@ import { prepareHostShellIntegration } from "./host-shell-integration.js";
 import { resolveManualShell } from "./manual-shell.js";
 import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
 import { t } from "../../i18n/index.js";
-import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
+import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, type HostTerminalAgentInput, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
 import { HostTerminalControl, type HostAgentLease, type HostTerminalDisclosure } from "./host-terminal-control.js";
+import type { HostTerminalTurn } from "../../tools/host-terminal-turn.js";
 
 const log = createLogger("ave");
 
@@ -137,6 +138,8 @@ interface TerminalSession {
   observation?: TerminalCommandObservation;
   /** Host terminals only: who controls the shell and what an approved agent command disclosed. */
   control?: HostTerminalControl;
+  /** The workspace pane conversation this host terminal was last seen bound to, for binding-change revocation. */
+  hostBinding?: string;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   cleanupIntegration?: () => void;
   closing: boolean;
@@ -851,7 +854,8 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
       resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, hostNotices: [],
       disposeData: () => {}, disposeExit: () => {},
       cleanupIntegration: integration.cleanup,
-      control: new HostTerminalControl(),
+      // Agent typing needs an integrated zsh or bash (bracketed paste); any other host shell says so on its strip.
+      control: new HostTerminalControl(hostAgentInput(launch.command, integration.integrationUnavailableReason)),
       forceKillTimer: null, closing: false, exited: false, gone, markGone,
     };
     session.control!.onChange((control) => {
@@ -1044,7 +1048,8 @@ function setTerminalPurpose(tabId: string, purpose: TerminalPurpose): void {
   const tab = logicalTabs.get(tabId);
   if (!tab || tab.purpose === purpose) return;
   tab.purpose = purpose;
-  if (purpose === "side-panel") sessions.get(terminalLaneKey({ tabId, lane: "manual" }))?.control?.revoke("purpose");
+  // Any move changes what an approval card was asked for: the generation moves even with no lease, and a lease ends.
+  sessions.get(terminalLaneKey({ tabId, lane: "manual" }))?.control?.revoke("purpose");
 }
 
 /** The host terminal `ref` names, live and owned by `ownerWindowId`, or undefined. */
@@ -1088,9 +1093,15 @@ export function controlTerminal(ref: TerminalSessionRef, ownerWindowId: number |
   if (action === "take-over") control.revoke("take-over");
   else if (action === "stop") stopHostAgentCommand(session, control);
   else if (action === "hand-back") {
-    const quiet = session.blocks.promptState() === "ready" && !session.blocks.typedSincePromptEnd();
-    const handed = control.handBack(quiet);
-    if (!handed.ok) return { ok: false, error: handed.reason, message: handed.message };
+    // An empty prompt is enough to hand back: vi mode, a right-hand prompt or a not-found handler keep the agent out on their own, but
+    // must not keep the user from handing control back.
+    const prompt = session.blocks.idlePromptState();
+    const handed = control.handBack(prompt === "idle");
+    if (!handed.ok) {
+      return handed.reason === "not-taken-over"
+        ? { ok: false, error: handed.reason, message: handed.message }
+        : { ok: false, error: `hand-back-${prompt === "idle" ? "pending-input" : prompt}`, message: handed.message };
+    }
   }
   return { ok: true, control: control.state() };
 }
@@ -1098,13 +1109,39 @@ export function controlTerminal(ref: TerminalSessionRef, ownerWindowId: number |
 /** Stop revokes the lease, then interrupts only the command it owns: one Ctrl-C while that very block is still the running one.
  * Before Enter, revoking is enough (Enter is never pressed). A late Stop, after the lease ended, writes nothing. */
 function stopHostAgentCommand(session: TerminalSession, control: HostTerminalControl): void {
-  const owned = control.state();
-  const blockId = owned.mode === "agent" && owned.typed === true ? runningLeaseBlock(session) : undefined;
+  const typedBlock = control.typedBlock();
   const revoked = control.revoke("stop");
-  if (revoked && blockId !== undefined && session.blocks.promptState() === "command-running" && runningLeaseBlock(session) === blockId) {
+  if (!revoked || typedBlock === undefined) return;
+  if (session.blocks.promptState() === "command-running" && runningLeaseBlock(session) === typedBlock) {
     session.pty.write("\u0003");
+    return;
   }
+  // Enter was pressed but the shell has not started the command yet (no C marker): interrupt it once when it starts, unless the user acts
+  // first, another prompt comes, or it never starts.
+  if (session.blocks.get(typedBlock) !== null) return;
+  const generation = session.blocks.userInputGeneration();
+  const prompts = session.blocks.promptEndCount();
+  let done = false;
+  const finish = (): void => { if (done) return; done = true; clearTimeout(timer); unsubscribe(); };
+  const timer = setTimeout(finish, STOP_START_WAIT_MS);
+  timer.unref?.();
+  const unsubscribe = session.blocks.subscribe(() => {
+    if (done) return;
+    if (session.exited || session.blocks.userInputGeneration() !== generation || session.blocks.promptEndCount() !== prompts) { finish(); return; }
+    if (session.blocks.get(typedBlock) === null) return;
+    if (session.blocks.promptState() === "command-running" && runningLeaseBlock(session) === typedBlock) session.pty.write("\u0003");
+    finish();
+  });
 }
+
+function hostAgentInput(command: string, integrationUnavailable: string | undefined): HostTerminalAgentInput {
+  const shell = basename(command).replace(/\.exe$/iu, "").toLowerCase();
+  if (shell === "pwsh" || shell === "powershell") return "powershell";
+  return integrationUnavailable === undefined && (shell === "zsh" || shell === "bash") ? "supported" : "unsupported";
+}
+
+/** How long a Stop pressed between Enter and the command's start waits for that start. */
+const STOP_START_WAIT_MS = 10_000;
 
 function runningLeaseBlock(session: TerminalSession): number | undefined {
   const open = session.blocks.list().find((block) => block.status === "running");
@@ -1112,18 +1149,20 @@ function runningLeaseBlock(session: TerminalSession): number | undefined {
 }
 
 /** The output span an approved host command disclosed to the conversation that requested it; any other conversation gets nothing. */
-export function hostTerminalDisclosure(ref: TerminalSessionRef, ownerWindowId: number, requestingSessionId: string, blockId: number): HostTerminalDisclosure | undefined {
+export function hostTerminalDisclosure(
+  ref: TerminalSessionRef, ownerWindowId: number, requestingSessionId: string, turnId: string, blockId: number,
+): HostTerminalDisclosure | undefined {
   if (ref.lane !== "manual") return undefined;
   const session = sessions.get(terminalLaneKey(ref));
   if (!session || session.ownerWindowId !== ownerWindowId || !sameTerminalSession(session.info, ref)) return undefined;
-  return session.control?.disclosure(requestingSessionId, blockId);
+  return session.control?.disclosure(requestingSessionId, turnId, blockId);
 }
 
 /** Resolve when the disclosure for `blockId` is no longer running, `waitMs` passes, or `signal` aborts. */
 export function waitForHostTerminalDisclosure(
-  ref: TerminalSessionRef, ownerWindowId: number, requestingSessionId: string, blockId: number, waitMs: number, signal?: AbortSignal,
+  ref: TerminalSessionRef, ownerWindowId: number, requestingSessionId: string, turnId: string, blockId: number, waitMs: number, signal?: AbortSignal,
 ): Promise<HostTerminalDisclosure | undefined> {
-  const read = (): HostTerminalDisclosure | undefined => hostTerminalDisclosure(ref, ownerWindowId, requestingSessionId, blockId);
+  const read = (): HostTerminalDisclosure | undefined => hostTerminalDisclosure(ref, ownerWindowId, requestingSessionId, turnId, blockId);
   const session = sessions.get(terminalLaneKey(ref));
   const control = session?.control;
   const now = read();
@@ -1150,25 +1189,26 @@ export function waitForHostTerminalDisclosure(
 export async function typeHostTerminalCommand(
   ref: TerminalSessionRef,
   ownerWindowId: number,
-  requestingSessionId: string,
-  line: string,
-  expectedCwd: string,
-  /** The requesting conversation is still this tab's own pane chat (main-owned binding); asked before every agent byte. */
-  bound: () => boolean,
+  request: HostTerminalTypingRequest,
   signal?: AbortSignal,
 ): Promise<TypeTerminalCommandResult> {
+  const { requestingSessionId, turn, line, expectedCwd, bound, effectCheck } = request;
   const session = hostSession(ref, ownerWindowId);
   const control = session?.control;
   const missing = `no running host terminal with tabId ${JSON.stringify(ref.tabId)} in this window`;
   if (!session || !control || logicalTabs.get(ref.tabId)?.purpose !== "workspace" || !bound()) return { ok: false, reason: "no-terminal", message: missing };
-  const admitted = control.admit(requestingSessionId, line.trim(), canonicalizePathForMatch(expectedCwd));
+  if (!turn.isCurrent()) return { ok: false, reason: "aborted", message: "the user turn that approved this command has ended" };
+  const admitted = control.admit(requestingSessionId, turn.turnId, line.trim(), canonicalizePathForMatch(expectedCwd));
   if (!admitted.ok) return { ok: false, reason: "pending-input", message: admitted.message };
   const lease = admitted.lease;
+  // Nothing is disclosed to a turn that is over: its end ends the lease (the command may keep running in the user's period).
+  const offTurn = turn.onEnd(() => control.endTurn(lease));
+  lease.signal.addEventListener("abort", offTurn, { once: true });
   const cancel = signal === undefined ? lease.signal : AbortSignal.any([signal, lease.signal]);
   const live = (): boolean => {
     if (hostSession(ref, ownerWindowId) !== session || !control.holds(lease) || logicalTabs.get(ref.tabId)?.purpose !== "workspace") return false;
-    if (bound()) return true;
-    control.revoke("binding");
+    if (bound() && turn.isCurrent()) return true;
+    control.revoke(turn.isCurrent() ? "binding" : "turn-ended");
     return false;
   };
   const result = await typeLineAtPrompt(
@@ -1178,11 +1218,20 @@ export async function typeHostTerminalCommand(
       isLive: live,
       // The final PTY write chokepoint for agent bytes: nothing reaches the shell once the lease is gone.
       write: (data) => { if (!cancel.aborted && live()) session.pty.write(data); },
-      verify: () => verifyHostTerminalShell(ref, ownerWindowId, expectedCwd),
+      // Every check before a write (reset, paste, Enter) asks the operating system about the shell, then re-proves the sealed directory
+      // identity and the approved route; a failure stops the protocol before that write.
+      verify: async () => {
+        const verified = await verifyHostTerminalShell(ref, ownerWindowId, expectedCwd);
+        if (!verified.ok) return verified;
+        const effect = await effectCheck();
+        return effect.ok ? verified : { ok: false, reason: "effect-refused", message: effect.message };
+      },
       onBeforeEnter: (blockId) => {
         if (!live()) throw new Error("Host terminal agent lease ended before Enter.");
         control.beginDisclosure(lease, blockId, (append) => attachLeaseOutput(session, control, lease, blockId, append));
       },
+      // A turn stopped, or an effect check refused, after the paste leaves the approved text on the prompt: clear it while the lease holds.
+      clearAfterAbort: () => { if (live()) session.pty.write("\u0003"); },
       missing,
     },
     line,
@@ -1191,20 +1240,38 @@ export async function typeHostTerminalCommand(
   if (!result.ok) {
     const revoked = lease.signal.aborted;
     control.abandon(lease);
-    if (revoked && !signal?.aborted) {
+    if (revoked && !signal?.aborted && result.reason === "aborted") {
       return { ok: false, reason: "aborted", message: "the user took control of the terminal; nothing further was typed" };
     }
   }
   return result;
 }
 
+/** One approved command for a workspace host terminal, bound to the user turn that asked for it. */
+export interface HostTerminalTypingRequest {
+  readonly requestingSessionId: string;
+  readonly turn: HostTerminalTurn;
+  readonly line: string;
+  readonly expectedCwd: string;
+  /** The requesting conversation is still this tab's own pane chat, in its workspace placement; asked before every agent byte. */
+  readonly bound: () => boolean;
+  /** The sealed directory identity and approved route, re-proved at each pre-write check. */
+  readonly effectCheck: () => Promise<{ ok: true } | { ok: false; message: string }>;
+}
+
 /** A pane binding changed in `windowId`: end every host lease whose requesting conversation is no longer that tab's pane chat, so its
- * pending bytes and output admission stop with the binding. */
-export function revokeUnboundHostTerminalLeases(windowId: number, stillBound: (tabId: string, sessionId: string) => boolean): void {
+ * pending bytes and output admission stop with the binding. `boundConversation` names the conversation the tab's pane chat holds while
+ * the tab sits in a workspace pane (undefined otherwise). With no lease, a changed binding still moves the control generation, so an
+ * approval card pending under the old binding types nothing. */
+export function revokeUnboundHostTerminalLeases(windowId: number, boundConversation: (tabId: string) => string | undefined): void {
   for (const session of sessions.values()) {
-    const holder = session.control?.leaseSession();
-    if (session.ownerWindowId !== windowId || session.info.lane !== "manual" || holder === undefined) continue;
-    if (!stillBound(session.info.tabId, holder)) session.control!.revoke("binding");
+    const control = session.control;
+    if (session.ownerWindowId !== windowId || session.info.lane !== "manual" || !control) continue;
+    const bound = boundConversation(session.info.tabId);
+    const holder = control.leaseSession();
+    const changed = holder === undefined ? bound !== session.hostBinding : bound !== holder;
+    session.hostBinding = bound;
+    if (changed) control.revoke("binding");
   }
 }
 
@@ -1256,6 +1323,7 @@ type TerminalNotTypedReason =
   | "shell-busy"
   | "cwd-unverified"
   | "cwd-mismatch"
+  | "effect-refused"
   | "aborted";
 
 export type TypeTerminalCommandResult =
@@ -1264,7 +1332,7 @@ export type TypeTerminalCommandResult =
 
 export type VerifyTerminalShellResult =
   | { ok: true; cwd: string }
-  | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "shell-busy" | "cwd-unverified" | "cwd-mismatch"; message: string };
+  | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "shell-busy" | "cwd-unverified" | "cwd-mismatch" | "effect-refused"; message: string };
 
 /** How long typing waits for the shell to draw a fresh prompt after the line-editor reset (Ctrl-C at an idle prompt). */
 const FRESH_PROMPT_TIMEOUT_MS = 3_000;
@@ -1471,6 +1539,8 @@ export interface PromptTypingTarget {
   verify(options?: TerminalForegroundOptions): Promise<VerifyTerminalShellResult>;
   /** The message when there is no such terminal. */
   readonly missing: string;
+  /** Clear a pasted line that will not be entered: the typing was cancelled or its final effect check refused (host terminals: only while the lease holds). */
+  clearAfterAbort?(): void;
 }
 
 /** The typing protocol of {@link typeAgentTerminalCommand}, over any terminal: check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit line, Enter. */
@@ -1537,24 +1607,29 @@ export async function typeLineAtPrompt(
     return notTyped("edit-line-mismatch", "the terminal prompt or editable buffer changed before pasting");
   }
   target.write(`\u001b[200~${line}\u001b[201~`);
+  // A cancellation or a refused final effect check from here on leaves the pasted line at the prompt; the target may clear it.
+  const cancelledAfterPaste = (result: TypeTerminalCommandResult): TypeTerminalCommandResult => {
+    if (!result.ok && (result.reason === "aborted" || result.reason === "effect-refused")) target.clearAfterAbort?.();
+    return result;
+  };
   // 5. Confirm both the display and the editor's actual buffer before Enter.
   const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS, target.signal);
-  if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed");
+  if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
   if (!shown || !target.isLive() || interrupted()) {
     if (target.isLive() && !await safeToWrite()) target.write("\u0003");
     return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
   }
   const beforeQuery = await safeToWrite();
-  if (beforeQuery) return beforeQuery;
+  if (beforeQuery) return cancelledAfterPaste(beforeQuery);
   const confirmed = await requestEditLine(blocks, target, prompt, interrupted);
-  if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed");
+  if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
   if (!confirmed || confirmed.line !== line || interrupted()) {
     if (target.isLive() && !await safeToWrite()) target.write("\u0003");
     return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
   }
   // No other process may share the terminal when Enter is pressed: whatever it writes would land in the agent's command output.
   const beforeEnter = await safeToWrite({ exclusive: true });
-  if (beforeEnter) return beforeEnter;
+  if (beforeEnter) return cancelledAfterPaste(beforeEnter);
   // The query widget can repaint the display without changing its buffer. Echo was checked before the query; the fresh report is the buffer proof.
   if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
     || blocks.editLineReport()?.generation !== confirmed.generation || blocks.editLineReport()?.line !== line) {

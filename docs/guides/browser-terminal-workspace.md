@@ -214,19 +214,26 @@ it. Side-work-panel host terminals have no agent read/write access.
 ### Agent commands in your terminal
 
 The chat in a workspace terminal's own pane can ask to run a command in that
-terminal. Unless you saved an exact rule for that command, shell and folder, you
-decide each command on an approval card that names the terminal, shell and
-folder; your permission mode does not approve it for you, and nothing is
-approved while you are away or from another device. **Always allow** saves only
-that exact command in that folder for that shell.
+terminal, only while answering a message you typed in that chat; a routine, a
+plugin or app message, or a sub-agent cannot. Unless you saved an exact rule for
+that command, shell and folder, you decide each command on an approval card that
+names the terminal, shell and folder and shows no automatic review; your
+permission mode does not approve it for you, and nothing is approved while you
+are away or from another device. **Always allow this exact command in this
+folder** saves only that exact command in that folder for that shell; **Always
+deny** saves a Bash rule that applies everywhere. If you type in the terminal or
+move it while the card is open, approving it types nothing.
 
 While the agent types or runs the command, a strip above the terminal shows it
-with **Take over** and **Stop**. Typing anything, pressing Take over or Stop,
-moving the terminal to the side panel, or closing the pane's chat binding ends
-the agent's control immediately; Stop also interrupts the command once. After a
-take-over, clear or run the line and press **Hand back** before the agent can run
-its next approved command. Only the output that arrived while the agent held
-control returns to the chat that asked for it.
+with **Take over** and **Stop** (typing takes over too). Typing anything,
+pressing Take over or Stop, moving the terminal to the side panel, closing the
+pane's chat binding or the end of that chat turn ends the agent's control
+immediately; Stop also interrupts the agent's command once, even if it has not
+started yet. After a take-over, clear or run the line and press **Hand back**
+before the agent can run its next approved command; if it is refused, the notice
+says why. Only the output that arrived while the agent held control returns to
+the chat turn that asked for it. A pwsh terminal keeps shell integration, but
+the agent cannot type into it, and the terminal says so.
 
 An ordinary conversation owns its own **Agent (isolated)** persistent shell,
 with a disposable HOME and existing filesystem/process confinement. Each

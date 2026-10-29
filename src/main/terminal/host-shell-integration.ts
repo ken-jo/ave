@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { TerminalIntegrationUnavailableReason } from "../../shared/terminal-session.js";
 import type { ManualShellLaunch } from "./manual-shell.js";
+import { readWindowsDirectoryDacls } from "../../shared/ave-home.js";
+import { isOwnerOnlyDacl } from "../../shared/windows-path-facts.js";
 import { generateHostShellHooks, generatePwshHostHooks, PWSH_PROFILE_STARTUP, powerShellQuote, pwshNoncePrologue, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
 
 export interface HostShellIntegration {
@@ -107,6 +109,9 @@ function preparePwsh(
   try {
     directory = mkdtempSync(join(tmpdir(), "ave-host-terminal-"));
     const ownedDirectory = directory;
+    // POSIX modes mean nothing to a Windows ACL, and a temporary directory inherits its parent's (which may grant every user read). Protect the
+    // directory with an owner-only DACL, verified on read-back, before the nonce is written into it; the files inherit it.
+    if (process.platform === "win32" && !protectOwnerOnlyDirectory(ownedDirectory)) throw new Error("owner-only directory protection failed");
     const write = (name: string, text: string): string => {
       const path = join(ownedDirectory, name);
       writeFileSync(path, text, { mode: 0o600 });
@@ -126,4 +131,11 @@ function preparePwsh(
     if (directory) rmSync(directory, { recursive: true, force: true });
     return native("setup-failed");
   }
+}
+
+/** Give `directory` an owner-only, inheritance-protected DACL (the protection the Ave home uses) and confirm it on read-back. */
+function protectOwnerOnlyDirectory(directory: string): boolean {
+  const [descriptor] = readWindowsDirectoryDacls([directory], true);
+  return descriptor !== undefined && descriptor.error === undefined && descriptor.protected === true
+    && typeof descriptor.currentUserSid === "string" && isOwnerOnlyDacl(descriptor, descriptor.currentUserSid);
 }

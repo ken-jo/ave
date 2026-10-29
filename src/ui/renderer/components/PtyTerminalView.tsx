@@ -85,6 +85,15 @@ export function PtyTerminalView({
   return <AttachedPtyTerminal key={props.tabId} {...props} purpose={location === "side-panel" ? "side-panel" : "workspace"} />;
 }
 
+/** Why hand-back was refused, as main reports the shell's prompt. */
+const HAND_BACK_REFUSAL_KEYS: Readonly<Record<string, string>> = {
+  "hand-back-pending-input": "ptyTerminal.handBackPendingInput",
+  "hand-back-command-running": "ptyTerminal.handBackCommandRunning",
+  "hand-back-waiting-for-prompt": "ptyTerminal.handBackWaitingForPrompt",
+  "hand-back-no-shell-integration": "ptyTerminal.handBackNoIntegration",
+  "hand-back-exited": "ptyTerminal.handBackExited",
+};
+
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
@@ -190,7 +199,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const offExit = terminalApi.onExit(acceptEvent);
     // Main owns control; the strip only shows the latest state for this incarnation.
     const offControl = terminalApi.onControl((event) => {
-      if (!disposed && liveRef && sameTerminalSession(liveRef, event)) setControl(event.control);
+      if (!disposed && liveRef && sameTerminalSession(liveRef, event)) {
+        setControl(event.control);
+        // A notice answered the previous state; it no longer applies once control changes.
+        setControlNotice(null);
+      }
     });
 
     setTerminalReplaying(tabId, true);
@@ -258,13 +271,18 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     };
   }, [api, tabId, purpose]);
 
+  // Only a workspace mount of a shell that takes agent typing can receive approved commands; every other mount says it has no agent access.
+  const workspaceTyping = purpose === "workspace" && (control === null || control.agentInput === "supported");
+  const badgeKey = purpose !== "workspace" ? "ptyTerminal.hostBadge"
+    : workspaceTyping ? "ptyTerminal.hostBadgeWorkspace" : "ptyTerminal.hostBadgeNoAgentInput";
+
   const changeControl = (action: TerminalControlAction): void => {
     const terminalApi = api.terminal;
     if (!terminalApi || !session) return;
     setControlNotice(null);
     void terminalApi.control(session, action).then((result) => {
       if (result.ok) setControl(result.control);
-      else setControlNotice(t(result.error === "prompt-not-ready" ? "ptyTerminal.handBackNotReady" : "ptyTerminal.controlFailed"));
+      else setControlNotice(t(HAND_BACK_REFUSAL_KEYS[result.error] ?? "ptyTerminal.controlFailed"));
     }, () => setControlNotice(t("ptyTerminal.controlFailed")));
   };
 
@@ -288,23 +306,29 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       data-testid="chat-side-panel-pty-terminal"
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
-        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t(purpose === "workspace" ? "ptyTerminal.hostBadgeWorkspace" : "ptyTerminal.hostBadge")}</span>
+        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t(badgeKey)}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
           {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
         </span>
       </div>
       <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-        {t(purpose === "workspace" ? "ptyTerminal.workspaceEnvironment" : "ptyTerminal.manualEnvironment")}
+        {t(workspaceTyping ? "ptyTerminal.workspaceEnvironment" : "ptyTerminal.manualEnvironment")}
       </p>
+      {purpose === "workspace" && control !== null && control.agentInput !== "supported" ? (
+        <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-agent-input-unavailable">
+          {t(control.agentInput === "powershell" ? "ptyTerminal.agentInputPowerShell" : "ptyTerminal.agentInputUnsupported")}
+        </p>
+      ) : null}
       {control?.mode === "agent" ? (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-warning border-border bg-warning/(--opacity-subtle) px-2 py-1 text-xs" data-testid="terminal-agent-control" role="status">
           <span className="min-w-0 flex-1 truncate font-medium" title={control.command}>
             {t(control.typed ? "ptyTerminal.agentRunning" : "ptyTerminal.agentTyping", { command: control.command ?? "" })}
           </span>
+          <span className="text-muted-foreground" data-testid="terminal-take-over-hint">{t("ptyTerminal.typingTakesOver")}</span>
           <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-take-over" onClick={() => changeControl("take-over")}>{t("ptyTerminal.takeOver")}</button>
           <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-stop-agent" onClick={() => changeControl("stop")}>{t("ptyTerminal.stop")}</button>
         </div>
-      ) : control?.mode === "taken-over" ? (
+      ) : control?.mode === "taken-over" && purpose === "workspace" ? (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-user-control" role="status">
           <span className="min-w-0 flex-1">{t("ptyTerminal.takenOver")}</span>
           <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-hand-back" onClick={() => changeControl("hand-back")}>{t("ptyTerminal.handBack")}</button>

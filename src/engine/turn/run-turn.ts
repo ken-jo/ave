@@ -1,5 +1,6 @@
 import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
+import { runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type {
@@ -27,7 +28,7 @@ import { projectNextTurnInputTokens } from "../request-input-projection.js";
 import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
-import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
+import { isUntaintedToolTrustOrigin, isUserKeyboardOrigin } from "../../shared/chat-origin.js";
 import { consumeUnattendedTurnAuthority } from "../../shared/authorization-required.js";
 import { countResourceAttachmentFences } from "../../shared/mcp-resource-bounds.js";
 import {
@@ -570,7 +571,11 @@ async function runTurnInSpan(
         }
       : undefined;
     // Bind async context to the effective session ID so delegates read isolated session activations.
-    const runQuery = () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
+    // Only a turn the user typed here, with nothing else speaking through it, may type into the user's own host terminal.
+    const hostTerminalTurn = isUserKeyboardOrigin(inputOrigin) && isUntaintedToolTrustOrigin(toolTrustOrigin) && memoryCaptureTaint.size === 0
+      && !isRemoteControllerTurn && options?.unattendedAuthority === undefined && self.sessionKind !== "subagent"
+      ? { sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId } : undefined;
+    const runQuery = () => runWithHostTerminalTurn(hostTerminalTurn, () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
         self,
         systemPrompt,
@@ -596,7 +601,7 @@ async function runTurnInSpan(
           ...(onStopHook ? { onStopHook } : {}),
         },
       ),
-    ));
+    )));
     if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
     result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
       ? await runQuery()

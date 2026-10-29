@@ -71,7 +71,7 @@ function terminalApi() {
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
     onControl: vi.fn((_handler: (event: TerminalControlEvent) => void) => () => {}),
-    control: vi.fn(async (_ref: TerminalSessionRef, _action: TerminalControlAction): Promise<TerminalControlResult> => ({ ok: true, control: { mode: "available", generation: 0 } })),
+    control: vi.fn(async (_ref: TerminalSessionRef, _action: TerminalControlAction): Promise<TerminalControlResult> => ({ ok: true, control: { mode: "available", generation: 0, agentInput: "supported" } })),
     listBlocks: vi.fn(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: session.shellIntegration, blocks: [] as unknown[] })),
     getBlock: vi.fn(async (_session: TerminalSessionInfo, _id: number) => ({ ok: false as const, error: "block-not-found" })),
   };
@@ -321,31 +321,52 @@ describe("PtyTerminalView host control strip", () => {
     let announce: ((event: TerminalControlEvent) => void) | undefined;
     terminal.onControl.mockImplementation((handler: (event: TerminalControlEvent) => void) => { announce = handler; return () => { announce = undefined; }; });
     terminal.control.mockImplementation(async (_ref: TerminalSessionRef, action: TerminalControlAction): Promise<TerminalControlResult> =>
-      action === "hand-back" ? { ok: false, error: "prompt-not-ready" }
-        : { ok: true, control: { mode: action === "get" ? "available" : "taken-over", generation: 3 } });
+      action === "hand-back" ? { ok: false, error: "hand-back-command-running" }
+        : { ok: true, control: { mode: action === "get" ? "available" : "taken-over", generation: 3, agentInput: "supported" } });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:21" tabLabel="Terminal 21" />);
     await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:21" }), "get"));
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", purpose: "workspace" }));
     expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadgeWorkspace"));
     const session = terminalSessionFixture("terminal:21", "manual");
-    act(() => announce!({ ...session, control: { mode: "agent", generation: 1, command: "npm test", typed: true } }));
+    act(() => announce!({ ...session, control: { mode: "agent", generation: 1, agentInput: "supported", command: "npm test", typed: true } }));
     expect(screen.getByTestId("terminal-agent-control")).toHaveTextContent(t("ptyTerminal.agentRunning", { command: "npm test" }));
+    expect(screen.getByTestId("terminal-take-over-hint")).toHaveTextContent(t("ptyTerminal.typingTakesOver"));
     fireEvent.click(screen.getByTestId("terminal-take-over"));
     await waitFor(() => expect(screen.getByTestId("terminal-user-control")).toHaveTextContent(t("ptyTerminal.takenOver")));
     expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:21" }), "take-over");
     fireEvent.click(screen.getByTestId("terminal-hand-back"));
-    expect(await screen.findByTestId("terminal-control-notice")).toHaveTextContent(t("ptyTerminal.handBackNotReady"));
+    // The refusal names the prompt's actual state, and the next control change clears it.
+    expect(await screen.findByTestId("terminal-control-notice")).toHaveTextContent(t("ptyTerminal.handBackCommandRunning"));
+    act(() => announce!({ ...session, control: { mode: "available", generation: 4, agentInput: "supported" } }));
+    expect(screen.queryByTestId("terminal-control-notice")).toBeNull();
     // Another incarnation's announcement does not change this view.
-    act(() => announce!({ ...session, terminalSessionId: "other", control: { mode: "agent", generation: 9, command: "rm -rf x" } }));
+    act(() => announce!({ ...session, terminalSessionId: "other", control: { mode: "agent", generation: 9, agentInput: "supported", command: "rm -rf x" } }));
     expect(screen.queryByTestId("terminal-agent-control")).toBeNull();
   });
 
-  it("keeps the side panel terminal private and without agent controls", async () => {
+  it("keeps the side panel terminal private and without agent controls, even after a take-over moved it there", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
+    terminal.control.mockImplementation(async (): Promise<TerminalControlResult> => ({ ok: true, control: { mode: "taken-over", generation: 2, agentInput: "supported" } }));
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:22" tabLabel="Terminal 22" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ purpose: "side-panel" })));
     expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadge"));
+    expect(screen.getByText(t("ptyTerminal.manualEnvironment"))).toBeTruthy();
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    expect(screen.queryByTestId("terminal-user-control")).toBeNull();
+    expect(screen.queryByTestId("terminal-hand-back")).toBeNull();
+  });
+
+  it.each([
+    ["powershell", "ptyTerminal.agentInputPowerShell"],
+    ["unsupported", "ptyTerminal.agentInputUnsupported"],
+  ] as const)("says a %s workspace terminal takes no agent input and drops the agent badge", async (agentInput, noteKey) => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.control.mockImplementation(async (): Promise<TerminalControlResult> => ({ ok: true, control: { mode: "available", generation: 0, agentInput } }));
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:23" tabLabel="Terminal 23" />);
+    expect(await screen.findByTestId("terminal-agent-input-unavailable")).toHaveTextContent(t(noteKey));
+    expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadgeNoAgentInput"));
     expect(screen.getByText(t("ptyTerminal.manualEnvironment"))).toBeTruthy();
   });
 });

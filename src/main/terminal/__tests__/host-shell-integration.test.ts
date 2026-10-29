@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
 import { prepareHostShellIntegration, type HostShellIntegration } from "../host-shell-integration.js";
+import { readWindowsDirectoryDacls } from "../../../shared/ave-home.js";
+import { isOwnerOnlyDacl } from "../../../shared/windows-path-facts.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
 import { TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
 import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_PWSH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
@@ -31,13 +33,25 @@ function execute(integration: HostShellIntegration, script: string) {
   expect(result.status, result.stderr).toBe(0);
   return result.stdout + result.stderr;
 }
+/** Only the current user can read the nonce: POSIX mode bits, or on Windows the directory's real DACL (mode bits do not reflect ACLs there). */
+function expectOwnerOnly(dir: string, file: string): void {
+  if (process.platform !== "win32") {
+    expect(statSync(file).mode & 0o077).toBe(0);
+    return;
+  }
+  const [descriptor] = readWindowsDirectoryDacls([dir]);
+  expect(descriptor?.error).toBeUndefined();
+  expect(descriptor?.protected).toBe(true);
+  expect(isOwnerOnlyDacl(descriptor!, descriptor!.currentUserSid!)).toBe(true);
+}
 afterEach(async () => {
   for (const { pty, exited } of editors.splice(0)) { pty.kill(); await exited; }
   for (const integration of integrations.splice(0)) integration.cleanup();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-describe("host shell startup", () => {
+// zsh and bash startup, run against the real interpreters: POSIX only (Windows host terminals start COMSPEC or pwsh).
+describe.runIf(process.platform !== "win32")("host shell startup", () => {
   it("sources real login files in order with the original startup directory and leaves HOME untouched", () => {
     expect(TERMINAL_TEST_ZSH).toBeDefined();
     const home = directory();
@@ -110,6 +124,9 @@ describe("host shell startup", () => {
     expect(raw).toContain(`;${integration.nonce}\u0007`);
   });
 
+});
+
+describe("host shell integration choice", () => {
   it("preserves unsupported native interpreters and reports why integration is unavailable", () => {
     for (const command of ["/bin/fish", "/bin/nu", "/bin/cmd.exe", "/bin/powershell.exe"]) {
       const integration = prepare(command, directory(), ["-i"]);
@@ -128,6 +145,7 @@ describe("host shell startup", () => {
   });
 });
 
+describe.runIf(process.platform !== "win32")("host shell prompt callbacks and startup secrecy", () => {
 it.each([
   { shell: TERMINAL_TEST_MODERN_BASH, rc: ".bashrc", startup: 'PROMPT_COMMAND=true\nPS0="USER-PS0"\n' },
   { shell: TERMINAL_TEST_ZSH, rc: ".zshrc", startup: 'precmd() { true; }\nprecmd_functions=(user_prompt_callback)\nuser_prompt_callback() { true; }\n' },
@@ -191,6 +209,7 @@ it("retains the configured debug trap without replacing it on an older interpret
   expect(raw).toContain("NATIVE-ALIVE");
   expect(raw).not.toContain("trap -- '__ave_preexec' DEBUG");
 });
+});
 
 describe("pwsh host startup (generated files)", () => {
   it("wraps the native launch so the nonce is taken before any profile and hooks install after them", () => {
@@ -211,7 +230,7 @@ describe("pwsh host startup (generated files)", () => {
       expect(profiles).toBeLessThan(hooks);
       // The nonce is in an owner-only file, never in the launch arguments or environment.
       expect(readFileSync(join(dirname(wrapperPath), ".ave-terminal-nonce"), "utf8")).toBe(integration.nonce);
-      expect(statSync(join(dirname(wrapperPath), ".ave-terminal-nonce")).mode & 0o077).toBe(0);
+      expectOwnerOnly(dirname(wrapperPath), join(dirname(wrapperPath), ".ave-terminal-nonce"));
       expect(JSON.stringify([integration.args, integration.env])).not.toContain(integration.nonce);
       const hookText = readFileSync(join(dirname(wrapperPath), "hooks.ps1"), "utf8");
       // No documented bracketed paste in PSReadLine: every prompt says so, and agent typing refuses it.
@@ -238,7 +257,13 @@ describe("pwsh host startup (generated files)", () => {
   });
 });
 
-/** Native pwsh (PowerShell 7). Runs where pwsh is installed or `AVE_TEST_PWSH` names it; the Windows verification session runs it there. */
+// A named interpreter that cannot be found fails here instead of silently skipping the native suite. A Store (MSIX) install's
+// `pwsh.exe` alias cannot be opened by path; name the real executable under C:\\Program Files\\WindowsApps\\… instead.
+it.runIf(process.env.AVE_TEST_PWSH !== undefined && process.env.AVE_TEST_PWSH.length > 0)("finds the pwsh that AVE_TEST_PWSH names", () => {
+  expect(TERMINAL_TEST_PWSH, `AVE_TEST_PWSH=${process.env.AVE_TEST_PWSH} is not a readable file`).toBe(process.env.AVE_TEST_PWSH);
+});
+
+/** Native pwsh (PowerShell 7). Runs wherever pwsh is installed (the Linux CI image has /usr/bin/pwsh) or `AVE_TEST_PWSH` names it. */
 describe.runIf(TERMINAL_TEST_PWSH !== undefined)("pwsh host startup (native)", () => {
   async function start(home: string, args: string[], extra: Record<string, string> = {}) {
     const integration = prepare(TERMINAL_TEST_PWSH!, home, args, extra);
@@ -247,7 +272,13 @@ describe.runIf(TERMINAL_TEST_PWSH !== undefined)("pwsh host startup (native)", (
       cwd: home, cols: 120, rows: 30, env: { ...integration.env, TERM: "xterm-256color" },
     });
     let raw = "";
-    pty.onData((data) => { raw += data; tracker.recordOutput(data); });
+    pty.onData((data) => {
+      raw += data;
+      tracker.recordOutput(data);
+      // Answer as a terminal emulator does (xterm.js in the app). .NET asks for the cursor position as PSReadLine starts and reads its
+      // input until the reply comes, so with nobody answering, the keys typed at the first prompt are consumed by that wait.
+      for (const _query of data.matchAll(/\u001b\[6n/gu)) pty.write("\u001b[1;1R");
+    });
     const exited = new Promise<void>((resolve) => pty.onExit(() => resolve()));
     editors.push({ pty, exited });
     await waitForTerminal(() => tracker.promptEndCount() > 0, 30_000);

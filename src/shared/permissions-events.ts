@@ -127,6 +127,8 @@ export type ApprovalMemoryScope =
       readonly terminalSessionId: string;
       /** The pane chat conversation that asked: only it may consume this approval and read the command's output. */
       readonly sessionId: string;
+      /** The user-typed turn of that conversation that asked; the approval, the typing and the output belong to it alone. */
+      readonly turnId: string;
       readonly shell: "zsh" | "bash";
       /** The directory the shell's markers reported, and the same directory as the operating system resolves it. */
       readonly cwd: string;

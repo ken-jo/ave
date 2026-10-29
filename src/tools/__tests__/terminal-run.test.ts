@@ -1,7 +1,7 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 /** terminal_run: type one approved command into the invoking conversation's isolated terminal. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostTerminalControlState } from "../../shared/terminal-session.js";
@@ -23,6 +23,8 @@ import { APPROVAL_MEMORY_SCOPE_METADATA_KEY } from "../approval-memory-context.j
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
+import { runWithHostTerminalTurn } from "../host-terminal-turn.js";
+import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRINT_FORMAT_COMMANDS, TERMINAL_PRINT_TARGET_COMMANDS, TERMINAL_PRINTF_DATA_COMMANDS, TERMINAL_PRINTF_UNCHECKED_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
@@ -118,6 +120,7 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
     // No host terminal is available unless a test provides one.
     host: {
       session: () => undefined,
+      placement: () => undefined,
       shellName: () => undefined,
       control: () => undefined,
       verifyShell: async () => ({ ok: false, reason: "no-terminal", message: "no host terminal" }),
@@ -130,13 +133,15 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
   };
 }
 
-const ctxFor = (scope: ApprovalMemoryScope | undefined, sessionId = "main", signal?: AbortSignal) => ({
+const ctxFor = (scope: ApprovalMemoryScope | undefined, sessionId = "main", signal?: AbortSignal, recheck: () => Promise<void> = async () => {}) => ({
   cwd: "/workspace",
   extraAllowedDirectories: [],
   metadata: {
     sessionId,
     ...(scope === undefined ? {} : { [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: scope }),
   },
+  // The sealed host execution route the invocation runner hands a host command (ignored by the isolated lane).
+  hostTerminalRoute: { recheck },
   ...(signal ? { abortSignal: signal } : {}),
 }) as unknown as ToolExecutionContext;
 
@@ -182,9 +187,12 @@ describe("terminal_run", () => {
       await expect(tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-1" }, { cwd: "/workspace", sessionId: "main" }))
         .rejects.toThrow(/only into this pane chat's own terminal/);
       for (const tabId of [undefined, "terminal:host"]) {
-        await expect(tool.approvalMemoryScope!({ command: "ls", ...(tabId ? { tabId } : {}) }, { cwd: "/workspace", sessionId: "main" }))
+        await expect(runWithHostTerminalTurn({ sessionId: "main", turnId: "turn-1" },
+          async () => tool.approvalMemoryScope!({ command: "ls", ...(tabId ? { tabId } : {}) }, { cwd: "/workspace", sessionId: "main" })))
           .rejects.toThrow(/not available for agent commands/);
       }
+      // Outside a user turn the bound pane chat is refused before anything else, and still never falls back.
+      await expect(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).rejects.toThrow(/Only a message the user typed/);
       expect(ensureConversationTerminal).not.toHaveBeenCalled();
       expect(deps.typed).toEqual([]);
     });
@@ -727,12 +735,18 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     rmSync(hostDir, { recursive: true, force: true });
   });
 
-  function hostDeps(options: { control?: HostTerminalControlState; bound?: () => string | undefined; span?: Partial<HostTerminalDisclosure>; tracker?: TerminalBlockTracker; shell?: string } = {}) {
+  function hostDeps(options: {
+    control?: HostTerminalControlState; bound?: () => string | undefined; span?: Partial<HostTerminalDisclosure>; tracker?: TerminalBlockTracker; shell?: string;
+    placement?: () => "workspace" | "side-panel" | undefined;
+  } = {}) {
     const session = terminalSessionFixture(HOST, "manual");
     const tracker = options.tracker ?? readyTracker(hostDir);
     registerTerminalBlockTracker(session, tracker, WINDOW);
     const hostTyped: Array<[string, string, string]> = [];
-    const control = { value: options.control ?? { mode: "available" as const, generation: 4 } };
+    const control = { value: options.control ?? { mode: "available" as const, generation: 4, agentInput: "supported" as const } };
+    // The user turn the calls run inside; undefined runs them in a turn that is not the user's (a routine, a plugin message, a sub-agent).
+    const turn: { id: string | undefined } = { id: "turn-1" };
+    const effectChecks: Array<{ ok: true } | { ok: false; message: string }> = [];
     const ensureConversationTerminal = vi.fn(async () => terminalSessionFixture("terminal:aaaaaaaa-1"));
     const deps = depsWith({
       ensureConversationTerminal,
@@ -743,21 +757,36 @@ describe("terminal_run into a pane chat's own host terminal", () => {
       },
       host: {
         session: (tabId) => (tabId === HOST ? session : undefined),
+        placement: (_windowId, tabId) => (tabId === HOST ? (options.placement ?? (() => "workspace" as const))() : undefined),
         shellName: () => options.shell ?? "zsh",
         control: () => control.value,
         verifyShell: async (_ref, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
-        typeCommand: async (_ref, _windowId, sessionId, line, cwd, bound) => {
-          hostTyped.push([sessionId, line, cwd]);
-          if (!bound()) return { ok: false, reason: "no-terminal", message: "unbound" };
+        // Like the PTY layer: the binding and the final effect check are asked before the first byte; a refusal types nothing.
+        typeCommand: async (_ref, _windowId, request) => {
+          if (!request.bound()) return { ok: false, reason: "no-terminal", message: "unbound" };
+          // Two of its pre-write checks (the reset and the paste); the first refusal stops it.
+          for (let check = 0; check < 2; check++) {
+            const effect = await request.effectCheck();
+            effectChecks.push(effect);
+            if (!effect.ok) return { ok: false, reason: "effect-refused", message: effect.message };
+          }
+          hostTyped.push([request.requestingSessionId, request.line, request.expectedCwd]);
           return { ok: true, firstBlockId: 2 };
         },
-        waitDisclosure: async (_ref, _windowId, sessionId, blockId) => sessionId === "main" && blockId === 2 ? {
-          requestingSessionId: "main", command: "npm test", cwd: hostDir, blockId: 2, state: "done", exitCode: 0, output: "approved output\n", truncated: false,
+        waitDisclosure: async (_ref, _windowId, sessionId, turnId, blockId) => sessionId === "main" && turnId === "turn-1" && blockId === 2 ? {
+          requestingSessionId: "main", turnId, command: "npm test", cwd: hostDir, blockId: 2, state: "done", exitCode: 0, output: "approved output\n", truncated: false,
           ...options.span,
         } : undefined,
       },
     });
-    return { deps, tool: createTerminalRunTool(deps), hostTyped, control, tracker, ensureConversationTerminal };
+    const raw = createTerminalRunTool(deps);
+    const inTurn = <T,>(run: () => Promise<T>): Promise<T> => runWithHostTerminalTurn(turn.id === undefined ? undefined : { sessionId: "main", turnId: turn.id }, run);
+    const tool: typeof raw = {
+      ...raw,
+      approvalMemoryScope: (input, context) => inTurn(async () => raw.approvalMemoryScope!(input, context)),
+      execute: (input, context) => inTurn(() => raw.execute(input, context)),
+    };
+    return { deps, tool, hostTyped, control, tracker, ensureConversationTerminal, turn, effectChecks };
   }
 
   it("seals the bound host target, shell, physical directory identity and control generation, without touching an isolated terminal", async () => {
@@ -766,7 +795,7 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     expect(scope).toEqual({
       kind: "terminal-command", lane: "manual", commandSha256: sha256Hex("npm test"), tabId: HOST, terminalSessionId: `${HOST}/manual`,
       sessionId: "main", shell: "zsh", cwd: hostDir, physicalCwd: hostDir, cwdDevice: identity.dev.toString(), cwdInode: identity.ino.toString(),
-      controlGeneration: 4, cwdForMatch: expect.any(String),
+      turnId: "turn-1", controlGeneration: 4, cwdForMatch: expect.any(String),
     });
     expect(ensureConversationTerminal).not.toHaveBeenCalled();
     // The pane chat's sub-agent is not the pane chat: it gets its own isolated terminal.
@@ -781,7 +810,7 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     await expect(hostDeps({ tracker: starting }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
       .rejects.toThrow(t("be_terminalRun.hostNoPromptYet", { tabId: HOST }));
     __resetTerminalBlocksForTest();
-    await expect(hostDeps({ control: { mode: "taken-over", generation: 5 } }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
+    await expect(hostDeps({ control: { mode: "taken-over", generation: 5, agentInput: "supported" } }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
       .rejects.toThrow(/must hand it back/);
     __resetTerminalBlocksForTest();
     await expect(hostDeps({ shell: "fish" }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
@@ -840,6 +869,72 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
     expect(result.isError).toBe(true);
     expect(result.output).toMatch(/no longer this terminal's pane chat/);
+    expect(hostTyped).toEqual([]);
+  });
+  it("spends an approval only in the user turn that asked; another turn, or a turn that is not the user's, types nothing", async () => {
+    const { tool, hostTyped, turn } = hostDeps();
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    turn.id = "turn-2";
+    const later = await tool.execute({ command: "npm test" }, ctxFor(scope));
+    expect(later.isError).toBe(true);
+    expect(later.output).toMatch(/another turn of this conversation/);
+    turn.id = undefined;
+    const background = await tool.execute({ command: "npm test" }, ctxFor(scope));
+    expect(background.isError).toBe(true);
+    expect(background.output).toMatch(/another turn of this conversation/);
+    // A routine, plugin or sub-agent turn of the pane chat cannot even seal a host command.
+    await expect(tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" })).rejects.toThrow(/Only a message the user typed/);
+    expect(hostTyped).toEqual([]);
+  });
+
+  it("takes the placement from main's layout record, whatever the renderer mount says", async () => {
+    let placement: "workspace" | "side-panel" | undefined = "side-panel";
+    const { tool, hostTyped } = hostDeps({ placement: () => placement });
+    // The renderer still reports the tab's live workspace session; main's own layout record says side panel.
+    await expect(tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" })).rejects.toThrow(/shown in the side panel/);
+    placement = "workspace";
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    placement = "side-panel";
+    const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
+    expect(result.isError).toBe(true);
+    expect(hostTyped).toEqual([]);
+  });
+
+  it("re-proves the sealed directory identity at the final pre-write check: a directory swapped during preparation types nothing", async () => {
+    const { tool, hostTyped, effectChecks } = hostDeps();
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    // The swap lands while the PTY layer prepares: after its first pre-write check, before the next.
+    let swapped = false;
+    const result = await tool.execute({ command: "npm test" }, ctxFor(scope, "main", undefined, async () => {
+      if (swapped) return;
+      swapped = true;
+      // Keep the original alive so the new directory cannot reuse its inode.
+      renameSync(hostDir, `${hostDir}-original`);
+      mkdirSync(hostDir);
+    }));
+    rmSync(`${hostDir}-original`, { recursive: true, force: true });
+    expect(result.isError).toBe(true);
+    expect(effectChecks).toEqual([{ ok: true }, { ok: false, message: expect.stringMatching(/replaced on disk while the command was being prepared/) }]);
+    expect(hostTyped).toEqual([]);
+  });
+
+  it("re-proves the approved execution route at the final pre-write check: a changed relaxation types nothing", async () => {
+    const { tool, hostTyped, effectChecks } = hostDeps();
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    const result = await tool.execute({ command: "npm test" }, ctxFor(scope, "main", undefined, async () => {
+      throw new Error(PATH_POLICY_DECISION_MISMATCH_ERROR);
+    }));
+    expect(result.isError).toBe(true);
+    expect(effectChecks).toEqual([{ ok: false, message: PATH_POLICY_DECISION_MISMATCH_ERROR }]);
+    expect(result.output).toContain(PATH_POLICY_DECISION_MISMATCH_ERROR);
+    expect(hostTyped).toEqual([]);
+  });
+
+  it("refuses a host command that reaches execute without its sealed execution route", async () => {
+    const { tool, hostTyped } = hostDeps();
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    const { hostTerminalRoute: _route, ...withoutRoute } = ctxFor(scope) as ToolExecutionContext & { hostTerminalRoute?: unknown };
+    await expect(tool.execute({ command: "npm test" }, withoutRoute as ToolExecutionContext)).rejects.toThrow(/without its sealed execution route/);
     expect(hostTyped).toEqual([]);
   });
 });

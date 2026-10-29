@@ -7,6 +7,7 @@ import {
   __resetTerminalBlocksForTest,
 } from "../../main/terminal/terminal-blocks.js";
 import type { ToolExecutionContext } from "../types.js";
+import { runWithHostTerminalTurn } from "../host-terminal-turn.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 // Sessions share a window without sharing isolated terminal ownership.
@@ -257,14 +258,19 @@ it("refuses host output and stale incarnations, including continuation-shaped re
   expect(read).not.toHaveProperty("lane");
 });
 
-it("serves a host command's continuation only as its own span, only to the conversation that ran it", async () => {
+it("serves a host command's continuation only as its own span, only to the conversation and user turn that ran it", async () => {
   const manual = trackerWith([{ command: "human", output: "HOST-SECRET", exit: 0 }]);
   registerTerminalBlockTracker(terminalSessionFixture("terminal:9", "manual"), manual, WINDOW);
-  const span = { requestingSessionId: "main", command: "npm test", cwd: "/repo", blockId: 4, state: "running" as const, exitCode: null, output: "approved output", truncated: false };
-  const hostDisclosure = vi.fn((ref: { lane: string }, _windowId: number, sessionId: string, blockId: number) =>
-    ref.lane === "manual" && sessionId === "main" && blockId === 4 ? span : undefined);
+  const span = {
+    requestingSessionId: "main", turnId: "turn-1", command: "npm test", cwd: "/repo", blockId: 4, state: "running" as const, exitCode: null,
+    output: "approved output", truncated: false,
+  };
+  const hostDisclosure = vi.fn((ref: { lane: string }, _windowId: number, sessionId: string, turnId: string, blockId: number) =>
+    ref.lane === "manual" && sessionId === "main" && turnId === "turn-1" && blockId === 4 ? span : undefined);
   const tool = createTerminalReadTool({ ...deps, hostDisclosure });
-  const read = await tool.execute({ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 4 }, ctx);
+  const inTurn = <T,>(turnId: string | undefined, run: () => Promise<T>): Promise<T> =>
+    runWithHostTerminalTurn(turnId === undefined ? undefined : { sessionId: "main", turnId }, run);
+  const read = await inTurn("turn-1", () => tool.execute({ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 4 }, ctx));
   expect(read.isError).toBeFalsy();
   expect(bodyOf(read.output as string, false)).toMatchObject({ terminal: "host", finished: false, block: { id: 4, output: "approved output" }, continuation: { blockId: 4 } });
   expect(read.output).not.toContain("HOST-SECRET");
@@ -275,9 +281,14 @@ it("serves a host command's continuation only as its own span, only to the conve
     [{ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 1 }, ctx],
     [{ tabId: "terminal:9", terminalSessionId: "terminal:9/manual" }, ctx],
   ] as const) {
-    const result = await tool.execute(input, context);
+    const result = await inTurn("turn-1", () => tool.execute(input, context));
     expect(result.isError, JSON.stringify(input)).toBe(true);
     expect(result.output).not.toContain("approved output");
   }
-  expect(hostDisclosure).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:9", lane: "manual" }), WINDOW, "child", 4);
+  // A later turn of the same conversation, or a turn that is not the user's (a routine, a plugin message), never re-fetches it.
+  for (const turnId of ["turn-2", undefined]) {
+    const result = await inTurn(turnId, () => tool.execute({ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 4 }, ctx));
+    expect(result.isError, String(turnId)).toBe(true);
+    expect(result.output).not.toContain("approved output");
+  }
 });

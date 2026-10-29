@@ -69,6 +69,7 @@ async function run(
     auditMismatch: () => {},
     host: {
       session: () => undefined,
+      placement: () => undefined,
       shellName: () => { throw new Error("an unbound chat never reaches a host terminal"); },
       control: () => { throw new Error("an unbound chat never reaches a host terminal"); },
       verifyShell: async () => { throw new Error("an unbound chat never reaches a host terminal"); },

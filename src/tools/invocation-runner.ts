@@ -1,3 +1,4 @@
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
@@ -1137,6 +1138,51 @@ export async function runToolInvocation(
         is_error: true,
         durationMs,
       });
+    }
+    // A command typed into the user's own host terminal runs on the host and nowhere else. Seal that route with the same router the shells
+    // use, so the permission decision sees its (empty) path-policy relaxations, and re-prove it before every write to the terminal: a route
+    // that would now move the effect elsewhere, or relax path policy, is a contract violation and types nothing.
+    let hostTerminalRoute: { recheck(): Promise<void> } | undefined;
+    const hostTerminalCommand = isCanonicalTerminalRunTool(tool) && approvalMemory.kind === "key"
+      && approvalMemory.scope.kind === "terminal-command" && approvalMemory.scope.lane === "manual" && typeof finalInput.command === "string"
+      ? { command: finalInput.command, cwd: approvalMemory.scope.physicalCwd } : undefined;
+    if (hostTerminalCommand !== undefined) {
+      const buildHostTerminalRoute = async () => {
+        const router = await import("../permissions/execution-router.js");
+        const broker = await acquireConfiguredBrokerCapability();
+        const operator = broker === null
+          ? await (await import("../permissions/operator-container-attestation.js")).acquirePublishedOperatorContainerCapabilityForGrant()
+          : null;
+        const route = router.buildHostShellExecutionRoute({
+          legacyPlan: getHostShellExecutionPlan("host"),
+          toolName: "bash",
+          command: hostTerminalCommand.command,
+          cwd: hostTerminalCommand.cwd,
+          // The command runs in the user's own shell with no host deadline; the route records how long the tool waits on it.
+          timeoutSeconds: TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000,
+          background: false,
+          ...(operator === null ? {} : { disposableCapability: operator.capability, disposableRevalidationLease: operator.revalidationLease }),
+          ...(broker === null ? {} : { brokeredWorkloadCapability: broker }),
+        });
+        return { router, plan: route.plan };
+      };
+      try {
+        const sealed = await buildHostTerminalRoute();
+        if (sealed.plan.route !== "host") {
+          throw new Error("a command for the user's own terminal runs only on the host, and this host now routes shell effects elsewhere");
+        }
+        executionRoutePathPolicyRelaxations = sealed.router.executionPlanPathPolicyRelaxations(sealed.plan);
+        const decided = executionRoutePathPolicyRelaxations;
+        hostTerminalRoute = Object.freeze({
+          recheck: async () => {
+            const current = await buildHostTerminalRoute();
+            current.router.assertDecidedPathPolicyRelaxations(current.plan, decided);
+            if (current.plan.route !== "host") throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
+          },
+        });
+      } catch (error) {
+        return await returnExecutionRouteFailure(error);
+      }
     }
     // Refuse unavailable host approval before even a prerequisite directory ask.
     if (hostShellRequiresExplicitApproval &&
@@ -2363,6 +2409,7 @@ export async function runToolInvocation(
       hostShellRequiresExplicitApproval,
       executionRouteGrant,
       finalizeExecutionRouteGrant,
+      hostTerminalRoute,
       preparedShellInvocation,
       verifiedShellCommand,
       invocationRuntimeAllowedDirectories,

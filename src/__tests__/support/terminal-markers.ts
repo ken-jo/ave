@@ -27,13 +27,12 @@ export const TERMINAL_TEST_MODERN_BASH = ["/opt/homebrew/bin/bash", "/usr/local/
 
 export const TERMINAL_TEST_ZSH = ["/bin/zsh", "/usr/bin/zsh"].find((path) => existsSync(path));
 
-/** PowerShell 7 for the native pwsh host terminal suite: `AVE_TEST_PWSH`, else the usual install locations. Absent on most CI hosts; the Windows
- * verification session runs it there. */
-export const TERMINAL_TEST_PWSH = [
-  process.env.AVE_TEST_PWSH,
-  "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-  "/opt/homebrew/bin/pwsh", "/usr/local/bin/pwsh", "/usr/bin/pwsh", "/snap/bin/pwsh",
-].find((path): path is string => path !== undefined && path.length > 0 && existsSync(path));
+/** PowerShell 7 for the native pwsh host terminal suite: `AVE_TEST_PWSH` (when set, only that path), else the usual install locations. The
+ * Linux CI image ships /usr/bin/pwsh, so the suite runs there; Windows runs it with AVE_TEST_PWSH set. */
+export const TERMINAL_TEST_PWSH = (process.env.AVE_TEST_PWSH !== undefined && process.env.AVE_TEST_PWSH.length > 0
+  ? [process.env.AVE_TEST_PWSH]
+  : ["C:\\Program Files\\PowerShell\\7\\pwsh.exe", "/opt/homebrew/bin/pwsh", "/usr/local/bin/pwsh", "/usr/bin/pwsh", "/snap/bin/pwsh"])
+  .find((path) => existsSync(path));
 
 export async function waitForTerminal(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

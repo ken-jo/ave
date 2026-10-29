@@ -10,6 +10,7 @@ import { t } from "../i18n/index.js";
 import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 import { terminalSandboxWindowNotice } from "../main/terminal/terminal-sandbox-policy.js";
 import type { HostTerminalDisclosure } from "../main/terminal/host-terminal-control.js";
+import { currentHostTerminalTurn } from "./host-terminal-turn.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -22,8 +23,8 @@ const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
   /** Main-owned isolated-terminal identity for the exact invoking session. Never spawns a terminal. */
   conversationTerminalRef: (sessionId: string, windowId: number) => TerminalSessionRef | undefined;
-  /** The span one approved host command disclosed to `sessionId` (pty-manager); undefined for anything else in a host terminal. */
-  hostDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, blockId: number) => HostTerminalDisclosure | undefined;
+  /** The span one approved host command disclosed to `sessionId` in user turn `turnId` (pty-manager); undefined for anything else. */
+  hostDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, turnId: string, blockId: number) => HostTerminalDisclosure | undefined;
 }
 
 /** The app window whose terminals `sessionId` may read (session-window-scope.ts): its own window, else its parent's when it is a running sub-agent, else none. */
@@ -162,11 +163,12 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         return terminalToolFailure("This conversation has no isolated terminal. Host terminal output is private; ask the user to attach a command block explicitly.");
       }
       // A host tab, or a terminal of another conversation or window, answers exactly like one that does not exist — except the exact
-      // continuation of a host command this very conversation ran, which returns that command's own span and nothing else.
+      // continuation of a host command this very conversation ran in this same user turn, which returns that command's own span and nothing else.
       const ref: TerminalSessionRef = { tabId, lane: "agent", terminalSessionId: input.terminalSessionId };
       if (!owned || owned.lane !== "agent" || !sameTerminalSession(owned, ref)) {
-        const span = input.blockId === undefined ? undefined
-          : deps.hostDisclosure({ tabId, lane: "manual", terminalSessionId: input.terminalSessionId }, windowId, sessionId, input.blockId as number);
+        const turn = currentHostTerminalTurn(sessionId);
+        const span = input.blockId === undefined || turn === undefined ? undefined
+          : deps.hostDisclosure({ tabId, lane: "manual", terminalSessionId: input.terminalSessionId }, windowId, sessionId, turn.turnId, input.blockId as number);
         if (span !== undefined) {
           return fenceTerminalData({ tabId, terminalSessionId: input.terminalSessionId, terminal: "host", ...hostSpanResult(span, tabId, input.terminalSessionId) }, { isolated: false });
         }

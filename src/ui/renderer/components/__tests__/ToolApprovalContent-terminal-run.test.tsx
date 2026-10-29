@@ -8,7 +8,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
 import { t } from "../../../../i18n/index.js";
-import { shellDecisionModel } from "../permissions/approval-decision.js";
+import { allowMenuChoices, shellDecisionModel } from "../permissions/approval-decision.js";
+import { openDecisionMenu } from "./support/decision-bar.js";
 
 /** A `terminal_run` card shows the exact command and the terminal it will be typed into; the target the host
  * sealed before the card was shown; and remembers the command in that directory for this app session only. */
@@ -148,7 +149,7 @@ describe("ToolApprovalContent host terminal card", () => {
       scope: {
         kind: "terminal-command", lane: "manual", commandSha256: "b".repeat(64), tabId: "terminal:0000c0de-1", terminalSessionId: "host",
         sessionId: "11111111-1111-4111-8111-111111111111", shell: "zsh", cwd: "/Users/me/repo", physicalCwd: "/Users/me/repo",
-        cwdDevice: "1", cwdInode: "2", controlGeneration: 3, cwdForMatch: "/users/me/repo",
+        cwdDevice: "1", cwdInode: "2", turnId: "turn-1", controlGeneration: 3, cwdForMatch: "/users/me/repo",
       },
     },
   });
@@ -177,5 +178,21 @@ describe("ToolApprovalContent host terminal card", () => {
     expect(model.options["allow-everywhere"]).toMatchObject({ offered: true, rule, editing: null, labelKey: "toolApprovalDialog.decisionAllowHostTerminal" });
     expect(model.options["deny-always"]).toMatchObject({ offered: true, rule: "Bash(npm test)" });
     expect(model.warnsOnWildcardAllow).toBe(false);
+  });
+  it("puts the exact folder rule on the allow button as the only lasting allow, names the deny scope, and claims no automatic review", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    showActiveSurface({ kind: "terminal", tabId: "terminal:0000c0de-1", label: "Terminal 4", cwd: "/Users/me/repo" });
+    renderApproval(hostRequest([]), vi.fn());
+    const lasting = screen.getByTestId(TEST_IDS.allowSessionButton);
+    expect(lasting).toHaveTextContent(t("toolApprovalDialog.decisionAllowHostTerminal"));
+    expect(lasting).toHaveAttribute("data-choice", "allow-everywhere");
+    expect(allowMenuChoices(shellDecisionModel(shellRule))).toEqual(["allow-everywhere"]);
+    openDecisionMenu("allow-everywhere");
+    expect(screen.queryByTestId("approval-choice-allow-session")).toBeNull();
+    expect(screen.queryByTestId("approval-choice-allow-project")).toBeNull();
+    fireEvent.keyDown(screen.getByTestId("approval-choice-allow-everywhere"), { key: "Escape" });
+    openDecisionMenu("deny-always");
+    expect(screen.getByTestId("approval-choice-deny-always-note")).toHaveTextContent(t("toolApprovalDialog.hostTerminalDenyScope"));
+    expect(screen.getByTestId("approval-no-automatic-review")).toHaveTextContent(t("toolApprovalDialog.noAutomaticReview"));
   });
 });

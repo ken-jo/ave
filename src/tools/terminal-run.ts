@@ -28,6 +28,8 @@ import { captureShellWorkingDirectoryIdentity } from "../permissions/shell-worki
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type { HostTerminalControlState, TerminalLane } from "../shared/terminal-session.js";
 import type { HostTerminalDisclosure } from "../main/terminal/host-terminal-control.js";
+import { currentHostTerminalTurn, type HostTerminalTurn } from "./host-terminal-turn.js";
+import { errorMessage } from "../shared/error-message.js";
 
 const TERMINAL_RUN_TOOL_NAME = "terminal_run";
 
@@ -79,12 +81,20 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
 interface HostTerminalDeps {
   /** The live host terminal of a workspace tab (never a side panel mount) in `windowId`. */
   session: (tabId: string, windowId: number) => TerminalSessionInfo | undefined;
+  /** Where main's own layout record places the tab; only `workspace` may take agent commands, whatever the renderer's mount says. */
+  placement: (windowId: number, tabId: string) => "workspace" | "side-panel" | undefined;
   shellName: (ref: TerminalSessionRef, windowId: number) => string | undefined;
   control: (ref: TerminalSessionRef, windowId: number) => HostTerminalControlState | undefined;
   verifyShell: VerifyTerminalShell;
-  typeCommand: (ref: TerminalSessionRef, windowId: number, sessionId: string, line: string, expectedCwd: string, bound: () => boolean, signal?: AbortSignal) =>
-    Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
-  waitDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, blockId: number, waitMs: number, signal?: AbortSignal) =>
+  typeCommand: (ref: TerminalSessionRef, windowId: number, request: {
+    readonly requestingSessionId: string;
+    readonly turn: HostTerminalTurn;
+    readonly line: string;
+    readonly expectedCwd: string;
+    readonly bound: () => boolean;
+    readonly effectCheck: () => Promise<{ ok: true } | { ok: false; message: string }>;
+  }, signal?: AbortSignal) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
+  waitDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, turnId: string, blockId: number, waitMs: number, signal?: AbortSignal) =>
     Promise<HostTerminalDisclosure | undefined>;
 }
 
@@ -233,6 +243,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     tracker: TerminalBlockTracker;
     session: Extract<TerminalSessionInfo, { lane: "manual" }>;
     sessionId: string;
+    turnId: string;
     shell: "zsh" | "bash";
     cwd: string;
     physicalCwd: string;
@@ -249,7 +260,11 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
   /** The pane chat's own host terminal, from main-owned state only. Any missing piece refuses; it never falls through to another terminal. */
   const resolveHostTarget = async (input: TerminalRunInput, sessionId: string, windowId: number, tabId: string): Promise<HostTarget> => {
     if (input.tabId !== undefined && input.tabId !== tabId) throw new Error("terminal_run types only into this pane chat's own terminal");
-    const session = deps.host.session(tabId, windowId);
+    const turn = currentHostTerminalTurn(sessionId);
+    if (turn === undefined) {
+      throw new Error("Only a message the user typed in this pane's chat can run a command in its terminal; this turn did not come from the user. Nothing was typed.");
+    }
+    const session = deps.host.placement(windowId, tabId) === "workspace" ? deps.host.session(tabId, windowId) : undefined;
     if (session?.lane !== "manual") {
       throw new Error("This pane chat's terminal is not available for agent commands (closed, restarting, or shown in the side panel). Nothing was typed.");
     }
@@ -279,7 +294,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     const identity = captureShellWorkingDirectoryIdentity(verified.cwd);
     if (!identity) throw new Error(`terminal ${tabId}'s directory could not be identified on disk; nothing was typed`);
     return {
-      kind: "host", windowId, tabId, tracker, session, sessionId, shell: shellName, cwd,
+      kind: "host", windowId, tabId, tracker, session, sessionId, turnId: turn.turnId, shell: shellName, cwd,
       physicalCwd: canonicalizePathForMatch(identity.realpath), cwdDevice: identity.dev.toString(), cwdInode: identity.ino.toString(),
       controlGeneration: control.generation,
     };
@@ -324,6 +339,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
         tabId: target.tabId,
         terminalSessionId: target.session.terminalSessionId,
         sessionId: target.sessionId,
+        turnId: target.turnId,
         shell: target.shell,
         cwd: target.cwd,
         physicalCwd: target.physicalCwd,
@@ -353,11 +369,16 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     const changed = (what: string): ToolExecutionResult => fail(`${what} after approval; nothing was typed. Call terminal_run again.`);
     const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
     if (sessionId !== scope.sessionId) return fail("this approval belongs to another conversation; nothing was typed");
+    // The approval belongs to the user turn that asked: another turn, or one that is not the user's, cannot spend it.
+    const turn = currentHostTerminalTurn(sessionId);
+    if (turn === undefined || turn.turnId !== scope.turnId) return fail("this approval belongs to another turn of this conversation; nothing was typed");
+    const route = ctx.hostTerminalRoute;
+    if (route === undefined) throw new Error("terminal_run reached a host terminal without its sealed execution route");
     const windowId = resolveSessionWindowId(sessionId, deps);
     if (windowId === null) return fail(`terminal ${scope.tabId} is no longer open; nothing was typed`);
     const bound = (): boolean => {
       const surface = deps.boundSurface(windowId, scope.sessionId);
-      return surface?.kind === "terminal" && surface.tabId === scope.tabId;
+      return surface?.kind === "terminal" && surface.tabId === scope.tabId && deps.host.placement(windowId, scope.tabId) === "workspace";
     };
     if (!bound()) return changed("this conversation is no longer this terminal's pane chat");
     const live = deps.host.session(scope.tabId, windowId);
@@ -366,17 +387,32 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     const control = deps.host.control(live, windowId);
     if (control?.mode !== "available" || control.generation !== scope.controlGeneration) return changed(`control of terminal ${scope.tabId} changed`);
     const tracker = getWindowTerminalBlockTracker(live, windowId);
-    if (!tracker || tracker.currentCwd() !== scope.cwd) return changed(`terminal ${scope.tabId} moved to another directory`);
-    const identity = captureShellWorkingDirectoryIdentity(scope.physicalCwd);
-    if (!identity || canonicalizePathForMatch(identity.realpath) !== scope.physicalCwd
-      || identity.dev.toString() !== scope.cwdDevice || identity.ino.toString() !== scope.cwdInode) {
-      return changed(`terminal ${scope.tabId}'s directory was replaced on disk`);
-    }
+    // The sealed directory, as the markers report it and as the operating system resolves it, at every check before a write.
+    const directoryChanged = (): string | undefined => {
+      if (!tracker || tracker.currentCwd() !== scope.cwd) return `terminal ${scope.tabId} moved to another directory`;
+      const identity = captureShellWorkingDirectoryIdentity(scope.physicalCwd);
+      if (!identity || canonicalizePathForMatch(identity.realpath) !== scope.physicalCwd
+        || identity.dev.toString() !== scope.cwdDevice || identity.ino.toString() !== scope.cwdInode) {
+        return `terminal ${scope.tabId}'s directory was replaced on disk`;
+      }
+      return undefined;
+    };
+    const before = directoryChanged();
+    if (before !== undefined || !tracker) return changed(before ?? `terminal ${scope.tabId} moved to another directory`);
+    const effectCheck = async (): Promise<{ ok: true } | { ok: false; message: string }> => {
+      const moved = directoryChanged();
+      if (moved !== undefined) return { ok: false, message: `${moved} while the command was being prepared` };
+      try { await route.recheck(); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+      return { ok: true };
+    };
     ctx.abortSignal?.throwIfAborted();
-    const typed = await deps.host.typeCommand(live, windowId, scope.sessionId, input.command, scope.cwd, bound, ctx.abortSignal);
+    const typed = await deps.host.typeCommand(live, windowId, {
+      requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck,
+    }, ctx.abortSignal);
     if (!typed.ok) return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     const waitMs = BLOCK_START_WAIT_MS + input.waitSeconds * 1000;
-    const span = await deps.host.waitDisclosure(live, windowId, scope.sessionId, typed.firstBlockId, waitMs, ctx.abortSignal);
+    const span = await deps.host.waitDisclosure(live, windowId, scope.sessionId, scope.turnId, typed.firstBlockId, waitMs, ctx.abortSignal);
     if (span === undefined) throw new Error("Host terminal disclosure is missing for a command its lease typed.");
     const ref = { tabId: scope.tabId, terminalSessionId: scope.terminalSessionId, terminal: "host" as const };
     if (span.interruption === "command-mismatch") {

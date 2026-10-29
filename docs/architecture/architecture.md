@@ -1413,7 +1413,9 @@ Each visible terminal tab owns one
 native host shell, with a host badge/color band. A side-work-panel mount is
 labeled **No agent access**; a workspace mount is labeled **Agent commands need
 your approval**. Its real HOME and configured profile remain intact. zsh, bash and
-pwsh use nonce-authenticated integration from a per-PTY temporary startup directory;
+pwsh use nonce-authenticated integration from a per-PTY temporary startup directory
+(pwsh: directory and exit status are attested, but agent typing into pwsh is refused
+and its mount says so);
 unsupported shells or failed integration retain the user's native shell without
 claiming current-directory, exit-status or agent-control capabilities that have
 not been attested. Host integration never installs the disposable-HOME startup

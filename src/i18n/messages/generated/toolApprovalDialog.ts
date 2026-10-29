@@ -142,8 +142,10 @@ export const en = {
   "toolApprovalDialog.hostTerminalTarget": "Types `{command}` into your own terminal {terminal} ({shell}) and runs it there, in {cwd}. You can take over at any time.",
   "toolApprovalDialog.hostTerminalWarning": "This is your real shell, with your permissions and no sandbox. The command's output returns to the model and may contain secrets from your machine.",
   "toolApprovalDialog.hostTerminalOutsideAllowed": "{cwd} is outside your allowed folders. The command runs there in your own shell.",
-  "toolApprovalDialog.decisionAllowHostTerminal": "Always allow this command in this folder",
-  "toolApprovalDialog.hostTerminalRuleScope": "In your own terminal, a lasting allow names this exact command and folder for this shell, and is kept until you remove it."
+  "toolApprovalDialog.decisionAllowHostTerminal": "Always allow this exact command in this folder",
+  "toolApprovalDialog.hostTerminalRuleScope": "In your own terminal, a lasting allow names this exact command and folder for this shell, and is kept until you remove it.",
+  "toolApprovalDialog.hostTerminalDenyScope": "Saves a Bash rule: this command is denied in every shell and folder, not only here.",
+  "toolApprovalDialog.noAutomaticReview": "No automatic review"
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
@@ -289,5 +291,7 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.hostTerminalWarning": "샌드박스 없이 내 권한으로 실행되는 실제 셸입니다. 명령의 출력은 모델에 전달되며 이 컴퓨터의 비밀 정보가 포함될 수 있습니다.",
   "toolApprovalDialog.hostTerminalOutsideAllowed": "{cwd} 는 허용된 폴더 밖입니다. 명령은 그곳에서 내 셸로 실행됩니다.",
   "toolApprovalDialog.decisionAllowHostTerminal": "이 폴더에서 이 명령 항상 허용",
-  "toolApprovalDialog.hostTerminalRuleScope": "내 터미널에서는 이 셸, 이 폴더, 이 명령만 지정하는 항상 허용 규칙만 저장할 수 있으며, 직접 삭제할 때까지 유지됩니다."
+  "toolApprovalDialog.hostTerminalRuleScope": "내 터미널에서는 이 셸, 이 폴더, 이 명령만 지정하는 항상 허용 규칙만 저장할 수 있으며, 직접 삭제할 때까지 유지됩니다.",
+  "toolApprovalDialog.hostTerminalDenyScope": "Bash 규칙으로 저장됩니다. 이 명령은 여기뿐 아니라 모든 셸과 폴더에서 거부됩니다.",
+  "toolApprovalDialog.noAutomaticReview": "자동 검토 없음"
 };
