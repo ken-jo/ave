@@ -215,6 +215,7 @@ export function App() {
   const sidebarHidden = sidebarState === "hidden";
   const sidebarOverlay = sidebarNarrow && sidebarState === "expanded";
   const sidebarFocusPending = useRef(false);
+  const sidebarRestoreStateRef = useRef<"expanded" | "rail">("expanded");
   useEffect(() => {
     if (!sidebarFocusPending.current) return;
     sidebarFocusPending.current = false;
@@ -224,7 +225,7 @@ export function App() {
   }, [sidebarHidden, shellElement]);
   const showSidebar = useCallback(() => {
     sidebarFocusPending.current = true;
-    setSidebarState("expanded");
+    setSidebarState(sidebarRestoreStateRef.current);
   }, [setSidebarState]);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
@@ -647,7 +648,12 @@ export function App() {
     switch (id) {
       case "sidebar.toggleVisibility":
         sidebarFocusPending.current = true;
-        setSidebarState(sidebarHidden ? "expanded" : "hidden");
+        if (sidebarHidden) {
+          showSidebar();
+        } else {
+          sidebarRestoreStateRef.current = sidebarState;
+          setSidebarState("hidden");
+        }
         return;
       case "pane.moveLeft":
       case "pane.moveRight":
@@ -669,7 +675,7 @@ export function App() {
         jumpToUnreadTerminal();
         return;
     }
-  }, [chatGroups, reopenClosedSurface, jumpToUnreadTerminal, sidebarHidden, setSidebarState]);
+  }, [chatGroups, reopenClosedSurface, jumpToUnreadTerminal, sidebarHidden, sidebarState, showSidebar, setSidebarState]);
 
   // Capture panel chords before terminal textareas can swallow them.
   const runPanelCommandRef = useRef(runPanelCommand);

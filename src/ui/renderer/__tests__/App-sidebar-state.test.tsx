@@ -51,6 +51,35 @@ describe("App sidebar visibility", () => {
     await waitFor(() => expect(view.container.querySelector('[data-testid="sidebar-collapse-toggle"]')?.getAttribute("aria-pressed")).toBe("true"));
   });
 
+  it.each([
+    ["rail", "shortcut"], ["rail", "titlebar"],
+    ["expanded", "shortcut"], ["expanded", "titlebar"],
+  ] as const)("restores the previous %s state using the %s", async (sidebarState, restore) => {
+    const view = await renderApp({ hasApiKey: true, settings: { system: { sidebarState } }, shellWidth: 1243 });
+    const state = () => view.container.querySelector('[data-testid="app-shell"]')?.getAttribute("data-sidebar-state");
+    await waitFor(() => expect(state()).toBe(sidebarState));
+    const toggleVisibility = () => act(async () => { fireEvent.keyDown(window, { key: "B", ctrlKey: true, shiftKey: true }); });
+    const restoreVisibility = async () => {
+      if (restore === "shortcut") await toggleVisibility();
+      else await act(async () => { fireEvent.click(view.container.querySelector('[data-testid="sidebar-show"]')!); });
+    };
+    await toggleVisibility();
+    await waitFor(() => expect(state()).toBe("hidden"));
+    await restoreVisibility();
+    await waitFor(() => expect(state()).toBe(sidebarState));
+    expect(view.api.updateSettings).toHaveBeenLastCalledWith({ system: { sidebarState } });
+    expect(document.activeElement).toBe(view.container.querySelector('[data-testid="sidebar-collapse-toggle"]'));
+
+    await act(async () => { fireEvent.click(view.container.querySelector('[data-testid="sidebar-collapse-toggle"]')!); });
+    const changedState = sidebarState === "rail" ? "expanded" : "rail";
+    await waitFor(() => expect(state()).toBe(changedState));
+    await toggleVisibility();
+    await waitFor(() => expect(state()).toBe("hidden"));
+    await restoreVisibility();
+    await waitFor(() => expect(state()).toBe(changedState));
+    expect(view.api.updateSettings).toHaveBeenLastCalledWith({ system: { sidebarState: changedState } });
+  });
+
   it.each([360, 1243])("restores a persisted hidden sidebar visibly at %s pixels", async (width) => {
     const view = await renderApp({ hasApiKey: true, settings: { system: { sidebarState: "hidden" } }, shellWidth: width, canvasWidth: width });
     const show = await waitFor(() => {

@@ -23,7 +23,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(actual), opendirSync: vi.fn(actual.opendirSync), readSync: vi.fn(actual.readSync) };
 });
 
-function withPlatform<T>(platform: "darwin" | "linux", action: () => T): T {
+function withPlatform<T>(platform: "darwin" | "linux" | "win32", action: () => T): T {
   const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { ...descriptor, value: platform });
@@ -49,6 +49,125 @@ describe("mandatory sandbox control-file writes", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  const loaderEntries = [".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+
+  it.each(["darwin", "linux", "win32"] as const)("protects existing and absent loader paths in the shared policy on %s", platform => {
+    withPlatform(platform, () => {
+      for (const existing of [false, true]) {
+        const project = join(root, existing ? "existing" : "absent");
+        mkdirSync(project);
+        if (existing) for (const entry of loaderEntries) {
+          if (entry === ".husky") mkdirSync(join(project, entry));
+          else writeFileSync(join(project, entry), "loader fixture");
+        }
+        const policy = buildMandatorySandboxWritePolicy([project]);
+        for (const entry of loaderEntries) expect(policy.denyWrite).toContain(join(project, entry));
+      }
+    });
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("protects existing and absent configured hook targets on %s", platform => {
+    withPlatform(platform, () => {
+      for (const existing of [false, true]) {
+        const project = join(root, existing ? "existing" : "absent");
+        const marker = join(project, ".git");
+        const hooks = join(project, "custom-hooks");
+        mkdirSync(marker, { recursive: true });
+        writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+        writeFileSync(join(marker, "config"), '[core]\n hooksPath = "custom-hooks"\n');
+        if (existing) { mkdirSync(hooks); writeFileSync(join(hooks, "pre-commit"), "hook fixture"); }
+        const policy = buildMandatorySandboxWritePolicy([project]);
+        expect(policy.denyWrite).toContain(hooks);
+        expect(policy.denyWrite).toContain(join(marker, "custom-hooks"));
+      }
+    });
+  });
+
+  it.each(["darwin", "linux"] as const)("protects physical loader and configured-hook targets on %s", platform => {
+    withPlatform(platform, () => {
+      const project = join(root, "project");
+      const marker = join(project, ".git");
+      const target = join(root, "physical-hook-target");
+      mkdirSync(marker, { recursive: true });
+      mkdirSync(target);
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(marker, "config"), '[core]\n hooksPath = "linked-hooks"\n');
+      symlinkSync(target, join(project, "linked-hooks"), "dir");
+      const loader = join(root, "physical-loader");
+      writeFileSync(loader, "loader fixture");
+      symlinkSync(loader, join(project, "mise.toml"));
+      const policy = buildMandatorySandboxWritePolicy([project]);
+      expect(policy.denyWrite).toContain(target);
+      expect(policy.denyWrite).toContain(loader);
+      if (platform === "linux") expect(policy.allowWrite).not.toContain(project);
+    });
+  });
+
+  it("includes inherited, conditional, common and worktree hook targets without executing configuration", () => {
+    const project = join(root, "project");
+    const marker = join(project, ".git");
+    const metadata = join(root, "metadata");
+    const common = join(root, "common");
+    mkdirSync(project); mkdirSync(metadata); mkdirSync(common);
+    writeFileSync(marker, "gitdir: " + metadata + "\n");
+    writeFileSync(join(metadata, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(metadata, "commondir"), common + "\n");
+    writeFileSync(join(metadata, "config.worktree"), '[core]\n hooksPath = "worktree-hooks"\n');
+    writeFileSync(join(common, "config"), '[core]\n hooksPath = "common-hooks"\n');
+    const included = join(root, "included-config");
+    writeFileSync(join(root, ".gitconfig"), '[core]\n hooksPath = "global-hooks"\n[includeIf "gitdir:never-matches"]\n path = "included-config"\n');
+    writeFileSync(included, '[core]\n hooksPath = "~/included-hooks"\n');
+    const policy = buildMandatorySandboxWritePolicy([project]);
+    for (const name of ["global-hooks", "worktree-hooks", "common-hooks"]) expect(policy.denyWrite).toContain(join(project, name));
+    expect(policy.denyWrite).toContain(join(root, "included-hooks"));
+    expect(policy.denyWrite).toContain(included);
+  });
+
+  it("decodes quoted hook paths and preserves pattern characters as literal targets", () => {
+    const project = join(root, "project");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    writeFileSync(join(project, ".git", "config"), '[CORE] hooksPath = "hooks [local] \\"quoted\\"" # trailing comment\n');
+    const target = join(project, 'hooks [local] "quoted"');
+    expect(buildMandatorySandboxWritePolicy([project]).denyWrite).toContainEqual({ path: target, literal: true });
+  });
+
+  it("does not write-deny the POSIX null device used to disable hooks", () => {
+    const project = join(root, "project");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    writeFileSync(join(project, ".git", "config"), '[core]\n hooksPath = /dev/null\n');
+    expect(withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])).denyWrite).not.toContain("/dev/null");
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("applies inherited relative hooks to every discovered nested repository on %s", platform => {
+    withPlatform(platform, () => {
+      const workspace = join(root, "workspace");
+      const repository = join(workspace, "nested", "repository");
+      const marker = join(repository, ".git");
+      mkdirSync(marker, { recursive: true });
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(root, ".gitconfig"), '[core]\n hooksPath = "custom-hooks"\n');
+      const policy = buildMandatorySandboxWritePolicy([workspace]);
+      expect(policy.denyWrite).toContain(join(repository, "custom-hooks"));
+      expect(policy.denyWrite).toContain(join(marker, "custom-hooks"));
+    });
+  });
+
+  it("protects configured hooks when the write grant starts below the repository root", () => {
+    const project = join(root, "project");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    mkdirSync(join(project, "child"));
+    writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(project, ".git", "config"), '[core]\n hooksPath = "child/hooks"\n');
+    expect(buildMandatorySandboxWritePolicy([join(project, "child")]).denyWrite).toContain(join(project, "child", "hooks"));
+  });
+
+  it("refuses ambiguous hook path interpolation instead of leaving its target writable", () => {
+    const project = join(root, "project");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    writeFileSync(join(project, ".git", "config"), '[core]\n hooksPath = "%(prefix)/hooks"\n');
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow("Unsupported sandbox Git configuration path");
   });
 
   // The shared floor's own list, so a new entry cannot fall off the sandbox floor unnoticed; `.git/*` controls are covered by the Git tests below.

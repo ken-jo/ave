@@ -85,6 +85,7 @@ class FakeBrowserWindow extends FakeEmitter {
   private _destroyed = false;
 
   public setMenu = vi.fn();
+  public setTitleBarOverlay = vi.fn();
   public isDestroyed = vi.fn(() => this._destroyed);
   public getBounds = vi.fn(() => ({ x: 0, y: 0, width: 1024, height: 768 }));
   public setPosition = vi.fn();
@@ -130,6 +131,7 @@ vi.mock("electron", () => {
 
   return {
     BrowserWindow: MockBrowserWindow,
+    nativeTheme: { shouldUseDarkColors: false, on: vi.fn(), off: vi.fn() },
     screen: {
       getPrimaryDisplay: vi.fn(() => ({
         workArea: { x: 0, y: 0, width: 1920, height: 1080 },
@@ -155,11 +157,6 @@ vi.mock("../../ipc/window-control-registry.js", () => ({
 }));
 vi.mock("../auth-window-registry.js", () => ({
   markAsAuthOwned: vi.fn(),
-}));
-vi.mock("../window-titlebar-shell.js", () => ({
-  buildTitlebarCss: vi.fn(() => ""),
-  buildTitlebarHtml: vi.fn(() => ""),
-  buildTitlebarButtonScript: vi.fn(() => ""),
 }));
 vi.mock("../app-icon.js", () => ({
   resolveAppIconPath: vi.fn(() => undefined),

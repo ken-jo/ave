@@ -1,6 +1,18 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "ptyTerminal.hostChip": "Host",
+  "ptyTerminal.hostChipAgentless": "Host · no agent access",
+  "terminalFileReview.changed": "Agent changed {count}",
+  "terminalFileReview.annotation": "Uses files the agent changed: {files}",
+  "terminalFileReview.viewChanges": "View changes",
+  "terminalFileReview.advisory": "Detection is best-effort: it follows script paths, Makefile recipes, package scripts and local bins, not dynamic indirection or untracked subprocess writes. Commands are never blocked.",
+  "terminalFileReview.diffUnavailable": "A text diff is unavailable for this file.",
+  "terminalFileReview.tab": "Changed files",
+  "terminalFileReview.viewCaption": "Files the agent changed this session · last used by {command}",
+  "terminalFileReview.viewCaptionNone": "Files the agent changed this session",
+  "terminalFileReview.backToTerminal": "Back to terminal",
+  "terminalFileReview.refreshFailed": "Changed-file information could not be refreshed.",
   "approvalAction.writeFile": "Write {target} file",
   "approvalAction.editFile": "Edit {target} file",
   "approvalAction.readFile": "Read {target} file",

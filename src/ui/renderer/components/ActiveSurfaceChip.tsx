@@ -1,7 +1,8 @@
 import { useGuestNavigation, useWebSurfaceGuest } from "../hooks/use-browser-navigation.js";
 import { clearActiveSurface, useActiveSurface, type ActiveSurface } from "../preview/active-surface.js";
 import { BoundSurfaceChip } from "./BoundSurfaceChip.js";
-import { directoryName, hostOf, webPanelTitle } from "./MainSurfacePanels.js";
+import { hostOf, webPanelTitle } from "./MainSurfacePanels.js";
+import { directoryName } from "./TerminalPaneHeader.js";
 
 /** Unbound side-chat tools target the last shown terminal/page; clearing the chip holds it empty until another surface is
  * shown. */

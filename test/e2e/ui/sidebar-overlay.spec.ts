@@ -62,8 +62,11 @@ test("restores a saved hidden sidebar and keeps one collapse control", async ({}
     await expect(page.getByTestId("sidebar-show")).toBeVisible();
     await expect(page.getByTestId("sidebar-show")).toBeFocused();
     await page.keyboard.press(shortcut);
-    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByTestId("sidebar-collapse-toggle")).toBeFocused();
+    await page.keyboard.press(shortcut);
+    await page.getByTestId("sidebar-show").click();
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveAttribute("aria-pressed", "false");
     await page.screenshot({ path: testInfo.outputPath("single-sidebar-control.png") });
   } finally {
     await teardownSeededElectron(context, { terminate: true });
