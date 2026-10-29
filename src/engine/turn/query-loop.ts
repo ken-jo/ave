@@ -38,6 +38,7 @@ import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
 import { nextToolTrustOrigin, rationaleProvenanceFor } from "./trust-origin.js";
+import { noteToolResultsReturnedToModel } from "../../tools/host-terminal-turn.js";
 import { contextBudgetForCurrentRuntime, warnUnstatedReasoningOnce } from "./compaction.js";
 import { markStaleToolResults, evictAgedToolResultImages, isContextLengthError } from "../auto-compact.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
@@ -1807,6 +1808,8 @@ export async function queryLoop(
         recordProviderUsage(rationaleBatch.rationaleUsage, false);
       }
       toolTrustOrigin = nextToolTrustOrigin(toolTrustOrigin, toolUsesForExecutor, toolResults);
+      // Whatever the tools were, their results now reach the model: a host terminal command later in this turn needs a fresh card.
+      if (toolResults.length > 0) noteToolResultsReturnedToModel();
 
       for (let i = 0; i < toolUsesForExecutor.length; i++) {
         allToolCalls.push({

@@ -86,7 +86,9 @@ export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionMod
           : refused("toolApprovalDialog.persistentUnavailableOneShot", label("deny-always")),
         "allow-session": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-session")),
         "allow-project": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-project")),
-        "allow-everywhere": exact === null
+        "allow-everywhere": rule.hostTerminal.afterExternalContent === true
+          ? refused("toolApprovalDialog.hostTerminalAfterExternalContent", HOST_TERMINAL_ALLOW_LABEL_KEY)
+          : exact === null
           ? refused("toolApprovalDialog.shellExactRuleUnavailable", HOST_TERMINAL_ALLOW_LABEL_KEY)
           : offered(exact, null, HOST_TERMINAL_ALLOW_LABEL_KEY),
       },

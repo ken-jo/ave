@@ -77,6 +77,7 @@ function fakeTurn(turnId = TURN) {
     sessionId: "conversation-a",
     turnId,
     isCurrent: () => current,
+    externalContentSeen: () => false,
     onEnd: (listener: () => void) => { if (!current) { listener(); return () => {}; } listeners.add(listener); return () => { listeners.delete(listener); }; },
     end: () => { current = false; for (const listener of [...listeners]) listener(); listeners.clear(); },
   };

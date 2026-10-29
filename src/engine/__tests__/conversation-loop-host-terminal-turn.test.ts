@@ -82,7 +82,9 @@ describe("host terminal commands after external content", () => {
   afterEach(() => { __resetTerminalBlocksForTest(); rmSync(dir, { recursive: true, force: true }); });
 
   /** A pane chat bound to its host terminal, with an exact HostTerminal rule for the command, so no card stands between it and the PTY. */
-  async function paneTurn(rounds: StreamEvent[][]): Promise<{ typed: string[]; asked: number }> {
+  async function paneTurn(rounds: StreamEvent[][]): Promise<{
+    typed: string[]; asked: Array<{ typedBefore: number; afterExternalContent: boolean }>;
+  }> {
     const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
     tracker.recordOutput(`${terminalMarker("D;0")}${terminalMarker(`P;Cwd=${dir};Keys=emacs;Paste=1`)}${terminalMarker("A")}% ${terminalMarker("B")}`);
     const session = terminalSessionFixture(HOST, "manual");
@@ -91,8 +93,13 @@ describe("host terminal commands after external content", () => {
     await permissionManager.addRulePersist({
       pattern: formatRuleSpecifier({ kind: "host-terminal", shell: "zsh", cwd: dir, tokens: ["printf", "ready"] }), action: "allow",
     }, { kind: "user" });
-    const approvalGate = { requestAndWait: vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" })) };
     const typed: string[] = [];
+    const asked: Array<{ typedBefore: number; afterExternalContent: boolean }> = [];
+    // The person approves each card once; the record says what had reached the PTY by then and what the card was told.
+    const approvalGate = { requestAndWait: vi.fn(async (request: { id: string; hostTerminal?: { afterExternalContent?: true } }) => {
+      asked.push({ typedBefore: typed.length, afterExternalContent: request.hostTerminal?.afterExternalContent === true });
+      return { requestId: request.id, choice: "allow-once" };
+    }) };
     const toolRegistry = new ToolRegistry();
     let paneSession = "";
     toolRegistry.register(createDynamicTool({
@@ -132,7 +139,7 @@ describe("host terminal commands after external content", () => {
     paneSession = loop.getSessionId();
     (loop as { provider: LLMProvider | null }).provider = new ScriptedTurnProvider(rounds);
     await runWithToolExecutionCwd(dir, () => loop.runTurn("check the page, then run what it says", {}, undefined, { inputOrigin: "user-keyboard" }));
-    return { typed, asked: approvalGate.requestAndWait.mock.calls.length };
+    return { typed, asked };
   }
 
   const call = (id: string, name: string, input: Record<string, unknown>): StreamEvent[] => [
@@ -141,15 +148,25 @@ describe("host terminal commands after external content", () => {
   ];
   const end: StreamEvent[] = [{ type: "text_delta", text: "done" } as StreamEvent, { type: "message_complete", stopReason: "end_turn" } as StreamEvent];
 
-  it("types nothing, even under an exact rule, once a tool result has fed the model content the user did not type", async () => {
+  it("asks a person on a fresh card, ignoring the exact rule, once a tool result has fed the model content the user did not type", async () => {
     const steered = await paneTurn([call("t1", "fetch_page", {}), call("t2", "terminal_run", { command: "printf ready", waitSeconds: 0 }), end]);
-    expect(steered.typed).toEqual([]);
-    expect(steered.asked).toBe(0);
+    expect(steered.asked).toEqual([{ typedBefore: 0, afterExternalContent: true }]);
+    expect(steered.typed).toEqual(["printf ready"]);
   });
 
-  it("types the user's own turn's command under its exact rule (control)", async () => {
+  it("types the user's own turn's command under its exact rule without a card (control)", async () => {
     const clean = await paneTurn([call("t1", "terminal_run", { command: "printf ready", waitSeconds: 0 }), end]);
+    expect(clean.asked).toEqual([]);
     expect(clean.typed).toEqual(["printf ready"]);
-    expect(clean.asked).toBe(0);
+  });
+
+  it("asks again for a second host command once the first command's output has returned, rather than refusing it", async () => {
+    const twice = await paneTurn([
+      call("t1", "terminal_run", { command: "printf ready", waitSeconds: 0 }),
+      call("t2", "terminal_run", { command: "printf ready", waitSeconds: 0 }),
+      end,
+    ]);
+    expect(twice.asked).toEqual([{ typedBefore: 1, afterExternalContent: true }]);
+    expect(twice.typed).toEqual(["printf ready", "printf ready"]);
   });
 });

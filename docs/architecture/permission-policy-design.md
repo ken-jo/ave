@@ -1882,12 +1882,16 @@ one command into that terminal. Main owns the boundary
   guidance behind it, and never a sub-agent (which runs with the capability
   masked). A routine, plugin or app message, or any other turn, is refused
   before a card. The turn id is sealed into the approval; the authorization
-  step also requires an untainted tool trust origin and that same turn. Any
-  tool result returned to the model (a file, a page, a plugin's or a
-  sub-agent's text, a command's output) taints the rest of the turn as
-  `file-content` ([trust-origin.ts](../../src/engine/turn/trust-origin.ts)),
-  so a host command steered by external content is denied even under an exact
-  rule; the user asks again in a new message. The
+  step also requires that same turn, still speaking for the user (staged app,
+  plugin or agent guidance refuses). The turn also records, irreversibly,
+  once any tool result has returned to the model in it, whatever the tool (a
+  file, a page, a plugin's, a browser's or a sub-agent's text, a command's
+  output). After that, every host command in the turn needs a fresh person's
+  approval: the card is forced, a saved exact `HostTerminal` rule and
+  remembered approvals do not apply, the card offers no lasting allow and
+  says so, and it stays desktop-only. In a clean turn an exact rule still runs
+  the command without a card. This is a host-terminal rule only; the general
+  tool trust origin is unchanged. The
   final PTY write, the disclosed span and its `terminal_read` continuation are
   bound to it, and the turn's end ends the lease (`turn-ended`).
 - **Target.** Two records must both say workspace: the mount's declared purpose

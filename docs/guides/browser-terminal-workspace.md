@@ -214,9 +214,11 @@ it. Side-work-panel host terminals have no agent read/write access.
 ### Agent commands in your terminal
 
 The chat in a workspace terminal's own pane can ask to run a command in that
-terminal, only while answering a message you typed in that chat, and only
-before any tool result (a page, a file, another tool's output) has come back in
-that answer; a routine, a plugin or app message, or a sub-agent cannot. Unless you saved an exact rule for
+terminal, only while answering a message you typed in that chat; a routine, a
+plugin or app message, or a sub-agent cannot. Once any tool result (a page, a
+file, another command's output) has come back in that answer, each further
+command shows a fresh card even if you saved a rule for it, and that card
+offers no lasting allow. Unless you saved an exact rule for
 that command, shell and folder, you decide each command on an approval card that
 names the terminal, shell and folder and shows no automatic review; your
 permission mode does not approve it for you, and nothing is approved while you

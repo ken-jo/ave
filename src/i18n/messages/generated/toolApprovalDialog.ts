@@ -145,6 +145,7 @@ export const en = {
   "toolApprovalDialog.decisionAllowHostTerminal": "Always allow this exact command in this folder",
   "toolApprovalDialog.hostTerminalRuleScope": "In your own terminal, a lasting allow names this exact command and folder for this shell, and is kept until you remove it.",
   "toolApprovalDialog.hostTerminalDenyScope": "Saves a Bash rule: this command is denied in every shell and folder, not only here.",
+  "toolApprovalDialog.hostTerminalAfterExternalContent": "This command comes after external content was read in this turn · saved rules do not apply",
   "toolApprovalDialog.noAutomaticReview": "No automatic review"
 } as const;
 export const ko: Record<keyof typeof en, string> = {
@@ -293,5 +294,6 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.decisionAllowHostTerminal": "이 폴더에서 이 명령 항상 허용",
   "toolApprovalDialog.hostTerminalRuleScope": "내 터미널에서는 이 셸, 이 폴더, 이 명령만 지정하는 항상 허용 규칙만 저장할 수 있으며, 직접 삭제할 때까지 유지됩니다.",
   "toolApprovalDialog.hostTerminalDenyScope": "Bash 규칙으로 저장됩니다. 이 명령은 여기뿐 아니라 모든 셸과 폴더에서 거부됩니다.",
+  "toolApprovalDialog.hostTerminalAfterExternalContent": "이 턴에서 외부 내용을 읽은 뒤의 명령입니다 · 저장된 규칙을 적용하지 않습니다",
   "toolApprovalDialog.noAutomaticReview": "자동 검토 없음"
 };

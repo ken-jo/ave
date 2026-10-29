@@ -195,4 +195,14 @@ describe("ToolApprovalContent host terminal card", () => {
     expect(screen.getByTestId("approval-choice-deny-always-note")).toHaveTextContent(t("toolApprovalDialog.hostTerminalDenyScope"));
     expect(screen.getByTestId("approval-no-automatic-review")).toHaveTextContent(t("toolApprovalDialog.noAutomaticReview"));
   });
+
+  it("after external content in the turn, says saved rules do not apply and offers no lasting allow", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const after = { ...shellRule, exactRule: null, persistentAllowed: false, hostTerminal: { ...shellRule.hostTerminal, afterExternalContent: true as const } };
+    renderApproval({ ...hostRequest([]), shellRule: after }, vi.fn());
+    const notes = screen.getAllByTestId("approval-terminal-note").map((note) => note.textContent);
+    expect(notes).toContain(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+    expect(shellDecisionModel(after).options["allow-everywhere"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.hostTerminalAfterExternalContent" });
+    expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
+  });
 });

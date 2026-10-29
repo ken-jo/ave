@@ -67,6 +67,8 @@ export interface HostTerminalApprovalBinding {
   /** Canonical physical directory of the shell. */
   readonly physicalCwd: string;
   readonly command: string;
+  /** Tool results reached the model earlier in this turn: the card offers no lasting allow and says saved rules do not apply. */
+  readonly afterExternalContent?: true;
 }
 
 /** The host terminal card's saves: the exact `HostTerminal(<shell> <cwd> <command>)` allow when the command has an exact Bash rule (the
@@ -87,12 +89,13 @@ export function buildHostTerminalRuleApproval(binding: HostTerminalApprovalBindi
       } catch { exactRule = null; }
     }
   }
+  const afterExternal = binding.afterExternalContent === true;
   return {
     ...base,
-    exactRule,
+    exactRule: afterExternal ? null : exactRule,
     sessionAllowed: false,
-    persistentAllowed: exactRule !== null,
-    hostTerminal: { shell: binding.shell, cwd: binding.physicalCwd },
+    persistentAllowed: !afterExternal && exactRule !== null,
+    hostTerminal: { shell: binding.shell, cwd: binding.physicalCwd, ...(afterExternal ? { afterExternalContent: true as const } : {}) },
   };
 }
 

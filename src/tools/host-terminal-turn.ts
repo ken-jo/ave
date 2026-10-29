@@ -10,6 +10,9 @@ export interface HostTerminalTurn {
   readonly turnId: string;
   /** False once the turn has ended. */
   isCurrent(): boolean;
+  /** True once any tool result has returned to the model in this turn (a file, a page, a plugin's, a browser's or a sub-agent's text, a
+   * command's output, whatever the tool). It never resets within the turn. A host command after it needs a fresh person's approval. */
+  externalContentSeen(): boolean;
   /** Run `listener` once when the turn ends (at once if it already has); returns the unsubscribe. */
   onEnd(listener: () => void): () => void;
 }
@@ -18,6 +21,7 @@ interface TurnState {
   readonly sessionId: string;
   readonly turnId: string;
   active: boolean;
+  externalContent: boolean;
   readonly endListeners: Set<() => void>;
 }
 
@@ -26,7 +30,7 @@ const turnContext = new AsyncLocalStorage<TurnState | undefined>();
 /** Run one turn. `identity` is set only for an eligible user-typed turn; `undefined` masks any enclosing turn (a sub-agent run inside it). */
 export async function runWithHostTerminalTurn<T>(identity: { sessionId: string; turnId: string } | undefined, run: () => Promise<T>): Promise<T> {
   if (identity === undefined) return turnContext.run(undefined, run);
-  const state: TurnState = { ...identity, active: true, endListeners: new Set() };
+  const state: TurnState = { ...identity, active: true, externalContent: false, endListeners: new Set() };
   return turnContext.run(state, async () => {
     try { return await run(); }
     finally {
@@ -46,10 +50,18 @@ export function currentHostTerminalTurn(sessionId: string | undefined): HostTerm
     sessionId: state.sessionId,
     turnId: state.turnId,
     isCurrent: () => state.active,
+    externalContentSeen: () => state.externalContent,
     onEnd: (listener: () => void) => {
       if (!state.active) { listener(); return () => {}; }
       state.endListeners.add(listener);
       return () => { state.endListeners.delete(listener); };
     },
   });
+}
+
+/** Tool results are returning to the model in the turn the caller runs inside: from now on that turn's host commands each need a fresh
+ * person's approval. Called by the query loop for every batch of results, whatever the tools; there is no way to clear it. */
+export function noteToolResultsReturnedToModel(): void {
+  const state = turnContext.getStore();
+  if (state?.active) state.externalContent = true;
 }

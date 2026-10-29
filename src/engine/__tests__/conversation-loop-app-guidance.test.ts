@@ -137,8 +137,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     await turn;
 
     expect(execCalls).toHaveLength(2);
-    // No app origin or overlay trigger: the second round carries only the first round's tool-result taint.
-    expect(execCalls[1]).toEqual({ overlayTriggerOrigin: null, trustOrigin: "file-content",
+    expect(execCalls[1]).toEqual({ overlayTriggerOrigin: null, trustOrigin: "llm-tool-arg",
     });
   });
 

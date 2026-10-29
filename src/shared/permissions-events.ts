@@ -71,7 +71,8 @@ export interface ShellRuleApproval {
   persistentAllowed: boolean;
   /** A command for the user's own host terminal: its allow saves only `exactRule` (a `HostTerminal(...)` rule for this shell and physical
    * directory) as "Always allow"; there is no session or project allow. */
-  hostTerminal?: { readonly shell: "zsh" | "bash"; readonly cwd: string };
+  /** `afterExternalContent`: tool results reached the model earlier in this turn, so saved rules do not apply and no lasting allow is offered. */
+  hostTerminal?: { readonly shell: "zsh" | "bash"; readonly cwd: string; readonly afterExternalContent?: true };
 }
 
 /** Exact-tuple decision stored for a user-reviewed tool invocation. Legacy entries pre-date this field and therefore normalize to `"allow"`.

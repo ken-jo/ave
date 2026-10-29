@@ -235,6 +235,8 @@ export async function authorizeToolInvocation(
   let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
   // The sealed target of a `terminal_run` into the user's host terminal, set where the permission subject is built.
   let hostTerminalScope: HostTerminalCommandScope | undefined;
+  // Tool results already returned to the model in this user turn: the host command needs a fresh person's card, with no saved rule.
+  let hostTerminalAfterExternalContent = false;
 
   const returnAuthorizationRequired = async (
     blockedPermission: PermissionCheckResult,
@@ -631,15 +633,28 @@ export async function authorizeToolInvocation(
         permissionResult = { decision: "deny", reason: "Host terminal typing is unavailable to remote-controller requests", layer: 2 };
       } else if (invocationPermissionContext.headless === true) {
         permissionResult = { decision: "deny", reason: "Host terminal typing needs its pane chat and a person at this desktop; it is unavailable here", layer: permissionResult.layer };
-      } else if (!isUntaintedToolTrustOrigin(invocationPermissionContext.trustOrigin)
-        || currentHostTerminalTurn(hostTerminalScope.sessionId)?.turnId !== hostTerminalScope.turnId) {
-        // Only the user turn that asked, its arguments still the model's own (no staged app, plugin or agent guidance, no file content), may type here.
-        permissionResult = { decision: "deny", reason: "Host terminal typing is available only to the user's own turn in its pane chat", layer: 2 };
-      } else if (permissionResult.decision === "allow" && !isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager)) {
-        throw new Error("Host terminal command was allowed without an exact host terminal rule");
-      } else if (permissionResult.decision === "ask") {
-        const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
-        permissionResult = { ...withoutReviewer, forceModal: true };
+      } else {
+        const hostTurn = currentHostTerminalTurn(hostTerminalScope.sessionId);
+        hostTerminalAfterExternalContent = hostTurn?.externalContentSeen() === true;
+        // A file read earlier in the turn is external content like any other tool result (the turn fact below); staged app, plugin or agent
+        // guidance is another speaker, and refuses.
+        const trusted = isUntaintedToolTrustOrigin(invocationPermissionContext.trustOrigin)
+          || (invocationPermissionContext.trustOrigin === "file-content" && hostTerminalAfterExternalContent);
+        if (!trusted || hostTurn?.turnId !== hostTerminalScope.turnId) {
+          // Only the user turn that asked, still speaking for the user, may type here.
+          permissionResult = { decision: "deny", reason: "Host terminal typing is available only to the user's own turn in its pane chat", layer: 2 };
+        } else if (permissionResult.decision === "allow" && !isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager)) {
+          throw new Error("Host terminal command was allowed without an exact host terminal rule");
+        } else if (hostTerminalAfterExternalContent) {
+          // Content the user did not type has reached the model in this turn: a saved exact rule no longer speaks for this command. A person
+          // decides it on a fresh desktop card, which offers no lasting allow.
+          permissionResult = {
+            decision: "ask", reason: "Host terminal command after external content in this turn; saved rules do not apply", layer: 2, forceModal: true,
+          };
+        } else if (permissionResult.decision === "ask") {
+          const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
+          permissionResult = { ...withoutReviewer, forceModal: true };
+        }
       }
     }
 
@@ -1618,6 +1633,7 @@ export async function authorizeToolInvocation(
               shell: hostTerminalScope.shell,
               physicalCwd: hostTerminalScope.physicalCwd,
               command: finalInput.command,
+              ...(hostTerminalAfterExternalContent ? { afterExternalContent: true as const } : {}),
             },
           }),
           // A guest-routed shell shows the substrate the reviewer graded, not
