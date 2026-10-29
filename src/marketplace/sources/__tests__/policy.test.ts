@@ -310,12 +310,17 @@ describe("FilePolicySource (§18.6)", () => {
 
   const T = Date.UTC(2026, 0, 1);
 
-  it("reads again after a read in the same clock tick as the change it saw", async () => {
-    // Identical size and times cannot distinguish a same-tick rewrite; only content can.
-    const clock = { stamp: T, now: T + 1 };
+  async function openCoarsePolicy(clock: { stamp: number; now: number }) {
     const { access, counts } = coarseClock(clock);
     writeFileSync(path, FIRST);
     const source = await FilePolicySource.open(path, access);
+    return { source, counts };
+  }
+
+  it("reads again after a read in the same clock tick as the change it saw", async () => {
+    // Identical size and times cannot distinguish a same-tick rewrite; only content can.
+    const clock = { stamp: T, now: T + 1 };
+    const { source, counts } = await openCoarsePolicy(clock);
     writeFileSync(path, SECOND);
     const update = await source.check();
     expect(update?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
@@ -324,9 +329,7 @@ describe("FilePolicySource (§18.6)", () => {
 
   it("trusts the stat without reading once a read began clearly after the change, and reads again on a new one", async () => {
     const clock = { stamp: T, now: T + 3_000 };
-    const { access, counts } = coarseClock(clock);
-    writeFileSync(path, FIRST);
-    const source = await FilePolicySource.open(path, access);
+    const { source, counts } = await openCoarsePolicy(clock);
     expect(counts.reads).toBe(1);
     expect(await source.check()).toBeNull();
     expect(await source.check()).toBeNull();
@@ -339,9 +342,7 @@ describe("FilePolicySource (§18.6)", () => {
 
   it("reads again while the last read was racy, and trusts the stat again after a read outside the window", async () => {
     const clock = { stamp: T, now: T + 2_999 };
-    const { access, counts } = coarseClock(clock);
-    writeFileSync(path, FIRST);
-    const source = await FilePolicySource.open(path, access);
+    const { source, counts } = await openCoarsePolicy(clock);
     expect(await source.check()).toBeNull();
     expect(await source.check()).toBeNull();
     expect(counts.reads).toBe(3);
@@ -354,9 +355,7 @@ describe("FilePolicySource (§18.6)", () => {
 
   it("reads again when the clock has stepped back behind the read that recorded the stat", async () => {
     const clock = { stamp: T, now: T + 5_000 };
-    const { access, counts } = coarseClock(clock);
-    writeFileSync(path, FIRST);
-    const source = await FilePolicySource.open(path, access);
+    const { source, counts } = await openCoarsePolicy(clock);
     expect(await source.check()).toBeNull();
     expect(counts.reads).toBe(1);
     clock.now = T;
@@ -367,9 +366,7 @@ describe("FilePolicySource (§18.6)", () => {
 
   it("treats a change time ahead of the clock as racy until the clock passes it", async () => {
     const clock = { stamp: T + 60_000, now: T };
-    const { access, counts } = coarseClock(clock);
-    writeFileSync(path, FIRST);
-    const source = await FilePolicySource.open(path, access);
+    const { source, counts } = await openCoarsePolicy(clock);
     writeFileSync(path, SECOND);
     const update = await source.check();
     expect(update?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });

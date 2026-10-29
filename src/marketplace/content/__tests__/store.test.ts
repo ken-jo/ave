@@ -145,7 +145,19 @@ describe("content package store", () => {
       stageContentPackage(plan, gitAccess(repo, remote, false), { workRoot: join(root, "work"), english: ENGLISH }));
   }
 
+  const harborFiles = () => ({
+    "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+    "themes/harbor/theme.json": theme("Harbor"),
+  });
+
   const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });
+  async function openHarborMarket() {
+    const fixture = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], harborFiles());
+    const syncer = await open(fixture.name);
+    const store = await openStore();
+    return { ...fixture, syncer, store };
+  }
+
   const installs = (kind: string, name: string): string[] => {
     const dir = join(root, "packages", kind, name, ".installs");
     return existsSync(dir) ? readdirSync(dir).sort() : [];
@@ -210,10 +222,7 @@ describe("content package store", () => {
   });
 
   it("installs a theme, records its origin, reloads it from disk and uninstalls it", async () => {
-    const { name, first } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
+    const { name, first } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], harborFiles());
     const syncer = await open(name, "acme", git.runner);
     const [row] = await rows(syncer);
     const staged = await stage(syncer, row!);
@@ -257,10 +266,7 @@ describe("content package store", () => {
 
   it("replaces an older version in place and removes its directory", async () => {
     const packages = [{ kind: "theme", name: "harbor", path: "themes/harbor" }];
-    const { name, commit } = market(packages, {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
+    const { name, commit } = market(packages, harborFiles());
     const syncer = await open(name);
     const store = await openStore();
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
@@ -283,12 +289,7 @@ describe("content package store", () => {
   });
 
   it("puts the previous install back when activation fails", async () => {
-    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { commit, syncer, store } = await openHarborMarket();
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
     failActivation = true;
@@ -299,12 +300,7 @@ describe("content package store", () => {
   });
 
   it("leaves nothing behind when a first install's activation fails", async () => {
-    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { syncer, store } = await openHarborMarket();
     failActivation = true;
     await expect(store.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow("settings write failed");
     expect(store.list()).toEqual([]);
@@ -313,12 +309,7 @@ describe("content package store", () => {
   });
 
   it("puts the live directory back when reinstalling the same version fails to activate", async () => {
-    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { syncer, store } = await openHarborMarket();
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     failActivation = true;
     await expect(store.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow("settings write failed");
@@ -330,12 +321,7 @@ describe("content package store", () => {
   });
 
   it("rethrows the activation error when the rollback's own ledger write fails too", async () => {
-    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { commit, syncer, store } = await openHarborMarket();
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
     const staged = await stage(syncer, (await rows(syncer))[0]!);
@@ -392,10 +378,7 @@ describe("content package store", () => {
   });
 
   it("refuses the same name from another source unless the install switches source", async () => {
-    const files = {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    };
+    const files = harborFiles();
     const packages = [{ kind: "theme", name: "harbor", path: "themes/harbor" }];
     const a = market(packages, files);
     const b = market(packages, files);
@@ -426,10 +409,7 @@ describe("content package store", () => {
     const bigSyncer = await open(big.name);
     await expect(stage(bigSyncer, (await rows(bigSyncer))[0]!)).rejects.toMatchObject({ code: "CONTENT_RULE_VIOLATION" });
 
-    const linked = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
+    const linked = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], harborFiles());
     linked.repo.commitEntries([
       { path: "marketplace.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "theme", name: "harbor", path: "themes/harbor" }] }) },
       { path: "themes/harbor/ave-package.json", mode: "100644", content: descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }) },
@@ -440,12 +420,7 @@ describe("content package store", () => {
   });
 
   it("lists a package whose files changed after install as broken and never applies it", async () => {
-    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { syncer, store } = await openHarborMarket();
     const { entry } = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     writeFileSync(join(store.packageDir(entry), "theme.json"), theme("Tampered"));
     const { loaded, broken } = await store.load();
@@ -465,10 +440,7 @@ describe("content package store", () => {
   }
 
   it("loads a legacy install from its version directory, and an update moves it to an install directory of its own", async () => {
-    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
+    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], harborFiles());
     const syncer = await open(name);
     const legacy = makeLegacy((await (await openStore()).install(await stage(syncer, (await rows(syncer))[0]!))).entry);
     const store = await openStore();
@@ -488,12 +460,7 @@ describe("content package store", () => {
   });
 
   it("a boot sweep removes only the install directories no entry names", async () => {
-    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { commit, syncer, store } = await openHarborMarket();
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
     retirement = new Promise<void>(() => undefined);
@@ -515,10 +482,7 @@ describe("content package store", () => {
   });
 
   it("a legacy install's version directory survives the sweep", async () => {
-    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
+    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], harborFiles());
     const syncer = await open(name);
     const legacy = makeLegacy((await (await openStore()).install(await stage(syncer, (await rows(syncer))[0]!))).entry);
     const store = await openStore();
@@ -527,12 +491,7 @@ describe("content package store", () => {
   });
 
   it("checkpoint two: a consent assertion that throws installs nothing", async () => {
-    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
-      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-      "themes/harbor/theme.json": theme("Harbor"),
-    });
-    const syncer = await open(name);
-    const store = await openStore();
+    const { syncer, store } = await openHarborMarket();
     const seen: unknown[] = [];
     await expect(store.install(await stage(syncer, (await rows(syncer))[0]!), {
       assertConsent: (consent) => { seen.push(consent); throw new Error("needs review"); },

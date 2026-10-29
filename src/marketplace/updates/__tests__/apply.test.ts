@@ -49,6 +49,14 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
 }
 
+async function waitingQueue() {
+  const context = queueOf();
+  const end = hold((factory) => context.activity.tryTrackTurn(factory));
+  context.queue.replace([item("notes"), item("wiki")]);
+  await flush();
+  return { ...context, end };
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 });
@@ -73,10 +81,7 @@ describe("the idle gate", () => {
   });
 
   it("waits at boot too: a turn already running holds the first package", async () => {
-    const { activity, queue, applied } = queueOf();
-    const end = hold((factory) => activity.tryTrackTurn(factory));
-    queue.replace([item("notes"), item("wiki")]);
-    await flush();
+    const { queue, applied, end } = await waitingQueue();
     expect(applied).toEqual([]);
     await end();
     await queue.drained();
@@ -116,10 +121,7 @@ describe("the idle gate", () => {
   });
 
   it("escalates after 30 minutes, keeps waiting without Apply now, and Apply now skips only the idle gate", async () => {
-    const { activity, queue, applied } = queueOf();
-    const end = hold((factory) => activity.tryTrackTurn(factory));
-    queue.replace([item("notes"), item("wiki")]);
-    await flush();
+    const { activity, queue, applied, end } = await waitingQueue();
     await vi.advanceTimersByTimeAsync(ESCALATE_AFTER_MS - 1);
     expect(queue.state().escalated).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
@@ -185,10 +187,7 @@ describe("Apply now and the waits it does not end", () => {
   });
 
   it("retain drops what is queued and no longer applies by itself, and leaves the package applying alone", async () => {
-    const { activity, queue, applied } = queueOf();
-    const end = hold((factory) => activity.tryTrackTurn(factory));
-    queue.replace([item("notes"), item("wiki")]);
-    await flush();
+    const { queue, applied, end } = await waitingQueue();
     queue.retain((next) => next.name !== "wiki");
     expect(queue.state().queued).toEqual(["acme:plugin:notes"]);
     await end();
