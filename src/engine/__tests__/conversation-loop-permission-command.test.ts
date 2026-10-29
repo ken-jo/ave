@@ -43,19 +43,19 @@ describe("ConversationLoop.handlePermissionCommand", () => {
   });
 
   it("show-current: without a PermissionManager reports the default mode", async () => {
-    const loop = makeLoop();
+    const loop = makeLoop({ permissionManager: undefined });
     const result = await callPermission(loop, "");
-    expect(result).toContain("default");
+    expect(result).toContain("strict");
   });
 
   it("mode branch without a PermissionManager returns the no-manager guard", async () => {
-    const loop = makeLoop();
+    const loop = makeLoop({ permissionManager: undefined });
     const result = await callPermission(loop, "mode allow");
     expect(result).toBe(t("be_conversationLoop.permissionModeNoManager"));
   });
 
   it("rules branch without a PermissionManager returns the no-manager guard", async () => {
-    const loop = makeLoop();
+    const loop = makeLoop({ permissionManager: undefined });
     const result = await callPermission(loop, "rules list");
     expect(result).toBe(t("be_conversationLoop.permissionRulesNoManager"));
   });

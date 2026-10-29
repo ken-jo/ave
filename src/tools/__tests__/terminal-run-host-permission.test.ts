@@ -63,6 +63,7 @@ const mark = terminalMarker;
 let dir: string;
 beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-"))); });
 afterEach(() => {
+  vi.unstubAllEnvs();
   operatorHarness.current = null;
   __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
@@ -152,6 +153,15 @@ async function run(command: string, options: {
 const hostRule = (command: string): string => formatRuleSpecifier({ kind: "bash", wildcard: false, tokens: command.split(" ") });
 
 describe("terminal_run host permission", () => {
+  it("never treats the parent process environment as the user's terminal environment", async () => {
+    vi.stubEnv("TMPDIR", dir);
+    const denied = await run('echo x > "$TMPDIR/out.txt"', { mode: "allow" });
+    expect(denied.context?.shellExecution).not.toHaveProperty("environmentSnapshot");
+    expect(denied.decision).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true });
+    expect(denied.request).toMatchObject({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+    expect(denied.typed).toEqual([]);
+  });
+
   it("judges the command as a host terminal subject in the shell's physical directory", async () => {
     const { context } = await run("printf ready");
     expect(context?.ruleSubject).toEqual({ kind: "shell", dialect: "bash", command: "printf ready", cwd: dir, hostTerminal: { shell: "zsh", cwd: dir } });

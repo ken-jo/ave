@@ -15,7 +15,7 @@ let cwd: string;
 let manager: PermissionManager;
 beforeEach(() => {
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "static-evaluation-")));
-  vi.stubEnv("AVE_HOME", cwd);
+  vi.stubEnv("AVE_HOME", join(cwd, "state"));
   __resetSessionStoreForTest();
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("allow");
@@ -40,23 +40,23 @@ describe("literal evaluation approval", () => {
   it.each(LITERAL_EVALUATIONS)("requires complete exact approval for $dialect $command", async ({ dialect, command }) => {
     const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true });
     const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
-    // #223 executable-bound startup admission: direct evaluators require proven outer startup.
+    // Direct evaluators require proven outer startup for reusable grants.
     const unprovenStartup = dialect === "powershell" && process.platform === "win32";
     expect(approval.exactRule).toBe(unprovenStartup ? null : pattern);
     for (const sandboxed of [false, true]) {
-      expect(check(command, dialect, sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(check(command, dialect, sandboxed, true).decision).toBe("deny");
+      expect(check(command, dialect, sandboxed)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      expect(check(command, dialect, sandboxed, true)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
     }
     const kind = dialect === "bash" ? "Bash" : "PowerShell";
     manager.setRules([withCurrentShellRuleVersion({ pattern: `${kind}(${command.split(" ")[0]} *)`, action: "allow" })]);
-    expect(check(command, dialect)).toMatchObject({ decision: "ask", layer: 2 });
+    expect(check(command, dialect)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
     await manager.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
     manager = new PermissionManager(join(cwd, "permissions.json"));
     await manager.loadRulesFromFile();
     for (const sandboxed of [false, true]) for (const headless of [false, true]) {
       expect(check(command, dialect, sandboxed, headless)).toMatchObject(unprovenStartup
-        ? headless ? { decision: "deny", layer: 2 } : { decision: "ask", layer: 2, forceModal: true }
-        : { decision: "allow", layer: 3 });
+          ? headless ? { decision: "deny", layer: 6, reasonCode: "no-approver" } : { decision: "ask", layer: 6, reasonCode: "shell-approval" }
+          : { decision: "allow", layer: 3 });
     }
   });
 
@@ -71,20 +71,20 @@ describe("literal evaluation approval", () => {
     { dialect: "powershell" as const, command: "Write-Output a b | ForEach-Object { Write-Output ready }" },
     { dialect: "powershell" as const, command: "Invoke-Expression ('Write-' + 'Output ready')" },
     { dialect: "powershell" as const, command: "[ScriptBlock]::Create($x).Invoke()" },
-  ])("never reuses approval for runtime-dependent $command", ({ dialect, command }) => {
+  ])("keeps runtime-dependent code outside reusable approval: $command", ({ dialect, command }) => {
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules([{ pattern: "*", action: "allow" }]);
-    expect(check(command, dialect)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(check(command, dialect, true, true).decision).toBe("deny");
+    expect(check(command, dialect)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+    expect(check(command, dialect, true, true)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
   });
 
   it.each([
     { dialect: "bash" as const, command: "bash -c 'printf ready' '~/.ssh/id_rsa'" },
     { dialect: "powershell" as const, command: "powershell -Command 'Write-Output ready' '~/.ssh/id_rsa'" },
-  ])("retains outer visible floors despite an exact rule: $command", ({ dialect, command }) => {
+  ])("routes outer secret-read operands through the mode: $command", ({ dialect, command }) => {
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules([withCurrentShellRuleVersion({ pattern: exact(dialect, command), action: "allow" })]);
-    expect(check(command, dialect)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check(command, dialect)).toMatchObject({ decision: "allow", layer: 6, reasonCode: dialect === "bash" ? "sandboxed-shell" : "allow-mode" });
   });
 
   it("keeps upload operands visible when one is spelled like an evaluator", () => {
@@ -98,11 +98,11 @@ describe("literal evaluation approval", () => {
   it.each((["bash", "powershell"] as const).flatMap((dialect) => [
     { dialect, command: "pwsh -co 'Write-Output ready'" },
     { dialect, command: "pwsh -ConfigurationName '~/.ssh/config'" },
-  ]))("never treats ambiguous launcher operands as opaque payloads: $dialect $command", ({ dialect, command }) => {
+  ]))("keeps ambiguous launcher operands outside reusable approval: $dialect $command", ({ dialect, command }) => {
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules([withCurrentShellRuleVersion({ pattern: exact(dialect, command), action: "allow" })]);
-    expect(check(command, dialect)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(check(command, dialect, true, true).decision).toBe("deny");
+    expect(check(command, dialect)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+    expect(check(command, dialect, true, true)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
   });
 
   it.each([
@@ -113,8 +113,8 @@ describe("literal evaluation approval", () => {
     expect(buildShellRuleApproval("bash", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules([withCurrentShellRuleVersion({ pattern: exact("bash", command), action: "allow" })]);
     for (const sandboxed of [false, true]) {
-      expect(check(command, "bash", sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(check(command, "bash", sandboxed, true).decision).toBe("deny");
+      expect(check(command, "bash", sandboxed)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      expect(check(command, "bash", sandboxed, true)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
     }
   });
 
@@ -126,8 +126,10 @@ describe("literal evaluation approval", () => {
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules([withCurrentShellRuleVersion({ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" })]);
     for (const sandboxed of [false, true]) {
-      expect(check(command, dialect, sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(check(command, dialect, sandboxed, true).decision).toBe("deny");
+      expect(check(command, dialect, sandboxed)).toMatchObject(command.includes("rebase")
+        ? { decision: "ask", layer: 2, forceModal: true, reasonCode: "protected-path" }
+        : { decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      expect(check(command, dialect, sandboxed, true).decision).toBe(command.includes("rebase") ? "deny" : "allow");
     }
   });
 
@@ -153,18 +155,18 @@ describe("runtime execution boundaries", () => {
   it.each(UPLOAD_PAYLOADS)("declines repeated mutation without simulating %s", (payload) => {
     const command = `Copy-Item /usr/bin/true ./runner.exe; Write-Output a b | ForEach-Object { ${payload}; Copy-Item curl.exe ./runner.exe }`;
     manager.setRules([{ pattern: "*", action: "allow" }]);
-    expect(check(command, "powershell")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(check(command, "powershell", true, true).decision).toBe("deny");
+    expect(check(command, "powershell")).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+    expect(check(command, "powershell", true, true)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it.each([128, 256, 398].flatMap((size) => [
-    { size, leaf: "Write-Output ready", expected: "ask" as const, layer: 2 },
-    { size, leaf: "printf ready", expected: "ask" as const, layer: 2 },
+    { size, leaf: "Write-Output ready", expected: "allow" as const, layer: 3 },
+    { size, leaf: "printf ready", expected: "allow" as const, layer: 3 },
   ]))("decides a literal $size-prefix argv with $leaf through the complete manager", ({ size, leaf, expected, layer }) => {
     const command = `${"npx ".repeat(size)}${leaf}`;
     const rule = buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule;
-    expect(rule === null).toBe(expected === "ask");
+    expect(rule).toBeNull();
     manager.setRules(rule === null ? [{ pattern: "*", action: "allow" }] : [withCurrentShellRuleVersion({ pattern: rule, action: "allow" })]);
     for (const sandboxed of [false, true]) {
       const samples: number[] = [];

@@ -416,17 +416,23 @@ describe("shared runner decisions", () => {
     expect(checkCommand(manager, dialect, command).decision).toBe("allow");
   });
 
-  // Analysis budgets constrain reusable syntax rules, without inventing a forced security floor.
+  // Exhausted evidence budgets deny before rules or modes can grant execution.
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
-  ])("routes $name through ordinary mode and exact-action memory", async ({ dialect, command }) => {
+  ])("denies $name before modes or remembered grants", async ({ dialect, command }) => {
     const manager = runnerManager();
-    expectOrdinaryHostAsk(checkCommand(manager, dialect, command));
+    const expected = { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" };
+    expect(checkCommand(manager, dialect, command)).toMatchObject(expected);
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expect(checkCommand(manager, dialect, command).decision).toBe("allow");
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      for (const sandboxed of [false, true]) {
+        expect(checkCommand(manager, dialect, command, sandboxed)).toMatchObject(expected);
+        expect(checkCommand(manager, dialect, command, sandboxed, true)).toMatchObject(expected);
+      }
+    }
     expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(checkCommand(manager, dialect, command, true).decision).toBe("allow");
   });
 
   it.each([

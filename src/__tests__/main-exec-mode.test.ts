@@ -183,26 +183,15 @@ describe("main-window.ts — headless creation allocates no window", () => {
   });
 });
 
-describe("boot.ts — a headless run reports nobody at the desk", () => {
-  function deskAttendedBody(): string {
-    const start = bootSource.indexOf("isDeskAttended: () => {");
-    expect(start, "isDeskAttended closure not found in boot.ts").toBeGreaterThan(-1);
-    const end = bootSource.indexOf("\n      },", start);
-    expect(end).toBeGreaterThan(start);
-    return bootSource.slice(start, end);
-  }
-
-  it("answers no from the launch mode before consulting the window", () => {
-    const body = deskAttendedBody();
-    // Splash visibility and later window activation do not establish desk attendance.
-    expect(body.indexOf("if (headless) return false;")).toBeGreaterThan(-1);
-    expect(body.indexOf("if (headless) return false;")).toBeLessThan(
-      body.indexOf("getMainWindow()"),
-    );
+describe("boot.ts — launch mode determines approval availability", () => {
+  it("passes true headless launches as unavailable and desktop launches as interactive", () => {
+    expect(bootSource).toMatch(/await wireConversation\([\s\S]*?headless \? "unavailable" : "interactive"/);
   });
 
-  it("still asks the window when a launch has an operator", () => {
-    // Only headless runs may defer escalation; interactive launches must still ask the user.
-    expect(deskAttendedBody()).toContain("win.isVisible() && !win.isMinimized()");
+  it("does not infer a missing approver from window visibility", () => {
+    const wiring = readFileSync(resolve(process.cwd(), "src/boot/steps/conversation-wiring.ts"), "utf-8");
+    expect(wiring).toContain("approvalSurface");
+    expect(wiring).not.toContain("isDeskAttended");
+    expect(wiring).not.toContain("win.isVisible() && !win.isMinimized()");
   });
 });

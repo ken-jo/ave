@@ -582,11 +582,12 @@ function terminalTargetText(
  * script, such as Korean filenames, are not listed; see terminalCommandLookalikes), and a terminal directory outside the allowed folders (the command still runs there, inside the terminal's sandbox). */
 function terminalCommandNotes(
   t: (key: string, params?: Record<string, string>) => string,
-  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext" | "shellRule">,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext" | "shellRule" | "hostTerminalAfterExternalContent">,
 ): string[] {
-  const memory = request.approvalMemory;
-  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return [];
   const notes: string[] = [];
+  if (request.hostTerminalAfterExternalContent === true) notes.push(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return notes;
   // The user's own shell: no sandbox, and the approved command's output goes back to the model.
   if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
   const command = parseArgs(request.args)?.command;

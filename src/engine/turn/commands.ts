@@ -313,7 +313,7 @@ export async function handlePermissionCommand(
     );
     if (outcome.kind === "parse-error") return t("be_conversationLoop.permissionParseError", { error: outcome.error });
     if (outcome.kind === "show-current") {
-      const mode = self.deps.permissionManager?.getMode() ?? "default";
+      const mode = self.deps.permissionManager?.getMode() ?? "strict";
       return t("be_conversationLoop.permissionShowCurrent", { mode });
     }
     if (outcome.kind === "dir") {

@@ -252,7 +252,7 @@ export interface PermissionCheckContext {
   // project whose per-project rule file applies. The caller must have awaited PermissionManager.ensureProjectRulesLoaded for it.
   projectRulesCwd?: string;
   // Host-only per-invocation route; a missing shell route is plain (no sandbox). pathPolicyRelaxations comes from the selected execution plan (executionPlanPathPolicyRelaxations); missing means none.
-  shellExecution?: { runsSandboxed: boolean; pathPolicyRelaxations?: readonly DisposablePathPolicyRelaxation[] };
+  shellExecution?: { runsSandboxed: boolean; pathPolicyRelaxations?: readonly DisposablePathPolicyRelaxation[]; environmentSnapshot?: Readonly<Record<string, string | undefined>> };
   // Conversation the invocation belongs to: selects its "This session" shell rules (`addSessionRule`).
   sessionId?: string;
   // Host-detected approval-store corruption is an admission failure, naming the file.
@@ -1480,11 +1480,18 @@ export class PermissionManager {
     analysisLimited ||= shellSignals?.analysisLimited === true;
     if (shellSignals?.exfiltration) floor ??= { code: "exfiltration", reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
-    const shellPaths = command !== undefined && !analysisLimited && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
-      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: {} }) : undefined;
-    const powerShellPaths = parsedPowerShell && !analysisLimited && ruleSubject?.cwd !== undefined
-      ? inspectPowerShellPermissionPaths(parsedPowerShell, ruleSubject.cwd) : undefined;
+    const shellPaths = command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
+      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {} }) : undefined;
+    const powerShellPaths = command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
+      ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, ruleSubject.cwd, shellExecution.environmentSnapshot ?? {}) : undefined;
+    if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
     if (powerShellPaths?.credentialStore) admissionDenial ??= { code: "credential-store", reason: powerShellPaths.credentialStore };
+    const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
+    if (unknownProtectedWrite) floor ??= { code: "protected-path", reason: unknownProtectedWrite };
+    const parsedRoot = parsed?.analysis.ok ? parsed.analysis.program : undefined;
+    const simpleRoot = parsedRoot?.kind === "sequence" && parsedRoot.statements.length === 1 ? parsedRoot.statements[0] : parsedRoot;
+    const hostBoundWriteTargets = shellExecution.environmentSnapshot !== undefined && shellPaths?.resolvedWriteTargetsOnly === true
+      && simpleRoot?.kind === "command";
     for (const evidence of [...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])]) {
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
       const criticalDelete = evidence.deleteIntent ? criticalDeleteTargetFor(evidence, [projectRulesCwd ?? ruleSubject?.cwd ?? process.cwd()]) : undefined;
@@ -1531,7 +1538,7 @@ export class PermissionManager {
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, rules, secretRead, manualRerun: context.manualRerun,
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
-      ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
+      ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
     const result = this.pipelineResult(request, context);
     if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && projectPolicyVersion && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {

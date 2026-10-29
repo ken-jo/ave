@@ -21,6 +21,7 @@ import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.j
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
+import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { statSync } from "node:fs";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import type { Tool } from "./base.js";
@@ -426,18 +427,22 @@ export async function runToolInvocation(
         const invocationRef = registeredTool && permissionContext?.trustOrigin && makeRecentlyDeniedInvocationRef(toolUse.input, {
           cwd: executionCwd, toolUseId: toolUse.id,
           pluginId: registeredTool.pluginId, mcpServerId: registeredTool.mcpServerId,
-          replayOrigin: { trustOrigin: permissionContext.trustOrigin, remoteController: permissionContext.remoteControllerAuthority !== undefined, otherPrincipal: permissionContext.otherPrincipal === true || permissionContext.remoteControllerAuthority !== undefined || approvalReasonPrefix !== undefined || permissionContext.floor?.code === "other-principal" },
+          replayOrigin: { trustOrigin: permissionContext.trustOrigin, remoteController: permissionContext.remoteControllerAuthority !== undefined,
+            otherPrincipal: permissionContext.otherPrincipal === true || permissionContext.remoteControllerAuthority !== undefined || approvalReasonPrefix !== undefined || permissionContext.floor?.code === "other-principal" || isStagedTurnSource(overlayTriggerOrigin),
+            ...(isStagedTurnSource(overlayTriggerOrigin) ? { overlayTriggerOrigin: overlayTriggerOrigin! } : {}),
+          },
         });
         const inputSnapshot = invocationRef ? structuredClone(toolUse.input) : undefined;
         await history.append({
           sessionId, toolName: toolUse.name, source: args[2], category: meta.category ?? "write",
-          inputSummary: JSON.stringify(args[4]), reason: denied.reason,
+          inputSummary: JSON.stringify(auditSafeToolInput(args[4], currentAuditMetadata(args[4]))), reason: denied.reason,
           ...(invocationRef ? { invocationRef } : {}),
           ...(inputSnapshot && invocationRef ? { rerun: async () => {
             const replayRootBinding = issueReplayRootBinding(executionCwd, invocationRef.rootDigest);
             if (!replayRootBinding) throw new Error("The replay project root changed");
             const result = await runToolInvocation(services, { ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, randomUUID(), 0, {
               sessionId, executionCwd, replayRootBinding, approvalReasonPrefix,
+              ...(invocationRef.replayOrigin!.overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin: invocationRef.replayOrigin!.overlayTriggerOrigin }),
               permissionContext: { ...permissionContext!, trustOrigin: invocationRef.replayOrigin!.trustOrigin, otherPrincipal: invocationRef.replayOrigin!.otherPrincipal, headless: false, ownerUnattended: false, approvalSurface: undefined, manualRerun: true },
             });
             if ("is_error" in result && result.is_error) throw new Error("The manual rerun was denied or failed");
@@ -1443,7 +1448,11 @@ export async function runToolInvocation(
         ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
         ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan,
           shellEscalated: true,
-          shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate) } } : {
+          shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate),
+            ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && hostShellExecutionPlan?.substrate !== "mxc"
+              && invocationPermissionContext.disposableSubstrate === undefined && !brokeredHostShellRouteSelected()
+              ? { environmentSnapshot: preparedShellFacts(preparedShellInvocation).environment } : {}),
+          } } : {
           ruleSubject: scopedRuleSubjectFor(tool, finalInput, executionCwd),
           fileWritePolicy: { insideProject: false, checkpointAvailable: false, directoryApproved: false },
         }),
@@ -1888,13 +1897,13 @@ export async function runToolInvocation(
     // command classified `read` was also a way to erase containment. A low-risk
     // judgement is never a reason to skip a control documented as
     // unoverridable.
-    // Session-control calls carry a shell handle rather than a command; their
-    // shell category still requires authorization, but has no paths to parse.
+    // Canonical lifecycle calls consume only a shell handle. Extra properties
+    // are data, while their shell category still requires authorization.
     // Broker requests carry guest paths. Reinterpreting them through host path
     // containment would turn valid /git, /tmp, or /logs operands into desktop
     // directory prompts. The exact one-shot grant and broker protocol schema
     // validate the guest request at execution time.
-    if (hasShellCommandArgument(finalInput) && !brokeredHostShellRouteSelected()) {
+    if (canonicalBrokerLifecycleTool === undefined && hasShellCommandArgument(finalInput) && !brokeredHostShellRouteSelected()) {
       while (true) {
         let shellPathViolation: ShellPathPolicyViolation | null = null;
         if (hostShellToolName === "powershell") {
@@ -1918,7 +1927,14 @@ export async function runToolInvocation(
           );
         }
         if (!shellPathViolation) break;
-        if (shellPathViolation.kind === "dynamic-path" || shellPathViolation.kind === "recursive-traversal") break;
+        if (shellPathViolation.kind === "dynamic-path" || shellPathViolation.kind === "recursive-traversal") {
+          try {
+            await updateExecutionRoute(shellPathViolation.kind);
+          } catch (error) {
+            return await returnExecutionRouteFailure(error);
+          }
+          break;
+        }
 
 
         if (
@@ -2036,6 +2052,7 @@ export async function runToolInvocation(
     // Boolean, not the type guard: narrowing `tool` to `PowerShellTool` here
     // would widen it to a union for the rest of the function.
     if (
+      canonicalBrokerLifecycleTool === undefined &&
       !isCanonicalPowerShellTool(tool) &&
       services.bashAstValidator &&
       executionRoutePlan?.disposableCapability?.kind !== "workload-broker"
@@ -2339,6 +2356,8 @@ export async function runToolInvocation(
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
       verifiedShellCommand,
+      ...(!brokeredHostShellRouteSelected() && hostShellExecutionPlan?.substrate !== "mxc"
+        && invocationPermissionContext.disposableSubstrate === undefined ? { preparedShellInvocation } : {}),
       finalInput,
       invocationAllowedScope,
       sensitivePathPattern,

@@ -7,7 +7,7 @@ import * as childProcess from "node:child_process";
 import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution, verifiedShellRequiresResultCheck, verifiedShellResultRefusal, type VerifiedShellCommand } from "../verified-shell-command.js";
-import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { GIT_VERSION_FLOOR } from "../rules/git-readonly-argv.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { inspectShellCommand } from "../rules/shell-exfiltration.js";
@@ -27,7 +27,7 @@ beforeEach(() => {
   stabilizeFixtureAncestorStats(cwd);
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
-  manager.setMode("allow");
+  manager.setMode("default");
   vi.mocked(resolveVerifiedExecutable).mockReset().mockImplementation((candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
   vi.mocked(childProcess.execFileSync).mockReset().mockReturnValue("git version 2.54.0\n");
   vi.mocked(childProcess.spawn).mockClear();
@@ -113,7 +113,9 @@ describe("bound native command authority", () => {
       expect(permission(command, dialect, handle, true, false)).toMatchObject({ decision: "allow" });
       expect(permission(command, dialect, handle, false, false)).toMatchObject({ decision: "ask" });
       manager.setRules([withCurrentShellRuleVersion({ pattern: `${wrapper}(git *)`, action: "allow" })]);
-      expect(permission(command, dialect, handle, false, true)).toMatchObject({ decision: "deny" });
+      expect(permission(command, dialect, handle, false, true)).toMatchObject(dialect === "bash"
+        ? { decision: "deny", layer: 6, reasonCode: "no-approver" }
+        : { decision: "allow", layer: 3, reasonCode: "rule-allow" });
       manager.setRules([withCurrentShellRuleVersion({ pattern: approval.exactRule!, action: "allow" })]);
       for (const sandboxed of [false, true]) {
         expect(permission(command, dialect, handle, sandboxed, true)).toMatchObject({ decision: "allow", layer: 3 });
@@ -126,15 +128,31 @@ describe("bound native command authority", () => {
       });
     });
 
+  it.each(["bash", "powershell"] as const)("applies a bounded saved prefix to a host repository read on %s", (dialect) => {
+    const command = "git log --oneline -n 3";
+    const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
+    expect(handle).toBeDefined();
+    const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle);
+    const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
+    expect(approval.exactRule).toBe(`${wrapper}(${command})`);
+    const prefix = `${wrapper}(git log *)`;
+    expect(shellRuleCoversCommand(dialect, prefix, "allow", command, cwd, handle)).toBe(true);
+    manager.setRules([withCurrentShellRuleVersion({ pattern: prefix, action: "allow" })]);
+    for (const headless of [false, true]) {
+      const result = permission(command, dialect, handle, false, headless);
+      expect(result).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+      expect(result).not.toHaveProperty("forceModal");
+    }
+  });
   it.each(["bash", "powershell"] as const)("keeps proved literal evaluation exact-only on %s", (dialect) => {
     const handle = prepareVerifiedShellCommand({ command: LITERAL_COMMAND, dialect, cwd });
     expect(handle).toBeDefined();
     const approval = buildShellRuleApproval(dialect, LITERAL_COMMAND, cwd, { allow: true, deny: true }, undefined, handle);
     const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
     expect(approval.exactRule).toBe(`${wrapper}(${LITERAL_COMMAND})`);
-    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
     manager.setRules([withCurrentShellRuleVersion({ pattern: `${wrapper}(bash *)`, action: "allow" })]);
-    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
     manager.setRules([withCurrentShellRuleVersion({ pattern: approval.exactRule!, action: "allow" })]);
     for (const sandboxed of [false, true]) {
       expect(permission(LITERAL_COMMAND, dialect, handle, sandboxed, true)).toMatchObject({ decision: "allow", layer: 3 });
@@ -208,8 +226,10 @@ describe("bound native command authority", () => {
       expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).toBeNull();
       const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
       manager.setRules([withCurrentShellRuleVersion({ pattern: `${wrapper}(${command})`, action: "allow" })]);
-      expect(permission(command, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(permission(command, dialect, handle, false, true)).toMatchObject({ decision: "deny", layer: 2 });
+      expect(permission(command, dialect, handle, true, false)).toMatchObject(dialect === "bash"
+        ? { decision: "allow", layer: 6, reasonCode: "read-only-shell" }
+        : { decision: "ask", layer: 6, reasonCode: "shell-approval" });
+      expect(permission(command, dialect, handle, false, true)).toMatchObject({ decision: "deny", layer: 6, reasonCode: "no-approver" });
     }
   });
   it("bounds input before parsing or installation discovery", () => {

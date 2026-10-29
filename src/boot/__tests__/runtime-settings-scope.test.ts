@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { createNodeBootHost } from "../node-host-runtime.js";
 import type { BootHost } from "../host-runtime.js";
 import { settingsFilePath } from "../../data/settings-store.js";
-import { ensureFileAccess } from "../../tools/file-access-policy.js";
+import { createPermissionPathEvidence } from "../../permissions/sensitive-paths.js";
+
+function settingsProtection(path: string, root: string) {
+  return createPermissionPathEvidence(root)({ lexical: path, canonical: path, effect: "write" }).protectedControl;
+}
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 
@@ -36,26 +40,24 @@ describe("host-owned settings write protection", () => {
     hosts.push(host);
     runtime.closeFailed = true;
     await expect(host.close()).rejects.toThrow("Dispatcher close failed");
-    expect(ensureFileAccess(settingsFilePath(host.userDataPath),
-      { cwd: directory, extraAllowedDirectories: [], metadata: {} }, "write")).toBeNull();
+    expect(settingsProtection(settingsFilePath(host.userDataPath), directory)).toBeUndefined();
   });
   it("protects overlapping live hosts until the final owner closes", async () => {
     const userDataPath = join(directory, "profile");
-    const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
     const settingsPath = settingsFilePath(userDataPath);
     const options = { userDataPath, resourcePath: directory, isPackaged: false };
     const first = await createNodeBootHost(options);
     hosts.push(first);
     const second = await createNodeBootHost(options);
     hosts.push(second);
-    expect(ensureFileAccess(settingsPath, context, "write")).toMatchObject({ isError: true });
-    expect(ensureFileAccess(userDataPath, context, "write")).toMatchObject({ isError: true });
-    expect(ensureFileAccess(directory, context, "write")).toBeNull();
+    expect(settingsProtection(settingsPath, directory)).toBe("runtime-settings-file");
+    expect(settingsProtection(userDataPath, directory)).toBe("runtime-settings-file");
+    expect(settingsProtection(directory, directory)).toBeUndefined();
     await first.close();
     await first.close();
-    expect(ensureFileAccess(settingsPath, context, "write")).toMatchObject({ isError: true });
+    expect(settingsProtection(settingsPath, directory)).toBe("runtime-settings-file");
     await second.close();
-    expect(ensureFileAccess(settingsPath, context, "write")).toBeNull();
-    expect(ensureFileAccess(userDataPath, context, "write")).toBeNull();
+    expect(settingsProtection(settingsPath, directory)).toBeUndefined();
+    expect(settingsProtection(userDataPath, directory)).toBeUndefined();
   });
 });

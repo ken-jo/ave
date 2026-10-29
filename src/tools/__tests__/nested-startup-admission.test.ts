@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe("nested startup admission before native execution", () => {
-  it.each(STARTUP_MARKER_CASES)("never launches PATH startup marker $program with a saved headless exact rule", async ({ program, command, startup }) => {
+  it.each(STARTUP_MARKER_CASES)("keeps opaque startup in the mode while refusing a saved exact grant headless in Default: $program", async ({ program, command, startup }) => {
     const cwd = mkdtempSync(join(tmpdir(), "nested-startup-marker-"));
     try {
       const bin = join(cwd, "bin");
@@ -53,7 +53,10 @@ describe("nested startup admission before native execution", () => {
       manager.setMode("allow");
       manager.setRules([withCurrentShellRuleVersion({ pattern: `Bash(${command})`, action: "allow" })]);
       expect(checkShellPermission(manager, cwd, "nested-startup-marker", command, "bash", false, true))
-        .toMatchObject({ decision: "deny", layer: 2 });
+        .toMatchObject({ decision: "allow", layer: 6 });
+      manager.setMode("strict");
+      expect(checkShellPermission(manager, cwd, "nested-startup-marker", command, "bash", false, true))
+        .toMatchObject({ decision: "deny", reasonCode: "no-approver" });
       const tool = new BashTool();
       const execute = vi.spyOn(tool, "execute");
       const registry = new ToolRegistry();

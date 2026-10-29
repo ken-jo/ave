@@ -31,7 +31,7 @@ let manager: PermissionManager;
 beforeAll(() => {
   cwd = mkdtempSync(join(tmpdir(), "encoded-unicode-"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
-  manager.setMode("allow");
+  manager.setMode("strict");
 });
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
 
@@ -61,6 +61,20 @@ function checkCommand(dialect: typeof DIALECTS[number], option: string): string 
 }
 
 describe.each(DIALECTS)("positive launcher argument character proof (%s)", (dialect) => {
+  it("keeps an encoded carrier unproven while the selected mode owns approval", () => {
+    const command = "pwsh -enc !!!";
+    expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+    const context = { ruleSubject: { kind: "shell" as const, dialect, command, cwd }, shellExecution: { runsSandboxed: false }, headless: true };
+    manager.setRules([]);
+    manager.setMode("allow");
+    try {
+      expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    } finally {
+      manager.setMode("strict");
+    }
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+  });
+
   it("rejects the literal next-line control around the option", () => {
     expect(checkCommand(dialect, "\u0085-enc\u0085")).toBeNull();
   });

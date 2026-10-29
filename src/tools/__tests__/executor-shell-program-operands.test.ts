@@ -59,11 +59,16 @@ describe("executor program operand gates", () => {
     'sqlite3 -separator * :memory: "SELECT 1;"',
     "sqlite3 sample.db '.shell sudo printf blocked'",
     "sqlite3 -unknown operand sample.db 'SELECT 1;'",
-    "sqlite3 sample.db 'SELECT 1;' > ../outside/report",
   ])("refuses an unauthorized effect before reaching the handler: %s", async (blocked) => {
     const { result, execute } = await invoke(blocked);
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("retains an explicit invocation grant for an outside output target", async () => {
+    const { result, execute } = await invoke("sqlite3 sample.db 'SELECT 1;' > ../outside/report");
+    expect(result.is_error).toBeFalsy();
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it("admits real string data resembling a quoted table-valued source", async () => {

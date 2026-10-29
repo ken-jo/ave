@@ -7,7 +7,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { checkReplayRootBinding } from "../reviewer/replay-root-binding.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import type { RecentlyDeniedEntry } from "../../shared/recently-denied.js";
-import { createRecentlyDeniedReplayResolver, makeRecentlyDeniedInvocationRef } from "../reviewer/recently-denied-replay.js";
+import { createRecentlyDeniedReplayResolver, makeRecentlyDeniedInvocationRef, normalizeRecentlyDeniedInvocationRef } from "../reviewer/recently-denied-replay.js";
 import { PermissionTestResources } from "./test-resources.js";
 
 const SESSION_ID = "c8f40ac1-4139-45c2-b470-809c5c1e1272";
@@ -66,6 +66,26 @@ describe("persisted denial invocation references", () => {
     expect(JSON.stringify(options.replayRootBinding)).toBe("{}");
     expect(options.sessionId).toBe(SESSION_ID);
     expect(options).not.toHaveProperty("abortSignal");
+  });
+
+  it.each(["overlay:meeting-detection", "app:status-card", "mcp-prompt:workspace", "plugin-prompt:extension:notes:summary"])("carries the validated %s source through persisted replay", async (overlayTriggerOrigin) => {
+    const current = await subject();
+    const replayOrigin = { ...REPLAY_ORIGIN, otherPrincipal: false, overlayTriggerOrigin };
+    const invocationRef = makeRecentlyDeniedInvocationRef(current.input, { cwd: current.project, toolUseId: CALL_ID, replayOrigin });
+    expect(invocationRef?.replayOrigin).toEqual(replayOrigin);
+    expect(await current.resolver({ ...current.entry, invocationRef })).toEqual({ ok: true });
+    expect(current.executeAll).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
+      sessionId: SESSION_ID, overlayTriggerOrigin,
+      permissionContext: { trustOrigin: replayOrigin.trustOrigin, otherPrincipal: false, manualRerun: true, headless: false },
+    }));
+  });
+
+  it.each([null, 42, {}, "user-keyboard", "app:", "overlay:notes\nprivate-content", `overlay:${"x".repeat(257)}`])("refuses an invalid staged source tag %j", async (overlayTriggerOrigin) => {
+    const current = await subject();
+    const ref = { ...current.invocationRef!, replayOrigin: { ...REPLAY_ORIGIN, overlayTriggerOrigin } };
+    expect(normalizeRecentlyDeniedInvocationRef(ref)).toBeUndefined();
+    expect(await current.resolver({ ...current.entry, invocationRef: ref as never })).toEqual({ ok: false, error: "rerun-unavailable" });
+    expect(current.executeAll).not.toHaveBeenCalled();
   });
 
   it.each(["missing-session", "duplicate-call", "changed-input", "changed-name", "changed-source", "invalid-input", "missing-root", "changed-root"])("refuses %s without entering the executor", async (kind) => {

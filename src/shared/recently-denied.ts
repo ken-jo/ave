@@ -7,7 +7,13 @@ export interface RecentlyDeniedInvocationRef {
   inputDigest: string;
   rootDigest: string;
   /** Restrictive original provenance; never a replay grant. Missing legacy provenance is not replayable. */
-  replayOrigin?: { trustOrigin: ChatInputOrigin; otherPrincipal: boolean; remoteController: boolean };
+  replayOrigin?: {
+    trustOrigin: ChatInputOrigin;
+    otherPrincipal: boolean;
+    remoteController: boolean;
+    /** A source tag validated by the staged-origin registry; never arbitrary content. */
+    overlayTriggerOrigin?: string;
+  };
   pluginId?: string;
   mcpServerId?: string;
 }

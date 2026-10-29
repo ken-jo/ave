@@ -123,6 +123,12 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
     }
   });
 
+  it("keeps inherited compound input unsupported for execution authority", () => {
+    const { cwd, environment } = fixture();
+    expect(() => inspectShellExecution("( bash ) <<'EOF'\nprintf ready\nEOF", cwd,
+      { dialect: "bash", environment }, { path() {}, command() {} })).toThrow("Unsupported compound input or dynamic descriptor redirection");
+  });
+
   it("retains cwd and loop state at a known lexical break", () => {
     const { cwd, environment } = fixture();
     mkdirSync(join(cwd, "stage/first"), { recursive: true });

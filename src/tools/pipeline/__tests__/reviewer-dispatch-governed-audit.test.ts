@@ -2,7 +2,7 @@ import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
@@ -10,28 +10,31 @@ import { RuleBasedRiskClassifier } from "../../../permissions/reviewer/risk-clas
 import { VerdictCache } from "../../../permissions/reviewer/verdict-cache.js";
 import { dispatchReviewerForHeadless } from "../reviewer-dispatch.js";
 
-describe("headless reviewer governed audit projection", () => {
-  it("persists only the Host-owned projection in strict mode", async () => {
+describe("headless reviewer dispatch audit ownership", () => {
+  it("returns strict headless denial without invoking review or duplicating denial history", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-strict-governed-"));
     try {
       const permissionManager = new PermissionManager(
         join(directory, "permissions.json"),
       );
       const recentlyDenied = makeRecentlyDeniedStore(
-        join(directory, "deferred-queue.jsonl"),
+        join(directory, "recently-denied.jsonl"),
       );
       permissionManager.setMode("strict");
+      const classifier = new RuleBasedRiskClassifier();
+      const classify = vi.spyOn(classifier, "classify");
+      const append = vi.spyOn(recentlyDenied, "append");
       setReviewerForTest(permissionManager, {
-        classifier: new RuleBasedRiskClassifier(),
+        classifier,
         cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
         recentlyDenied,
       });
 
-      await dispatchReviewerForHeadless(
+      const result = await dispatchReviewerForHeadless(
         permissionManager,
-        "domain_read",
+        "domain_network",
         "plugin",
-        "read",
+        "network",
         [],
         {
           operation: "status",
@@ -39,7 +42,7 @@ describe("headless reviewer governed audit projection", () => {
         },
         [],
         [],
-        { trustOrigin: "plugin-emitted" },
+        { trustOrigin: "plugin-emitted", headless: true },
         {
           pathFields: [],
           targetFilePaths: [],
@@ -55,11 +58,14 @@ describe("headless reviewer governed audit projection", () => {
         "reviewer-governed-audit-session",
       );
 
-      const [pending] = (await recentlyDenied.list());
-      expect(pending?.inputSummary).toBe('{"operation":"status"}');
-      expect(pending?.inputSummary).not.toContain(
-        "must-never-reach-deferred-storage",
-      );
+      expect(result).toMatchObject({
+        allowed: false,
+        message: "Nobody can approve this request; do not retry.",
+        permissionResult: { decision: "deny", reasonCode: "no-approver" },
+      });
+      expect(classify).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+      expect(await recentlyDenied.list()).toEqual([]);
     } finally {
       await cleanupTmpDir(directory);
     }

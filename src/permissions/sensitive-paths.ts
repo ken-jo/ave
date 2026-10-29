@@ -375,11 +375,11 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/.config/Ave/**",
 ]);
 
-// Credential stores controlled by the host retain an unconditional admission deny.
+// Credential stores and the process ownership lock retain an unconditional admission deny.
 // User-authored secret files and configuration are classified separately.
 function isAdmissionEntry(entry: SensitiveEntry): boolean {
   const [first, second, third] = entry.segments;
-  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json"].includes(first!)
+  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime"].includes(first!)
     || (first === "plugins" && second === "auth-partitions.json");
   if (entry.anchor === "root") return second === "shadow";
   if (["Library", "AppData", ".mozilla", ".thunderbird", "snap", ".var", ".password-store"].includes(first!)) return true;
@@ -556,21 +556,26 @@ export function createPermissionPathEvidence(projectRoot: string): (path: { lexi
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
+  const observations = new Map<string, Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>();
   return path => {
     const lexical = normalize(path.lexical);
     const canonical = normalize(path.canonical);
+    const key = JSON.stringify([path.effect, lexical, canonical]);
+    const previous = observations.get(key);
+    if (previous) return { ...path, ...previous };
     let matcher = matchers.get(path.effect);
     if (!matcher) {
       matcher = { secret: createSensitivePathMatcher(path.effect), admission: createAdmissionDeniedPathMatcher(path.effect) };
       matchers.set(path.effect, matcher);
     }
-    return {
-      ...path,
+    const observation = {
       secret: matcher.secret(lexical) ?? (canonical === lexical ? null : matcher.secret(canonical)),
       admissionDenial: matcher.admission(lexical) ?? (canonical === lexical ? null : matcher.admission(canonical)),
       protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
       projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
     };
+    observations.set(key, observation);
+    return { ...path, ...observation };
   };
 }
 

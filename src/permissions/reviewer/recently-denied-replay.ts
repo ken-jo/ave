@@ -6,6 +6,7 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { parseStrictJsonText } from "../../shared/strict-json.js";
 import { describeNonJson } from "../../shared/json-representable.js";
 import { isChatSendInputOrigin } from "../../shared/chat-origin.js";
+import { isStagedTurnSource } from "../../shared/staged-origins.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { isValidToolUseId } from "../../shared/tool-use-id.js";
 import { isSafeStructuralId } from "../../shared/dlp-safe-id.js";
@@ -33,10 +34,13 @@ export function normalizeRecentlyDeniedInvocationRef(value: unknown): RecentlyDe
     || (value.mcpServerId !== undefined && !isSafeStructuralId(value.mcpServerId))) return undefined;
   const origin = value.replayOrigin;
   if (origin !== undefined && (!isRecord(origin) || typeof origin.otherPrincipal !== "boolean" || typeof origin.remoteController !== "boolean"
+    || (origin.overlayTriggerOrigin !== undefined && (typeof origin.overlayTriggerOrigin !== "string" || origin.overlayTriggerOrigin.length > 256 || !isStagedTurnSource(origin.overlayTriggerOrigin)))
     || !(isChatSendInputOrigin(origin.trustOrigin) || origin.trustOrigin === "llm-tool-arg"
       || origin.trustOrigin === "agent-message" || origin.trustOrigin === "file-content"))) return undefined;
   return {
-    ...(origin === undefined ? {} : { replayOrigin: { trustOrigin: origin.trustOrigin, otherPrincipal: origin.otherPrincipal, remoteController: origin.remoteController } as NonNullable<RecentlyDeniedInvocationRef["replayOrigin"]> }),
+    ...(origin === undefined ? {} : { replayOrigin: { trustOrigin: origin.trustOrigin, otherPrincipal: origin.otherPrincipal, remoteController: origin.remoteController,
+      ...(origin.overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin: origin.overlayTriggerOrigin }),
+    } as NonNullable<RecentlyDeniedInvocationRef["replayOrigin"]> }),
     toolUseId: value.toolUseId, inputDigest: value.inputDigest, rootDigest: value.rootDigest,
     ...(typeof value.pluginId === "string" ? { pluginId: value.pluginId } : {}),
     ...(typeof value.mcpServerId === "string" ? { mcpServerId: value.mcpServerId } : {}),
@@ -126,6 +130,7 @@ export function createRecentlyDeniedReplayResolver(deps: RecentlyDeniedReplayDep
     if (!replayRootBinding) return unavailable;
     const results = await deps.executeAll([{ id: randomUUID(), name: entry.toolName, input }], {
       sessionId: entry.sessionId, executionCwd: cwd, replayRootBinding,
+      ...(ref.replayOrigin.overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin: ref.replayOrigin.overlayTriggerOrigin }),
       permissionContext: { trustOrigin: ref.replayOrigin.trustOrigin, otherPrincipal: ref.replayOrigin.otherPrincipal, manualRerun: true, headless: false },
     });
     return results.length === 1 && !results[0].is_error ? { ok: true } : { ok: false, error: "rerun-failed" };

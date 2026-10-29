@@ -320,10 +320,8 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const modeAllow = pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: "echo one-shot", cwd: "/repo" },
     });
-    // Allow mode does not admit a plain shell outside the sandbox: it still
-    // needs an exact Bash(<command>) rule or approval, and the mode issues no
-    // rule proof (owner 2026-10-25, unsandboxed shell exact-rule requirement).
-    expect(modeAllow).toMatchObject({ decision: "ask", layer: 6 });
+    // A mode grant admits this host action without issuing reusable rule authority.
+    expect(modeAllow).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
     expect(isIssuedShellAllowRuleDecision(modeAllow)).toBe(false);
   });
 

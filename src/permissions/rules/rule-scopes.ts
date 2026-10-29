@@ -9,7 +9,7 @@ import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, type PowerShellCommandInput } from "./powershell-exfiltration.js";
-import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
+import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
@@ -141,12 +141,13 @@ function forEachCommandRule(scopes: ReadonlyArray<readonly PermissionRule[]>, vi
   const specifiers = new Map<string, RuleSpecifier>();
   for (const rules of scopes) {
     for (const rule of rules) {
-      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule) || storedRuleInvalidReason(rule) !== null) continue;
+      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule) || isRetiredHostTerminalRule(rule.pattern)) continue;
       let spec = specifiers.get(rule.pattern);
       if (spec === undefined) {
         spec = parseRuleSpecifier(rule.pattern);
         specifiers.set(rule.pattern, spec);
       }
+      if (storedRuleInvalidReason(rule, spec) !== null) continue;
       visit(rule, spec);
     }
   }

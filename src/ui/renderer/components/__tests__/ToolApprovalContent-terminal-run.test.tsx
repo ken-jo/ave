@@ -8,6 +8,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
 import { t } from "../../../../i18n/index.js";
+import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
+import { setLocale } from "../../../../i18n/runtime.js";
 
 /** A `terminal_run` card shows the exact command and the terminal it will be typed into; the target the host
  * sealed before the card was shown; and remembers the command in that directory for this app session only. */
@@ -148,7 +150,7 @@ describe("ToolApprovalContent host terminal card", () => {
       },
     },
   });
-  afterEach(() => { vi.unstubAllGlobals(); clearActiveSurface(); });
+  afterEach(() => { vi.unstubAllGlobals(); clearActiveSurface(); setLocale("ko"); });
 
   it("names the user's own shell and warns that the output returns to the model, without a sandbox claim", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
@@ -164,6 +166,40 @@ describe("ToolApprovalContent host terminal card", () => {
     // Manual host cards disclose the shell target and offer no persistent rule.
     expect(screen.queryByTestId("approval-shell-outside-sandbox")).toBeNull();
     expect(screen.queryByTestId("approval-shell-rule-scope-target")).toBeNull();
+  });
+
+  it.each(["en", "ko"] as const)("explains forced external-content consent in %s without offering lasting authority", async (locale) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const record = vi.fn();
+    const onDecide = vi.fn();
+    vi.stubGlobal("ave", { userApproval: { record } });
+    renderApproval({ ...hostRequest([]), reason: "One-time approval required.", hostTerminalAfterExternalContent: true }, onDecide);
+    expect(screen.getAllByTestId("approval-terminal-note").some((note) => note.textContent === t("toolApprovalDialog.hostTerminalAfterExternalContent"))).toBe(true);
+    expect(screen.getByText(t("toolApprovalDialog.hostTerminalAfterExternalContent"))).toBeVisible();
+    expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "one-shot");
+    expect(screen.queryByTestId("approval-shell-rule-context")).toBeNull();
+    const lastingAllow = screen.getByTestId(TEST_IDS.allowSessionButton);
+    expect(lastingAllow).toBeDisabled();
+    fireEvent.click(lastingAllow);
+    expect(onDecide).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId(TEST_IDS.approveButton));
+    expect(onDecide).toHaveBeenCalledWith("allow-once", undefined);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("does not infer external-content guidance from the free-form reason", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    renderApproval({ ...hostRequest([]), reason: t("toolApprovalDialog.hostTerminalAfterExternalContent") }, vi.fn());
+    expect(screen.getAllByTestId("approval-terminal-note").map((note) => note.textContent)).not.toContain(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+  });
+
+  it("retains the host provenance guidance when a one-shot card has no approval-memory descriptor", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    renderApproval({ ...hostRequest([]), approvalMemory: undefined, hostTerminalAfterExternalContent: true }, vi.fn());
+    expect(screen.getByTestId("approval-terminal-note")).toHaveTextContent(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+    expect(screen.queryByTestId("approval-shell-rule-context")).toBeNull();
   });
 
   it("offers no persistent command rule from the manual host card", () => {

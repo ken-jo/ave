@@ -51,7 +51,7 @@ describe("mandatory sandbox control-file writes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const loaderEntries = [".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+  const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
 
   it.each(["darwin", "linux", "win32"] as const)("protects existing and absent loader paths in the shared policy on %s", platform => {
     withPlatform(platform, () => {
@@ -59,8 +59,11 @@ describe("mandatory sandbox control-file writes", () => {
         const project = join(root, existing ? "existing" : "absent");
         mkdirSync(project);
         if (existing) for (const entry of loaderEntries) {
-          if (entry === ".husky") mkdirSync(join(project, entry));
-          else writeFileSync(join(project, entry), "loader fixture");
+          if ([".husky", ".githooks", ".claude/hooks", ".claude/commands"].includes(entry)) mkdirSync(join(project, entry), { recursive: true });
+          else {
+            mkdirSync(dirname(join(project, entry)), { recursive: true });
+            writeFileSync(join(project, entry), "loader fixture");
+          }
         }
         const policy = buildMandatorySandboxWritePolicy([project]);
         for (const entry of loaderEntries) expect(policy.denyWrite).toContain(join(project, entry));
@@ -102,6 +105,29 @@ describe("mandatory sandbox control-file writes", () => {
       expect(policy.denyWrite).toContain(target);
       expect(policy.denyWrite).toContain(loader);
       if (platform === "linux") expect(policy.allowWrite).not.toContain(project);
+    });
+  });
+
+  it.each(["darwin", "linux"] as const)("pins linked child loaders inside separately writable targets on %s", platform => {
+    withPlatform(platform, () => {
+      const project = join(root, "project");
+      const storage = join(root, "storage");
+      const work = join(project, "work");
+      for (const directory of [join(project, ".claude"), join(project, ".idea"), work, storage]) {
+        mkdirSync(directory, { recursive: true });
+      }
+      const hooks = join(storage, "hooks");
+      const workspace = join(storage, "workspace.xml");
+      mkdirSync(hooks);
+      writeFileSync(workspace, "workspace fixture");
+      const hookLink = join(project, ".claude", "hooks");
+      const workspaceLink = join(project, ".idea", "workspace.xml");
+      symlinkSync(hooks, hookLink, "dir");
+      symlinkSync(workspace, workspaceLink, "file");
+      const policy = buildMandatorySandboxWritePolicy([project, storage, work]);
+      expect(policy.denyWrite).toEqual(expect.arrayContaining([hookLink, hooks, workspaceLink, workspace]));
+      if (platform === "linux") expect(policy.allowWrite).toEqual([storage, work]);
+      else expect(policy.allowWrite).toEqual([project, storage, work]);
     });
   });
 
@@ -197,7 +223,13 @@ describe("mandatory sandbox control-file writes", () => {
 
   it("hands only the .git marker and its children to the Git control policy", () => {
     expect(PROTECTED_ROOT_ENTRIES.filter(isSandboxGitMetadataEntry))
-      .toEqual([".git", ".git/hooks", ".git/config", ".git/modules"]);
+      .toEqual([".git"]);
+    for (const entry of [".git", ".git/hooks", ".git/config", ".git/modules"]) {
+      expect(isSandboxGitMetadataEntry(entry)).toBe(true);
+    }
+    for (const entry of [".gitconfig", ".githooks", ".github", ".gitignore"]) {
+      expect(isSandboxGitMetadataEntry(entry)).toBe(false);
+    }
     const project = join(root, "project");
     const marker = join(project, ".git");
     mkdirSync(join(marker, "modules", "inner", "hooks"), { recursive: true });
@@ -207,7 +239,7 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(marker, "modules", "inner", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(marker, "modules", "inner", "config"), "existing control");
     const denies = buildMandatorySandboxWritePolicy([project]).denyWrite;
-    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude/hooks"]) expect(denies).toContain(join(project, entry));
+    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude", ".claude/hooks"]) expect(denies).toContain(join(project, entry));
     for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(denies).not.toContain(path);
     for (const path of [join(marker, "hooks"), join(marker, "config"), join(marker, "modules", "inner", "hooks"), join(marker, "modules", "inner", "config")]) {
       expect(denies).toContain(path);
@@ -399,7 +431,7 @@ describe("mandatory sandbox control-file writes", () => {
       const sibling = join(ancestor, "sibling");
       const targets = join(root, "targets");
       for (const directory of [child, sibling, targets]) mkdirSync(directory, { recursive: true });
-      const controls = [".bashrc", ".gitconfig"].map((entry) => {
+      const controls = [".bashrc", ".bash_profile", ".gitconfig"].map((entry) => {
         const link = join(protectedRoot, entry);
         const target = join(targets, entry.slice(1));
         writeFileSync(target, "protected");

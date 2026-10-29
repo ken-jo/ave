@@ -85,7 +85,7 @@ function configure(cwd: string, key: string, value: string): void {
   git(cwd, ["config", "--local", key, value]);
 }
 
-function assertRefused(cwd: string, commands: readonly string[], marker?: string): void {
+function assertUnprovenRepository(cwd: string, commands: readonly string[], marker?: string): void {
   for (const platform of ["linux", "darwin", "win32"] as const) {
     setProcessPlatform(platform);
     for (const dialect of ["bash", "powershell"] as const) {
@@ -112,8 +112,8 @@ function assertRefused(cwd: string, commands: readonly string[], marker?: string
             ruleSubject: { kind: "shell", dialect, command, cwd }, shellExecution: { runsSandboxed }, headless,
             ...(handle === undefined ? {} : { verifiedShellCommand: handle }),
           });
-          expect.soft(check(false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-          expect.soft(check(true)).toMatchObject({ decision: "deny", layer: 2 });
+          expect.soft(check(false)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+          expect.soft(check(true)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
         }
         expect.soft(resolveVerifiedExecutable).not.toHaveBeenCalled();
         for (const entry of CHILD_ENTRY_POINTS) expect.soft(childProcess[entry]).not.toHaveBeenCalled();
@@ -136,7 +136,7 @@ describe("implicit repository file reads", () => {
     expect(control.status).not.toBe(0);
     expect(control.stderr).toContain(outside);
     expect(control.stderr).toMatch(/bad config|invalid config/i);
-    assertRefused(cwd, ["git log", "git rev-parse --verify HEAD", "git branch --list"]);
+    assertUnprovenRepository(cwd, ["git log", "git rev-parse --verify HEAD", "git branch --list"]);
   });
 
   it("uses an outside mailmap for synthetic private contact output", () => {
@@ -150,7 +150,7 @@ describe("implicit repository file reads", () => {
       expect(output).toContain("Private Synthetic Contact <private@example.invalid>");
       expect(output).not.toContain("Boundary Author <author@example.invalid>");
     }
-    assertRefused(cwd, ["git log -n 1", "git show --no-patch HEAD"]);
+    assertUnprovenRepository(cwd, ["git log -n 1", "git show --no-patch HEAD"]);
   });
 
   it("takes both cached and revision diff ordering from an outside order file", () => {
@@ -167,7 +167,7 @@ describe("implicit repository file reads", () => {
     expect(git(cwd, ["diff", "--cached", "--name-only"]).trim().split(/\r?\n/)).toEqual(["zeta.txt", "alpha.txt"]);
     git(cwd, ["-c", "commit.gpgSign=false", "commit", "-m", "changed paths"]);
     expect(git(cwd, ["diff", "HEAD~1", "HEAD", "--name-only"]).trim().split(/\r?\n/)).toEqual(["zeta.txt", "alpha.txt"]);
-    assertRefused(cwd, ["git diff --cached --name-only", "git diff 'HEAD~1' HEAD --name-only"]);
+    assertUnprovenRepository(cwd, ["git diff --cached --name-only", "git diff 'HEAD~1' HEAD --name-only"]);
   });
 
   it("follows a gitfile to another repository identity", () => {
@@ -177,7 +177,7 @@ describe("implicit repository file reads", () => {
     writeFileSync(join(cwd, ".git"), `gitdir: ${join(outside, ".git").replaceAll("\\", "/")}\n`);
     expect(realpathSync(git(cwd, ["rev-parse", "--absolute-git-dir"]).trim())).toBe(join(outside, ".git"));
     expect(git(cwd, ["log", "-n", "1"])).toContain("outside repository identity");
-    assertRefused(cwd, ["git log", "git rev-parse --absolute-git-dir"]);
+    assertUnprovenRepository(cwd, ["git log", "git rev-parse --absolute-git-dir"]);
   });
 
   it("follows a linked worktree commondir outside the working directory", () => {
@@ -190,7 +190,7 @@ describe("implicit repository file reads", () => {
     const common = readFileSync(join(metadata, "commondir"), "utf8").trim();
     expect(realpathSync(resolve(metadata, common))).toBe(join(outside, ".git"));
     expect(git(cwd, ["log", "-n", "1"])).toContain("shared metadata identity");
-    assertRefused(cwd, ["git log", "git rev-parse --git-dir"]);
+    assertUnprovenRepository(cwd, ["git log", "git rev-parse --git-dir"]);
   });
 
   it("loads a commit exclusively from an outside object alternate", () => {
@@ -205,7 +205,7 @@ describe("implicit repository file reads", () => {
     writeFileSync(alternate, join(outside, ".git", "objects").replaceAll("\\", "/") + "\n");
     git(cwd, ["update-ref", "refs/heads/main", object]);
     expect(git(cwd, ["show", "--no-patch", "HEAD"])).toContain("alternate object identity");
-    assertRefused(cwd, ["git log", "git show --no-patch HEAD", "git rev-parse --verify HEAD"]);
+    assertUnprovenRepository(cwd, ["git log", "git show --no-patch HEAD", "git rev-parse --verify HEAD"]);
   });
 });
 

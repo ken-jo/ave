@@ -22,6 +22,7 @@ import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
+import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 
 let root: string;
 let dir: string;
@@ -116,12 +117,19 @@ describe("shell confinement and escape rules", () => {
     expect(manager.listSessionRules("conversation-a")).toEqual([]);
   });
 
-  it.each(["rm -rf output", "git reset --hard", "cat ~/.ssh/id_rsa"])("uses ordinary approval for destructive or secret access inside confinement: %s", (command) => {
+  it.each(["rm -rf output", "cat ~/.ssh/id_rsa"])("uses ordinary approval for destructive or secret access inside confinement: %s", (command) => {
     const result = check(command, true);
     expect(result).toMatchObject({ decision: "ask" });
     expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     expect(check(command, true).decision).toBe("allow");
+  });
+
+  it("requires forced consent for the implicit control-file writes of a repository reset", () => {
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      expect(check("git reset --hard", true)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+    }
   });
 
   it.each([
@@ -221,9 +229,9 @@ describe("shell confinement and escape rules", () => {
     it.each([
       "tree src", "rg term", "node walker.js src", "cmd /c dir /s", "iex 'Get-ChildItem'", "& $cmd src",
       "Get-ChildItem @options", "Get-ChildItem 'unterminated",
-      "tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
+      "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
       "tar --c x.tar", "tar --a x.tar", "tar --u x.tar", "tar --lz4 -t -f x.tar",
-      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "xcopy $from out", "robocopy src out $flags",
+      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "robocopy src out $flags",
       "robocopy --% a b /e", "xcopy --% a b /s", "findstr --% /s term src", "$env:X='/e'; robocopy --% a b %X%", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
     ])("uses ordinary mode policy for undecidable traversal %s", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
@@ -233,6 +241,15 @@ describe("shell confinement and escape rules", () => {
       expect(result.forceModal).toBeUndefined();
       manager.setMode("allow");
       expect(checkPowerShell(command).decision).toBe("allow");
+    });
+
+    it.each(["tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "xcopy $from out"])("forces possibly protected mutation targets in %s", command => {
+      expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
+      expect(mayTraversePowerShellRecursively(command)).toBe(true);
+      for (const mode of ["strict", "default", "auto", "allow"] as const) {
+        manager.setMode(mode);
+        expect(checkPowerShell(command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+      }
     });
 
     // Listing and extraction read the archive, not a tree; extraction writes belong to the write policy.
@@ -471,5 +488,18 @@ describe("plain-shell invocation authorization", () => {
       expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
       expect(classifier.classify).not.toHaveBeenCalled();
     } finally { await cache.flush(); }
+  });
+});
+
+describe("protected write evidence budget", () => {
+  it.each(["strict", "default", "auto", "allow"] as const)("denies actual evidence parser exhaustion before mode or a card in %s", (mode) => {
+    manager.setMode(mode);
+    const command = " ".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1) + "git config core.hooksPath /tmp";
+    for (const headless of [false, true]) {
+      const result = check(command, true, { headless });
+      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit", layer: 1 });
+      expect(result.forceModal).toBeUndefined();
+      expect(result.reviewer).toBeUndefined();
+    }
   });
 });

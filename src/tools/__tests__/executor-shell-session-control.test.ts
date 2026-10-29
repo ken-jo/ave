@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChildProcess } from "node:child_process";
-import { mkdtempSync, realpathSync } from "node:fs";
+import childProcess, { ChildProcess } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -54,6 +55,8 @@ describe("ToolExecutor background shell session control", () => {
     child.stdout?.destroy();
     child.stderr?.destroy();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    syncBuiltinESMExports();
     await cleanupTmpDir(dir);
   });
 
@@ -106,17 +109,53 @@ describe("ToolExecutor background shell session control", () => {
   });
 
   it.each(["command", "cmd", "script", "shellCommand"])(
-    "still applies containment when a session-control call carries %s",
+    "ignores read-looking command data in %s during owned session control",
     async (field) => {
       // Quoted so bash keeps a Windows path's backslashes and names the file.
       const result = await kill("owner", {
         [field]: `cat ${shellQuote(join(homedir(), ".ssh", "id_rsa"))}`,
       });
 
-      expect(result.is_error).toBe(true);
-      expect(String(result.content)).toContain("Sensitive path");
-      expect(child.kill).not.toHaveBeenCalled();
-      expect(backgroundShellManager.read("owner", shellId)?.status).toBe("running");
+      expect(result.is_error).toBeFalsy();
+      expect(JSON.parse(String(result.content))).toMatchObject({ shellId, status: "killed" });
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+      expect(backgroundShellManager.read("owner", shellId)?.status).toBe("killed");
+    },
+  );
+
+  it.each(["command", "cmd", "script", "shellCommand"])(
+    "ignores protected-looking command data in %s while signaling only the owning shell",
+    async (field) => {
+      mkdirSync(join(dir, ".git"));
+      const target = join(dir, ".git", "config");
+      writeFileSync(target, "unchanged-control-file");
+      const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => { throw new Error("Unexpected executable spawn"); });
+      syncBuiltinESMExports();
+      const result = await kill("owner", { [field]: "echo changed > .git/config" });
+      expect(result.is_error).toBeFalsy();
+      expect(JSON.parse(String(result.content))).toMatchObject({ shellId, status: "killed" });
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+      expect(backgroundShellManager.read("owner", shellId)?.status).toBe("killed");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(readFileSync(target, "utf8")).toBe("unchanged-control-file");
+    },
+  );
+
+  it.each(["command", "cmd", "script", "shellCommand"])(
+    "does not expand command data in %s during session control",
+    async (field) => {
+      const target = join(dir, "untouched.txt");
+      writeFileSync(target, "unchanged-variable-target");
+      vi.stubEnv("UNRESOLVED_SESSION_WRITE_TARGET", target);
+      const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => { throw new Error("Unexpected executable spawn"); });
+      syncBuiltinESMExports();
+      const result = await kill("owner", { [field]: "echo changed > $UNRESOLVED_SESSION_WRITE_TARGET" });
+      expect(result.is_error, String(result.content)).toBeFalsy();
+      expect(JSON.parse(String(result.content))).toMatchObject({ shellId, status: "killed" });
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+      expect(backgroundShellManager.read("owner", shellId)?.status).toBe("killed");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(readFileSync(target, "utf8")).toBe("unchanged-variable-target");
     },
   );
 });

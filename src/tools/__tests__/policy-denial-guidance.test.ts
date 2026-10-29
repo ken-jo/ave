@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { buildPolicyDenialGuidance } from "../invocation-runner.js";
 import { ToolExecutor } from "../executor.js";
@@ -148,6 +149,7 @@ function makeCommandBearingTool(spy: { ran: boolean }): Tool {
 
 async function runUnattended(
   command: string,
+  mode: "strict" | "allow" = "strict",
 ): Promise<{ isError: boolean; content: string; ran: boolean }> {
   const dir = mkdtempSync(join(tmpdir(), "ave-denial-guidance-"));
   try {
@@ -155,6 +157,7 @@ async function runUnattended(
     const registry = new ToolRegistry();
     registry.register(makeCommandBearingTool(spy));
     const permMgr = new PermissionManager(join(dir, "permissions.json"));
+    permMgr.setMode(mode);
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -185,46 +188,52 @@ async function runUnattended(
 }
 
 describe("policy denials carry their guidance through to the tool result", () => {
-  it("keeps the bracketed prefix a downstream parser keys on", async () => {
+  it("keeps the permission-denial prefix for a headless host-shell request", async () => {
     const result = await runUnattended("cat $PROJECT_SECRET/file.txt");
     expect(result.isError).toBe(true);
     expect(result.ran).toBe(false);
     // Match the suite's Korean locale.
-    expect(result.content).toContain("[Shell 경로 정책 차단]");
+    expect(result.content).toContain("[권한 차단]");
   });
 
-  it("names the unresolved active operand under the dynamic-path rule", async () => {
+  it("tells the model nobody can approve an opaque headless host-shell request", async () => {
     const result = await runUnattended("cat $PROJECT_SECRET/file.txt");
     expect(result.isError).toBe(true);
     expect(result.ran).toBe(false);
-    expect(result.content).toContain("operand: $PROJECT_SECRET/file.txt (rule: shell-path-policy/dynamic-path)");
+    expect(result.content).toContain("Nobody can approve this request; do not retry.");
   });
 
-  it("admits the same bytes as a quoted literal filename", async () => {
-    const result = await runUnattended("cat '$PROJECT_SECRET/file.txt'");
+  it("admits a quoted literal filename through Allow mode", async () => {
+    const result = await runUnattended("cat '$PROJECT_SECRET/file.txt'", "allow");
     expect(result.isError).toBe(false);
     expect(result.ran).toBe(true);
   });
 
-  it("tells the model that the filesystem root can never be authorized", async () => {
-    // Root writes reach directory policy; root reads only reach the sensitive-path deny-list.
+  it("denies a headless root-write request without offering a grant", async () => {
     const result = await runUnattended(`chmod u+w ${hostFilesystemPath("/")}`);
     expect(result.isError).toBe(true);
     expect(result.ran).toBe(false);
-    expect(result.content).toContain("[디렉토리 정책 차단]");
-    expect(result.content).toContain("allowed-directories/not-grantable");
+    expect(result.content).toContain("Nobody can approve this request; do not retry.");
   });
 
-  it("says, on a write refusal, that reading outside those directories is still allowed", async () => {
+  it("denies a headless outside-write request with the no-retry instruction", async () => {
     const result = await runUnattended(`chmod u+w ${hostFilesystemPath("/var/tmp/ave-denial-guidance-outside/x")}`);
     expect(result.isError).toBe(true);
-    // Clarify that directory grants bound writes and execution, preserving permitted wide reads.
-    expect(result.content).toContain("쓰기와 명령 실행에만 적용됩니다");
+    expect(result.ran).toBe(false);
+    expect(result.content).toContain("Nobody can approve this request; do not retry.");
   });
 
-  it("lets the read the same guidance describes actually run", async () => {
-    const result = await runUnattended(`cat ${HOSTS_FILE}`);
+  it("lets an ordinary wide read run in Allow mode", async () => {
+    const result = await runUnattended(`cat ${HOSTS_FILE}`, "allow");
     expect(result.isError).toBe(false);
     expect(result.ran).toBe(true);
   });
+  it("keeps host credential stores admission-denied even in Allow mode", async () => {
+    const target = join(tmpdir(), "policy-guidance", ".ave", "secrets", "token");
+    const result = await runUnattended(`cat ${shellQuote(target)}`, "allow");
+    expect(result.isError).toBe(true);
+    expect(result.ran).toBe(false);
+    expect(result.content).toContain("sensitive-path");
+  });
+
 });

@@ -309,13 +309,13 @@ export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], c
 
 interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; commandCount: number; changesState?: true; unproven?: string; exactLiteralEvaluation?: true }
 function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.readsPath ||= value.readsPath; into.commandCount += value.commandCount; into.changesState ||= value.changesState; into.unproven ??= value.unproven; }
-interface IndexRange { from: number; to: number }
-interface NativeArgvBoundary { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; ambiguous?: true }
+export interface IndexRange { from: number; to: number }
+export interface NativeArgvBoundary { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; ambiguous?: true }
 function inRange(range: IndexRange | undefined, index: number): boolean {
   return range !== undefined && index >= range.from && index < range.to;
 }
 const argvBoundaries = new WeakMap<ShellFloorContext, WeakMap<readonly (string | undefined)[], NativeArgvBoundary>>();
-function literalNativeBoundary(argv: readonly (string | undefined)[], context: ShellFloorContext): NativeArgvBoundary {
+export function literalNativeBoundary(argv: readonly (string | undefined)[], context: ShellFloorContext): NativeArgvBoundary {
   let boundaries = argvBoundaries.get(context);
   if (boundaries === undefined) { boundaries = new WeakMap(); argvBoundaries.set(context, boundaries); }
   const cached = boundaries.get(argv);

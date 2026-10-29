@@ -85,11 +85,12 @@ function controlFixture(): RationaleRequiredControl {
     },
     permission: {
       decision: "ask",
-      reason: "reviewer medium",
-      layer: 5,
+      reason: "Automatic review requires human approval.",
+      reasonCode: "reviewer-human-required",
+      layer: 6,
       reviewer: {
         route: "foreground-auto",
-        verdict: { level: "medium", reason: "bounded deletion needs review" },
+        verdict: { level: "high", reason: "bounded deletion needs review" },
         outcome: "fresh",
       },
     },

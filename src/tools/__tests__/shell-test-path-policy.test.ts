@@ -45,8 +45,8 @@ describe.skipIf(process.platform === "win32")("test expression path roles", () =
     expect(fixture().policy(command)?.kind).toBe("sandbox-boundary");
   });
 
-  it("retains the sensitive-path guard for file predicates", () => {
-    expect(fixture().policy(`test -e ${join(homedir(), ".ssh", "id_rsa")}`)?.kind).toBe("sensitive-path");
+  it("applies the explicit read fence to secret-file predicates", () => {
+    expect(fixture().policy(`test -e ${join(homedir(), ".ssh", "id_rsa")}`)?.kind).toBe("sandbox-boundary");
   });
 
   it.each([

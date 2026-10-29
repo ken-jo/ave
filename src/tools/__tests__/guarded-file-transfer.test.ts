@@ -107,6 +107,43 @@ describe("authority and exclusive destinations", () => {
     });
   }
 
+  it("admits an exact outside destination without granting its parent or siblings", async () => {
+    const workspace = join(root, "workspace");
+    const outside = join(root, "outside");
+    await mkdir(workspace); await mkdir(outside);
+    source = join(workspace, "source.bin");
+    destination = join(outside, "admitted.bin");
+    await writeFile(source, bytes);
+    const narrow = { ...context, cwd: workspace, extraAllowedDirectories: [destination] };
+    expect(await copyPath({ sourcePath: source, destinationPath: destination }, narrow)).toMatchObject({ ok: true });
+    expect(await readFile(destination)).toEqual(bytes);
+    const sibling = join(outside, "sibling.bin");
+    expect(await copyPath({ sourcePath: source, destinationPath: sibling }, narrow)).toMatchObject({ ok: false, code: "path-denied", cleanup: "not-created" });
+    await absent(sibling);
+    expect(await readdir(outside)).toEqual(["admitted.bin"]);
+  });
+
+  it("retains destination-parent identity checks with only an exact child grant", async () => {
+    const workspace = join(root, "workspace");
+    const parent = join(root, "outside");
+    await mkdir(workspace); await mkdir(parent);
+    source = join(workspace, "source.bin");
+    destination = join(parent, "output");
+    await writeFile(source, bytes);
+    const narrow = { ...context, cwd: workspace, extraAllowedDirectories: [destination] };
+    const result = await runOwnedTransfer({ sourcePath: source, destinationPath: destination, destinationKind: "directory" }, narrow, async ({ sink }) => {
+      await rename(parent, join(root, "original-parent"));
+      await mkdir(parent);
+      await mkdir(destination);
+      await writeFile(join(destination, "foreign"), "preserve-foreign");
+      await sink.file("unexpected.bin", chunks(bytes), { expectedBytes: bytes.length, ownerExecutable: false });
+    });
+    expect(result).toMatchObject({ ok: false, code: "source-changed", cleanup: "incomplete" });
+    expect(await readdir(destination)).toEqual(["foreign"]);
+    expect(await readFile(join(destination, "foreign"), "utf8")).toBe("preserve-foreign");
+    expect(await readdir(join(root, "original-parent", "output"))).toEqual([]);
+  });
+
   it("lets exactly one of two simultaneous creators keep its complete output", async () => {
     const results = await Promise.all([1, 2].map(() => copyPath({ sourcePath: source, destinationPath: destination }, context)));
     expect(results.filter((result) => result.ok)).toHaveLength(1);
@@ -124,7 +161,7 @@ describe("authority and exclusive destinations", () => {
     expect(await copyPath({ sourcePath: source, destinationPath: join(root, "absent", "new") }, context)).toMatchObject({ ok: false, code: "invalid-destination-parent", cleanup: "not-created" });
   });
 
-  it("confines both endpoints and denies sensitive descendants", async () => {
+  it("confines both endpoints and denies credential-store descendants", async () => {
     await mkdir(join(root, "workspace"));
     const narrowed = { ...context, cwd: join(root, "workspace") };
     expect(await copyPath({ sourcePath: source, destinationPath: join(narrowed.cwd, "copy") }, narrowed)).toMatchObject({ ok: false, code: "path-denied", cleanup: "not-created" });
@@ -132,6 +169,11 @@ describe("authority and exclusive destinations", () => {
     source = join(root, "tree");
     await mkdir(source);
     await writeFile(join(source, ".env"), "synthetic-only");
+    expect(await copyPath({ sourcePath: source, destinationPath: destination }, context)).toMatchObject({ ok: true });
+    expect(await readFile(join(destination, ".env"), "utf8")).toBe("synthetic-only");
+    await rm(destination, { recursive: true });
+    await mkdir(join(source, ".ave", "secrets"), { recursive: true });
+    await writeFile(join(source, ".ave", "secrets", "token.json"), "host-credential-fixture");
     expect(await copyPath({ sourcePath: source, destinationPath: destination }, context)).toMatchObject({ ok: false, code: "path-denied", cleanup: "removed" });
     await absent(destination);
   });

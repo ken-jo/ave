@@ -20,6 +20,7 @@ import {
   directoryInstructionsForToolResult,
   liveDirectoryInstructions,
 } from "../directory-instructions.js";
+import { makeConversationPermissionDeps } from "../../__tests__/support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 let project: string;
@@ -124,6 +125,7 @@ describe("directory instructions in the query loop", () => {
       execute: async () => ({ output: "contents", isError: false }),
     }));
     const loop = new ConversationLoop({
+      ...makeConversationPermissionDeps(),
       settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
       systemPromptBuilder: { build: () => "system" },
       inputClassifier: new InputClassifier(),

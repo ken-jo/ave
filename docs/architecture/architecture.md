@@ -1845,7 +1845,7 @@ The [owner-approved permission decision tree](permission-decision-tree.md) is th
 
 All builtin, plugin and MCP tools enter the same normalized decision pipeline. Callers supply evidence and execute the returned outcome; they do not own additional mode matrices. Argument rewriting finishes before authorization, and user script PreToolUse blocks before any target approval. The source affects display/audit, not authority.
 
-New installs use Default (`strict`). Persisted `default` remains Allow writes; stored IDs do not change. Eligible checkpoint-backed project writes pass in Allow writes/auto/Allow, while Default asks. Ordinary reads remain allowed. Secret reads use mode/rules; secret writes follow file rules. Host credential stores remain admission-denied. Exact lexical/canonical identity, all-target checks and checkpoint recovery remain required. Ordinary outside writes use one folder/invocation card. See [Project file writes](permission-policy-design.md#project-file-writes) for eligibility and recovery.
+New installs use Default (`strict`). Persisted `default` remains Allow writes; stored IDs do not change. Eligible checkpoint-backed project writes pass in Allow writes/auto/Allow, while Default asks. Ordinary reads remain allowed. Secret reads use mode/rules; secret writes follow file rules. Host credential stores and the process ownership lock remain admission-denied. Exact lexical/canonical identity, all-target checks and checkpoint recovery remain required. Ordinary outside writes use one folder/invocation card. See [Project file writes](permission-policy-design.md#project-file-writes) for eligibility and recovery.
 
 Owner-away cards wait without a timeout by default; optional `permissions.ownerAwayAutoSkipMinutes` denies after N minutes (0 means unlimited). True headless auto requests review first; a required human fallback denies with “Nobody can approve this request; do not retry.” Recently denied replaces deferred approvals with redacted summaries and fresh manually approved reruns. Reruns retain the original session and turn-origin restrictions; the user click supplies only one-time consent. Stored history grants nothing.
 
@@ -1922,19 +1922,13 @@ ledger records a plugin invocation as host-observable but an out-of-process MCP
 invocation as `hostObservable:false`; and the identity field is `pluginId` for a
 plugin versus `mcpServerId` for an MCP tool.
 
-The one asymmetry that is a _path_ fork rather than a pure input difference is the
-foreground reviewer AUTO-APPROVE lane, and it is a direct consequence of the
-sanctioned trust-tier split: `PermissionManager.categoryBasedDecision`
-short-circuits every low-trust (MCP) invocation with a bare `ask` carrying no
-reviewer route, so an MCP tool is categorically excluded from the reviewer
-auto-approve lane and escalates straight to the ApprovalGate, while a
-medium-trust plugin may enter the lane (the reviewer classifier runs, keyed on
-the host-computed `ownerPluginSandboxRoot`) and, on any non-LOW verdict, escalates
-to the SAME gate. A low-trust foreign peer is therefore never silently
-auto-approved; both sources still converge at the user-facing gate. There is no
-MCP analog of the app-only dispatch bypass — external servers declare no
-app-visible tools. This whole invariant (deny/gate/audit/effect-ledger convergence plus the
-trust-gated lane) is regression-locked by
+Read-only MCP tools are allowed by kind. Other MCP tools use the same mode and
+reviewer stages as other tool sources: auto invokes the reviewer, low/medium
+verdicts allow, and high/error/abort verdicts require a normal approval card.
+Plugin invocations still require their own effect permissions and one-use
+operation grants; neither bypasses a tool ask rule. Both sources converge on
+the active recipient’s approval gate and retain their audit/effect-ledger
+identities. This boundary is covered by
 `src/tools/__tests__/executor-mcp-plugin-parity.test.ts`.
 
 ## OS Execution Sandbox And Plugin Workers

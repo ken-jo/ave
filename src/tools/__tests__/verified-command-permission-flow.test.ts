@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
   auditLogger = new AuditLogger(join(cwd, "audit"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
-  manager.setMode("allow");
+  manager.setMode("default");
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(false);
   vi.mocked(resolveVerifiedExecutable).mockImplementation((candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
@@ -146,12 +146,13 @@ it.each([
   ["git diff --name-only 'HEAD~1' HEAD", "Bash(git diff *)"],
   ["git rev-parse --verify HEAD", "Bash(git rev-parse *)"],
   ["git branch --list", "Bash(git branch *)"],
-])("executes checked %s headlessly only after its exact grant", async (command, broadRule) => {
+])("executes checked %s headlessly under prefix and exact grants", async (command, broadRule) => {
   const f = fixture(command);
   manager.setRules([withCurrentShellRuleVersion({ pattern: broadRule, action: "allow" })]);
-  const [blocked] = await f.run(true);
-  expect(blocked!.is_error).toBe(true);
-  expect(f.execute).not.toHaveBeenCalled();
+  const [prefixed] = await f.run(true);
+  expect(prefixed!.is_error).not.toBe(true);
+  expect(f.execute).toHaveBeenCalledOnce();
+  f.execute.mockClear();
   manager.setRules([withCurrentShellRuleVersion({ pattern: `Bash(${command})`, action: "allow" })]);
   const [allowed] = await f.run(true);
   expect(allowed!.is_error).not.toBe(true);

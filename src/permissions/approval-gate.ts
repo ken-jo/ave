@@ -109,6 +109,8 @@ export interface ApprovalRequest {
   id: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
+  // Display-only projection of the host terminal's current-turn provenance; never an approval capability.
+  hostTerminalAfterExternalContent?: true;
   category: "tool" | "agent-action";
   // Permission policy.5 — discriminator for the renderer to pick the right card. Defaults to `"tool"` when omitted (backwards-compatible).
   kind?: ApprovalKind;
@@ -220,7 +222,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -936,6 +938,7 @@ export class ApprovalGate {
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
       hostTerminal,
+      hostTerminalAfterExternalContent: _requestedAfterExternalContent,
       userOwnedSurface: requestedUserOwnedSurface,
       userOwnedSurfaceReviewFallback: requestedSurfaceReviewFallback,
       executionPlan: requestedExecutionPlan,
@@ -951,7 +954,7 @@ export class ApprovalGate {
       approvalRuleBasis,
       verifiedShellCommand,
       ...request
-    } = req;
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
@@ -1155,6 +1158,7 @@ export class ApprovalGate {
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
       ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
       ...(executionPlanAudit === undefined

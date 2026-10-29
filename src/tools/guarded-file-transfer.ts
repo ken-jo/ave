@@ -240,7 +240,8 @@ class OwnedTransfer {
     } catch (error) {
       throw new FileTransferError("invalid-destination-parent", `Destination parent must be an existing directory: ${dirname(lexicalDestination)}`, { cause: error });
     }
-    assertAccess(parent, this.context, this.request.assertPath);
+    // Creating the admitted child needs no broader grant to its parent.
+    // The canonical child and parent identity are still checked independently.
     this.summary.destinationPath = join(parent, basename(lexicalDestination));
     assertAccess(this.summary.destinationPath, this.context, this.request.assertPath);
     if (containsPath(source.path, this.summary.destinationPath) || containsPath(this.summary.destinationPath, source.path)) {

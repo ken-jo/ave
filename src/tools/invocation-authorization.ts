@@ -24,6 +24,7 @@ import {
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
+import { preparedShellFacts, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -107,6 +108,7 @@ export interface AuthorizationStageContext {
   hostShellRequiresExplicitApproval: boolean;
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
+  preparedShellInvocation?: PreparedShellInvocation;
   hostShellExecutionPlanAudit:
     | HostShellExecutionPlanAuditProjection | undefined;
   // Relaxations of the selected execution-route plan (execution-router).
@@ -184,6 +186,7 @@ export async function authorizeToolInvocation(
     hostShellRequiresExplicitApproval,
     hostShellExecutionPlan,
     verifiedShellCommand,
+    preparedShellInvocation,
     hostShellExecutionPlanAudit,
     hostShellPathPolicyRelaxations,
     hostShellExecutionPermitBinding,
@@ -359,6 +362,9 @@ export async function authorizeToolInvocation(
           runsSandboxed: isConfinedHostShellExecution(hostShellExecutionPlan, invocationPermissionContext.disposableSubstrate)
             || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
+          ...(shellDialect === "bash" && preparedShellInvocation !== undefined && hostShellExecutionPlan.substrate !== "mxc"
+            && invocationPermissionContext.disposableSubstrate === undefined
+            ? { environmentSnapshot: preparedShellFacts(preparedShellInvocation).environment } : {}),
         } : terminalScope !== undefined
           // The user's host terminal decides on its sealed host route's relaxations (none); the isolated terminal keeps its own.
           ? { runsSandboxed: false, ...(terminalScope.lane === "manual" ? { pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [] } : {}) }

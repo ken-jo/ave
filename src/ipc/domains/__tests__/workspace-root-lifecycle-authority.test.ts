@@ -26,6 +26,7 @@ vi.mock("electron", () => ({
 import { registerWorkspaceHandlers } from "../workspace.js";
 import { ConversationLoop } from "../../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../../engine/__tests__/conversation-loop-test-helpers.js";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { ApprovalGate } from "../../../permissions/approval-gate.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { createDynamicTool } from "../../../tools/base.js";
@@ -80,6 +81,7 @@ function makeSubAgentShapedLoop(gate: ApprovalGate, executeSpy: (input: unknown)
   }));
   return new ConversationLoop(makeConversationLoopDeps({
     toolRegistry: registry,
+    permissionManager: new PermissionManager(join(homeRoot, "permissions.json")),
     approvalGate: gate,
   }));
 }

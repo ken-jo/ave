@@ -16,7 +16,7 @@ import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js
 class BroadShellWildcardError extends RuleSpecifierError {}
 class RetiredRuleError extends RuleSpecifierError {}
 
-function isRetiredHostTerminalRule(pattern: string): boolean {
+export function isRetiredHostTerminalRule(pattern: string): boolean {
   return pattern.startsWith("HostTerminal(");
 }
 

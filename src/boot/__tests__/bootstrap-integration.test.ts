@@ -117,7 +117,7 @@ vi.mock("../conversation.js", () => ({
   createPostTurnHookChain: vi.fn(() => ({ postTurnHookChain: {} })),
   createApprovalGate: vi.fn(async () => {
     h.rec("approvalGate");
-    return { setConversationTitleResolver: vi.fn() };
+    return { setConversationTitleResolver: vi.fn(), setOwnerAwayAutoSkipMinutes: vi.fn() };
   }),
   createHookRunner: vi.fn(() => ({})),
   createConversationLoop: vi.fn((deps) => {
@@ -261,6 +261,8 @@ vi.mock("../steps/model-catalog-refresh.js", () => ({
 
 vi.mock("../steps/reviewer-wiring.js", () => ({
   wireReviewerAgent: vi.fn(() => ({
+    classifier: { classify: vi.fn(async () => ({ level: "low", reason: "fixture classification" })) },
+    recentlyDenied: { setReplayResolver: vi.fn() },
     rationaleScopeReviewer: { reevaluate: vi.fn() },
   })),
 }));

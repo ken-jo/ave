@@ -18,6 +18,7 @@ export interface ShellRedirect {
   target?: ShellWord;
   data?: ShellWord;
   descriptor: boolean;
+  fileDescriptor?: number;
   heredocQuoted?: boolean;
   literalDataBytes?: number;
 }
@@ -42,7 +43,7 @@ export type ShellStatement =
   | { kind: "if"; source: ShellSpan; condition: ShellStatement; consequent: ShellStatement; alternate: ShellStatement }
   | { kind: "while"; source: ShellSpan; condition: ShellStatement; body: ShellStatement; until: boolean }
   | { kind: "function"; source: ShellSpan; name: string; body: ShellStatement }
-  | { kind: "unsupported"; source: ShellSpan; reason: string };
+  | { kind: "unsupported"; source: ShellSpan; reason: string; redirected?: { body: ShellStatement; redirects: readonly ShellRedirect[] } };
 
 export type ShellAnalysis = { ok: true; program: ShellStatement; totalTokens?: number } | { ok: false; reason: string };
 
@@ -179,7 +180,8 @@ function lowerStatement(node: ShellSyntaxNode, source: ShellSource): ShellStatem
       // Inherited input needs descriptor and consumption provenance; support only fixed output descriptors until execution owns that proof.
       if (redirects.some((redirect) => ![">", ">>", ">|", ">&", "&>", "&>>"].includes(value(redirect, "Op"))
         || (redirect.N && !/^0*[1-9][0-9]*$/.test(value(child(redirect, "N"), "Value"))))) {
-        return { kind: "unsupported", source: location, reason: "Unsupported compound input or dynamic descriptor redirection" };
+        return { kind: "unsupported", source: location, reason: "Unsupported compound input or dynamic descriptor redirection",
+          redirected: { body: statement, redirects: redirects.map(redirect => lowerRedirect(redirect, source)) } };
       }
       statement = { kind: "redirected", source: location, body: statement, redirects: redirects.map((redirect) => lowerRedirect(redirect, source)) };
     }
@@ -284,6 +286,9 @@ function lowerAssignment(node: ShellSyntaxNode, source: ShellSource): ShellAssig
 function lowerRedirect(node: ShellSyntaxNode, source: ShellSource): ShellRedirect {
   const location = span(node, source);
   const operator = value(node, "Op");
+  const descriptorText = node.N ? value(child(node, "N"), "Value") : undefined;
+  const fileDescriptor = descriptorText === undefined ? operator === "<>" ? 0 : undefined
+    : /^[0-9]+$/u.test(descriptorText) && Number.isSafeInteger(Number(descriptorText)) ? Number(descriptorText) : undefined;
   const word = lowerWord(child(node, "Word"), source);
   if (operator === "<<" || operator === "<<-") {
     const quoted = children(child(node, "Word"), "Parts").some((part) => part.Type !== "Lit" || value(part, "Value").includes("\\"));
@@ -291,18 +296,18 @@ function lowerRedirect(node: ShellSyntaxNode, source: ShellSource): ShellRedirec
     const range = body ? source.literalHeredocs.get(body.Pos?.Offset ?? -1) : undefined;
     const data = range === undefined ? (body ? lowerWord(body, source, quoted ? "literal" : "heredoc") : literalWord("", location))
       : literalWord(source.text.slice(range[2], range[3]), { start: range[0]!, end: range[1]!, raw: source.text.slice(range[2], range[3]) });
-    return { source: location, effect: "read", descriptor: false, heredocQuoted: quoted, data,
+    return { source: location, effect: "read", descriptor: false, ...(fileDescriptor === undefined ? {} : { fileDescriptor }), heredocQuoted: quoted, data,
       ...(range ? { literalDataBytes: range[1]! - range[0]! } : {}) };
   }
   if (operator === "<<<") {
     if (source.dialect !== "bash") throw new ShellAnalysisError("Unsupported non-POSIX here-string");
-    return { source: location, effect: "read", descriptor: false, data: word };
+    return { source: location, effect: "read", descriptor: false, ...(fileDescriptor === undefined ? {} : { fileDescriptor }), data: word };
   }
   const target = staticShellWord(word);
   const descriptor = [">&", "<&"].includes(operator) && target !== undefined && /^(?:\d+-?|-)$/.test(target);
   if ([">&", "<&"].includes(operator) && target === undefined) throw new ShellAnalysisError("Unresolved descriptor redirect");
   return { source: location, effect: operator.startsWith("<") && operator !== "<>" ? "read" : "write",
-    descriptor, ...(descriptor ? {} : { target: word }) };
+    descriptor, ...(fileDescriptor === undefined ? {} : { fileDescriptor }), ...(descriptor ? {} : { target: word }) };
 }
 type WordContext = "unquoted" | "double" | "assignment" | "heredoc" | "literal";
 function lowerWord(node: ShellSyntaxNode, source: ShellSource, context: WordContext = "unquoted"): ShellWord {

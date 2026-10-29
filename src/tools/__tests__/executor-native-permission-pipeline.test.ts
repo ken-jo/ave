@@ -21,6 +21,7 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { ToolExecutor } from "../executor.js";
 import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
+import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
 
@@ -96,6 +97,50 @@ function reviewer() {
 }
 
 describe("native invocation permission evidence", () => {
+  it.each([false, true])("uses the prepared child environment for a deterministic write target, sandboxed=%s", async (sandboxed) => {
+    manager.setMode("allow");
+    vi.stubEnv("PWD", join(root, "state"));
+    if (sandboxed) {
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
+        reason: "Fixture confinement", confines: { filesystem: true, process: true, network: true } });
+    }
+    const tool = new BashTool();
+    let childEnvironment: Readonly<Record<string, string | undefined>> | undefined;
+    const execute = vi.spyOn(tool, "execute").mockImplementation(async (_input, context) => {
+      childEnvironment = preparedShellFacts(context!.preparedShellInvocation!).environment;
+      return { output: "prepared operation", isError: false };
+    });
+    registry.register(tool);
+    const check = vi.spyOn(manager, "checkDetailed");
+    const [result] = await run(executor(), tool.name, { command: 'echo x > "$PWD/out.txt"',
+      executionMode: sandboxed ? "default" : "host", justification: "Write the project fixture" });
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
+    expect(childEnvironment?.PWD).toBe(project);
+    const permissionCall = check.mock.calls.findLast((call) => call[4]?.shellExecution?.environmentSnapshot !== undefined);
+    expect(permissionCall?.[4]?.shellExecution?.environmentSnapshot).toBe(childEnvironment);
+    expect(check.mock.results.at(-1)?.value.pipelineRequest?.floor).toBeUndefined();
+  });
+
+  it("does not borrow a stripped parent variable as a deterministic child write target", async () => {
+    manager.setMode("allow");
+    vi.stubEnv("UNFORWARDED_WRITE_TARGET", join(project, "out.txt"));
+    const tool = new BashTool();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "must not execute", isError: false });
+    registry.register(tool);
+    const check = vi.spyOn(manager, "checkDetailed");
+    const [result] = await run(executor(), tool.name, { command: 'echo x > "$UNFORWARDED_WRITE_TARGET"',
+      executionMode: "host", justification: "Write the project fixture" });
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+    const permissionCall = check.mock.calls.findLast((call) => call[4]?.shellExecution?.environmentSnapshot !== undefined);
+    expect(permissionCall?.[4]?.shellExecution?.environmentSnapshot).not.toHaveProperty("UNFORWARDED_WRITE_TARGET");
+  });
+
   it.each(["strict", "default"] as const)("asks before reading a secret file in %s", async (mode) => {
     manager.setMode(mode);
     const path = join(project, ".env");

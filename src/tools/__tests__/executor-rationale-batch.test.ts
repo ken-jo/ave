@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { HookRunner } from "../../hooks/hook-runner.js";
+import type { ApprovalGate } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
@@ -155,6 +156,14 @@ function reviewerPermissionManager(directory: string, classify = vi.fn(() => ({
   return manager;
 }
 
+function rationaleApprovalGate(): ApprovalGate {
+  return {
+    requestAndWait: vi.fn(async () => {
+      throw new Error("The rationale control must suspend before the approval card");
+    }),
+  } as unknown as ApprovalGate;
+}
+
 const permissionContext = {
   trustOrigin: "llm-tool-arg" as const,
   userIntent: "Perform the requested operation.",
@@ -231,7 +240,7 @@ describe("ToolExecutor rationale conversation batches", () => {
           : { action: "allow" },
       );
       const manager = reviewerPermissionManager(directory);
-      const executor = new ToolExecutor(registry, hooks, manager);
+      const executor = new ToolExecutor(registry, hooks, manager, undefined, rationaleApprovalGate());
       const { runtime, materialize } = hostRuntime();
       const onToolStart = vi.fn();
       const onToolEnd = vi.fn();
@@ -302,6 +311,8 @@ describe("ToolExecutor rationale conversation batches", () => {
         registry,
         undefined,
         reviewerPermissionManager(directory, classify),
+        undefined,
+        rationaleApprovalGate(),
       );
       const firstRuntime = hostRuntime();
       const first = await executor.executeConversationBatch(
@@ -347,6 +358,8 @@ describe("ToolExecutor rationale conversation batches", () => {
           registry,
           undefined,
           reviewerPermissionManager(directory),
+          undefined,
+          rationaleApprovalGate(),
         );
         const { runtime } = hostRuntime();
         const onToolStart = vi.fn();

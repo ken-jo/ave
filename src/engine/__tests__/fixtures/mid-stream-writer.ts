@@ -9,6 +9,8 @@ import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { createDynamicTool } from "../../../tools/base.js";
+import { join } from "node:path";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 
@@ -80,6 +82,7 @@ const loop = new ConversationLoop({
   inputClassifier: new InputClassifier(),
   routeEngine: new RouteEngine(),
   toolRegistry,
+  permissionManager: new PermissionManager(join(aveDir, "permissions.json")),
   memoryManager,
 } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 (loop as unknown as { provider: LLMProvider | null }).provider = new KillTestProvider();

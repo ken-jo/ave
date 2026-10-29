@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { ApplyPatchTool, MultiEditTool, EditFileTool, WriteFileTool } from "../../tools/file-tools.js";
+import { ApplyPatchTool, MultiEditTool, EditFileTool, WriteFileTool, ReadFileTool } from "../../tools/file-tools.js";
 import { extractTargetFilePaths } from "../../tools/pipeline/path-extraction.js";
 import type { Tool } from "../../tools/base.js";
 import type { ToolExecutionContext } from "../../tools/types.js";
@@ -117,7 +117,7 @@ describe("reviewer host file-policy facts", () => {
     expect(existsSync(input.path)).toBe(false);
   });
 
-  it("retains the sensitive-write gate even for a path inside the project", async () => {
+  it("keeps secret-write facts while ordinary project mutations retain read prerequisites", async () => {
     const path = join(workDir, "project", "src", ".env");
     writeFileSync(path, "unchanged");
     for (const tool of [new WriteFileTool(), new EditFileTool(), new MultiEditTool()]) {
@@ -126,12 +126,14 @@ describe("reviewer host file-policy facts", () => {
       const facts = hostFacts(_internal.buildUserPrompt(reviewContext(tool, input)));
       expect(facts.allDeclaredPathsInsideAllowedDirectories).toBe(true);
       expect(facts.anyDeclaredPathSensitiveWrite).toBe(true);
-      expect((await tool.execute(input, executionContext)).isError).toBe(true);
+      writeFileSync(path, "unchanged");
+      expect((await new ReadFileTool().execute({ path }, executionContext)).isError).toBe(false);
+      expect((await tool.execute(input, executionContext)).isError).toBe(false);
+      expect(readFileSync(path, "utf8")).toBe("changed");
     }
-    expect(readFileSync(path, "utf8")).toBe("unchanged");
   });
 
-  it("declares apply_patch targets so a sensitive file in the patch keeps the sensitive-write floor", async () => {
+  it("declares secret patch targets without making them unconditional write denials", async () => {
     const sensitive = join(workDir, "project", "src", ".env");
     writeFileSync(sensitive, "unchanged\n");
     const tool = new ApplyPatchTool();
@@ -153,12 +155,11 @@ describe("reviewer host file-policy facts", () => {
       allDeclaredPathsInsideAllowedDirectories: true,
       anyDeclaredPathSensitiveWrite: true,
     });
+    expect((await new ReadFileTool().execute({ path: sensitive }, executionContext)).isError).toBe(false);
     const result = await tool.execute(input, executionContext);
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("Sensitive path:");
-    expect(result.output).toContain("**/.env");
-    expect(readFileSync(sensitive, "utf8")).toBe("unchanged\n");
-    expect(existsSync(join(workDir, "project", "src", "note.txt"))).toBe(false);
+    expect(result.isError).toBe(false);
+    expect(readFileSync(sensitive, "utf8")).toBe("changed\n");
+    expect(readFileSync(join(workDir, "project", "src", "note.txt"), "utf8")).toBe("hello\n");
   });
 
   it("rates a patch inside the project like the other file writes, not as an undeclared write", async () => {

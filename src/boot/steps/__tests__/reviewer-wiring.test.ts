@@ -587,8 +587,8 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
     const rewiredRationaleScopeReviewer = { reevaluate: vi.fn() };
     const wireReviewerAgentMock = vi
       .fn()
-      .mockReturnValueOnce({ rationaleScopeReviewer: initialRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } })
-      .mockReturnValue({ rationaleScopeReviewer: rewiredRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } });
+      .mockReturnValueOnce({ classifier: new RuleBasedRiskClassifier(), rationaleScopeReviewer: initialRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } })
+      .mockReturnValue({ classifier: new RuleBasedRiskClassifier(), rationaleScopeReviewer: rewiredRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } });
     vi.doMock("electron", () => ({
       BrowserWindow: { getAllWindows: () => [] },
     }));
@@ -735,8 +735,8 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
     const rewiredRationaleScopeReviewer = { reevaluate: vi.fn() };
     const wireReviewerAgentMock = vi
       .fn()
-      .mockReturnValueOnce({ rationaleScopeReviewer: initialRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } })
-      .mockReturnValue({ rationaleScopeReviewer: rewiredRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } });
+      .mockReturnValueOnce({ classifier: new RuleBasedRiskClassifier(), rationaleScopeReviewer: initialRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } })
+      .mockReturnValue({ classifier: new RuleBasedRiskClassifier(), rationaleScopeReviewer: rewiredRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } });
     vi.doMock("electron", () => ({
       BrowserWindow: { getAllWindows: () => [] },
     }));

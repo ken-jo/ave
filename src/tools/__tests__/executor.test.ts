@@ -618,8 +618,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
   it.each([
     ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
     ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
-    ["sensitive redirection target", "Get-Content package.json > ~/.ssh/leak"],
-    ["dynamic path composition", "Set-Content (Join-Path $HOME \"Desktop/out.txt\") hi"],
   ])("checks parsed shell paths before execution or durable approval: %s", async (_label, command) => {
     const registry = new ToolRegistry();
     registry.register(new PowerShellTool());
@@ -680,6 +678,48 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       spawn.mockRestore();
       syncBuiltinESMExports();
       preflight.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each([
+    ["unbound home write target", "Get-Content package.json > ~/.ssh/leak", "forced"],
+    ["ordinary absolute secret-file write", `Get-Content package.json > ${shellQuote(join(tmpdir(), ".ssh", "leak"))}`, "allow"],
+    ["runtime-composed write target", 'Set-Content (Join-Path $HOME "Desktop/out.txt") hi', "forced"],
+    ["unresolved write target", "Set-Content $UNRESOLVED_WRITE_TARGET hi", "forced"],
+    ["protected control-file write", "Set-Content .git/config hi", "forced"],
+  ] as const)("routes %s through the central write decision", async (_label, command, expected) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-powershell-write-route-"));
+    const tool = new PowerShellTool();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "admitted write probe", isError: false });
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("allow");
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
+    try {
+      const [result] = await executor.executeAll(
+        [{ id: "powershell-write-route", name: "powershell", input: { command } }],
+        { executionCwd: dir, sessionId: "powershell-write-route", permissionContext: userPermissionContext() },
+      );
+      if (expected === "allow") {
+        expect(result!.is_error).toBeUndefined();
+        expect(result!.content).toBe("admitted write probe");
+        expect(requestAndWait).not.toHaveBeenCalled();
+        expect(execute).toHaveBeenCalledExactlyOnceWith({ command }, expect.anything());
+      } else {
+        expect(result!.is_error).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
+        expect(requestAndWait).toHaveBeenCalledOnce();
+        expect(requestAndWait.mock.calls[0]![0]).toMatchObject({
+          toolName: "powershell", forceExplicit: true, allowedChoices: ["allow-once", "deny-once"],
+          args: { command },
+        });
+      }
+      await expect(manager.listPersistedRules()).resolves.toEqual([]);
+    } finally {
+      execute.mockRestore();
       await cleanupTmpDir(dir);
     }
   });

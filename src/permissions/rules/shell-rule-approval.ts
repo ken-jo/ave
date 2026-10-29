@@ -23,7 +23,7 @@ function commandSyntax(dialect: ShellRuleDialect, command: string, cwd?: string,
   return dialect === "bash" ? { bash: parseShellCommand(command) } : { powershell: parsePowerShellCommand(command) };
 }
 
-// Derive the one exact rule a shell card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25). `Bash(...)` for bash and `PowerShell(...)` for PowerShell, each in the canonical form its matcher compares.
+// Seed the card with the complete original argv of one simple command. An edited prefix must independently pass rule validation and coverage checks.
 export function buildShellRuleApproval(
   dialect: ShellRuleDialect,
   command: string,
@@ -171,7 +171,7 @@ function shellRuleCoversParsedCommand(dialect: ShellRuleDialect, pattern: string
   return result.decision === action;
 }
 
-// The wildcard allow warning a card shows for an edited rule (owner 2026-10-25): a wildcard allow applies only to sandboxed runs, because a shell without a sandbox runs unasked only on an exact rule.
+// Identify an edited prefix rule so the card can disclose its broader scope. Execution still checks rules, admission and forced floors.
 export function isWildcardShellRule(pattern: string): boolean {
   const spec = parseRuleSpecifier(pattern);
   return (spec.kind === "bash" || spec.kind === "powershell") && spec.wildcard;

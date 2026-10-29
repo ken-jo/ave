@@ -13,7 +13,7 @@ describe("host operation decision contracts", () => {
 
   it.each(["strict", "default"] as const)("asks normally for an ordinary host operation in %s", (mode) => {
     manager.setMode(mode);
-    expect(manager.checkDetailed("agent_spawn", "builtin", "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "ask", reasonCode: "tool-approval" });
+    expect(manager.checkDetailed("agent_spawn", "builtin", "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "ask", reasonCode: "file-write" });
   });
 
   it.each(["agent_spawn", "agent_interrupt"])("reviews %s in auto mode", (name) => {

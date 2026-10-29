@@ -230,7 +230,7 @@ lifecycle coverage are described in the architecture contract.
 
 Host-shell credential/sink classification supplies evidence separate from raw-word rule identity. Lane B input is bounded at 2,000 characters; Lane A retains an 8,000-character executable envelope. Quoted, non-code-consuming heredoc bodies may use the separate aggregate 65,536-byte data allowance. Global executable-token and structural limits bound analysis. A refusal leaves no static proof.
 
-The [decision tree](permission-decision-tree.md) alone routes that evidence: unproven/destructive signals use ordinary mode/human handling unless they identify a forced floor. Host credential stores remain admission-denied. Protected control paths, critical delete, project escape, exfiltration and other-principal requests require forced one-shot approval. Ordinary secret reads are not blanket admission denials. A reviewer cannot turn incomplete parsing into execution proof or relax native confinement.
+The [decision tree](permission-decision-tree.md) alone routes that evidence: unproven/destructive signals use ordinary mode/human handling unless they identify a forced floor. Host credential stores and the process ownership lock remain admission-denied. Protected control mutations, critical delete, project escape, exfiltration and other-principal requests require forced one-shot approval. Ordinary secret reads are not blanket admission denials. A reviewer cannot turn incomplete parsing into execution proof or relax native confinement.
 
 Decision cost is bounded by structural limits, not elapsed time or a work-step
 verdict. The floor derives immutable facts for each source node and literal token
@@ -744,7 +744,12 @@ also contribute records; literal quoted body data does not. It refuses
 over-limit input before expensive result serialization. The cap is global;
 there is no separate per-command word allowance. Separators and operators are
 bounded by the character cap. General structural parsing retains its existing
-safety limits.
+safety limits. The independent path-evidence pass uses the same complete-input
+400-record budget, including executed nested literal code. Exhausting a parser
+or evidence safety limit is an admission denial (`shell-analysis-limit`), not an
+approvable card. The 2,000-character reusable-rule limit alone does not stop
+path evidence collection or create a forced floor. Ordinary runtime opacity
+within the safety budget continues through the mode stage.
 
 Quoted literal data is retained as an original source slice. The lexer scans
 it only to locate its terminator lines; it does not turn body contents into
@@ -2567,6 +2572,8 @@ read-before-write observation and unchanged-since-read hash checks remain
 mandatory. A stale observation instructs the agent to re-read the file.
 
 For confined shell invocations, unproven or destructive evidence uses the ordinary mode/human route unless it establishes a forced floor from the decision tree. Critical deletion, project escape, exfiltration and mutations of protected control paths remain forced one-shot requests, without reviewer or remembered-grant reuse. Protected-path reads use the ordinary read or secret-read decision; the protected-path floor applies only to writes, creation and deletion, including shell commands proven to perform those effects. Host or escalated execution uses the ordinary mode/human route and may offer prefix rules.
+
+The shell evidence collector owns a shared implicit-target table for repository mutations, including configuration, remotes, refs and hooks. An implicit control write remains protected when the control directory is relocated. Explicit file targets still enter the same lexical/canonical path checks. A write operand with an unresolved variable, command substitution or glob may name a protected target and therefore supplies a forced protected-path floor. This concerns write targets, not arbitrary opaque program text or read operands. The deterministic exception uses the actual host-prepared environment; a manual terminal or guest route cannot borrow the controller process environment. A fully proven ordinary target follows the normal write policy, while unrelated parser or program uncertainty remains restrictive.
 
 ## Foreground And Headless Behavior
 

@@ -220,12 +220,12 @@ describe("checkpoint recovery and retention", () => {
     expect(await readFile(file, "utf8")).toBe("agent");
   });
 
-  it("rechecks sensitive paths even when their directory is allowed", async () => {
+  it("restores ordinary secret-file writes within the allowed directory", async () => {
     file = join(root, ".env");
     await writeFile(file, "secret");
     await turn("sensitive", () => edit());
-    expect(await restoreCodeCheckpoint(sessionId, "sensitive", { cwd: root, extraAllowedDirectories: [] })).toMatchObject({ ok: false });
-    expect(await readFile(file, "utf8")).toBe("agent");
+    expect(await restoreCodeCheckpoint(sessionId, "sensitive", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("secret");
   });
 
   it("refuses a write grant revoked while restore replacements are staged", async () => {

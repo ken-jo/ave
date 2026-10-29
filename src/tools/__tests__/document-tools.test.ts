@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { createFileTools } from "../file-tools.js";
 import type { ToolExecutionContext } from "../types.js";
 
@@ -72,8 +72,15 @@ describe("agent document tools", () => {
       expect(result.isError, result.output).toBe(false);
     } finally { rmSync(other, { recursive: true, force: true }); }
   });
-  it("denies sensitive paths before reading bytes or parsing", async () => {
-    const result = await tool("read_document").execute({ path: join(homedir(), ".ssh", "secret.csv") }, context);
+  it("leaves ordinary secret-file reads to the permission pipeline", async () => {
+    mkdirSync(join(directory, ".ssh"));
+    writeFileSync(join(directory, ".ssh", "secret.csv"), "a,b");
+    const result = await tool("read_document").execute({ path: join(directory, ".ssh", "secret.csv") }, context);
+    expect(result.isError).toBe(false);
+    expect(parser.acquire).toHaveBeenCalledOnce();
+  });
+  it("denies host credential stores before reading bytes or parsing", async () => {
+    const result = await tool("read_document").execute({ path: join(directory, ".ave", "secrets", "secret.csv") }, context);
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.output).error).toBe("sensitive-path");
     expect(parser.acquire).not.toHaveBeenCalled();
@@ -84,8 +91,8 @@ describe("agent document tools", () => {
     expect(result.isError, result.output).toBe(false);
     expect(parser.parse.mock.calls[0]?.[1]).toBe("csv");
   });
-  it("preserves read-policy refusal before a headless UI failure", async () => {
-    const result = await tool("open_document").execute({ path: join(homedir(), ".ssh", "secret.csv") },
+  it("preserves credential admission refusal before a headless UI failure", async () => {
+    const result = await tool("open_document").execute({ path: join(directory, ".ave", "secrets", "secret.csv") },
       { ...context, headless: true });
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.output).error).toBe("sensitive-path");

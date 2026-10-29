@@ -8,7 +8,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { PermissionManager } from "../permission-manager.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 
-// Expectations describe the admission contract independently of lexer signals.
+// Reusable proof and mode routing are separate policy decisions.
 const NESTED_EXECUTABLE_CASES = [
   "python3 -I -S ordinary.py", "python3.11 -I -S ordinary.py", "python3.15 -I -S ordinary.py",
   "python3 -I -S -c 'print(1)'", "python3 -S -I ordinary.py", "python -I -S ordinary.py",
@@ -23,7 +23,7 @@ let cwd: string;
 let manager: PermissionManager;
 beforeEach(() => {
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "nested-startup-")));
-  vi.stubEnv("AVE_HOME", cwd);
+  vi.stubEnv("AVE_HOME", join(cwd, "state"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("allow");
 });
@@ -38,9 +38,15 @@ describe("nested executable startup requires more than argv", () => {
       manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
       for (const sandboxed of [false, true]) {
         expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed))
-          .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+          .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
         expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed, true))
-          .toMatchObject({ decision: "deny", layer: 2 });
+          .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        manager.setMode("default");
+        expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed))
+          .toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+        expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed, true))
+          .toMatchObject({ decision: "deny", layer: 6, reasonCode: "no-approver" });
+        manager.setMode("allow");
       }
     }
   });

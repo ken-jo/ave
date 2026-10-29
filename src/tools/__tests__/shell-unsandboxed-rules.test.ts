@@ -1,6 +1,5 @@
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-/** Host shells without isolation (off or unavailable) run unasked only on an exact Bash(<command>) rule (owner 2026-10-25, unsandboxed shell exact-rule requirement); unavailable requests retain warning metadata.
- * Explicit host retries ask unless an exact allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
+/** Host shells use ordinary rules and modes; mandatory floors and deny rules retain precedence. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -240,15 +239,15 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
     expect(result.content).toContain("user-approved");
   });
 
-  it("does not treat allow-all mode as a matching allow rule", async () => {
+  it("allows an ordinary host retry in allow mode", async () => {
     const { result, cards, execute } = await run({
       substrate: "sandbox-active", rules: [], command: "printf mode-only",
       executionMode: "host", answer: "deny-once", mode: "allow",
     });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]?.executionPlan).toMatchObject({ executionRequest: "host", requiresExplicitUserApproval: true });
-    expect(execute).not.toHaveBeenCalled();
-    expect(result.is_error).toBe(true);
+    expect(cards).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.is_error).toBeUndefined();
+    expect(result.content).toContain("mode-only");
   });
 
   it("keeps the floor modal over a matching allow rule", async () => {

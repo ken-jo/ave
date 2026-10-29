@@ -147,6 +147,25 @@ describe("host terminal approval card", () => {
     await expect(decided).resolves.toMatchObject({ choice: "allow-once" });
   });
 
+  it.each([false, true])("projects external-content guidance only from the host binding: %s", async (afterExternalContent) => {
+    const wc = { send: vi.fn(), isDestroyed: () => false };
+    const gate = new ApprovalGate(wc as never);
+    const request = hostRequest("printf ready", {
+      forceExplicit: true,
+      hostTerminal: { ...binding(), ...(afterExternalContent ? { afterExternalContent: true as const } : {}) },
+      ...({ hostTerminalAfterExternalContent: !afterExternalContent } as unknown as Partial<ApprovalRequestInput>),
+    });
+    const pending = gate.requestAndWait(request);
+    const sent = wc.send.mock.calls[0]![1] as ApprovalRequest;
+    expect(sent.hostTerminalAfterExternalContent).toBe(afterExternalContent ? true : undefined);
+    expect(sent).not.toHaveProperty("hostTerminal");
+    expect(sent.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(sent.exactRecordAllowed).toBe(false);
+    expect(sent.shellRule).toBeUndefined();
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+    await pending;
+  });
+
   it("refuses a binding that does not describe the request", async () => {
     const gate = new ApprovalGate({ send: vi.fn(), isDestroyed: () => false } as never);
     await expect(gate.requestAndWait(hostRequest("printf ready", { hostTerminal: binding("printf other") }))).rejects.toThrow(/host terminal/);

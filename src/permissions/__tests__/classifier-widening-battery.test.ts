@@ -49,7 +49,7 @@ describe("verified command policy battery", () => {
         ...(handle === undefined ? {} : { verifiedShellCommand: handle }),
       });
       expect(check(true, false).decision).toBe(fixture.sandbox);
-      if (fixture.sandbox === "allow") expect(check(true, false).layer).toBe(3);
+      if (fixture.sandbox === "allow") expect(check(true, false)).toMatchObject({ layer: 6 });
       const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${fixture.storable === false ? "git log *" : command})`;
       manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
       for (const sandboxed of [false, true]) {
@@ -58,8 +58,8 @@ describe("verified command policy battery", () => {
       }
       if (command.startsWith("git ")) {
         manager.setRules([withCurrentShellRuleVersion({ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(git *)`, action: "allow" })]);
-        expect(check(false, false).decision).toBe("ask");
-        expect(check(false, true).decision).toBe("deny");
+        expect(check(false, false).decision).toBe(fixture.saved);
+        expect(check(false, true).decision).toBe(fixture.headless);
         expect(check(true, false).decision).toBe(fixture.sandbox);
       }
     });
@@ -76,8 +76,8 @@ describe("verified command policy battery", () => {
       manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
       for (const sandboxed of [false, true]) {
         const context = { ruleSubject: { kind: "shell" as const, dialect, command, cwd }, shellExecution: { runsSandboxed: sandboxed } };
-        expect(manager.checkDetailed(dialect, "builtin", "shell", null, context).decision).toBe("ask");
-        expect(manager.checkDetailed(dialect, "builtin", "shell", null, { ...context, headless: true }).decision).toBe("deny");
+        expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", layer: 6, reasonCode: dialect === "bash" && sandboxed ? "read-only-shell" : "allow-mode" });
+        expect(manager.checkDetailed(dialect, "builtin", "shell", null, { ...context, headless: true })).toMatchObject({ decision: "allow", layer: 6, reasonCode: dialect === "bash" && sandboxed ? "read-only-shell" : "allow-mode" });
       }
     }
   });

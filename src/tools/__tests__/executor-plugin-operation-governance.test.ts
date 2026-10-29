@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { PluginOperationGrantCoordinator } from "../../permissions/plugin-operation-grant.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { RuleBasedRiskClassifier } from "../../permissions/reviewer/risk-classifier.js";
@@ -127,7 +128,7 @@ function setup(options: {
   ]);
   const permissions = new PermissionManager("/tmp/nonexistent-operation-governance.json");
   permissions.checkDetailed = () => ({ decision: "allow", reason: "test", layer: 3 });
-  const approvalGate = { requestAndWait: vi.fn(async () => ({ choice: "allow-once" })) };
+  const approvalGate = { requestAndWait: vi.fn(async (_request: Record<string, unknown>) => ({ choice: "allow-once" })) };
   const scriptHookManager =
     options.wireHooks === false
       ? undefined
@@ -224,7 +225,7 @@ function options(
 }
 
 describe("ToolExecutor plugin operation governance", () => {
-  it("persists only the governed projection for headless directory deferral", async () => {
+  it("persists only the governed projection for a headless operation requiring approval", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-governed-directory-"));
     const outsideDirectory = mkdtempSync(
       join(tmpdir(), "ave-governed-outside-"),
@@ -234,6 +235,7 @@ describe("ToolExecutor plugin operation governance", () => {
 
     try {
       const { executor, registry, permissions } = setup();
+      permissions.checkDetailed = PermissionManager.prototype.checkDetailed.bind(permissions);
       const execute = vi.fn(async () => ({ output: "unexpected", isError: false }));
       registry.register(createDynamicTool({
         name: "governed_path_read",
@@ -296,7 +298,7 @@ describe("ToolExecutor plugin operation governance", () => {
       );
 
       expect(result.is_error).toBe(true);
-      expect(result.content).toContain("허용 디렉토리 외부");
+      expect(result.content).toBe(NO_APPROVER_MESSAGE);
       expect(execute).not.toHaveBeenCalled();
       const [pending] = (await recentlyDenied.list());
       expect(pending?.inputSummary).toBe('{"operation":"status"}');
@@ -1367,7 +1369,7 @@ describe("ToolExecutor plugin operation governance", () => {
     expect(taintedRead).toHaveBeenCalledTimes(1);
   });
 
-  it("uses a pre-issued grant instead of the ordinary ask without bypassing final consume", async () => {
+  it("requires the normal ask-rule card alongside a pre-issued one-shot grant", async () => {
     const { executor, permissions, approvalGate, write } = setup();
     await runWithInvocationOrigin("ui", undefined, () =>
       executor.executeAll([{ id: "r", name: "domain_read", input: { operation: "status" } }], options()),
@@ -1377,17 +1379,19 @@ describe("ToolExecutor plugin operation governance", () => {
       input: { operation: "save", value: 2 },
       principal,
     });
-    permissions.checkDetailed = () => ({ decision: "ask", reason: "ordinary write ask", layer: 6 });
+    permissions.checkDetailed = PermissionManager.prototype.checkDetailed.bind(permissions);
+    permissions.setRules([{ pattern: "domain_write", action: "ask" }]);
     const [result] = await runWithInvocationOrigin("ui", undefined, () =>
       executor.executeAll([{ id: "w", name: "domain_write", input: { operation: "save", value: 2 } }], options(grant.token)),
     );
     expect(result.is_error).toBeFalsy();
-    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
+    expect(approvalGate.requestAndWait).toHaveBeenCalledOnce();
+    expect(approvalGate.requestAndWait.mock.calls[0][0]).toMatchObject({ toolName: "domain_write", reason: "domain_write" });
     expect(write).toHaveBeenCalledTimes(1);
   });
 
   it("requires and consumes a one-shot grant for writes without an artificial read", async () => {
-    const { executor, permissions, approvalGate, directWrite } = setup();
+    const { executor, approvalGate, directWrite } = setup();
     const grant = executor.issuePluginOperationGrant({
       toolName: "direct_write",
       input: { operation: "reserve", target: "room-1" },
@@ -1395,7 +1399,6 @@ describe("ToolExecutor plugin operation governance", () => {
     });
     expect(grant.readRevision).toBeNull();
 
-    permissions.checkDetailed = () => ({ decision: "ask", reason: "ordinary write ask", layer: 6 });
     const [forged] = await runWithInvocationOrigin("ui", undefined, () =>
       executor.executeAll(
         [{ id: "forged", name: "direct_write", input: { operation: "reserve", target: "room-1" } }],
@@ -1413,6 +1416,7 @@ describe("ToolExecutor plugin operation governance", () => {
       ),
     );
     expect(first.is_error).toBeFalsy();
+    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
     expect(directWrite).toHaveBeenCalledTimes(1);
 
     const [replay] = await runWithInvocationOrigin("ui", undefined, () =>
@@ -1422,6 +1426,7 @@ describe("ToolExecutor plugin operation governance", () => {
       ),
     );
     expect(replay.is_error).toBe(true);
+    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
     expect(directWrite).toHaveBeenCalledTimes(1);
   });
 

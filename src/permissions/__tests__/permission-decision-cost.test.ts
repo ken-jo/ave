@@ -86,28 +86,28 @@ interface TimingCase {
   command: string;
   dialect: "bash" | "powershell";
   runsSandboxed: boolean;
-  allowed: boolean;
+  expected: "ask" | "deny";
   words?: number;
   executableChars: number;
   dataBytes?: number;
 }
 
 const CASES: readonly TimingCase[] = [
-  { name: "plain", command: PLAIN_COMMAND, dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 7_900 },
-  { name: "quoted-data", command: LARGE_COMMAND, dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 7_916, dataBytes: 60_000 },
+  { name: "plain", command: PLAIN_COMMAND, dialect: "bash", runsSandboxed: true, expected: "deny", executableChars: 7_900 },
+  { name: "quoted-data", command: LARGE_COMMAND, dialect: "bash", runsSandboxed: true, expected: "deny", executableChars: 7_916, dataBytes: 60_000 },
   ...(["bash", "powershell"] as const).flatMap((dialect) => [false, true].map((runsSandboxed) => ({
     name: `max-${dialect}-${runsSandboxed ? "sandboxed" : "unsandboxed"}`,
-    command: commandWithDistinctPaths(runsSandboxed ? 8_000 : 2_000), dialect, runsSandboxed, allowed: false,
+    command: commandWithDistinctPaths(runsSandboxed ? 8_000 : 2_000), dialect, runsSandboxed, expected: runsSandboxed ? "deny" as const : "ask" as const,
     executableChars: runsSandboxed ? 8_000 : 2_000,
   }))),
-  { name: "max-quoted-data", command: quotedData(commandWithDistinctPaths(7_984), 65_536), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, dataBytes: 65_536 },
-  { name: "admitted-token-cap", command: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS, 8_000), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, words: MAX_SHELL_ANALYSIS_TOKENS },
-  { name: "admitted-token-cap-data", command: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS - 2, 7_984), 65_536), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, dataBytes: 65_536, words: MAX_SHELL_ANALYSIS_TOKENS },
-  { name: "admitted-pipeline", command: pipelineCommand(100, 8_000), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, words: 400 },
+  { name: "max-quoted-data", command: quotedData(commandWithDistinctPaths(7_984), 65_536), dialect: "bash", runsSandboxed: true, expected: "deny", executableChars: 8_000, dataBytes: 65_536 },
+  { name: "admitted-token-cap", command: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS, 8_000), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, words: MAX_SHELL_ANALYSIS_TOKENS },
+  { name: "admitted-token-cap-data", command: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS - 2, 7_984), 65_536), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, dataBytes: 65_536, words: MAX_SHELL_ANALYSIS_TOKENS },
+  { name: "admitted-pipeline", command: pipelineCommand(100, 8_000), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, words: 400 },
 ];
 
 describe("bounded complete decision cost", () => {
-  it.each(CASES)("$name", ({ name, command, dialect, runsSandboxed, allowed, words, executableChars, dataBytes }) => {
+  it.each(CASES)("$name", ({ name, command, dialect, runsSandboxed, expected, words, executableChars, dataBytes }) => {
     expect(command.length).toBe(executableChars + (dataBytes ?? 0));
     const samples: number[] = [];
     const results = [];
@@ -119,14 +119,16 @@ describe("bounded complete decision cost", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, target: permissionDecisionCostTargetMs, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject(allowed
-      ? { decision: "allow", layer: 6 }
+    for (const result of results) expect(result).toMatchObject(expected === "deny"
+      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
       : { decision: "ask", layer: 6, reasonCode: "shell-approval" });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-    expect(permitted.decision).toBe("allow");
+    expect(permitted).toMatchObject(expected === "deny"
+      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
+      : { decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   }, 60_000);
 
@@ -137,7 +139,7 @@ describe("bounded complete decision cost", () => {
     expect(parseShellFloorCommand(command).analysis.ok).toBe(true);
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true)).toMatchObject(nested
       ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "allow", layer: 6 });
-    expect(checkShellPermission(manager, cwd, SESSION_ID, `${command}:`, "bash", true)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, `${command}:`, "bash", true)).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
   });
 
   it("counts assignment values across the complete command", () => {
@@ -145,7 +147,7 @@ describe("bounded complete decision cost", () => {
     expect(parseShellFloorCommand(command).analysis.ok).toBe(true);
     expect(parseShellFloorCommand(`${command}A=1`).analysis.ok).toBe(false);
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
-    expect(checkShellPermission(manager, cwd, SESSION_ID, `${command}A=1`, "bash", true)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, `${command}A=1`, "bash", true)).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
   });
 
   it("does not let a current exact rule bypass the complete token cap", () => {
@@ -154,7 +156,7 @@ describe("bounded complete decision cost", () => {
     expect(command.length).toBeLessThanOrEqual(2_000);
     for (const runsSandboxed of [false, true]) {
       const bounded = checkShellPermission(manager, cwd, SESSION_ID, command, "bash", runsSandboxed);
-      expect(bounded).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval", pipelineRequest: { shell: { unproven: true, readOnlyProven: false } } });
+      expect(bounded).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit", pipelineRequest: { shell: { unproven: true, readOnlyProven: false } } });
       expect(bounded.forceModal).toBeUndefined();
       expect(bounded.pipelineRequest?.rules?.allow).toBeUndefined();
       expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", runsSandboxed, true).decision).not.toBe("allow");
@@ -163,15 +165,15 @@ describe("bounded complete decision cost", () => {
     manager.setMode("allow");
     for (const runsSandboxed of [false, true]) {
       const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "bash", runsSandboxed, true);
-      expect(permitted).toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { shell: { unproven: true, readOnlyProven: false } } });
+      expect(permitted).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit", pipelineRequest: { shell: { unproven: true, readOnlyProven: false } } });
       expect(permitted.pipelineRequest?.rules?.allow).toBeUndefined();
     }
   });
 
   it.each([
-    { name: "comments", command: "#\n".repeat(4_000), allowed: false },
-    { name: "empty-arithmetic", command: "(())\n".repeat(1_600), allowed: false },
-  ])("bounds low-record representation $name", ({ name, command, allowed }) => {
+    { name: "comments", command: "#\n".repeat(4_000), expected: "deny" },
+    { name: "empty-arithmetic", command: "(())\n".repeat(1_600), expected: "ask" },
+  ])("bounds low-record representation $name", ({ name, command, expected }) => {
     expect(command.length).toBe(8_000);
     const samples: number[] = [];
     const results = [];
@@ -183,14 +185,16 @@ describe("bounded complete decision cost", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`decision shape cost ${JSON.stringify({ name, chars: command.length, samples, median, results })}\n`);
-    for (const result of results) expect(result).toMatchObject(allowed
-      ? { decision: "allow", layer: 6 }
+    for (const result of results) expect(result).toMatchObject(expected === "deny"
+      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
       : { decision: "ask", layer: 6, reasonCode: "shell-approval" });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true);
-    expect(permitted.decision).toBe("allow");
+    expect(permitted).toMatchObject(expected === "deny"
+      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
+      : { decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 });

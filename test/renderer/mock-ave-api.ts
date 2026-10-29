@@ -1026,6 +1026,9 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
       permission: {
         getMode: vi.fn(async () => ({ mode: "default" })),
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
+        recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [] })),
+        recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
+        onRecentlyDeniedChanged: vi.fn(() => () => undefined),
         onModeChanged: vi.fn(() => () => undefined),
         listRules: vi.fn(async () => []),
         listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),

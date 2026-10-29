@@ -60,8 +60,9 @@ async function subject() {
   cleanup.push(async () => { gate.disposeAll(); await audit.close(); });
   const originalAbort = new AbortController();
   const input = { message: "bounded message", password: "private-history-credential" };
-  const denyHeadless = (origin: Partial<import("../executor-contract.js").ToolPermissionContext> = {}) => executor.executeAll([{ id: "initial-denied-call", name: "send_probe", input }], {
+  const denyHeadless = (origin: Partial<import("../executor-contract.js").ToolPermissionContext> = {}, overlayTriggerOrigin?: string) => executor.executeAll([{ id: "initial-denied-call", name: "send_probe", input }], {
     sessionId: SESSION_ID, executionCwd: root, abortSignal: originalAbort.signal, permissionContext: userPermissionContext({ headless: true, ...origin }),
+    ...(overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin }),
   });
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
@@ -246,6 +247,39 @@ describe("executor denial history and manual rerun", () => {
     expect(await pending).toEqual({ ok: true });
     expect(current.execute).toHaveBeenCalledOnce();
   });
+
+  for (const overlayTriggerOrigin of ["overlay:meeting-detection", "app:status-card", "mcp-prompt:workspace", "plugin-prompt:extension:notes:summary"]) {
+    it.each(["live", "persisted"] as const)(`retains ${overlayTriggerOrigin} staged provenance in a %s rerun`, async (kind) => {
+      const current = await subject();
+      const memory = new MemoryManager({ aveDir: join(current.storageRoot, "saved-memory") });
+      await memory.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
+        id: "initial-denied-call", name: "send_probe", input: current.input, source: "builtin", category: "network",
+      }] }]);
+      await memory.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
+      await current.denyHeadless({}, overlayTriggerOrigin);
+      const history = kind === "live" ? current.history : makeRecentlyDeniedStore(current.historyFile);
+      if (kind === "persisted") history.setReplayResolver(createRecentlyDeniedReplayResolver({ memoryManager: memory,
+        toolRegistry: current.registry, executeAll: current.executor.executeAll.bind(current.executor),
+      }));
+      current.manager.setMode("allow");
+      current.surfaces.register(SESSION_ID, current.sender as never);
+      const checks = vi.spyOn(current.manager, "checkDetailed");
+      const [entry] = await history.list();
+      expect(entry.invocationRef?.replayOrigin).toMatchObject({ overlayTriggerOrigin, otherPrincipal: true });
+      expect(readFileSync(current.historyFile, "utf8")).toContain(overlayTriggerOrigin);
+      const pending = history.rerun(entry.id);
+      await vi.waitFor(() => expect(current.cards).toHaveLength(1));
+      expect(checks.mock.calls.some(([name, , , source]) => name === "send_probe" && source === overlayTriggerOrigin)).toBe(true);
+      expect(checks.mock.results.some((result) => result.type === "return" && result.value.pipelineRequest?.floor?.code === "other-principal")).toBe(true);
+      expect(current.cards[0]).toMatchObject({ sessionId: SESSION_ID, requireExplicit: true,
+        allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
+      expect(current.execute).not.toHaveBeenCalled();
+      expect(current.classify).not.toHaveBeenCalled();
+      current.approve(current.cards[0]);
+      expect(await pending).toEqual({ ok: true });
+      expect(current.execute).toHaveBeenCalledOnce();
+    });
+  }
 
   it("applies a new admission hook denial before any replay approval or tool effect", async () => {
     const current = await subject();
