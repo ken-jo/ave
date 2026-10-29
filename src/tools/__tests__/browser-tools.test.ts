@@ -91,9 +91,7 @@ function fakeActions() {
     click: record("click") as BrowserPageActions<FakeGuest>["click"],
     type: record("type") as BrowserPageActions<FakeGuest>["type"],
     pressKey: record("pressKey") as BrowserPageActions<FakeGuest>["pressKey"],
-    settle: async (target) => {
-      return { url: target.tab.guest!.url };
-    },
+    settle: async (target) => ({ url: target.tab.guest!.url }),
     navigate: async (target, url) => {
       calls.push({ action: "navigate", tab: target.tab.handle, args: [url] });
       target.tab.guest!.url = url;

@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
 
-function makeBuiltin(name: string) {
+function makeBuiltin(name: string, overrides: Partial<Parameters<typeof createDynamicTool>[0]> = {}) {
   return createDynamicTool({
     name,
     description: `builtin ${name}`,
@@ -12,56 +12,41 @@ function makeBuiltin(name: string) {
     category: "read",
     jsonSchema: { type: "object", properties: {} },
     execute: async () => ({ output: "", isError: false }),
+    ...overrides,
   });
 }
 
 // Builtins exposing server content also require external-tool scope.
 function makeMcpScopedBuiltin(name: string) {
-  return createDynamicTool({
-    name,
+  return makeBuiltin(name, {
     description: `mcp-scoped builtin ${name}`,
-    source: "builtin",
-    category: "read",
     requiresMcpScope: true,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => ({ output: "", isError: false }),
   });
 }
 
 // This builtin can reach a model-selected external URL.
 function makeEgressBuiltin(name: string) {
-  return createDynamicTool({
-    name,
+  return makeBuiltin(name, {
     description: `egress builtin ${name}`,
-    source: "builtin",
     category: "network",
     arbitraryEgress: true,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => ({ output: "", isError: false }),
   });
 }
 
 function makePluginTool(name: string, pluginId: string) {
-  return createDynamicTool({
-    name,
+  return makeBuiltin(name, {
     description: `plugin ${name}`,
     source: "plugin",
-    category: "read",
     pluginId,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => ({ output: "", isError: false }),
   });
 }
 
 function makeMcpTool(name: string, mcpServerId: string) {
-  return createDynamicTool({
-    name,
+  return makeBuiltin(name, {
     description: `mcp ${name}`,
     source: "mcp",
     category: "network",
     mcpServerId,
-    jsonSchema: { type: "object", properties: {} },
-    execute: async () => ({ output: "", isError: false }),
   });
 }
 
