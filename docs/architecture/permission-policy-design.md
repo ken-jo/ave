@@ -1729,7 +1729,11 @@ and bash use a per-PTY temporary rc directory and nonce-authenticated hooks,
 sourcing the actual startup files before hooks and restoring the original ZDOTDIR
 for user startup files. pwsh launches with `-NoProfile -NoExit` and an owned
 wrapper that dot-sources the user's profiles in PowerShell's own order before the
-hooks. This never runs the disposable-HOME installer against real HOME. Unsupported
+hooks. On Windows that wrapper's directory is a fresh child of the private Ave
+home, created owner-only and inheritance-protected by the home's own protection
+helper and verified on read-back before the nonce is written; a temporary
+directory would inherit its parent's DACL. If the home is not private, pwsh
+starts natively without integration. This never runs the disposable-HOME installer against real HOME. Unsupported
 interpreters or integration failure preserve the normal user shell and report why
 integration is unavailable; unverified current directory/exit state stays unknown.
 Integration is not authority to type, read host output or claim native support.

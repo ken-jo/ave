@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
 import { prepareHostShellIntegration, type HostShellIntegration } from "../host-shell-integration.js";
-import { readWindowsDirectoryDacls } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate, readWindowsDirectoryDacls } from "../../../shared/ave-home.js";
+import { configureHostResources } from "../../host-resources.js";
 import { isOwnerOnlyDacl } from "../../../shared/windows-path-facts.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
 import { TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
@@ -44,6 +45,14 @@ function expectOwnerOnly(dir: string, file: string): void {
   expect(descriptor?.protected).toBe(true);
   expect(isOwnerOnlyDacl(descriptor!, descriptor!.currentUserSid!)).toBe(true);
 }
+// Boot supplies host resources (on Windows, the DACL helper) and makes the Ave home private before any terminal starts; a Windows pwsh
+// terminal's owned directory is a protected child of that home, so these tests compose the same way. The home is a fresh path so the
+// helper creates it owner-only, as boot does on first run.
+beforeAll(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  process.env.AVE_HOME = join(process.env.AVE_HOME!, "home");
+  expect(ensureAveHomePrivate().enforcement).not.toBe("none");
+});
 afterEach(async () => {
   for (const { pty, exited } of editors.splice(0)) { pty.kill(); await exited; }
   for (const integration of integrations.splice(0)) integration.cleanup();
@@ -231,6 +240,8 @@ describe("pwsh host startup (generated files)", () => {
       // The nonce is in an owner-only file, never in the launch arguments or environment.
       expect(readFileSync(join(dirname(wrapperPath), ".ave-terminal-nonce"), "utf8")).toBe(integration.nonce);
       expectOwnerOnly(dirname(wrapperPath), join(dirname(wrapperPath), ".ave-terminal-nonce"));
+      // On Windows the owned directory is a protected child of the Ave home, never a temporary directory inheriting its parent's DACL.
+      if (process.platform === "win32") expect(dirname(dirname(wrapperPath))).toBe(aveHome());
       expect(JSON.stringify([integration.args, integration.env])).not.toContain(integration.nonce);
       const hookText = readFileSync(join(dirname(wrapperPath), "hooks.ps1"), "utf8");
       // No documented bracketed paste in PSReadLine: every prompt says so, and agent typing refuses it.
