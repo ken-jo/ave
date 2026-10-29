@@ -354,12 +354,12 @@ describe("bash tool", () => {
       }
     });
 
-    // Windows hosts usually have no HOME (Git Bash and CI export one), so each case states it.
+    // HOME may be absent on Windows, so each case sets the HOME it means.
     it("rejects redirection-attached sensitive operands before spawning the shell", async () => {
       vi.stubEnv("HOME", homedir());
       try {
         const result = await new BashTool().execute(
-          { command: "cat<$HOME/.ssh/id_rsa", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          { command: 'cat<"$HOME/.ssh/id_rsa"', timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(),
         );
         expect(result.isError).toBe(true);
@@ -373,7 +373,7 @@ describe("bash tool", () => {
       vi.stubEnv("HOME", undefined);
       try {
         const result = await new BashTool().execute(
-          { command: "cat<$HOME/.ssh/id_rsa", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          { command: 'cat<"$HOME/.ssh/id_rsa"', timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(),
         );
         expect(result.isError).toBe(true);
