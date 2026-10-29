@@ -6,7 +6,7 @@ import type { TerminalIntegrationUnavailableReason } from "../../shared/terminal
 import type { ManualShellLaunch } from "./manual-shell.js";
 import { aveHome, readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 import { isOwnerOnlyDacl } from "../../shared/windows-path-facts.js";
-import { generateHostShellHooks, generatePwshHostHooks, PWSH_PROFILE_STARTUP, powerShellQuote, pwshNoncePrologue, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
+import { generateHostShellHooks, generatePwshHostHooks, PWSH_PROFILE_STARTUP, pwshNoncePrologue, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
 
 export interface HostShellIntegration {
   command: string;
@@ -95,8 +95,8 @@ const PWSH_STARTUP_FLAGS: Readonly<Record<string, "login" | "interactive">> = {
   "-l": "login", "-login": "login", "-i": "interactive", "-interactive": "interactive",
 };
 
-// PowerShell 7: launch with -NoProfile so nothing of the user's runs before the owned wrapper, which takes the nonce first, then dot-sources the
-// user's profiles in PowerShell's own order, then installs the hooks. A launch with any other argument stays native.
+// Inline startup avoids script execution policy for owned code; user profiles still obey it.
+// Take the nonce before profiles, then install hooks. Other launch arguments stay native.
 function preparePwsh(
   launch: ManualShellLaunch,
   env: Record<string, string>,
@@ -112,18 +112,13 @@ function preparePwsh(
     // on read-back, before the nonce is written into it; the files inherit it.
     directory = process.platform === "win32" ? createOwnerOnlyHomeDirectory() : mkdtempSync(join(tmpdir(), "ave-host-terminal-"));
     const ownedDirectory = directory;
-    const write = (name: string, text: string): string => {
-      const path = join(ownedDirectory, name);
-      writeFileSync(path, text, { mode: 0o600 });
-      return path;
-    };
-    const noncePath = write(SHELL_INTEGRATION_NONCE_FILE, nonce);
-    const hooksPath = write("hooks.ps1", generatePwshHostHooks());
-    const wrapper = write("startup.ps1", [pwshNoncePrologue(noncePath), PWSH_PROFILE_STARTUP, `. ${powerShellQuote(hooksPath)}`, ""].join("\n"));
+    const noncePath = join(ownedDirectory, SHELL_INTEGRATION_NONCE_FILE);
+    writeFileSync(noncePath, nonce, { mode: 0o600 });
+    const startup = [pwshNoncePrologue(noncePath), PWSH_PROFILE_STARTUP, generatePwshHostHooks(), ""].join("\n");
     return {
       command: launch.command,
       // -Login must come first when it is given at all.
-      args: [...(flags.includes("login") ? ["-Login"] : []), "-NoProfile", "-NoExit", "-Command", `. ${powerShellQuote(wrapper)}`],
+      args: [...(flags.includes("login") ? ["-Login"] : []), "-NoProfile", "-NoExit", "-Command", startup],
       env, nonce, marksPromptEnd: true,
       cleanup: () => rmSync(ownedDirectory, { recursive: true, force: true }),
     };

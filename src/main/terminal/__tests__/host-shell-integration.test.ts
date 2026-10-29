@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -9,8 +10,40 @@ import { aveHome, ensureAveHomePrivate, readWindowsDirectoryDacls } from "../../
 import { configureHostResources } from "../../host-resources.js";
 import { isOwnerOnlyDacl } from "../../../shared/windows-path-facts.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
-import { TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
+import { generatePwshHostHooks, powerShellQuote, pwshNoncePrologue, TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
 import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_PWSH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
+
+const { argsToCommandLine } = createRequire(import.meta.url)("node-pty/lib/windowsPtyAgent.js") as {
+  argsToCommandLine: (file: string, args: string[]) => string;
+};
+
+/** Decode argument quotes and backslash runs using the native C runtime rules. */
+function parseWindowsArguments(commandLine: string): string[] {
+  const args: string[] = [];
+  let index = 0;
+  while (index < commandLine.length) {
+    while (/[ \t]/u.test(commandLine[index] ?? "")) index++;
+    if (index === commandLine.length) break;
+    let arg = "";
+    let quoted = false;
+    while (index < commandLine.length && (quoted || !/[ \t]/u.test(commandLine[index]!))) {
+      let backslashes = 0;
+      while (commandLine[index] === "\\") { backslashes++; index++; }
+      if (commandLine[index] === '"') {
+        arg += "\\".repeat(Math.floor(backslashes / 2));
+        if (backslashes % 2 === 1) arg += '"';
+        else if (quoted && commandLine[index + 1] === '"') { arg += '"'; index++; }
+        else quoted = !quoted;
+        index++;
+      } else {
+        arg += "\\".repeat(backslashes);
+        if (index < commandLine.length && (quoted || !/[ \t]/u.test(commandLine[index]!))) arg += commandLine[index++]!;
+      }
+    }
+    args.push(arg);
+  }
+  return args;
+}
 
 const directories: string[] = [];
 const integrations: HostShellIntegration[] = [];
@@ -220,34 +253,72 @@ it("retains the configured debug trap without replacing it on an older interpret
 });
 });
 
-describe("pwsh host startup (generated files)", () => {
-  it("wraps the native launch so the nonce is taken before any profile and hooks install after them", () => {
+function pwshNoncePath(integration: Pick<HostShellIntegration, "args">): string {
+  return /ReadAllText\('((?:[^']|'')*)'\)/u.exec(integration.args.at(-1)!)![1]!.replace(/(['‘’‚‛])\1/gu, "$1");
+}
+
+describe("pwsh host startup (inline command)", () => {
+  it("inlines startup so the nonce is taken before any profile and hooks install after them", () => {
     for (const [args, login] of [[["-l", "-i"], true], [[], false], [["-Interactive"], false]] as const) {
       const integration = prepare("/usr/local/bin/pwsh", directory(), [...args]);
       expect(integration.integrationUnavailableReason).toBeUndefined();
       expect(integration.marksPromptEnd).toBe(true);
       expect(integration.args.slice(0, -1)).toEqual([...(login ? ["-Login"] : []), "-NoProfile", "-NoExit", "-Command"]);
-      const wrapperPath = /^\. '(.+)'$/u.exec(integration.args.at(-1)!)![1]!;
-      const wrapper = readFileSync(wrapperPath, "utf8");
-      const nonceRead = wrapper.indexOf("ReadAllText");
-      const nonceDelete = wrapper.indexOf("Remove-Item -LiteralPath");
-      const profiles = wrapper.indexOf("$PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost");
-      const hooks = wrapper.indexOf("hooks.ps1");
+      const noncePath = pwshNoncePath(integration);
+      const startup = integration.args.at(-1)!;
+      expect(startup.startsWith(pwshNoncePrologue(noncePath) + "\n")).toBe(true);
+      expect(startup).not.toMatch(/^\s*#/mu);
+      const nonceRead = startup.indexOf("ReadAllText");
+      const nonceDelete = startup.indexOf("Remove-Item -LiteralPath");
+      const profiles = startup.indexOf("$PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost");
+      const hooks = startup.indexOf(generatePwshHostHooks());
       expect(nonceRead).toBeGreaterThan(-1);
       expect(nonceRead).toBeLessThan(nonceDelete);
       expect(nonceDelete).toBeLessThan(profiles);
       expect(profiles).toBeLessThan(hooks);
       // The nonce is in an owner-only file, never in the launch arguments or environment.
-      expect(readFileSync(join(dirname(wrapperPath), ".ave-terminal-nonce"), "utf8")).toBe(integration.nonce);
-      expectOwnerOnly(dirname(wrapperPath), join(dirname(wrapperPath), ".ave-terminal-nonce"));
+      expect(readFileSync(noncePath, "utf8")).toBe(integration.nonce);
+      expectOwnerOnly(dirname(noncePath), noncePath);
       // On Windows the owned directory is a protected child of the Ave home, never a temporary directory inheriting its parent's DACL.
-      if (process.platform === "win32") expect(dirname(dirname(wrapperPath))).toBe(aveHome());
+      if (process.platform === "win32") expect(dirname(dirname(noncePath))).toBe(aveHome());
       expect(JSON.stringify([integration.args, integration.env])).not.toContain(integration.nonce);
-      const hookText = readFileSync(join(dirname(wrapperPath), "hooks.ps1"), "utf8");
+      const hookText = startup.slice(hooks);
       // No documented bracketed paste in PSReadLine: every prompt says so, and agent typing refuses it.
       expect(hookText).toContain(";Paste=0;");
       expect(hookText).toContain(";Edit=0;");
     }
+  });
+
+  it("leaves only the nonce file and dot-sources only user profiles", () => {
+    const integration = prepare("/usr/local/bin/pwsh", directory(), []);
+    const startup = integration.args.at(-1)!;
+    expect(readdirSync(dirname(pwshNoncePath(integration)))).toEqual([".ave-terminal-nonce"]);
+    expect(startup).not.toMatch(/\.\s+['"]/u);
+    expect(startup.match(/\{ \. [^}]+\}/gu)).toEqual(["{ . $__ave_profile }"]);
+    expect(startup).not.toContain(".ps1");
+  });
+
+  it("quotes nonce paths containing apostrophes and shell metacharacters literally", () => {
+    const noncePath = "C:\\Users\\alice's ‘home’‚‛ $home` directory\\.ave\\host-terminal-example\\.ave-terminal-nonce";
+    const quoted = "'C:\\Users\\alice''s ‘‘home’’‚‚‛‛ $home` directory\\.ave\\host-terminal-example\\.ave-terminal-nonce'";
+    expect(powerShellQuote(noncePath)).toBe(quoted);
+    const prologue = pwshNoncePrologue(noncePath);
+    expect(prologue).toContain(`Test-Path -LiteralPath ${quoted} -PathType Leaf`);
+    expect(prologue).toContain(`[System.IO.File]::ReadAllText(${quoted})`);
+    expect(prologue).toContain(`Remove-Item -LiteralPath ${quoted} -Force`);
+    expect(pwshNoncePath({ args: [prologue] })).toBe(noncePath);
+  });
+
+  it("keeps inline argv well below the command-line limit with a long home path", () => {
+    const home = join("C:\\Users\\alice", ...Array<string>(12).fill("example directory with spaces"));
+    const integration = prepare("/usr/local/bin/pwsh", home, ["-Login"]);
+    // Model an owned nonce directory under the long home on every test platform.
+    const noncePath = home + "\\.ave\\host-terminal-example\\alice's \"%$`‘’‚‛ nonce\\";
+    const args = integration.args.map((arg) => arg.replaceAll(powerShellQuote(pwshNoncePath(integration)), () => powerShellQuote(noncePath)));
+    const commandLine = argsToCommandLine(integration.command, args);
+    expect(commandLine.length).toBeLessThan(16_000);
+    expect(parseWindowsArguments(commandLine)).toEqual([integration.command, ...args]);
+    expect(pwshNoncePath({ args: parseWindowsArguments(commandLine).slice(1) })).toBe(noncePath);
   });
 
   it("keeps a pwsh launch with other arguments native", () => {
@@ -303,8 +374,7 @@ describe.runIf(TERMINAL_TEST_PWSH !== undefined)("pwsh host startup (native)", (
     expect(tracker.currentCwd()).not.toBeNull();
     expect(tracker.reportedShellPid()).not.toBeNull();
     expect(tracker.promptState()).toBe("no-bracketed-paste");
-    const wrapperPath = /^\. '(.+)'$/u.exec(integration.args.at(-1)!)![1]!;
-    expect(existsSync(join(dirname(wrapperPath), ".ave-terminal-nonce"))).toBe(false);
+    expect(existsSync(pwshNoncePath(integration))).toBe(false);
   }, 60_000);
 
   it("records the user's command block with its exit status", async () => {
@@ -316,6 +386,13 @@ describe.runIf(TERMINAL_TEST_PWSH !== undefined)("pwsh host startup (native)", (
     const block = tracker.list().find((summary) => summary.command.includes("ave-block"));
     expect(block?.source).toBe("osc133");
     expect(block?.exitCode).not.toBe(0);
+  }, 60_000);
+
+  it.runIf(process.platform === "win32")("attests inline startup under a restrictive execution policy and deletes the nonce file", async () => {
+    // Restricted blocks script files without the interactive publisher prompt that AllSigned can trigger.
+    const { integration, tracker } = await start(directory(), [], { PSExecutionPolicyPreference: "Restricted" });
+    expect(tracker.isIntegrated()).toBe(true);
+    expect(existsSync(pwshNoncePath(integration))).toBe(false);
   }, 60_000);
 
   it.runIf(process.platform !== "win32")("dot-sources the user's profiles after the nonce is taken and before the hooks", async () => {
