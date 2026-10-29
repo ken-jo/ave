@@ -250,7 +250,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     if (chatGroupId === undefined) return undefined;
     const unregister = registerSideTabsSink(chatGroupId, {
       adopt: adoptTab,
-      release: releaseTab,
+      // A tab that moves away and leaves the panel empty takes the panel with it: an open panel with no tabs is the
+      // workspace launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
+      release: (tabId) => {
+        const { tabs } = savedTabsRef.current;
+        const emptied = tabs.length > 0 && tabs.every((tab) => tab.id === tabId);
+        const tab = releaseTab(tabId);
+        if (tab && emptied) openSidePanelRef.current(false);
+        return tab;
+      },
       open: () => openSidePanelRef.current(true),
       activate: (tabId) => {
         if (!hasTab(tabId)) return false;

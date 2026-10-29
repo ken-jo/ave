@@ -317,6 +317,39 @@ describe("main-area terminal and web panels", () => {
     // Return panels by header drag; the header toggle opens the pane's own chat.
   });
 
+  it("closes a side panel the move to the main area left empty, so no launcher floats over the conversation", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    const tabId = await openSideTerminal(container);
+    expect(sideTabIds()).toEqual([tabId]);
+    const move = document.querySelector<HTMLButtonElement>(`[data-tab-id="${tabId}"] [data-testid="chat-side-panel-move-to-main"]`)!;
+    await act(async () => { fireEvent.click(move); });
+    await waitFor(() => expect(shownSurfaces(container)).toEqual([{ kind: "terminal", tabId }]));
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden") ?? "true").toBe("true"));
+    expect(document.querySelector('[data-testid="pane-panel-toggle"]')?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps a side panel open when the move leaves other tabs in it", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    const first = await openSideTerminal(container);
+    const add = document.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')!;
+    await act(async () => {
+      fireEvent.pointerDown(add, { button: 0, ctrlKey: false });
+      fireEvent.click(add);
+    });
+    const browser = await waitFor(() => {
+      const item = document.querySelector<HTMLElement>('[data-testid="chat-side-panel-launcher-menu-browser"]');
+      expect(item).not.toBeNull();
+      return item!;
+    });
+    await act(async () => { fireEvent.click(browser); });
+    await waitFor(() => expect(sideTabIds()).toHaveLength(2));
+    const move = document.querySelector<HTMLButtonElement>(`[data-tab-id="${first}"] [data-testid="chat-side-panel-move-to-main"]`)!;
+    await act(async () => { fireEvent.click(move); });
+    await waitFor(() => expect(shownSurfaces(container)).toEqual([{ kind: "terminal", tabId: first }]));
+    expect(sideTabIds()).toHaveLength(1);
+    expect(document.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden")).not.toBe("true");
+  });
+
   it("drops a dragged side tab on a pane, and a pane's header on the side panel's tabs", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     const tabId = await openSideTerminal(container);
