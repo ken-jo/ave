@@ -1730,6 +1730,14 @@ interpreters or integration failure preserve the normal user shell and report wh
 integration is unavailable; unverified current directory/exit state stays unknown.
 Integration is not authority to type, read host output or claim native support.
 
+The first owned startup step (zsh's temporary `.zshenv`, bash's rcfile) reads
+the nonce into an unexported shell variable and deletes its file before any user
+startup file runs, so a user rc or a loader it starts cannot read the file and
+forge markers. Residual limit: user startup files run in the same shell and can
+still read that variable, and system startup files read before the wrapper
+(such as `/etc/zshenv`) run before the nonce exists. Same-user processes are not
+an isolation boundary.
+
 For a bash login launch, the wrapper explicitly sources the system profile and
 first readable user login profile before hooks using an interactive rc launch.
 The shell's read-only `login_shell` flag remains false, and automatic logout-file
@@ -1831,7 +1839,8 @@ Unavailable confinement refuses without host/foreign fallback while the host
 shell remains usable. The current Windows isolated interactive backend cannot
 attest this contract. Supported host-shell integration is a separate capability;
 PowerShell (pwsh and Windows PowerShell), cmd, fish and nu have no host
-integration in this delivery and receive no agent-typing claim.
+integration in this delivery and receive no agent-typing claim. pwsh
+integration moves to the host-typing delivery, with native Windows verification.
 
 Existing one-shot shell tools retain their explicit approved host/outside-sandbox
 execution route. Their inline badge reflects the actual execution mode: an

@@ -164,10 +164,11 @@ state, not preview images. Captures are throttled and bounded per window; previe
 focus, navigate, or remount a tab. Capture counts and native guest behavior need
 runtime evidence before claiming a resource-use improvement.
 
-## Terminal lanes
+<a id="terminal-lanes"></a>
 
-The existing section anchor is retained for links; visible terminals have no
-lane selector. Each workspace or side-work-panel terminal contains one native
+## Host terminals and isolated conversation shells
+
+Visible terminals have no lane selector. Each workspace or side-work-panel terminal contains one native
 shell, labeled **My terminal (host) · No agent access**. It uses your real HOME,
 profile and validated initial directory. Moving or hiding the pane preserves its
 shell; closing the terminal tab ends that host shell.
@@ -177,7 +178,16 @@ startup directory, without replacing your HOME or modifying your startup files.
 The wrapper sources your actual startup files before installing its hooks and
 preserves their environment semantics, including the original ZDOTDIR. Other
 interpreters (PowerShell, cmd, fish, nu) and integration failures leave the
-configured user shell usable, with integration reported as unavailable.
+configured user shell usable, with integration reported as unavailable. pwsh
+integration is not part of this delivery; it arrives with agent host typing,
+together with native Windows verification.
+
+The wrapper's first startup step reads the marker nonce into a shell variable
+and deletes its file before any of your startup files run, so a startup file or
+a loader it starts cannot find the file. Your startup files run in the same
+shell, so they can still read that variable; system-wide startup files that the
+shell reads before the wrapper (for example `/etc/zshenv`) run before the nonce
+exists.
 Unverified current directory or exit status remains unknown. Host integration
 alone never enables agent typing or automatic output access.
 
