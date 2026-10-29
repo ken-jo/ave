@@ -32,9 +32,10 @@ it("resolves abbreviated named source and destination bindings with their own ef
   expect(result.paths.some((path) => path.effect === "write" && path.protectedControl === ".git")).toBe(true);
 });
 
-it.each(["-LiteralPath", "-Li", "-pAtH"])("retains protected case and separator evidence through %s", (parameter) => {
+it.each(["-LiteralPath", "-Li", "-pAtH"])("keeps protected-path reads outside the mutation floor through %s", (parameter) => {
   const result = inspectPowerShellPermissionPaths(`Get-ChildItem ${parameter} '.GIT\\objects'`, project);
-  expect(result.paths.some((path) => path.protectedControl === ".git")).toBe(true);
+  expect(result.paths).not.toHaveLength(0);
+  expect(result.paths.every((path) => path.effect === "read" && path.protectedControl === undefined)).toBe(true);
 });
 
 it("keeps a dynamic parameter value uncertain without making it a filesystem target", () => {

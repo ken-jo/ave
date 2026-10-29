@@ -5,6 +5,7 @@ import { resolveAddFormats, resolveAjv, type AjvCtor } from "../../plugins/confi
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { parseStrictJsonText } from "../../shared/strict-json.js";
 import { describeNonJson } from "../../shared/json-representable.js";
+import { isChatSendInputOrigin } from "../../shared/chat-origin.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { isValidToolUseId } from "../../shared/tool-use-id.js";
 import { isSafeStructuralId } from "../../shared/dlp-safe-id.js";
@@ -30,7 +31,12 @@ export function normalizeRecentlyDeniedInvocationRef(value: unknown): RecentlyDe
     || typeof value.rootDigest !== "string" || !DIGEST_PATTERN.test(value.rootDigest)
     || (value.pluginId !== undefined && !isSafeStructuralId(value.pluginId))
     || (value.mcpServerId !== undefined && !isSafeStructuralId(value.mcpServerId))) return undefined;
+  const origin = value.replayOrigin;
+  if (origin !== undefined && (!isRecord(origin) || typeof origin.otherPrincipal !== "boolean" || typeof origin.remoteController !== "boolean"
+    || !(isChatSendInputOrigin(origin.trustOrigin) || origin.trustOrigin === "llm-tool-arg"
+      || origin.trustOrigin === "agent-message" || origin.trustOrigin === "file-content"))) return undefined;
   return {
+    ...(origin === undefined ? {} : { replayOrigin: { trustOrigin: origin.trustOrigin, otherPrincipal: origin.otherPrincipal, remoteController: origin.remoteController } as NonNullable<RecentlyDeniedInvocationRef["replayOrigin"]> }),
     toolUseId: value.toolUseId, inputDigest: value.inputDigest, rootDigest: value.rootDigest,
     ...(typeof value.pluginId === "string" ? { pluginId: value.pluginId } : {}),
     ...(typeof value.mcpServerId === "string" ? { mcpServerId: value.mcpServerId } : {}),
@@ -44,7 +50,7 @@ function fingerprint(value: unknown): string {
 /** Refuse inputs that cannot round-trip exactly through the saved transcript. */
 export function makeRecentlyDeniedInvocationRef(
   input: Record<string, unknown>,
-  context: { cwd: string; toolUseId: string; pluginId?: string; mcpServerId?: string },
+  context: { cwd: string; toolUseId: string; pluginId?: string; mcpServerId?: string; replayOrigin?: RecentlyDeniedInvocationRef["replayOrigin"] },
 ): RecentlyDeniedInvocationRef | undefined {
   try {
     if (!isRecord(input) || describeNonJson(input, "input") !== null || !isAbsolute(context.cwd)) return undefined;
@@ -61,6 +67,7 @@ export function makeRecentlyDeniedInvocationRef(
       toolUseId: context.toolUseId,
       inputDigest: fingerprint(canonicalInput),
       rootDigest,
+      ...(context.replayOrigin === undefined ? {} : { replayOrigin: context.replayOrigin }),
       ...(context.pluginId === undefined ? {} : { pluginId: context.pluginId }),
       ...(context.mcpServerId === undefined ? {} : { mcpServerId: context.mcpServerId }),
     });
@@ -80,7 +87,8 @@ export function createRecentlyDeniedReplayResolver(deps: RecentlyDeniedReplayDep
   return async (entry: RecentlyDeniedEntry) => {
     const unavailable = { ok: false, error: "rerun-unavailable" } as const;
     const ref = normalizeRecentlyDeniedInvocationRef(entry.invocationRef);
-    if (!ref || !isValidSessionId(entry.sessionId)) return unavailable;
+    if (!ref?.replayOrigin || ref.replayOrigin.remoteController || ref.replayOrigin.trustOrigin === "tailnet-surface"
+      || ref.replayOrigin.trustOrigin === "platform-bridge" || !isValidSessionId(entry.sessionId)) return unavailable;
     let input: Record<string, unknown>;
     let cwd: string;
     try {
@@ -117,8 +125,8 @@ export function createRecentlyDeniedReplayResolver(deps: RecentlyDeniedReplayDep
     const replayRootBinding = issueReplayRootBinding(cwd, ref.rootDigest);
     if (!replayRootBinding) return unavailable;
     const results = await deps.executeAll([{ id: randomUUID(), name: entry.toolName, input }], {
-      executionCwd: cwd, replayRootBinding,
-      permissionContext: { trustOrigin: "user-keyboard", manualRerun: true, headless: false },
+      sessionId: entry.sessionId, executionCwd: cwd, replayRootBinding,
+      permissionContext: { trustOrigin: ref.replayOrigin.trustOrigin, otherPrincipal: ref.replayOrigin.otherPrincipal, manualRerun: true, headless: false },
     });
     return results.length === 1 && !results[0].is_error ? { ok: true } : { ok: false, error: "rerun-failed" };
   };

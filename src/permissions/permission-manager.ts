@@ -247,7 +247,7 @@ export interface PermissionCheckContext {
   // Tool-author `decisionOverride` for `meta`-category builtin tools, carried from the executor so the post-computation guard owns re-elevation (V1 SOT). A foreground `"ask"` meta invocation uses the same reviewer route as write/shell/network in automatic execution mode; otherwise it remains a per-invocation `forceModal` ask. `"always-allow-with-audit"` is short-circuited before checkDetailed runs. Non-meta callers pass `undefined`.
   decisionOverride?: "ask" | "always-allow-with-audit";
   // Host-built rule subject. Native file subjects retain the sealed path snapshot; mediated fetches and MCP use actual destination/tool identity. Shell dialects share floors; Bash rules match only the bash dialect.
-  // `hostTerminal`: a bash command typed into the user's own host terminal; only exact `HostTerminal(...)` rules of that shell and physical directory may allow it.
+  // `hostTerminal`: a bash command typed into the user's own host terminal; the shared user-owned-surface session choice authorizes agent actions.
   ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string; hostTerminal?: HostTerminalRuleTarget } | ScopedRuleSubject;
   // project whose per-project rule file applies. The caller must have awaited PermissionManager.ensureProjectRulesLoaded for it.
   projectRulesCwd?: string;
@@ -984,7 +984,7 @@ export class PermissionManager {
     const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", projectRules], ["session", sessionRules]];
     for (const [scope, rules] of scoped) {
       for (const rule of rules) {
-        if (rule.source || !isRuleSpecifier(rule.pattern)) continue;
+        if (rule.source || storedRuleInvalidReason(rule) !== null || !isRuleSpecifier(rule.pattern)) continue;
         const spec = parseRuleSpecifier(rule.pattern);
         if (spec.kind !== "network" || !matchesWebFetchHost(spec, subject.host, subject.port)) continue;
         matched[rule.action] ??= { pattern: rule.pattern, scope };
@@ -1044,7 +1044,7 @@ export class PermissionManager {
   // Read an already loaded scope; a generic tool allow is never a scoped grant.
   checkScopedRules(subject: ScopedRuleSubject, projectCwd: string): ScopedRuleEvaluation {
     const state = this.projectRuleScopes.stateFor(projectCwd);
-    if (this.rulesLoadError || !state.ok) return { floor: "Permission rule store is unavailable" };
+    if (this.rulesLoadError || !state.ok) return { admissionDenial: "Permission rule store is unavailable" };
     return evaluateScopedRules(subject, state.projectRoot, this.rules, state.rules);
   }
 
@@ -1252,7 +1252,7 @@ export class PermissionManager {
     await updatePermissionsFile(this.permissionsFilePath, async (file) => {
       knownPolicy = previous !== undefined && (
         previous.contentsDigest === sha256Hex(canonicalStringify(file)) ||
-        (previous.contentsDigest === sha256Hex("null") && file.rules.length === 0 && file.mode === "default")
+        (previous.contentsDigest === sha256Hex("null") && file.rules.length === 0)
       );
       await mutator(file);
       written = file;
@@ -1452,7 +1452,11 @@ export class PermissionManager {
     }
     if (scopedSubject && projectRuleState === undefined) throw new Error("Scoped permission rules require an explicit project scope");
     const scopedRules = scopedSubject ? evaluateScopedRules(scopedSubject, projectRuleState!.projectRoot, this.rules, projectRules) : undefined;
-    if (scopedRules?.floor) floor ??= { code: "protected-path", reason: scopedRules.floor };
+    if (scopedRules?.admissionDenial) admissionDenial ??= { code: "invalid-rule-target", reason: scopedRules.admissionDenial };
+    if (scopedRules?.floor) {
+      if (!scopedRules.floorCode) throw new Error("Scoped permission floor has no reason code");
+      floor ??= { code: scopedRules.floorCode, reason: scopedRules.floor };
+    }
     const networkScreen = scopedSubject?.kind === "webfetch" ? screenEgressRequest({ url: scopedSubject.url, allowPrivateNetwork: scopedSubject.privateNetwork }) : undefined;
     if (networkScreen?.outcome === "screened") floor ??= { code: "exfiltration", reason: `Network request carries an exfiltration signal: ${networkScreen.signal}` };
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
@@ -1515,9 +1519,13 @@ export class PermissionManager {
       return isDestructiveShellArgv(argv) || noReusableRuleReason(argv.map((arg) => arg ?? "")) !== null;
     })));
     const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && isReadOnlyCommand(command));
+    // Meta is host dispatch metadata; normalize its authenticated contract to an effect kind.
+    const effectKind = category === "meta" && !invalidMeta
+      ? context.decisionOverride === "always-allow-with-audit" ? "read" : "write"
+      : category;
     const request: PermissionDecisionRequest = {
       sessionId: context.sessionId,
-      tool: { name: toolName, source, kind: source === "mcp" ? "mcp" : context.fileWritePolicy ? "file-write" : category, readOnlyHint: context.mcpReadOnlyHint },
+      tool: { name: toolName, source, kind: source === "mcp" ? "mcp" : context.fileWritePolicy ? "file-write" : effectKind, readOnlyHint: context.mcpReadOnlyHint },
       mode: this.toolModeOverrides.get(toolName) ?? this.mode,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, rules, secretRead, manualRerun: context.manualRerun,

@@ -505,7 +505,7 @@ export function caseFoldForMatch(canonical: string): string {
   return canonical;
 }
 
-// Control paths require a fresh approval independently of ordinary secret evidence.
+// Mutations of control paths require fresh approval independently of ordinary secret evidence.
 export const PROTECTED_ROOT_ENTRIES = [
   ".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn",
   ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile",
@@ -564,7 +564,7 @@ export function permissionPathEvidence(
     ...path,
     secret: isSensitivePath(lexical, path.effect) ?? isSensitivePath(canonical, path.effect),
     admissionDenial: isAdmissionDeniedPath(lexical, path.effect) ?? isAdmissionDeniedPath(canonical, path.effect),
-    protectedControl: protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical),
+    protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
     projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
   };
 }

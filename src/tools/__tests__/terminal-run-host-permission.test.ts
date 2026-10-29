@@ -149,7 +149,7 @@ async function run(command: string, options: {
   };
 }
 
-const hostRule = (command: string): string => formatRuleSpecifier({ kind: "host-terminal", shell: "zsh", cwd: dir, tokens: command.split(" ") });
+const hostRule = (command: string): string => formatRuleSpecifier({ kind: "bash", wildcard: false, tokens: command.split(" ") });
 
 describe("terminal_run host permission", () => {
   it("judges the command as a host terminal subject in the shell's physical directory", async () => {
@@ -185,9 +185,9 @@ describe("terminal_run host permission", () => {
     expect(request?.sandboxCapability).toMatchObject({ kind: "none", confines: { filesystem: false, process: false, network: false } });
   });
 
-  it("retains host-terminal rule matching without allowing any rule to bypass the initial surface choice", async () => {
+  it("does not let shell allow rules bypass the initial surface choice", async () => {
     const ruled = await run("printf ready", { rules: [{ pattern: hostRule("printf ready"), action: "allow" }] });
-    expect(ruled.decision).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: { allow: expect.any(String) } } });
+    expect(ruled.decision).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: {} } });
     expect(ruled.requestAndWait).toHaveBeenCalledOnce();
     expect(ruled.typed).toEqual([]);
     const bash = await run("printf ready", { mode: "allow", rules: [{ pattern: "Bash(printf ready)", action: "allow" }] });

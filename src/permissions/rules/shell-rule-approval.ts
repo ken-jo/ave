@@ -71,34 +71,6 @@ export interface HostTerminalApprovalBinding {
   readonly afterExternalContent?: true;
 }
 
-/** The host terminal card's saves: the exact `HostTerminal(<shell> <cwd> <command>)` allow when the command has an exact Bash rule (the
- * same floors, destructive and secret-bearing refusals), only as "Always allow"; the Bash literal deny otherwise, since Bash denies also bind
- * host terminals. */
-export function buildHostTerminalRuleApproval(binding: HostTerminalApprovalBinding, saves: { allow: boolean; deny: boolean }): ShellRuleApproval {
-  const base = buildShellRuleApproval("bash", binding.command, binding.physicalCwd, saves);
-  let exactRule: string | null = null;
-  if (base.exactRule !== null && binding.command === binding.command.trim()) {
-    const bash = parseRuleSpecifier(base.exactRule);
-    if (bash.kind !== "bash" || bash.wildcard || bash.tokens.join(" ") !== binding.command) {
-      exactRule = null;
-    } else {
-      const candidate = formatRuleSpecifier({ kind: "host-terminal", shell: binding.shell, cwd: binding.physicalCwd, tokens: bash.tokens });
-      try {
-        validatePermissionRule(withCurrentShellRuleVersion({ pattern: candidate, action: "allow" }));
-        exactRule = candidate;
-      } catch { exactRule = null; }
-    }
-  }
-  const afterExternal = binding.afterExternalContent === true;
-  return {
-    ...base,
-    exactRule: afterExternal ? null : exactRule,
-    sessionAllowed: false,
-    persistentAllowed: !afterExternal && exactRule !== null,
-    hostTerminal: { shell: binding.shell, cwd: binding.physicalCwd, ...(afterExternal ? { afterExternalContent: true as const } : {}) },
-  };
-}
-
 function exactBashRule(parsed: ParsedShellCommand, projectCwd: string): string | null {
   const command = parsed.command;
   const shape = analyzeShellForRules(parsed, projectCwd);

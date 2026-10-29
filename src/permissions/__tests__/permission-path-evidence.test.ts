@@ -33,7 +33,10 @@ describe("permission path facts", () => {
   });
 
   it.each([".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json"])("reports protected paths across case and separators for %s", (name) => {
-    expect(protectedControlEntryFor(`${project}/${name}/child`)).toBe(name);
+    const target = `${project}/${name}/child`;
+    expect(protectedControlEntryFor(target)).toBe(name);
+    expect(permissionPathEvidence({ lexical: target, canonical: target, effect: "read" }, project).protectedControl).toBeUndefined();
+    expect(permissionPathEvidence({ lexical: target, canonical: target, effect: "write" }, project).protectedControl).toBe(name);
     expect(protectedControlEntryFor(`C:\\workspace\\${name.toUpperCase().replaceAll("/", "\\")}\\child`)).toBe(name);
   });
 

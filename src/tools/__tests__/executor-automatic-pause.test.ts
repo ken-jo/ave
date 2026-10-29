@@ -656,11 +656,9 @@ describe("executor automated approval pause", () => {
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
-  it.each(["approved", "policy changed"] as const)("rechecks a host permit paused during final routing and keeps its late card normal: %s", async outcome => {
+  it.each(["approved", "policy changed"] as const)("rechecks a reviewed host permit paused during final routing and keeps its late card normal: %s", async outcome => {
     const f = await subject();
     const command = "printf late-card";
-    await f.manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
-    await f.manager.loadRulesFromFile();
     f.manager.setMode("auto");
     const registry = new ToolRegistry();
     const shell = new BashTool();
@@ -676,7 +674,7 @@ describe("executor automated approval pause", () => {
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
     });
     await held.waits[0].reached;
-    expect(held.observed()?.permissionResult).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(held.observed()?.permissionResult).toMatchObject({ decision: "allow", reasonCode: "reviewer-allow" });
     expect(mint.mock.results[0]?.value).toBeDefined();
     expect(cards).toHaveLength(0);
     await f.pause();
@@ -713,6 +711,33 @@ describe("executor automated approval pause", () => {
       expect(execute).not.toHaveBeenCalled();
     }
     expect(cards).toHaveLength(1);
+    expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {
+    const f = await subject();
+    const command = "printf rule-permit";
+    await f.manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    const held = heldHandlerFinalizers("rule-host-permit", 1);
+    const { gate, cards } = denyingGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "rule-host-permit", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await held.waits[0].reached;
+    expect(held.observed()?.permissionResult).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    await f.pause();
+    held.waits[0].release();
+    const [result] = await pending;
+    expect(result.is_error, result.content).toBeUndefined();
+    expect(result.content).toContain("rule-permit");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(cards).toHaveLength(0);
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
@@ -790,7 +815,7 @@ describe("executor automated approval pause", () => {
     }
   });
 
-  it.each(["before lookup", "during lookup"] as const)("requires the user card despite exact approval memory when paused %s", async (timing) => {
+  it.each(["before lookup", "during lookup"] as const)("preserves exact approval memory when the reviewer pauses %s", async (timing) => {
     const current = await subject();
     const input = { path: join(current.root, "approved.txt") };
     await remember(current.root, input);
@@ -820,11 +845,10 @@ describe("executor automated approval pause", () => {
         return lookup(...args);
       });
     }
-    const [blocked] = await executor.executeAll([{ id: "after-pause", name: "write_probe", input }], options);
-    expect(blocked.is_error).toBe(true);
-    expect(execute).toHaveBeenCalledOnce();
-    expect(cards).toHaveLength(1);
-    expect(cards[0].reason).toBe("Automated approval is paused for this turn; human approval is required.");
+    const [remembered] = await executor.executeAll([{ id: "after-pause", name: "write_probe", input }], options);
+    expect(remembered.is_error, remembered.content).toBeUndefined();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(cards).toHaveLength(0);
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 

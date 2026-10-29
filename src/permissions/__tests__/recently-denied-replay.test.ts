@@ -12,6 +12,7 @@ import { PermissionTestResources } from "./test-resources.js";
 
 const SESSION_ID = "c8f40ac1-4139-45c2-b470-809c5c1e1272";
 const CALL_ID = "tool-call-original";
+const REPLAY_ORIGIN = { trustOrigin: "agent-message" as const, otherPrincipal: true, remoteController: false };
 const resources = new PermissionTestResources();
 afterEach(async () => { vi.restoreAllMocks(); await resources.cleanup(); });
 
@@ -33,7 +34,7 @@ async function subject() {
   await memory.saveSessionMetadata(SESSION_ID, { projectRoot: project });
   const executeAll = vi.fn(async () => [{ tool_use_id: "fresh", content: "done", is_error: false, durationMs: 0 }]);
   const resolver = createRecentlyDeniedReplayResolver({ memoryManager: memory, toolRegistry: registry, executeAll });
-  const invocationRef = makeRecentlyDeniedInvocationRef(input, { cwd: project, toolUseId: CALL_ID });
+  const invocationRef = makeRecentlyDeniedInvocationRef(input, { cwd: project, toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN });
   expect(invocationRef).toBeDefined();
   const entry: RecentlyDeniedEntry = {
     id: "730b7e85-ffbd-47c3-97bd-97af131701d4", ts: "2026-10-30T00:00:00.000Z", sessionId: SESSION_ID,
@@ -60,10 +61,10 @@ describe("persisted denial invocation references", () => {
     const [calls, options] = current.executeAll.mock.calls[0] as unknown as [Array<{ id: string; name: string; input: unknown }>, Record<string, unknown>];
     expect(calls[0]).toMatchObject({ name: "send_probe", input: current.input });
     expect(calls[0].id).not.toBe(CALL_ID);
-    expect(options).toEqual({ executionCwd: current.project, replayRootBinding: expect.any(Object), permissionContext: { trustOrigin: "user-keyboard", manualRerun: true, headless: false } });
+    expect(options).toEqual({ sessionId: SESSION_ID, executionCwd: current.project, replayRootBinding: expect.any(Object), permissionContext: { trustOrigin: REPLAY_ORIGIN.trustOrigin, otherPrincipal: REPLAY_ORIGIN.otherPrincipal, manualRerun: true, headless: false } });
     expect(checkReplayRootBinding(options.replayRootBinding)).toEqual({ valid: true });
     expect(JSON.stringify(options.replayRootBinding)).toBe("{}");
-    expect(options).not.toHaveProperty("sessionId");
+    expect(options.sessionId).toBe(SESSION_ID);
     expect(options).not.toHaveProperty("abortSignal");
   });
 
@@ -117,12 +118,28 @@ describe("persisted denial invocation references", () => {
     const ownedTool = { ...current.tool, source, ...origin };
     vi.spyOn(current.registry, "findByName").mockReturnValue(ownedTool);
     await current.memory.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, source, ...origin }] }]);
-    const invocationRef = makeRecentlyDeniedInvocationRef(current.input, { cwd: current.project, toolUseId: CALL_ID, ...origin });
+    const invocationRef = makeRecentlyDeniedInvocationRef(current.input, { cwd: current.project, toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN, ...origin });
     const entry = { ...current.entry, source, invocationRef };
     expect(await current.resolver(entry)).toEqual({ ok: true });
     current.executeAll.mockClear();
     vi.mocked(current.registry.findByName).mockReturnValue({ ...ownedTool, ...(source === "plugin" ? { pluginId: "another-provider" } : { mcpServerId: "another-server" }) });
     expect(await current.resolver(entry)).toEqual({ ok: false, error: "rerun-unavailable" });
+    expect(current.executeAll).not.toHaveBeenCalled();
+  });
+
+  it.each(["tailnet-surface", "platform-bridge", "llm-tool-arg"] as const)("cannot reconstruct live remote-controller authority for a persisted %s replay", async (trustOrigin) => {
+    const current = await subject();
+    const invocationRef = makeRecentlyDeniedInvocationRef(current.input, { cwd: current.project, toolUseId: CALL_ID,
+      replayOrigin: { trustOrigin, otherPrincipal: true, remoteController: true } });
+    expect(await current.resolver({ ...current.entry, invocationRef })).toEqual({ ok: false, error: "rerun-unavailable" });
+    expect(current.executeAll).not.toHaveBeenCalled();
+  });
+
+  it("refuses legacy or invalid provenance instead of promoting it to a user action", async () => {
+    const current = await subject();
+    const { replayOrigin: _origin, ...legacy } = current.invocationRef!;
+    expect(await current.resolver({ ...current.entry, invocationRef: legacy })).toEqual({ ok: false, error: "rerun-unavailable" });
+    expect(await current.resolver({ ...current.entry, invocationRef: { ...current.invocationRef!, replayOrigin: { trustOrigin: "invented", otherPrincipal: false } } as never })).toEqual({ ok: false, error: "rerun-unavailable" });
     expect(current.executeAll).not.toHaveBeenCalled();
   });
 
@@ -137,11 +154,11 @@ describe("persisted denial invocation references", () => {
 
   it("rejects non-JSON or non-directory fingerprints and reflects a failed fresh execution", async () => {
     const current = await subject();
-    expect(makeRecentlyDeniedInvocationRef({ value: Infinity }, { cwd: current.project, toolUseId: CALL_ID })).toBeUndefined();
-    expect(makeRecentlyDeniedInvocationRef(current.input, { cwd: "relative", toolUseId: CALL_ID })).toBeUndefined();
+    expect(makeRecentlyDeniedInvocationRef({ value: Infinity }, { cwd: current.project, toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN })).toBeUndefined();
+    expect(makeRecentlyDeniedInvocationRef(current.input, { cwd: "relative", toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN })).toBeUndefined();
     let nested: Record<string, unknown> = { leaf: "value" };
     for (let index = 0; index < 70; index += 1) nested = { nested };
-    expect(makeRecentlyDeniedInvocationRef(nested, { cwd: current.project, toolUseId: CALL_ID })).toBeUndefined();
+    expect(makeRecentlyDeniedInvocationRef(nested, { cwd: current.project, toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN })).toBeUndefined();
     current.executeAll.mockResolvedValue([{ tool_use_id: "fresh", content: "denied", is_error: true, durationMs: 0 }]);
     expect(await current.resolver(current.entry)).toEqual({ ok: false, error: "rerun-failed" });
   });

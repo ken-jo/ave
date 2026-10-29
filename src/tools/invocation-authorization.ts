@@ -432,7 +432,7 @@ export async function authorizeToolInvocation(
     const ordinaryRequest = permissionResult.pipelineRequest;
     if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
         !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined && ordinaryRequest.rules?.ask === undefined &&
-        ordinaryRequest.manualRerun !== true && ordinaryRequest.automationPause === undefined && rationaleResumeContext === undefined &&
+        ordinaryRequest.manualRerun !== true && rationaleResumeContext === undefined &&
         rationaleBatchContext === undefined && services.permissionManager !== undefined) {
       const memorySkip = await services.tryUserApprovalMemorySkip(
         toolUse.name,

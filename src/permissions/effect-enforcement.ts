@@ -274,14 +274,15 @@ export async function gateMutatingEffect(params: {
     ...(params.input === undefined || params.capabilityBound ? [randomUUID()] : [])]);
   const storedGrant = descriptorGrants.get(key);
   const remembered = storedGrant?.choice === "allow-session" && storedGrant.sessionId !== ctx.sessionId ? undefined : storedGrant?.choice;
-  const network = params.methodPath === "hostFetch" || params.methodPath === "openExternalUrl";
-  const otherPrincipal = params.methodPath === "openExternalUrl" || params.methodPath === "openAuthWindow" || params.methodPath === "openAuthPartitionViewer" || params.methodPath === "clearAuthPartition";
+  const authNavigation = params.methodPath === "openAuthWindow" || params.methodPath === "openAuthPartitionViewer";
+  const network = params.methodPath === "hostFetch" || params.methodPath === "openExternalUrl" || authNavigation;
   const worker = params.methodPath === "spawnWorker" && snapshot.args[0] !== null && typeof snapshot.args[0] === "object" ? snapshot.args[0] as Record<string, unknown> : undefined;
   const workerCommand = worker && typeof worker.command === "string" && (!worker.args || Array.isArray(worker.args) && worker.args.every((arg) => typeof arg === "string"))
     ? [worker.command, ...((worker.args as string[] | undefined) ?? [])].map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(" ") : undefined;
   const category = network ? "network" : workerCommand ? "shell" : params.effect === "read" ? "read" : "write";
 
-  const actualUrl = network ? snapshot.args[0] : undefined;
+  const authOptions = authNavigation && snapshot.args[0] !== null && typeof snapshot.args[0] === "object" ? snapshot.args[0] as Record<string, unknown> : undefined;
+  const actualUrl = authNavigation ? authOptions?.url : network ? snapshot.args[0] : undefined;
   if (network && typeof actualUrl !== "string") throw new Error("Network effects require the exact URL");
   if (network && snapshot.args[1] !== null && typeof snapshot.args[1] === "object") {
     assertSnapshotableRequestBody((snapshot.args[1] as Record<string, unknown>).body);
@@ -296,7 +297,6 @@ export async function gateMutatingEffect(params: {
     sessionId: ctx.sessionId,
     paths,
     ...(params.methodPath === "config.set" ? { floor: ctx.permissionContext?.floor ?? { code: "protected-path" as const, reason: "Plugin configuration is a protected control surface." } } : {}),
-    ...(otherPrincipal ? { floor: ctx.permissionContext?.floor ?? { code: "other-principal" as const, reason: "This browser or external surface requires local approval." } } : {}),
     ...(network ? { ruleSubject: issueHostNetworkSubject({ url: actualUrl as string }) } : workerCommand ? { ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command: workerCommand, cwd: process.cwd() }, shellExecution: { runsSandboxed: false } } : {}),
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
@@ -305,7 +305,7 @@ export async function gateMutatingEffect(params: {
   }
   const effectInput = { pluginId: params.pluginId, methodPath: params.methodPath, effect: params.effect, target: params.target ?? null };
   const reviewInput = network
-    ? { ...(snapshot.args[1] !== null && typeof snapshot.args[1] === "object" ? snapshot.args[1] : {}), url: actualUrl, ...effectInput }
+    ? { ...(authNavigation ? authOptions : snapshot.args[1] !== null && typeof snapshot.args[1] === "object" ? snapshot.args[1] : {}), url: actualUrl, ...effectInput }
     : workerCommand ? { ...worker, command: workerCommand, ...effectInput } : { ...effectInput, input: snapshot.args };
   if (permission.reviewer && permission.decision === "ask" && !permission.forceModal) {
 

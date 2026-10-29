@@ -1847,7 +1847,7 @@ All builtin, plugin and MCP tools enter the same normalized decision pipeline. C
 
 New installs use Default (`strict`). Persisted `default` remains Allow writes; stored IDs do not change. Eligible checkpoint-backed project writes pass in Allow writes/auto/Allow, while Default asks. Ordinary reads remain allowed. Secret reads use mode/rules; secret writes follow file rules. Host credential stores remain admission-denied. Exact lexical/canonical identity, all-target checks and checkpoint recovery remain required. Ordinary outside writes use one folder/invocation card. See [Project file writes](permission-policy-design.md#project-file-writes) for eligibility and recovery.
 
-Owner-away cards wait without a timeout by default; optional `permissions.ownerAwayAutoSkipMinutes` denies after N minutes (0 means unlimited). True headless auto requests review first; a required human fallback denies with “Nobody can approve this request; do not retry.” Recently denied replaces deferred approvals with redacted summaries and fresh manually approved reruns; stored history grants nothing.
+Owner-away cards wait without a timeout by default; optional `permissions.ownerAwayAutoSkipMinutes` denies after N minutes (0 means unlimited). True headless auto requests review first; a required human fallback denies with “Nobody can approve this request; do not retry.” Recently denied replaces deferred approvals with redacted summaries and fresh manually approved reruns. Reruns retain the original session and turn-origin restrictions; the user click supplies only one-time consent. Stored history grants nothing.
 
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
@@ -1956,7 +1956,7 @@ its `sandboxed` field describes the selected child, including exclusions and
 unsandboxed retries, rather than merely repeating the setting. Permission,
 reviewer, audit and cache consumers use that plan.
 
-A shell whose plan is not sandboxed, including explicit host execution or escalation, uses the ordinary mode/human decision in the [decision tree](permission-decision-tree.md). Host state wins even when read-only evidence exists. Normal cards may save prefix rules. Such execution is not itself a forced floor; protected paths, critical delete, escape, exfiltration and other-principal turns still are. Deny rules remain authoritative.
+A shell whose plan is not sandboxed, including explicit host execution or escalation, uses the ordinary mode/human decision in the [decision tree](permission-decision-tree.md). Host state wins even when read-only evidence exists. Normal cards may save prefix rules. Such execution is not itself a forced floor; protected-path mutations, critical delete, escape, exfiltration and other-principal turns still are. Deny rules remain authoritative.
 
 Exact shell-rule identity preserves literal raw words, including case, module qualifier and quoting; normalization for detection does not change that identity. Versioned rule matching and literal analysis supply evidence rather than a separate exact-only host-shell policy.
 

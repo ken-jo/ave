@@ -1,3 +1,4 @@
+import { deriveApprovalIsReadOnly } from "./invocation-authorization.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
@@ -738,6 +739,7 @@ export async function executeAuthorizedToolInvocation(
         let first = true;
         return async (url: URL): Promise<void> => {
           const rules = await services.permissionManager!.checkNetworkRules(url.href, executionCwd, finalInput.allowPrivateNetwork === true);
+          if (rules.admissionDenial) throw new Error(rules.admissionDenial);
           const initial = first && url.href === initialUrl.href;
           first = false;
           if (initial && (rules.decision === "allow" || rules.decision === "ask")) scopedFetch = true;
@@ -841,8 +843,8 @@ export async function executeAuthorizedToolInvocation(
         + `(base ${TOOL_TIMEOUT_POLICY.globalCeilingMs}ms)`,
     });
   }
-  // Every allow source reaches this gate. Only fresh native human consent
-  // satisfies a pause; policy, memory, parent and rationale receipts do not.
+  // Every allow source reaches this gate. Reviewer-bound requests paused by
+  // the breaker require fresh native consent; existing grants keep their scope.
   // Nothing asynchronous may separate this check from the handler call.
   const assertHandlerAdmission = (signal: AbortSignal): void => {
     signal.throwIfAborted();
@@ -962,7 +964,10 @@ export async function executeAuthorizedToolInvocation(
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
-      isReadOnly: invocationCategory === "read", mode: currentApprovalMode(services.permissionManager),
+      isReadOnly: permissionResult.forceModal !== true && deriveApprovalIsReadOnly({
+        invocationCategory, approvalReasonPrefix,
+        remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
+      }), mode: currentApprovalMode(services.permissionManager),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
       ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
       scopeTargetFilePaths: targetFilePaths,

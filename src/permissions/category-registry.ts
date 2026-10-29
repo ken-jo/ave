@@ -1,21 +1,10 @@
 // Only the host registers categories and derives per-call risk; descriptors are pure and perform no I/O or plugin execution. Registry weights feed review and the shared matrix feeds permission/audit consumers (docs/architecture/permission-policy-design.md).
-import { decidePermission } from "./decision-pipeline.js";
-import type { ToolCategory, ToolSource } from "../tools/types.js";
-
-export type CategoryDecision = "allow" | "ask" | "deny" | "reviewer" | "override";
-
-export interface CategoryDecisionInput {
-  mode: "default" | "auto" | "strict" | "allow";
-  source: ToolSource;
-  headless: boolean;
-}
+import type { ToolCategory } from "../tools/types.js";
 
 export interface ToolCategoryDescriptor {
   name: ToolCategory;
   // 0..1 — rule classifier baseline weight.
   riskWeight: number;
-  // Pure function — given mode/source/headless, returns the lane the executor should follow. Builtin `meta` returns the `"override"` sentinel so the host reads `tool.decisionOverride`; external `meta` is denied.
-  decisionFor: (input: CategoryDecisionInput) => CategoryDecision;
 }
 
 const _registry = new Map<ToolCategory, ToolCategoryDescriptor>();
@@ -57,12 +46,6 @@ export function registerStandardCategories(): void {
     registerToolCategory({
       name,
       riskWeight: weights[name],
-      decisionFor: ({ mode, source, headless }) => {
-        if (name === "meta") return source === "builtin" ? "override" : "deny";
-        const result = decidePermission({ tool: { name, source, kind: name }, mode, headless });
-        if (result.reviewRequired) return "reviewer";
-        return result.outcome === "ask-forced" ? "ask" : result.outcome === "sandbox-auto" ? "allow" : result.outcome;
-      },
     });
   }
 }

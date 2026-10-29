@@ -2,8 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PermissionManager, type PermissionCheckContext, type ReviewerDispatchResult } from "../permission-manager.js";
+import { PermissionManager, isIssuedShellAllowRuleDecision, type PermissionCheckContext, type ReviewerDispatchResult } from "../permission-manager.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { JudgeContractError } from "../judge/judge-contract.js";
 import { issueHostNetworkSubject } from "../host-network-subject.js";
@@ -26,13 +27,13 @@ describe("permission manager pipeline integration", () => {
     for (let index = 0; index < 3; index += 1) manager.getJudgeBreaker().record(sessionId, "ask", `block-${index}`);
   }
 
-  it("rechecks late pauses centrally and clears their evidence only for a new turn", () => {
+  it("keeps ordinary reads allowed during a reviewer pause and clears pause evidence for a new turn", () => {
     const sessionId = "late-pause";
     const initial = manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId });
     expect(initial.decision).toBe("allow");
     pauseSession(sessionId);
     const paused = manager.recheckPermission(initial);
-    expect(paused).toMatchObject({ decision: "ask", reasonCode: "automation-paused", pipelineRequest: { sessionId, automationPause: { kind: "consecutive" } } });
+    expect(paused).toMatchObject({ decision: "allow", reasonCode: "ordinary-read", pipelineRequest: { sessionId, automationPause: { kind: "consecutive" } } });
     expect(paused.forceModal).toBeUndefined();
     expect(paused.reviewer).toBeUndefined();
     expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { sessionId: "other-session" }).decision).toBe("allow");
@@ -42,12 +43,12 @@ describe("permission manager pipeline integration", () => {
     expect(resumed.pipelineRequest).not.toHaveProperty("automationPause");
   });
 
-  it("normalizes network session pauses and denies without an approver", async () => {
+  it("preserves allow-mode network decisions during a reviewer pause", async () => {
     manager.setMode("allow");
     const sessionId = "network-pause";
     pauseSession(sessionId);
     const evaluated = await manager.checkNetworkPermission({ host: "example.test", port: 443, source: "builtin", network: "public" }, { sessionId, headless: true });
-    expect(evaluated.permission).toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE, pipelineRequest: { sessionId, automationPause: { kind: "consecutive" } } });
+    expect(evaluated.permission).toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { sessionId, automationPause: { kind: "consecutive" } } });
   });
 
   it("keeps deny and mandatory floor precedence during a paused turn", () => {
@@ -95,6 +96,20 @@ describe("permission manager pipeline integration", () => {
     expect(manager.checkDetailed("remote_write", "mcp", "write").decision).toBe("ask");
   });
 
+  it.each(["strict", "default", "auto", "allow"] as const)("normalizes authenticated host dispatch contracts in %s", mode => {
+    manager.setMode(mode);
+    expect(manager.checkDetailed("host_audited", "builtin", "meta", undefined, { decisionOverride: "always-allow-with-audit" })).toMatchObject({ decision: "allow", reasonCode: "rule-allow", pipelineRequest: { tool: { kind: "read" } } });
+    const asked = manager.checkDetailed("host_action", "builtin", "meta", undefined, { decisionOverride: "ask" });
+    expect(asked).toMatchObject({ decision: mode === "allow" ? "allow" : "ask", pipelineRequest: { tool: { kind: "write" } } });
+    expect(asked.reviewer?.route).toBe(mode === "auto" ? "foreground-auto" : undefined);
+    expect(manager.checkDetailed("untrusted_dispatch", "plugin", "meta", undefined, { decisionOverride: "always-allow-with-audit" })).toMatchObject({ decision: "deny", reasonCode: "invalid-meta" });
+  });
+
+  it("denies an unknown runtime effect kind even in allow mode", () => {
+    manager.setMode("allow");
+    expect(manager.checkDetailed("unknown_effect", "builtin", "unrecognized" as never)).toMatchObject({ decision: "deny", reasonCode: "unsupported-tool-kind" });
+  });
+
   it("denies unreadable policy even for reads and allow mode", () => {
     manager.setMode("allow");
     expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { permissionStoreError: "Invalid permission store" })).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable" });
@@ -137,11 +152,32 @@ describe("permission manager pipeline integration", () => {
     expect(manager.checkDetailed("bash", "builtin", "shell", undefined, context).decision).toBe("ask");
   });
 
-  it("asks normally for a secret read and forces protected control paths", () => {
-    manager.setMode("default");
-    const path = (name: string) => ({ lexical: join(directory, name), canonical: join(directory, name), effect: "read" as const });
-    expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { paths: [path(".env")] })).toMatchObject({ decision: "ask", reasonCode: "secret-read" });
-    expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { paths: [path(".git/config")] })).toMatchObject({ decision: "ask", forceModal: true });
+  it.each(["strict", "default", "auto", "allow"] as const)("allows protected-path reads but forces mutations in %s", (mode) => {
+    manager.setMode(mode);
+    const target = join(directory, ".git/config");
+    const read = manager.checkDetailed("read_file", "builtin", "read", undefined, { paths: [{ lexical: target, canonical: target, effect: "read" }] });
+    expect(read).toMatchObject({ decision: "allow", reasonCode: "ordinary-read" });
+    expect(read.forceModal).toBeUndefined();
+    const write = manager.checkDetailed("write_file", "builtin", "write", undefined, { paths: [{ lexical: target, canonical: target, effect: "write" }] });
+    expect(write).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+    const secret = join(directory, ".env");
+    const secretRead = manager.checkDetailed("read_file", "builtin", "read", undefined, { paths: [{ lexical: secret, canonical: secret, effect: "read" }] });
+    expect(secretRead.decision).toBe(mode === "allow" ? "allow" : "ask");
+    expect(secretRead.forceModal).toBeUndefined();
+    expect(secretRead.reviewer?.route).toBe(mode === "auto" ? "foreground-auto" : undefined);
+  });
+
+  it.each(["strict", "default", "auto", "allow"] as const)("retains persisted policy authority after the first mode save to %s", async mode => {
+    await manager.setModePersist(mode);
+    await manager.addRulePersist(withCurrentShellRuleVersion({ pattern: "Bash(echo *)", action: "allow" }), { kind: "user" });
+    await manager.ensureProjectRulesLoaded(directory);
+    const result = manager.checkDetailed("bash", "builtin", "shell", undefined, {
+      projectRulesCwd: directory,
+      ruleSubject: { kind: "shell", dialect: "bash", command: "echo ready", cwd: directory },
+      hostShellExecutionPlan: buildHostShellExecutionPlan({ platform: process.platform, requestedSandbox: false, executionMode: "host", activeCapability: { kind: "none", confidence: "verified", platform: process.platform, reason: "fixture" } }),
+    });
+    expect(result).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(isIssuedShellAllowRuleDecision(result, manager)).toBe(true);
   });
 
   it("routes headless auto through review and denies a high fallback without retry", () => {
@@ -193,6 +229,31 @@ describe("permission manager pipeline integration", () => {
       expect(() => manager.resolveReviewedPermission(pending, review as ReviewerDispatchResult)).toThrow(JudgeContractError);
     },
   );
+
+  it("rejects an unsealed edit target before an approval can be issued", async () => {
+    await manager.ensureProjectRulesLoaded(directory);
+    manager.setMode("allow");
+    expect(() => manager.checkDetailed("write_file", "builtin", "write", undefined, {
+      projectRulesCwd: directory,
+      ruleSubject: { kind: "edit", cwd: directory, paths: ["ordinary"], targets: [] },
+    })).toThrow("Edit target was not sealed by the host");
+  });
+
+  it("labels scoped escape and credential URL floors precisely and denies unsupported URL schemes", async () => {
+    await manager.ensureProjectRulesLoaded(directory);
+    manager.setMode("allow");
+    const escaped = manager.checkDetailed("write_file", "builtin", "write", undefined, {
+      projectRulesCwd: directory,
+      ruleSubject: { kind: "edit", cwd: directory, paths: ["../outside"] },
+    });
+    expect(escaped).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape" });
+    const network = (url: string) => manager.checkDetailed("web_fetch", "builtin", "network", undefined, {
+      projectRulesCwd: directory, ruleSubject: { kind: "webfetch", url },
+    });
+    expect(network("https://user:secret@example.test/")).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
+    expect(network("file:///ordinary")).toMatchObject({ decision: "deny", reasonCode: "invalid-rule-target" });
+    expect(() => network("not a URL")).toThrow();
+  });
 
   it.each(["auto", "allow"] as const)("keeps credential-bearing fetches forced in %s despite allow rules", async (mode) => {
     await manager.ensureProjectRulesLoaded(directory);

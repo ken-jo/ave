@@ -45,7 +45,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
   manager.setMode(options.mode ?? "auto");
   if (options.holdFinalizer !== false) manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
   if (options.exactRule !== false) await manager.addRulePersist({ pattern: formatRuleSpecifier({
-    kind: "host-terminal", shell: "zsh", cwd: root, tokens: command.split(" "),
+    kind: "bash", wildcard: false, tokens: command.split(" "),
   }), action: "allow" }, { kind: "user" });
   setReviewerForTest(manager, {
     classifier: { classify: () => ({ level: "high", reason: "Sibling action requires human approval" }), ...(options.logicalReview ? { reviewUserOwnedSurface: options.logicalReview } : {}) },
@@ -127,7 +127,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
 }
 
 describe("host terminal late native approval", () => {
-  it.each(["native", "non-native", "tainted"] as const)("rechecks a preissued terminal rule before late native authority: %s", async kind => {
+  it.each(["native", "non-native", "tainted"] as const)("rechecks a changed surface choice or taint before late native authority: %s", async kind => {
     const f = await fixture();
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-turn" }, async () => {
       const pending = f.run();
@@ -135,7 +135,10 @@ describe("host terminal late native approval", () => {
       expect(f.cards).toHaveLength(0);
       expect(f.typed).toEqual([]);
       if (kind === "tainted") noteToolResultsReturnedToModel();
-      else await f.pause();
+      else {
+        await f.pause();
+        f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      }
       f.release();
       await vi.waitFor(() => expect(f.cards).toHaveLength(1));
       const card = f.cards[0];
@@ -148,7 +151,7 @@ describe("host terminal late native approval", () => {
       if (kind === "tainted") {
         expect(f.request.mock.calls[0]?.[0]).toMatchObject({ hostTerminal: { afterExternalContent: true }, forceExplicit: true });
         expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-        expect(card.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
+        expect(card.shellRule).toBeUndefined();
       }
       if (kind === "non-native") {
         expect(f.approve(card, false)).toBeNull();
@@ -166,6 +169,47 @@ describe("host terminal late native approval", () => {
       }
       expect(f.cards).toHaveLength(1);
       expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(kind !== "tainted");
+    });
+  });
+
+  it("keeps an allowed surface command outside a newly tripped reviewer breaker", async () => {
+    const f = await fixture();
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "paused-allow-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.release();
+      const [result] = await pending;
+      expect(result.is_error, result.content).toBeFalsy();
+      expect(f.typed).toEqual([COMMAND]);
+      expect(f.cards).toEqual([]);
+      expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+    });
+  });
+
+  it("routes a logically reviewed surface command to a normal card when the reviewer pauses before typing", async () => {
+    const logical = vi.fn(async () => ({ consistent: true, reason: "The command follows the current task." }));
+    const f = await fixture({ logicalReview: logical, surfaceChoice: "auto" });
+    f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "auto");
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "paused-auto-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      expect(logical).toHaveBeenCalledOnce();
+      expect(f.cards).toHaveLength(0);
+      await f.pause();
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      expect(f.typed).toEqual([]);
+      expect(f.request.mock.calls[0]?.[0]).toMatchObject({
+        reason: "Automated approval is paused for this turn; human approval is required.",
+        userOwnedSurfaceReviewFallback: true,
+      });
+      expect(f.request.mock.calls[0]?.[0].forceExplicit).not.toBe(true);
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error, result.content).toBeFalsy();
+      expect(f.typed).toEqual([COMMAND]);
+      expect(logical).toHaveBeenCalledOnce();
     });
   });
 

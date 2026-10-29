@@ -14,9 +14,15 @@ import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js
 
 // A broad allow wildcard is refused at save but retained inert when already stored.
 class BroadShellWildcardError extends RuleSpecifierError {}
+class RetiredRuleError extends RuleSpecifierError {}
+
+function isRetiredHostTerminalRule(pattern: string): boolean {
+  return pattern.startsWith("HostTerminal(");
+}
 
 // The reason a stored rule is inert, or null for a rule in force. Decisions skip such a rule and Settings lists it with this reason.
 export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }, parsed?: RuleSpecifier): StoredRuleInvalidReason | null {
+  if (isRetiredHostTerminalRule(rule.pattern)) return "retired-host-terminal";
   if (rule.action !== "allow" || rule.source !== undefined || !isRuleSpecifier(rule.pattern)) return null;
   const spec = parsed ?? parseRuleSpecifier(rule.pattern);
   return spec.kind === "bash" && refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), spec.wildcard) === "broad-prefix"
@@ -48,6 +54,7 @@ export function validatePermissionRule(rule: unknown): PermissionRule {
   if (typeof action !== "string" || !ACTIONS.has(action)) throw new RuleSpecifierError(pattern, `unknown action ${String(action)}`);
   if (tier !== undefined && tier !== "read" && tier !== "write") throw new RuleSpecifierError(pattern, `unknown tier ${String(tier)}`);
   if (source !== undefined && typeof source !== "string") throw new RuleSpecifierError(pattern, "source must be a string");
+  if (isRetiredHostTerminalRule(pattern)) throw new RetiredRuleError(pattern, "host terminal rules are no longer used; remove this stored rule");
   if (isRuleSpecifier(pattern)) {
     const spec = parseRuleSpecifier(pattern);
     if (source !== undefined) throw new RuleSpecifierError(pattern, "specifier rules do not take a source");
@@ -62,13 +69,6 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
   }
   if (!ENFORCED_RULE_KINDS.has(spec.kind)) {
     throw new RuleSpecifierError(pattern, `${spec.kind} rules are not enforced yet`);
-  }
-  if (spec.kind === "host-terminal") {
-    if (action !== "allow") {
-      throw new RuleSpecifierError(pattern, "a host terminal rule only allows one exact command; deny or ask with a Bash(...) rule, which host terminals also obey");
-    }
-    const refused = refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), false);
-    if (refused) throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" cannot be allowed by a rule (${refused}); approve it once instead`);
   }
   if (spec.kind === "bash" && action === "allow") {
     const refused = refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), spec.wildcard);
@@ -139,8 +139,10 @@ export function validateRuleList(
           validatePermissionRule(rule);
         } catch (error) {
           const pattern = (rule as { pattern?: unknown }).pattern;
-          if (error instanceof BroadShellWildcardError && typeof pattern === "string" && (keep === "all" || keep.has(pattern))) {
-            return { ...(rule as PermissionRule) };
+          if ((error instanceof BroadShellWildcardError || error instanceof RetiredRuleError) && typeof pattern === "string" && (keep === "all" || keep.has(pattern))) {
+            const row = rule as PermissionRule;
+            if (!ACTIONS.has(row.action) || row.source !== undefined || (row.tier !== undefined && row.tier !== "read" && row.tier !== "write")) throw error;
+            return { ...row };
           }
         }
       }

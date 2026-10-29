@@ -26,30 +26,6 @@ describe("Category Registry — registerStandardCategories", () => {
     expect(known).toEqual(["meta", "network", "read", "shell", "write"].sort());
   });
 
-  it.each(["strict", "default", "auto", "allow"] as const)("allows ordinary reads in %s mode", (mode) => {
-    expect(getToolCategoryDescriptor("read").decisionFor({ mode, source: "builtin", headless: false })).toBe("allow");
-    expect(getToolCategoryDescriptor("read").decisionFor({ mode, source: "builtin", headless: true })).toBe("allow");
-  });
-
-  it.each(["write", "shell", "network"] as const)("delegates %s approval policy to the decision pipeline", (kind) => {
-    const descriptor = getToolCategoryDescriptor(kind);
-    for (const mode of ["strict", "default"] as const) {
-      expect(descriptor.decisionFor({ mode, source: "builtin", headless: false })).toBe("ask");
-      expect(descriptor.decisionFor({ mode, source: "builtin", headless: true })).toBe("deny");
-    }
-    for (const headless of [false, true]) {
-      expect(descriptor.decisionFor({ mode: "auto", source: "builtin", headless })).toBe("reviewer");
-      expect(descriptor.decisionFor({ mode: "allow", source: "builtin", headless })).toBe("allow");
-    }
-  });
-
-  it("meta descriptor keeps override host-only and denies external sources", () => {
-    const d = getToolCategoryDescriptor("meta");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("override");
-    expect(d.decisionFor({ mode: "auto", source: "plugin", headless: true })).toBe("deny");
-    expect(d.decisionFor({ mode: "allow", source: "mcp", headless: false })).toBe("deny");
-  });
-
   it("riskWeight ordering matches Phase 3 classifier expectation: shell > network > write > read > meta", () => {
     const w = (c: ToolCategory) => getToolCategoryDescriptor(c).riskWeight;
     expect(w("shell")).toBeGreaterThan(w("network"));
@@ -78,7 +54,6 @@ describe("Category Registry — lookup errors", () => {
     registerToolCategory({
       name: "read",
       riskWeight: 0.05,
-      decisionFor: () => "allow",
     });
     const d = getToolCategoryDescriptor("read");
     expect(d.riskWeight).toBe(0.05);
@@ -89,18 +64,11 @@ describe("Category Registry — lookup errors", () => {
     registerToolCategory({
       name: "read",
       riskWeight: 0.1,
-      decisionFor: () => "allow",
     });
     registerToolCategory({
       name: "read",
       riskWeight: 0.3,
-      decisionFor: () => "ask",
     });
     expect(getToolCategoryDescriptor("read").riskWeight).toBe(0.3);
-    expect(getToolCategoryDescriptor("read").decisionFor({
-      mode: "default",
-      source: "builtin",
-      headless: false,
-    })).toBe("ask");
   });
 });

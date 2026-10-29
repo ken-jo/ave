@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-// Across scopes, floors outrank deny, then ask, then allow; corrupt rule data must not silently disappear.
+// Admission and deny rules precede floors; ask rules precede grants and corrupt policy denies.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -126,7 +126,7 @@ describe("Store A (user-global permissions.json)", () => {
     const pm = new PermissionManager(permissionsFile.replace("permissions.json", "other.json"));
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("ls"), projectRulesCwd: project }))
-      .toMatchObject({ decision: "ask", reason: expect.stringMatching(/rule 2 at line 9: Invalid permission rule "Bash\(\*\)"/) });
+      .toMatchObject({ decision: "deny", reasonCode: "policy-unreadable", reason: expect.stringMatching(/rule 2 at line 9: Invalid permission rule "Bash\(\*\)"/) });
   });
 
   it.each([
@@ -157,12 +157,12 @@ describe("Store A (user-global permissions.json)", () => {
     await pm.loadRulesFromFile();
     expect(pm.getRulesLoadError()).toMatch(/is corrupt/);
     for (const [tool, category] of [["write_file", "write"], ["web_fetch", "network"], ["bash", "shell"]] as const) {
-      expect(pm.checkDetailed(tool, "builtin", category)).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/is corrupt/) });
+      expect(pm.checkDetailed(tool, "builtin", category)).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable", reason: expect.stringMatching(/is corrupt/) });
     }
-    // Reads keep the normal matrix so the app stays usable during repair.
-    expect(pm.checkDetailed("read_file", "builtin", "read")).toMatchObject({ decision: "allow" });
+    // Unread deny rules also block reads until the policy can be repaired.
+    expect(pm.checkDetailed("read_file", "builtin", "read")).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable" });
     pm.setMode("allow");
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, shell("ls"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, shell("ls"))).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable" });
   });
 });
 
@@ -186,13 +186,15 @@ describe("decision path", () => {
   it("stored Bash rules survive restart but require a proven shell subject", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
-    // A plain (unsandboxed) shell runs only on an exact rule (owner 2026-10-25, unsandboxed shell exact-rule requirement): the stored prefix does not run it.
+    // A shell grant still needs a complete literal rule proof; unsupported command shapes follow mode policy.
     expect(pm.checkDetailed("bash", "builtin", "shell", null, shell("git status -s"))).toMatchObject({ decision: "ask" });
     await pm.addRulePersist({ pattern: "Bash(git status)", action: "allow" }, { kind: "user" });
 
     const restarted = new PermissionManager(permissionsFile);
     await restarted.loadRulesFromFile();
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const unproven = restarted.checkDetailed("bash", "builtin", "shell", null, shell("git status"));
+    expect(unproven).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+    expect(unproven.forceModal).toBeUndefined();
     await restarted.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
     const proven = new PermissionManager(permissionsFile);
     await proven.loadRulesFromFile();
@@ -213,7 +215,7 @@ describe("decision path", () => {
     await expect(readPermissionsFile(permissionsFile)).resolves.toBeNull();
   });
 
-  it("deny > ask > allow across user and project scopes; ask beats allow mode", async () => {
+  it("keeps deny and ask precedence across scopes before ordinary mode policy", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git log -5)", action: "allow" }, { kind: "user" });
     await pm.addRulePersist({ pattern: "Bash(git log --all *)", action: "deny" }, { kind: "project", projectCwd: project });
@@ -221,13 +223,15 @@ describe("decision path", () => {
     await pm.ensureProjectRulesLoaded(project);
     const ctx = (command: string) => ({ ...shell(command), projectRulesCwd: project });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny", layer: 1 });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const ask = pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"));
+    expect(ask).toMatchObject({ decision: "ask", reasonCode: "rule-ask" });
+    expect(ask.forceModal).toBeUndefined();
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     pm.setMode("allow");
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
-    // Literal shell payloads are opaque and require their own complete exact rule.
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    // An opaque nested shell without a forced signal follows the ordinary host-shell mode.
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {
@@ -248,13 +252,13 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf ready"), projectRulesCwd: project })).toMatchObject({ decision: "ask" });
   });
 
-  it("a Store B corruption reported by the pipeline asks for non-read calls only", () => {
+  it("denies writes and reads when the approval policy store is corrupt", () => {
     const pm = new PermissionManager(permissionsFile);
     pm.setMode("allow");
     const error = "Saved approvals file /x/user-approvals.json is corrupt: invalid JSON";
     expect(pm.checkDetailed("write_file", "builtin", "write", null, { permissionStoreError: error }))
-      .toMatchObject({ decision: "ask", forceModal: true, reason: error });
-    expect(pm.checkDetailed("read_file", "builtin", "read", null, { permissionStoreError: error })).toMatchObject({ decision: "allow" });
+      .toMatchObject({ decision: "deny", reasonCode: "policy-unreadable", reason: error });
+    expect(pm.checkDetailed("read_file", "builtin", "read", null, { permissionStoreError: error })).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable", reason: error });
   });
 
   it("a corrupt project file fails that project closed; a decision for an unloaded project throws", async () => {
@@ -265,7 +269,7 @@ describe("decision path", () => {
     expect(() => pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("ls"), projectRulesCwd: project })).toThrow(/not loaded/);
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("ls"), projectRulesCwd: project }))
-      .toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/projectRoot does not match/) });
+      .toMatchObject({ decision: "deny", reasonCode: "policy-unreadable", reason: expect.stringMatching(/projectRoot does not match/) });
     await expect(pm.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "project", projectCwd: project })).rejects.toBeInstanceOf(PermissionRulesFileCorruptError);
     writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "web_fetch", action: "allow" }] }));
     await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/specifiers only/) });
@@ -345,7 +349,7 @@ describe("decision path", () => {
     expect(result!.is_error).toBe(true);
     // The session cwd's (empty) project file is not what decided the call.
     await pm.ensureProjectRulesLoaded(repoA);
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf hi"), projectRulesCwd: repoA })).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf hi"), projectRulesCwd: repoA })).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
 
   it("re-reads a project rule file when it changes on disk", async () => {
@@ -360,7 +364,7 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "allow" });
     writeFileSync(location.filePath, "{ broken");
     await pm.ensureProjectRulesLoaded(project);
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable" });
   });
 
   it("a specifier deny never hides the tool from the model", async () => {
@@ -399,8 +403,8 @@ describe("gate: unreviewed shell in default mode", () => {
   it.each([
     ["ls -la", "low", true],
     ["npm test", "medium", true],
-    ["rm -rf build", "high", false],
-    [null, undefined, false],
+    ["rm -rf build", "high", true],
+    [null, undefined, true],
   ] as const)("%s → verdict %s, remember offered: %s", async (command, level, rememberable) => {
     const args = { command: command ?? "ls" };
     const ruleVerdict = command === null ? undefined : classifyApprovalRuleVerdict({
@@ -426,7 +430,9 @@ describe("gate: unreviewed shell in default mode", () => {
       }),
     });
     expect(displayed).toMatchObject({ persistentAllowAllowed: rememberable });
-    if (!rememberable) expect(displayed!.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(displayed!.allowedChoices).toBeUndefined();
+    expect(displayed!.exactRecordAllowed).toBe(true);
+    if (command === "rm -rf build") expect(displayed!.shellRule).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
     gate.resolveFromDesktopRenderer(id, { requestId: id, choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
   });

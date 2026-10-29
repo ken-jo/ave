@@ -296,6 +296,7 @@ export const en = {
   "permissionsTab.scopeProject": "Project",
   "permissionsTab.scopeUser": "Everywhere",
   "permissionsTab.revokeNamedRule": "Revoke {pattern}",
+  "permissionsTab.ruleRetiredHostTerminal": "No longer used: host terminal actions use session choices. Delete this stored rule.",
   "permissionsTab.ruleInvalidWildcardNotAllowlisted": "Not in force: this stored wildcard prefix is too broad. Remove it or save a narrower prefix or exact command.",
   "permissionsTab.exactApprovalLabel": "Exact approval",
 
@@ -623,6 +624,7 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.scopeProject": "프로젝트",
   "permissionsTab.scopeUser": "모든 프로젝트",
   "permissionsTab.revokeNamedRule": "{pattern} 철회",
+  "permissionsTab.ruleRetiredHostTerminal": "더 이상 사용되지 않음: 호스트 터미널 동작은 세션 선택을 사용합니다. 저장된 이 규칙을 삭제하세요.",
   "permissionsTab.ruleInvalidWildcardNotAllowlisted": "적용되지 않음: 저장된 와일드카드 접두사의 범위가 너무 넓습니다. 삭제하거나 더 구체적인 접두사 또는 정확한 명령으로 저장하세요.",
   "permissionsTab.exactApprovalLabel": "정확히 일치하는 승인",
 

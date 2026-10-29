@@ -166,7 +166,7 @@ describe("classification boundaries", () => {
   });
 });
 
-describe("rest-of-turn human routing", () => {
+describe("reviewer-bound rest-of-turn human routing", () => {
   const pauses = [
     { kind: "consecutive", reason: "Consecutive review limit reached." },
     { kind: "total", reason: "Turn review limit reached." },
@@ -178,15 +178,15 @@ describe("rest-of-turn human routing", () => {
         for (const headless of [false, true]) {
           it(`${automationPause.kind} pause, ${row.name}, ${mode}, headless=${headless}`, () => {
             const result = decidePermission(request({ ...row.evidence, mode, headless, sessionId: "paused-session", automationPause }));
-            if (headless) {
-              expect(result).toEqual({ outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE });
-            } else if (row.evidence.floor) {
-              expect(result).toEqual({ outcome: "ask-forced", reasonCode: row.evidence.floor.code, reason: row.evidence.floor.reason });
+            const baseline = decidePermission(request({ ...row.evidence, mode, headless }));
+            if (baseline.reviewRequired) {
+              expect(result).toEqual(headless
+                ? { outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE }
+                : { outcome: "ask", reasonCode: "automation-paused", reason: automationPause.reason });
+              expect(result.reviewRequired).toBeUndefined();
             } else {
-              expect(result).toEqual({ outcome: "ask", reasonCode: "automation-paused", reason: automationPause.reason });
+              expect(result).toEqual(baseline);
             }
-            expect(result.reviewRequired).toBeUndefined();
-            expect(result.requiresCodeCheckpoint).toBeUndefined();
           });
         }
       }
@@ -195,10 +195,9 @@ describe("rest-of-turn human routing", () => {
     for (const mode of MODES) {
       for (const headless of [false, true]) {
         for (const grant of ["allow", "remembered"] as const) {
-          it(`${automationPause.kind} pause overrides ${grant} in ${mode}, headless=${headless}`, () => {
+          it(`${automationPause.kind} pause preserves ${grant} in ${mode}, headless=${headless}`, () => {
             expect(decidePermission(request({ mode, headless, automationPause, rules: { [grant]: "Explicit prior approval." } })))
-              .toEqual(headless ? { outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE }
-                : { outcome: "ask", reasonCode: "automation-paused", reason: automationPause.reason });
+              .toEqual({ outcome: "allow", reasonCode: grant === "allow" ? "rule-allow" : "remembered-approval", reason: "Explicit prior approval." });
           });
         }
 
@@ -223,9 +222,24 @@ describe("rest-of-turn human routing", () => {
   }
 
   it("pause evidence applies only to the supplied request and never infers session state", () => {
-    const paused = request({ sessionId: "paused-session", automationPause: { kind: "total", reason: "Turn review limit reached." } });
+    const paused = request({ mode: "auto", secretRead: true, sessionId: "paused-session", automationPause: { kind: "total", reason: "Turn review limit reached." } });
     expect(decidePermission(paused).outcome).toBe("ask");
     expect(decidePermission(request({ sessionId: "paused-session" })).outcome).toBe("allow");
     expect(decidePermission(request({ sessionId: "another-session" })).outcome).toBe("allow");
   });
+});
+
+describe("unsupported tool kinds", () => {
+  for (const mode of MODES) for (const headless of [false, true]) {
+    it(`denies an unlisted kind before grants in ${mode}, headless=${headless}`, () => {
+      const evidence = request({ mode, headless, tool: { ...READ, kind: "meta" }, rules: { allow: "Grant.", remembered: "Prior grant." } });
+      expect(decidePermission(evidence)).toEqual({ outcome: "deny", reasonCode: "unsupported-tool-kind", reason: "The tool kind is not supported by the permission contract." });
+      expect(decidePermission({ ...evidence, floor: { code: "protected-path", reason: "Control path." } }).outcome).toBe("deny");
+      expect(decidePermission({ ...evidence, tool: { ...READ, kind: "unregistered" as never } }).outcome).toBe("deny");
+      expect(decidePermission({ ...evidence, tool: { ...evidence.tool, source: "mcp" } }).outcome).toBe("deny");
+      for (const kind of ["browser", "host-terminal"] as const) {
+        expect(decidePermission({ ...evidence, userOwnedSurface: { kind, choice: "allow" } }).outcome).toBe("deny");
+      }
+    });
+  }
 });

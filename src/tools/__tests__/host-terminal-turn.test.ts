@@ -1,7 +1,6 @@
 // The host-terminal turn capability: readable only inside the turn that issued it, for its own conversation, masked for nested runs.
 import { describe, expect, it } from "vitest";
 import { currentHostTerminalTurn, noteOtherPrincipalGuidance, noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../host-terminal-turn.js";
-import { buildHostTerminalRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
 
 describe("host-terminal turn capability", () => {
   it("is read only inside its turn and for its own conversation, and ends with the turn", async () => {
@@ -78,13 +77,4 @@ describe("host-terminal turn capability", () => {
     });
   });
 
-  it("builds a host card with no lasting allow after external content, and the exact rule otherwise", () => {
-    const binding = { tabId: "terminal:0000c0de-1", terminalSessionId: "host", sessionId: "pane", shell: "zsh" as const, physicalCwd: process.cwd(), command: "printf ready" };
-    const clean = buildHostTerminalRuleApproval(binding, { allow: true, deny: true });
-    expect(clean).toMatchObject({ exactRule: expect.stringContaining("HostTerminal("), persistentAllowed: true, hostTerminal: { shell: "zsh", cwd: process.cwd() } });
-    expect(clean.hostTerminal).not.toHaveProperty("afterExternalContent");
-    const after = buildHostTerminalRuleApproval({ ...binding, afterExternalContent: true }, { allow: true, deny: true });
-    expect(after).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false, hostTerminal: { afterExternalContent: true } });
-    expect(after.denyAllowed).toBe(true);
-  });
 });

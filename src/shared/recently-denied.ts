@@ -1,3 +1,4 @@
+import type { ChatInputOrigin } from "./chat-origin.js";
 import type { ToolCategory, ToolSource } from "./permission-review-status.js";
 
 /** Non-executable references into an existing saved transcript. */
@@ -5,6 +6,8 @@ export interface RecentlyDeniedInvocationRef {
   toolUseId: string;
   inputDigest: string;
   rootDigest: string;
+  /** Restrictive original provenance; never a replay grant. Missing legacy provenance is not replayable. */
+  replayOrigin?: { trustOrigin: ChatInputOrigin; otherPrincipal: boolean; remoteController: boolean };
   pluginId?: string;
   mcpServerId?: string;
 }

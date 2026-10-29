@@ -64,6 +64,31 @@ describe("scoped permission rules", () => {
     }
   });
 
+  it.each(["copy_path", "extract_archive"] as const)("retains %s read endpoints for rules without a protected mutation floor", name => {
+    const tool = createFileTools().find(tool => tool.name === name)!;
+    const sourceField = name === "copy_path" ? "sourcePath" : "archivePath";
+    const subject = scopedRuleSubjectFor(tool, { [sourceField]: ".git/config", destinationPath: "src/ordinary" }, project)!;
+    expect(subject).toMatchObject({ kind: "edit", pathEffects: ["read", "write"] });
+    expect(evaluate(subject, [])).not.toHaveProperty("floor");
+    // Edit restrictions still see every endpoint, including a source-only read.
+    expect(evaluate(subject, [{ pattern: "Edit(.git/**)", action: "deny" }])).toMatchObject({ decision: "deny" });
+    const mutation = scopedRuleSubjectFor(tool, { [sourceField]: "src/ordinary", destinationPath: ".git/config" }, project)!;
+    expect(evaluate(mutation, [])).toMatchObject({ floorCode: "protected-path" });
+    const sameTarget = scopedRuleSubjectFor(tool, { [sourceField]: ".git/config", destinationPath: ".git/config" }, project)!;
+    expect(sameTarget).toMatchObject({ pathEffects: ["write", "write"] });
+    expect(evaluate(sameTarget, [])).toMatchObject({ floorCode: "protected-path" });
+  });
+
+  it("retains project escape evidence on source-only reads and rejects invalid effect contracts", () => {
+    const outside = join(directory, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(project, "read-link"), "junction");
+    const tool = createFileTools().find(tool => tool.name === "copy_path")!;
+    const subject = scopedRuleSubjectFor(tool, { sourcePath: "read-link/source", destinationPath: "src/ordinary" }, project)!;
+    expect(evaluate(subject, [])).toMatchObject({ floorCode: "project-escape" });
+    expect(() => evaluate({ kind: "edit", paths: ["src/ordinary"], pathEffects: [], cwd: project }, [])).toThrow("Edit path effects do not match sealed operands");
+  });
+
   it.each((["allow", "always-allow"] as const).flatMap((mode) => PROTECTED_FILE_CALLS.map((call) => ({ mode, ...call }))))("denies $name $input in $mode mode", async ({ mode, name, input }) => {
     const tools = createFileTools();
     const registry = new ToolRegistry();
@@ -192,16 +217,15 @@ describe("scoped permission rules", () => {
 
   it("distinguishes native separators from literal backslashes in filenames", async () => {
     const subject = edit(String.raw`src\new.ts`);
-    const result = evaluate(subject, [allow("Edit(src/**)")]);
-    if (process.platform === "win32") expect(result.decision).toBe("allow");
-    else expect(result).toMatchObject({ floor: expect.any(String) });
+    if (process.platform === "win32") expect(evaluate(subject, [allow("Edit(src/**)")]).decision).toBe("allow");
+    else expect(() => evaluate(subject, [allow("Edit(src/**)")])).toThrow("Write path cannot be represented");
     const paths = [String.raw`src\new.ts`];
     if (process.platform !== "win32") {
       const literal = join(project, String.raw`src\alias`);
       mkdirSync(literal);
       symlinkSync(literal, join(project, "alias"));
       paths.push("alias/new.ts");
-      expect(evaluate(edit("alias/new.ts"), [allow("Edit(src/**)")])).toMatchObject({ floor: expect.any(String) });
+      expect(() => evaluate(edit("alias/new.ts"), [allow("Edit(src/**)")])).toThrow("Write path cannot be represented");
       expect(evaluate(edit("src/alias/new.ts"), [allow("Edit(alias/**)")]).decision).toBeUndefined();
     }
     await manager.addRulePersist(allow("Edit(src/**)"), { kind: "user" });
@@ -225,9 +249,15 @@ describe("scoped permission rules", () => {
     mkdirSync(outside);
     symlinkSync(outside, join(project, "src", "escape"), "junction");
     symlinkSync(join(directory, "absent"), join(project, "src", "dangling"), "junction");
-    for (const path of ["src/escape/new.ts", "src/escape/../new.ts", "../outside/new.ts", "src/dangling/new.ts"]) {
-      // A link followed by a parent component has ambiguous shell semantics and must stay on the floor.
-      expect(evaluate(edit(path), [allow("Edit(**)")]), path).toMatchObject({ floor: expect.any(String) });
+    for (const path of ["src/escape/new.ts", "../outside/new.ts"]) {
+      expect(evaluate(edit(path), [allow("Edit(**)")]), path).toMatchObject({ floorCode: "project-escape" });
+    }
+    // Unresolvable targets cannot become an approval a human can grant.
+    expect(() => evaluate(edit("src/dangling/new.ts"), [allow("Edit(**)")])).toThrow();
+    if (process.platform === "win32") {
+      expect(() => evaluate(edit("src/escape/../new.ts"), [allow("Edit(**)")])).toThrow("ambiguous directory-link parents");
+    } else {
+      expect(evaluate(edit("src/escape/../new.ts"), [allow("Edit(**)")])).toMatchObject({ floorCode: "project-escape" });
     }
     expect(evaluate(edit(join(outside, "new.ts")), [allow("Edit(src/**)")]).decision).toBeUndefined();
     const escapedAnchor = `Edit(${join(project, "src", "escape")}/**)`;
@@ -255,7 +285,7 @@ describe("scoped permission rules", () => {
     symlinkSync(join(project, "src", "nested"), link, "junction");
     const subject: ScopedRuleSubject = { kind: "edit", paths: [filePath], cwd: project, targets: [{ filePath, canonicalPath }] };
     expect(evaluate(subject, [allow("Edit(src/**)")])).toMatchObject({ floor: expect.any(String) });
-    expect(evaluate({ ...subject, targets: [] }, [allow("Edit(src/**)")])).toMatchObject({ floor: expect.any(String) });
+    expect(() => evaluate({ ...subject, targets: [] }, [allow("Edit(src/**)")])).toThrow("Edit target was not sealed by the host");
   });
 
   it.each(["deny", "ask"] as const)("retains a lexical %s when a rule anchor symlink changes", (action) => {
@@ -270,12 +300,18 @@ describe("scoped permission rules", () => {
     expect(evaluate(subject, [allow("Edit(**)"), { pattern: "Edit(alias/**)", action }])).toMatchObject({ decision: action });
   });
 
+  it.each(["edit", "webfetch", "mcp"] as const)("ignores a retained retired rule while evaluating %s", kind => {
+    const subject = kind === "edit" ? edit("src/new.ts") : kind === "webfetch" ? network("https://example.test/") : mcp();
+    const retired: PermissionRule = { pattern: 'HostTerminal(bash "/work" echo ready)', action: "deny" };
+    expect(evaluate(subject, [retired])).toEqual({});
+  });
+
   it("matches hostname boundaries and effective ports, never command text or URL substrings", async () => {
     const rules = [allow("WebFetch(domain:*.example.com:443)")];
     for (const url of ["https://API.EXAMPLE.COM/page", "https://api.example.com.:443/page"]) expect(evaluate(network(url), rules).decision).toBe("allow");
     for (const url of ["https://example.com", "https://api.example.com:8443", "http://api.example.com", "https://api.example.com.evil.test", "https://evil.test/?next=api.example.com"]) expect(evaluate(network(url), rules).decision).toBeUndefined();
-    expect(evaluate(network("https://api.example.com@evil.test"), rules).floor).toBeDefined();
-    expect(evaluate(network("file:///api.example.com"), rules).floor).toBeDefined();
+    expect(evaluate(network("https://api.example.com@evil.test"), rules)).toMatchObject({ floorCode: "exfiltration" });
+    expect(evaluate(network("file:///api.example.com"), rules)).toMatchObject({ admissionDenial: "Network target must use HTTP or HTTPS" });
     const spec = parseRuleSpecifier("WebFetch(domain:example.com)");
     if (spec.kind !== "webfetch") throw new Error("Expected host rule");
     expect(matchesWebFetchHost(spec, "example.com:443")).toBe(false);
@@ -364,7 +400,9 @@ describe("scoped permission rules", () => {
     expect(await restarted.checkNetworkRules("https://example.com", project)).toMatchObject({ decision: "deny" });
     const location = projectRulesLocation(directory, project);
     writeFileSync(location.filePath, "broken");
-    expect(await restarted.checkNetworkRules("https://example.com", project)).toMatchObject({ floor: expect.any(String) });
+    const unavailable = await restarted.checkNetworkRules("https://example.com", project);
+    expect(unavailable).toMatchObject({ admissionDenial: "Permission rule store is unavailable" });
+    expect(unavailable).not.toHaveProperty("floor");
   });
 
   it("resolves external depth candidates to existing Edit rules without widening to ancestors", () => {

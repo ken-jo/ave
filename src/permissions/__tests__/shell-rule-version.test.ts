@@ -138,7 +138,10 @@ describe("stored shell rule format versions", () => {
     await manager.loadRulesFromFile();
     await manager.addRulePersist({ pattern: "Network(example.test)", action: "deny" }, { kind: "user" });
     expect((await readPermissionsFile(file))?.rules).toContainEqual(stale);
-    expect(check(manager, dialect, cwd, true)).toMatchObject({ decision: "deny", layer: 6 });
+    const decision = check(manager, dialect, cwd, true);
+    expect(decision).toMatchObject({ decision: "ask", reasonCode: "review-required" });
+    expect(decision.pipelineRequest?.rules?.allow).toBeUndefined();
+    expect(decision.pipelineRequest?.headless).toBe(true);
   });
 
   it.each((["bash", "powershell"] as const).flatMap((dialect) =>

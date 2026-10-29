@@ -25,7 +25,7 @@ import type {
 } from "../shared/parent-escalation-notice.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
-import { buildHostTerminalRuleApproval, buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
+import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import type {
@@ -82,7 +82,7 @@ function maskApprovalPurposeForDisplay(
   return { ...purpose, text: masked };
 }
 
-// ask_all still shows the dock for read-only calls; absence uses default read auto-approval.
+// Transport delivery modes do not classify tools; the permission pipeline owns read and write policy.
 export type ApprovalMode = "default" | "ask_all" | "full_auto";
 
 // Permission policy.5 — discriminated kinds for the approval dock. Default `"tool"` is the normal Layer 3 ask; `"out-of-allowed-dir"` is the Layer 1 directory-confirm variant; and `"agent-action"` is a plugin-origin host approval request that does not correspond to a host tool execution.
@@ -168,9 +168,9 @@ export interface ApprovalRequest {
   target?: {
     filePath?: string;
   };
-  // Read-only calls skip the dock unless ask_all requires every prompt.
+  // Host-derived read-only evidence for approval display and delivery.
   isReadOnly?: boolean;
-  // ask_all still prompts for reads; other modes retain read auto-approval.
+  // Delivery mode selected after the permission pipeline decides a card is required.
   mode?: ApprovalMode;
   // Sensitive-pattern metadata is diagnostic only; requestAndWait owns the authoritative hard block before any dock.
   sensitivePathPattern?: string | null;
@@ -239,7 +239,7 @@ export type ApprovalRequestInput = Omit<
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
-  // parked observer or away answer), it is never remembered, and its saves store only the exact `HostTerminal(...)` rule. Set by the
+  // parked observer or away answer), it is never remembered and offers no rule saves. Set by the
   // executor from the sealed terminal target, never by a renderer.
   readonly hostTerminal?: HostTerminalApprovalBinding;
   // Derive remote origin only from host-owned controller authority, never reason text or renderer input. Keep it off ApprovalRequest and all renderer payloads; absence means no host-observed remote controller.
@@ -1143,12 +1143,8 @@ export class ApprovalGate {
     const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract &&
       remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
-    const shellRule = userOwnedSurface !== undefined ? undefined : hostTerminal !== undefined
-      // The person's own host terminal: an exact HostTerminal(...) allow, always user-global, never a session rule; a Bash deny still narrows.
-      ? typeof rawShellArgs?.command === "string" && rawShellArgs.command === hostTerminal.command
-        ? buildHostTerminalRuleApproval(hostTerminal, { allow: shellRuleSaveAllowed, deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined })
-        : (() => { throw new Error("approval: host terminal command does not match the request"); })()
-      : req.source === "builtin" && shellRuleDialect !== undefined &&
+    if (hostTerminal !== undefined && rawShellArgs?.command !== hostTerminal.command) throw new Error("approval: host terminal command does not match the request");
+    const shellRule = userOwnedSurface !== undefined || hostTerminal !== undefined ? undefined : req.source === "builtin" && shellRuleDialect !== undefined &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       typeof rawShellArgs?.command === "string" && shellRuleCwd
       ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
@@ -1181,7 +1177,7 @@ export class ApprovalGate {
           }
         : {}),
       allowedChoices:
-        userOwnedSurface !== undefined || req.kind === "rationale" || forceExplicit
+        userOwnedSurface !== undefined || hostTerminal !== undefined || req.kind === "rationale" || forceExplicit
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,

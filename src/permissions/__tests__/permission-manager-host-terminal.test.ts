@@ -7,7 +7,6 @@ import type { HostTerminalCommandScope } from "../../tools/terminal-run.js";
 import { noteOtherPrincipalGuidance, noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
-import { formatRuleSpecifier } from "../rules/rule-specifier.js";
 
 let directory: string;
 let manager: PermissionManager;
@@ -38,9 +37,7 @@ describe("host terminal admission before directory authorization", () => {
       const generic = check(context);
       expect(generic.pipelineRequest?.rules?.allow).toBeUndefined();
       expect(generic.decision).toBe("ask");
-      const pattern = formatRuleSpecifier({ kind: "host-terminal", shell: scope.shell, cwd: scope.physicalCwd, tokens: ["touch", "output.txt"] });
-      await manager.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
-      expect(check(context)).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: { allow: pattern } } });
+      expect(check(context)).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask" });
       manager.setUserOwnedSurfaceChoice("pane", "host-terminal", "allow");
       expect(check(context)).toMatchObject({ decision: "allow", reasonCode: "user-owned-surface-allow" });
       expect(check({ ...context, ruleSubject: { kind: "shell", dialect: "bash", command: "touch different.txt", cwd: directory } }).pipelineRequest?.rules?.allow).toBeUndefined();

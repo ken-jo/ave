@@ -1592,7 +1592,7 @@ The [decision tree's resolved browser and host-terminal contracts](permission-de
 
 The host stores choices only in memory, keyed independently by conversation session and surface (browser or host-terminal), and clears them at session teardown. A browser choice does not choose terminal behavior. Global execution mode, generic remembered grants and exact shell allows cannot bypass this surface decision. Headless actions on either surface always deny, regardless of choice, global mode or an allow rule.
 
-Admission checks and deny rules remain authoritative. Genuine other-principal/taint, exfiltration and other forced floors bypass the selector and retain one-shot approval. Credential entry, payments and irreversible submission protections remain enforced for every choice. Selection comes only from the authenticated native owner's valid live answer, never tool arguments. Physical terminal typing is a user action outside this pipeline.
+Admission checks and deny rules remain authoritative. An explicit ask rule precedes the session choice and requires a normal card, including when the saved choice is Allow or Auto. Genuine other-principal/taint, exfiltration and other forced floors bypass the selector and retain one-shot approval. Credential entry, payments and irreversible submission protections remain enforced for every choice. Selection comes only from the authenticated native owner's valid live answer, never tool arguments. Physical terminal typing is a user action outside this pipeline.
 
 The host resolves the actual session actor and direct parent from trusted tool
 context. Window discovery does not authorize another conversation's owned tab.
@@ -1932,7 +1932,7 @@ one command at a time under its [user-owned surface choice](#user-owned-surface-
   and physical cwd remain host-computed policy subjects. Existing deny rules,
   admission, true other-principal/taint and exfiltration floors still apply.
   The session choice replaces the intrinsic per-command human/exact-rule
-  requirement; remembered generic or exact shell grants do not bypass it.
+  requirement; remembered generic or exact shell grants do not bypass it. The retired `HostTerminal(...)` rule grammar is not accepted or saved. Existing stored entries remain visible in Permissions as no longer used, with a delete action; they grant no authority.
   Auto uses the dedicated logical-consistency review, not general shell risk
   heuristics. Headless denies. A native card names the recipient terminal,
   shell, command and physical directory; its valid answer never authorizes a
@@ -2566,7 +2566,7 @@ sensitive set for reads and writes; other sensitive rules still apply. Existing
 read-before-write observation and unchanged-since-read hash checks remain
 mandatory. A stale observation instructs the agent to re-read the file.
 
-For confined shell invocations, unproven or destructive evidence uses the ordinary mode/human route unless it establishes a forced floor from the decision tree. Critical deletion, project escape, exfiltration and protected control paths remain forced one-shot requests, without reviewer or remembered-grant reuse. Host or escalated execution uses the ordinary mode/human route and may offer prefix rules.
+For confined shell invocations, unproven or destructive evidence uses the ordinary mode/human route unless it establishes a forced floor from the decision tree. Critical deletion, project escape, exfiltration and mutations of protected control paths remain forced one-shot requests, without reviewer or remembered-grant reuse. Protected-path reads use the ordinary read or secret-read decision; the protected-path floor applies only to writes, creation and deletion, including shell commands proven to perform those effects. Host or escalated execution uses the ordinary mode/human route and may offer prefix rules.
 
 ## Foreground And Headless Behavior
 
@@ -2576,7 +2576,7 @@ An owner-away turn with an app approval surface is not headless. Its card waits 
 
 True headless execution has no human approver. In auto mode ordinary requests reach the reviewer first; only fallback to a human card denies. Forced one-shot requests deny without reviewer dispatch. A no-approver or configured auto-skip denial tells the model: **Nobody can approve this request; do not retry.** Host-created turn provenance remains unforgeable and cannot be inherited by a later remote turn.
 
-There is no deferred approval queue. Recently denied stores bounded, DLP-redacted summaries, never raw executable arguments or grants. Legacy `deferred-queue.jsonl` does not authorize anything. A reconstructable entry can be manually rerun with the user as approver: it starts admission again and requires a fresh card, skipping remembered approvals and reviewer automation. Bounded live callbacks are one-use and do not survive restart. A persisted non-executable reference may instead resolve the original call from its existing saved transcript after restart; the denial record stores only tool-use identity and input/root digests, not a second copy of executable arguments. The [replay resolver](../../src/permissions/reviewer/recently-denied-replay.ts) requires one matching call, unchanged project-root identity and input digest, matching tool/source/provider identity, and validation against the current tool schema without coercion. Missing, ambiguous, changed or invalid references make rerun unavailable. A stored denial or digest never becomes permission.
+There is no deferred approval queue. Recently denied stores bounded, DLP-redacted summaries, never raw executable arguments or grants. Legacy `deferred-queue.jsonl` does not authorize anything. A reconstructable entry can be manually rerun with the user as approver: it starts admission again and requires a fresh card, skipping remembered approvals and reviewer automation. The replay retains the original session and turn origin, including other-principal restrictions; the human click adds one-time manual consent without changing the original principal. Bounded live callbacks are one-use and do not survive restart. A persisted non-executable reference may instead resolve the original call from its existing saved transcript after restart; the denial record stores tool-use identity, input/root digests and validated origin metadata, not a second copy of executable arguments. The [replay resolver](../../src/permissions/reviewer/recently-denied-replay.ts) requires one matching call, unchanged project-root identity and input digest, matching tool/source/provider identity, and validation against the current tool schema without coercion. Missing, ambiguous, changed or invalid references, including legacy references without required provenance, make rerun unavailable. A stored denial or digest never becomes permission.
 
 Cancellation and host-owned expiry remain distinct from a human refusal. Approval outcome reasons propagate to tool/directory results and audit; changing approval waiting does not change execution ceilings.
 
@@ -2797,7 +2797,7 @@ The judge settings and transport contract remains in the [judge design](../desig
 
 Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. Audit records the redacted request, final outcome, model, invocation identity, reason and fallback. Review cannot persist a rule. Required audit failures remain terminal.
 
-The breaker counts each successfully completed classifier non-allow assessment once per invocation within the active root turn; errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send the rest of that turn to normal human cards. An allowed assessment resets only the consecutive count. Human consent does not reopen automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
+The breaker counts each successfully completed classifier non-allow assessment once per invocation within the active root turn; errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send subsequent reviewer-bound requests in that turn to normal human cards. In headless execution those human fallbacks deny. Rule allows, remembered grants, ordinary reads, sandbox-auto and checkpoint-backed project writes retain their earlier pipeline outcomes. An allowed assessment resets only the consecutive count. Human consent does not reopen reviewer automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
 
 ### Approval delivery and execution binding
 

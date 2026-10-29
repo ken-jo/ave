@@ -48,6 +48,7 @@ export interface InvocationRunnerServices {
   readonly pluginOperationIdentityProvider: PluginOperationIdentityProvider;
 }
 
+/** Maps the permission mode to approval delivery after the pipeline has required a card; it never classifies reads. */
 export function currentApprovalMode(
   permissionManager: PermissionManager | undefined,
 ): ApprovalMode {

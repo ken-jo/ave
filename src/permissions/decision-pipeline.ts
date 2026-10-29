@@ -43,6 +43,7 @@ function applyMode(request: PermissionDecisionRequest, reasonCode: string, reaso
   if (request.mode === "allow") return { outcome: "allow", reasonCode: "allow-mode", reason: "The mode allows this action." };
   if (request.mode !== "auto") return askHuman(request, reasonCode, reason);
 
+  if (request.automationPause) return askHuman(request, "automation-paused", request.automationPause.reason);
   const reviewer = request.reviewer;
   if (!reviewer) {
     return { outcome: "ask", reasonCode: "review-required", reason: "Automatic review is required.", reviewRequired: true };
@@ -53,31 +54,39 @@ function applyMode(request: PermissionDecisionRequest, reasonCode: string, reaso
   return askHuman(request, "reviewer-human-required", "Automatic review requires human approval.");
 }
 
-function decideBasePermission(request: PermissionDecisionRequest): PermissionPipelineDecision {
+/** Applies the ordered stages in docs/architecture/permission-decision-tree.md. */
+export function decidePermission(request: PermissionDecisionRequest): PermissionPipelineDecision {
   if (request.admissionDenial) {
     return { outcome: "deny", reasonCode: request.admissionDenial.code, reason: request.admissionDenial.reason };
   }
   if (request.rules?.deny !== undefined) {
     return { outcome: "deny", reasonCode: "rule-deny", reason: request.rules.deny };
   }
+  if (!["read", "write", "file-write", "shell", "network", "mcp"].includes(request.tool.kind)) {
+    return { outcome: "deny", reasonCode: "unsupported-tool-kind", reason: "The tool kind is not supported by the permission contract." };
+  }
   if (request.floor) {
     return request.headless
       ? { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE }
       : { outcome: "ask-forced", reasonCode: request.floor.code, reason: request.floor.reason };
   }
+  if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
+  if (request.rules?.ask !== undefined) {
+    return request.userOwnedSurface
+      ? askHuman(request, "rule-ask", request.rules.ask)
+      : applyMode(request, "rule-ask", request.rules.ask);
+  }
   if (request.userOwnedSurface) {
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
-    if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
     if (request.userOwnedSurface.choice === "allow") return { outcome: "allow", reasonCode: "user-owned-surface-allow", reason: "The user allowed this surface for the session." };
     if (request.userOwnedSurface.choice === "auto") {
+      if (request.automationPause) return askHuman(request, "automation-paused", request.automationPause.reason);
       if (!request.reviewer) return { outcome: "ask", reasonCode: "user-owned-surface-review", reason: "Logical consistency review is required.", reviewRequired: true };
       if (request.reviewer.status === "success" && request.reviewer.level === "low" && !request.reviewer.breakerOpen) return { outcome: "allow", reasonCode: "user-owned-surface-reviewed", reason: "The action follows the user's request." };
       return askHuman(request, "user-owned-surface-human-required", "The action needs human confirmation.");
     }
     return askHuman(request, "user-owned-surface-ask", "Choose how to approve actions on this user-owned surface.");
   }
-  if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
-  if (request.rules?.ask !== undefined) return applyMode(request, "rule-ask", request.rules.ask);
   if (request.rules?.allow !== undefined) {
     return { outcome: "allow", reasonCode: "rule-allow", reason: request.rules.allow };
   }
@@ -105,12 +114,6 @@ function decideBasePermission(request: PermissionDecisionRequest): PermissionPip
     }
     return applyMode(request, "shell-approval", "This shell action requires approval.");
   }
-  return applyMode(request, "tool-approval", "This action requires approval.");
-}
-
-/** Applies the ordered stages and the rest-of-turn human routing in docs/architecture/permission-decision-tree.md. */
-export function decidePermission(request: PermissionDecisionRequest): PermissionPipelineDecision {
-  const decision = decideBasePermission(request);
-  if (!request.automationPause || decision.outcome === "deny" || decision.outcome === "ask-forced") return decision;
-  return askHuman(request, "automation-paused", request.automationPause.reason);
+  if (request.tool.kind === "network") return applyMode(request, "network-approval", "This network action requires approval.");
+  return { outcome: "deny", reasonCode: "unsupported-tool-kind", reason: "The tool kind is not supported by the permission contract." };
 }

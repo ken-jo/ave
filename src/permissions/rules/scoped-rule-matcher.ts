@@ -7,12 +7,15 @@ import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { validateDirectoryAddition } from "../allowed-directories.js";
+import type { PathEffect } from "../allowed-directories.js";
+import type { PermissionFloorCode } from "../decision-pipeline.js";
 import type { PermissionRule } from "../permission-manager.js";
+import { storedRuleInvalidReason } from "./rule-files.js";
 import { projectRootFor } from "./project-rule-files.js";
 import { formatRuleSpecifier, isRuleSpecifier, matchesMcpTool, matchesWebFetchHost, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 
 export type ScopedRuleSubject =
-  | { kind: "edit"; paths: readonly string[]; cwd: string; targets?: readonly { filePath: string; canonicalPath: string }[] }
+  | { kind: "edit"; paths: readonly string[]; pathEffects?: readonly PathEffect[]; cwd: string; targets?: readonly { filePath: string; canonicalPath: string }[] }
   | { kind: "webfetch"; url: string; privateNetwork?: boolean; requiresSiteApproval?: boolean }
   | { kind: "mcp"; server: string; tool: string; nonDestructive: boolean };
 
@@ -21,6 +24,8 @@ export interface ScopedRuleEvaluation {
   pattern?: string;
   // Mandatory gate, independent of allow rules and mode.
   floor?: string;
+  floorCode?: PermissionFloorCode;
+  admissionDenial?: string;
 }
 
 function isWithinRoot(root: string, path: string): boolean {
@@ -30,7 +35,8 @@ function isWithinRoot(root: string, path: string): boolean {
 }
 
 function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: string) {
-  return subject.paths.map((path) => {
+  if (subject.pathEffects && subject.pathEffects.length !== subject.paths.length) throw new Error("Edit path effects do not match sealed operands");
+  return subject.paths.map((path, index) => {
     const lexical = foldCanonicalPathSeparators(resolveToolPathForPermission(path, subject.cwd));
     const frozen = subject.targets?.find((target) => caseFoldForMatch(foldCanonicalPathSeparators(target.filePath)) === caseFoldForMatch(lexical));
     if (subject.targets && !frozen) throw new Error("Edit target was not sealed by the host");
@@ -39,9 +45,12 @@ function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: 
       throw new Error("Write path cannot be represented by normalized rules");
     }
     const canonical = foldCanonicalPathSeparators(resolved);
-    const control = protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical);
-    return { lexical, canonical, floor: control !== undefined ? `Protected control path: ${control}`
-      : (isWithinRoot(root, lexical) || path.split(/[\\/]/).includes("..")) && !isWithinRoot(root, canonical) ? "Write path escapes the project" : undefined };
+    const effect = subject.pathEffects?.[index] ?? "write";
+    if (effect !== "read" && effect !== "write") throw new Error("Edit target has no valid path effect");
+    const control = effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined;
+    const escaped = (isWithinRoot(root, lexical) || path.split(/[\\/]/).includes("..")) && !isWithinRoot(root, canonical);
+    return { lexical, canonical, floor: escaped ? "Write path escapes the project" : control !== undefined ? `Protected control path: ${control}` : undefined,
+      floorCode: escaped ? "project-escape" as const : control !== undefined ? "protected-path" as const : undefined };
   });
 }
 
@@ -80,24 +89,28 @@ export function evaluateScopedRules(
   let destination: URL | undefined;
   let floor: string | undefined;
   let grantable = true;
-  try {
-    if (subject.kind === "edit") {
-      paths = editPaths(subject, root);
-      floor = paths.find((path) => path.floor)?.floor;
-    } else if (subject.kind === "webfetch") {
-      grantable = subject.requiresSiteApproval !== true;
-      destination = new URL(subject.url);
-      if (!["http:", "https:"].includes(destination.protocol) || destination.username || destination.password) {
-        floor = "Network target requires explicit approval";
-      }
-    } else {
-      // Unannotated tools follow server rules and mode without scoped grants.
-      grantable = subject.nonDestructive;
+  let floorCode: PermissionFloorCode | undefined;
+  if (subject.kind === "edit") {
+    // Broken sealed-target contracts must fail before a human can approve them.
+    paths = editPaths(subject, root);
+    const protectedTarget = paths.find((path) => path.floor);
+    floor = protectedTarget?.floor;
+    floorCode = protectedTarget?.floorCode;
+  } else if (subject.kind === "webfetch") {
+    grantable = subject.requiresSiteApproval !== true;
+    destination = new URL(subject.url);
+    if (!["http:", "https:"].includes(destination.protocol)) {
+      return { admissionDenial: "Network target must use HTTP or HTTPS" };
     }
-  } catch {
-    return { floor: "Cannot resolve permission rule target" };
+    if (destination.username || destination.password) {
+      floor = "Network target contains credentials";
+      floorCode = "exfiltration";
+    }
+  } else {
+    // Unannotated tools follow server rules and mode without scoped grants.
+    grantable = subject.nonDestructive;
   }
-  const rules = scopes.flat().filter((rule) => !rule.source && isRuleSpecifier(rule.pattern));
+  const rules = scopes.flat().filter((rule) => !rule.source && storedRuleInvalidReason(rule) === null && isRuleSpecifier(rule.pattern));
   const matches = (rule: PermissionRule, index = 0): boolean => {
     const spec = parseRuleSpecifier(rule.pattern);
     if (subject.kind === "edit" && spec.kind === "edit") {
@@ -116,9 +129,9 @@ export function evaluateScopedRules(
   };
   for (const action of ["deny", "ask"] as const) {
     const hit = rules.find((rule) => rule.action === action && (subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)));
-    if (hit) return { decision: action, pattern: hit.pattern, floor };
+    if (hit) return { decision: action, pattern: hit.pattern, floor, floorCode };
   }
-  if (floor) return { floor };
+  if (floor) return { floor, floorCode };
   if (!grantable) return {};
   // A public host grant does not answer the separate private-network opt-in.
   if (subject.kind === "webfetch" && subject.privateNetwork) return {};

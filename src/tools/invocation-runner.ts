@@ -116,7 +116,7 @@ import { issueAuthorizationRequiredControl } from "../shared/authorization-requi
 // LOW/MEDIUM-risk helpers. Authorization and execution/finalization are
 // delegated to their named stages below.
 import { extractTargetFilePaths, shellPathPolicyViolation } from "./pipeline/path-extraction.js";
-import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
+import { canonicalFilePathEffect, scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { hasShellCommandArgument } from "../shared/shell-command-fields.js";
 import { buildApprovalPurposeSuggestion } from "./pipeline/approval-purpose.js";
 import { pluginTurnScopeTarget } from "./pipeline/plugin-turn-scope.js";
@@ -423,9 +423,10 @@ export async function runToolInvocation(
       if (denied?.decision === "deny" && history && !denialRecorded) {
         denialRecorded = true;
         const registeredTool = services.toolRegistry.findByName(toolUse.name);
-        const invocationRef = registeredTool && makeRecentlyDeniedInvocationRef(toolUse.input, {
+        const invocationRef = registeredTool && permissionContext?.trustOrigin && makeRecentlyDeniedInvocationRef(toolUse.input, {
           cwd: executionCwd, toolUseId: toolUse.id,
           pluginId: registeredTool.pluginId, mcpServerId: registeredTool.mcpServerId,
+          replayOrigin: { trustOrigin: permissionContext.trustOrigin, remoteController: permissionContext.remoteControllerAuthority !== undefined, otherPrincipal: permissionContext.otherPrincipal === true || permissionContext.remoteControllerAuthority !== undefined || approvalReasonPrefix !== undefined || permissionContext.floor?.code === "other-principal" },
         });
         const inputSnapshot = invocationRef ? structuredClone(toolUse.input) : undefined;
         await history.append({
@@ -436,8 +437,8 @@ export async function runToolInvocation(
             const replayRootBinding = issueReplayRootBinding(executionCwd, invocationRef.rootDigest);
             if (!replayRootBinding) throw new Error("The replay project root changed");
             const result = await runToolInvocation(services, { ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, randomUUID(), 0, {
-              executionCwd, replayRootBinding,
-              permissionContext: { headless: false, manualRerun: true, trustOrigin: "user-keyboard" },
+              sessionId, executionCwd, replayRootBinding, approvalReasonPrefix,
+              permissionContext: { ...permissionContext!, trustOrigin: invocationRef.replayOrigin!.trustOrigin, otherPrincipal: invocationRef.replayOrigin!.otherPrincipal, headless: false, ownerUnattended: false, approvalSurface: undefined, manualRerun: true },
             });
             if ("is_error" in result && result.is_error) throw new Error("The manual rerun was denied or failed");
             return result;
@@ -1450,7 +1451,7 @@ export async function runToolInvocation(
       });
       const memoryRequest = directoryPermission.pipelineRequest;
       if (directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
-        && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !memoryRequest.automationPause && !rationaleResumeContext) {
+        && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
         const remembered = await services.tryUserApprovalMemorySkip(toolUse.name, source, invocationCategory, reviewerPathFields,
           finalInput, executionCwd, invocationAllowedScope.directories, [], invocationPermissionContext, approvalCacheKey, {},
           JSON.stringify([meta.groupId, meta.toolUseId]), tool.mcpServerId, tool.workerId, tool.pluginId, hostShellExecutionPlan, auditInput, sessionId);
@@ -2099,7 +2100,7 @@ export async function runToolInvocation(
       return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
         const expanded = expandLeadingTilde(path);
         return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath,
-          effect: canonicalFileTool !== undefined && ["copy_path", "extract_archive"].includes(canonicalFileTool.name) && typeof finalInput.sourcePath === "string" && resolveToolPathForPermission(finalInput.sourcePath, executionCwd) === target.filePath ? "read" as const : requiredTier(invocationCategory) };
+          effect: canonicalFileTool !== undefined ? canonicalFilePathEffect(tool, finalInput, target.filePath, executionCwd) : requiredTier(invocationCategory) };
       });
     });
     if (canonicalFileTool?.name === "delete_file") {

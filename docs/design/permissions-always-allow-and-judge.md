@@ -2,7 +2,7 @@
 
 The [permission decision tree](../architecture/permission-decision-tree.md) is the single source of execution order, mode behavior, forced floors, reviewer outcomes and human availability. The [permission policy](../architecture/permission-policy-design.md) owns path/effect evidence, native execution, approval delivery and sandbox boundaries. This document records the rule language, approval-storage identity and judge configuration that support those decisions. It does not define another decision sequence.
 
-User-owned browser and host-terminal actions follow their independent [session surface choices](../architecture/permission-policy-design.md#user-owned-surface-choices). Global mode, generic remembered approvals and exact shell rules do not replace that choice. The dedicated surface Auto check examines logical task/target consistency rather than general risk. Admission, deny rules and genuine principal/taint or exfiltration floors remain authoritative. Browser payment and irreversible-submit guards use bounded English/Korean element/form-attribute heuristics over recognizable live DOM targets. Native credential and manual-submit controls remain enforced; these checks do not prove the business effects of arbitrary site scripts or detect every payment/irreversible action.
+User-owned browser and host-terminal actions follow their independent [session surface choices](../architecture/permission-policy-design.md#user-owned-surface-choices). Global mode, generic remembered approvals and exact shell rules do not replace that choice. The dedicated surface Auto check examines logical task/target consistency rather than general risk. Admission, deny rules, explicit ask rules and genuine principal/taint or exfiltration floors remain authoritative. A matching ask rule requires a normal card before the surface choice. Browser payment and irreversible-submit guards use bounded English/Korean element/form-attribute heuristics over recognizable live DOM targets. Native credential and manual-submit controls remain enforced; these checks do not prove the business effects of arbitrary site scripts or detect every payment/irreversible action.
 
 ## Decisions
 
@@ -14,12 +14,11 @@ One [parser](../../src/permissions/rules/rule-specifier.ts) owns rule syntax for
 | --- | --- |
 | `Bash(<prefix> *)` / `PowerShell(<prefix> *)` | Literal command prefix in the named dialect, within the matcher's supported grammar. |
 | `Bash(<exact>)` / `PowerShell(<exact>)` | Complete original raw words in that dialect. Quote style, argument content and program spelling remain part of the key. |
-| `HostTerminal(<shell> <JSON cwd> <command>)` | Host-terminal shell, canonical physical cwd and complete literal command. It is not a replacement for the user-owned session choice. |
 | `Edit(<path-glob>)` | Absolute or project-relative target; supported `*`, `**` and `?` patterns, with trailing `/**` also covering the directory. |
 | `WebFetch(domain:<host>[:port])` / `WebFetch(domain:*.<host>[:port])` | Exact hostname or strict subdomains, with the configured port restriction. |
 | `Mcp(<server>)` / `Mcp(<server>:<tool>)` | Registered server and original tool identity. |
 
-Parsing is strict. Legacy action-key patterns that do not have a rule-specifier prefix retain their existing glob representation; exact approvals are not converted into structural rules.
+Parsing is strict. The retired `HostTerminal(...)` grammar is not accepted or saved. Existing stored entries are listed as no longer used and can be deleted; they never match or grant authority. Legacy action-key patterns that do not have a rule-specifier prefix retain their existing glob representation; exact approvals are not converted into structural rules.
 
 Shell matching normalizes interword whitespace only. Program/module spelling, quote characters and argument bytes remain raw identity. Detection may normalize a basename, suffix or case without rewriting that key. An inner-only rule cannot authorize an outer wrapper command. Dialect-specific allow rules do not cross into another dialect.
 
@@ -85,7 +84,7 @@ The [canonical tree](../architecture/permission-decision-tree.md) owns precedenc
 
 Ordinary host shells and sandbox escalation use mode/human routing; they are not intrinsically exact-rule-only or forced one-shot. Ordinary secrets follow file/mode policy, while host credential stores retain admission denial and protected controls retain their specified floor. Ask rules are restrictive inputs to the mode decision; they are not automatically a new forced-floor class. Unproven/destructive evidence is ordinary unless it establishes one of the contract's actual floors.
 
-The rest-of-turn breaker is a normal-human-routing overlay over every automatic source, including read, memory, rule, review and Allow mode. Admission denies and forced floors retain their outcomes. One human answer does not reopen that turn's automation.
+The turn breaker routes only subsequent reviewer-bound requests to a normal human card, or denial without an approver. Earlier read, memory, rule, sandbox-auto and checkpoint-write outcomes retain their results. Admission denies and forced floors retain their outcomes. One human answer does not reopen that turn's reviewer automation.
 
 ### Shell matching authority boundary
 
@@ -115,7 +114,7 @@ Wrappers/interpreters remain in the complete raw command identity. Host-issued v
 
 ### Dialect-scoped rules and grants
 
-Bash and PowerShell rules retain distinct matchers and raw keys. Current shell-rule versions prevent old quote/identity provenance from being assumed valid. `HostTerminal` identity is additionally bound to shell and physical cwd, but does not supersede the shared surface choice. Read approvals, command rules and effect descriptors cannot be borrowed across another principal, destination or native execution plan.
+Bash and PowerShell rules retain distinct matchers and raw keys. Current shell-rule versions prevent old quote/identity provenance from being assumed valid. Host-terminal execution remains bound to the actual shell, physical cwd and shared surface choice; retired exact-terminal rules supply no authority. Read approvals, command rules and effect descriptors cannot be borrowed across another principal, destination or native execution plan.
 
 ### Egress and verification boundary
 
@@ -169,11 +168,11 @@ User script PreToolUse runs before target authorization and only blocks; argumen
 
 #### Breaker, approval delivery and history
 
-The shared breaker counts each completed classifier non-allow once per invocation in the active root turn. Three consecutive or twenty total blocks send the rest of that turn to normal human routing across every automatic source. Allowed review resets only the consecutive count. Failures, aborted assessments, shadow observations and separate host rejections do not count as completed classifier blocks. Human approval does not reopen automation during the same turn; a fresh turn resets the turn state.
+The shared breaker counts each completed classifier non-allow once per invocation in the active root turn. Three consecutive or twenty total blocks send subsequent reviewer-bound requests in that turn to normal human routing. Earlier pipeline allows, including ordinary reads, rules, remembered grants, sandbox-auto and checkpoint writes, remain unchanged. Allowed review resets only the consecutive count. Failures, aborted assessments, shadow observations and separate host rejections do not count as completed classifier blocks. Human approval does not reopen automation during the same turn; a fresh turn resets the turn state.
 
 Only the registered application owner's exact native main frame can answer its current signed card. Focus, persisted ancestry, subframes and plugin/browser content cannot supply authority. Legitimate host-owned attachment transfers delivery; it does not isolate the application against its own compromised renderer. Capability, principal, exact action, current policy epoch, audit integrity and cancellation are checked again immediately before handler entry, after asynchronous preparation and without an await before the effect.
 
-Owner-away cards wait indefinitely by default; an optional configured interval denies unanswered requests with no-retry guidance. True no-approver outcomes deny rather than queue an approval. Recently denied stores bounded redacted summaries and non-executable references to existing saved invocations. An explicit user rerun revalidates the reference and enters admission with a fresh human card; it never replays a stored decision or resumes an ended turn's authority. Parent-model and delegated away deciders are retired.
+Owner-away cards wait indefinitely by default; an optional configured interval denies unanswered requests with no-retry guidance. True no-approver outcomes deny rather than queue an approval. Recently denied stores bounded redacted summaries and non-executable references to existing saved invocations. An explicit user rerun revalidates the reference and enters admission with a fresh human card while retaining the original session and turn-origin restrictions. Its manual consent never replays a stored decision or restores an ended turn's native authority. Parent-model and delegated away deciders are retired.
 
 #### Audit and verification
 

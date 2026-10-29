@@ -46,7 +46,7 @@ export async function createPaneHostTerminalLoop(
   const permissionManager = new PermissionManager(join(dir, "permissions.json"));
   if (options.exactRule !== false) {
     await permissionManager.addRulePersist({
-      pattern: formatRuleSpecifier({ kind: "host-terminal", shell: "zsh", cwd: dir, tokens: ["printf", "ready"] }), action: "allow",
+      pattern: formatRuleSpecifier({ kind: "bash", wildcard: false, tokens: ["printf", "ready"] }), action: "allow",
     }, { kind: "user" });
   }
   const typed: string[] = [];

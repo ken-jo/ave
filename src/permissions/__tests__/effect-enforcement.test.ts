@@ -1049,6 +1049,52 @@ describe("common policy at each actual effect", () => {
     expect(log).toEqual(["write"]);
   });
 
+  for (const methodPath of ["openExternalUrl", "openAuthWindow", "openAuthPartitionViewer", "clearAuthPartition"] as const) {
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      it(`${methodPath} uses ordinary ${mode} effect policy without an invented principal floor`, async () => {
+        permissionManager.setMode(mode);
+        const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("low"));
+        const { gate, requests } = makeGate("allow-once");
+        const input = methodPath === "openExternalUrl" ? ["https://service.example/resource"]
+          : methodPath === "clearAuthPartition" ? ["persist:plugin-auth:p1"] : [{ url: "https://service.example/login" }];
+        await runWithEffectGateContext({ headless: false, toolName: "outer" }, () => gateMutatingEffect({
+          pluginId: "p1", methodPath, effect: "write", target: "https://service.example", input, approvalGate: gate, permissionManager,
+        }));
+        expect(requests).toHaveLength(mode === "strict" || mode === "default" ? 1 : 0);
+        expect(requests.every((request) => !request.forceExplicit)).toBe(true);
+        expect(review).toHaveBeenCalledTimes(mode === "auto" ? 1 : 0);
+      });
+    }
+  }
+
+  it("an external URL exfil signal still forces consent independently of the effect kind", async () => {
+    permissionManager.setMode("allow");
+    const { gate, requests } = makeGate("deny-once");
+    await runWithEffectGateContext({ headless: false, toolName: "outer" }, async () => {
+      await expect(gateMutatingEffect({ pluginId: "p1", methodPath: "openExternalUrl", effect: "write", target: "https://service.example",
+        input: [`https://service.example/?payload=${"a".repeat(600)}`], approvalGate: gate, permissionManager })).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].forceExplicit).toBe(true);
+  });
+
+  for (const methodPath of ["openAuthWindow", "openAuthPartitionViewer"] as const) {
+    for (const headless of [false, true]) {
+      it(`${methodPath} preserves URL exfil floors with headless=${headless}`, async () => {
+        permissionManager.setMode("allow");
+        const { gate, requests } = makeGate("deny-once");
+        const review = vi.spyOn(permissionManager, "dispatchReviewer");
+        await runWithEffectGateContext({ headless, toolName: "outer" }, async () => {
+          await expect(gateMutatingEffect({ pluginId: "p1", methodPath, effect: "write", target: "https://service.example",
+            input: [{ url: `https://service.example/?payload=${"a".repeat(600)}` }], approvalGate: gate, permissionManager })).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+        });
+        expect(review).not.toHaveBeenCalled();
+        expect(requests).toHaveLength(headless ? 0 : 1);
+        if (!headless) expect(requests[0].forceExplicit).toBe(true);
+      });
+    }
+  }
+
   it("an active tool effect without policy dependencies fails clearly", async () => {
     const { gate } = makeGate("allow-once");
     await runWithEffectGateContext({ headless: false, toolName: "outer" }, async () => {
@@ -1109,15 +1155,14 @@ describe("exact effect authority and sealed execution", () => {
     expect(requests[0].allowedChoices).toEqual(["allow-once", "deny-once"]);
   });
 
-  it("storage reads still evaluate protected paths before ordinary-read allowance", async () => {
+  it("ordinary storage reads of protected paths remain allowed", async () => {
     permissionManager.setMode("allow");
     const { gate, requests } = makeGate("deny-once");
     const api = enforceMutatingEffects(makeApi([]), deps(gate));
     await runWithEffectGateContext({ headless: false, toolName: "outer" }, async () => {
-      await expect(api.storage.read(".git/config")).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+      await expect(api.storage.read(".git/config")).resolves.toBe("data");
     });
-    expect(requests).toHaveLength(1);
-    expect(requests[0].forceExplicit).toBe(true);
+    expect(requests).toHaveLength(0);
   });
 
   for (const method of ["GET", "HEAD", "OPTIONS"] as const) {

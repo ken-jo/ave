@@ -19,7 +19,7 @@ import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { ToolExecutor } from "../executor.js";
-import { ApplyPatchTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
@@ -177,12 +177,12 @@ describe("native invocation permission evidence", () => {
     const resolveMemory = vi.spyOn(manager, "resolveRememberedPermission");
     const [result] = await run(executor(), "read_file", { path }, { headless: true });
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("do not retry") });
-    expect(resolveMemory).toHaveBeenCalledOnce();
+    expect(resolveMemory).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
     expect(requests).toHaveLength(0);
   });
 
-  it("keeps a protected headless read denied despite a matching stored grant", async () => {
+  it("allows a protected-path read with a matching stored grant in headless", async () => {
     manager.setMode("allow");
     await mkdir(join(project, ".git"));
     const path = join(project, ".git", "config");
@@ -195,11 +195,41 @@ describe("native invocation permission evidence", () => {
     const resolveMemory = vi.spyOn(manager, "resolveRememberedPermission");
     const dispatch = vi.spyOn(manager, "dispatchReviewer");
     const [result] = await run(executor(), "read_file", { path }, { headless: true });
-    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("do not retry") });
+    expect(result.is_error, result.content).not.toBe(true);
     expect(resolveMemory).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
     expect(requests).toHaveLength(0);
+  });
+
+  it.each([
+    { ToolClass: CopyPathTool, sourceField: "sourcePath" },
+    { ToolClass: ExtractArchiveTool, sourceField: "archivePath" },
+  ] as const)("treats a protected $sourceField as a read and its destination as a write", async ({ ToolClass, sourceField }) => {
+    manager.setMode("allow");
+    await mkdir(join(project, ".git"));
+    const source = join(project, ".git", "source.data");
+    await writeFile(source, "read-only transfer source");
+    const tool = new ToolClass();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "transfer completed", isError: false });
+    registry.register(tool);
+    const check = vi.spyOn(manager, "checkDetailed");
+    const destination = join(project, "ordinary-output");
+    const [allowed] = await run(executor(), tool.name, { [sourceField]: source, destinationPath: destination });
+    expect(allowed.is_error, allowed.content).not.toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
+    expect(check.mock.results.at(-1)?.value.pipelineRequest?.paths).toEqual([
+      expect.objectContaining({ lexical: source, effect: "read" }),
+      expect.objectContaining({ lexical: destination, effect: "write" }),
+    ]);
+    execute.mockClear();
+    const protectedDestination = join(project, ".git", "new-control");
+    const [blocked] = await run(executor(), tool.name, { [sourceField]: source, destinationPath: protectedDestination });
+    expect(blocked.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
   });
 
   it("reuses a remembered explicit host command only on its sealed plan", async () => {
@@ -269,22 +299,26 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(0);
   });
 
-  it("forces direct protected reads once before allow mode, rules, review or memory", async () => {
+  it("forces direct protected writes once before allow mode, rules, review or memory", async () => {
     manager.setMode("allow");
-    manager.setRules([{ pattern: "read_file", action: "allow" }]);
+    manager.setRules([{ pattern: "write_file", action: "allow" }]);
     const dispatch = reviewer();
     const remembered = vi.spyOn(manager, "resolveRememberedPermission");
     await mkdir(join(project, ".git"));
     const path = join(project, ".git", "config");
     await writeFile(path, "[core]\nrepositoryformatversion = 0\n");
-    await recordApproval("read_file", canonicalStringify({ path }), "builtin", {
+    const input = { path, content: "unapproved control change" };
+    const identity = await approvalIdentityFor(writeTool, input, project, undefined, sessionId);
+    await recordApproval("write_file", canonicalStringify(input), "builtin", {
       scope: "session", sessionId, verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
       workingDirectoryIdentity: captureApprovalWorkingDirectory(project).identity,
+      approvalCacheKey: approvalCacheKeyIdentity(identity.approvalCacheKey, identity.approvalMemory),
     });
-    const execute = vi.spyOn(readTool, "execute");
-    const [result] = await run(executor(), "read_file", { path });
+    const execute = vi.spyOn(writeTool, "execute");
+    const [result] = await run(executor(), "write_file", input);
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
+    expect(await readFile(path, "utf8")).toBe("[core]\nrepositoryformatversion = 0\n");
     expect(dispatch).not.toHaveBeenCalled();
     expect(remembered).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);

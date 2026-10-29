@@ -60,8 +60,8 @@ async function subject() {
   cleanup.push(async () => { gate.disposeAll(); await audit.close(); });
   const originalAbort = new AbortController();
   const input = { message: "bounded message", password: "private-history-credential" };
-  const denyHeadless = () => executor.executeAll([{ id: "initial-denied-call", name: "send_probe", input }], {
-    sessionId: SESSION_ID, executionCwd: root, abortSignal: originalAbort.signal, permissionContext: userPermissionContext({ headless: true }),
+  const denyHeadless = (origin: Partial<import("../executor-contract.js").ToolPermissionContext> = {}) => executor.executeAll([{ id: "initial-denied-call", name: "send_probe", input }], {
+    sessionId: SESSION_ID, executionCwd: root, abortSignal: originalAbort.signal, permissionContext: userPermissionContext({ headless: true, ...origin }),
   });
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
@@ -157,12 +157,13 @@ describe("executor denial history and manual rerun", () => {
     });
     current.originalAbort.abort(new Error("original turn ended"));
     current.manager.setMode("auto");
+    current.surfaces.register(SESSION_ID, current.sender as never);
     const pending = current.history.rerun(entry.id);
     await vi.waitFor(() => expect(current.cards).toHaveLength(1));
     expect(current.preHook).toHaveBeenCalledTimes(2);
     expect(current.classify).not.toHaveBeenCalled();
     expect(current.execute).not.toHaveBeenCalled();
-    expect(current.cards[0].sessionId).toBeUndefined();
+    expect(current.cards[0].sessionId).toBe(SESSION_ID);
     expect(current.approve(current.cards[0])).toBeTruthy();
     expect(await pending).toEqual({ ok: true });
     expect(current.execute).toHaveBeenCalledOnce();
@@ -185,9 +186,10 @@ describe("executor denial history and manual rerun", () => {
     expect(entry.invocationRef).toBeDefined();
     expect(entry.rerunAvailable).toBe(true);
     current.originalAbort.abort(new Error("old process ended"));
+    current.surfaces.register(SESSION_ID, current.sender as never);
     const pending = restarted.rerun(entry.id);
     await vi.waitFor(() => expect(current.cards).toHaveLength(1));
-    expect(current.cards[0].sessionId).toBeUndefined();
+    expect(current.cards[0].sessionId).toBe(SESSION_ID);
     expect(current.execute).not.toHaveBeenCalled();
     expect(current.preHook).toHaveBeenCalledTimes(2);
     current.approve(current.cards[0]);
@@ -209,6 +211,7 @@ describe("executor denial history and manual rerun", () => {
       toolRegistry: current.registry, executeAll: current.executor.executeAll.bind(current.executor),
     }));
     const [entry] = await history.list();
+    current.surfaces.register(SESSION_ID, current.sender as never);
     const pending = history.rerun(entry.id);
     await vi.waitFor(() => expect(current.cards).toHaveLength(1));
     renameSync(current.root, join(current.storageRoot, "original-project"));
@@ -216,6 +219,32 @@ describe("executor denial history and manual rerun", () => {
     current.approve(current.cards[0]);
     expect(await pending).toEqual({ ok: false, error: "rerun-failed" });
     expect(current.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["live", "persisted"] as const)("preserves an other-principal turn and its one-time-only floor in a %s rerun", async (kind) => {
+    const current = await subject();
+    const memory = new MemoryManager({ aveDir: join(current.storageRoot, "saved-memory") });
+    await memory.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
+      id: "initial-denied-call", name: "send_probe", input: current.input, source: "builtin", category: "network",
+    }] }]);
+    await memory.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
+    await current.denyHeadless({ trustOrigin: "agent-message", otherPrincipal: true });
+    const history = kind === "live" ? current.history : makeRecentlyDeniedStore(current.historyFile);
+    if (kind === "persisted") history.setReplayResolver(createRecentlyDeniedReplayResolver({ memoryManager: memory,
+      toolRegistry: current.registry, executeAll: current.executor.executeAll.bind(current.executor),
+    }));
+    current.manager.setMode("allow");
+    current.surfaces.register(SESSION_ID, current.sender as never);
+    const [entry] = await history.list();
+    const pending = history.rerun(entry.id);
+    await vi.waitFor(() => expect(current.cards).toHaveLength(1));
+    expect(current.cards[0]).toMatchObject({ sessionId: SESSION_ID, trustOrigin: "agent-message", requireExplicit: true,
+      allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
+    expect(current.execute).not.toHaveBeenCalled();
+    expect(current.classify).not.toHaveBeenCalled();
+    current.approve(current.cards[0]);
+    expect(await pending).toEqual({ ok: true });
+    expect(current.execute).toHaveBeenCalledOnce();
   });
 
   it("applies a new admission hook denial before any replay approval or tool effect", async () => {

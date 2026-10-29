@@ -2263,6 +2263,21 @@ describe("PermissionsTab unified permission rules", () => {
     expect(table).toHaveTextContent(healthy.pattern);
   });
 
+  it.each(["en", "ko"] as const)("lists a retired host terminal rule with a delete action in %s", async (locale) => {
+    setLocale(locale);
+    const api = installApi([[]]);
+    const retired = { pattern: 'HostTerminal(zsh "/workspace" printf ready)', action: "allow", scope: "user", invalidReason: "retired-host-terminal" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({ rules: [retired], errors: [] }).mockResolvedValue({ rules: [], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    const reason = await screen.findByTestId("permissions-rule-invalid");
+    expect(reason).toHaveTextContent(t("permissionsTab.ruleRetiredHostTerminal"));
+    expect(reason.closest("tr")).toHaveTextContent(retired.pattern);
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: retired.pattern }) }));
+    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(retired));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rule-invalid")).toBeNull());
+  });
+
   it("refreshes the scoped list after adding or revoking a rule", async () => {
     const api = installApi([[]]);
     const rule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };

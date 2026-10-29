@@ -662,15 +662,19 @@ describe("browser tools", () => {
       expect(result.isError, url).toBe(true);
     }
     expect(page.calls).toEqual([]);
-    // Even after one-shot consent, invalid navigation never reaches the page.
+    // Non-HTTP targets fail admission; credential-carrying HTTP still requires exfil consent.
     const invalidNavigationCards = cards.filter((card) => card.toolName === BROWSER_TOOL.navigate);
-    expect(invalidNavigationCards).toHaveLength(5);
+    expect(invalidNavigationCards).toHaveLength(1);
+    expect(invalidNavigationCards[0].requireExplicit).toBe(true);
+    expect(JSON.stringify(invalidNavigationCards[0].args)).not.toContain("user:pw@");
     for (const card of invalidNavigationCards) {
       expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
       expect(card.persistentAllowAllowed).toBe(false);
     }
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
-    expect(refused.output).toContain("file:, javascript:, data: and other schemes are denied");
+    expect(refused.isError).toBe(true);
+    expect(refused.output).toContain("Network target must use HTTP or HTTPS");
+    expect(cards.filter((card) => card.toolName === BROWSER_TOOL.tabNew)).toHaveLength(0);
 
     const badRef = await run(BROWSER_TOOL.pressKey, { tabId: agent.handle, key: "Enter", ref: "#submit" });
     expect(badRef.output).toContain("ref must be an element ref");

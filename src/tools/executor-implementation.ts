@@ -341,7 +341,6 @@ export class ToolExecutor {
     auditInput?: Record<string, unknown>,
     sessionId?: string,
   ): Promise<PermissionCheckResult | null> {
-    if (this.permissionManager?.isAutomatedApprovalPaused(sessionId)) return null;
     const result = await tryUserApprovalMemorySkipImpl(
       toolName,
       source,
@@ -373,7 +372,7 @@ export class ToolExecutor {
         ? (...args) => this.permissionManager!.dispatchReviewer(...args)
         : undefined,
     );
-    return this.permissionManager?.isAutomatedApprovalPaused(sessionId) ? null : result;
+    return result;
   }
 
   async executeAll(
