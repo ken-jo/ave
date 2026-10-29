@@ -6,6 +6,9 @@ import { basename, dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+
+const HOST_PLATFORM = process.platform;
 
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(), spawn: vi.fn(),
@@ -44,10 +47,12 @@ beforeEach(() => {
 });
 afterEach(() => {
   manager._resetForTest(); __resetActiveSandboxCapabilityForTest(); vi.useRealTimers();
+  setProcessPlatform(HOST_PLATFORM);
 });
 
 describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
   describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
+    beforeEach(() => { setProcessPlatform(dialect === "powershell" ? "darwin" : HOST_PLATFORM); });
     const temporaryRoots = new Set<string>();
     async function start(captureFactory?: () => ToolOutputCapture, failure?: "abort" | "empty" | "sync-throw") {
       setShellSandboxRequestedAtBoot(route === "sandbox");

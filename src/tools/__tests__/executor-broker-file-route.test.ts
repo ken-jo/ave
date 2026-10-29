@@ -169,15 +169,16 @@ afterEach(async () => {
 describe("executor canonical file workload-broker route", () => {
   it("reads guest document bytes through the bound binary operation instead of the host file", async () => {
     const path = join(root, "document.csv");
+    const guestPath = posix.resolve(broker.current.workload.cwd, path);
     writeFileSync(path, "host sentinel");
     const bytes = Buffer.from("guest value");
     broker.execute.mockResolvedValueOnce({ output: "binary receipt", isError: false,
-      path, bytes: bytes.length, data: bytes.toString("base64") });
+      path: guestPath, bytes: bytes.length, data: bytes.toString("base64") });
     const result = await invoke(allowingExecutor(new ReadDocumentTool(), root), "read_document", { path });
     expect(result?.is_error, result?.content).toBeUndefined();
     expect(JSON.parse(result!.content).cells).toEqual([["guest value"]]);
     expect(broker.execute).toHaveBeenCalledWith(broker.current, "file.read_binary",
-      expect.objectContaining({ path, maxBytes: 20 * 1024 * 1024 }),
+      expect.objectContaining({ path: guestPath, maxBytes: 20 * 1024 * 1024 }),
       expect.objectContaining({ operation: "file.read_binary", toolName: "read_document" }), expect.any(AbortSignal));
     expect(documentParser.parse.mock.calls[0]?.[0]).toEqual(bytes);
     expect(readFileSync(path, "utf8")).toBe("host sentinel");

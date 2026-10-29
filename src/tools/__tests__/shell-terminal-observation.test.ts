@@ -1,9 +1,11 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAdmittedAgentWork } from "../../__tests__/support/agent-observation-admission.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import * as windowsJobLauncher from "../../main/windows-job-launcher.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import type { ObservationIdentity } from "../../shared/agent-observation.js";
@@ -40,6 +42,7 @@ afterEach(async () => {
   setAgentTerminalObservationSink(undefined);
   backgroundShellManager.disposeSession(identity.sessionId);
   await backgroundShellManager.waitForLocalCleanup(identity.sessionId);
+  vi.restoreAllMocks();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   await cleanupTmpDir(directory);
@@ -84,6 +87,8 @@ describe("shell command observation provenance and lifetime", () => {
   });
 
   it("keeps direct background observation alive after invocation end and beyond model output retention", async () => {
+    vi.spyOn(windowsJobLauncher, "spawnWindowsJobProcess").mockImplementation((executable, args, options) =>
+      spawn(executable, args, { ...options, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }));
     const result = await agent(() => execute("sleep 0.15; yes x | head -c 210000; sleep 0.15; printf 'observed-tail\\n'; exit 3", true));
     expect(result.metadata?.backgrounded).toBe(true);
     expect(runs).toHaveLength(1);
