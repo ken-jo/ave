@@ -11,6 +11,7 @@ import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -108,7 +109,7 @@ describe("ConversationLoop — the price a turn records (design §6, endpoint re
     };
     const loop = makeLoop(provider, [], settings);
     let summary: TurnSummary | undefined;
-    await loop.runTurn("go", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("go", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
     const expected = { source: "endpoint-report", rates: { inputPer1M: 2.5, outputPer1M: 10, cacheReadPer1M: 0.25 } };
     expect(summary?.modelSettings?.pricing).toEqual(expected);
     expect(summary?.usageByModel?.[0]).toMatchObject({ vendorProvider: "openrouter", vendorModel: model, pricing: expected });
@@ -125,7 +126,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     const loop = makeLoop(provider, [{ name: "bad_tool" }], settings);
     let summary: TurnSummary | undefined;
     await loop.runTurn("go", { onTurnSummary: (value) => { summary = value; } }, undefined,
-      { inputOrigin: "user-keyboard" });
+      { ...userKeyboardTurn() });
     expect(provider.toolNamesPerCall).toEqual([["bad_tool"], []]);
     expect(summary?.modelSettings?.reasoning).toMatchObject({ kind: "openai-effort", effort: "high" });
     expect(summary?.modelSettings?.reasoning).not.toHaveProperty("suppressed");
@@ -142,7 +143,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     const logTurn = vi.spyOn(loop.auditLogger, "logTurn");
     const result = await loop.runTurn("go", {
       onDecision: (event) => { if (event.kind === "tool_schema.drop") switched = true; },
-    }, undefined, { inputOrigin: "user-keyboard" });
+    }, undefined, { ...userKeyboardTurn() });
     expect(provider.toolNamesPerCall).toEqual([["bad_tool"]]);
     expect(result.stopReason).toBe("interrupted");
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({
@@ -161,7 +162,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     const loop = makeLoop(provider);
 
     const result = await loop.runTurn("go", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(result.text).toContain("done");
@@ -187,7 +188,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
 
     await loop.runTurn("go", {
       onDecision: (event) => { decisions.push(event); },
-    }, undefined, { inputOrigin: "user-keyboard" });
+    }, undefined, { ...userKeyboardTurn() });
 
     expect(decisions).toContainEqual(expect.objectContaining({
       kind: "tool_schema.drop",
@@ -206,7 +207,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     const loop = makeLoop(provider);
 
     const result = await loop.runTurn("go", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.toolNamesPerCall).toHaveLength(2);
@@ -228,7 +229,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     ]);
 
     const result = await loop.runTurn("go", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(result.stopReason).toBe("end_turn");
@@ -259,7 +260,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     const loop = makeLoop(provider);
 
     const result = await loop.runTurn("go", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.toolNamesPerCall).toHaveLength(1);

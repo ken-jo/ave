@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { InputClassifier } from "../../../core/input-classifier.js";
 import { RouteEngine } from "../../../core/route-engine.js";
 import { ConversationLoop } from "../../conversation-loop.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { createDynamicTool } from "../../../tools/base.js";
@@ -84,5 +85,5 @@ const loop = new ConversationLoop({
 (loop as unknown as { provider: LLMProvider | null }).provider = new KillTestProvider();
 (loop as unknown as { sessionId: string }).sessionId = sessionId;
 
-await loop.runTurn("kill test question", undefined, undefined, { inputOrigin: "user-keyboard" });
+await loop.runTurn("kill test question", undefined, undefined, userKeyboardTurn());
 process.stdout.write("TURN_ENDED\n");

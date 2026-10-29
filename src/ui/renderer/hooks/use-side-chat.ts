@@ -29,6 +29,7 @@ import type { AveApi } from "../types.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { sideChatFailureNotice, type SideChatOperationFailure } from "../../../shared/side-chat-operation.js";
 import { parseTabId } from "../../../shared/tab-id.js";
+import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 
 interface SideChatSendOptions {
   /** Vision / resource parts composed from the composer's attachments. */
@@ -42,6 +43,8 @@ interface SideChatSendOptions {
    * turn is still running, interrupts it first — the main composer's rule.
    */
   inputOrigin?: "queue-auto";
+  /** The gesture's one-shot keyboard intent for a user send; preload consumes it and main verifies it. A queue drain has none. */
+  userIntent?: UserKeyboardIntentSnapshot;
   /** The pane tab this chat is bound to (a pane's own chat), named on every turn. */
   surface?: ActiveWorkspaceSurface;
   /** The conversation this side chat belongs to. Sent on every turn; the host records it once, on the turn that first gives
@@ -572,6 +575,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         pendingSend = api.sideChat.send(
           trimmed, opts?.attachments, opts?.originSessionId, sendRequestId, opts?.surface,
           sessionIdRef.current ?? undefined,
+          // The true origin: a queue drain is never the user's keyboard; a user send carries its gesture's intent.
+          opts?.inputOrigin === "queue-auto"
+            ? { inputOrigin: "queue-auto" }
+            : { inputOrigin: "user-keyboard", ...(opts?.userIntent ? { userIntent: opts.userIntent } : {}) },
         );
         pendingSendRef.current = pendingSend;
         const result = await pendingSend;

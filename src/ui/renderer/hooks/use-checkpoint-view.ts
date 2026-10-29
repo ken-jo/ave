@@ -5,6 +5,7 @@ import { SHORT_TOAST_TTL_MS } from "../constants.js";
 import type { ViewModeState } from "../components/ViewModeBanner.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import type { AveApi } from "../types.js";
+import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 
 export interface UseCheckpointViewParams {
   api: AveApi;
@@ -13,7 +14,7 @@ export interface UseCheckpointViewParams {
   streaming: boolean;
   hasActiveStreamingEntry: boolean;
   onLoadSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
-  onContinueFromLastUser?: (sessionId: string) => void | Promise<void>;
+  onContinueFromLastUser?: (sessionId: string, opts?: { userIntent?: UserKeyboardIntentSnapshot }) => void | Promise<void>;
   setViewMode: React.Dispatch<React.SetStateAction<ViewModeState | null>>;
   scrollChatToBottom: (behavior?: ScrollBehavior) => void;
 }
@@ -65,6 +66,8 @@ export function useCheckpointView({
   }, [api, scrollChatToBottom, setViewMode]);
 
   const handleBranchFrom = useCallback(async (compactNum: number) => {
+    // The auto-continue runs after the fork and load awaits, outside the click; it replays the user's request with the click's intent.
+    const userIntent = api.captureUserKeyboardIntent();
     if (streaming || hasActiveStreamingEntry) {
       if (forkToastTimerRef.current) clearTimeout(forkToastTimerRef.current);
       setForkToast(t("chatView.forkBusyToast"));
@@ -86,7 +89,7 @@ export function useCheckpointView({
     );
     forkToastTimerRef.current = setTimeout(() => setForkToast(null), SHORT_TOAST_TTL_MS);
     if (result.shouldAutoContinue) {
-      await onContinueFromLastUser?.(result.newSessionId);
+      await onContinueFromLastUser?.(result.newSessionId, { userIntent });
     }
   }, [api, currentSessionId, hasActiveStreamingEntry, onContinueFromLastUser, onLoadSession, streaming, setViewMode]);
 

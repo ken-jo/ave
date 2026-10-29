@@ -11,6 +11,7 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { makeConversationLoopDeps, makeConversationLoopSettings } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const roots: string[] = [];
 
@@ -83,7 +84,7 @@ describe("conversation shell project context", () => {
     // An additional directory grant cannot make host-owned runtime state accessible.
     loop.addSessionAdditionalDirectory(privateWorkspace);
 
-    const result = await loop.runTurn("Report the working directory.", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const result = await loop.runTurn("Report the working directory.", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(loop.getSessionExecutionCwd()).toBe(projectRoot);
     expect(projectRoot).not.toBe(process.cwd());

@@ -191,7 +191,21 @@ async function setup() {
     onAskUserQuestion: internalApi.onAskUserQuestion,
     onAskUserQuestionTimeout: internalApi.onAskUserQuestionTimeout,
   };
+  // The composer captures its gesture token through the window's API, as in the app; the token is the real preload's.
+  Object.defineProperty(window, "aveApi", { value: api, configurable: true, writable: true });
   return { api, deps, runner, read, sideLoop, tileLoop };
+}
+
+/** Runs `act` inside a user gesture, so the real preload mints the keyboard token the send carries to main. */
+function duringUserGesture<T>(act: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(navigator, "userActivation");
+  Object.defineProperty(navigator, "userActivation", { value: { isActive: true, hasBeenActive: true }, configurable: true });
+  try {
+    return act();
+  } finally {
+    if (previous) Object.defineProperty(navigator, "userActivation", previous);
+    else delete (navigator as { userActivation?: unknown }).userActivation;
+  }
 }
 
 describe("side-chat session transition boundary", () => {
@@ -234,7 +248,7 @@ describe("side-chat session transition boundary", () => {
     expect(result.current.entries).toContainEqual(expect.objectContaining({ kind: "user", text: "Old transcript" }));
     await api.sideChat!.new();
     expect(sideLoop.getSessionId()).toBe(replacementSessionId);
-    await act(async () => { await result.current.send("New prompt"); });
+    await act(async () => { await result.current.send("New prompt", { userIntent: duringUserGesture(() => api.captureUserKeyboardIntent()) }); });
     // The send names the session this view shows, so the host moves back onto it rather than writing this view's prompt into
     // the peer's new session.
     expect(sideLoop.getSessionId()).toBe(sideSessionId);
@@ -345,7 +359,7 @@ describe("side-chat child transcript across host and renderer", () => {
       try {
         const sideView = within(screen.getByTestId("side-chat-view"));
         fireEvent.change(sideView.getByTestId("composer-textarea"), { target: { value: "Start the first side turn" } });
-        fireEvent.click(sideView.getByTestId("composer-send-button"));
+        duringUserGesture(() => fireEvent.click(sideView.getByTestId("composer-send-button")));
         await waitFor(() => expect(sideLoop.runTurn).toHaveBeenCalledOnce());
         expect(replies.some(({ channel }) => channel === CHANNELS.sidechat.send)).toBe(false);
         expect(invoke).not.toHaveBeenCalledWith(CHANNELS.sidechat.load, expect.anything());

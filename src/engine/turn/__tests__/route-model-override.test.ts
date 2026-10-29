@@ -7,6 +7,7 @@ import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 const state = vi.hoisted(() => ({
   configs: [] as ProviderConfig[],
@@ -60,7 +61,7 @@ it.each([undefined, "openai/gpt-5.4"])("budgets the child model without inheriti
 
 it("sends and accounts for the same child model that the adapter was constructed for", async () => {
   const { loop } = childLoop();
-  const result = await loop.runTurn("reply", undefined, undefined, { inputOrigin: "user-keyboard" });
+  const result = await loop.runTurn("reply", undefined, undefined, { ...userKeyboardTurn() });
   expect(state.configs[0]?.model).toBe("gpt-5.4-mini");
   expect(state.requests[0]?.model).toBe("gpt-5.4-mini");
   expect(result.usageByModel).toEqual([

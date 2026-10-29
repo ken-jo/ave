@@ -192,6 +192,30 @@ export function hasUserKeyboardIntent(value: unknown): value is UserKeyboardInte
   return payload.inputOrigin === "user-keyboard" && payload.userActivation === true;
 }
 
+/** Main's proof that one send carries the user's keyboard gesture. Preload minted a one-shot token during the gesture, consumed it for this
+ * send, and reported `userActivation: true` over a sender-validated IPC frame (main never sees the token itself); main turns that report into
+ * this value. It is unforgeable (only {@link mintUserKeyboardIntent} makes one) and single-use (the turn that receives it spends it). A turn
+ * is a user-keyboard turn, and may get user-only capabilities such as typing into the user's own host terminal, only with one. */
+export interface VerifiedUserKeyboardIntent {
+  readonly kind: "verified-user-keyboard-intent";
+}
+const mintedUserKeyboardIntents = new WeakSet<object>();
+
+/** The one mint: a verified intent for a send whose IPC payload reports a consumed preload gesture token, otherwise nothing. */
+export function mintUserKeyboardIntent(payload: unknown): VerifiedUserKeyboardIntent | undefined {
+  if (!hasUserKeyboardIntent(payload)) return undefined;
+  const intent: VerifiedUserKeyboardIntent = Object.freeze({ kind: "verified-user-keyboard-intent" as const });
+  mintedUserKeyboardIntents.add(intent);
+  return intent;
+}
+
+/** Spend a verified intent: true once for a minted value, false for a lookalike or a second use. */
+export function spendUserKeyboardIntent(intent: unknown): boolean {
+  if (typeof intent !== "object" || intent === null || !mintedUserKeyboardIntents.has(intent)) return false;
+  mintedUserKeyboardIntents.delete(intent);
+  return true;
+}
+
 /** Share the missing-keyboard-intent error code across mutation IPC domains. */
 export const USER_KEYBOARD_REQUIRED = Object.freeze({
   ok: false as const,

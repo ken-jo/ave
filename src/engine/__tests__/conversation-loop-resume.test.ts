@@ -16,6 +16,7 @@ import {
   makeConversationLoopMemoryManager,
   makeConversationLoopSettings,
 } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const RESUME_SESSION_ID = "08001f8f-a6f5-4bb9-820d-df1e8366af93";
 const resumeMemory = (storedMessages: GenericMessage[] | null = null) =>
@@ -424,7 +425,7 @@ describe("ConversationLoop.resetAndResume", () => {
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
     expect((await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93")).ok).toBe(true);
-    await loop.runTurn("new question", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("new question", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     expect(providerMessages.map((message) => message.content)).toEqual([
@@ -555,7 +556,7 @@ describe("ConversationLoop command routing", () => {
     );
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    const result = await loop.runTurn("/memory", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("/memory", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     expect(result.text).toContain("사용자 기억");
@@ -574,7 +575,7 @@ describe("ConversationLoop command routing", () => {
     const { loop, saveMemory } = createRememberCommandLoop(captureExplicit);
 
     const result = await loop.runTurn("/remember retain this rollout preference", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(captureExplicit).toHaveBeenCalledWith({
@@ -593,7 +594,7 @@ describe("ConversationLoop command routing", () => {
     const { loop, saveMemory } = createRememberCommandLoop(captureExplicit);
 
     const result = await loop.runTurn("/remember retain this rollout preference", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(captureExplicit).toHaveBeenCalledOnce();
@@ -608,7 +609,7 @@ describe("ConversationLoop command routing", () => {
     const { loop, saveMemory } = createRememberCommandLoop(captureExplicit);
 
     const result = await loop.runTurn("/remember retain this rollout preference", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(captureExplicit).toHaveBeenCalledOnce();
@@ -654,7 +655,7 @@ describe("ConversationLoop command routing", () => {
       };
       (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-      const result = await loop.runTurn("/permission hooks accept pre-demo.sh", undefined, undefined, { inputOrigin: "user-keyboard" },
+      const result = await loop.runTurn("/permission hooks accept pre-demo.sh", undefined, undefined, { ...userKeyboardTurn() },
       );
 
       expect(result.text).toContain("Hook 신뢰 등록됨: pre-demo.sh");

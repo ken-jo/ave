@@ -18,6 +18,7 @@ import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import type { SubAgentRunner, SubAgentSpawnResult } from "../subagent-runner.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 let temporaryDirectory: string | undefined;
 
@@ -84,7 +85,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       "write the file",
       { onTurnSummary },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(result).toMatchObject({
@@ -190,7 +191,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       {},
       undefined,
       {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         unattendedAuthority: { kind: "native-exec" } as never,
       },
     )).rejects.toThrow(/unattended authority this host did not issue/);
@@ -269,7 +270,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       "run the probe",
       {},
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(providerCalls).toBe(2);
@@ -356,7 +357,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       "run the plugin effect probe",
       {},
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(pluginCaughtDenial).toBe(true);
@@ -461,7 +462,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       "delegate the task",
       {},
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(providerCalls).toBe(1);

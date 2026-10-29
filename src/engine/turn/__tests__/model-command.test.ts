@@ -9,6 +9,7 @@ import { t } from "../../../i18n/index.js";
 import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
 import type { ActiveChatRuntime } from "../../../shared/subscription-runtime.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 const state = vi.hoisted(() => ({
   configs: [] as ProviderConfig[],
@@ -96,7 +97,7 @@ describe("/model", () => {
     expect(state.configs.at(-1)?.model).toBe("gpt-5.4-mini");
     expect(contextBudgetForCurrentRuntime(loop)).toMatchObject({ model: "gpt-5.4-mini" });
 
-    await loop.runTurn("reply", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("reply", undefined, undefined, { ...userKeyboardTurn() });
     expect(state.requests.at(-1)?.model).toBe("gpt-5.4-mini");
     expect(llm.vendors.openai.model).toBe("gpt-5.4");
   });

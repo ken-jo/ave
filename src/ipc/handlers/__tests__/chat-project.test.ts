@@ -75,10 +75,10 @@ describe("markMainActiveAfterTurn across chat tiles", () => {
         markMainActiveFresh: vi.fn(async () => {}),
       },
     };
-    await markMainActiveAfterTurn({ ...base, chatGroupId: "group-2" } as unknown as IpcDeps, "hello");
+    await markMainActiveAfterTurn({ ...base, chatGroupId: "group-2" } as unknown as IpcDeps, "hello", "user-keyboard");
     expect(markMainActiveResume).not.toHaveBeenCalled();
-    await markMainActiveAfterTurn({ ...base, chatGroupId: "main" } as unknown as IpcDeps, "hello");
-    await markMainActiveAfterTurn(base as unknown as IpcDeps, "hello");
+    await markMainActiveAfterTurn({ ...base, chatGroupId: "main" } as unknown as IpcDeps, "hello", "user-keyboard");
+    await markMainActiveAfterTurn(base as unknown as IpcDeps, "hello", "user-keyboard");
     expect(markMainActiveResume).toHaveBeenCalledTimes(2);
   });
 });
@@ -106,7 +106,7 @@ describe("markMainActiveAfterTurn project metadata", () => {
       },
     } as unknown as IpcDeps;
 
-    await markMainActiveAfterTurn(deps, "hello");
+    await markMainActiveAfterTurn(deps, "hello", "user-keyboard");
 
     expect(saveSessionMetadata).toHaveBeenCalledWith("session-1", {
       title: "Existing title",
@@ -141,7 +141,7 @@ describe("markMainActiveAfterTurn project metadata", () => {
       },
     } as unknown as IpcDeps;
 
-    await markMainActiveAfterTurn(deps, "hello");
+    await markMainActiveAfterTurn(deps, "hello", "user-keyboard");
 
     expect(saveSessionMetadata).not.toHaveBeenCalled();
     expect(markMainActiveResume).toHaveBeenCalledWith("session-1");
@@ -169,7 +169,7 @@ describe("markMainActiveAfterTurn project metadata", () => {
       },
     } as unknown as IpcDeps;
 
-    await markMainActiveAfterTurn(deps, "hello");
+    await markMainActiveAfterTurn(deps, "hello", "user-keyboard");
 
     expect(saveSessionMetadata).toHaveBeenCalledWith("session-1", {
       sessionKind: "main",

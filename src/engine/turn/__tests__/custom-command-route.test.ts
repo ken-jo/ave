@@ -11,6 +11,7 @@ import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { GenericMessage, ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { BUILTIN_SLASH_COMMANDS } from "../commands.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 const state = vi.hoisted(() => ({ requests: [] as StreamTurnParams[] }));
 
@@ -73,7 +74,7 @@ afterEach(async () => {
 describe("custom slash commands in a turn", () => {
   it("runs the command file with the typed arguments and shows what was typed", async () => {
     const loop = makeLoop();
-    const result = await loop.runTurn("/review 42", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const result = await loop.runTurn("/review 42", undefined, undefined, { ...userKeyboardTurn() });
     expect(result.text).toBe("done");
     expect(result.route).toBe("llm");
     expect(lastUserText()).toContain("Review pull request 42 carefully.");
@@ -83,14 +84,14 @@ describe("custom slash commands in a turn", () => {
 
   it("leaves built-in names to the built-in handler", async () => {
     const loop = makeLoop();
-    const result = await loop.runTurn("/help", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const result = await loop.runTurn("/help", undefined, undefined, { ...userKeyboardTurn() });
     expect(result.route).toBe("command");
     expect(result.text).not.toContain("A file cannot take over a built-in.");
     expect(state.requests).toHaveLength(0);
   });
 
   it("still reports an unknown command when no file defines it", async () => {
-    const result = await makeLoop().runTurn("/nothing-here", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const result = await makeLoop().runTurn("/nothing-here", undefined, undefined, { ...userKeyboardTurn() });
     expect(result.route).toBe("command");
     expect(result.text).toContain("/nothing-here");
     expect(state.requests).toHaveLength(0);

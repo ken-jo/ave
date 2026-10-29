@@ -1919,7 +1919,20 @@ one command into that terminal. Main owns the boundary
   ([host-terminal-turn.ts](../../src/tools/host-terminal-turn.ts)): no remote
   controller, unattended authority, agent message, attachment or staged
   guidance behind it, and never a sub-agent (which runs with the capability
-  masked). A routine, plugin or app message, or any other turn, is refused
+  masked). "Typed at the keyboard" is never read from the origin string:
+  every turn defaults to a non-user origin, and main makes a turn the user's
+  only by minting a single-use `VerifiedUserKeyboardIntent`
+  ([chat-origin.ts](../../src/shared/chat-origin.ts)) from a send whose
+  gesture token preload consumed, which `runTurn` spends; a `user-keyboard`
+  origin without it fails the turn. Main sees preload's consumed-token
+  report (`userActivation: true`), not the token. Chat send, guide,
+  side-chat and pane-chat send, edit-resend, continue and retry each carry
+  their click's token; a queued auto-send stays `queue-auto`. The headless
+  `ave exec` prompt is the owner's via its unattended authority and never
+  gets the capability. The inventory of entry points and their
+  classification is a test
+  ([turn-entry-classification.test.ts](../../src/engine/turn/__tests__/turn-entry-classification.test.ts)).
+  A routine, plugin or app message, or any other turn, is refused
   before a card. The turn id is sealed into the approval; the authorization
   step also requires that same turn, still speaking for the user. Both turn
   facts below are irreversible and are set by the conversation history's one

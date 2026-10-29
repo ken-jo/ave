@@ -9,6 +9,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../llm/output-token-limit.js";
 import { estimateTokens } from "../../shared/token-estimate.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -231,7 +232,7 @@ describe("ConversationLoop.generateText", () => {
 
     await expect(
       loop.runTurn("hello", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
       }),
     ).rejects.toThrow(/provider|프로바이더/i);
     expect(provider.lastParams).toBeNull();

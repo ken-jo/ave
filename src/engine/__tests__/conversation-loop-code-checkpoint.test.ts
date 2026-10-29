@@ -9,6 +9,7 @@ import { restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-che
 import { ToolRegistry } from "../../tools/registry.js";
 import { EditFileTool, ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { makeConversationLoopDeps } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 let root: string;
 beforeEach(async () => {
@@ -41,12 +42,12 @@ describe("turn-owned code checkpoint integration", () => {
     (child as unknown as { provider: LLMProvider }).provider = provider;
     const parentId = "parent";
     await withCodeCheckpoint({ sessionId: parentId, messageId: "spawn" }, () =>
-      child.runTurn("Create the child file.", undefined, undefined, { inputOrigin: "user-keyboard" }));
+      child.runTurn("Create the child file.", undefined, undefined, { ...userKeyboardTurn() }));
     expect(await readFile(file, "utf8")).toBe("child");
     expect(await restoreCodeCheckpoint(parentId, "spawn", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
     const ledger = JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8"));
     expect(ledger.turns.map((turn: { sessionId: string }) => turn.sessionId)).toEqual([parentId]);
-    await child.runTurn("Finish.", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await child.runTurn("Finish.", undefined, undefined, { ...userKeyboardTurn() });
     expect(JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8")).turns).toHaveLength(1);
   });
 
@@ -72,10 +73,10 @@ describe("turn-owned code checkpoint integration", () => {
       getDefaultProject: () => ({ projectRoot: root, projectName: "checkpoint workspace" }),
     }));
     (loop as unknown as { provider: LLMProvider }).provider = provider;
-    await loop.runTurn("Create the source file.", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("Create the source file.", undefined, undefined, { ...userKeyboardTurn() });
     const first = loop.getHistory().getMessages().find((message) => message.role === "user")!.meta!.messageId!;
     expect(await readFile(file, "utf8")).toBe("created\r\n");
-    await loop.runTurn("Update the source file.", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("Update the source file.", undefined, undefined, { ...userKeyboardTurn() });
     const second = loop.getHistory().getMessages().filter((message) => message.role === "user").at(-1)!.meta!.messageId!;
     expect(await readFile(file, "utf8")).toBe("updated\r\n");
     expect(await restoreCodeCheckpoint(loop.getSessionId(), second, { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });

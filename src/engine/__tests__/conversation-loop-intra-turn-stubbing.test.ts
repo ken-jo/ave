@@ -9,6 +9,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 // Match the loop protect window so plateau assertions cross the same boundary.
 const INTRA_TURN_PRESERVE_RECENT_RESULTS = 16;
@@ -77,7 +78,7 @@ describe("ConversationLoop intra-turn tool-result stubbing (issue #1171)", () =>
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("deep tool loop", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const tokens = provider.perRoundWireTokens;
@@ -137,7 +138,7 @@ describe("ConversationLoop intra-turn tool-result stubbing (issue #1171)", () =>
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("deep tool loop", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const history = (loop as unknown as {

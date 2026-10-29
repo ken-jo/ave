@@ -13,6 +13,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { TOOL_SPAN_PREFIX, TURN_SPAN_NAME } from "../telemetry/tracing.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const SECRET_RESULT = "SECRET-TOOL-OUTPUT-THAT-MUST-NOT-BE-EXPORTED";
 
@@ -61,7 +62,7 @@ describe("ConversationLoop — loop decisions", () => {
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()));
     const { decisions, onDecision } = collectDecisions();
 
-    await loop.runTurn("go", { onDecision }, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("go", { onDecision }, undefined, { ...userKeyboardTurn() });
 
     expect(decisions).toContainEqual(expect.objectContaining({
       kind: "tool_batch",
@@ -74,7 +75,7 @@ describe("ConversationLoop — loop decisions", () => {
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()));
     const onTurnSummary = vi.fn();
 
-    await loop.runTurn("go", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("go", { onTurnSummary }, undefined, { ...userKeyboardTurn() });
 
     expect(onTurnSummary).toHaveBeenCalledTimes(1);
     const summary = onTurnSummary.mock.calls[0][0] as {
@@ -88,7 +89,7 @@ describe("ConversationLoop — loop decisions", () => {
     const { decisions, onDecision } = collectDecisions();
 
     await loop.runTurn("go", { onDecision }, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       maxRounds: 1,
     });
 
@@ -101,9 +102,9 @@ describe("ConversationLoop — loop decisions", () => {
 
   it("does not change what the turn returns when nobody is listening", async () => {
     const withListener = await makeLoop(new ScriptedProvider(toolThenAnswer()))
-      .runTurn("go", collectDecisions(), undefined, { inputOrigin: "user-keyboard" });
+      .runTurn("go", collectDecisions(), undefined, { ...userKeyboardTurn() });
     const withoutListener = await makeLoop(new ScriptedProvider(toolThenAnswer()))
-      .runTurn("go", undefined, undefined, { inputOrigin: "user-keyboard" });
+      .runTurn("go", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(withoutListener.text).toBe(withListener.text);
     expect(withoutListener.stopReason).toBe(withListener.stopReason);
@@ -119,7 +120,7 @@ describe("ConversationLoop — turn tracing", () => {
     const tracer = provider.getTracer("test");
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()), tracer);
 
-    await loop.runTurn("go", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("go", {}, undefined, { ...userKeyboardTurn() });
     await provider.forceFlush();
 
     const spans = exporter.getFinishedSpans();
@@ -159,7 +160,7 @@ describe("ConversationLoop — turn tracing", () => {
     });
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()), provider.getTracer("test"));
 
-    await loop.runTurn("go", {}, undefined, { inputOrigin: "user-keyboard", maxRounds: 1 });
+    await loop.runTurn("go", {}, undefined, { ...userKeyboardTurn(), maxRounds: 1 });
     await provider.forceFlush();
 
     const turnSpan = exporter.getFinishedSpans()

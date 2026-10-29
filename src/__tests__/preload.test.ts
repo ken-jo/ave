@@ -40,6 +40,8 @@ Object.defineProperty(globalThis.navigator, "userActivation", {
   value: mockUserActivation,
 });
 
+type UserKeyboardIntentSnapshot = import("../shared/chat-origin.js").UserKeyboardIntentSnapshot;
+
 async function loadAveApi(): Promise<Record<string, unknown>> {
   await import("../preload.js");
   const api = exposed.get("aveApi");
@@ -230,6 +232,7 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.send, {
       input: "hello", attachments: [], originSessionId: "parent-session",
       ...(sendRequestId !== undefined ? { sendRequestId } : {}),
+      inputOrigin: "queue-auto",
     }]]);
   });
 
@@ -241,8 +244,55 @@ describe("preload — plugin webview asset URLs", () => {
     await sideChat.send("hello", [], undefined, "side-request", { kind: "terminal", tabId: "terminal:w-1" }, sessionId);
     expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.send, {
       input: "hello", attachments: [], originSessionId: undefined, sendRequestId: "side-request",
-      surface: { kind: "terminal", tabId: "terminal:w-1" }, sessionId,
+      surface: { kind: "terminal", tabId: "terminal:w-1" }, sessionId, inputOrigin: "queue-auto",
     }]]);
+  });
+
+  it("reports a side-chat keyboard send as the user's only with a captured, unspent gesture token", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    const sent = () => mockInvoke.mock.calls.at(-1)![1] as { inputOrigin?: string; userActivation?: boolean };
+    mockUserActivation.isActive = true;
+    try {
+      const token = capture() as UserKeyboardIntentSnapshot;
+      await sideChat.send("typed", [], undefined, undefined, undefined, undefined, { inputOrigin: "user-keyboard", userIntent: token });
+      expect(sent()).toMatchObject({ inputOrigin: "user-keyboard", userActivation: true });
+      await sideChat.send("replayed", [], undefined, undefined, undefined, undefined, { inputOrigin: "user-keyboard", userIntent: token });
+      expect(sent()).toMatchObject({ inputOrigin: "user-keyboard", userActivation: false });
+      await sideChat.send("queued", [], undefined, undefined, undefined, undefined, { inputOrigin: "queue-auto" });
+      expect(sent()).toMatchObject({ inputOrigin: "queue-auto" });
+      expect(sent()).not.toHaveProperty("userActivation");
+    } finally {
+      mockUserActivation.isActive = false;
+    }
+  });
+
+  it("carries each replay's gesture token to main once: edit-resend, continue and retry", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const editResend = api["chatEditResend"] as (id: string, text: string, userIntent?: unknown) => Promise<unknown>;
+    const continueLastUser = api["chatContinueLastUser"] as (sessionId: string, userIntent?: unknown) => Promise<unknown>;
+    const retryEffort = api["chatRetryEffort"] as (opts: unknown, userIntent?: unknown) => Promise<unknown>;
+    const gesture = (activation: boolean) => ({ inputOrigin: "user-keyboard", userActivation: activation });
+    mockUserActivation.isActive = true;
+    try {
+      const edit = capture();
+      await editResend("row-1", "new", edit);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:edit-resend", "row-1", "new", "main", gesture(true));
+      await editResend("row-1", "again", edit);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:edit-resend", "row-1", "again", "main", gesture(false));
+      await continueLastUser("session-1", capture());
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:continue-last-user", { sessionId: "session-1", intent: gesture(true) }, "main");
+      await continueLastUser("session-1");
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:continue-last-user", { sessionId: "session-1", intent: gesture(false) }, "main");
+      await retryEffort({ enableThinking: true }, capture());
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:retry-effort", { enableThinking: true }, "main", gesture(true));
+      await retryEffort({ enableThinking: true });
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:retry-effort", { enableThinking: true }, "main", gesture(false));
+    } finally {
+      mockUserActivation.isActive = false;
+    }
   });
 
   it("bridges a pane chat's history read and its ending", async () => {

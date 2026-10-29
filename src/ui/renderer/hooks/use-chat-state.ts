@@ -22,6 +22,7 @@ import { detectFromStream } from "../../../lib/stream-markers.js";
 import { debugLog, isDebugStreamEnabled } from "../../../lib/debug-stream.js";
 import { isMissingStagedEnvelopeErrorMessage } from "../../../shared/staged-origins.js";
 import type { AveApi } from "../types.js";
+import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { resetSuggestedReplies } from "./use-suggested-replies.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
@@ -578,6 +579,8 @@ export function useChatState(
 
   const handleEditSave = useCallback(
     async (entryIdx: number, newText: string) => {
+      // Captured synchronously inside the save gesture; main runs the replay as the user's turn only with it.
+      const userIntent = api.captureUserKeyboardIntent();
       const target = entries[entryIdx];
       const messageId = target?.kind === "user" ? target.messageId : undefined;
       if (messageId === undefined) return;
@@ -591,7 +594,7 @@ export function useChatState(
         thoughtRef.current = "";
         releaseActiveStream();
         finalAssistantRoundClosedRef.current = false;
-        const res = await api.chatEditResend(messageId, newText);
+        const res = await api.chatEditResend(messageId, newText, userIntent);
         if (!res?.ok) {
           failed = true;
           setEntries(
@@ -623,6 +626,7 @@ export function useChatState(
   );
 
   const handleRetryEffort = useCallback(async () => {
+    const userIntent = api.captureUserKeyboardIntent();
     const prevEntries = entries;
     const requestId = beginStreamingRequest();
     setEntries((p) => {
@@ -644,7 +648,7 @@ export function useChatState(
     try {
       const res = await api.chatRetryEffort({
         enableThinking: true,
-      });
+      }, userIntent);
       if (!res?.ok) {
         setEntries(
           setAssistantError(
@@ -741,7 +745,9 @@ export function useChatState(
     });
   }, []);
 
-  const handleContinueFromLastUser = useCallback(async (sessionId: string, opts?: { userBubble?: string }) => {
+  // A caller that awaited work after the click passes the intent it captured inside the gesture; otherwise capture it here.
+  const handleContinueFromLastUser = useCallback(async (sessionId: string, opts?: { userBubble?: string; userIntent?: UserKeyboardIntentSnapshot }) => {
+    const userIntent = opts?.userIntent ?? api.captureUserKeyboardIntent();
     const requestId = beginStreamingRequest();
     streamRef.current = "";
     thoughtRef.current = "";
@@ -752,7 +758,7 @@ export function useChatState(
     if (opts?.userBubble) appendUserMessage(opts.userBubble);
     appendAssistantStatus(t("useChatState.continueFromLastUserStatus"));
     try {
-      const res = await api.chatContinueLastUser(sessionId);
+      const res = await api.chatContinueLastUser(sessionId, userIntent);
       if (!res?.ok) {
         if (opts?.userBubble) dropUnannouncedUserBubble(opts.userBubble);
         setErrorWithThought(t("useChatState.continueGenerationFailedError", { error: res?.error ?? t("useChatState.unknownError") }));

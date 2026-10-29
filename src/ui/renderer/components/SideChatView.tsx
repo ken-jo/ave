@@ -379,7 +379,7 @@ function SideChatSession({
   const handleAsk = useCallback(
     (
       text: string,
-      _intent?: UserKeyboardIntentSnapshot,
+      intent?: UserKeyboardIntentSnapshot,
       opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
     ) => {
       const origin = {
@@ -396,6 +396,7 @@ function SideChatSession({
       return settle(send(composed.text, {
         attachments: composed.attachments,
         ...(opts?.injectHint ? { injectHint: opts.injectHint } : {}),
+        ...(intent ? { userIntent: intent } : {}),
         ...origin,
       }));
     },

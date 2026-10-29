@@ -8,6 +8,7 @@ import { createProvider } from "../llm/provider-factory.js";
 import type { LLMProvider, LLMVendor, ProviderConfig } from "../llm/types.js";
 import { compactWithBoundary } from "../structured-compact.js";
 import { makeConversationLoopDeps } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 vi.mock("../llm/provider-factory.js", async (original) => ({
   ...await original<typeof import("../llm/provider-factory.js")>(),
@@ -176,7 +177,7 @@ describe("automatic compaction failure visibility", () => {
     });
     const onError = vi.fn();
     const onTextDelta = vi.fn();
-    const result = await settle(loop.runTurn("hello", { onError, onTextDelta }, undefined, { inputOrigin: "user-keyboard" }));
+    const result = await settle(loop.runTurn("hello", { onError, onTextDelta }, undefined, { ...userKeyboardTurn() }));
     expect(calls.filter((call) => call.model === "summary-model")).toHaveLength(5);
     expect(calls.some((call) => call.model === "fallback-model")).toBe(false);
     expect(onError).toHaveBeenCalledExactlyOnceWith("Automatic compaction failed", undefined, undefined, "compaction");

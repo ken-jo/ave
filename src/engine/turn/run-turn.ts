@@ -28,7 +28,7 @@ import { projectNextTurnInputTokens } from "../request-input-projection.js";
 import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
-import { isUntaintedToolTrustOrigin, isUserKeyboardOrigin } from "../../shared/chat-origin.js";
+import { isUntaintedToolTrustOrigin, isUserKeyboardOrigin, spendUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { consumeUnattendedTurnAuthority } from "../../shared/authorization-required.js";
 import { countResourceAttachmentFences } from "../../shared/mcp-resource-bounds.js";
 import {
@@ -148,6 +148,18 @@ async function runTurnInSpan(
       && !consumeUnattendedTurnAuthority(options.unattendedAuthority)
     ) {
       throw new Error("ConversationLoop.runTurn received an unattended authority this host did not issue for this turn");
+    }
+    // A user-keyboard turn is one main verified a gesture for (a spent, main-minted intent), or a command-line turn whose owner proof is the
+    // spent unattended authority just above; an origin string alone never makes one (fail clearly, never downgrade).
+    const userKeyboardVerified = options.userKeyboardIntent !== undefined && spendUserKeyboardIntent(options.userKeyboardIntent);
+    if (options.userKeyboardIntent !== undefined && !userKeyboardVerified) {
+      throw new Error("ConversationLoop.runTurn received a keyboard intent this host did not mint for this turn");
+    }
+    if (userKeyboardVerified && !isUserKeyboardOrigin(inputOrigin)) {
+      throw new Error("ConversationLoop.runTurn: a verified keyboard intent was passed with a non-keyboard inputOrigin");
+    }
+    if (isUserKeyboardOrigin(inputOrigin) && !userKeyboardVerified && options.unattendedAuthority === undefined) {
+      throw new Error("ConversationLoop.runTurn: inputOrigin user-keyboard requires a verified keyboard intent");
     }
     let turnInput = isUserKeyboardOrigin(inputOrigin) ? input : stripLeadingSlash(input);
     let customCommandDisplayText: string | undefined;
@@ -572,7 +584,7 @@ async function runTurnInSpan(
       : undefined;
     // Bind async context to the effective session ID so delegates read isolated session activations.
     // Only a turn the user typed here, with nothing else speaking through it, may type into the user's own host terminal.
-    const hostTerminalTurn = isUserKeyboardOrigin(inputOrigin) && isUntaintedToolTrustOrigin(toolTrustOrigin) && memoryCaptureTaint.size === 0
+    const hostTerminalTurn = userKeyboardVerified && isUntaintedToolTrustOrigin(toolTrustOrigin) && memoryCaptureTaint.size === 0
       && !isRemoteControllerTurn && options?.unattendedAuthority === undefined && self.sessionKind !== "subagent"
       ? { sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId } : undefined;
     const runQuery = () => runWithHostTerminalTurn(hostTerminalTurn, () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>

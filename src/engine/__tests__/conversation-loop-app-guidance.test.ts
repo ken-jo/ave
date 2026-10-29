@@ -10,6 +10,7 @@ import { formatAppMessageEnvelope } from "../../shared/mcp-app-message-source.js
 import type { PostTurnHookContext } from "../../hooks/post-turn-hook-chain.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 function twoToolRounds(): FakeProvider {
   return new FakeProvider([
@@ -90,7 +91,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
   it("app-enveloped guidance ⇒ staged origin `app:<serverId>` + `app-emitted` trust from that round on", async () => {
     const { loop, execCalls } = makeLoop(twoToolRounds());
 
-    const turn = loop.runTurn("사용자 질문", {}, undefined, { inputOrigin: "user-keyboard",
+    const turn = loop.runTurn("사용자 질문", {}, undefined, { ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance(formatAppMessageEnvelope("open the invoice", "app:acme-cards"),
@@ -110,7 +111,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const postTurnHookChain = makePostTurnHookSpy();
     const { loop } = makeLoop(twoToolRounds(), { postTurnHookChain });
 
-    const turn = loop.runTurn("사용자 질문", {}, undefined, { inputOrigin: "user-keyboard",
+    const turn = loop.runTurn("사용자 질문", {}, undefined, { ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance(formatAppMessageEnvelope("open the invoice", "app:acme-cards"),
@@ -130,7 +131,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
   it("a user-typed guide does NOT downgrade the turn (control)", async () => {
     const { loop, execCalls } = makeLoop(twoToolRounds());
 
-    const turn = loop.runTurn("사용자 질문", {}, undefined, { inputOrigin: "user-keyboard",
+    const turn = loop.runTurn("사용자 질문", {}, undefined, { ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance("더 짧게 요약");
@@ -147,7 +148,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const { loop } = makeLoop(provider, { postTurnHookChain });
 
     await loop.runTurn("사용자 질문", {}, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       attachments: [{ type: "text", text: "첨부된 원문" }],
       initialGuidance: "호스트가 부가한 컨텍스트",
     });

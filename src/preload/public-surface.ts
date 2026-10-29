@@ -123,17 +123,27 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
       messages: SerializedHistoryMessage[];
       preambleChars?: number;
     }>,
-  chatEditResend: async (messageId: string, newText: string) =>
-    ipcRenderer.invoke(CHANNELS.chat.editResend, messageId, newText, chatGroupId),
+  // Replays re-run the user's own request, so each carries the click's single-use gesture intent; main refuses one without it.
+  chatEditResend: async (messageId: string, newText: string, userIntent?: UserKeyboardIntentSnapshot) =>
+    ipcRenderer.invoke(CHANNELS.chat.editResend, messageId, newText, chatGroupId, {
+      inputOrigin: "user-keyboard",
+      userActivation: consumeUserKeyboardIntent(userIntent),
+    }),
   chatRewindTo: async (messageId: string, mode: RewindMode = "conversation") =>
     ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId, mode) as Promise<RewindResult>,
   chatGetTurnReview: async (expectedSessionId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.getTurnReview, expectedSessionId, chatGroupId) as Promise<TurnReviewResult>,
   chatFork: async (messageId?: string) => ipcRenderer.invoke(CHANNELS.chat.fork, messageId, chatGroupId),
-  chatContinueLastUser: async (sessionId: string) =>
-    ipcRenderer.invoke(CHANNELS.chat.continueLastUser, { sessionId }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,
-  chatRetryEffort: async (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }) =>
-    ipcRenderer.invoke(CHANNELS.chat.retryEffort, opts, chatGroupId),
+  chatContinueLastUser: async (sessionId: string, userIntent?: UserKeyboardIntentSnapshot) =>
+    ipcRenderer.invoke(CHANNELS.chat.continueLastUser, {
+      sessionId,
+      intent: { inputOrigin: "user-keyboard", userActivation: consumeUserKeyboardIntent(userIntent) },
+    }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,
+  chatRetryEffort: async (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }, userIntent?: UserKeyboardIntentSnapshot) =>
+    ipcRenderer.invoke(CHANNELS.chat.retryEffort, opts, chatGroupId, {
+      inputOrigin: "user-keyboard",
+      userActivation: consumeUserKeyboardIntent(userIntent),
+    }),
   // An explicit session id shares another conversation; omission targets the loaded one.
   chatExport: async (format: "markdown" | "json", sessionId?: string) =>
     ipcRenderer.invoke(CHANNELS.chat.export, format, sessionId),

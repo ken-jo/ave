@@ -5,6 +5,7 @@ import {
   isChatSendInputOrigin,
   isRemoteControllerAuthorityCurrent,
   isUserKeyboardOrigin,
+  mintUserKeyboardIntent,
 } from "../../shared/chat-origin.js";
 import { normalizeLocalUserContentParts } from "../../main/subscription-attachment-input.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
@@ -39,7 +40,6 @@ import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { expandFileMentionContext } from "./file-mention-context.js";
 import {
   runStreamedTurn,
-  STREAM_TURN_OPTIONS,
   type ConversationStreamEventSink,
 } from "./chat-stream.js";
 
@@ -364,7 +364,7 @@ export function sanitizeOutgoingInput(
 export async function markMainActiveAfterTurn(
   deps: IpcDeps,
   input: string,
-  inputOrigin: ChatInputOrigin = "user-keyboard",
+  inputOrigin: ChatInputOrigin,
 ): Promise<void> {
   const { conversationLoop, memoryManager } = deps;
   if (conversationLoop.getSessionKind() !== "main") return;
@@ -484,9 +484,11 @@ export async function handleChatSend(
         sanitized.input,
         sink,
         {
-          ...STREAM_TURN_OPTIONS,
           attachments: sanitized.attachments,
           inputOrigin,
+          // Desktop sends only: the payload's userActivation is preload's report of a consumed gesture token (parse refuses a
+          // user-keyboard payload without it); main mints the turn's one verified intent from it.
+          ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
           ...(displayText === undefined ? {} : { displayText }),
           ...(inputOrigin === "user-keyboard" && userActivation === true
             ? { requestAnchorRawIntent: input }

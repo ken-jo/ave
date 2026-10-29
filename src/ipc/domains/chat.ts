@@ -2,7 +2,7 @@ import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-ch
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
-import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
+import { hasUserKeyboardIntent, mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED, type VerifiedUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
@@ -52,7 +52,6 @@ import {
 } from "../../shared/llm-vendor-defaults.js";
 import {
   runStreamedTurn,
-  STREAM_TURN_OPTIONS,
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
 import {
@@ -515,10 +514,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const runStreamTurn = async (
       { sink, abortSignal }: StreamTurnTransport,
       input: string,
-      attachments?: import("../../engine/llm/types.js").UserContentPart[],
-      rolePrompt?: ActiveRolePrompt,
-      displayText?: string,
-      resumesInterruptedTurn?: true,
+      attachments: import("../../engine/llm/types.js").UserContentPart[] | undefined,
+      rolePrompt: ActiveRolePrompt | undefined,
+      displayText: string | undefined,
+      resumesInterruptedTurn: true | undefined,
+      // The replay's click, verified by main; a replay is the user's own turn only with it, and a staged envelope keeps its own origin.
+      userKeyboardIntent: VerifiedUserKeyboardIntent,
     ) => {
       // Replay and edit/resend need the same input DLP boundary as ordinary sends.
       const replayStagedInputOrigin = parseStagedEnvelope(input)?.kind.inputOrigin;
@@ -530,9 +531,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
         sanitized.input,
         sink,
         {
-          ...STREAM_TURN_OPTIONS,
           ...(abortSignal ? { abortSignal } : {}),
-          ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : {}),
+          ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : { inputOrigin: "user-keyboard" as const, userKeyboardIntent }),
           ...(sanitized.attachments && sanitized.attachments.length > 0
             ? { attachments: sanitized.attachments }
             : {}),
@@ -541,7 +541,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
         },
       );
-      await markMainActiveAfterTurn(groupDeps, sanitized.input);
+      await markMainActiveAfterTurn(groupDeps, sanitized.input, replayStagedInputOrigin ?? "user-keyboard");
       return result;
     };
     const tryStreamTurn = <T>(
@@ -552,7 +552,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
 
     const continueFromLastUserTurnWithinLease = async (
-      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean },
+      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent },
       transport: StreamTurnTransport,
     ) => {
       const messages = [...(loop.getHistory().getMessages() as GenericMessage[])];
@@ -599,6 +599,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           personaPrompt.rolePrompt,
           t("be_conversationLoop.resumeInterruptedTurnDisplay"),
           true,
+          opts.userKeyboardIntent,
         );
         return { ok: true, result };
       }
@@ -612,6 +613,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
           lastUserAttachments,
           personaPrompt.rolePrompt,
           typeof priorDisplayText === "string" ? priorDisplayText : undefined,
+          undefined,
+          opts.userKeyboardIntent,
         );
         return { ok: true, result };
       } catch (err) {
@@ -623,7 +626,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       }
     };
     const continueFromLastUserTurn = async (
-      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean },
+      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent },
       expectedSessionId?: string,
     ) => {
       const turn = tryStreamTurn(async (transport) => {
@@ -766,7 +769,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
         tryTakeTurn: (body) => surfaceRuntime.activity.tryTrackTurn(body),
         runTurn: async ({ input, displayText }) => {
           await runStreamedTurn(loop, input, buildGroupSink(turns.allocateStreamId()), {
-            ...STREAM_TURN_OPTIONS,
             // Autonomous continuation is host-authored and must retain non-keyboard provenance.
             inputOrigin: "agent-message",
             displayText,
@@ -979,7 +981,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
           mailboxTurn.initialGuidance,
           sink,
           {
-            ...STREAM_TURN_OPTIONS,
             inputOrigin: "agent-message",
             abortSignal,
             approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
@@ -991,7 +992,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         );
         if (conversationLoop.getSessionId() !== parentSessionId) return result;
         await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
-        await markMainActiveAfterTurn(deps, mailboxTurn.initialGuidance);
+        await markMainActiveAfterTurn(deps, mailboxTurn.initialGuidance, "agent-message");
         return result;
       });
     });
@@ -1239,8 +1240,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return handleChatSessionHistory(deps, sessionId);
   });
 
-  ipcMain.handle(CHANNELS.chat.editResend, async (e, messageId: string, newText: string, chatGroupId?: unknown) => {
+  ipcMain.handle(CHANNELS.chat.editResend, async (e, messageId: string, newText: string, chatGroupId?: unknown, intent?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.editResend, e); return UNAUTHORIZED_FRAME; }
+    // Resending edited text is the user's own turn only with the click's consumed gesture intent; without one it is refused.
+    const userKeyboardIntent = mintUserKeyboardIntent(intent);
+    if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
     const group = groupOf(e, chatGroupId, CHANNELS.chat.editResend);
     const conversationLoop = group.loop;
     if (typeof messageId !== "string" || messageId.length === 0) return { ok: false, error: "invalid-message-id" };
@@ -1263,7 +1267,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         transport.abortSignal?.throwIfAborted();
         conversationLoop.getHistory().truncate(historyIndex);
         replayEntered = true;
-        const result = await group.turns.runStreamTurn(transport, expanded.input, undefined, personaPrompt.rolePrompt, expanded.displayText);
+        const result = await group.turns.runStreamTurn(transport, expanded.input, undefined, personaPrompt.rolePrompt, expanded.displayText, undefined, userKeyboardIntent);
         return { ok: true, result };
       } catch (err) {
         if (!replayEntered && transport.abortSignal?.aborted) {
@@ -1397,18 +1401,25 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.continueLastUser, async (e, payload: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.continueLastUser, e); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.continueLastUser);
-    const p = payload as { sessionId?: unknown };
+    const p = payload as { sessionId?: unknown; intent?: unknown };
     if (typeof p?.sessionId !== "string") return { ok: false, error: "invalid-args" };
     if (p.sessionId !== group.loop.getSessionId()) return { ok: false, error: "session-mismatch" };
-    return group.turns.continueFromLastUserTurn({ requireTerminalUser: true, restoreOnFailure: true }, p.sessionId);
+    // Continuing replays the user's request: their turn only with the click's consumed gesture intent.
+    const userKeyboardIntent = mintUserKeyboardIntent(p.intent);
+    if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
+    return group.turns.continueFromLastUserTurn({ requireTerminalUser: true, restoreOnFailure: true, userKeyboardIntent }, p.sessionId);
   });
 
   ipcMain.handle(CHANNELS.chat.retryEffort, async (
     e,
     opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean },
     chatGroupId?: unknown,
+    intent?: unknown,
   ) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.retryEffort, e); return UNAUTHORIZED_FRAME; }
+    // Retrying replays the user's request: their turn only with the click's consumed gesture intent.
+    const userKeyboardIntent = mintUserKeyboardIntent(intent);
+    if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
     const group = groupOf(e, chatGroupId, CHANNELS.chat.retryEffort);
     const turn = group.turns.tryStreamTurn(async (transport) => {
       const prevLlm = settingsService.get("llm");
@@ -1441,7 +1452,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       group.loop.refreshProvider();
       try {
         return await group.turns.continueFromLastUserTurnWithinLease(
-          { requireTerminalUser: false, restoreOnFailure: false },
+          { requireTerminalUser: false, restoreOnFailure: false, userKeyboardIntent },
           transport,
         );
       } finally {

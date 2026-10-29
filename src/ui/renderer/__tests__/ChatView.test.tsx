@@ -2142,7 +2142,7 @@ describe("ChatView", () => {
       expect(api.chatBranchFromCheckpoint).toHaveBeenCalledWith("sess-source", 2);
       expect(api.chatSessionResume).toHaveBeenCalledWith("sess-branch-1");
       expect(api.chatSessionHistory).toHaveBeenCalledWith("sess-branch-1");
-      expect(api.chatContinueLastUser).toHaveBeenCalledWith("sess-branch-1");
+      expect(api.chatContinueLastUser).toHaveBeenCalledWith("sess-branch-1", expect.objectContaining({ inputOrigin: "user-keyboard" }));
       expect(api.chatRetryEffort).not.toHaveBeenCalled();
       expect(container.textContent).toContain("마지막 질문");
       expect(container.textContent).toContain("이 지점부터 다시 시작했습니다. 마지막 질문에 대한 답변을 이어서 생성합니다.");

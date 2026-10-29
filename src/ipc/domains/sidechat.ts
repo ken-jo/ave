@@ -18,11 +18,11 @@ import type { ConversationLoop, TurnResult } from "../../engine/conversation-loo
 import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import {
   runStreamedTurn,
-  STREAM_TURN_OPTIONS,
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
 import { isValidSessionId } from "../../memory/memory-manager.js";
 import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
+import { mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 
 import { sanitizeOutgoingTurnContent, validateUserContentParts } from "../handlers/chat.js";
 import type { IpcDeps } from "../types.js";
@@ -231,10 +231,17 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
     const senderWindow = approvalOwnerWindow(e);
     if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
-    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown; sessionId?: unknown };
+    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown; sessionId?: unknown; inputOrigin?: unknown; userActivation?: unknown };
     if (typeof p.input !== "string") {
       return { ok: false as const, error: "invalid-input" };
     }
+    // The turn's origin is never assumed: a send without one is a queue drain, and a keyboard send needs preload's consumed gesture.
+    if (p.inputOrigin !== undefined && p.inputOrigin !== "queue-auto" && p.inputOrigin !== "user-keyboard") {
+      return { ok: false as const, error: "invalid-input" };
+    }
+    const inputOrigin = p.inputOrigin === "user-keyboard" ? "user-keyboard" as const : "queue-auto" as const;
+    const userKeyboardIntent = inputOrigin === "user-keyboard" ? mintUserKeyboardIntent(p) : undefined;
+    if (inputOrigin === "user-keyboard" && userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
     if (p.sessionId !== undefined && !isValidSessionId(p.sessionId)) {
       return { ok: false as const, error: "invalid-session-id" };
     }
@@ -324,7 +331,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         sanitized.input,
         sink,
         {
-          ...STREAM_TURN_OPTIONS,
+          inputOrigin,
+          ...(userKeyboardIntent ? { userKeyboardIntent } : {}),
           ...(sanitized.attachments && sanitized.attachments.length > 0
             ? { attachments: sanitized.attachments }
             : {}),

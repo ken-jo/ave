@@ -44,6 +44,7 @@ import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureA
 import { createPrivateDirectory } from "../codex-executable-location.js";
 import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 // Release metadata is fetched only by real Linux publisher verification; these services never reach it.
 const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
@@ -326,7 +327,7 @@ describe("native RPC timeout context", () => {
       (loop as { provider: LLMProvider | null }).provider = provider;
       const tracer = createTracer("rpc-timeout", { enabled: true, traceDir: join(harness.runtimeRoot, "traces") });
       loop.setTracer(tracer);
-      const pending = loop.runTurn("private-user-input", undefined, undefined, { inputOrigin: "user-keyboard" });
+      const pending = loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
       await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
       await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
       await expect(pending).resolves.toMatchObject({ stopReason: "stream-error" });

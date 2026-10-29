@@ -33,6 +33,7 @@ import type {
 } from "../../llm/types.js";
 import { RATIONALE_SIBLING_CANCELLED_RESULT } from "../rationale-conversation-orchestration.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 const RAW_ANCHOR_SECRET = "alice@example.com";
 
@@ -299,7 +300,7 @@ describe("foreground rationale real-stack integration", () => {
         undefined,
         undefined,
         {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
           requestAnchorRawIntent:
             "perform the approved action for " + RAW_ANCHOR_SECRET,
         },
@@ -550,7 +551,7 @@ describe("foreground rationale real-stack integration", () => {
         undefined,
         undefined,
         {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
           requestAnchorRawIntent:
             "perform the approved action for " + RAW_ANCHOR_SECRET,
         },
@@ -673,7 +674,7 @@ describe("foreground rationale real-stack integration", () => {
         undefined,
         undefined,
         {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
           requestAnchorRawIntent: "inspect this image and apply the bounded update",
           attachments: [{
             type: "image",

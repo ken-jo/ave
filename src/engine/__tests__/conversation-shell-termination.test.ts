@@ -11,6 +11,7 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent } from "../llm/types.js";
 import { makeConversationLoopDeps, makeConversationLoopSettings } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const roots: string[] = [];
 
@@ -75,7 +76,7 @@ describe.skipIf(process.platform === "win32")("conversation shell termination de
       "Run the shell command and report its result.",
       { onToolEnd },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(execute).toHaveBeenCalledTimes(1);
