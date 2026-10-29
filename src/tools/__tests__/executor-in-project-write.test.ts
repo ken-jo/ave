@@ -181,6 +181,31 @@ describe("checkpointed project file writes", () => {
     expect(await readFile(join(project, "unrecoverable"), "utf8")).toBe("approved");
   });
 
+  it.each(["default", "auto"] as const)("%s refuses a copy source replaced by a directory after permission admission", async (mode) => {
+    manager.setMode(mode); manager.setInteractiveAutoApprove("medium");
+    const sourcePath = join(project, "source");
+    const destinationPath = join(project, "copy");
+    const priorPath = join(project, "prior-edit");
+    await writeFile(sourcePath, "original");
+    const execute = CopyPathTool.prototype.execute;
+    vi.spyOn(CopyPathTool.prototype, "execute").mockImplementation(async function (this: CopyPathTool, input, context) {
+      await rename(sourcePath, join(project, "original-source"));
+      await mkdir(sourcePath);
+      await writeFile(join(sourcePath, "child"), "must not copy this tree");
+      return execute.call(this, input, context);
+    });
+    await turn(async () => {
+      expect((await run("write_file", { path: priorPath, content: "recoverable" }))[0].is_error).toBeFalsy();
+      const result = await run("copy_path", { sourcePath, destinationPath });
+      expect(result[0].is_error).toBe(true);
+      expect(result[0].content).toMatch(/checkpoint unavailable/i);
+    });
+    expect(requestAndWait).not.toHaveBeenCalled();
+    await expect(readFile(destinationPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await restoreCodeCheckpoint(sessionId, "turn", { cwd: project, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    await expect(readFile(priorPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("enforces the required checkpoint at the executor mutation boundary", async () => {
     const execute = WriteFileTool.prototype.execute;
     vi.spyOn(WriteFileTool.prototype, "execute").mockImplementation(async function (this: WriteFileTool, input, context) {

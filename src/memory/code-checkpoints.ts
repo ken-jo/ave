@@ -456,9 +456,13 @@ async function makeUnavailable(turns: Turn[], identity: ActiveTurn, reason: stri
   await save(turns, turn);
 }
 
-/** Remote edits and file transfers have no host before-image contract. */
+/** Unsupported mutations cannot discard a required checkpoint's rewind evidence. */
 export async function markCodeCheckpointUnavailable(sessionId?: string, reason = "unsupported edits"): Promise<void> {
   const inherited = turnContext.getStore();
+  if (requiredCheckpointContext.getStore() === true) {
+    if (inherited) blockAutomaticWrites(inherited);
+    throw new CodeCheckpointRequiredError();
+  }
   const targets = sessionId === undefined ? (inherited ? [inherited] : [])
     : [...inFlight].filter((active) => active.dir === namespace.dir && active.sessionId === sessionId);
   for (const active of targets) if (!active.deleted) downgrade(active, reason);

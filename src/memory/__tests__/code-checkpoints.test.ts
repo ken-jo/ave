@@ -94,9 +94,10 @@ describe("native file-tool code checkpoints", () => {
     await turn("revoked", async () => {
       expect(await isCodeCheckpointAvailable([file])).toBe(true);
       await withRequiredCodeCheckpoint(async () => {
-        await markCodeCheckpointUnavailable();
+        await expect(markCodeCheckpointUnavailable()).rejects.toThrow("retry with explicit approval");
         await expect(checkpointFileMutation([{ path: file, content: "after" }], mutate)).rejects.toThrow("retry with explicit approval");
       });
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
     });
     expect(mutate).not.toHaveBeenCalled();
   });

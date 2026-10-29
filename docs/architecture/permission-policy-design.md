@@ -2427,12 +2427,12 @@ an approval card only when every touched lexical and canonical path is inside
 the session cwd or a configured `additionalDirectories` root, and the write's
 code checkpoint is available. Application home, temporary roots and scratch
 roots do not become project roots through the broader allowed-directory list;
-existing scratch auto-approval remains separate. Move and copy operations must
-cover both endpoints. Archive extraction must cover its destination and every
-entry and retain its existing source-path and transfer checks. A regular-file
-copy can use checkpoint-backed allowance when its source is a single-link regular
+existing scratch auto-approval remains separate. Move and regular-file copy
+operations must cover both endpoints. A regular-file copy can use
+checkpoint-backed allowance when its source is a single-link regular
 file within the checkpoint size limit and both endpoints are in the project.
-Directory copy and archive extraction use the ordinary approval route: they can
+Directory copy and archive extraction keep the ordinary approval route and
+their existing source-path, entry and transfer checks. They can
 create directory trees, but the code checkpoint ledger restores regular files
 and has no safe directory-tree ownership contract for removing created
 directories without removing unrelated later files. Their transfer journal does
