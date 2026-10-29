@@ -38,7 +38,6 @@ import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
 import { nextToolTrustOrigin, rationaleProvenanceFor } from "./trust-origin.js";
-import { noteOtherPrincipalGuidance } from "../../tools/host-terminal-turn.js";
 import { contextBudgetForCurrentRuntime, warnUnstatedReasoningOnce } from "./compaction.js";
 import { markStaleToolResults, evictAgedToolResultImages, isContextLengthError } from "../auto-compact.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
@@ -338,10 +337,7 @@ export async function queryLoop(
       && bounds.a2aCausalContext.recipientChildSessionId === effectiveSessionId
         ? bounds.a2aCausalContext
         : undefined;
-    if (activeA2ACausalContext) {
-      noteOtherPrincipalGuidance();
-      toolTrustOrigin = "agent-message";
-    }
+    if (activeA2ACausalContext) toolTrustOrigin = "agent-message";
 
     let assistantRoundsRun = 0;
     // Count progress outside history because compaction must not make a long turn appear short.
@@ -478,8 +474,6 @@ export async function queryLoop(
           .find((parsed) => parsed !== null);
         if (stagedGuidance) {
           bounds.onMemoryCaptureTaint?.("staged-guidance");
-          // Another principal speaks in this turn from here on: host typing ends, whatever the trust origin later becomes.
-          noteOtherPrincipalGuidance();
           stagedOrigin = stagedGuidance.source;
           toolTrustOrigin = stagedGuidance.kind.inputOrigin;
         }
@@ -502,7 +496,6 @@ export async function queryLoop(
           );
           if (mergedCausalContext) {
             activeA2ACausalContext = mergedCausalContext;
-            noteOtherPrincipalGuidance();
             toolTrustOrigin = "agent-message";
           }
         }
@@ -561,7 +554,8 @@ export async function queryLoop(
             displayText: joined,
             ...(subAgentHistoryMeta(subAgentSource).meta ?? {}),
           },
-        });
+        // Only a batch the user typed, every entry of it, is the user's own words; anything else marks another principal at the history.
+        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard" } : undefined);
         delivery.historyMessage = historyMessage;
       }
 
@@ -1997,6 +1991,11 @@ function truncateGuidanceBatch<T extends { text: string }>(
       ? t("be_conversationLoop.guidanceTruncationMarker", { count: truncatedCount, joined })
       : joined,
   };
+}
+
+/** A guidance entry is the user's own words only when the renderer's guide path queued it and it does not carry a staged app/plugin envelope. */
+function isUserTypedGuidance(entry: { text: string; principal?: "user-keyboard" }): boolean {
+  return entry.principal === "user-keyboard" && parseStagedEnvelope(entry.text) === null;
 }
 
 /** Attribute to children only when every entry is a child report; mixed user guides keep user framing. */

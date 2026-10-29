@@ -5,7 +5,7 @@ import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
 import { isBoundedSkillReadResult } from "../main/skill-overlay.js";
 import { normalizeLocalUserContentParts } from "../main/subscription-attachment-input.js";
-import { noteToolResultsReturnedToModel } from "../tools/host-terminal-turn.js";
+import { noteOtherPrincipalGuidance, noteToolResultsReturnedToModel } from "../tools/host-terminal-turn.js";
 
 export interface ConversationHistoryOptions {
   maxMessages?: number;
@@ -18,8 +18,23 @@ export type StoredMessage = GenericMessage & {
 
 const DEFAULT_MAX_MESSAGES = Number.POSITIVE_INFINITY;
 
+/** Who put a live row into the history. Only the drain of guidance the user typed passes `user-keyboard`; leaving it out means
+ * another principal, so a producer that forgets it fails closed. */
+export interface HistoryAppendProvenance {
+  principal: "user-keyboard";
+}
+
+/** How rows not seen before enter: a live append (a model reply, a tool result, injected guidance) or a host transform
+ * (restore after compaction, eviction, reload or wire input). */
+type HistoryEntry =
+  | { via: "append"; row: GenericMessage; provenance: HistoryAppendProvenance | undefined }
+  | { via: "transform" };
+
 export class ConversationHistory {
-  private messages: GenericMessage[] = [];
+  /** Written only by commit(); every other method builds the next array and hands it there. */
+  private messages: readonly GenericMessage[] = [];
+  /** Every row id this history has held. It survives clear(), so a clear() then restore() of the same rows is not new content. */
+  private readonly knownIds = new Set<string>();
   private readonly maxMessages: number;
 
   constructor(options?: ConversationHistoryOptions) {
@@ -27,8 +42,8 @@ export class ConversationHistory {
     this.maxMessages = normalizeMaxMessages(options?.maxMessages);
   }
 
-  append(message: GenericMessage): StoredMessage {
-    return this.appendAt(message, this.messages.length);
+  append(message: GenericMessage, provenance?: HistoryAppendProvenance): StoredMessage {
+    return this.appendAt(message, this.messages.length, provenance);
   }
 
   /** Insert a completed result in its assistant's call order, even when siblings finish out of order. */
@@ -48,18 +63,34 @@ export class ConversationHistory {
         }
       }
     }
-    return this.appendAt(message, index);
+    return this.appendAt(message, index, undefined);
   }
 
-  /** The one point where a row enters the history. A tool result entering it during a user turn marks that turn as having fed the model
-   * content the user did not type (host terminal commands then need a fresh card), whichever path appended it. */
-  private appendAt(message: GenericMessage, index: number): StoredMessage {
+  private appendAt(message: GenericMessage, index: number, provenance: HistoryAppendProvenance | undefined): StoredMessage {
     const stored = stampMessageId(stampCreatedAt(applyToolResultCap(message)));
-    if (stored.role === "tool_result") noteToolResultsReturnedToModel();
-    this.messages.splice(index, 0, stored);
+    const next = [...this.messages];
+    next.splice(index, 0, stored);
+    this.commit(next, { via: "append", row: stored, provenance });
     this.trim();
     this.appendObserver?.(stored);
     return stored;
+  }
+
+  /** The one write of the history array. Each row it has not held before is classified for the active user turn, if any, before it
+   * becomes model-visible: a tool result, or any row a host transform brings in, means content the user did not type (host terminal
+   * commands then need a fresh card); a live user row not typed by the user means another principal spoke (host terminal commands are
+   * then refused). Rows it already held, re-written by eviction, compaction or repair, are not new; an appended row is always new,
+   * whatever id it carries. */
+  private commit(next: GenericMessage[], entry: HistoryEntry): void {
+    for (const row of next) {
+      const id = row.meta?.messageId;
+      const appended = entry.via === "append" && row === entry.row;
+      if (!appended && typeof id === "string" && this.knownIds.has(id)) continue;
+      if (entry.via === "transform" || row.role === "tool_result") noteToolResultsReturnedToModel();
+      else if (row.role === "user" && entry.provenance?.principal !== "user-keyboard") noteOtherPrincipalGuidance();
+      if (typeof id === "string") this.knownIds.add(id);
+    }
+    this.messages = next;
   }
 
   private appendObserver: ((message: StoredMessage) => void) | undefined;
@@ -93,15 +124,16 @@ export class ConversationHistory {
   removeExact(message: GenericMessage): boolean {
     const index = this.messages.indexOf(message);
     if (index < 0) return false;
-    this.messages.splice(index, 1);
+    this.commit(this.messages.filter((_, i) => i !== index), { via: "transform" });
     return true;
   }
 
   // Compaction replaces row identities; remove every clone when rolling back an injection.
   removeByHostInjectionId(hostInjectionId: string): number {
     const before = this.messages.length;
-    this.messages = this.messages.filter(
-      (message) => message.meta?.hostInjectionId !== hostInjectionId,
+    this.commit(
+      this.messages.filter((message) => message.meta?.hostInjectionId !== hostInjectionId),
+      { via: "transform" },
     );
     return before - this.messages.length;
   }
@@ -109,13 +141,13 @@ export class ConversationHistory {
   repairToolPairInvariant(): { removedMessages: number; removedToolCalls: number } {
     const { messages, removedMessages, removedToolCalls } = normalizeToolPairInvariant(this.messages);
     if (removedMessages > 0 || removedToolCalls > 0) {
-      this.messages = messages;
+      this.commit(messages, { via: "transform" });
     }
     return { removedMessages, removedToolCalls };
   }
 
   clear(): void {
-    this.messages = [];
+    this.commit([], { via: "transform" });
   }
 
   restore(messages: GenericMessage[]): void {
@@ -131,14 +163,14 @@ export class ConversationHistory {
       // Mint missing legacy IDs while retaining existing IDs across reload.
       if (normalized) capped.push(stampMessageId(normalized, seenIds));
     }
-    this.messages = normalizeToolPairInvariant(capped).messages;
+    this.commit(normalizeToolPairInvariant(capped).messages, { via: "transform" });
     this.trim();
   }
 
   truncate(count: number): void {
     if (count < 0) return;
     if (count >= this.messages.length) return;
-    this.messages = this.messages.slice(0, count);
+    this.commit(this.messages.slice(0, count), { via: "transform" });
   }
 
   get length(): number {
@@ -170,8 +202,10 @@ export class ConversationHistory {
 
   private trim(): void {
     if (Number.isFinite(this.maxMessages) && this.messages.length > this.maxMessages) {
-      this.messages = this.messages.slice(-this.maxMessages);
-      this.messages = normalizeToolPairInvariant(this.messages, { preserveOpenToolTail: true }).messages;
+      this.commit(
+        normalizeToolPairInvariant(this.messages.slice(-this.maxMessages), { preserveOpenToolTail: true }).messages,
+        { via: "transform" },
+      );
     }
   }
 }
@@ -245,7 +279,7 @@ function normalizeRestoredUserContent(message: GenericMessage): GenericMessage |
 }
 
 export function normalizeToolPairInvariant(
-  messages: GenericMessage[],
+  messages: readonly GenericMessage[],
   options: NormalizeToolPairOptions = {},
 ): {
   messages: GenericMessage[];

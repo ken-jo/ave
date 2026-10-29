@@ -1882,16 +1882,21 @@ one command into that terminal. Main owns the boundary
   guidance behind it, and never a sub-agent (which runs with the capability
   masked). A routine, plugin or app message, or any other turn, is refused
   before a card. The turn id is sealed into the approval; the authorization
-  step also requires that same turn, still speaking for the user. Staged app,
-  plugin or agent guidance arriving mid-turn sets a second irreversible turn
-  fact at the point it is staged; from then on every host command in the turn
-  is refused with no card, even when a later file read changes the tool trust
-  origin. The turn also records, irreversibly, once any tool result has
-  entered the conversation history in it, whatever produced it (a file, a
-  page, a plugin's, a browser's or a sub-agent's text, a command's output, an
-  invalid-argument error, a refusal, or a tool search or plugin request). The
-  fact is set at the history's single insertion point, so no path that
-  appends a tool result can skip it. After that, every host command in the turn needs a fresh person's
+  step also requires that same turn, still speaking for the user. Both turn
+  facts below are irreversible and are set by the conversation history's one
+  write (`ConversationHistory.commit`), for each row it has not held before,
+  so no producer can skip them. A user row appended mid-turn that the user
+  did not type in the composer (staged app or plugin guidance, an agent
+  message, a sub-agent's report, stop-hook feedback, or any future producer
+  that does not declare keyboard provenance) records that another principal
+  spoke: from then on every host command in the turn is refused with no card,
+  even when a later file read changes the tool trust origin. A tool result
+  (a file, a page, a plugin's, a browser's or a sub-agent's text, a command's
+  output, an invalid-argument error, a refusal, or a tool search or plugin
+  request), or any new row a host transform brings in (a compaction summary,
+  wire or disk input restored mid-turn), records external content. Rows the
+  history already held, re-written by eviction, mark-stale or repair, are not
+  new. After that, every host command in the turn needs a fresh person's
   approval: the card is forced, a saved exact `HostTerminal` rule and
   remembered approvals do not apply, the card offers no lasting allow and
   says so, and it stays desktop-only. In a clean turn an exact rule still runs

@@ -1062,7 +1062,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     // Guide text needs the same PII redaction as keyboard sends.
     const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), input);
-    const queueResult = group.loop.queueGuidance(effective);
+    const queueResult = group.loop.queueUserGuidance(effective);
     if (queueResult === "queued") {
       // Audit guide acceptance as a mutation, recording metadata without user text.
       const mode: ChatUtteranceMode = "guide";
