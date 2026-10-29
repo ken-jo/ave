@@ -47,6 +47,26 @@ describe("sidebar preview cards", () => {
     fireEvent.pointerEnter(screen.getByText("Terminal"));
     expect(screen.getByRole("tooltip").textContent).toContain("make build");
   });
+  it("keeps a newly focused preview when the previous hovered entry leaves", () => {
+    vi.useFakeTimers(); entries();
+    const terminal = screen.getByText("Terminal");
+    const entry = screen.getByText("Conversation");
+    fireEvent.pointerEnter(terminal);
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.focus(entry);
+    fireEvent.pointerLeave(terminal);
+    expect(screen.getByRole("tooltip").textContent).toContain(conversation.message);
+    expect(entry.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+  });
+  it("keeps a focused preview during unrelated programmatic scroll and hides on user wheel", () => {
+    entries();
+    const activity = render(<div data-testid="unrelated-scroll" />);
+    fireEvent.focus(screen.getByText("Conversation"));
+    fireEvent.scroll(activity.getByTestId("unrelated-scroll"));
+    expect(screen.getByRole("tooltip").textContent).toContain(conversation.message);
+    fireEvent.wheel(window);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
   it("shows focus immediately and associates the summary with the entry", () => {
     entries();
     const entry = screen.getByText("Conversation");

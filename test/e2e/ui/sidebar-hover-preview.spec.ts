@@ -54,15 +54,20 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
     await terminal.click();
     await expect(card).toBeHidden();
     await page.getByTestId("sidebar-collapse-toggle").click();
+    await expect(page.getByTestId("sidebar-card")).toHaveAttribute("data-surface", "bare");
     await expect(conversation).toBeVisible();
+    await page.mouse.move(1100, 700);
     await conversation.focus();
+    await expect(conversation).toBeFocused();
     await expect(card).toContainText(message);
     const collapsedEntryBounds = (await conversation.boundingBox())!;
     const collapsedCardBounds = (await card.boundingBox())!;
     expect(collapsedCardBounds.x).toBeGreaterThanOrEqual(collapsedEntryBounds.x + collapsedEntryBounds.width);
     expect(collapsedCardBounds.x).toBeLessThanOrEqual(collapsedEntryBounds.x + collapsedEntryBounds.width + 30);
-    const descriptionId = await card.getAttribute("id");
-    await expect(conversation).toHaveAttribute("aria-describedby", descriptionId!);
+    await expect.poll(() => conversation.evaluate((entry) => {
+      const id = entry.getAttribute("aria-describedby");
+      return id ? document.getElementById(id)?.textContent : null;
+    })).toContain(message);
     await page.screenshot({ path: testInfo.outputPath("collapsed-keyboard-preview.png") });
     await page.keyboard.press("Escape");
     await expect(card).toBeHidden();

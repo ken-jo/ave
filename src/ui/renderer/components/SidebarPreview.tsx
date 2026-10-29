@@ -17,7 +17,7 @@ interface PreviewRequest {
 interface PreviewContextValue {
   activeId: string | undefined;
   show: (request: PreviewRequest, immediate: boolean) => void;
-  hide: (leaving?: boolean) => void;
+  hide: (leaving?: boolean, id?: string) => void;
 }
 const PreviewContext = createContext<PreviewContextValue | null>(null);
 
@@ -28,7 +28,10 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const warmUntil = useRef(0);
   const revision = useRef(0);
-  const hide = useCallback((leaving = false) => {
+  const requestedId = useRef<string | undefined>(undefined);
+  const hide = useCallback((leaving = false, id?: string) => {
+    if (id && requestedId.current !== id) return;
+    requestedId.current = undefined;
     clearTimeout(timer.current);
     revision.current += 1;
     if (leaving && activeRef.current) warmUntil.current = Date.now() + 100;
@@ -37,6 +40,7 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
     setActive(null);
   }, []);
   const show = useCallback((request: PreviewRequest, immediate: boolean) => {
+    requestedId.current = request.id;
     clearTimeout(timer.current);
     const currentRevision = ++revision.current;
     const reveal = () => {
@@ -56,15 +60,21 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     const dismiss = () => hide();
+    const handleScroll = (event: Event) => {
+      const boundary = activeRef.current?.anchor.closest("[data-sidebar-preview-boundary]");
+      if (event.target === window || event.target === document || (event.target instanceof Node && boundary?.contains(event.target))) hide();
+    };
     const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") hide(); };
-    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("wheel", dismiss, true);
     window.addEventListener("pointerdown", dismiss, true);
     window.addEventListener("keydown", handleKey);
     window.addEventListener("resize", dismiss);
     return () => {
       clearTimeout(timer.current);
       revision.current += 1;
-      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("wheel", dismiss, true);
       window.removeEventListener("pointerdown", dismiss, true);
       window.removeEventListener("keydown", handleKey);
       window.removeEventListener("resize", dismiss);
@@ -95,9 +105,9 @@ export function SidebarPreviewTrigger({ preview, loadPreview, children }: {
   return cloneElement(children, {
     "aria-describedby": context.activeId === id ? [original["aria-describedby"], id].filter(Boolean).join(" ") : original["aria-describedby"],
     onPointerEnter: (event) => { original.onPointerEnter?.(event); show(event.currentTarget, false); },
-    onPointerLeave: (event) => { original.onPointerLeave?.(event); context.hide(true); },
+    onPointerLeave: (event) => { original.onPointerLeave?.(event); context.hide(true, id); },
     onFocus: (event) => { original.onFocus?.(event); show(event.currentTarget, true); },
-    onBlur: (event) => { original.onBlur?.(event); context.hide(); },
+    onBlur: (event) => { original.onBlur?.(event); context.hide(false, id); },
     onClick: (event) => { original.onClick?.(event); context.hide(); },
   });
 }
