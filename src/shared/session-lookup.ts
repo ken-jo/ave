@@ -47,6 +47,8 @@ export interface SessionListRow {
   id: string;
   modifiedAt: string;
   title: string;
+  /** Bounded last-message summary prepared by the owning transcript store. */
+  preview?: string;
   sessionKind: SessionKind;
   family: SessionFamily;
   /** Present on a work-board run row — the item it opens. */

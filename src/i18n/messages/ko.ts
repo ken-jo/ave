@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "sidebarPreview.localFile": "로컬 파일",
+  "sidebarPreview.running": "에이전트 응답",
   "approvalAction.writeFile": "{target} 파일 쓰기",
   "approvalAction.editFile": "{target} 파일 수정",
   "approvalAction.readFile": "{target} 파일 읽기",

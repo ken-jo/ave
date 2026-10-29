@@ -506,7 +506,7 @@ describe("Sidebar stacked sections", () => {
       publish(BROWSER_FAVICON_DATA_URL);
       expect(row.querySelector("img")).not.toBeNull();
       rerenderSidebar({ collapsed: true });
-      expect(queryByTestId("sidebar-surface-browser:icon")).toBeNull();
+      expect(queryByTestId("sidebar-surface-browser:icon")).not.toBeNull();
       publish(null);
       rerenderSidebar({ collapsed: false });
       expect(getByTestId("sidebar-surface-browser:icon").querySelector(".lucide-globe")).not.toBeNull();

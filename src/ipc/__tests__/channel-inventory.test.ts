@@ -616,6 +616,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:terminal:blocks",
         "ave:terminal:input",
         "ave:terminal:kill",
+        "ave:terminal:preview",
         "ave:terminal:resize",
         "ave:terminal:spawn",
         "ave:tour:dismiss",

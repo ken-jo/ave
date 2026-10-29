@@ -1,3 +1,5 @@
+import { SidebarPreviewProvider, SidebarPreviewTrigger, type SidebarPreviewData } from "./SidebarPreview.js";
+import { loadSidebarSurfacePreview } from "../utils/sidebar-preview-data.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
@@ -247,6 +249,8 @@ const NAV_TONE: Record<NavTone, { hover: string; active: string; bar: string }> 
 };
 
 interface NavItemProps {
+  preview?: SidebarPreviewData;
+  loadPreview?: () => Promise<SidebarPreviewData>;
   viewKey: string;
   label: string;
   icon: React.ReactNode;
@@ -273,6 +277,8 @@ interface NavItemProps {
 }
 
 function NavItem({
+  preview,
+  loadPreview,
   viewKey: _viewKey,
   label,
   icon,
@@ -353,6 +359,8 @@ function NavItem({
     </button>
   );
 
+  if (preview) return <SidebarPreviewTrigger preview={preview} loadPreview={loadPreview}>{btn}</SidebarPreviewTrigger>;
+
   if (collapsed) {
     return (
       <Tooltip>
@@ -368,7 +376,8 @@ function NavItem({
   return btn;
 }
 
-function SidebarSurfaceRow({ surface, visible, onOpen }: {
+function SidebarSurfaceRow({ surface, visible, onOpen, collapsed = false }: {
+  collapsed?: boolean;
   surface: SidebarSurface;
   visible: boolean;
   onOpen?: (tabId: string) => void;
@@ -384,6 +393,8 @@ function SidebarSurfaceRow({ surface, visible, onOpen }: {
   const Icon = tabIcon(surface.kind);
   return (
     <NavItem
+      preview={{ kind: surface.kind, title: label, ...(surface.url ? { url: surface.url } : {}) }}
+      loadPreview={() => loadSidebarSurfacePreview(surface, label)}
       viewKey={surface.tabId}
       label={label}
       title={label}
@@ -392,7 +403,7 @@ function SidebarSurfaceRow({ surface, visible, onOpen }: {
         : <Icon className="h-4 w-4" />}
       isActive={visible && active?.tabId === surface.tabId}
       onClick={() => onOpen?.(surface.tabId)}
-      collapsed={false}
+      collapsed={collapsed}
       data-testid={`sidebar-surface-${surface.tabId}`}
     />
   );
@@ -1043,6 +1054,7 @@ function SessionRow({
           />
         </div>
       ) : (
+        <SidebarPreviewTrigger preview={{ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding }}>
         <button
           type="button"
           aria-current={active ? "page" : undefined}
@@ -1093,6 +1105,7 @@ function SessionRow({
             <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
           ) : null}
         </button>
+        </SidebarPreviewTrigger>
       )}
       {time ? (
         <span className="shrink-0 pr-1 text-[10px] text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
@@ -1299,6 +1312,27 @@ function ProjectSessionList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ordinarySessions, namedProjects, isSessionStarred]);
 
+  const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
+    switch (session.family) {
+      case "main":
+        return undefined;
+      case "routine":
+        // A routine run IS a session in the main store — the routine panel opens it by loading it, and so does this row.
+        return () => void onLoadSession?.(session.id);
+      case "work-board":
+        return session.workBoardItemId === undefined
+          ? undefined
+          : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
+      case "side-chat":
+        if (paneSurfaceOf(session)) {
+          return () => onOpenPaneChat?.(session.paneTabId!);
+        }
+        return () => onOpenSideChat?.(session.id, session.originSessionId);
+    }
+  };
+  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
+  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
+
   // Collapsed rail: deliberately NOT wired to the add-project menu. The rail
   // renders no projects at all, and it has nowhere to host the adjacency
   // warning `workspace.pickRoot` can demand before an add completes — a
@@ -1307,6 +1341,7 @@ function ProjectSessionList({
   // show the folders.
   if (collapsed) {
     return (
+      <>
       <NavItem
         viewKey="project"
         label={t("sidebar.projectsLabel")}
@@ -1318,6 +1353,25 @@ function ProjectSessionList({
         collapsed
         data-testid="sidebar-projects-collapsed"
       />
+      {surfaces.map((surface) => (
+        <SidebarSurfaceRow key={surface.tabId} surface={surface}
+          visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} collapsed />
+      ))}
+      {visibleSessions(ordinarySessions).slice(0, SESSION_PAGE_SIZE).map((listed) => {
+        const session = { ...listed, title: resolveConversationTitle({ sessionId: listed.id, title: listed.title }, t) };
+        return (
+          <NavItem key={session.id} viewKey={session.id} label={session.title} title={session.title}
+            icon={<MessageSquareText className="h-4 w-4" />} isActive={session.id === currentSessionId} collapsed
+            onClick={() => {
+              if (session.family === "main") void onLoadSession?.(session.id);
+              else openFamilyRow(session)?.();
+            }}
+            preview={{ kind: "conversation", title: session.title, message: session.preview,
+              modifiedAt: session.modifiedAt, running: conversationActions?.isResponding(session.id) }}
+            data-testid={`sidebar-session-${session.id}`} />
+        );
+      })}
+      </>
     );
   }
 
@@ -1378,26 +1432,6 @@ function ProjectSessionList({
     } as NativeContextMenuHandlers;
   };
 
-  // Where one family's row lands when it is clicked. Every family but `main` opens the surface that already owns its
-  // transcript; `main` has no entry here because it loads into the tile through `onLoadSession`.
-  const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
-    switch (session.family) {
-      case "main":
-        return undefined;
-      case "routine":
-        // A routine run IS a session in the main store — the routine panel opens it by loading it, and so does this row.
-        return () => void onLoadSession?.(session.id);
-      case "work-board":
-        return session.workBoardItemId === undefined
-          ? undefined
-          : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
-      case "side-chat":
-        if (paneSurfaceOf(session)) {
-          return () => onOpenPaneChat?.(session.paneTabId!);
-        }
-        return () => onOpenSideChat?.(session.id, session.originSessionId);
-    }
-  };
 
   // A row that is not a main conversation is READ-ONLY here: it cannot be
   // renamed, archived, pinned, deleted or dragged, because those act on the
@@ -1463,10 +1497,6 @@ function ProjectSessionList({
     );
   };
 
-  // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
-  // the reason archive is worth having as something distinct from delete.
-  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
-  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
   const hasArchivedSessions = listableSessions.some(isSessionArchived);
 
   // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never
@@ -2031,6 +2061,7 @@ export function Sidebar({
   return (
     // Keep the cluster fixed on the native-control centerline while the card surface retracts; pixel chrome geometry must not
     // scale with text.
+    <SidebarPreviewProvider>
     <aside
       ref={asideRef}
       data-testid="primary-sidebar"
@@ -2425,5 +2456,6 @@ export function Sidebar({
       </div>
       </div>
     </aside>
+    </SidebarPreviewProvider>
   );
 }
