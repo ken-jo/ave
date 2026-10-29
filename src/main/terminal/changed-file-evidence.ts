@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath, stat, type FileHandle } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -69,12 +70,15 @@ function interpreterOption(verb: string, option: string): InterpreterOption {
 }
 /** npx options that leave which local bin runs unchanged. */
 const NPX_RUNS_LOCAL_BIN = ["--no-install", "--yes", "-y", "--no", "--quiet", "-q"];
-/** The file an agent write left at a path: the diff reads only this file, whatever the path names later. */
-interface FileIdentity { readonly dev: bigint; readonly ino: bigint; readonly birthtimeNs: bigint }
+/**
+ * The file an agent write left at a path, as the writer's own descriptor saw it: the diff reads only this file,
+ * whatever the path names later.
+ */
+export interface WrittenFileIdentity { readonly dev: bigint; readonly ino: bigint; readonly birthtimeNs: bigint }
 interface ChangedFile {
   readonly path: string;
-  /** Identity right after the latest attributed write; undefined when it was not a readable regular file. */
-  identity: FileIdentity | undefined;
+  /** From the latest attributed write's own descriptor; undefined when that write had no descriptor to report. */
+  identity: WrittenFileIdentity | undefined;
   readonly sessionIds: Set<string>;
   readonly recordedAt: number;
   before?: string | null;
@@ -153,17 +157,41 @@ export async function readTerminalReviewText(path: string): Promise<string | nul
   } finally { await handle.close(); }
 }
 
-/** The regular file `path` names now, as identified by its open descriptor. */
-async function fileIdentity(path: string): Promise<FileIdentity | undefined> {
-  const handle = await openNoFollow(path);
-  if (!handle) return undefined;
-  try {
-    const opened = await handle.stat({ bigint: true });
-    return opened.isFile() ? { dev: opened.dev, ino: opened.ino, birthtimeNs: opened.birthtimeNs } : undefined;
-  } catch (error) {
-    if (isTerminalReviewUnavailable(error)) return undefined;
-    throw error;
-  } finally { await handle.close(); }
+/** The identity of a file a writer holds open: `stats` is that descriptor's fstat. */
+export function writtenFileIdentity(stats: BigIntStats): WrittenFileIdentity | undefined {
+  return stats.isFile() ? { dev: stats.dev, ino: stats.ino, birthtimeNs: stats.birthtimeNs } : undefined;
+}
+
+const ownedWrites = new AsyncLocalStorage<Map<string, WrittenFileIdentity>>();
+
+/**
+ * Runs a mutation and returns, per physical path, the identities its writers reported through
+ * {@link noteOwnedWrite}. A path whose writer reported nothing has no identity, and so no diff.
+ */
+export async function withOwnedWrites<T>(run: () => Promise<T>): Promise<{ result: T; owned: ReadonlyMap<string, WrittenFileIdentity> }> {
+  const owned = new Map<string, WrittenFileIdentity>();
+  const result = await ownedWrites.run(owned, run);
+  return { result, owned };
+}
+
+/**
+ * A writer's report from inside {@link withOwnedWrites}: `path` is where the file it wrote ends up (the rename
+ * target for a temporary file), and `identity` comes from fstat on the descriptor it wrote through.
+ */
+export function noteOwnedWrite(path: string, identity: WrittenFileIdentity | undefined): void {
+  const scope = ownedWrites.getStore();
+  if (!scope) return;
+  let physical: string;
+  try { physical = resolvePhysicalFilesystemPath(path, process.cwd(), 64); }
+  catch (error) { if (isTerminalReviewUnavailable(error)) return; throw error; }
+  if (identity) scope.set(physical, identity);
+  else scope.delete(physical);
+}
+
+/** The physical path evidence keys a write by, or undefined when it cannot be resolved. */
+function evidencePath(path: string): string | undefined {
+  try { return resolvePhysicalFilesystemPath(path, process.cwd(), 64); }
+  catch (error) { if (isTerminalReviewUnavailable(error)) return undefined; throw error; }
 }
 
 /**
@@ -171,7 +199,7 @@ async function fileIdentity(path: string): Promise<FileIdentity | undefined> {
  * descriptor must be the file the agent write left (same device, inode and birth time); any other file, including
  * one reached through a swapped parent or a save that replaced the inode, has no diff. Path checks cannot race this.
  */
-async function readRecordedText(path: string, identity: FileIdentity): Promise<string | undefined> {
+async function readRecordedText(path: string, identity: WrittenFileIdentity): Promise<string | undefined> {
   const handle = await openNoFollow(path);
   if (!handle) return undefined;
   try {
@@ -391,17 +419,16 @@ export class TerminalFileEvidence {
   /** Per-block positive matches; `null` caches a block that uses no recorded agent-changed file. */
   private readonly commands = new Map<string, TerminalExecutionWarning | null>();
 
-  async recordWrite(sessionId: string, path: string, before?: string | null): Promise<void> {
+  /**
+   * Records an attributed write. `identity` is what the writer's own descriptor reported, never a re-open of the path:
+   * whatever the path named between the write and this call cannot enter the ledger. Undefined means the write had no
+   * descriptor to report, and the file then has no diff until a write that does.
+   */
+  async recordWrite(sessionId: string, path: string, before: string | null | undefined, identity: WrittenFileIdentity | undefined): Promise<void> {
     if (!sessionId) throw new Error("Missing changed-file session");
-    let physical: string;
-    try { physical = resolvePhysicalFilesystemPath(path, process.cwd(), 64); }
-    catch (error) {
-      // An unresolvable write target cannot be matched later; detection is documented as best-effort.
-      if (!isTerminalReviewUnavailable(error)) throw error;
-      return;
-    }
-    // Identified right after the write succeeded; a later attributed write to the path re-records it.
-    const identity = await fileIdentity(physical);
+    // An unresolvable write target cannot be matched later; detection is documented as best-effort.
+    const physical = evidencePath(path);
+    if (physical === undefined) return;
     const existing = this.files.get(physical);
     if (existing) { existing.sessionIds.add(sessionId); existing.identity = identity; }
     else this.files.set(physical, { path: physical, identity, sessionIds: new Set([sessionId]),

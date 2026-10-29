@@ -468,7 +468,8 @@ export class DocumentObservationAdapter {
     }
     signal.throwIfAborted();
     if (!this.current(view) || version !== view.version) return;
-    await terminalFileEvidence.recordWrite(proof.identity.sessionId, view.registration.path);
+    // The document app wrote the file, not a descriptor Ave holds, so the evidence has no identity and no diff.
+    await terminalFileEvidence.recordWrite(proof.identity.sessionId, view.registration.path, undefined, undefined);
     signal.throwIfAborted();
     if (!this.current(view) || version !== view.version) return;
     this.publishDiff(view, document);

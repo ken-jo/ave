@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, open, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
+import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity } from "../../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable, withCodeCheckpoint } from "../code-checkpoints.js";
 import { copyPath } from "../../tools/guarded-file-transfer.js";
 import { MoveFileTool, WriteFileTool } from "../../tools/file-tools.js";
@@ -21,6 +21,12 @@ beforeEach(async () => {
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });
 const turn = <T>(run: () => Promise<T>) => withCodeCheckpoint({ sessionId, messageId: randomUUID() }, run);
+/** A native writer: writes through its own descriptor and reports that descriptor's identity. */
+async function ownedWrite(path: string, content: string): Promise<void> {
+  const handle = await open(path, "w");
+  try { await handle.writeFile(content); noteOwnedWrite(path, writtenFileIdentity(await handle.stat({ bigint: true }))); }
+  finally { await handle.close(); }
+}
 /** The files this terminal used, after one command that runs every script these tests write. */
 const snapshot = () => terminalFileEvidence.snapshot(directory, [{ id: 1, command: "./run.sh; ./user.sh; ./new.sh; ./copied.sh; ./unreported.sh",
   cwd: directory, startedAt: Date.now() + 1_000, endedAt: null, exitCode: null, status: "running", source: "osc133", outputChars: 0, truncated: false }]);
@@ -29,10 +35,33 @@ describe("successful native mutation provenance", () => {
   it("records a successful native file write with real original bytes", async () => {
     const path = join(directory, "run.sh");
     await writeFile(path, "before\n");
-    await turn(() => checkpointFileMutation([{ path, content: "after\n" }], () => writeFile(path, "after\n")));
+    await turn(() => checkpointFileMutation([{ path, content: "after\n" }], () => ownedWrite(path, "after\n")));
     const entry = (await snapshot()).files.find(file => file.path === path);
     expect(entry?.sessionIds).toEqual([sessionId]);
     expect(change(entry)).toEqual({ operation: "modify", hunks: [["before\n", "after\n"]] });
+  });
+
+  it("records a write whose writer reported no descriptor, without a diff", async () => {
+    const path = join(directory, "run.sh");
+    await writeFile(path, "before\n");
+    await turn(() => checkpointFileMutation([{ path, content: "after\n" }], () => writeFile(path, "after\n")));
+    const entry = (await snapshot()).files.find(file => file.path === path);
+    expect(entry?.sessionIds).toEqual([sessionId]);
+    expect(entry?.review).toBeUndefined();
+  });
+
+  it("records the written file, not whatever the path names when the write is recorded", async () => {
+    const path = join(directory, "run.sh");
+    await writeFile(path, "before\n");
+    // The file is replaced after its writer reported it and before the checkpoint records it.
+    await turn(() => checkpointFileMutation([{ path, content: "after\n" }], async () => {
+      await ownedWrite(path, "after\n");
+      await writeFile(join(directory, "foreign"), "host secret\n");
+      await rename(join(directory, "foreign"), path);
+    }));
+    const entry = (await snapshot()).files.find(file => file.path === path);
+    expect(entry?.review).toBeUndefined();
+    expect(JSON.stringify(await snapshot())).not.toContain("host secret");
   });
 
   it("does not attribute failed mutations", async () => {
@@ -53,7 +82,7 @@ describe("successful native mutation provenance", () => {
     const path = join(directory, "run.sh");
     await turn(async () => {
       await markCodeCheckpointUnavailable();
-      await checkpointFileMutation([{ path, content: "created\n" }], () => writeFile(path, "created\n"));
+      await checkpointFileMutation([{ path, content: "created\n" }], () => ownedWrite(path, "created\n"));
     });
     expect(change((await snapshot()).files.find(file => file.path === path))).toEqual({ operation: "create", hunks: [["", "created\n"]] });
   });
@@ -79,7 +108,7 @@ describe("successful native mutation provenance", () => {
   it("retains changed-file history across deletion and restoration", async () => {
     const path = join(directory, "run.sh");
     await turn(async () => {
-      await checkpointFileMutation([{ path, content: "agent\n" }], () => writeFile(path, "agent\n"));
+      await checkpointFileMutation([{ path, content: "agent\n" }], () => ownedWrite(path, "agent\n"));
       await checkpointFileMutation([{ path, content: null }], () => unlink(path));
     });
     // Nothing can run a deleted file.
@@ -89,7 +118,7 @@ describe("successful native mutation provenance", () => {
     const restored = (await snapshot()).files.find(file => file.path === path);
     expect(restored?.sessionIds).toHaveLength(1);
     expect(restored?.review).toBeUndefined();
-    await turn(() => checkpointFileMutation([{ path, content: "agent again\n" }], () => writeFile(path, "agent again\n")));
+    await turn(() => checkpointFileMutation([{ path, content: "agent again\n" }], () => ownedWrite(path, "agent again\n")));
     expect(change((await snapshot()).files.find(file => file.path === path))).toEqual({ operation: "create", hunks: [["", "agent again\n"]] });
   });
 

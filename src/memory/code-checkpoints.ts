@@ -14,7 +14,7 @@ import type { TurnChangeReview, TurnReviewError, TurnReviewResult } from "../sha
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
-import { isTerminalReviewUnavailable, readTerminalReviewText, terminalFileEvidence } from "../main/terminal/changed-file-evidence.js";
+import { isTerminalReviewUnavailable, readTerminalReviewText, terminalFileEvidence, withOwnedWrites } from "../main/terminal/changed-file-evidence.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { currentAgentObservationIdentity, observeAgentDocumentMutation } from "../tools/agent-observation-context.js";
 import type { ToolExecutionContext } from "../tools/types.js";
@@ -463,9 +463,10 @@ export async function checkpointFileMutation<T>(
     }
   }));
   return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async () => {
-    const result = await run();
+    // Each file's identity is what its writer's own descriptor reported; a write without one records none.
+    const { result, owned } = await withOwnedWrites(run);
     if (!(result && typeof result === "object" && "isError" in result && result.isError === true)) {
-      for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before);
+      for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before, owned.get(original.path));
     }
     return result;
   }));

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, open as openFile, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TerminalFileEvidence, inferExecutedPaths, readTerminalReviewText } from "../changed-file-evidence.js";
+import { TerminalFileEvidence, inferExecutedPaths, readTerminalReviewText, writtenFileIdentity, type WrittenFileIdentity } from "../changed-file-evidence.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 import { reviewChange as change } from "../../../__tests__/support/terminal-session-fixtures.js";
 
@@ -31,9 +31,19 @@ async function file(name: string, content = "echo changed\n"): Promise<string> {
   await writeFile(path, content);
   return realpath(path);
 }
+/** What a writer's own descriptor reports for the file it just wrote at `path`. */
+async function heldIdentity(path: string): Promise<WrittenFileIdentity | undefined> {
+  const handle = await openFile(path, "r");
+  try { return writtenFileIdentity(await handle.stat({ bigint: true })); } finally { await handle.close(); }
+}
+/** Writes `content` through a descriptor and reports that descriptor's identity, as an agent file tool does. */
+async function writeOwned(path: string, content: string): Promise<WrittenFileIdentity | undefined> {
+  const handle = await openFile(path, "w");
+  try { await handle.writeFile(content); return writtenFileIdentity(await handle.stat({ bigint: true })); } finally { await handle.close(); }
+}
 async function changed(name: string, content?: string): Promise<string> {
   const path = await file(name, content);
-  await evidence.recordWrite("session-a", path, null);
+  await evidence.recordWrite("session-a", path, null, await heldIdentity(path));
   return path;
 }
 beforeEach(async () => {
@@ -69,7 +79,7 @@ describe("host execution provenance", () => {
     const path = await file("physical/run.sh");
     const alias = join(directory, "alias.sh");
     await symlink(path, alias);
-    await evidence.recordWrite("session-a", alias, null);
+    await evidence.recordWrite("session-a", alias, null, await heldIdentity(alias));
     const result = await evidence.snapshot(directory, [block("bash alias.sh")]);
     expect(result.files.map(item => item.path)).toEqual([path]);
     expect(result.warnings[0]?.files).toEqual([path]);
@@ -164,7 +174,7 @@ describe("host execution provenance", () => {
     const old = await changed("old.sh");
     const destination = join(directory, "renamed.sh");
     await rename(old, destination);
-    await evidence.recordWrite("session-a", destination);
+    await evidence.recordWrite("session-a", destination, undefined, await heldIdentity(destination));
     const result = await evidence.snapshot(directory, [block("./renamed.sh"), block("./old.sh", 2)]);
     expect(result.files.map(item => item.path)).toEqual([destination]);
     expect(result.warnings.map(warning => warning.files)).toEqual([[destination]]);
@@ -174,7 +184,7 @@ describe("host execution provenance", () => {
 
   it("records each contributing session without duplicate physical paths", async () => {
     const path = await changed("run.sh");
-    await evidence.recordWrite("session-b", path);
+    await evidence.recordWrite("session-b", path, undefined, await heldIdentity(path));
     expect((await evidence.snapshot(directory, [block("./run.sh")])).files[0]?.sessionIds).toEqual(["session-a", "session-b"]);
   });
 
@@ -188,14 +198,14 @@ describe("host execution provenance", () => {
     const command = block("./run.sh");
     expect((await evidence.snapshot(directory, [command], "first")).warnings).toEqual([]);
     const path = join(directory, "run.sh");
-    await evidence.recordWrite("session-a", path);
+    await evidence.recordWrite("session-a", path, undefined, await heldIdentity(path));
     expect((await evidence.snapshot(directory, [command], "second")).warnings[0]?.files).toEqual([path]);
     expect((await evidence.snapshot(directory, [command], "first")).warnings).toEqual([]);
   });
 
   it("returns a bounded real baseline and the current contents", async () => {
     const path = await file("run.sh", "after\n");
-    await evidence.recordWrite("session-a", path, "before\n");
+    await evidence.recordWrite("session-a", path, "before\n", await heldIdentity(path));
     const snapshot = await evidence.snapshot(directory, [block("./run.sh")]);
     expect(change(snapshot.files[0])).toEqual({ operation: "modify", hunks: [["before\n", await readFile(path, "utf8")]] });
     await writeFile(path, Buffer.from([0, 1]));
@@ -204,7 +214,7 @@ describe("host execution provenance", () => {
 
   it("keeps an unknown baseline explicitly unavailable", async () => {
     const path = await file("run.sh");
-    await evidence.recordWrite("session-a", path);
+    await evidence.recordWrite("session-a", path, undefined, await heldIdentity(path));
     expect((await evidence.snapshot(directory, [block("./run.sh")])).files[0]?.review).toBeUndefined();
   });
 
@@ -305,7 +315,7 @@ describe("host execution provenance", () => {
 
   it("never reads through a parent directory swapped for a link after the write was recorded", async () => {
     const recorded = await file("scripts/run.sh", "agent\n");
-    await evidence.recordWrite("session-a", recorded, "before\n");
+    await evidence.recordWrite("session-a", recorded, "before\n", await heldIdentity(recorded));
     expect(change((await evidence.snapshot(directory, [block("./scripts/run.sh")])).files[0])).toEqual({ operation: "modify", hunks: [["before\n", "agent\n"]] });
     const outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
     try {
@@ -323,7 +333,7 @@ describe("host execution provenance", () => {
 
   it("never diffs another file when the parent is swapped between path checks, the open and the inode compares", async () => {
     const recorded = await file("scripts/run.sh", "agent\n");
-    await evidence.recordWrite("session-a", recorded, "before\n");
+    await evidence.recordWrite("session-a", recorded, "before\n", await heldIdentity(recorded));
     const outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
     const parent = join(directory, "scripts");
     const moved = join(directory, "scripts.real");
@@ -353,14 +363,71 @@ describe("host execution provenance", () => {
 
   it("shows no diff once a save replaces the recorded inode, until the agent writes the path again", async () => {
     const path = await file("run.sh", "agent\n");
-    await evidence.recordWrite("session-a", path, "before\n");
+    await evidence.recordWrite("session-a", path, "before\n", await heldIdentity(path));
     const replacement = join(directory, "run.sh.tmp");
     await writeFile(replacement, "saved elsewhere\n");
     await rename(replacement, path);
     expect((await evidence.snapshot(directory, [block("./run.sh")])).files[0]?.review).toBeUndefined();
     await writeFile(path, "agent again\n");
-    await evidence.recordWrite("session-a", path);
+    await evidence.recordWrite("session-a", path, undefined, await heldIdentity(path));
     expect(change((await evidence.snapshot(directory, [block("./run.sh", 2)])).files[0])).toEqual({ operation: "modify", hunks: [["before\n", "agent again\n"]] });
+  });
+
+  describe("a swap between the agent's write and its recording", () => {
+    // The write reports its own descriptor's identity; the swap happens before the ledger records it. Re-opening the
+    // path at record time would put the foreign file into the ledger and later diff it.
+    let outside: string;
+    beforeEach(async () => {
+      outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
+      await writeFile(join(outside, "run.sh"), "host secret\n");
+    });
+    afterEach(async () => { await rm(outside, { recursive: true, force: true }); });
+    const expectNoDiff = async (path: string) => {
+      const snapshot = await evidence.snapshot(directory, [block(`./${path.slice(directory.length + 1)}`)]);
+      expect(snapshot.files.every(item => item.review === undefined)).toBe(true);
+      expect(JSON.stringify(snapshot)).not.toContain("host secret");
+    };
+
+    it("records no foreign file when the parent is swapped for a link", async () => {
+      await mkdir(join(directory, "scripts"));
+      const path = join(directory, "scripts", "run.sh");
+      const identity = await writeOwned(path, "agent\n");
+      await rename(join(directory, "scripts"), join(directory, "scripts.moved"));
+      await symlink(outside, join(directory, "scripts"));
+      await evidence.recordWrite("session-a", path, "before\n", identity);
+      await expectNoDiff(path);
+    });
+
+    it("records no foreign file when the file is replaced", async () => {
+      const path = join(directory, "run.sh");
+      const identity = await writeOwned(path, "agent\n");
+      await writeFile(join(directory, "run.sh.foreign"), "host secret\n");
+      await rename(join(directory, "run.sh.foreign"), path);
+      await evidence.recordWrite("session-a", path, "before\n", identity);
+      await expectNoDiff(path);
+    });
+
+    it("records no foreign file when the path becomes a hard link to another file", async () => {
+      const path = join(directory, "run.sh");
+      const identity = await writeOwned(path, "agent\n");
+      await unlink(path);
+      await link(join(outside, "run.sh"), path).catch(async (error: NodeJS.ErrnoException) => {
+        // Hard links cannot cross devices; a same-device foreign file stands in.
+        if (error.code !== "EXDEV") throw error;
+        await writeFile(join(directory, "foreign.sh"), "host secret\n");
+        await link(join(directory, "foreign.sh"), path);
+      });
+      await evidence.recordWrite("session-a", path, "before\n", identity);
+      await expectNoDiff(path);
+    });
+
+    it("records no identity, and so no diff, for a write without a descriptor to report", async () => {
+      const path = await file("run.sh", "agent\n");
+      await evidence.recordWrite("session-a", path, "before\n", undefined);
+      const snapshot = await evidence.snapshot(directory, [block("./run.sh")]);
+      expect(snapshot.files.map(item => item.path)).toEqual([path]);
+      expect(snapshot.files[0]?.review).toBeUndefined();
+    });
   });
 
   it("caps text reads and distinguishes absent files from unavailable text", async () => {
