@@ -90,8 +90,26 @@ test.describe("side-chat tab", () => {
       "아직 응답을 생성하는 중입니다. 중지하거나 끝날 때까지 기다린 뒤 다시 보내 주세요.",
       { exact: true },
     )).toBeVisible();
+    await expect(sideView.getByText("시스템 알림 — 요청을 완료할 수 없음", { exact: true })).toBeVisible();
+    await expect(sideView.getByText("시스템 알림 — 응답 스트림 오류", { exact: true })).toHaveCount(0);
     await expect(page.getByTestId("side-chat-new")).toBeEnabled();
     await page.screenshot({ path: test.info().outputPath("side-session-refusal.png"), fullPage: true });
+  });
+
+  test("shows an early provider failure as a stream notice before any prelude", async () => {
+    await page.getByTestId(TEST_IDS.panePanelToggle).click();
+    await page.getByTestId(chatSidePanelLauncherTestId("side-chat")).click();
+    const sideView = page.getByTestId("side-chat-view");
+    await expect(sideView).toBeVisible();
+    await app.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, () => ({ ok: false, error: "Provider fixture connection failed" }));
+    }, CHANNELS.sidechat.send);
+    await sideView.getByTestId("composer-textarea").fill("try provider");
+    await sideView.getByTestId("composer-send-button").click();
+    await expect(sideView.getByText("시스템 알림 — 응답 스트림 오류", { exact: true })).toBeVisible();
+    await expect(sideView.getByText("시스템 알림 — 요청을 완료할 수 없음", { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: test.info().outputPath("side-early-stream-error.png"), fullPage: true });
   });
 
   test("side-chat renders tool / thinking / permission through the shared TranscriptRenderer", async () => {

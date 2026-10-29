@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryManager } from "../memory-manager.js";
+import { MemoryManager, toSessionListRow } from "../memory-manager.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -146,6 +146,14 @@ describe("findPaneSession", () => {
     expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
     await mm.updateSessionRowFields(OLDER, { archivedAt: "2026-10-19T00:00:00.000Z" });
     expect(mm.findPaneSession("browser:w-1")).toBeUndefined();
+  });
+
+  it("carries pane binding from metadata through the shared side-chat row only", async () => {
+    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "terminal:w-2" });
+    const listed = mm.listSessions().find((entry) => entry.id === SESSION)!;
+    expect(listed.paneTabId).toBe("terminal:w-2");
+    expect(toSessionListRow("side-chat", listed)?.paneTabId).toBe("terminal:w-2");
+    expect(toSessionListRow("main", listed)?.paneTabId).toBeUndefined();
   });
 
   it("reads the pane back from the metadata it was saved in", async () => {

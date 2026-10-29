@@ -20,10 +20,10 @@ vi.mock("electron", () => ({
   },
 }));
 
-const sent: Array<{ channel: string; payload: unknown }> = [];
+const sent: Array<{ target: unknown; channel: string; payload: unknown }> = [];
 vi.mock("../../safe-send.js", () => ({
-  sendToWebContents: vi.fn((_wc: unknown, channel: string, payload: unknown) => {
-    sent.push({ channel, payload });
+  sendToWebContents: vi.fn((target: unknown, channel: string, payload: unknown) => {
+    sent.push({ target, channel, payload });
   }),
 }));
 
@@ -140,6 +140,7 @@ function register(
   piiRedactEnabled = false,
   sideChatMemoryManager: unknown = makeSideChatStore(),
   paneChatLoops: unknown = makePanePool(),
+  focusedContents: unknown = {},
 ) {
   const deps = {
     conversationLoop: mainLoop,
@@ -147,7 +148,7 @@ function register(
     paneChatLoops,
     sideChatMemoryManager,
     auditLogger: { log: vi.fn() },
-    getMainWindow: () => ({ webContents: {} }),
+    getMainWindow: () => ({ webContents: focusedContents }),
     settingsService: {
       get: vi.fn((key: string) => (key === "privacy" ? { piiRedactEnabled } : undefined)),
     },
@@ -162,6 +163,22 @@ beforeEach(() => {
 });
 
 describe("side-chat IPC domain", () => {
+  it("keeps rail stream frames in the requesting window when another window is focused", async () => {
+    const side = makeSideLoop();
+    const requester = rendererContents(1);
+    const focused = rendererContents(2);
+    register(side, makeMainLoop(), false, makeSideChatStore(), makePanePool(), focused);
+
+    await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, requester), {
+      input: "respond here", sendRequestId: "requesting-window-turn",
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every((frame) => frame.target === requester)).toBe(true);
+    expect(sent.some((frame) => frame.target === focused)).toBe(false);
+    expect(sent.map(({ payload }) => (payload as { type: string }).type)).toContain("text_delta");
+  });
+
   it.each(["rail", "pane"] as const)("registers the %s owner before a real approval gate receives its first tool request", async (surfaceKind) => {
     const owner = Object.assign(rendererContents(), { send: vi.fn() });
     const foreign = Object.assign(rendererContents(2), { send: vi.fn() });
@@ -975,11 +992,22 @@ describe("pane chats are their own conversations", () => {
     const { rail, pane } = setup();
     await sendFrom({ input: "page", surface: PANE_A });
     const paneSession = pane(PANE_A)!.getSessionId();
-    await expect(sendFrom({ input: "rail", sessionId: paneSession })).resolves.toEqual({ ok: false, error: "session-open-in-pane" });
+    await expect(sendFrom({ input: "rail", sessionId: paneSession })).resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId });
     await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), paneSession))
-      .resolves.toEqual({ ok: false, error: "session-open-in-pane", messages: [] });
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId, messages: [] });
     expect(rail.runTurn).not.toHaveBeenCalled();
     expect(rail.loadSession).not.toHaveBeenCalled();
+  });
+
+  it("does not offer another window's pane as a refusal navigation target", async () => {
+    const { pane } = setup();
+    await sendFrom({ input: "page", surface: PANE_A });
+    const paneSession = pane(PANE_A)!.getSessionId();
+    await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 2), {
+      input: "other window", sessionId: paneSession, paneTabId: "terminal:abcd1234-1",
+    })).resolves.toEqual({ ok: false, error: "session-open-in-pane" });
+    await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html", 2), paneSession))
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", messages: [] });
   });
 
   it("reopens a restored pane on its stored conversation, read before and continued on its first turn", async () => {

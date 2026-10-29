@@ -2,6 +2,7 @@ import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../../shared/shell-tasks.js";
+import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
 import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
@@ -632,12 +633,12 @@ export type AveApi = {
       sessionId?: string,
     ) => Promise<
       | { ok: true; result: unknown }
-      | { ok: false; error: string }
+      | SideChatOperationFailure
     >;
-    new: () => Promise<{ ok: true; sessionId: string } | { ok: false; error: string }>;
+    new: () => Promise<{ ok: true; sessionId: string } | SideChatOperationFailure>;
     load: (sessionId: string) => Promise<
       | { ok: true; sessionId: string; messages: SerializedHistoryMessage[] }
-      | { ok: false; error: string; messages: SerializedHistoryMessage[] }
+      | (SideChatOperationFailure & { messages: SerializedHistoryMessage[] })
     >;
     /** Reads a child of the active side-chat session; optional only in partial fixtures. */
     getSubAgentTranscript?: (request: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;

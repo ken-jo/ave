@@ -202,6 +202,8 @@ export function SurfacePane({
   onNavigate,
   onAttachText,
   chatRuntime,
+  chatOpen,
+  onChatOpenChange,
   onSessionsChanged,
 }: {
   api: AveApi;
@@ -210,6 +212,9 @@ export function SurfacePane({
   frame: FrameProps;
   /** The model readiness the pane's own chat composer needs. */
   chatRuntime: SideChatRuntime;
+  /** Presentation state belongs to the tab, so pane navigation cannot lose it. */
+  chatOpen: boolean;
+  onChatOpenChange: (open: boolean) => void;
   /** A pane chat turn lists or moves a side-chat row in the window's list. */
   onSessionsChanged?: () => void | Promise<void>;
   /** A web surface's address row asked for `url`. */
@@ -227,8 +232,7 @@ export function SurfacePane({
   const title = surface.kind === "terminal" ? label : webPanelTitle(navigation, surface.url, label);
   const attention = useTerminalAttention().get(surface.tabId)?.message ?? null;
   const meta = surface.kind === "terminal" && surface.cwd ? { text: directoryName(surface.cwd), title: surface.cwd } : null;
-  // The pane's own chat: the header's panel toggle opens it beside the body.
-  const [chatOpen, setChatOpen] = useState(false);
+  // The header toggles the owning tab's panel state.
   const chatLabel = chatOpen
     ? t("mainPanels.closeChat")
     : t(surface.kind === "terminal" ? "mainPanels.chatWithTerminal" : "mainPanels.chatWithPage");
@@ -239,9 +243,9 @@ export function SurfacePane({
       label: chatLabel,
       icon: chatOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />,
       active: chatOpen,
-      onSelect: () => setChatOpen((open) => !open),
+      onSelect: () => onChatOpenChange(!chatOpen),
     },
-  ], [frame.actions, chatLabel, chatOpen]);
+  ], [frame.actions, chatLabel, chatOpen, onChatOpenChange]);
   const host = surface.kind === "browser" ? hostOf(navigation.url ?? surface.url) : null;
   const boundSurface = useMemo<BoundSurface>(() => (surface.kind === "terminal"
     ? { kind: "terminal", tabId: surface.tabId, name: label, detail: surface.cwd ? directoryName(surface.cwd) : null, detailTitle: surface.cwd ?? null }

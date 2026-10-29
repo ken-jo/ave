@@ -477,6 +477,11 @@ export const en = {
   "startupTab.shutdownTimeoutSecondsDefault": "{seconds} seconds (default)",
   "startupTab.launchRegisterFailedBody":
     "Ave could not register itself to launch at login on this system. Open Settings to try again.",
+  "app.paneChatUnavailable": "This terminal or page is no longer available in this window.",
+  "app.paneChatOpenFailed": "The terminal or page could not be opened. Select it from the workspace and try again.",
+  "assistantCard.systemNoticeOperationError": "System Notice — Request Not Completed",
+  "assistantCard.conversationOpenInPane": "This conversation is open in {surface}.",
+  "assistantCard.openPaneChat": "Open",
 } as const;
 
 /** Union of the *seed* (hand-curated, common) translation keys. The full app key space is `string` (see {@link ./index.MessageKey}) because per-surface

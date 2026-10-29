@@ -213,6 +213,15 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.exportInstalled, "team-kit", true);
   });
 
+  it.each(["load", "send"] as const)("preserves the host pane target in a refused side-chat %s", async (operation) => {
+    const refusal = { ok: false, error: "session-open-in-pane", paneTabId: "terminal:abcd1234-1", ...(operation === "load" ? { messages: [] } : {}) };
+    mockInvoke.mockResolvedValueOnce(refusal);
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    await expect(operation === "load" ? sideChat.load("unlisted-session") : sideChat.send("prompt"))
+      .resolves.toEqual(refusal);
+  });
+
   it.each([undefined, "side-request"])("bridges side-chat send correlation %s on the existing channel", async (sendRequestId) => {
     mockInvoke.mockResolvedValueOnce({ ok: true, result: {} });
     const api = await loadAveApi();
