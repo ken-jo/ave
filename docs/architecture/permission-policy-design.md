@@ -1905,10 +1905,13 @@ an advisory inline warning when a command uses a file with concrete successful
 agent-write evidence from this application session. Direct scripts and sourced
 files, target recipes in makefiles, package scripts and their referenced scripts,
 and physical local-bin entry points (only where a package runner puts them on
-PATH) are matched conservatively. Interpreter, `make` and `npx` options are an
-explicit per-tool allowlist: options under which nothing runs (a dry run,
-version or help output, a syntax check) and any option or executable not
-classified as running the operand are never a positive match. The command
+PATH) are matched conservatively. A runner matches only in a proven executing
+form: every option before the operand is on a short per-runner list, and an
+option that takes a value has one the list validates (a shell's `-o errexit`,
+`make -j N`, `-s`, `-C dir`, `-f file`, `--silent` before a package runner's
+subcommand, `npx --no-install`). Any other option or value, including dry runs,
+version or help output, syntax checks, preloads and variable assignments, is
+uncertain and never a positive match: precision wins over recall. The command
 continues without a confirmation dialog. Only a positive match to at least one
 agent-changed file warns: commands with no file reference, shell-integration and
 prompt internals, and unresolved dynamic indirection never do. The warning is
@@ -1938,15 +1941,25 @@ pane the view is a tab of the pane's work panel, next to the pane's chat: the
 same docked column, card and push-aside layout as a conversation pane's work
 panel. A side-work-panel terminal shows it in place of the shell, with a way
 back; the PTY outlives the switch. The view reuses the conversation's change
-UI (the workspace file tree, `TurnChangeDetail` and `FileEditDiff`). Main sends
+UI (the file tree's rows, `TurnChangeDetail` and `FileEditDiff`) in a
+matched-only mode: it lists exactly the files main delivered, with no filter,
+no folder browsing and no workspace listing call, so it cannot reach a path the
+terminal never executed. Each file's text is bounded at 1 MiB and a snapshot's
+review text at 4 MiB in all; files past that are listed without a diff. Main sends
 each file's change as a turn-review entry built against the recorded
 baseline, and a file without one shows that its diff is unavailable: this view
 never falls back to reading the file. There is no review or acknowledgement state:
 the change has already happened, so the count follows the set of changed files
 and never drops on a user action. Canonical physical paths retain session
 attribution across symlink aliases and delete/restore. Each attributed write
-records the identity (device, inode, birth time) of the file it left, and the
-diff reads only through a non-following open whose descriptor has that
+records the identity (device, inode, birth time) that fstat gives on the
+writer's own descriptor: the atomic text write's temporary file (whose inode the
+rename moves), the source descriptor `move_file` holds across its rename, or the
+descriptor an owned transfer created the file with. The path is never re-opened
+to identify it, so a swap between the write and its recording cannot enter the
+ledger. A write with no descriptor to report (a no-clobber copy, a document
+app's save, any other mutation) records no identity and shows no diff. The diff
+reads only through a non-following open whose descriptor has the recorded
 identity; it never relies on repeated path checks, so a parent swapped for a
 link at any point, or a save that replaced the inode, shows no diff until the
 agent writes the path again. Deleting a file does not

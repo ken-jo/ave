@@ -1455,13 +1455,16 @@ view in its work panel, built from the conversation's change UI. A terminal
 pane has one header row, like a conversation pane: a compact host chip, whose
 tooltip carries the environment note, the shell-reported directory, block
 history and attach-last, the badge, and the same work-panel toggle. Its chat and
-changes open in the same docked work panel a conversation pane uses. The side-work-panel
-host terminal has the same advisory changed-file UI while retaining no agent access.
-Successful write provenance uses canonical physical paths and the identity of the
-written file, which alone the diff may read; it is never permission authority.
-An attended host terminal takes keyboard focus when it opens or is activated only
-if nothing holds focus, focus is already inside it, or focus is on the selected tab
-that showed it, so a composer or approval card keeps focus. Dynamic indirection and subprocess writes without concrete path evidence
+changes open in the same docked work panel a conversation pane uses, docked from
+the conversation pane's breakpoint up and overlaid below it. The side-work-panel
+host terminal has the same single row (its chip also says the agent has no
+access) and the same advisory changed-file UI while retaining no agent access.
+Successful write provenance uses canonical physical paths and the identity the
+writer's own descriptor reported, which alone the diff may read; it is never
+permission authority. An attended host terminal takes keyboard focus when it opens
+or is activated only if nothing holds focus or focus is on this terminal's own
+selected tab, so a composer, an approval card, a tab elsewhere or the terminal's
+own controls keep focus. Dynamic indirection and subprocess writes without concrete path evidence
 remain explicitly outside complete coverage. The
 [changed-file review policy](permission-policy-design.md#agent-changed-file-review)
 defines the evidence lifetime and the separate isolated loader write-deny floor.
