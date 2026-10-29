@@ -10,6 +10,8 @@ import { approvalSurfaceRegistry } from "../approval-surface-registry.js";
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const OWNER_FILE = join(SOURCE_ROOT, "permissions/approval-surface-registry.ts");
 const REGISTRY_MODULE = /(?:^|\/)approval-surface-registry\.(?:[cm]?js|ts)$/;
+// Side-effect-free lookups. Every other registry method is a writer and must run inside updateApprovalSurface.
+const READERS: ReadonlySet<string> = new Set(["resolve", "terminalSessionId"]);
 
 function enclosingCallable(node: ts.Node): ts.Node | undefined {
   for (let parent = node.parent; parent; parent = parent.parent) {
@@ -29,7 +31,7 @@ function writerViolations(sources: readonly ts.SourceFile[], ownerFile: string):
   const collectOwner = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) && node.name?.text === "ApprovalSurfaceRegistry") {
       for (const method of node.members) {
-        if (ts.isMethodDeclaration(method) && method.name.getText() !== "resolve") mutators.add(method.name.getText());
+        if (ts.isMethodDeclaration(method) && !READERS.has(method.name.getText())) mutators.add(method.name.getText());
       }
     }
     if (ts.isVariableDeclaration(node) && node.initializer && ts.isNewExpression(node.initializer)
@@ -84,9 +86,9 @@ function writerViolations(sources: readonly ts.SourceFile[], ownerFile: string):
         violations.push(location + ": another mutable registry is constructed");
       }
       if (source !== owner && ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && views.has(node.expression.text)
-        && node.name.text !== "resolve") violations.push(location + ": registry view accesses writer " + node.name.text);
+        && !READERS.has(node.name.text)) violations.push(location + ": registry view accesses writer " + node.name.text);
       if (source !== owner && ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && views.has(node.expression.text)) {
-        if (!ts.isStringLiteral(node.argumentExpression) || node.argumentExpression.text !== "resolve") violations.push(location + ": registry view accesses a computed writer");
+        if (!ts.isStringLiteral(node.argumentExpression) || !READERS.has(node.argumentExpression.text)) violations.push(location + ": registry view accesses a computed writer");
       }
       if (source === owner && ts.isIdentifier(node) && node.text === mutableName && node !== instance.name) {
         const access = node.parent;
@@ -98,7 +100,7 @@ function writerViolations(sources: readonly ts.SourceFile[], ownerFile: string):
             || callable.pos !== updateFunction.pos || callable.end !== updateFunction.end) {
             violations.push(location + ": registry writer " + access.name.text + " is outside updateApprovalSurface");
           } else callsThroughUpdate.add(access.name.text);
-        } else if (access.name.text !== "resolve") violations.push(location + ": mutable registry exposes unknown member " + access.name.text);
+        } else if (!READERS.has(access.name.text)) violations.push(location + ": mutable registry exposes unknown member " + access.name.text);
       }
       node.forEachChild(scan);
     };
@@ -164,9 +166,9 @@ describe("approval surface mutation ownership", () => {
     expect(inspectSourceFiles(files, OWNER_FILE)).toEqual([]);
   });
 
-  it("exports a frozen resolve-only view without runtime mutation methods", () => {
+  it("exports a frozen read-only view without runtime mutation methods", () => {
     expect(Object.isFrozen(approvalSurfaceRegistry)).toBe(true);
-    expect(Object.keys(approvalSurfaceRegistry)).toEqual(["resolve"]);
+    expect(Object.keys(approvalSurfaceRegistry).sort()).toEqual([...READERS].sort());
     expect(Reflect.set(approvalSurfaceRegistry, "register", () => undefined)).toBe(false);
     expect(Reflect.has(approvalSurfaceRegistry, "register")).toBe(false);
   });
@@ -175,7 +177,7 @@ describe("approval surface mutation ownership", () => {
     expect(inspectWriterAttempt("", [
       "import type { ApprovalSurfaceRegistry } from './approval-surface-registry.js';",
       "import { approvalSurfaceRegistry as delivery, updateApprovalSurface } from './approval-surface-registry.js';",
-      "delivery.resolve('session'); updateApprovalSurface({sessionId:'session',surface:null});",
+      "delivery.resolve('session'); delivery.terminalSessionId('tab'); updateApprovalSurface({sessionId:'session',surface:null});",
     ].join("\n"))).toEqual([]);
   });
 
@@ -203,6 +205,8 @@ describe("approval surface mutation ownership", () => {
 
   it.each([
     ["import { approvalSurfaceRegistry as delivery } from './approval-surface-registry.js'; delivery.register('session', null);", "registry view accesses writer"],
+    ["import { approvalSurfaceRegistry as delivery } from './approval-surface-registry.js'; delivery.bindTerminalSession('tab', 'session');", "registry view accesses writer"],
+    ["import { approvalSurfaceRegistry as delivery } from './approval-surface-registry.js'; delivery['releaseTerminal']('tab');", "registry view accesses a computed writer"],
     ["import { ApprovalSurfaceRegistry as OtherRegistry } from './approval-surface-registry.js'; new OtherRegistry();", "registry class value imported"],
     ["import * as delivery from './approval-surface-registry.js';", "namespace or default registry import"],
     ["export { ApprovalSurfaceRegistry } from './approval-surface-registry.js';", "registry value re-export"],

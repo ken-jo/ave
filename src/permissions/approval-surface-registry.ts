@@ -155,7 +155,7 @@ export type ApprovalSurfaceUpdate =
 
 const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
 
-/** Read-only delivery lookup; all attachment and lifecycle updates use one host function. */
+/** Read-only delivery and terminal-binding lookups; all attachment and lifecycle updates use one host function. */
 export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId">> = Object.freeze({
   resolve: (sessionId: string | undefined, terminalTabId?: string) =>
     registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
