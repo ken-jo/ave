@@ -1,5 +1,5 @@
 import { cloneElement, createContext, useCallback, useContext, useEffect, useId, useRef, useState, type HTMLAttributes, type ReactElement, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { Popover, PopoverAnchor, PopoverContent } from "../../../components/ui/popover.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatRelativeSessionTime } from "../../../shared/format-time.js";
 
@@ -93,14 +93,21 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("resize", dismiss);
     };
   }, [hide]);
-  const rect = active?.anchor.getBoundingClientRect();
-  const sidebarRect = active?.anchor.closest("[data-sidebar-preview-boundary]")?.getBoundingClientRect();
   return <PreviewContext.Provider value={{ activeId: active?.id, show, hide, update }}>
     {children}
-    {active && active.anchor.isConnected && rect && createPortal(<div
-      className="pointer-events-none fixed z-50 w-[300px] max-w-[calc(100vw-16px)]"
-      style={{ left: Math.min((sidebarRect?.right ?? rect.right) + 10, Math.max(8, window.innerWidth - 308)), top: Math.max(8, Math.min(rect.top, window.innerHeight - (active.data.kind === "browser" && active.data.imageDataUrl ? 250 : 140))) }}
-    ><SidebarPreviewCard id={active.id} preview={active.data} /></div>, document.body)}
+    {active && active.anchor.isConnected && <Popover open onOpenChange={(open) => { if (!open) hide(); }}>
+      <PopoverAnchor virtualRef={{ current: { getBoundingClientRect: () => {
+        const rect = active.anchor.getBoundingClientRect();
+        const boundary = active.anchor.closest("[data-sidebar-preview-boundary]")?.getBoundingClientRect();
+        return new DOMRect(boundary?.right ?? rect.right, rect.top, 0, rect.height);
+      } } }} />
+      <PopoverContent side="right" align="start" sideOffset={10} collisionPadding={8}
+        role="presentation" className="pointer-events-none w-[300px] max-w-[calc(100vw-16px)] rounded-none border-0 bg-transparent p-0 shadow-none"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+        onInteractOutside={(event) => event.preventDefault()}
+      ><SidebarPreviewCard id={active.id} preview={active.data} /></PopoverContent>
+    </Popover>}
   </PreviewContext.Provider>;
 }
 

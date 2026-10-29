@@ -74,7 +74,8 @@ describe("sidebar preview cards", () => {
   it("shows focus immediately and associates the summary with the entry", () => {
     entries();
     const entry = screen.getByText("Conversation");
-    fireEvent.focus(entry);
+    act(() => entry.focus());
+    expect(document.activeElement).toBe(entry);
     expect(entry.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
     fireEvent.blur(entry);
     expect(screen.queryByRole("tooltip")).toBeNull();
