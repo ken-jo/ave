@@ -386,8 +386,17 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.link?.sendSessionBindings?.(windowId, this.bindingState(windowId));
   }
 
+  private readonly bindingListeners = new Set<(windowId: number) => void>();
+
+  // Called after any pane binding of `windowId` changes, so holders of binding-scoped authority (a host terminal's agent lease) recheck it.
+  onBindingsChanged(listener: (windowId: number) => void): () => void {
+    this.bindingListeners.add(listener);
+    return () => { this.bindingListeners.delete(listener); };
+  }
+
   private bindingsChanged(windowId: number): void {
     this.publishBindings(windowId);
+    for (const listener of [...this.bindingListeners]) listener(windowId);
     const persistence = this.bindingPersistence;
     const layout = persistence?.load(windowId);
     if (!persistence || !layout) return;

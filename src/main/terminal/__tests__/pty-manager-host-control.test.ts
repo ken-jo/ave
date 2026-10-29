@@ -32,7 +32,7 @@ vi.mock("../shell-process.js", () => ({
 }));
 
 import {
-  __resetTerminalsForTest, controlTerminal, hostTerminalDisclosure, hostTerminalSession, setTerminalEmitter, spawnTerminal,
+  __resetTerminalsForTest, controlTerminal, hostTerminalDisclosure, hostTerminalSession, revokeUnboundHostTerminalLeases, setTerminalEmitter, spawnTerminal,
   typeHostTerminalCommand, writeTerminal, type TerminalEmit,
 } from "../pty-manager.js";
 import { SHELL_INTEGRATION_NONCE_FILE, TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
@@ -109,7 +109,7 @@ describe("host terminal control periods", () => {
       shell.pty.emitData(`${shell.run("echo approved")}approved output\n`);
       shell.pty.emitData(`${shell.mark("D;0")}${shell.prompt()}`);
     });
-    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w");
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w", () => true);
     expect(typed).toMatchObject({ ok: true });
     if (!typed.ok) return;
     await vi.waitFor(() => expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)?.state).toBe("done"));
@@ -128,14 +128,14 @@ describe("host terminal control periods", () => {
       writeTerminal(shell.session, "x");
       return true;
     };
-    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w");
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w", () => true);
     expect(typed.ok).toBe(false);
     expect(shell.pty.written).not.toContain("\r");
     const afterUser = shell.pty.written.slice(shell.pty.written.indexOf("x") + 1);
     expect(afterUser).toEqual([]);
     expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "taken-over" } });
     // A new admission needs a hand-back first, and hand-back needs a fresh empty prompt.
-    expect(await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo again", "/w")).toMatchObject({ ok: false });
+    expect(await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo again", "/w", () => true)).toMatchObject({ ok: false });
     expect(controlTerminal(shell.session, WINDOW, "hand-back")).toMatchObject({ ok: false, error: "prompt-not-ready" });
     shell.pty.emitData(`\r\n${shell.prompt()}`);
     // Still inside the quiet window after the user's last key.
@@ -147,7 +147,7 @@ describe("host terminal control periods", () => {
   it("keeps user-period output, split sentinels included, out of the disclosed span after Take over", async () => {
     const shell = await hostShell();
     shell.hooks.onEnter = () => queueMicrotask(() => shell.pty.emitData(`${shell.run("tail -f log")}agent line\npartial-before-take`));
-    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "tail -f log", "/w");
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "tail -f log", "/w", () => true);
     expect(typed.ok).toBe(true);
     if (!typed.ok) return;
     await vi.waitFor(() => expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)?.output).toContain("agent line"));
@@ -166,7 +166,7 @@ describe("host terminal control periods", () => {
   it("stops only the command it owns, once; a late Stop after Take over writes nothing", async () => {
     const shell = await hostShell();
     shell.hooks.onEnter = () => queueMicrotask(() => shell.pty.emitData(`${shell.run("sleep 30")}`));
-    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "sleep 30", "/w");
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "sleep 30", "/w", () => true);
     expect(typed.ok).toBe(true);
     const before = shell.pty.written.length;
     shell.pty.respond = null;
@@ -179,12 +179,12 @@ describe("host terminal control periods", () => {
   it("refuses a side panel terminal, and moving a running tab to the side panel revokes its lease", async () => {
     const side = await hostShell("side-panel");
     expect(hostTerminalSession(TAB, WINDOW)).toBeUndefined();
-    expect(await typeHostTerminalCommand(side.session, WINDOW, "conversation-a", "echo no", "/w")).toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(await typeHostTerminalCommand(side.session, WINDOW, "conversation-a", "echo no", "/w", () => true)).toMatchObject({ ok: false, reason: "no-terminal" });
     expect(side.pty.written).toEqual([]);
     // The same tab remounted in a workspace pane may take a command; remounting it in the side panel ends the lease.
     expect((await spawnTerminal({ tabId: TAB, lane: "manual", purpose: "workspace", ownerWindowId: WINDOW })).ok).toBe(true);
     side.hooks.onEnter = () => queueMicrotask(() => side.pty.emitData(`${side.run("sleep 30")}agent\n`));
-    const typed = await typeHostTerminalCommand(side.session, WINDOW, "conversation-a", "sleep 30", "/w");
+    const typed = await typeHostTerminalCommand(side.session, WINDOW, "conversation-a", "sleep 30", "/w", () => true);
     expect(typed.ok).toBe(true);
     expect((await spawnTerminal({ tabId: TAB, lane: "manual", purpose: "side-panel", ownerWindowId: WINDOW })).ok).toBe(true);
     expect(controlTerminal(side.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "taken-over" } });
@@ -196,7 +196,7 @@ describe("host terminal control periods", () => {
     expect(await spawnTerminal({ tabId: TAB, lane: "manual", ownerWindowId: WINDOW })).toMatchObject({ ok: false, reason: "bad-request" });
     const shell = await hostShell();
     foreground = { ok: true, foreground: { pid: 5151, command: "vim", cwd: "/w" } };
-    expect(await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo no", "/w")).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    expect(await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo no", "/w", () => true)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
     expect(shell.pty.written).toEqual([]);
     expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "available" } });
   });
@@ -204,7 +204,7 @@ describe("host terminal control periods", () => {
   it("announces each control change for the live incarnation and refuses a retired one", async () => {
     const shell = await hostShell();
     shell.hooks.onEnter = () => queueMicrotask(() => shell.pty.emitData(`${shell.run("echo approved")}ok\n${shell.mark("D;0")}${shell.prompt()}`));
-    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w");
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w", () => true);
     expect(typed.ok).toBe(true);
     await vi.waitFor(() => expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "available" } }));
     const modes = controlEvents.map((event) => (event as { control: { mode: string; typed?: boolean } }).control);
@@ -213,5 +213,61 @@ describe("host terminal control periods", () => {
     expect(controlEvents.every((event) => (event as { terminalSessionId: string }).terminalSessionId === shell.session.terminalSessionId)).toBe(true);
     expect(controlTerminal({ ...shell.session, terminalSessionId: "retired" }, WINDOW, "take-over")).toMatchObject({ ok: false, error: "stale-terminal-session" });
     expect(controlTerminal(shell.session, WINDOW + 1, "take-over")).toMatchObject({ ok: false, error: "stale-terminal-session" });
+  });
+
+  it("keeps the lease through the emulator's reply to the command's own query, but not through a lookalike nobody asked for", async () => {
+    const shell = await hostShell();
+    shell.hooks.onEnter = () => queueMicrotask(() => shell.pty.emitData(`${shell.run("tput u7")}\u001b[6n`));
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "tput u7", "/w", () => true);
+    expect(typed.ok).toBe(true);
+    await vi.waitFor(() => expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "agent", typed: true } }));
+    writeTerminal(shell.session, "\u001b[12;40R");
+    expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "agent" } });
+    // The same reply again answers nothing: it is the user's input.
+    writeTerminal(shell.session, "\u001b[12;40R");
+    expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "taken-over" } });
+  });
+
+  it("stops before Enter without writing Ctrl-C or Enter", async () => {
+    const shell = await hostShell();
+    let stopped: ReturnType<typeof controlTerminal> | undefined;
+    shell.hooks.onPaste = () => { stopped = controlTerminal(shell.session, WINDOW, "stop"); return true; };
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w", () => true);
+    expect(stopped).toMatchObject({ ok: true, control: { mode: "taken-over" } });
+    expect(typed).toMatchObject({ ok: false, reason: "aborted" });
+    const pasteAt = shell.pty.written.findIndex((data) => data.startsWith("\u001b[200~"));
+    expect(shell.pty.written.slice(pasteAt + 1)).toEqual([]);
+  });
+
+  it("stops disclosure when the shell reports a different command than the approved one", async () => {
+    const shell = await hostShell();
+    shell.hooks.onEnter = () => queueMicrotask(() => shell.pty.emitData(`${shell.run("echo other")}${SECRET}\n${shell.mark("D;0")}${shell.prompt()}`));
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo approved", "/w", () => true);
+    expect(typed.ok).toBe(true);
+    if (!typed.ok) return;
+    await vi.waitFor(() => expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)?.state).toBe("interrupted"));
+    const disclosed = hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)!;
+    expect(disclosed).toMatchObject({ interruption: "command-mismatch", output: "" });
+  });
+
+  it("ends the lease and its disclosure when the pane chat binding goes away mid-command", async () => {
+    const shell = await hostShell();
+    let bound = true;
+    shell.hooks.onEnter = () => queueMicrotask(() => shell.pty.emitData(`${shell.run("sleep 30")}agent line\n`));
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "sleep 30", "/w", () => bound);
+    expect(typed.ok).toBe(true);
+    if (!typed.ok) return;
+    await vi.waitFor(() => expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)?.output).toContain("agent line"));
+    bound = false;
+    revokeUnboundHostTerminalLeases(WINDOW, () => bound);
+    shell.pty.emitData(`${SECRET}\n`);
+    expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)).toMatchObject({ state: "interrupted", interruption: "binding" });
+    expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", typed.firstBlockId)!.output).not.toContain(SECRET);
+  });
+
+  it("refuses to start for a conversation that is not the tab's pane chat", async () => {
+    const shell = await hostShell();
+    expect(await typeHostTerminalCommand(shell.session, WINDOW, "conversation-a", "echo no", "/w", () => false)).toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(shell.pty.written).toEqual([]);
   });
 });

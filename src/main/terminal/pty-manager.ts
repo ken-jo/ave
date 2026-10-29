@@ -1153,18 +1153,24 @@ export async function typeHostTerminalCommand(
   requestingSessionId: string,
   line: string,
   expectedCwd: string,
+  /** The requesting conversation is still this tab's own pane chat (main-owned binding); asked before every agent byte. */
+  bound: () => boolean,
   signal?: AbortSignal,
 ): Promise<TypeTerminalCommandResult> {
   const session = hostSession(ref, ownerWindowId);
   const control = session?.control;
   const missing = `no running host terminal with tabId ${JSON.stringify(ref.tabId)} in this window`;
-  if (!session || !control || logicalTabs.get(ref.tabId)?.purpose !== "workspace") return { ok: false, reason: "no-terminal", message: missing };
+  if (!session || !control || logicalTabs.get(ref.tabId)?.purpose !== "workspace" || !bound()) return { ok: false, reason: "no-terminal", message: missing };
   const admitted = control.admit(requestingSessionId, line.trim(), canonicalizePathForMatch(expectedCwd));
   if (!admitted.ok) return { ok: false, reason: "pending-input", message: admitted.message };
   const lease = admitted.lease;
   const cancel = signal === undefined ? lease.signal : AbortSignal.any([signal, lease.signal]);
-  const live = (): boolean => hostSession(ref, ownerWindowId) === session && control.holds(lease)
-    && logicalTabs.get(ref.tabId)?.purpose === "workspace";
+  const live = (): boolean => {
+    if (hostSession(ref, ownerWindowId) !== session || !control.holds(lease) || logicalTabs.get(ref.tabId)?.purpose !== "workspace") return false;
+    if (bound()) return true;
+    control.revoke("binding");
+    return false;
+  };
   const result = await typeLineAtPrompt(
     {
       signal: cancel,
@@ -1190,6 +1196,16 @@ export async function typeHostTerminalCommand(
     }
   }
   return result;
+}
+
+/** A pane binding changed in `windowId`: end every host lease whose requesting conversation is no longer that tab's pane chat, so its
+ * pending bytes and output admission stop with the binding. */
+export function revokeUnboundHostTerminalLeases(windowId: number, stillBound: (tabId: string, sessionId: string) => boolean): void {
+  for (const session of sessions.values()) {
+    const holder = session.control?.leaseSession();
+    if (session.ownerWindowId !== windowId || session.info.lane !== "manual" || holder === undefined) continue;
+    if (!stillBound(session.info.tabId, holder)) session.control!.revoke("binding");
+  }
 }
 
 /** Feed block `blockId`'s output to the lease's span while it holds, checking the shell's own record of the command and directory; close

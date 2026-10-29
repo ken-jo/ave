@@ -97,6 +97,11 @@ export class HostTerminalControl {
     return { ok: true, lease };
   }
 
+  /** The conversation the live lease types for, if one holds. */
+  leaseSession(): string | undefined {
+    return this.lease?.requestingSessionId;
+  }
+
   /** True only while `lease` is the live lease. The final PTY write chokepoint asks this for every agent byte. */
   holds(lease: HostAgentLease): boolean {
     return this.lease !== undefined && this.lease === lease && this.lease.generation === this.generation && this.mode === "agent";
