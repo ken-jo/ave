@@ -34,6 +34,10 @@ afterEach(async () => {
   await cleanupTmpDir(dir);
 });
 
+function writeSessionMetadataFixture(sessionsDir: string, sessionId: string, metadata: unknown) {
+  writeFileSync(join(sessionsDir, `${sessionId}.meta.json`), JSON.stringify(metadata), "utf-8");
+}
+
 describe("appendCheckpoint", () => {
   it("adds a checkpoint to metadata with no prior checkpoints", () => {
     const meta: SessionMetadata = { sessionKind: "routine", routineId: "r1" };
@@ -164,9 +168,7 @@ describe("metadata validation", () => {
     const sessionId = SESSION_B;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({
+    writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
           {
             id: "ckpt-valid",
@@ -185,9 +187,7 @@ describe("metadata validation", () => {
             messageCountAtTrigger: 50,
           },
         ],
-      }),
-      "utf-8",
-    );
+      });
 
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toHaveLength(1);
@@ -261,9 +261,7 @@ describe("normalizeCheckpoint range validation", () => {
     const sessionId = SESSION_A;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({
+    writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
           {
             id: "ckpt-neg-ctx",
@@ -274,9 +272,7 @@ describe("normalizeCheckpoint range validation", () => {
             messageCountAtTrigger: 10,
           },
         ],
-      }),
-      "utf-8",
-    );
+      });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
@@ -285,9 +281,7 @@ describe("normalizeCheckpoint range validation", () => {
     const sessionId = SESSION_B;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({
+    writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
           {
             id: "ckpt-over-ctx",
@@ -298,9 +292,7 @@ describe("normalizeCheckpoint range validation", () => {
             messageCountAtTrigger: 10,
           },
         ],
-      }),
-      "utf-8",
-    );
+      });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
@@ -310,9 +302,7 @@ describe("normalizeCheckpoint range validation", () => {
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     // JSON encodes NaN as null; use null to exercise that persisted shape.
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({
+    writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
           {
             id: "ckpt-nan-ctx",
@@ -323,9 +313,7 @@ describe("normalizeCheckpoint range validation", () => {
             messageCountAtTrigger: 10,
           },
         ],
-      }),
-      "utf-8",
-    );
+      });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
@@ -334,9 +322,7 @@ describe("normalizeCheckpoint range validation", () => {
     const sessionId = SESSION_A;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({
+    writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
           {
             id: "ckpt-neg-msg",
@@ -347,9 +333,7 @@ describe("normalizeCheckpoint range validation", () => {
             messageCountAtTrigger: -1,
           },
         ],
-      }),
-      "utf-8",
-    );
+      });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
@@ -358,9 +342,7 @@ describe("normalizeCheckpoint range validation", () => {
     const sessionId = SESSION_B;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({
+    writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
           {
             id: "ckpt-float-msg",
@@ -371,9 +353,7 @@ describe("normalizeCheckpoint range validation", () => {
             messageCountAtTrigger: 1.5,
           },
         ],
-      }),
-      "utf-8",
-    );
+      });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
@@ -384,11 +364,7 @@ describe("normalizeSessionMetadata — parentSessionId regex validation", () => 
     const sessionId = SESSION_A;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({ sessionKind: "routine", routineId: "r1", parentSessionId: "../../../etc/passwd" }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, sessionId, { sessionKind: "routine", routineId: "r1", parentSessionId: "../../../etc/passwd" });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta).not.toBeNull();
     expect(meta!.routineId).toBe("r1");
@@ -399,11 +375,7 @@ describe("normalizeSessionMetadata — parentSessionId regex validation", () => 
     const sessionId = SESSION_B;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({ parentSessionId: SESSION_A }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, sessionId, { parentSessionId: SESSION_A });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.parentSessionId).toBe(SESSION_A);
   });
@@ -443,11 +415,7 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
   it("accepts a standard UUID-format parentSessionId", async () => {
     const sessionsDir = join(dir, "sessions");
     await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
-    writeFileSync(
-      join(sessionsDir, `${SESSION_A}.meta.json`),
-      JSON.stringify({ parentSessionId: SESSION_B }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, SESSION_A, { parentSessionId: SESSION_B });
     const meta = mm.loadSessionMetadata(SESSION_A);
     expect(meta!.parentSessionId).toBe(SESSION_B);
   });
@@ -455,11 +423,7 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
   it("accepts alphanumeric-plus-dash ID (non-UUID-shaped)", async () => {
     const sessionsDir = join(dir, "sessions");
     await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
-    writeFileSync(
-      join(sessionsDir, `${SESSION_A}.meta.json`),
-      JSON.stringify({ parentSessionId: "f502abaa-afc9-46a6-863c-19c8bbe6013c" }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, SESSION_A, { parentSessionId: "f502abaa-afc9-46a6-863c-19c8bbe6013c" });
     const meta = mm.loadSessionMetadata(SESSION_A);
     expect(meta!.parentSessionId).toBe("f502abaa-afc9-46a6-863c-19c8bbe6013c");
   });
@@ -467,11 +431,7 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
   it("rejects parentSessionId with slash (path-traversal)", async () => {
     const sessionsDir = join(dir, "sessions");
     await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
-    writeFileSync(
-      join(sessionsDir, `${SESSION_A}.meta.json`),
-      JSON.stringify({ parentSessionId: "../evil" }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, SESSION_A, { parentSessionId: "../evil" });
     const meta = mm.loadSessionMetadata(SESSION_A);
     expect(meta!.parentSessionId).toBeUndefined();
   });
@@ -479,11 +439,7 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
   it("rejects parentSessionId with space", async () => {
     const sessionsDir = join(dir, "sessions");
     await mm.saveSession(SESSION_B, [{ role: "user", content: "msg" }]);
-    writeFileSync(
-      join(sessionsDir, `${SESSION_B}.meta.json`),
-      JSON.stringify({ parentSessionId: "session id" }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, SESSION_B, { parentSessionId: "session id" });
     const meta = mm.loadSessionMetadata(SESSION_B);
     expect(meta!.parentSessionId).toBeUndefined();
   });
@@ -491,11 +447,7 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
   it("rejects empty string parentSessionId", async () => {
     const sessionsDir = join(dir, "sessions");
     await mm.saveSession(SESSION_C, [{ role: "user", content: "msg" }]);
-    writeFileSync(
-      join(sessionsDir, `${SESSION_C}.meta.json`),
-      JSON.stringify({ parentSessionId: "" }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, SESSION_C, { parentSessionId: "" });
     const meta = mm.loadSessionMetadata(SESSION_C);
     expect(meta!.parentSessionId).toBeUndefined();
   });
@@ -507,11 +459,7 @@ describe("normalizeSessionMetadata — read-side summaryPreamble truncation (def
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     const overlong = "x".repeat(10_000);
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({ summaryPreamble: overlong }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, sessionId, { summaryPreamble: overlong });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.summaryPreamble!.length).toBe(8_000);
   });
@@ -521,11 +469,7 @@ describe("normalizeSessionMetadata — read-side summaryPreamble truncation (def
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     const exact = "y".repeat(8_000);
-    writeFileSync(
-      join(sessionsDir, `${sessionId}.meta.json`),
-      JSON.stringify({ summaryPreamble: exact }),
-      "utf-8",
-    );
+    writeSessionMetadataFixture(sessionsDir, sessionId, { summaryPreamble: exact });
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta!.summaryPreamble!.length).toBe(8_000);
   });

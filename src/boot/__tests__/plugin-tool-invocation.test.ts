@@ -265,15 +265,10 @@ describe("dispatchAppOnlyRuntimeInvocation — nested plugin-origin ctx.callTool
   it("throws the explicit app-only-visibility constraint error for a nested plugin-origin call (not the generic activation error)", async () => {
     let handlerCalled = false;
     const runtime = {
-      listPluginManifests: () => [
-        {
-          pluginId: "meeting",
-          manifest: normalize([
-            manifestTool("meeting_upload_file", ["model"]),
-            manifestTool("meeting_stage_upload_begin", ["app"]),
-          ]),
-        },
-      ],
+      ...runtimeWithManifest([
+        manifestTool("meeting_upload_file", ["model"]),
+        manifestTool("meeting_stage_upload_begin", ["app"]),
+      ]),
       callDeclaredAppOnlyTool: async () => {
         handlerCalled = true;
         return "unreached";
@@ -302,15 +297,10 @@ describe("dispatchAppOnlyRuntimeInvocation — nested plugin-origin ctx.callTool
 
   it("keeps the generic user-activation error for a genuine direct-UI call without activation", async () => {
     const runtime = {
-      listPluginManifests: () => [
-        {
-          pluginId: "meeting",
-          manifest: normalize([
-            manifestTool("meeting_upload_file", ["model"]),
-            manifestTool("meeting_stage_upload_begin", ["app"]),
-          ]),
-        },
-      ],
+      ...runtimeWithManifest([
+        manifestTool("meeting_upload_file", ["model"]),
+        manifestTool("meeting_stage_upload_begin", ["app"]),
+      ]),
       callDeclaredAppOnlyTool: async () => "unreached",
     } as any;
 
@@ -364,15 +354,10 @@ describe("dispatchAppOnlyRuntimeInvocation — boundary routing gate (security d
       }),
     );
     const runtime = {
-      listPluginManifests: () => [
-        {
-          pluginId: "meeting",
-          manifest: normalize([
-            manifestTool("meeting_upload_file", ["model"]),
-            manifestTool("meeting_stage_upload_begin", ["app"]),
-          ]),
-        },
-      ],
+      ...runtimeWithManifest([
+        manifestTool("meeting_upload_file", ["model"]),
+        manifestTool("meeting_stage_upload_begin", ["app"]),
+      ]),
       callDeclaredAppOnlyTool,
     } as any;
 
