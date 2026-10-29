@@ -2,7 +2,7 @@ vi.mock("../../../shared/windows-path-facts.js", async original => (await import
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { spawnTerminal as spawnLane, writeTerminal as writeLane, resizeTerminal as resizeLane, ensureConversationTerminal, conversationTerminalRef, releaseConversationTerminals, endConversationTerminalSession, typeAgentTerminalCommand, terminalTabOwnerWindow, terminalOwnedBy as rendererOwnsTerminal } from "../pty-manager.js";
+import { spawnTerminal as spawnLane, writeTerminal as writeLane, ensureConversationTerminal, conversationTerminalRef, releaseConversationTerminals, endConversationTerminalSession, typeAgentTerminalCommand, terminalTabOwnerWindow, terminalOwnedBy as rendererOwnsTerminal } from "../pty-manager.js";
 import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker, killTerminal, conversationOwnedBy as terminalOwnedBy } from "../../../__tests__/support/terminal-agent-fixture.js";
 /** Check terminal confinement wiring with mocked runtime and PTY boundaries, including fail-closed spawn and cleanup.
  * These tests do not exercise native isolation or real PTY allocation. */

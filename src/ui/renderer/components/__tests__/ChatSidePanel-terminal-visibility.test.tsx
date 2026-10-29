@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
-import type { AgentObservationEvent, ObservationRequest } from "../../../../shared/agent-observation.js";
+import type { ObservationRequest } from "../../../../shared/agent-observation.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
@@ -17,21 +17,20 @@ const TARGET_ID = "b0000000-0000-4000-8000-000000000001";
 
 let store: WorkspaceTabsStore | null = null;
 let previousWindowAve: unknown;
-let listener: ((events: AgentObservationEvent[]) => void) | null = null;
 let stopListening: ReturnType<typeof vi.fn>;
 let acknowledge: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   previousWindowAve = window.ave;
   const ns = makeMockAveNamespace().ns;
-  stopListening = vi.fn(() => { listener = null; });
+  stopListening = vi.fn();
   acknowledge = vi.fn(async (request: ObservationRequest) => ({
     ok: true,
     ...(request.action === "subscribe-terminal" ? { observation: { targetId: TARGET_ID, sessionId: request.sessionId, seq: 0 } } : {}),
   }));
   (window as unknown as { ave: unknown }).ave = { ...ns, preview: {
     ...ns.preview,
-    onAgentObservation: vi.fn((handler: (events: AgentObservationEvent[]) => void) => { listener = handler; return stopListening; }),
+    onAgentObservation: vi.fn(() => stopListening),
     acknowledgeObservation: acknowledge,
   } };
 });
@@ -39,7 +38,6 @@ beforeEach(() => {
 afterEach(() => {
   (window as unknown as { ave: unknown }).ave = previousWindowAve;
   store = null;
-  listener = null;
 });
 
 const api = { openExternalUrl: vi.fn(async () => ({ ok: true })) } as unknown as AveApi;
