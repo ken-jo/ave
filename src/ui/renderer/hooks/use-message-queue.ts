@@ -10,7 +10,7 @@ import type { Attachment } from "../types/attachments.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
 import type { ChatStreamEvent } from "../../../lib/chat-stream-state.js";
-import type { ComposerHandle, ComposerSurface } from "../components/Composer.js";
+import { captureComposerKeyboardIntent, type ComposerHandle, type ComposerSurface } from "../components/Composer.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { augmentFileReferenceMarkers } from "../utils/compose.js";
 
@@ -21,7 +21,9 @@ import { augmentFileReferenceMarkers } from "../utils/compose.js";
  * instead, and the shortcut is not registered.
  */
 interface MessageQueueGuide {
-  inject: (text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** `intent` is present only for a guide the user just typed (⌘K); a queue flush at a round boundary has none, so main treats it as
+   * another principal's text, as a queued send is `queue-auto` rather than the keyboard. */
+  inject: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
   onError: (message: string) => void;
 }
 
@@ -418,8 +420,10 @@ export function useMessageQueue({
       const text = question.trim();
       if (text.length === 0) return;
       e.preventDefault();
+      // Capture the gesture's one-shot intent now, inside the key handler, before any await.
+      const intent = captureComposerKeyboardIntent();
       void (async () => {
-        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments));
+        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments), intent);
         if (result?.ok === true) {
           setQuestion("");
         } else if (result?.ok === false) {

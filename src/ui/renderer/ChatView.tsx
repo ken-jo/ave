@@ -94,7 +94,7 @@ export interface ChatViewProps {
   isEntryStarred: (idx: number) => string | null;
   onAbort: () => void | Promise<void>;
   /** Mid-stream "guide" utterance — non-interrupting direction adjustment. Returns IPC result so caller can preserve typed text on rejection. */
-  onGuide: (text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onGuide: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Surface visible error in chat transcript when guide is rejected (queue-full / too-long / no-active-turn). */
   onGuideError: (message: string) => void;
   onFeedback?: (messageIdx: number, rating: "up" | "down", reason?: string) => void | Promise<void>;

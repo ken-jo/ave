@@ -633,6 +633,46 @@ describe("preload — plugin webview asset URLs", () => {
     }), "main");
   });
 
+  it("marks a chat guide as the user's own words only with a fresh, unused composer intent", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const chatGuide = api["chatGuide"] as (input: string, userIntent?: unknown) => Promise<unknown>;
+    const intentOf = (call: number) => mockInvoke.mock.calls[call]![3];
+
+    // No gesture at all (a queue flush at a round boundary), even while the browser still reports activation.
+    mockUserActivation.isActive = true;
+    await chatGuide("flushed");
+    expect(mockInvoke.mock.calls[0]!.slice(0, 3)).toEqual(["ave:chat:guide", "flushed", "main"]);
+    expect(intentOf(0)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+
+    // A renderer-minted claim is not an intent.
+    mockUserActivation.isActive = false;
+    await chatGuide("forged", { inputOrigin: "user-keyboard", userActivation: true });
+    expect(intentOf(1)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+
+    // A real composer gesture: captured during the key handler, consumed once.
+    mockUserActivation.isActive = true;
+    const token = capture();
+    mockUserActivation.isActive = false;
+    await chatGuide("typed", token);
+    expect(intentOf(2)).toEqual({ inputOrigin: "user-keyboard", userActivation: true });
+    await chatGuide("replayed", token);
+    expect(intentOf(3)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+
+    // An expired intent confers nothing.
+    vi.useFakeTimers();
+    try {
+      mockUserActivation.isActive = true;
+      const stale = capture();
+      mockUserActivation.isActive = false;
+      vi.advanceTimersByTime(5_001);
+      await chatGuide("late", stale);
+      expect(intentOf(4)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("exposes renderer env flags including debugStream", async () => {
     const ave = await loadAveNamespace();
     const env = ave["env"] as Record<string, unknown>;

@@ -5,7 +5,9 @@ import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
 import { isBoundedSkillReadResult } from "../main/skill-overlay.js";
 import { normalizeLocalUserContentParts } from "../main/subscription-attachment-input.js";
+import { createHash } from "node:crypto";
 import { noteOtherPrincipalGuidance, noteToolResultsReturnedToModel } from "../tools/host-terminal-turn.js";
+import { canonicalStringify } from "../shared/canonical-json.js";
 
 export interface ConversationHistoryOptions {
   maxMessages?: number;
@@ -24,17 +26,26 @@ export interface HistoryAppendProvenance {
   principal: "user-keyboard";
 }
 
-/** How rows not seen before enter: a live append (a model reply, a tool result, injected guidance) or a host transform
- * (restore after compaction, eviction, reload or wire input). */
+/** A host transform that rewrites rows the history already holds, declared by the transform itself, never inferred from the rows.
+ * `stale-tool-result-truncation`: only tool results change (stubbed or their images evicted), under the same tool call.
+ * `metadata-only`: only row metadata changes; role, content, tool structure and provenance are as committed. */
+export type DeclaredHistoryTransform = "stale-tool-result-truncation" | "metadata-only";
+
+/** How rows enter: a live append (a model reply, a tool result, injected guidance) or a host transform (restore after compaction,
+ * eviction, reload or wire input; a removal), which may declare what kind of rewrite it is. */
 type HistoryEntry =
   | { via: "append"; row: GenericMessage; provenance: HistoryAppendProvenance | undefined }
-  | { via: "transform" };
+  | { via: "transform"; declared?: DeclaredHistoryTransform };
+
+/** What was committed under a row id: the row object, and digests of it with and without its metadata. */
+interface CommittedRow { row: GenericMessage; full: string; bare: string }
 
 export class ConversationHistory {
   /** Written only by commit(); every other method builds the next array and hands it there. */
   private messages: readonly GenericMessage[] = [];
-  /** Every row id this history has held. It survives clear(), so a clear() then restore() of the same rows is not new content. */
-  private readonly knownIds = new Set<string>();
+  /** Every row id this history has held, with what was committed under it. It survives clear(), so a clear() then restore() of the
+   * same rows is not new content; an id is proof of nothing by itself, so a row under a held id is compared with what was committed. */
+  private readonly committed = new Map<string, CommittedRow>();
   private readonly maxMessages: number;
 
   constructor(options?: ConversationHistoryOptions) {
@@ -84,11 +95,17 @@ export class ConversationHistory {
   private commit(next: GenericMessage[], entry: HistoryEntry): void {
     for (const row of next) {
       const id = row.meta?.messageId;
-      const appended = entry.via === "append" && row === entry.row;
-      if (!appended && typeof id === "string" && this.knownIds.has(id)) continue;
-      if (entry.via === "transform" || row.role === "tool_result") noteToolResultsReturnedToModel();
-      else if (row.role === "user" && entry.provenance?.principal !== "user-keyboard") noteOtherPrincipalGuidance();
-      if (typeof id === "string") this.knownIds.add(id);
+      const prior = typeof id === "string" ? this.committed.get(id) : undefined;
+      // The same row object is unchanged (a removal, a reorder, a re-commit of the array); only a new object needs comparing.
+      if (prior?.row === row && !(entry.via === "append" && row === entry.row)) continue;
+      const current = { row, ...rowDigests(row) };
+      if (entry.via === "append" && row === entry.row) {
+        if (row.role === "tool_result") noteToolResultsReturnedToModel();
+        else if (row.role === "user" && entry.provenance?.principal !== "user-keyboard") noteOtherPrincipalGuidance();
+      } else if (!(prior && entry.via === "transform" && isDeclaredRewrite(prior, current, entry.declared))) {
+        noteToolResultsReturnedToModel();
+      }
+      if (typeof id === "string") this.committed.set(id, current);
     }
     this.messages = next;
   }
@@ -106,9 +123,18 @@ export class ConversationHistory {
     turnSummary: NonNullable<NonNullable<GenericMessage["meta"]>["turnSummary"]>,
   ): boolean {
     for (let i = this.messages.length - 1; i >= 0; i--) {
-      const m = this.messages[i];
+      const m = this.messages[i]!;
       if (m.role === "assistant") {
         m.meta = { ...(m.meta ?? {}), turnSummary };
+        // The row object is shared with snapshots, so it is updated in place; this transform declares itself metadata-only, and its
+        // committed digest follows.
+        const id = m.meta.messageId;
+        const prior = typeof id === "string" ? this.committed.get(id) : undefined;
+        if (prior) {
+          const current = { row: m, ...rowDigests(m) };
+          if (!isDeclaredRewrite(prior, current, "metadata-only")) noteToolResultsReturnedToModel();
+          this.committed.set(id!, current);
+        }
         return true;
       }
     }
@@ -150,7 +176,8 @@ export class ConversationHistory {
     this.commit([], { via: "transform" });
   }
 
-  restore(messages: GenericMessage[]): void {
+  /** `declared` names the host transform this restore is, when it rewrites rows already held; without one, any changed row counts as new content. */
+  restore(messages: GenericMessage[], declared?: DeclaredHistoryTransform): void {
     /** Preserve original timestamps and re-derive tool caps from untrusted disk content.
      * Discard remote or malformed user binary parts before any provider replay. */
     const capped: GenericMessage[] = [];
@@ -163,7 +190,7 @@ export class ConversationHistory {
       // Mint missing legacy IDs while retaining existing IDs across reload.
       if (normalized) capped.push(stampMessageId(normalized, seenIds));
     }
-    this.commit(normalizeToolPairInvariant(capped).messages, { via: "transform" });
+    this.commit(normalizeToolPairInvariant(capped).messages, { via: "transform", ...(declared ? { declared } : {}) });
     this.trim();
   }
 
@@ -208,6 +235,24 @@ export class ConversationHistory {
       );
     }
   }
+}
+
+/** Digests of a row with and without its metadata. Row id and creation time are bookkeeping, never content. */
+function rowDigests(row: GenericMessage): { full: string; bare: string } {
+  const { meta, ...body } = row;
+  const { messageId: _id, createdAt: _created, ...rest } = meta ?? {};
+  const hash = (value: unknown) => createHash("sha256").update(canonicalStringify(value)).digest("hex");
+  return { full: hash({ body, meta: rest }), bare: hash(body) };
+}
+
+/** Whether a changed row under a held id is the rewrite its transform declared; anything else is new content. */
+function isDeclaredRewrite(prior: CommittedRow, current: CommittedRow, declared: DeclaredHistoryTransform | undefined): boolean {
+  if (prior.full === current.full) return true;
+  if (declared === "metadata-only") return prior.bare === current.bare;
+  if (declared === "stale-tool-result-truncation") {
+    return prior.row.role === "tool_result" && current.row.role === "tool_result" && prior.row.toolUseId === current.row.toolUseId;
+  }
+  return false;
 }
 
 interface NormalizeToolPairOptions {

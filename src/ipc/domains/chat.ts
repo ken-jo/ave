@@ -2,6 +2,7 @@ import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-ch
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
+import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
@@ -1046,7 +1047,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
 
   // Guide input queues for the next assistant-round boundary without interrupting the turn.
-  ipcMain.handle(CHANNELS.chat.guide, async (e, input: string, chatGroupId?: unknown) => {
+  ipcMain.handle(CHANNELS.chat.guide, async (e, input: string, chatGroupId?: unknown, intent?: unknown) => {
     const group = groupOf(e, chatGroupId, CHANNELS.chat.guide);
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.guide, e);
@@ -1062,7 +1063,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     // Guide text needs the same PII redaction as keyboard sends.
     const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), input);
-    const queueResult = group.loop.queueUserGuidance(effective);
+    // Only a guide carrying the composer gesture's consumed keyboard intent is the user's own words; anything else (a queue flush, a
+    // replayed or forged call) is queued as another principal's, which ends host terminal typing for the rest of the turn.
+    const queueResult = hasUserKeyboardIntent(intent) ? group.loop.queueUserGuidance(effective) : group.loop.queueGuidance(effective);
     if (queueResult === "queued") {
       // Audit guide acceptance as a mutation, recording metadata without user text.
       const mode: ChatUtteranceMode = "guide";

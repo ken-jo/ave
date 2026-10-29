@@ -1931,9 +1931,14 @@ one command into that terminal. Main owns the boundary
   (a file, a page, a plugin's, a browser's or a sub-agent's text, a command's
   output, an invalid-argument error, a refusal, or a tool search or plugin
   request), or any new row a host transform brings in (a compaction summary,
-  wire or disk input restored mid-turn), records external content. Rows the
-  history already held, re-written by eviction, mark-stale or repair, are not
-  new. After that, every host command in the turn needs a fresh person's
+  wire or disk input restored mid-turn), records external content. A held row
+  id proves nothing: a row under it is compared, by a digest of its role,
+  content, tool structure and provenance, with what was committed, and a
+  changed row counts as new content unless its transform declared itself
+  (stale tool-result truncation by eviction or mark-stale, or a metadata-only
+  change). Composer guidance counts as the user's own words only when it carries
+  the same one-shot keyboard intent a send consumes; a queue flush or any
+  call without that intent is another principal's. After that, every host command in the turn needs a fresh person's
   approval: the card is forced, a saved exact `HostTerminal` rule and
   remembered approvals do not apply, the card offers no lasting allow and
   says so, and it stays desktop-only. In a clean turn an exact rule still runs

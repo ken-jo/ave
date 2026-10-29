@@ -764,7 +764,8 @@ export type AveApi = {
     personaPromptId?: string,
     options?: { interrupt?: boolean },
   ) => Promise<unknown>;
-  chatGuide: (input: string) => Promise<unknown>;
+  /** `userIntent` is the composer gesture's one-shot keyboard intent; without a valid one main queues the text as another principal's. */
+  chatGuide: (input: string, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot) => Promise<unknown>;
   chatNew: (opts?: { projectRoot?: string; projectName?: string }) => Promise<
     { ok: true } | { ok: false; error: string }
   >;

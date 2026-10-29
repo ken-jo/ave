@@ -63,7 +63,11 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
         ? { userActivation: consumeUserKeyboardIntent(userIntent) }
         : {}),
     }, chatGroupId),
-  chatGuide: async (input: string) => ipcRenderer.invoke(CHANNELS.chat.guide, input, chatGroupId),
+  // The same one-shot keyboard intent chatSend consumes; a guide without one (a queue flush) carries none, so main treats it as another principal's.
+  chatGuide: async (input: string, userIntent?: UserKeyboardIntentSnapshot) => ipcRenderer.invoke(CHANNELS.chat.guide, input, chatGroupId, {
+    inputOrigin: "user-keyboard",
+    userActivation: userIntent !== undefined && consumeUserKeyboardIntent(userIntent),
+  }),
   chatNew: async (opts?: { projectRoot?: string; projectName?: string }) => ipcRenderer.invoke(CHANNELS.chat.new, opts, chatGroupId),
   chatSessions: async (opts?: { kind?: SessionListKindFilter; families?: SessionFamily[]; routineId?: string; projectRoot?: string; limit?: number; before?: string; beforeId?: string; after?: string }) =>
     ipcRenderer.invoke(CHANNELS.chat.sessions, opts) as Promise<{
