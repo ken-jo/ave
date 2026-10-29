@@ -1,11 +1,6 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
-  "app.paneChatUnavailable": "This terminal or page is no longer available in this window.",
-  "app.paneChatOpenFailed": "The terminal or page could not be opened. Select it from the workspace and try again.",
-  "assistantCard.systemNoticeOperationError": "System Notice — Request Not Completed",
-  "assistantCard.conversationOpenInPane": "This conversation is open in {surface}.",
-  "assistantCard.openPaneChat": "Open",
   "terminalObservation.decisionBasis": "Decision basis: {basis}",
   "terminalObservation.decisionScope": "Permission scope: {scope}",
   "terminalObservation.basis.extensionAllowlist": "declared network access",
@@ -472,6 +467,11 @@ export const en = {
   "startupTab.shutdownTimeoutSecondsDefault": "{seconds} seconds (default)",
   "startupTab.launchRegisterFailedBody":
     "Ave could not register itself to launch at login on this system. Open Settings to try again.",
+  "app.paneChatUnavailable": "This terminal or page is no longer available in this window.",
+  "app.paneChatOpenFailed": "The terminal or page could not be opened. Select it from the workspace and try again.",
+  "assistantCard.systemNoticeOperationError": "System Notice — Request Not Completed",
+  "assistantCard.conversationOpenInPane": "This conversation is open in {surface}.",
+  "assistantCard.openPaneChat": "Open",
 } as const;
 
 /** Union of the *seed* (hand-curated, common) translation keys. The full app key space is `string` (see {@link ./index.MessageKey}) because per-surface
