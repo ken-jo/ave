@@ -6,6 +6,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
+import { setLocale } from "../../../../i18n/runtime.js";
 
 const TARGET = "C:\\ProgramData\\ave\\config.json";
 const PARENT = "C:\\ProgramData\\ave";
@@ -49,6 +51,7 @@ const targetLine = () => screen.getByTestId("approval-decision-target").textCont
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setLocale("ko");
 });
 
 describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row", () => {
@@ -103,6 +106,19 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(details.textContent).toContain(PARENT);
   });
 
+  it.each([
+    ["ko", "항상 허용하면 이 폴더가 프로젝트에 추가됩니다.", "다시 묻지 않습니다", "필수 검사는 계속 적용됩니다"],
+    ["en", "Always allow adds this folder to the project.", "without asking", "mandatory checks still apply"],
+  ] as const)("explains the lasting project write grant in %s", async (locale, addition, futureWrites, floors) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    renderCard();
+    const hint = screen.getByTestId("approval-folder-project-hint");
+    expect(hint).toHaveTextContent(addition);
+    expect(hint).toHaveTextContent(futureWrites);
+    expect(hint).toHaveTextContent(floors);
+  });
+
   it("shows the adjacency warning only while the widening decision is selected", () => {
     renderCard(makeRequest({
       outOfAllowedDir: {
@@ -133,6 +149,7 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(always).toHaveAttribute("title", "지속 허용할 안전한 검토 상위 폴더가 없습니다.");
     expect(screen.getByTestId("allow-always-unavailable-reason"))
       .toHaveTextContent("지속 허용할 안전한 검토 상위 폴더가 없습니다.");
+    expect(screen.queryByTestId("approval-folder-project-hint")).toBeNull();
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeEnabled();
   });
 

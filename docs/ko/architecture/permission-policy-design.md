@@ -349,9 +349,11 @@ Shell leaf 의 read/write 판정은 risk classifier 의 verb table (`permissions
 
 **Eval pipeline:** numeric order short-circuit. Layer N deny → Layer N+1 ~ skip. **단 audit 에는 `denyReasons: [{layer, reason}]` 으로 *현재 deny 이유 1건* 만 기록** (forensics 가 다른 hypothetical 결정을 보고 싶으면 별도 dry-run 모드로).
 
-**Runtime mode semantics:** `default` 는 read 허용 + write/shell/network 및 `decisionOverride: "ask"` builtin meta를 ask 한다. `strict` 는 read 포함 모든 도구 실행을 ask. `auto` 는 user-visible write/shell/network 및 `decisionOverride: "ask"` builtin meta를 같은 foreground reviewer lane으로 보내고, 설정된 foreground 자동승인 임계값(low/medium; off면 기존 explicit approval 경로)까지 allow+audit, 그 초과/HIGH 는 main-owned bottom-floating approval dock 에서 사용자 결정을 받는다. Chat 문장 감지나 executor 재시도 메모리는 승인 권한으로 사용하지 않는다. `auto` headless mutation 은 reviewer/deferred queue 로 보낸다. `allow` 는 명시적 전체허용 opt-in 이며 Layer 0 sensitive path, Layer 1 directory scope, deny rules, overlay-trigger-origin mutation guard 는 우회하지 않는다.
+**Runtime mode semantics:** 소유자 결정(2026-10-29)에 따라 `default` 와 `auto` 는 세션 cwd 및 설정된 추가 프로젝트 디렉터리 안에서 체크포인트로 복구 가능한 builtin 파일 도구 변경을 허용한다. 모든 변경 경로가 lexical/canonical 양쪽 모두에서 프로젝트 안에 있어야 한다. 민감 경로 차단, 보호 제어 경로·프로젝트 탈출 강제 확인, 명시적 ask/deny 규칙, staged/overlay·remote 출처, 손상된 규칙은 우선한다. 임시 경로와 앱 데이터 경로는 프로젝트 루트가 아니며, 사용자가 없는 headless 턴에는 새 자동 허용을 적용하지 않는다.
 
-**Auto mode 의 silent skip 금지:** `confirm` (Layer 1 외부 path) 은 auto mode 에서도 ask. foreground 자동승인이 low/medium으로 활성화된 경우에만, Auto mode 의 자동 허용 대상은 그 임계값 이하로 판정된 user-visible write/shell/network 및 `decisionOverride: "ask"` builtin meta이며, dir-confirm/headless/hard approval gate는 제외한다.
+`default` 의 나머지 쓰기는 승인을 요청하며 셸·네트워크는 각 권한 규칙을 따른다. `strict` 는 읽기를 포함한 모든 도구 실행을 확인한다. `auto` 는 위 프로젝트 변경을 허용한 뒤 나머지 검증 대상 호출에 foreground reviewer 임계값(low/medium; off면 사용자 승인)을 적용한다. 체크포인트를 사용할 수 없는 쓰기는 reviewer 자동승인 대신 사용자 승인을 요청하며, 명시적 grant는 강제 확인 조건 뒤에서 기존 권한을 유지한다. Headless mutation은 기존 reviewer/deferred 경로를 유지한다. `allow` 도 민감 경로·허용 디렉터리·deny 규칙·출처 강제를 우회하지 않는다. 상세한 현행 순서는 [Project file writes](../../architecture/permission-policy-design.md#project-file-writes)를 따른다.
+
+**Auto mode 의 승인 경계:** 복구 가능한 프로젝트 파일 변경은 reviewer 전에 허용된다. 그 외 reviewer 검증 대상만 설정된 임계값 이하에서 자동 허용된다. 외부 경로의 디렉터리 승인은 auto mode에서도 사용자 카드가 필요하고, 그 카드의 디렉터리 grant는 같은 호출의 일반 쓰기 승인도 충족해 중복 카드를 없앤다. 보호 경로·프로젝트 탈출·명시적 ask 같은 강제 확인 조건은 디렉터리 grant로 대체되지 않는다. Chat 문장 감지나 executor 재시도 메모리는 승인 권한으로 사용하지 않는다.
 
 ### Layer 3 — Category × Source × Registry pattern
 
@@ -415,7 +417,7 @@ registerToolCategory({
 | source × cat | default | strict | auto interactive | auto headless | allow |
 |---|---|---|---|---|---|
 | builtin × read | L0/L1 → allow | L0/L1 → ask | L0/L1 → allow | L0/L1 → allow | L0/L1 → allow |
-| builtin × write | L0/L1 → ask | L0/L1 → ask | L0/L1 → reviewer LOW allow + audit / MED-HIGH approval dock | L0/L1 → reviewer (L5) | L0/L1 → allow + audit |
+| builtin × write | 강제 조건 확인 → 복구 가능한 프로젝트 파일 변경 allow, 그 외 ask | 강제 조건 확인 → ask | 강제 조건 확인 → 같은 프로젝트 변경 allow, 나머지 검증 대상은 reviewer 임계값 적용 | 기존 reviewer 경로 유지 | 강제 조건 확인 → allow + audit |
 | builtin × shell | L0/L1 → ask + AST | L0/L1 → ask + AST | L0/L1 → reviewer LOW allow + AST + audit / MED-HIGH approval dock + AST | L0/L1 → reviewer | L0/L1 → allow + AST |
 | builtin × network | L0/L1 → ask + endpoint | L0/L1 → ask | L0/L1 → reviewer LOW allow + audit / MED-HIGH approval dock | L0/L1 → reviewer (L5) | L0/L1 → allow + audit |
 | plugin × read | L0/L1/L4 → allow | L0/L1/L4 → ask | L0/L1/L4 → allow | L0/L1/L4 → allow, reviewer if out-of-dir | L0/L1/L4 → allow |

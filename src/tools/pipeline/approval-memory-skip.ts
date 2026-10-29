@@ -147,7 +147,7 @@ export async function tryUserApprovalMemorySkip(
   // A target-wide hit on arguments other than the ones the user approved is reviewed exactly like a fresh request; risk screen and LLM reviewer lane. The remembered
   // grant then only stands in for the prompt when that fresh, actually-assessed verdict is no riskier than the stored one. An exact-args hit keeps the rule-only guard above.
   let freshReviewLevel: UserApprovalVerdict | null = null;
-  if (!isExactArgsDecision(approval, canonicalArgs)) {
+  if (!isExactArgsDecision(approval, canonicalArgs, toolName)) {
     if (!dispatchFreshReview) return null;
     const reviewed = await dispatchFreshReview(
       toolName,

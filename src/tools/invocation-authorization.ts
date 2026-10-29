@@ -7,6 +7,7 @@ import {
   isIssuedShellAllowRuleDecision,
   isReviewerAutoDecisionOutcome,
   isTailnetControllerP1BlockedTool,
+  type PermissionCheckContext,
   type PermissionCheckResult,
 } from "../permissions/permission-manager.js";
 import {
@@ -160,6 +161,7 @@ export interface AuthorizationStageContext {
   ) => Promise<ToolResult>;
   sessionId: string | undefined;
   startTime: number;
+  fileWritePolicy?: PermissionCheckContext["fileWritePolicy"];
   permissionResult: PermissionCheckResult | undefined;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
   pluginOperationPrincipal: PluginOperationPrincipal | undefined;
@@ -487,6 +489,7 @@ export async function authorizeToolInvocation(
           {
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
+            fileWritePolicy: context.fileWritePolicy,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),

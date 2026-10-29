@@ -87,6 +87,8 @@ export interface ToolPermissionContext {
   approvalCacheKey?: string;
   /** What a remembered decision is keyed on; host-derived with approvalCacheKey. */
   approvalMemory?: ApprovalMemory;
+  /** Configured project roots only; excludes implicit temp, app-data and scratch grants. */
+  projectDirectories?: readonly string[];
   /** Snapshot of user-configured Layer 1 roots. */
   additionalDirectories?: readonly string[];
   /** Fresh accessor used to observe earlier grants in an ordered batch. */
