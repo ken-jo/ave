@@ -1,10 +1,10 @@
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { describe, expect, it } from "vitest";
 import { hasMarketplaceInstallInFlight, withMarketplaceInstall } from "../install-lifecycle.js";
 
 describe("marketplace install lifecycle", () => {
   it("keeps concurrent installs busy until the last operation settles", async () => {
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
+    const { promise: held, resolve: release } = deferred<void>();
     const pending = withMarketplaceInstall(() => held);
     try {
       await withMarketplaceInstall(async () => undefined);

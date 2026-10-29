@@ -159,6 +159,14 @@ describe("SourceSyncer", () => {
     return { registry, syncer, changed };
   }
 
+  async function emptySource() {
+    const { repo, name } = fixture();
+    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const context = await setup();
+    await context.registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    return context;
+  }
+
   function snapshotFiles(id: string): string[] {
     const dir = join(root, id, "snapshots");
     return existsSync(dir) ? readdirSync(dir).sort() : [];
@@ -258,10 +266,7 @@ describe("SourceSyncer", () => {
   });
 
   it("refuses to treat a source with synced data but no state file as fresh", async () => {
-    const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
-    const { registry, syncer } = await setup();
-    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const { syncer } = await emptySource();
     await syncer.sync("acme");
     rmSync(join(root, "acme", "state.json"));
     await expect(syncer.sync("acme")).rejects.toMatchObject({
@@ -297,10 +302,7 @@ describe("SourceSyncer", () => {
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("names an unreadable state file as damaged, by its error code and not its path", async () => {
-    const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
-    const { registry, syncer } = await setup();
-    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const { registry, syncer } = await emptySource();
     await syncer.sync("acme");
     chmodSync(join(root, "acme", "state.json"), 0o000);
     await expect(registry.readState("acme")).rejects.toMatchObject({
@@ -452,10 +454,7 @@ describe("SourceSyncer", () => {
   });
 
   it("lets a running sync finish before its source is removed", async () => {
-    const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
-    const { registry, syncer } = await setup();
-    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const { registry, syncer } = await emptySource();
     const order: string[] = [];
     const syncing = syncer.sync("acme").then((result) => {
       order.push("sync");
@@ -470,10 +469,7 @@ describe("SourceSyncer", () => {
   });
 
   it("still syncs a hidden source, but refuses installs and updates from it with SOURCE_DISABLED", async () => {
-    const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
-    const { registry, syncer } = await setup();
-    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const { registry, syncer } = await emptySource();
     await registry.setEnabled("acme", false);
     expect((await syncer.sync("acme")).status).toBe("ok");
     await expect(syncer.withRepository("acme", async () => "read")).rejects.toMatchObject({ code: "SOURCE_DISABLED" });

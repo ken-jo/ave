@@ -23,6 +23,11 @@ const NEW = "https://ave.example";
 
 const doc = (fields: Record<string, unknown> = {}) => ({ schemaVersion: 1, announcements: "/announcements/v1.json", telemetry: null, movedTo: null, movedFrom: null, ...fields });
 
+const moveRoutes = () => ({
+  [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
+  [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
+});
+
 const announcement = (id: number) => ({
   id,
   title: `Notice ${id}`,
@@ -178,8 +183,7 @@ describe("ServiceClient", () => {
 
   it("follows a move the new base confirms, records it, and reads the new base from then on", async () => {
     const routes = {
-      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
+      ...moveRoutes(),
       [`${NEW}/announcements/v1.json`]: [announcement(2)],
     };
     const first = client(routes);
@@ -212,10 +216,7 @@ describe("ServiceClient", () => {
   });
 
   it("drops a move made under another build constant", async () => {
-    await client({
-      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
-    }).service.refresh();
+    await client(moveRoutes()).service.refresh();
     const shipped = "https://ave-next.example";
     const { service } = client({ [`${shipped}/.well-known/ave-service.json`]: doc() }, { buildBase: shipped });
     await expect(service.refresh()).resolves.toMatchObject({ base: shipped, source: "build" });
@@ -424,10 +425,7 @@ describe("ServiceClient", () => {
   });
 
   it("fails when an accepted move's base cannot be read, without falling back", async () => {
-    await client({
-      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
-    }).service.refresh();
+    await client(moveRoutes()).service.refresh();
     const { service, fetchImpl } = client({ [`${OLD}/.well-known/ave-service.json`]: doc() });
     await expect(service.refresh()).rejects.toThrow("HTTP 404");
     expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([`${NEW}/.well-known/ave-service.json`]);
