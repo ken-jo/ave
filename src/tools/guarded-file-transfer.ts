@@ -1,3 +1,4 @@
+import { terminalFileEvidence } from "../main/terminal/changed-file-evidence.js";
 import { constants, createReadStream, read, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -617,6 +618,12 @@ class OwnedTransfer {
         await this.verifyOwned(entry);
       }
       this.check();
+      const sessionId = this.context.metadata?.sessionId;
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        for (const entry of this.ledger) if (entry.kind === "file") {
+          await terminalFileEvidence.recordWrite(sessionId, join(this.summary.destinationPath, entry.relativePath), null);
+        }
+      }
       return { ok: true, summary: this.summary };
     } catch (error) {
       this.accepting = false;

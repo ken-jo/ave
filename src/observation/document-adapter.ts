@@ -1,3 +1,4 @@
+import { terminalFileEvidence } from "../main/terminal/changed-file-evidence.js";
 import { createHash } from "node:crypto";
 import { watch, type BigIntStats, type FSWatcher } from "node:fs";
 import { lstat } from "node:fs/promises";
@@ -467,6 +468,7 @@ export class DocumentObservationAdapter {
     }
     signal.throwIfAborted();
     if (!this.current(view) || version !== view.version) return;
+    await terminalFileEvidence.recordWrite(proof.identity.sessionId, view.registration.path);
     this.publishDiff(view, document);
     const seq = this.daemon.publish(view.registration.id, { kind: "snapshot", before: null, after: document });
     if (seq !== undefined) {

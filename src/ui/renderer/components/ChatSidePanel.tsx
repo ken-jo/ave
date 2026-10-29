@@ -1,3 +1,5 @@
+import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
+import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import type { WorkspaceTab, WorkspaceTabKind, WorkspaceTabsStore } from "../preview/workspace-tabs.js";
@@ -966,7 +968,10 @@ export function ChatSidePanel({
   const closeWorkspaceTab = useCallback(
     (id: string) => {
       const closing = tabs.find((tab) => tab.id === id);
-      if (closing?.kind === "terminal") void api.terminal?.kill(id);
+      if (closing?.kind === "terminal") {
+        forgetTerminalFileReview(id);
+        void api.terminal?.kill(id);
+      }
       closeTab(id);
     },
     [tabs, api, closeTab],
@@ -1152,6 +1157,7 @@ export function ChatSidePanel({
                       <TerminalAttentionDot testId="chat-side-panel-tab-terminal-attention" message={terminalAttention.get(tab.id)!.message} />
                     ) : null}
                   </button>
+                  {tab.kind === "terminal" ? <TerminalFileReviewBadge tabId={tab.id} onOpen={() => setActiveTabId(tab.id)} /> : null}
                   {isEphemeral ? (
                     <button
                       type="button"

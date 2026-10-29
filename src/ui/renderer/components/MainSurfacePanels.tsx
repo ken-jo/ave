@@ -1,4 +1,5 @@
 /** Terminal views hand over a single mount; web pages remain in the window layer when their panes are hidden. */
+import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, PanelRightClose, PanelRightOpen, RotateCw } from "lucide-react";
@@ -257,6 +258,7 @@ export function SurfacePane({
       actions={actions}
       asideSlot={chatOpen}
       title={title}
+      titleAccessory={surface.kind === "terminal" ? <TerminalFileReviewBadge tabId={surface.tabId} /> : undefined}
       attention={attention}
       meta={meta}
       {...(surface.kind === "browser" && (navigation.url ?? surface.url) ? { description: navigation.url ?? surface.url ?? "" } : {})}

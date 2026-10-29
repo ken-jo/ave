@@ -11,6 +11,7 @@ import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "..
 import { isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
 
 const log = createLogger("terminal-ipc");
 
@@ -91,6 +92,42 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       if (!("blockId" in payload) || typeof payload.blockId !== "number" || !Number.isInteger(payload.blockId) || payload.blockId < 1) return { ok: false, error: "invalid-params" };
       const block = tracker.get(payload.blockId);
       return block ? { ok: true, session, block } : { ok: false, error: "block-not-found" };
+    });
+  }
+  for (const operation of ["fileReviews", "reviewFiles"] as const) {
+    ipcMain.handle(CHANNELS.terminal[operation], async (event, payload) => {
+      if (!authorized(event, CHANNELS.terminal[operation])) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+      const liveOwner = (): boolean => {
+        const window = BrowserWindow.fromWebContents(event.sender);
+        return !!window && !window.isDestroyed() && !event.sender.isDestroyed()
+          && event.senderFrame === event.sender.mainFrame
+          && (deps.getAppWindows?.() ?? [deps.getMainWindow()]).some(owner => owner === window && owner.webContents === event.sender);
+      };
+      if (!liveOwner()) {
+        auditUnauthorized(auditLogger, CHANNELS.terminal[operation], event);
+        return { ok: false, error: UNAUTHORIZED_FRAME.error };
+      }
+      if (!isTerminalSessionRef(payload) || payload.lane !== "manual") return { ok: false, error: "invalid-params" };
+      const ownerWindowId = senderWindowId(event);
+      if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
+      const tracker = getWindowTerminalBlockTracker(payload, ownerWindowId);
+      const session = getWindowTerminalBlockSession(payload, ownerWindowId);
+      if (!tracker || !session) return { ok: false, error: "stale-terminal-session" };
+      const snapshot = await terminalFileEvidence.snapshot(session.currentCwd ?? session.initialCwd, tracker.list(), session.terminalSessionId);
+      // Filesystem reads yield; closing or replacing the terminal revokes the response.
+      if (!liveOwner() || !terminalOwnedBy(payload.tabId, ownerWindowId)
+        || getWindowTerminalBlockTracker(payload, ownerWindowId) !== tracker) return { ok: false, error: "stale-terminal-session" };
+      if (operation === "fileReviews") return { ok: true, snapshot };
+      if (!("files" in payload) || !Array.isArray(payload.files) || payload.files.length > 4096
+        || !payload.files.every((file: unknown) => typeof file === "object" && file !== null
+          && "path" in file && typeof file.path === "string"
+          && "hash" in file && typeof file.hash === "string")) return { ok: false, error: "invalid-params" };
+      const files = payload.files as { path: string; hash: string }[];
+      if (!files.every(file => snapshot.files.some(known => known.path === file.path && known.hash === file.hash))) {
+        return { ok: false, error: "stale-file-review" };
+      }
+      terminalFileEvidence.review(files);
+      return { ok: true };
     });
   }
 }

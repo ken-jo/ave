@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
+import { TerminalFileReview } from "./TerminalFileReview.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
@@ -264,7 +265,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
 
   return (
     <div
-      className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
+      className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
@@ -290,6 +291,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           onSession={setSession}
         />
       ) : null}
+      {api.terminal && session ? <TerminalFileReview key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} /> : null}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />
     </div>
   );

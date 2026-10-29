@@ -853,12 +853,34 @@ each admitted write root, taking precedence over grants:
 - `.bashrc`, `.zshrc`, `.profile`, `.bash_profile` and `.zprofile`;
 - `.gitconfig` and the repository control paths defined below;
 - `.vscode/**`;
+- `.envrc`, `.mise.toml`, `mise.toml`, `.tool-versions`, `.npmrc`, `.yarnrc.yml`,
+  `bunfig.toml` and `.husky/**`;
+- configured `core.hooksPath` directories, including absent targets and their
+  physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
 
 The Windows MXC PowerShell container receives the same denies from the same
 policy builder: an existing protected entry inside a write grant becomes
 read-only and an absent one is denied, so it cannot be created.
+
+Loader denies apply to isolated processes through the common filesystem policy,
+including the persistent conversation shell and worker confinement when enabled.
+They do not interpose on commands the user types into a host terminal. Existing
+loader trust prompts remain independent of these write denies. Hook discovery
+reads bounded regular configuration files without running repository programs.
+It includes repository ancestry, linked-worktree/common configuration, inherited
+home/XDG/system configuration and explicit configuration-file environment
+overrides. Conditional includes are conservatively included regardless of their
+current condition. Configuration sources, include sources, configured hook
+directories and physical aliases remain protected; relative hook paths cover
+both the worktree and metadata working directories. Unsupported path interpolation,
+named-home expansion, invalid escapes and exhausted read/include budgets refuse
+policy preparation instead of leaving an unknown target writable. Conventional
+system locations and explicit overrides are inspected; custom compiled-in system
+configuration prefixes require an explicit system-config override. The Unix
+loader paths retain creation protection on Linux rather than using its special
+Git-metadata quarantine exception.
 
 The existing sensitive-write floor owns real-home startup-file protection; the
 root-relative policy does not maintain a second real-home filename list.
@@ -1876,12 +1898,27 @@ The useful comparison is visible control transfer. Ave's planned host path
 requires exact command admission and bounded output disclosure; it does not
 adopt auto-approval or full terminal-buffer sharing.
 
-Agent-written-file execution warnings, the inline warning/review panel and
-hash-based file reviews are separately deferred, together with expanded isolated
-loader-file denies for `.envrc`, `.mise.toml`, `.tool-versions` and
-`.npmrc`. That independent follow-up starts from main after the ownership
-foundation and does not depend on host control. Existing deny floors and checks
-below remain unchanged; these warnings are not delivered permission authority.
+### Agent-changed file review
+
+Host terminals, including the agent-inaccessible side-work-panel terminal, show
+an advisory inline warning when a command uses a file with concrete successful
+agent-write evidence from this application session. Direct scripts and sourced
+files, target recipes in makefiles, package scripts and their referenced scripts,
+and physical local-bin entry points are matched conservatively. The command
+continues without a confirmation dialog. Unresolved dynamic indirection is
+disclosed; subprocess writes without concrete path evidence are not claimed
+covered. Provenance is advisory and is never permission or terminal authority.
+
+The pending-review badge opens the changed-file panel. Each entry shows its
+latest known command use or that no execution use was observed. Users can open
+a diff and mark one or all entries reviewed. Review decisions bind the observed
+content hash: another content revision becomes pending again. Canonical physical
+paths retain session attribution across symlink aliases and delete/restore;
+deleting a file does not erase its historical evidence. Dismissing an inline
+warning does not grant permission or mark its files reviewed.
+Evidence and review decisions live only in memory for the running application;
+restarting clears them. Command use is inferred from command blocks and static
+file contents, rather than proof of operating-system file opens.
 
 ### Isolated shell readiness and command checks
 

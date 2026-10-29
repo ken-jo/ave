@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentObservationFixture } from "../../__tests__/support/agent-observation.js";
 
+import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation } from "../../memory/code-checkpoints.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import type { ObservationIdentity } from "../../shared/agent-observation.js";
@@ -316,6 +317,17 @@ describe("agent document observation context", () => {
     expect(sink.beforeMutation).toHaveBeenCalledExactlyOnceWith(IDENTITY, [{ path, content: "after" }]);
     expect(sink.revokeInvocation).toHaveBeenCalledExactlyOnceWith(IDENTITY);
     expect(finishMutation).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("retains successful write evidence when observer finalization fails", async () => {
+    const path = join(directory, "run.sh");
+    await writeFile(path, "before");
+    finishMutation.mockImplementation(async () => { throw new Error("observer finalization failed"); });
+    await expect(admitted(() => checkpointFileMutation([{ path, content: "after" }], () => writeFile(path, "after"))))
+      .rejects.toThrow("observer finalization failed");
+    const snapshot = await terminalFileEvidence.snapshot(directory, []);
+    const canonical = await realpath(path);
+    expect(snapshot.files.find(file => file.path === canonical)).toMatchObject({ sessionIds: [IDENTITY.sessionId], diff: { before: "before", after: "after" } });
   });
 
   it("does not execute a mutation after its observation admission fails", async () => {

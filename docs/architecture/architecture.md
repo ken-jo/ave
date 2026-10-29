@@ -1447,6 +1447,14 @@ confinement, TTY/nonce readiness, egress and cancellation checks. These isolated
 checks remain in force, including the Linux initial-namespace revalidation limit
 and fail-closed behavior when the backend is unavailable. Host startup/user output
 is private; only explicit user-selected block attachments share host context.
+Host terminals show a non-blocking execution warning for concretely tracked
+agent-changed files and a hash-keyed pending-review badge/panel. The side-work-panel
+host terminal has the same advisory review UI while retaining no agent access.
+Successful write provenance uses canonical physical paths; it is never permission
+authority. Dynamic indirection and subprocess writes without concrete path evidence
+remain explicitly outside complete coverage. The
+[changed-file review policy](permission-policy-design.md#agent-changed-file-review)
+defines review lifetime and the separate isolated loader write-deny floor.
 Side-work-panel host terminals have no agent read/write access. Host command
 approval and takeover are pending; this delivery enables no agent host typing.
 

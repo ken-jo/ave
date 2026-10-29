@@ -1,3 +1,4 @@
+import { terminalFileEvidence } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { constants, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -544,7 +545,8 @@ async function requireFreshRead(
 }
 
 /** After an edit tool's own write, the model has seen the new content. */
-async function recordOwnWrite(sessionId: string, target: string, content: string): Promise<void> {
+async function recordOwnWrite(sessionId: string, target: string, content: string, before?: string | null): Promise<void> {
+  await terminalFileEvidence.recordWrite(sessionId, target, before);
   const written = await stat(target);
   recordFileRead(sessionId, await fileReadKey(target), {
     mtimeMs: written.mtimeMs,
@@ -1062,7 +1064,7 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
 
     await mkdir(dirname(target), { recursive: true });
     await atomicTextWrite(target, after);
-    if (readSession !== undefined) await recordOwnWrite(readSession, target, after);
+    if (readSession !== undefined) await recordOwnWrite(readSession, target, after, skipSidecar ? undefined : existing.value === null ? null : before);
 
     const sessionId =
       typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
@@ -1173,7 +1175,7 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
       ? current.split(oldText).join(newText)
       : current.replace(oldText, () => newText);
     await atomicTextWrite(target, next);
-    await recordOwnWrite(fresh.value.sessionId, target, next);
+    await recordOwnWrite(fresh.value.sessionId, target, next, bytes.toString("utf8"));
     return {
       output: JSON.stringify({ path: target, replacements: input.replaceAll ? occurrences : 1 }),
       isError: false,
@@ -1488,7 +1490,7 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     if (!sourceStat.value.isFile()) {
       return toolError(`move_file requires a regular source file: ${source}`);
     }
-    return checkpointFileMutation([
+    const result = await checkpointFileMutation([
       { path: source, content: null },
       { path: destination, copyFrom: source },
     ], async () => {
@@ -1510,6 +1512,9 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
         metadata: { sourcePath: source, destinationPath: destination },
       };
     });
+    const sessionId = sessionIdOf(ctx);
+    if (sessionId !== undefined && !result.isError) await terminalFileEvidence.recordWrite(sessionId, destination);
+    return result;
   }
 }
 

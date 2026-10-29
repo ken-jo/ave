@@ -70,6 +70,8 @@ function terminalApi() {
     kill: vi.fn(async () => ({ ok: true as const })),
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
+    listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { files: [], warnings: [] } })),
+    reviewFiles: vi.fn(async () => ({ ok: true as const })),
     listBlocks: vi.fn(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: session.shellIntegration, blocks: [] as unknown[] })),
     getBlock: vi.fn(async (_session: TerminalSessionInfo, _id: number) => ({ ok: false as const, error: "block-not-found" })),
   };

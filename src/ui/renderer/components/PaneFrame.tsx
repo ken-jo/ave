@@ -93,6 +93,7 @@ interface PaneAction {
 interface PaneFrameProps {
   /** Leading edge of the header. */
   title: string;
+  titleAccessory?: ReactNode;
   /** Keep plugin descriptions on the frame title tooltip rather than duplicating page chrome. */
   description?: string;
   /** Drawn ahead of the title: the same glyph the sidebar row uses for this content, so the pane and the row that opened it
@@ -248,6 +249,7 @@ export function PaneFrame({
   title,
   description,
   icon,
+  titleAccessory,
   actions = [],
   trailing,
   focused,
@@ -405,6 +407,7 @@ export function PaneFrame({
             </span>
           ) : null}
         </h2>
+        {titleAccessory}
         {headerActions.map((action) =>
           action.items ? (
             <DropdownMenu key={action.id}>

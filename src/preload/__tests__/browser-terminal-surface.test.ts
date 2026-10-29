@@ -69,6 +69,10 @@ describe("private browser and terminal preload boundaries", () => {
     const ref = { tabId: "terminal:1", lane: "manual" as const, terminalSessionId: "incarnation-2" };
     await api.input(ref, "echo hello\r");
     expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.input, { ...ref, data: "echo hello\r" });
+    await api.listFileReviews(ref);
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.fileReviews, ref);
+    await api.reviewFiles(ref, [{ path: "/work/script.sh", hash: "observed" }]);
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.reviewFiles, { ...ref, files: [{ path: "/work/script.sh", hash: "observed" }] });
     const receive = vi.fn();
     const off = api.onData(receive);
     listeners.get(CHANNELS.terminal.data)!(undefined, { ...ref, chunk: "hello" });

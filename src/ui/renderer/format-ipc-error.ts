@@ -274,6 +274,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
   "stale-terminal-session": "formatIpcError.staleTerminalSession",
+  "stale-file-review": "terminalFileReview.staleReview",
   "no-such-request": "formatIpcError.noSuchRequest",
   "not-registered": "formatIpcError.notRegistered",
   "already-resolved": "formatIpcError.alreadyResolved",

@@ -14,7 +14,9 @@ import type { TurnChangeReview, TurnReviewError, TurnReviewResult } from "../sha
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
-import { observeAgentDocumentMutation } from "../tools/agent-observation-context.js";
+import { isTerminalReviewUnavailable, readTerminalReviewText, terminalFileEvidence } from "../main/terminal/changed-file-evidence.js";
+import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { currentAgentObservationIdentity, observeAgentDocumentMutation } from "../tools/agent-observation-context.js";
 import type { ToolExecutionContext } from "../tools/types.js";
 import { createLogger } from "../lib/logger.js";
 import { countTurnReviewLines, createTurnReviewHunks } from "./turn-review-diff.js";
@@ -448,7 +450,25 @@ export async function checkpointFileMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
   run: () => Promise<T>,
 ): Promise<T> {
-  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run));
+  const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
+  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run));
+  const originals = await Promise.all(effects.map(async (effect) => {
+    try {
+      const path = resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
+      return { path, requestedPath: effect.path, before: await readTerminalReviewText(path) };
+    } catch (error) {
+      if (!isTerminalReviewUnavailable(error)) throw error;
+      log.warn("terminal review baseline unavailable: %s", (error as Error).message);
+      return { path: effect.path, requestedPath: effect.path, before: undefined };
+    }
+  }));
+  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async () => {
+    const result = await run();
+    if (!(result && typeof result === "object" && "isError" in result && result.isError === true)) {
+      for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before);
+    }
+    return result;
+  }));
 }
 
 async function checkpointMutation<T>(
