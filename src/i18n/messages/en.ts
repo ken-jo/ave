@@ -138,7 +138,7 @@ export const en = {
   "oauthWindow.insecure": "Not encrypted (HTTP / loopback)",
   "oauthWindow.certificateError": "Certificate error",
   "oauthWindow.loadError": "Page could not be loaded",
-  "mainToolbar.hideSidebar": "Hide sidebar",
+  "mainToolbar.toggleSidebar": "Toggle Sidebar Visibility",
   "mainToolbar.showSidebar": "Show sidebar",
   "sidebar.generalLabel": "General",
   "shellTasks.title": "Commands",

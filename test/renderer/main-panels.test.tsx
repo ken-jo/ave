@@ -321,6 +321,35 @@ describe("main-area terminal and web panels", () => {
     // Return panels by header drag; the header toggle opens the pane's own chat.
   });
 
+  it("keeps sidebar terminal entries unique through a side-to-main move, close and reopen", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    const rows = () => [...container.querySelectorAll<HTMLElement>('[data-testid^="sidebar-surface-terminal:"]')];
+    const sideId = await openSideTerminal(container);
+    await waitFor(() => expect(rows()).toHaveLength(1));
+    const movedTitle = rows()[0]!.textContent;
+    await act(async () => { fireEvent.click(document.querySelector(
+      `[data-tab-id="${sideId}"] [data-testid="chat-side-panel-move-to-main"]`,
+    )!); });
+    await waitFor(() => expect(shownSurfaces(container)).toEqual([{ kind: "terminal", tabId: sideId }]));
+    expect(sideTabIds()).not.toContain(sideId);
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]!.textContent).toBe(movedTitle);
+    await clickSidebarNavRow("features", "sidebar-terminal", { ctrlKey: true });
+    await clickSidebarNavRow("features", "sidebar-terminal", { ctrlKey: true });
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    expect(new Set(rows().map((row) => row.textContent)).size).toBe(3);
+    const closingId = shownSurfaces(container)[0]!.tabId!;
+    await act(async () => { fireEvent.click(container.querySelector('[data-testid="surface-pane"]')!
+      .closest('[data-testid="pane"]')!.querySelector('[data-testid="pane-close"]')!); });
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(container.querySelector(`[data-testid="sidebar-surface-${closingId}"]`)).toBeNull();
+    await act(async () => { fireEvent.keyDown(window, { key: "T", ctrlKey: true, shiftKey: true }); });
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    expect(new Set(rows().map((row) => row.textContent)).size).toBe(3);
+    expect(new Set(rows().map((row) => row.dataset.testid)).size).toBe(3);
+    expect(shownSurfaces(container).map((surface) => surface.tabId)).not.toContain(closingId);
+  });
+
   it("drops a dragged side tab on a pane, and a pane's header on the side panel's tabs", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     const tabId = await openSideTerminal(container);
