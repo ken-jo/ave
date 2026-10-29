@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -8,7 +8,8 @@ import { ToolRegistry } from "../registry.js";
 import { ApplyPatchTool, CopyPathTool, DeleteFileTool, EditFileTool, MultiEditTool, MoveFileTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
-import { markCodeCheckpointUnavailable, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { markCodeCheckpointUnavailable, restoreCodeCheckpoint, trackCodeCheckpointChild, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { approvalCacheKeyFor, ARGS_APPROVAL_MEMORY } from "../pipeline/display-mask.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
@@ -32,7 +33,7 @@ describe("checkpointed project file writes", () => {
     audit = new AuditLogger(join(root, "audit"));
     executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
   });
-  afterEach(async () => { await audit.close(); vi.unstubAllEnvs(); __resetSessionStoreForTest(); await rm(root, { recursive: true, force: true }); });
+  afterEach(async () => { await audit.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); __resetSessionStoreForTest(); await rm(root, { recursive: true, force: true }); });
   const run = (name: string, input: Record<string, unknown>, opts: Partial<ExecuteOptions> = {}) => executor.executeAll([{ id: randomUUID(), name, input }], {
     sessionId, executionCwd: project, permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [] }, ...opts,
   });
@@ -143,20 +144,74 @@ describe("checkpointed project file writes", () => {
     expect(requestAndWait).toHaveBeenCalledTimes(1);
   });
 
-  it("does not auto-allow a transfer without a before-image contract", async () => {
+  it("auto-allows and rewinds a regular file copy when both endpoints are in project", async () => {
     const sourcePath = join(project, "source"); await writeFile(sourcePath, "ok");
-    await turn(() => run("copy_path", { sourcePath, destinationPath: join(project, "copy") }));
+    const destinationPath = join(project, "copy");
+    expect((await turn(() => run("copy_path", { sourcePath, destinationPath })))[0].is_error).toBeFalsy();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(await readFile(destinationPath, "utf8")).toBe("ok");
+    expect(await restoreCodeCheckpoint(sessionId, "turn", { cwd: project, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    await expect(readFile(destinationPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(sourcePath, "utf8")).toBe("ok");
+  });
+
+  it("keeps directory copies on the ordinary approval route", async () => {
+    const sourcePath = join(project, "tree"); await mkdir(sourcePath); await writeFile(join(sourcePath, "file"), "ok");
+    expect((await turn(() => run("copy_path", { sourcePath, destinationPath: join(project, "copy") })))[0].is_error).toBeFalsy();
     expect(requestAndWait).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps an unavailable checkpoint in front of a person in auto mode", async () => {
+  it.each(["unavailable", "no-turn", "child-alive"])("preserves auto reviewer routing with %s checkpoint", async (reason) => {
     manager.setMode("auto"); manager.setInteractiveAutoApprove("medium");
-    await turn(async () => {
-      await markCodeCheckpointUnavailable();
-      await run("write_file", { path: join(project, "unrecoverable"), content: "approved" });
+    const review = vi.spyOn(manager, "dispatchReviewer").mockResolvedValue({
+      verdict: { level: "low", reason: "reviewed write" }, outcome: "host-determined",
+      cacheReason: "miss-not-found", judge: reviewerJudgeOutcomeForTest("allow", "reviewed write"),
     });
-    expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ reviewerVerdict: undefined }));
+    const action = async () => {
+      let release: (() => void) | undefined;
+      if (reason === "unavailable") await markCodeCheckpointUnavailable();
+      if (reason === "child-alive") release = await trackCodeCheckpointChild(sessionId);
+      try {
+        expect((await run("write_file", { path: join(project, "unrecoverable"), content: "approved" }))[0].is_error).toBeFalsy();
+      } finally { release?.(); }
+    };
+    if (reason === "no-turn") await action(); else await turn(action);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(await readFile(join(project, "unrecoverable"), "utf8")).toBe("approved");
+  });
+
+  it("enforces the required checkpoint at the executor mutation boundary", async () => {
+    const execute = WriteFileTool.prototype.execute;
+    vi.spyOn(WriteFileTool.prototype, "execute").mockImplementation(async function (this: WriteFileTool, input, context) {
+      await markCodeCheckpointUnavailable();
+      return execute.call(this, input, context);
+    });
+    const path = join(project, "checkpoint-lost");
+    const result = await turn(() => run("write_file", { path, content: "must not write" }));
+    expect(result[0].is_error).toBe(true);
+    expect(result[0].content).toMatch(/checkpoint unavailable/i);
+    expect(requestAndWait).not.toHaveBeenCalled();
+    await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses a parent symlink swap after automatic permission admission", async () => {
+    const parent = join(project, "parent");
+    const outside = join(root, "external");
+    await mkdir(parent); await mkdir(outside);
+    const execute = WriteFileTool.prototype.execute;
+    vi.spyOn(WriteFileTool.prototype, "execute").mockImplementation(async function (this: WriteFileTool, input, context) {
+      await rename(parent, join(project, "original-parent"));
+      await symlink(outside, parent);
+      return execute.call(this, input, context);
+    });
+    const result = await turn(() => run("write_file", { path: join(parent, "new.txt"), content: "blocked" }, {
+      permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [root] },
+    }));
+    expect(result[0].is_error).toBe(true);
+    expect(result[0].content).toMatch(/project/i);
+    expect(requestAndWait).not.toHaveBeenCalled();
+    await expect(readFile(join(outside, "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves the existing reviewer lane for supported writes outside project roots", () => {

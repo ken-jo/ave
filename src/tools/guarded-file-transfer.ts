@@ -24,7 +24,12 @@ type OwnedEntry = {
   explicit: boolean;
   handle?: OwnedHandle;
 };
-type TransferRequest = { sourcePath: string; destinationPath: string; destinationKind: EntryKind };
+type TransferRequest = {
+  sourcePath: string;
+  destinationPath: string;
+  destinationKind: EntryKind;
+  assertPath?: (path: string) => void;
+};
 
 const REPORT_PATH_LIMIT = 20;
 const REPORT_ERROR_BYTES = 1024;
@@ -79,7 +84,8 @@ function resolvedInput(path: string, context: ToolExecutionContext): string {
   return resolve(context.cwd, expandLeadingTilde(path));
 }
 
-function assertAccess(path: string, context: ToolExecutionContext): void {
+function assertAccess(path: string, context: ToolExecutionContext, assertPath?: (path: string) => void): void {
+  assertPath?.(path);
   const denied = ensureFileAccess(path, context, "write");
   if (denied) throw new FileTransferError("path-denied", denied.output);
 }
@@ -90,13 +96,13 @@ function assertSupported(stats: BigIntStats, path: string): void {
   }
 }
 
-async function sourceEndpoint(input: string, context: ToolExecutionContext): Promise<{ path: string; stats: BigIntStats }> {
+async function sourceEndpoint(input: string, context: ToolExecutionContext, assertPath?: (path: string) => void): Promise<{ path: string; stats: BigIntStats }> {
   const lexical = resolvedInput(input, context);
-  assertAccess(lexical, context);
+  assertAccess(lexical, context, assertPath);
   const before = await lstat(lexical, { bigint: true });
   assertSupported(before, lexical);
   const path = await realpath(lexical);
-  assertAccess(path, context);
+  assertAccess(path, context, assertPath);
   const stats = await lstat(path, { bigint: true });
   if (!sameSource(stats, before)) throw transferError(`Source changed during path resolution: ${lexical}`);
   return { path, stats };
@@ -209,11 +215,11 @@ class OwnedTransfer {
 
   async prepare(): Promise<void> {
     this.check();
-    const source = await sourceEndpoint(this.request.sourcePath, this.context);
+    const source = await sourceEndpoint(this.request.sourcePath, this.context, this.request.assertPath);
     this.summary.sourcePath = source.path;
     this.sourceStats = source.stats;
     const lexicalDestination = resolvedInput(this.request.destinationPath, this.context);
-    assertAccess(lexicalDestination, this.context);
+    assertAccess(lexicalDestination, this.context, this.request.assertPath);
     if (containsPath(source.path, lexicalDestination) || containsPath(lexicalDestination, source.path)) {
       throw new FileTransferError("source-destination-overlap", "Source and destination paths overlap");
     }
@@ -231,9 +237,9 @@ class OwnedTransfer {
     } catch (error) {
       throw new FileTransferError("invalid-destination-parent", `Destination parent must be an existing directory: ${dirname(lexicalDestination)}`, { cause: error });
     }
-    assertAccess(parent, this.context);
+    assertAccess(parent, this.context, this.request.assertPath);
     this.summary.destinationPath = join(parent, basename(lexicalDestination));
-    assertAccess(this.summary.destinationPath, this.context);
+    assertAccess(this.summary.destinationPath, this.context, this.request.assertPath);
     if (containsPath(source.path, this.summary.destinationPath) || containsPath(this.summary.destinationPath, source.path)) {
       throw new FileTransferError("source-destination-overlap", "Source and destination paths overlap");
     }
@@ -282,7 +288,7 @@ class OwnedTransfer {
     await verifyAnchors(this.destinationAnchors);
     for (const owned of this.ownedChain(entry)) {
       const path = this.entryPath(owned);
-      assertAccess(path, this.context);
+      assertAccess(path, this.context, this.request.assertPath);
       const stats = await lstat(path, { bigint: true });
       if (!owned.identity || !sameFileIdentity(stats, owned.identity) ||
           (owned.kind === "file" ? !stats.isFile() || stats.nlink !== 1n : !stats.isDirectory())) {
@@ -295,7 +301,7 @@ class OwnedTransfer {
     this.check();
     if (this.ledger.length >= this.limits.maxEntries) throw new FileTransferError("limit-exceeded", "Transfer entry limit exceeded");
     const path = relativePath === "" ? this.summary.destinationPath : join(this.summary.destinationPath, relativePath);
-    assertAccess(path, this.context);
+    assertAccess(path, this.context, this.request.assertPath);
     await verifyAnchors(this.destinationAnchors);
     let parentIdentity = this.destinationAnchors[this.destinationAnchors.length - 1].identity;
     if (relativePath !== "") {
@@ -437,7 +443,7 @@ class OwnedTransfer {
 
   async verifySource(path: string, expected: BigIntStats): Promise<void> {
     await verifyAnchors(this.sourceAnchors);
-    assertAccess(path, this.context);
+    assertAccess(path, this.context, this.request.assertPath);
     const suffix = relative(this.summary.sourcePath, path);
     if (suffix !== "" && (!this.sourceStats.isDirectory() || !containsPath(this.summary.sourcePath, path))) {
       throw new FileTransferError("path-denied", "A source file is outside the transfer source");
@@ -466,7 +472,7 @@ class OwnedTransfer {
   }
 
   async createSourceStream(path: string): Promise<Readable> {
-    const { path: lexical, stats: before } = await sourceEndpoint(path, this.context);
+    const { path: lexical, stats: before } = await sourceEndpoint(path, this.context, this.request.assertPath);
     if (!before.isFile() || before.nlink > 1n) throw new FileTransferError("unsupported-entry", `Unsupported source file: ${lexical}`);
     await this.verifySource(lexical, before);
     if (pathKey(lexical) === pathKey(this.summary.sourcePath) && !sameSource(before, this.sourceStats)) {
@@ -568,7 +574,7 @@ class OwnedTransfer {
           await verifyAnchors(this.destinationAnchors);
           for (const owned of this.ownedChain(entry)) {
             const observedPath = this.entryPath(owned);
-            assertAccess(observedPath, this.context);
+            assertAccess(observedPath, this.context, this.request.assertPath);
             const stats = await lstat(observedPath, { bigint: true });
             if (owned === entry || !owned.identity || !stats.isDirectory() || !sameFileIdentity(stats, owned.identity)) {
               if (residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(observedPath)) residualPaths.push(observedPath);
@@ -651,11 +657,21 @@ export async function runOwnedTransfer(
   }
 }
 
-export async function copyPath(input: CopyPathInput, context: ToolExecutionContext): Promise<TransferResult> {
+export async function copyPath(
+  input: CopyPathInput,
+  context: ToolExecutionContext,
+  options: { requireRegularSource?: boolean; expectedSource?: BigIntStats; assertPath?: (path: string) => void } = {},
+): Promise<TransferResult> {
   try {
     if (context.abortSignal?.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
-    const source = await sourceEndpoint(input.sourcePath, context);
-    return await runOwnedTransfer({ ...input, destinationKind: source.stats.isDirectory() ? "directory" : "file" }, context, async (session) => {
+    const source = await sourceEndpoint(input.sourcePath, context, options.assertPath);
+    if (options.requireRegularSource && !source.stats.isFile()) {
+      throw new FileTransferError("source-changed", "Checkpointed copy requires a regular source file");
+    }
+    if (options.expectedSource && !sameSource(source.stats, options.expectedSource)) {
+      throw transferError("Copy source changed after checkpoint admission");
+    }
+    return await runOwnedTransfer({ ...input, destinationKind: source.stats.isDirectory() ? "directory" : "file", assertPath: options.assertPath }, context, async (session) => {
       const check = (): void => {
         if (session.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
       };
@@ -666,12 +682,12 @@ export async function copyPath(input: CopyPathInput, context: ToolExecutionConte
       };
       const visit = async (sourcePath: string, destinationRelative: string, before: BigIntStats): Promise<void> => {
         check();
-        assertAccess(sourcePath, context);
+        assertAccess(sourcePath, context, options.assertPath);
         assertSupported(before, sourcePath);
         if (before.isFile()) return copyFile(sourcePath, destinationRelative, before);
         await session.sink.directory(destinationRelative);
         check();
-        assertAccess(sourcePath, context);
+        assertAccess(sourcePath, context, options.assertPath);
         if (!sameSource(await lstat(sourcePath, { bigint: true }), before)) throw transferError(`Source directory changed before opening: ${sourcePath}`);
         const directory = await opendir(sourcePath, { bufferSize: 1 });
         try {
@@ -682,7 +698,7 @@ export async function copyPath(input: CopyPathInput, context: ToolExecutionConte
             if (!entry) break;
             check();
             const childSource = join(sourcePath, entry.name);
-            assertAccess(childSource, context);
+            assertAccess(childSource, context, options.assertPath);
             const childRelative = destinationRelative === "" ? entry.name : `${destinationRelative}/${entry.name}`;
             if (childRelative.split("/").length > session.limits.maxDepth || Buffer.byteLength(childRelative) > session.limits.maxRelativePathBytes) {
               throw new FileTransferError("limit-exceeded", "Source tree exceeds the path or depth limit");

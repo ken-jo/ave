@@ -139,6 +139,7 @@ export const en = {
   "toolApprovalDialog.networkScopeNotOffered": "This connection is not offered for that lifetime.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "A local or unverified destination cannot be allowed for good.",
   "toolApprovalDialog.pathGrantOnlyFolder": "A folder is allowed once or for good.",
+  "toolApprovalDialog.folderAddsProject": "Always allow adds this folder to the project. Eligible later file writes there run without asking in default and auto-review modes; protected paths and other mandatory checks still apply.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
@@ -280,4 +281,5 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.networkScopeNotOffered": "이 연결에는 그 기간의 허용을 제공하지 않습니다.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "로컬 또는 확인되지 않은 대상은 영구히 허용할 수 없습니다.",
   "toolApprovalDialog.pathGrantOnlyFolder": "폴더는 한 번만 또는 영구히 허용합니다.",
+  "toolApprovalDialog.folderAddsProject": "항상 허용하면 이 폴더가 프로젝트에 추가됩니다. 기본·자동 검토 모드에서는 이후 조건을 충족하는 파일 쓰기를 다시 묻지 않습니다. 보호 경로와 필수 검사는 계속 적용됩니다.",
 };

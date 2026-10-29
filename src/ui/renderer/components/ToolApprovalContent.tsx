@@ -1328,9 +1328,14 @@ export function ToolApprovalContent({
                       <code className="break-all font-mono">{outOfDirCandidatePath}</code>
                     </ReviewRow>
                     {outOfDirSuggestedParent ? (
-                      <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
-                        <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
-                      </ReviewRow>
+                      <>
+                        <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
+                          <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
+                        </ReviewRow>
+                        <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
+                          {tHook("toolApprovalDialog.folderAddsProject")}
+                        </p>
+                      </>
                     ) : null}
                     {decisionIndex === 1 && (outOfDir?.adjacencyWarnings.length ?? 0) > 0 ? (
                       <p

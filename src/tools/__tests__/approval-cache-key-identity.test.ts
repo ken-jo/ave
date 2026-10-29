@@ -199,6 +199,28 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     expect(reviewedTools()).toContain("edit_file");
   });
 
+  it("does not reuse a session edit approval for a delete patch of the same home file", async () => {
+    const edit = new EditFileTool();
+    const patch = new ApplyPatchTool();
+    vi.spyOn(edit, "execute").mockResolvedValue({ output: "ok", isError: false });
+    vi.spyOn(patch, "execute").mockResolvedValue({ output: "ok", isError: false });
+    const { cards, run } = harness([edit, patch]);
+    await run("edit_file", { path: "~/notes.txt", oldText: "old", newText: "next" });
+    expect(cards).toHaveLength(1);
+    await run("apply_patch", { patch: "*** Begin Patch\n*** Delete File: ~/notes.txt\n*** End Patch" });
+    expect(cards).toHaveLength(2);
+    expect(cards[1].approvalMemory).toMatchObject({ kind: "key", scope: { kind: "paths" } });
+  });
+
+  it("partitions delete patches from update patches with the same touched path set", async () => {
+    const tool = new ApplyPatchTool();
+    const update = "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch";
+    const deletion = "*** Begin Patch\n*** Delete File: a.txt\n*** Delete File: b.txt\n*** End Patch";
+    const editIdentity = await approvalIdentityFor(tool, { patch: update }, dir);
+    const deleteIdentity = await approvalIdentityFor(tool, { patch: deletion }, dir);
+    expect(deleteIdentity.approvalMemory).not.toEqual(editIdentity.approvalMemory);
+  });
+
   it("remembers a browser origin independently of the invocation's concrete tab and document", async () => {
     let tabId = "tab-1";
     let documentId = 1;

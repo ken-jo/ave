@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -9,11 +11,14 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ToolExecutionContext } from "../base.js";
 import { ToolExecutor } from "../executor.js";
-import { CopyPathTool, ExtractArchiveTool, createFileTools } from "../file-tools.js";
+import { CopyPathTool, ExtractArchiveTool, createFileTools, withProjectWriteRoots } from "../file-tools.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
 import { extractTargetFilePaths } from "../pipeline/path-extraction.js";
 import { ToolRegistry } from "../registry.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { readTestFileSnapshot } from "./file-snapshot-fixture.js";
+import { createCodeCheckpointTurn } from "../../__tests__/support/code-checkpoint-turn.js";
+import { restoreCodeCheckpoint, withRequiredCodeCheckpoint } from "../../memory/code-checkpoints.js";
 
 let root: string;
 let workspace: string;
@@ -66,6 +71,160 @@ async function fixtureArchive(gzip = false): Promise<string> {
 }
 
 describe("structured transfer registration and permission routing", () => {
+  it("rejects a copy destination parent swapped outside the project during checkpoint capture", async () => {
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    const parent = join(workspace, "target");
+    mkdirSync(parent);
+    const source = join(workspace, "source.bin");
+    const destination = join(parent, "copy.bin");
+    const lstat = fsPromises.lstat;
+    let swapped = false;
+    let destinationSnapshots = 0;
+    try {
+      const turn = createCodeCheckpointTurn(() => "copy-swapped-parent");
+      await turn("copy-turn", async () => {
+        const statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
+          try { return await lstat(path, options); }
+          catch (error) {
+            if (path === destination && ++destinationSnapshots === 2) {
+              swapped = true;
+              renameSync(parent, join(workspace, "original-target"));
+              symlinkSync(outside, parent, "junction");
+            }
+            throw error;
+          }
+        });
+        syncBuiltinESMExports();
+        try {
+          await expect(withProjectWriteRoots([caseFoldForMatch(canonicalizePathForMatch(workspace))],
+            () => withRequiredCodeCheckpoint(() => new CopyPathTool().execute(
+              { sourcePath: source, destinationPath: destination }, context([outside]),
+            )))).rejects.toThrow("escaped project roots");
+        } finally {
+          statSpy.mockRestore();
+          syncBuiltinESMExports();
+        }
+      });
+      expect(swapped).toBe(true);
+      expect(existsSync(join(outside, "copy.bin"))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["directory", "regular-file"] as const)("refuses a %s substituted for a checkpoint-captured regular copy source", async (replacement) => {
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    const source = join(workspace, "source.bin");
+    const destination = join(workspace, "copy.bin");
+    const lstat = fsPromises.lstat;
+    let snapshots = 0;
+    try {
+      const turn = createCodeCheckpointTurn(() => "copy-source-kind");
+      await turn("copy-turn", async () => {
+        const statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
+          try { return await lstat(path, options); }
+          catch (error) {
+            if (path === destination && ++snapshots === 2) {
+              renameSync(source, join(workspace, "original-source.bin"));
+              if (replacement === "directory") {
+                mkdirSync(source);
+                writeFileSync(join(source, "unexpected.txt"), "must not copy this tree");
+              } else {
+                writeFileSync(source, "must not copy these substituted bytes");
+              }
+            }
+            throw error;
+          }
+        });
+        syncBuiltinESMExports();
+        try {
+          const result = await withRequiredCodeCheckpoint(() => new CopyPathTool().execute(
+            { sourcePath: source, destinationPath: destination }, context(),
+          ));
+          expect(result.isError).toBe(true);
+          expect(result.output).toContain(replacement === "directory"
+            ? "Checkpointed copy requires a regular source file"
+            : "Copy source changed after checkpoint admission");
+        } finally {
+          statSpy.mockRestore();
+          syncBuiltinESMExports();
+        }
+      });
+      expect(snapshots).toBeGreaterThanOrEqual(2);
+      expect(existsSync(destination)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects a destination parent swapped while the transfer resolves its source", async () => {
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    const parent = join(workspace, "target");
+    mkdirSync(parent);
+    const source = join(workspace, "source.bin");
+    const destination = join(parent, "copy.bin");
+    const lstat = fsPromises.lstat;
+    let snapshots = 0;
+    let captured = false;
+    let swapped = false;
+    try {
+      const turn = createCodeCheckpointTurn(() => "copy-transfer-parent");
+      await turn("copy-turn", async () => {
+        const statSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (path, options) => {
+          try {
+            const info = await lstat(path, options);
+            if (captured && !swapped && path === source) {
+              swapped = true;
+              renameSync(parent, join(workspace, "original-target"));
+              symlinkSync(outside, parent, "junction");
+            }
+            return info;
+          } catch (error) {
+            if (path === destination && ++snapshots === 2) captured = true;
+            throw error;
+          }
+        });
+        syncBuiltinESMExports();
+        try {
+          const result = await withProjectWriteRoots([caseFoldForMatch(canonicalizePathForMatch(workspace))],
+            () => withRequiredCodeCheckpoint(() => new CopyPathTool().execute(
+              { sourcePath: source, destinationPath: destination }, context([outside]),
+            )));
+          expect(result.isError).toBe(true);
+          expect(result.output).toContain("escaped project roots");
+        } finally {
+          statSpy.mockRestore();
+          syncBuiltinESMExports();
+        }
+      });
+      expect(swapped).toBe(true);
+      expect(existsSync(join(outside, "copy.bin"))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rewinds a required checkpoint for a regular binary file copy", async () => {
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    try {
+      const sessionId = "regular-copy";
+      const turn = createCodeCheckpointTurn(() => sessionId);
+      const destination = join(workspace, "copy.bin");
+      await turn("copy-turn", async () => {
+        const result = await withRequiredCodeCheckpoint(() => new CopyPathTool().execute(
+          { sourcePath: "source.bin", destinationPath: "copy.bin" }, context(),
+        ));
+        expect(result.isError, result.output).toBe(false);
+        expect(readFileSync(destination)).toEqual(PAYLOAD);
+      });
+      expect(await restoreCodeCheckpoint(sessionId, "copy-turn", context())).toEqual({ ok: true });
+      expect(existsSync(destination)).toBe(false);
+      expect(readFileSync(join(workspace, "source.bin"))).toEqual(PAYLOAD);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([
     ["copy_path", "sourcePath"],
     ["extract_archive", "archivePath"],

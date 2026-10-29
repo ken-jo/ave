@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fsPromises, { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,6 +43,49 @@ describe("native file-tool code checkpoints", () => {
       expect(await isCodeCheckpointAvailable([file])).toBe(false);
     });
     expect(await isCodeCheckpointAvailable([file])).toBe(false);
+  });
+
+  it("estimates admission without opening targets or hydrating existing images", async () => {
+    await writeFile(file, "before");
+    await turn("cheap-admission", async () => {
+      await checkpointFileMutation([{ path: file, content: "after" }], () => writeFile(file, "after"));
+      const openSpy = vi.spyOn(fsPromises, "open");
+      syncBuiltinESMExports();
+      try {
+        expect(await isCodeCheckpointAvailable([file, join(root, "new.txt")])).toBe(true);
+        expect(await isCodeCheckpointAvailable([file])).toBe(true);
+        expect(openSpy.mock.calls.map(([path]) => path)).toEqual([
+          join(root, "state/code-checkpoints/turns.json"),
+          join(root, "state/code-checkpoints/turns.json"),
+        ]);
+      } finally { openSpy.mockRestore(); syncBuiltinESMExports(); }
+    });
+    expect(await restoreCodeCheckpoint(sessionId, "cheap-admission")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("before");
+  });
+
+  it.each(["corrupt", "delete"] as const)("refuses a later automatic mutation when an earlier image is %s", async (damage) => {
+    const other = join(root, "other.txt");
+    await writeFile(file, "first original");
+    await writeFile(other, "second original");
+    await turn("damaged-image", async () => {
+      await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "first edit" }], () => writeFile(file, "first edit")));
+      const ledgerPath = join(root, "state/code-checkpoints/turns.json");
+      const ledger = await readFile(ledgerPath, "utf8");
+      const imageName = JSON.parse(ledger).turns[0].changes[0].before as string;
+      const imagePath = join(root, "state/code-checkpoints", imageName);
+      if (damage === "corrupt") await writeFile(imagePath, JSON.stringify(Buffer.from("wrong original").toString("base64")));
+      else await rm(imagePath);
+      expect(await isCodeCheckpointAvailable([other])).toBe(true);
+      const mutate = vi.fn(() => writeFile(other, "second edit"));
+      await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: other, content: "second edit" }], mutate)))
+        .rejects.toThrow("retry with explicit approval");
+      expect(mutate).not.toHaveBeenCalled();
+      expect(await readFile(other, "utf8")).toBe("second original");
+      expect(await readFile(file, "utf8")).toBe("first edit");
+      expect(await readFile(ledgerPath, "utf8")).toBe(ledger);
+      expect(await isCodeCheckpointAvailable([other])).toBe(false);
+    });
   });
 
   it("refuses automatic mutations when the turn loses checkpoint authority", async () => {

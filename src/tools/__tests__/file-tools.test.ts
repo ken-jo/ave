@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   statSync,
   symlinkSync,
   truncateSync,
@@ -42,7 +43,10 @@ import {
   ReadFileTool,
   ViewImageTool,
   WriteFileTool,
+  withProjectWriteRoots,
+  isFileCopyCheckpointSupported,
 } from "../file-tools.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
 import type { ToolExecutionContext } from "../base.js";
 import {
   dispatchPermissionDirCommand,
@@ -143,6 +147,30 @@ describe("view_image tool", () => {
 });
 
 describe("file native tools", () => {
+  it("rejects an automatic write after an admitted parent is replaced with an external symlink", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "ave-file-outside-"));
+    try {
+      const roots = [caseFoldForMatch(canonicalizePathForMatch(workDir))];
+      renameSync(join(workDir, "src"), join(workDir, "original-src"));
+      symlinkSync(outside, join(workDir, "src"), "junction");
+      const result = await withProjectWriteRoots(roots, () => new WriteFileTool().execute(
+        { path: "src/escaped.txt", content: "must not escape" },
+        { ...ctx(), extraAllowedDirectories: [outside] },
+      ));
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("escaped project roots");
+      expect(existsSync(join(outside, "escaped.txt"))).toBe(false);
+    } finally {
+      await cleanupTmpDir(outside);
+    }
+  });
+
+  it("admits only bounded regular files for recoverable copy operations", async () => {
+    expect(await isFileCopyCheckpointSupported("README.md", workDir)).toBe(true);
+    expect(await isFileCopyCheckpointSupported("src", workDir)).toBe(false);
+    expect(await isFileCopyCheckpointSupported("missing.txt", workDir)).toBe(false);
+  });
+
   describe.each([
     ["edit_file", EditFileTool],
     ["multi_edit", MultiEditTool],

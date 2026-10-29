@@ -2322,7 +2322,7 @@ in-workspace edits with recovery while reserving separate consent for external
 writes and protecting control files in every mode. Ave uses its per-turn code
 checkpoints and `restoreCodeCheckpoint` for that recovery boundary. A refused automatic
 mutation preserves earlier before-images and blocks further automatic writes
-in that active turn, so a retry needs approval.
+in that active turn, so a retry returns to the ordinary approval route.
 
 In default and auto-review modes, a builtin file-tool write is allowed without
 an approval card only when every touched lexical and canonical path is inside
@@ -2330,11 +2330,32 @@ the session cwd or a configured `additionalDirectories` root, and the write's
 code checkpoint is available. Application home, temporary roots and scratch
 roots do not become project roots through the broader allowed-directory list;
 existing scratch auto-approval remains separate. Move and copy operations must
-cover both endpoints. Archive extraction must cover its destination and retain
-its existing source-path and transfer checks. Brokered, remote and transfer
-routes that mark the checkpoint unavailable require human approval rather than
-reviewer auto-approval. Explicit grants keep their existing authority after all
-mandatory floors; being inside the project alone supplies no transfer grant.
+cover both endpoints. Archive extraction must cover its destination and every
+entry and retain its existing source-path and transfer checks. A regular-file
+copy can use checkpoint-backed allowance when its source is a single-link regular
+file within the checkpoint size limit and both endpoints are in the project.
+Directory copy and archive extraction use the ordinary approval route: they can
+create directory trees, but the code checkpoint ledger restores regular files
+and has no safe directory-tree ownership contract for removing created
+directories without removing unrelated later files. Their transfer journal does
+not supply that rewind contract.
+
+An unavailable checkpoint does not itself force a human card: it leaves the
+ordinary default-mode approval and auto-review reviewer routing unchanged.
+Other mandatory floors can still require explicit human approval. Subagent
+sessions and sessions with persistence disabled have no durable checkpoint turn
+and use that ordinary route. A live child invalidates its parent's active turn
+because concurrent child writes have no coordinated before-images; that turn
+remains unavailable after the child exits, while a fresh parent turn can regain
+checkpoint eligibility. Brokered and remote writes likewise gain no new
+checkpoint-based allowance. Explicit grants keep their existing authority after
+all mandatory floors; being inside the project alone supplies no transfer grant.
+
+Availability preflight checks storage and file metadata and size bounds without
+reading target contents or hydrating saved images. The mutation boundary
+captures and validates before-images. Automatically allowed execution also
+re-resolves canonical paths against the project roots, failing if a parent
+symlink swap has moved a target outside those roots.
 
 This category rule runs after sensitive-path denial, explicit deny and ask
 rules, corrupt-store handling, remote-controller one-shot consent, the scoped
@@ -2346,11 +2367,17 @@ Strict mode still asks for all tools. Shell policy is unchanged.
 For an ordinary write outside the project, the directory approval card also
 approves that invocation, avoiding a second category-level card for the same
 write. A directory grant never replaces a later mandatory floor.
+Choosing the lasting folder grant adds it to configured `additionalDirectories`
+and therefore to the project roots. The card explains that eligible later file
+writes there no longer ask in default and auto-review modes; mandatory floors
+and checkpoint eligibility still apply.
 
 Path-scoped remembered approvals for builtin `write_file`, `edit_file`,
 `multi_edit` and `apply_patch` share one text-write identity. The approval card
-names all four operations for a single-path scope. A single-path patch shares
-that file's scope; a multi-path patch retains a tool-specific identity bound to
+names all four operations for a single-path scope. A single-path patch that
+creates or edits a file shares that file's scope; a patch containing a deletion
+has a separate memory identity and cannot reuse a text-edit approval. A
+multi-path patch retains a tool-specific identity bound to
 the exact sorted set of touched paths. Its card names only `apply_patch`. Other sources
 and other tools retain their own memory identities. Reuse still requires the
 existing risk check and re-prompts on escalation.

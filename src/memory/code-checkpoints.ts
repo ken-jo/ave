@@ -73,7 +73,7 @@ let queue: Promise<unknown> = Promise.resolve();
 class InvalidCheckpointStorageError extends Error {}
 
 class CodeCheckpointRequiredError extends Error {
-  constructor() { super("Code checkpoint unavailable; retry with explicit approval"); }
+  constructor(cause?: unknown) { super("Code checkpoint unavailable; retry with explicit approval", { cause }); }
 }
 
 function requireAvailableCheckpoint(identity: ActiveTurn | undefined): void {
@@ -83,9 +83,9 @@ function requireAvailableCheckpoint(identity: ActiveTurn | undefined): void {
   }
 }
 
-function blockAutomaticWrites(identity: ActiveTurn): never {
+function blockAutomaticWrites(identity: ActiveTurn, cause?: unknown): never {
   identity.automaticWritesBlocked = true;
-  throw new CodeCheckpointRequiredError();
+  throw new CodeCheckpointRequiredError(cause);
 }
 
 /** Automatic edits require rewind at the actual mutation boundary, too. */
@@ -409,7 +409,7 @@ export async function withCodeCheckpoint<T>(identity: TurnIdentity, run: () => P
   }
 }
 
-/** Only a healthy admitted turn with capturable originals can justify automatic writes. */
+/** Cheap admission estimate; originals and stored images are verified at the mutation boundary. */
 export async function isCodeCheckpointAvailable(paths: readonly string[]): Promise<boolean> {
   const identity = turnContext.getStore();
   if (!identity || !identity.admitted || identity.deleted || identity.unavailable || identity.automaticWritesBlocked
@@ -419,11 +419,19 @@ export async function isCodeCheckpointAvailable(paths: readonly string[]): Promi
       const turns = await loadLedger(true);
       const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
       if (!turn || turn.unavailable || turn.consumed || identity.unavailable || identity.deleted || identity.automaticWritesBlocked) return false;
-      for (const change of turn.changes) await hydrate(change);
       let projectedBytes = ledgerStorageBytes(turns);
       for (const path of new Set(paths.map((value) => resolve(value)))) {
-        const before = await snapshot(path);
-        projectedBytes += (before.bytes === null ? 0 : Math.ceil(before.bytes.length / 3) * 4 + 3)
+        if (await canonicalPath(path) !== path) return false;
+        let bytes = 0;
+        try {
+          const info = await lstat(path);
+          if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1
+            || info.size > CODE_CHECKPOINT_POLICY.maxFileBytes) return false;
+          bytes = Math.ceil(info.size / 3) * 4 + 3;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        projectedBytes += bytes
           + Buffer.byteLength(path) + 512;
         if (projectedBytes > CODE_CHECKPOINT_POLICY.maxStorageBytes) return false;
       }
@@ -520,6 +528,11 @@ async function checkpointMutation<T>(
       await makeUnavailable(turns, identity, "unsupported edits");
       requireAvailableCheckpoint(identity);
       return run();
+    }
+    if (requiredCheckpointContext.getStore() === true) {
+      // Preserve every earlier before-image and refuse new effects if rewind evidence is damaged.
+      try { for (const change of turn.changes) await hydrate(change); }
+      catch (error) { blockAutomaticWrites(identity, error); }
     }
     const changes: StoredChange[] = [];
     try {

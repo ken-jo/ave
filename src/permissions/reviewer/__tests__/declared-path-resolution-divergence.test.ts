@@ -76,11 +76,11 @@ describe("reviewer vs. pipeline: leading ~", () => {
     ).toMatchObject({ level: "high", reason: "write outside allowed dirs" });
   });
 
-  it("a ~ write to an ALLOWED location classifies at its true depth", () => {
-    // Home is allowed and the invocation cwd sits well below it. `~/secret.txt` is a direct leaf of the allowed root. Pre-alignment the literal `~` segment appended to the cwd pushed it past the depth heuristic and it read `medium` "write deep inside allowed".
+  it("expands a home write outside a nested allowed directory", () => {
+    // Only the nested cwd is allowed. Treating ~ as a literal cwd segment would incorrectly classify this external home write as low risk.
     const deepCwd = pathResolve(homedir(), "a", "b", "c");
     vi.spyOn(process, "cwd").mockReturnValue(deepCwd);
-    const allowed = [canonicalizePathForMatch(homedir()).toLowerCase()];
+    const allowed = [canonicalizePathForMatch(deepCwd).toLowerCase()];
 
     expect(
       classifier.classify(
@@ -90,7 +90,7 @@ describe("reviewer vs. pipeline: leading ~", () => {
           allowedDirectories: allowed,
         }),
       ),
-    ).toMatchObject({ level: "low", reason: "write at allowed-dir leaf" });
+    ).toMatchObject({ level: "high", reason: "write outside allowed dirs" });
 
     expect(
       classifier.classify(
@@ -100,7 +100,7 @@ describe("reviewer vs. pipeline: leading ~", () => {
           allowedDirectories: allowed,
         }),
       ),
-    ).toMatchObject({ level: "low", reason: "write at allowed-dir leaf" });
+    ).toMatchObject({ level: "high", reason: "write outside allowed dirs" });
   });
 });
 

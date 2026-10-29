@@ -1,5 +1,6 @@
 import { isCodeCheckpointAvailable, withRequiredCodeCheckpoint } from "../memory/code-checkpoints.js";
 import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js";
+import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
@@ -21,6 +22,8 @@ import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-r
 import {
   isCanonicalFileTool,
   normalizeCanonicalFileToolInput,
+  withProjectWriteRoots,
+  isFileCopyCheckpointSupported,
 } from "./file-tools.js";
 import { extractShellCommands } from "../shared/shell-command-fields.js";
 import type { ShellPathPolicyViolation } from "./shell-path-policy.js";
@@ -52,7 +55,6 @@ import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
   sanitizeAllowedDirectories,
-  isPathAllowed,
   buildAllowedScope,
   buildRuntimeAllowedDirectories,
   isFilesystemRootPath,
@@ -2116,11 +2118,12 @@ export async function runToolInvocation(
     const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
     const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
     const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
-    const insideProject = nativeFileWrite && canonicalTargets.length > 0 && canonicalTargets.every((target) =>
-      isPathAllowed(caseFoldForMatch(target.filePath), { directories: lexicalProjectRoots }) &&
-      isPathAllowed(target.canonicalPath, { directories: projectRoots }));
+    const insideProject = nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets, lexicalProjectRoots, projectRoots,
+      unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
     // Outside project roots, preserve the existing reviewer lane for supported host edits.
-    const checkpointAvailable = !nativeFileWrite || tool.name === "copy_path" || tool.name === "extract_archive"
+    const unsupportedTransfer = nativeFileWrite && insideProject && (tool.name === "extract_archive" || (tool.name === "copy_path"
+      && !(typeof finalInput.sourcePath === "string" && await isFileCopyCheckpointSupported(finalInput.sourcePath, executionCwd))));
+    const checkpointAvailable = !nativeFileWrite || unsupportedTransfer
       ? false
       : insideProject ? await isCodeCheckpointAvailable(canonicalTargets.map((target) => target.runtimePath)) : undefined;
     const fileWritePolicy = isCanonicalFileTool(tool) && invocationCategory === "write" ? { insideProject, checkpointAvailable, directoryApproved: false } : undefined;
@@ -2402,7 +2405,7 @@ export async function runToolInvocation(
       pluginAuthLifecycle,
     });
     return permissionResult?.requiresCodeCheckpoint === true
-      ? await withRequiredCodeCheckpoint(executeAuthorized)
+      ? await withProjectWriteRoots(projectRoots, () => withRequiredCodeCheckpoint(executeAuthorized))
       : await executeAuthorized();
     };
     try {

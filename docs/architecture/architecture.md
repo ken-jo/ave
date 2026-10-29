@@ -1825,6 +1825,14 @@ corrupt rules and strict mode retain their existing authority. Headless turns
 without a user gain no new automatic lane. Application home and temporary roots
 are not project roots. An ordinary external write uses one approval card for
 both its directory grant and that invocation; mandatory floors remain separate.
+The lasting folder grant adds its directory to the project's configured roots.
+When a checkpoint is unavailable, writes retain the ordinary default-mode
+approval or auto-review reviewer route. Sessions without durable checkpoint
+turns, parent turns invalidated by live children, directory-tree copies and
+archive extractions gain no new automatic allowance. Bounded regular-file copies
+can use the checkpoint-backed allowance when both endpoints are in the project.
+Automatically allowed file execution rechecks canonical containment in the
+project roots.
 See [Project file writes](permission-policy-design.md#project-file-writes) for
 the owner decision, checkpoint eligibility and recovery contract.
 
