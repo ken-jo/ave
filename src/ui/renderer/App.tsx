@@ -30,6 +30,9 @@ import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
 import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
+import { PaneChatNavigationProvider, type PaneChatNavigation } from "./context/PaneChatNavigationContext.js";
+import { prunePaneChats } from "./hooks/use-side-chat.js";
+import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
 import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces, type MainSurface } from "./preview/main-surfaces.js";
@@ -233,6 +236,16 @@ export function App() {
   // Tile geometry follows docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(canvasElement);
   const mainSurfaces = useMainSurfaces();
+  const [paneChatOpenTabIds, setPaneChatOpenTabIds] = useState<ReadonlySet<string>>(() => new Set());
+  const setPaneChatOpen = useCallback((tabId: string, open: boolean) => {
+    setPaneChatOpenTabIds((current) => {
+      if (current.has(tabId) === open) return current;
+      const next = new Set(current);
+      if (open) next.add(tabId);
+      else next.delete(tabId);
+      return next;
+    });
+  }, []);
   // Pane layout, terminal directories and page addresses persist across launches.
   useMainLayout(api, chatGroups, mainSurfaces);
   // Watch every terminal for attention notifications, including hidden terminals.
@@ -540,6 +553,45 @@ export function App() {
     }
     return false;
   }, [activeSurfaceOf]);
+
+  /** Reveal the tab's owning pane and its conversation, wherever presentation last placed it. */
+  const openPaneChat = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    if (surfaces.get(tabId)) {
+      if (openWorkspaceSurface(tabId)) setPaneChatOpen(tabId, true);
+      return;
+    }
+    const source = groups.groups.find((group) => getSideTabsSink(group.id)?.snapshot().some((tab) => tab.tabId === tabId));
+    if (!source) return;
+    surfaceMoves.tabToMain(source.id, tabId, { paneId: groups.focusedId, target: "center" });
+    setPaneChatOpen(tabId, true);
+  }, [openWorkspaceSurface, setPaneChatOpen, surfaceMoves]);
+  const paneChatNavigation = useMemo<PaneChatNavigation>(() => ({
+    openPaneChat,
+    resolveSession: (sessionId) => {
+      const tabId = sessions.find((session) => session.id === sessionId && session.family === "side-chat")?.paneTabId;
+      if (!tabId) return undefined;
+      const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+      const surface = surfaces.get(tabId) ?? groups.groups.flatMap((group) => getSideTabsSink(group.id)?.snapshot() ?? []).find((tab) => tab.tabId === tabId);
+      return surface ? { tabId, name: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}` } : undefined;
+    },
+  }), [openPaneChat, sessions, t]);
+  const [paneChatLayoutRevision, setPaneChatLayoutRevision] = useState(0);
+  useEffect(() => subscribeMainLayoutChange(() => setPaneChatLayoutRevision((revision) => revision + 1)), []);
+  useEffect(() => {
+    if (!api.sideChat) return;
+    const sideChat = api.sideChat;
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    const liveTabIds = new Set([
+      ...surfaces.surfaces.map((surface) => surface.tabId),
+      ...groups.groups.flatMap((group) => getSideTabsSink(group.id)?.snapshot().map((tab) => tab.tabId) ?? []),
+    ]);
+    prunePaneChats(sideChat, liveTabIds);
+    setPaneChatOpenTabIds((current) => {
+      const next = new Set([...current].filter((tabId) => liveTabIds.has(tabId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [api.sideChat, mainSurfaces.surfaces, chatGroups.groups, paneChatLayoutRevision]);
 
   /** Show the most recent live terminal asking for attention; discard stale entries until one can be shown. */
   const jumpToUnreadTerminal = useCallback(() => {
@@ -1696,6 +1748,8 @@ export function App() {
             dragSurface: { tabId: surface.tabId, kind: surface.kind, from: { pane: paneId } },
           }}
           chatRuntime={paneChatRuntime}
+          chatOpen={paneChatOpenTabIds.has(surface.tabId)}
+          onChatOpenChange={(open) => setPaneChatOpen(surface.tabId, open)}
           onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
           // Main-terminal blocks attach to the last composer the user typed in.
@@ -1753,6 +1807,7 @@ export function App() {
               from outside the React tree. Hoisting it out — or mounting it below
               its consumers — would leave that ref null when the first IPC event
               lands. See src/ui/renderer/context/OverlayContext.tsx. */}
+          <PaneChatNavigationProvider value={paneChatNavigation}>
           <ApprovalSurfaceProvider value={approvalSurface}>
           <OverlayContextProvider
             onOpenSession={handleOpenRoutineSession}
@@ -1839,6 +1894,7 @@ export function App() {
                   return loaded;
                 }}
                 onOpenWorkBoardItem={openWorkBoardItem}
+                onOpenPaneChat={openPaneChat}
                 onOpenSideChat={(sideChatSessionId, originSessionId) =>
                   void openSideChat(sideChatSessionId, originSessionId)}
                 pendingAnswerSessionIds={pendingAnswers.sessionIds}
@@ -2219,6 +2275,7 @@ export function App() {
             <WebSurfaceLayer api={api} />
           </OverlayContextProvider>
           </ApprovalSurfaceProvider>
+          </PaneChatNavigationProvider>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

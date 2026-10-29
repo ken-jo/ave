@@ -87,6 +87,30 @@ async function startTurn(text = "hello") {
 }
 
 describe("SideChatView — New button gating during streaming", () => {
+  it("keeps a pane send running across a surface switch and restores its continuing transcript", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const reply = deferred<{ ok: true; result: Record<string, never> }>();
+    spies.send.mockReturnValueOnce(reply.promise);
+    api.sideChat!.paneHistory = vi.fn(async () => ({ ok: true as const, sessionId: null, messages: [] }));
+    const boundSurface = { kind: "terminal" as const, tabId: "terminal-pane", name: "Terminal 1", detail: null, detailTitle: null };
+    const first = renderView(api, { hasApiKey: true, settingsLoaded: true }, { boundSurface });
+    await startTurn("continue on the terminal");
+    acceptTurn(1);
+    emit({ type: "text_delta", streamId: 1, text: "before " });
+    first.unmount();
+    expect(spies.abort).not.toHaveBeenCalled();
+    emit({ type: "text_delta", streamId: 1, text: "hidden " });
+    const onSessionIdChange = vi.fn();
+    renderView(api, { hasApiKey: true, settingsLoaded: true }, { boundSurface, onSessionIdChange });
+    await waitFor(() => expect(api.sideChat!.paneHistory).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("side-chat-transcript")).toHaveTextContent("before hidden");
+    expect(onSessionIdChange).toHaveBeenCalledWith("side-1");
+    emit({ type: "text_delta", streamId: 1, text: "after" });
+    expect(screen.getByTestId("side-chat-transcript")).toHaveTextContent("before hidden after");
+    emit({ type: "done", streamId: 1 });
+    await act(async () => { reply.resolve({ ok: true, result: {} }); });
+  });
+
   it("sends Ctrl+B command controls through the side conversation API", async () => {
     const { api, acceptTurn, spies } = makeApi();
     const mainControl = vi.fn();

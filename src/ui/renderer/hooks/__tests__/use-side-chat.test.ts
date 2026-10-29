@@ -2,7 +2,7 @@
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useSideChat } from "../use-side-chat.js";
+import { prunePaneChats, useSideChat } from "../use-side-chat.js";
 import type { ChatStreamEvent, ChatEntry } from "../../../../lib/chat-stream-state.js";
 import type { AveApi } from "../../types.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
@@ -72,6 +72,24 @@ const REFUSAL_INTENT_CASES = Object.freeze((["new", "load"] as const).flatMap((f
 ));
 
 describe("useSideChat session identity", () => {
+  it.each(["load", "new", "send"] as const)("reports a refused %s as an operation notice rather than a stream error", async (operation) => {
+    const { api, spies } = makeApi();
+    spies.load.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", messages: [] });
+    spies.newSession.mockResolvedValueOnce({ ok: false, error: "streaming-active" });
+    spies.send.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane" });
+    const { result } = renderHook(() => useSideChat(api));
+    const sessionId = "owned-pane-session";
+    if (operation === "send") act(() => { result.current.restore(sessionId, []); });
+    await act(async () => {
+      if (operation === "load") await result.current.loadSession(sessionId);
+      else if (operation === "new") await result.current.newSession();
+      else await result.current.send("refused prompt");
+    });
+    expect(lastAssistant(result.current.entries)).toMatchObject({ systemNotice: "operation-error" });
+    expect(lastAssistant(result.current.entries)?.noticeSessionId).toBe(operation === "new" ? undefined : sessionId);
+    expect(result.current.isStreaming).toBe(false);
+  });
+
   it.each(REFUSAL_INTENT_CASES)("keeps the accepted $first across refused $second/$third in reply order $order", async ({ first, second, third, order }) => {
     const { api, spies } = makeApi();
     const initialSessionId = sessionUuid("sidechat-response-initial");
@@ -1080,6 +1098,104 @@ describe("useSideChat stale-frame guard", () => {
     expect(spies.abort).toHaveBeenCalledTimes(1);
   });
 
+  it("retains a pane turn across surface unmount and reattaches its continuing stream", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const reply = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockReturnValueOnce(reply.promise);
+    const options = { paneTabId: "terminal-pane" };
+    const first = renderHook(() => useSideChat(api, options));
+    let pending = Promise.resolve();
+    act(() => { pending = first.result.current.send("keep running", { surface: { kind: "terminal", tabId: "terminal-pane" } }); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "before ", streamId: 1 });
+    first.unmount();
+    expect(spies.abort).not.toHaveBeenCalled();
+    emit({ type: "text_delta", text: "hidden ", streamId: 1 });
+    const second = renderHook(() => useSideChat(api, options));
+    expect(second.result.current.isStreaming).toBe(true);
+    expect(second.result.current.sessionId).toBe("side-1");
+    expect(lastAssistant(second.result.current.entries)?.text).toBe("before hidden ");
+    emit({ type: "text_delta", text: "after", streamId: 1 });
+    expect(lastAssistant(second.result.current.entries)?.text).toBe("before hidden after");
+    emit({ type: "done", streamId: 1 });
+    await act(async () => { reply.resolve({ ok: true, result: {} }); await pending; });
+    expect(second.result.current.isStreaming).toBe(false);
+    expect(spies.onStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a pane turn while hidden and retains its completed answer without a stale history replacement", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const reply = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockReturnValueOnce(reply.promise);
+    const options = { paneTabId: "hidden-pane" };
+    const first = renderHook(() => useSideChat(api, options));
+    let pending = Promise.resolve();
+    act(() => { pending = first.result.current.send("continue while hidden"); });
+    first.unmount();
+    acceptTurn(3);
+    emit({ type: "text_delta", text: "finished while hidden", streamId: 3 });
+    emit({ type: "done", streamId: 3 });
+    await act(async () => { reply.resolve({ ok: true, result: {} }); await pending; });
+    const onSessionBound = vi.fn();
+    const second = renderHook(() => useSideChat(api, { ...options, onSessionBound }));
+    expect(second.result.current.isStreaming).toBe(false);
+    expect(lastAssistant(second.result.current.entries)?.text).toBe("finished while hidden");
+    expect(onSessionBound).toHaveBeenCalledWith("side-1");
+    act(() => { second.result.current.restore("stale-session", []); });
+    expect(second.result.current.sessionId).toBe("side-1");
+    expect(lastAssistant(second.result.current.entries)?.text).toBe("finished while hidden");
+    expect(spies.abort).not.toHaveBeenCalled();
+  });
+
+  it("retires a closed pane subscription and starts a fresh transcript if its tab id is reused", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const options = { paneTabId: "closed-pane" };
+    const first = renderHook(() => useSideChat(api, options));
+    await act(async () => { await first.result.current.send("old tab"); });
+    acceptTurn(1);
+    first.unmount();
+    act(() => { prunePaneChats(api.sideChat!, new Set()); });
+    emit({ type: "text_delta", text: "late old answer", streamId: 1 });
+    const second = renderHook(() => useSideChat(api, options));
+    expect(second.result.current.entries).toEqual([]);
+    expect(second.result.current.isStreaming).toBe(false);
+    expect(second.result.current.sessionId).toBeNull();
+    expect(spies.onStream).toHaveBeenCalledTimes(2);
+    expect(spies.abort).not.toHaveBeenCalled();
+  });
+
+  it("keeps retained transcripts separate for each pane and renderer API", async () => {
+    const firstApi = makeApi();
+    const secondApi = makeApi();
+    const first = renderHook(() => useSideChat(firstApi.api, { paneTabId: "same-tab" }));
+    act(() => { first.result.current.restore("retained-session", [{ index: 0, role: "user", content: "first only" }]); });
+    first.unmount();
+    const anotherPane = renderHook(() => useSideChat(firstApi.api, { paneTabId: "different-tab" }));
+    const anotherWindow = renderHook(() => useSideChat(secondApi.api, { paneTabId: "same-tab" }));
+    expect(anotherPane.result.current.entries).toEqual([]);
+    expect(anotherWindow.result.current.entries).toEqual([]);
+  });
+
+  it("routes stream guards to the current pane when a mounted hook changes tabs", async () => {
+    const { api, emit, spies } = makeApi();
+    const hook = renderHook(({ tabId }) => useSideChat(api, { paneTabId: tabId }), { initialProps: { tabId: "first-pane" } });
+    await act(async () => { await hook.result.current.send("first pane"); });
+    const firstRequestId = spies.send.mock.calls.at(-1)![3];
+    emit({ type: "user_message", streamId: 1, sessionId: "first-session", sendRequestId: firstRequestId });
+    hook.rerender({ tabId: "second-pane" });
+    await act(async () => { await hook.result.current.send("second pane"); });
+    const secondRequestId = spies.send.mock.calls.at(-1)![3];
+    emit({ type: "user_message", streamId: 2, sessionId: "second-session", sendRequestId: secondRequestId });
+    emit({ type: "text_delta", streamId: 2, text: "second answer" });
+    expect(hook.result.current.sessionId).toBe("second-session");
+    expect(lastAssistant(hook.result.current.entries)?.text).toBe("second answer");
+    emit({ type: "text_delta", streamId: 1, text: "first answer" });
+    hook.rerender({ tabId: "first-pane" });
+    expect(hook.result.current.sessionId).toBe("first-session");
+    expect(lastAssistant(hook.result.current.entries)?.text).toBe("first answer");
+    expect(spies.abort).not.toHaveBeenCalled();
+  });
+
   it("does NOT abort on unmount when idle", async () => {
     const { api, spies } = makeApi();
     const { unmount } = renderHook(() => useSideChat(api));
@@ -1413,7 +1529,7 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
     });
     expect(lastAssistant(result.current.entries)).toMatchObject({
       text: "render frame disposed",
-      systemNotice: "stream-error",
+      systemNotice: "operation-error",
     });
   });
 });

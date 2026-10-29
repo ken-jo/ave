@@ -218,7 +218,7 @@ function SideChatSession({
     clear,
     abort,
     isCurrentTurnEvent,
-  } = useSideChat(api, { onSessionBound: handleSessionBound });
+  } = useSideChat(api, { onSessionBound: handleSessionBound, paneTabId: boundSurface?.tabId });
   // A pane chat is its pane's conversation: it opens on what the pane already said, read without moving the side loop, and
   // "New" ends it for the pane instead of switching the loop under another view's turn.
   const paneTabId = boundSurface?.tabId;

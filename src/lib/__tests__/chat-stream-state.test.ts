@@ -642,6 +642,16 @@ describe("imported_trigger helpers (overlay import marker lifecycle)", () => {
 });
 
 describe("setAssistantError — Issue #911 systemNotice option", () => {
+  it("carries the refused session as a renderer-only operation notice target", () => {
+    const out = setAssistantError([], "Continue in the owning pane.", "", "operation-error", "pane-session");
+    expect(out).toEqual([expect.objectContaining({
+      kind: "assistant",
+      systemNotice: "operation-error",
+      noticeSessionId: "pane-session",
+      streaming: false,
+    })]);
+  });
+
   it("stamps systemNotice on the streaming-assistant replacement", () => {
     const initial: ChatEntry[] = [
       { kind: "user", text: "hi" },

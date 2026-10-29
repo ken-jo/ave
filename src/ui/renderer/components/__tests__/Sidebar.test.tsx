@@ -1774,6 +1774,39 @@ describe("Sidebar — every conversation family", () => {
     }
   });
 
+  it("opens a live pane-bound side chat on its own surface instead of the rail", async () => {
+    const onOpenSideChat = vi.fn();
+    const onOpenPaneChat = vi.fn();
+    const tabId = "terminal:pane-chat";
+    const { getByTestId, onLoadSession, restore } = renderSidebar({
+      sessions: [{ ...sideChatRow, paneTabId: tabId }],
+      mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }],
+      onOpenSideChat,
+      onOpenPaneChat,
+    });
+    try {
+      fireEvent.click(getByTestId("sidebar-session-side-1"));
+      expect(onOpenPaneChat).toHaveBeenCalledWith(tabId);
+      expect(onOpenSideChat).not.toHaveBeenCalled();
+      expect(onLoadSession).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
+  it("opens a closed pane's side chat on the rail", async () => {
+    const onOpenSideChat = vi.fn();
+    const onOpenPaneChat = vi.fn();
+    const { getByTestId, restore } = renderSidebar({
+      sessions: [{ ...sideChatRow, paneTabId: "terminal:closed" }],
+      onOpenSideChat,
+      onOpenPaneChat,
+    });
+    try {
+      fireEvent.click(getByTestId("sidebar-session-side-1"));
+      expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
+      expect(onOpenPaneChat).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
   it("lists a side chat whose conversation is not here at the top level", async () => {
     const { getByTestId, queryByTestId, restore } = renderSidebar({ sessions: allRows });
     try {

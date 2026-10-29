@@ -1198,7 +1198,7 @@ which is what every caller but the sidebar wants.
 | `main` | main | chat glyph, the conversation's title | the conversation, in the focused tile |
 | `routine` | main (`sessionKind: "routine"`) | routine glyph, the run's title | the run, through the same session-load path the routine panel uses |
 | `work-board` | sub-agent (origin names an item) | work glyph, the item's title | the board item, newest run transcript expanded |
-| `side-chat` | side-chat | side-chat glyph, indented under its conversation | the conversation, then that tile's side-chat tab showing this side chat |
+| `side-chat` | side-chat | side-chat glyph, indented under its conversation | the bound live terminal or page and its pane chat; with no live pane binding, the conversation and its side-chat tab |
 
 A sub-agent session that is not an item's run has no family and is not listed:
 it is already reachable inside its parent conversation's sub-agent tab, and a
@@ -1229,7 +1229,9 @@ side-chat store. A pane's turn binds its session to the pane's tab
 tab (`paneTabId`), so a restart reopens each restored pane on its conversation
 (restored tabs keep their ids). A turn from a conversation's side panel runs
 on the side loop in the session its view shows; a conversation a pane holds
-is refused there (`session-open-in-pane`). Reopening a pane's chat reads its
+is refused there (`session-open-in-pane`). Hiding or unmounting a pane chat
+does not abort its turn. Its renderer transcript subscription follows the tab's
+lifetime; returning to the chat reattaches to that transcript. Reopening a pane's chat reads its
 history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh
 and the pane's close ends it (`ave:sidechat:end-pane-chat`), stopping only
 that pane's turn and archiving a closed pane's conversation. A pane that ends

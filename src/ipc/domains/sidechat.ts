@@ -32,7 +32,7 @@ const MAX_PANE_TAB_ID_LENGTH = 256;
 const log = createLogger("sidechat");
 
 export function registerSideChatHandlers(deps: IpcDeps): void {
-  const { sideChatConversationLoop, paneChatLoops, auditLogger, getMainWindow, settingsService } = deps;
+  const { sideChatConversationLoop, paneChatLoops, auditLogger, settingsService } = deps;
   let railShellOwnerId: number | undefined;
   const shellTaskSession = (sender: WebContents, expectedSessionId: unknown): string | null => {
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return null;
@@ -292,7 +292,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
     registerApprovalOwner(loop, senderWindow.webContents);
     if (pane === null) { setSideChatOwnerContents(e.sender); railShellOwnerId = e.sender.id; }
-    const streamTarget = pane !== null ? senderWindow!.webContents : getMainWindow()?.webContents;
+    const streamTarget = e.sender;
     const sink: ConversationStreamEventSink = createLegacyChatStreamEventSink(
       buildSink(streamTarget),
       {

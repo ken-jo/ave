@@ -20,10 +20,10 @@ vi.mock("electron", () => ({
   },
 }));
 
-const sent: Array<{ channel: string; payload: unknown }> = [];
+const sent: Array<{ target: unknown; channel: string; payload: unknown }> = [];
 vi.mock("../../safe-send.js", () => ({
-  sendToWebContents: vi.fn((_wc: unknown, channel: string, payload: unknown) => {
-    sent.push({ channel, payload });
+  sendToWebContents: vi.fn((target: unknown, channel: string, payload: unknown) => {
+    sent.push({ target, channel, payload });
   }),
 }));
 
@@ -140,6 +140,7 @@ function register(
   piiRedactEnabled = false,
   sideChatMemoryManager: unknown = makeSideChatStore(),
   paneChatLoops: unknown = makePanePool(),
+  focusedContents: unknown = {},
 ) {
   const deps = {
     conversationLoop: mainLoop,
@@ -147,7 +148,7 @@ function register(
     paneChatLoops,
     sideChatMemoryManager,
     auditLogger: { log: vi.fn() },
-    getMainWindow: () => ({ webContents: {} }),
+    getMainWindow: () => ({ webContents: focusedContents }),
     settingsService: {
       get: vi.fn((key: string) => (key === "privacy" ? { piiRedactEnabled } : undefined)),
     },
@@ -162,6 +163,22 @@ beforeEach(() => {
 });
 
 describe("side-chat IPC domain", () => {
+  it("keeps rail stream frames in the requesting window when another window is focused", async () => {
+    const side = makeSideLoop();
+    const requester = rendererContents(1);
+    const focused = rendererContents(2);
+    register(side, makeMainLoop(), false, makeSideChatStore(), makePanePool(), focused);
+
+    await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, requester), {
+      input: "respond here", sendRequestId: "requesting-window-turn",
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every((frame) => frame.target === requester)).toBe(true);
+    expect(sent.some((frame) => frame.target === focused)).toBe(false);
+    expect(sent.map(({ payload }) => (payload as { type: string }).type)).toContain("text_delta");
+  });
+
   it.each(["rail", "pane"] as const)("registers the %s owner before a real approval gate receives its first tool request", async (surfaceKind) => {
     const owner = Object.assign(rendererContents(), { send: vi.fn() });
     const foreign = Object.assign(rendererContents(2), { send: vi.fn() });

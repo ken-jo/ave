@@ -1,7 +1,7 @@
 /** Side chat uses shared transcript reducers but subscribes only to its dedicated stream channel; adopt stream ids from
  * matching preludes and drop stale frames before reduction. User sends interrupt, queue drains do not; approval requests
  * remain in the global gate. */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import { t } from "../../../i18n/runtime.js";
 import {
   applyReasoningDelta,
@@ -73,6 +73,8 @@ export interface UseSideChat {
 export interface UseSideChatOptions {
   /** Acquires ownership on an accepted send, new or load, including the same session. */
   onSessionBound?: (sessionId: string) => void;
+  /** Pane lifetime follows its tab, including while its view is unmounted. */
+  paneTabId?: string | undefined;
 }
 
 interface SessionChangeIntent {
@@ -82,32 +84,126 @@ interface SessionChangeIntent {
   applied: boolean;
   applyResult?: () => { historyReplaced: boolean };
   refusalMessage?: string;
-  refusedSends?: Array<{ userEntry: ChatEntry; message: string }>;
+  refusalSessionId?: string;
+  refusedSends?: Array<{ userEntry: ChatEntry; message: string; noticeSessionId?: string | undefined }>;
 }
 
 type SessionChangeResult = Awaited<ReturnType<NonNullable<AveApi["sideChat"]>["new" | "load"]>>;
 
+interface SideChatSnapshot {
+  entries: ChatEntry[];
+  isStreaming: boolean;
+  sessionId: string | null;
+}
+
+function runtimeRef<T>(current: T): { current: T } {
+  return { current };
+}
+
+/** The tab owns the transcript and stream subscription; mounting a view only subscribes to its snapshot. */
+function createSideChatRuntime(retained: boolean) {
+  const runtime = {
+    retained,
+    hydrated: false,
+    snapshot: { entries: [], isStreaming: false, sessionId: null } as SideChatSnapshot,
+    listeners: new Set<() => void>(),
+    unsubscribe: null as (() => void) | null,
+    sessionIdRef: runtimeRef<string | null>(null),
+    viewMountedRef: runtimeRef(true),
+    activeSendRequestIdRef: runtimeRef<string | null>(null),
+    activeUserEntryRef: runtimeRef<ChatEntry | null>(null),
+    boundSendRequestIdRef: runtimeRef<string | null>(null),
+    sendGenerationRef: runtimeRef(0),
+    generationSequenceRef: runtimeRef(0),
+    sessionChangeIntentRef: runtimeRef<SessionChangeIntent | null>(null),
+    pendingSendRef: runtimeRef<ReturnType<NonNullable<AveApi["sideChat"]>["send"]> | null>(null),
+    onSessionBoundRef: runtimeRef<UseSideChatOptions["onSessionBound"]>(undefined),
+    streamRef: runtimeRef(""),
+    thoughtRef: runtimeRef(""),
+    finalAssistantRoundClosedRef: runtimeRef(false),
+    terminalStreamClosedRef: runtimeRef(false),
+    activeStreamIdRef: runtimeRef<number | null>(null),
+    activeStreamSessionIdRef: runtimeRef<string | null>(null),
+    maxStreamIdRef: runtimeRef<number>(-1),
+    isStreamingRef: runtimeRef(false),
+  };
+  const update = (patch: Partial<SideChatSnapshot>) => {
+    runtime.snapshot = { ...runtime.snapshot, ...patch };
+    for (const listener of runtime.listeners) listener();
+  };
+  return Object.assign(runtime, {
+    read: () => runtime.snapshot,
+    subscribe: (listener: () => void) => {
+      runtime.listeners.add(listener);
+      return () => { runtime.listeners.delete(listener); };
+    },
+    setEntries: (next: ChatEntry[] | ((previous: ChatEntry[]) => ChatEntry[])) => {
+      update({ entries: typeof next === "function" ? next(runtime.snapshot.entries) : next });
+    },
+    setIsStreaming: (isStreaming: boolean) => update({ isStreaming }),
+    setSessionId: (sessionId: string | null) => update({ sessionId }),
+  });
+}
+
+type SideChatRuntime = ReturnType<typeof createSideChatRuntime>;
+const paneChats = new WeakMap<NonNullable<AveApi["sideChat"]>, Map<string, SideChatRuntime>>();
+
+function acquirePaneChat(api: NonNullable<AveApi["sideChat"]>, tabId: string): SideChatRuntime {
+  let chats = paneChats.get(api);
+  if (!chats) {
+    chats = new Map();
+    paneChats.set(api, chats);
+  }
+  let runtime = chats.get(tabId);
+  if (!runtime) {
+    runtime = createSideChatRuntime(true);
+    chats.set(tabId, runtime);
+  }
+  return runtime;
+}
+
+/** Closing a surface retires its renderer subscription; the host owns ending the closed tab's turn. */
+export function prunePaneChats(api: NonNullable<AveApi["sideChat"]>, liveTabIds: ReadonlySet<string>): void {
+  const chats = paneChats.get(api);
+  if (!chats) return;
+  for (const [tabId, runtime] of chats) {
+    if (liveTabIds.has(tabId)) continue;
+    runtime.viewMountedRef.current = false;
+    runtime.sendGenerationRef.current = ++runtime.generationSequenceRef.current;
+    runtime.onSessionBoundRef.current = undefined;
+    runtime.unsubscribe?.();
+    chats.delete(tabId);
+  }
+}
+
 export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideChat {
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
-  const viewMountedRef = useRef(true);
-  const activeSendRequestIdRef = useRef<string | null>(null);
-  const activeUserEntryRef = useRef<ChatEntry | null>(null);
-  const boundSendRequestIdRef = useRef<string | null>(null);
+  const runtime = useMemo(() => {
+    if (api.sideChat && options?.paneTabId !== undefined) return acquirePaneChat(api.sideChat, options.paneTabId);
+    return createSideChatRuntime(false);
+  }, [api.sideChat, options?.paneTabId]);
+  const { entries, isStreaming, sessionId } = useSyncExternalStore(runtime.subscribe, runtime.read, runtime.read);
+  const { setEntries, setIsStreaming, setSessionId } = runtime;
+  const sessionIdRef = runtime.sessionIdRef;
+  const viewMountedRef = runtime.viewMountedRef;
+  const activeSendRequestIdRef = runtime.activeSendRequestIdRef;
+  const activeUserEntryRef = runtime.activeUserEntryRef;
+  const boundSendRequestIdRef = runtime.boundSendRequestIdRef;
   // Invoke replies can outlive the terminal frame. A deliberate stream reset supersedes their generation; refused
   // replacements restore the prior one.
-  const sendGenerationRef = useRef(0);
+  const sendGenerationRef = runtime.sendGenerationRef;
   // Restoring an intent must never reuse a generation already issued to a different request whose reply may still be
   // pending.
-  const generationSequenceRef = useRef(0);
-  const sessionChangeIntentRef = useRef<SessionChangeIntent | null>(null);
-  const pendingSendRef = useRef<ReturnType<NonNullable<AveApi["sideChat"]>["send"]> | null>(null);
-  const onSessionBoundRef = useRef(options?.onSessionBound);
+  const generationSequenceRef = runtime.generationSequenceRef;
+  const sessionChangeIntentRef = runtime.sessionChangeIntentRef;
+  const pendingSendRef = runtime.pendingSendRef;
+  const onSessionBoundRef = runtime.onSessionBoundRef;
   useLayoutEffect(() => {
     onSessionBoundRef.current = options?.onSessionBound;
-  }, [options?.onSessionBound]);
+    if (runtime.retained && sessionIdRef.current !== null) options?.onSessionBound?.(sessionIdRef.current);
+    return () => {
+      if (onSessionBoundRef.current === options?.onSessionBound) onSessionBoundRef.current = undefined;
+    };
+  }, [runtime, options?.onSessionBound]);
   const recordSessionId = useCallback((next: string, acquired = true) => {
     const changed = sessionIdRef.current !== next;
     if (changed) {
@@ -115,28 +211,28 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       setSessionId(next);
     }
     if (changed || acquired) onSessionBoundRef.current?.(next);
-  }, []);
+  }, [runtime]);
 
   // Stream-accumulator refs — mirror the main hook so `assistant_round` / `done` can finalize the streamed body / thought
   // exactly as the main transcript does.
-  const streamRef = useRef("");
-  const thoughtRef = useRef("");
+  const streamRef = runtime.streamRef;
+  const thoughtRef = runtime.thoughtRef;
   // Final assistant text is canonical at assistant_round(end_turn). Later deltas in the same stream are protocol tail noise,
   // not a new response.
-  const finalAssistantRoundClosedRef = useRef(false);
-  const terminalStreamClosedRef = useRef(false);
+  const finalAssistantRoundClosedRef = runtime.finalAssistantRoundClosedRef;
+  const terminalStreamClosedRef = runtime.terminalStreamClosedRef;
 
   // Adopt monotonic streamId only from a matching prelude; deliberate send/abort/session transitions re-arm the guard, while
   // done/error must not change its dispatch-time verdict.
-  const activeStreamIdRef = useRef<number | null>(null);
-  const activeStreamSessionIdRef = useRef<string | null>(null);
+  const activeStreamIdRef = runtime.activeStreamIdRef;
+  const activeStreamSessionIdRef = runtime.activeStreamSessionIdRef;
   // Highest streamId ever adopted. Because main allocates ids monotonically, a
   // straggler frame from a JUST-FINISHED turn carries a LOWER id than the next
   // turn's — after a re-arm we must adopt only a strictly-greater id so such a
   // straggler can never be mistaken for the new turn's first frame.
-  const maxStreamIdRef = useRef<number>(-1);
+  const maxStreamIdRef = runtime.maxStreamIdRef;
   // Update isStreaming and its ref through the same setter so interrupt checks cannot observe pre-commit stale state.
-  const isStreamingRef = useRef(false);
+  const isStreamingRef = runtime.isStreamingRef;
   const setStreaming = useCallback((next: boolean) => {
     isStreamingRef.current = next;
     if (!next) {
@@ -145,7 +241,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       boundSendRequestIdRef.current = null;
     }
     setIsStreaming(next);
-  }, []);
+  }, [runtime]);
 
   // Empty the stream accumulators. Says nothing about which turn is current — frame handlers use this so that judging a
   // frame stays a pure read of the guard (see `isCurrentTurnEvent`).
@@ -153,7 +249,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     streamRef.current = "";
     thoughtRef.current = "";
     finalAssistantRoundClosedRef.current = false;
-  }, []);
+  }, [runtime]);
 
   // …and abandon the turn on top of that: the guard is re-armed so the NEXT
   // turn's matching prelude adopts its own streamId. Only the deliberate transitions
@@ -170,11 +266,12 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     boundSendRequestIdRef.current = null;
   }, [resetStreamAccumulators]);
 
-  // Hidden tabs remain mounted. Teardown retires pending continuations before cancelling this view's request, so delayed
-  // work cannot start an orphan turn. The lifetime does not follow api-identity churn.
+  // Rail teardown retires pending continuations before cancelling its request. A pane retains the same runtime until the
+  // surface tab closes, so changing the visible pane cannot cancel its turn.
   useEffect(() => {
     viewMountedRef.current = true;
     return () => {
+      if (runtime.retained) return;
       viewMountedRef.current = false;
       const sendRequestId = activeSendRequestIdRef.current;
       const streaming = isStreamingRef.current;
@@ -185,7 +282,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetStreamState]);
+  }, [runtime, resetStreamState]);
 
   // Transcript and queue share one idempotent stale-frame verdict; never re-arm inside frame handlers or cache by frame
   // identity because subscribers receive separate copies.
@@ -215,7 +312,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       if (event.sessionId !== undefined && event.sessionId !== activeStreamSessionIdRef.current) return false;
       return judgeStreamFrame(event, activeStreamIdRef, maxStreamIdRef);
     },
-    [],
+    [runtime],
   );
 
   // Subscribe to the DEDICATED side-chat stream. Frames reduce through the
@@ -223,7 +320,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   // identically. The stale-frame guard runs FIRST, before any reducer, so it
   // stays orthogonal to the richer frame set.
   useEffect(() => {
-    if (!api.sideChat) return;
+    if (!api.sideChat || runtime.unsubscribe !== null) return;
     const handleSideStreamEvent = (event: ChatStreamEvent) => {
       if (!isCurrentTurnEvent(event)) return;
       if (terminalStreamClosedRef.current) return;
@@ -332,13 +429,17 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       w.__aveSideChatStream = { _emit: handleSideStreamEvent };
     }
 
-    return () => {
+    runtime.unsubscribe = () => {
       off();
+      runtime.unsubscribe = null;
       if (w.__aveSideChatStream && w.__aveSideChatStream._emit === handleSideStreamEvent) {
         delete w.__aveSideChatStream;
       }
     };
-  }, [api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
+    return () => {
+      if (!runtime.retained) runtime.unsubscribe?.();
+    };
+  }, [runtime, api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
 
   const abandonTurn = useCallback(() => {
     // Retire the stream before awaiting abort so its trailing done cannot drain onto the replacement turn; preserve partial
@@ -362,10 +463,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     return { sendRequestId, generation: sendGenerationRef.current };
   }, [resetStreamState, setStreaming]);
 
-  const reportOperationError = useCallback((generation: number, message: string) => {
+  const reportOperationError = useCallback((generation: number, message: string, noticeSessionId?: string) => {
     if (!viewMountedRef.current || generation !== sendGenerationRef.current) return;
-    setEntries((p) => setAssistantError(p, message, "", "stream-error"));
-  }, []);
+    setEntries((p) => setAssistantError(p, message, "", "operation-error", noticeSessionId));
+  }, [runtime]);
 
   const restoreSessionIntent = useCallback((intent: SessionChangeIntent): SessionChangeIntent => {
     let restored = intent;
@@ -380,7 +481,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     sendGenerationRef.current = restored.generation;
     sessionChangeIntentRef.current = restored.state === "pending" ? restored : null;
     return restored;
-  }, []);
+  }, [runtime]);
 
   const abort = useCallback(async () => {
     if (!viewMountedRef.current || !api.sideChat) return;
@@ -440,6 +541,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       };
       // Re-arm the stale-frame guard + clear accumulators: the next turn's matching prelude adopts its streamId (see
       // activeStreamIdRef doc).
+      runtime.hydrated = true;
       resetStreamState();
       const sendGeneration = sendGenerationRef.current;
       const sendRequestId = crypto.randomUUID();
@@ -453,7 +555,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       activeUserEntryRef.current = userEntry;
       setEntries((prev) => [...prev, userEntry]);
       setStreaming(true);
-      // The main-window webContents receives the stream frames; the invoke
+      // The requesting window receives the stream frames; the invoke
       // resolves with the final TurnResult (unused here — the transcript is built
       // from the stream). A rejected/failed result surfaces as an error entry so
       // the transcript never hangs on a permanent spinner.
@@ -473,12 +575,14 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           // Localize side-chat refusal codes through the same map as main chat.
           const thought = thoughtRef.current;
           const refusalMessage = formatIpcError(result.error, undefined);
+          const noticeSessionId = result.error === "session-open-in-pane" ? sessionIdRef.current ?? undefined : undefined;
           setEntries((p) =>
             setAssistantError(
               p,
               refusalMessage,
               thought,
-              "stream-error",
+              result.error === "session-open-in-pane" || activeStreamIdRef.current === null ? "operation-error" : "stream-error",
+              noticeSessionId,
             ),
           );
           if (activeStreamIdRef.current !== null) {
@@ -502,10 +606,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           finalAssistantRoundClosedRef.current = streamStateBeforeSend.finalAssistantRoundClosed;
           if (streamStateBeforeSend.sessionChangeIntent !== null) {
             const sessionIntent = restoreSessionIntent(streamStateBeforeSend.sessionChangeIntent);
-            (sessionIntent.refusedSends ??= []).push({ userEntry, message: refusalMessage });
+            (sessionIntent.refusedSends ??= []).push({ userEntry, message: refusalMessage, noticeSessionId });
             const applied = sessionIntent.applyResult?.();
             if (applied?.historyReplaced && sessionIntent.refusalMessage) {
-              reportOperationError(sessionIntent.generation, sessionIntent.refusalMessage);
+              reportOperationError(sessionIntent.generation, sessionIntent.refusalMessage, sessionIntent.refusalSessionId);
             }
           }
         }
@@ -521,7 +625,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
             p,
             errorMessage(err),
             thought,
-            "stream-error",
+            "operation-error",
           ),
         );
         setStreaming(false);
@@ -535,7 +639,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     [api, abort, reportOperationError, resetStreamAccumulators, resetStreamState, restoreSessionIntent, setStreaming],
   );
 
-  const changeSession = useCallback(async (invoke: () => Promise<SessionChangeResult>, clearHistory: boolean) => {
+  const changeSession = useCallback(async (invoke: () => Promise<SessionChangeResult>, clearHistory: boolean, requestedSessionId?: string) => {
     const previous = sessionChangeIntentRef.current;
     const { generation } = abandonTurn();
     const intent: SessionChangeIntent = {
@@ -557,7 +661,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
             const pendingUser = activeStreamIdRef.current === null ? activeUserEntryRef.current : null;
             let next = history;
             for (const refused of intent.refusedSends ?? []) {
-              next = setAssistantError([...next, refused.userEntry], refused.message, "", "stream-error");
+              next = setAssistantError([...next, refused.userEntry], refused.message, "", "operation-error", refused.noticeSessionId);
             }
             if (pendingUser !== null && !next.includes(pendingUser)) next = [...next, pendingUser];
             setEntries(next);
@@ -573,10 +677,11 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         || !viewMountedRef.current) return;
       if (res.ok) {
         const applied = intent.applyResult!();
-        if (intent.refusalMessage && applied.historyReplaced) reportOperationError(generation, intent.refusalMessage);
+        if (intent.refusalMessage && applied.historyReplaced) reportOperationError(generation, intent.refusalMessage, intent.refusalSessionId);
         sessionChangeIntentRef.current = null;
       } else {
         const message = intent.refusalMessage ?? formatIpcError(res.error, undefined);
+        const noticeSessionId = intent.refusalSessionId ?? (res.error === "session-open-in-pane" ? requestedSessionId : undefined);
         if (intent.previous !== null) {
           // A refused replacement never changed the host session. Preserve the earlier accepted change, even when its reply has
           // already arrived.
@@ -586,11 +691,12 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
             intent.refusedSends = undefined;
           }
           restored.refusalMessage = message;
+          restored.refusalSessionId = noticeSessionId;
           restored.applyResult?.();
-          reportOperationError(restored.generation, message);
+          reportOperationError(restored.generation, message, noticeSessionId);
         } else {
           sessionChangeIntentRef.current = null;
-          reportOperationError(generation, message);
+          reportOperationError(generation, message, noticeSessionId);
         }
       }
     } catch (err) {
@@ -610,13 +716,14 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     async (id: string) => {
       const sideChat = api.sideChat;
       if (!viewMountedRef.current || !sideChat) return;
-      await changeSession(() => sideChat.load(id), false);
+      await changeSession(() => sideChat.load(id), false, id);
     },
     [api, changeSession],
   );
 
   const restore = useCallback((id: string, messages: SerializedHistoryMessage[]) => {
-    if (!viewMountedRef.current) return;
+    if (!viewMountedRef.current || (runtime.retained && runtime.hydrated)) return;
+    runtime.hydrated = true;
     abandonTurn();
     sessionChangeIntentRef.current = null;
     setEntries(historyToEntries(messages));
@@ -625,6 +732,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
 
   const clear = useCallback(() => {
     if (!viewMountedRef.current) return;
+    runtime.hydrated = true;
     abandonTurn();
     sessionChangeIntentRef.current = null;
     setEntries([]);

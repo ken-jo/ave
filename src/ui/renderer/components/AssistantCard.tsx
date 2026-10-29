@@ -11,6 +11,7 @@ import { MARKDOWN_SAFE_COMPONENTS, markdownUrlTransform } from "../utils/markdow
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { replaceToolNamesInText } from "../utils/tool-display.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
+import { usePaneChatNavigation } from "../context/PaneChatNavigationContext.js";
 
 /**
  * Trailing "[중단됨]"-style markers that older engine versions appended to the
@@ -41,6 +42,10 @@ function AssistantCardImpl({
   isFinal?: boolean;
 }) {
   const { t } = useTranslation();
+  const paneChatNavigation = usePaneChatNavigation();
+  const noticePane = entry.systemNotice === "operation-error" && entry.noticeSessionId
+    ? paneChatNavigation?.resolveSession(entry.noticeSessionId)
+    : undefined;
   // Distinguish host-emitted system notices from model replies.
   const isSystemNotice = entry.systemNotice !== undefined;
   // Style restored system notices as previous-session errors; keep live notices destructive without re-alarming on reload.
@@ -50,6 +55,8 @@ function AssistantCardImpl({
       ? t("assistantCard.systemNoticeContextError")
       : entry.systemNotice === "stream-error"
         ? t("assistantCard.systemNoticeStreamError")
+        : entry.systemNotice === "operation-error"
+          ? t("assistantCard.systemNoticeOperationError")
         : t("assistantCard.systemNotice");
   const title = isSystemNotice
     ? systemNoticeLabel
@@ -60,7 +67,9 @@ function AssistantCardImpl({
   const wasInterrupted = entry.interrupted === true || legacySplit.hadMarker;
   const displayText = useMemo(() => detectFromStream(legacySplit.text).cleanedText, [legacySplit.text]);
   const renderedText = useMemo(() => replaceToolNamesInText(displayText), [displayText]);
-  const markdownText = entry.route === "command" ? preserveCommandLineBreaks(renderedText) : renderedText;
+  const markdownText = noticePane
+    ? t("assistantCard.conversationOpenInPane", { surface: noticePane.name })
+    : entry.route === "command" ? preserveCommandLineBreaks(renderedText) : renderedText;
   const hasRenderableText = markdownText.trim().length > 0;
   const hasHeaderTitle = title.trim().length > 0;
   const showHeader = actions !== undefined || isSystemNotice || wasInterrupted || (entry.streaming && hasHeaderTitle);
@@ -174,6 +183,13 @@ function AssistantCardImpl({
         </ReactMarkdown>
       </div>
 
+      {noticePane ? (
+        <div className="mt-2 flex items-center gap-2" data-testid="assistant-notice-pane-action">
+          <Button type="button" variant="outline" size="sm" onClick={() => paneChatNavigation?.openPaneChat(noticePane.tabId)}>
+            {t("assistantCard.openPaneChat")}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

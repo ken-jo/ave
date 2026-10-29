@@ -3,6 +3,9 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "assistantCard.systemNoticeOperationError": "시스템 알림 — 요청을 완료할 수 없음",
+  "assistantCard.conversationOpenInPane": "이 대화는 {surface}에 열려 있습니다.",
+  "assistantCard.openPaneChat": "열기",
   "terminalObservation.decisionBasis": "결정 근거: {basis}",
   "terminalObservation.decisionScope": "허용 범위: {scope}",
   "terminalObservation.basis.extensionAllowlist": "선언된 네트워크 접근",
