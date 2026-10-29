@@ -1,3 +1,4 @@
+import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
 // Disabled mode yields LOW while the matrix still applies; strict always yields HIGH/defer. Rule review is deterministic; model review composes conservatively with rules and DLP-redacts provider input. Missing provider/model configuration fails boot (docs/architecture/permission-policy-design.md).
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
 import { isIP } from "node:net";
@@ -1379,17 +1380,18 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
     }
     return null;
   },
-  // The existing rule-verdict reason carries runtime uncertainty into reviewer requests.
+  // The existing rule-verdict reason carries floor context without changing risk levels.
   (ctx) => {
     if (ctx.category !== "shell" || ctx.source !== "builtin"
       || (ctx.toolName !== "bash" && ctx.toolName !== "powershell")) return null;
+    const commands = extractShellCommands(ctx.finalInput);
+    const destructive = ctx.toolName === "bash" && commands.some((command) =>
+      tokenizeShell(command).leaves.some((leaf) => isDestructiveShellArgv(leaf.argv) || noReusableRuleReason(leaf.argv) !== null));
     const inspect = ctx.toolName === "powershell" ? inspectPowerShellCommand : inspectShellCommand;
-    if (extractShellCommands(ctx.finalInput).some((command) => inspect(command, shellInvocationCwd(ctx)).outcome === "unproven")) {
-      const commands = extractShellCommands(ctx.finalInput);
-      const level = commands.length > 0 && commands.every((command) => REVERSIBLE_SHELL_RE.test(command)) ? "low" : "medium";
-      return { level, reason: "shell requires runtime evaluation" };
-    }
-    return null;
+    const unproven = commands.some((command) => inspect(command, shellInvocationCwd(ctx)).outcome === "unproven");
+    if (!destructive && !unproven) return null;
+    const level = commands.length > 0 && commands.every((command) => REVERSIBLE_SHELL_RE.test(command)) ? "low" : "medium";
+    return { level, reason: destructive ? "shell destructive floor: irreversible command" : "shell requires runtime evaluation" };
   },
   (ctx) => {
     if (ctx.category !== "shell") return null;

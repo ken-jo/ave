@@ -18,7 +18,7 @@ beforeEach(() => {
   manager.setInteractiveAutoApprove("medium");
 });
 afterEach(async () => { vi.unstubAllEnvs(); await cleanupTmpDir(cwd); });
-const COMMANDS = ['echo "$TARGET"', 'echo "$(pwd)"', 'printf "$TARGET" | cat', "rm -rf ./build"];
+const COMMANDS = ['echo "$TARGET"', 'echo "$(pwd)"', 'printf "$TARGET" | cat', "rm -rf ./build", "git reset --hard", "env git reset --hard"];
 const check = (command: string, sandboxed = true, headless = false) =>
   checkShellPermission(manager, cwd, "shell-review-session", command, "bash", sandboxed, headless);
 
@@ -85,7 +85,7 @@ describe("confined shell floor review", () => {
       sandboxCapability: { kind: "asrt" as const, confidence: "verified" as const, platform: "darwin" as const, reason: "confined" },
     };
     const verdict = new RuleBasedRiskClassifier().classify(context);
-    expect(verdict.reason).toMatch(command.startsWith("rm") ? /destructive/ : /runtime evaluation/);
+    expect(verdict.reason).toMatch(command.includes("reset --hard") || command.startsWith("rm") ? /destructive/ : /runtime evaluation/);
     expect(_internal.buildUserPrompt(context, verdict)).toContain(verdict.reason);
   });
 });
