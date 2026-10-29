@@ -139,6 +139,11 @@ export const en = {
   "toolApprovalDialog.networkScopeNotOffered": "This connection is not offered for that lifetime.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "A local or unverified destination cannot be allowed for good.",
   "toolApprovalDialog.pathGrantOnlyFolder": "A folder is allowed once or for good.",
+  "toolApprovalDialog.hostTerminalTarget": "Types `{command}` into your own terminal {terminal} ({shell}) and runs it there, in {cwd}. You can take over at any time.",
+  "toolApprovalDialog.hostTerminalWarning": "This is your real shell, with your permissions and no sandbox. The command's output returns to the model and may contain secrets from your machine.",
+  "toolApprovalDialog.hostTerminalOutsideAllowed": "{cwd} is outside your allowed folders. The command runs there in your own shell.",
+  "toolApprovalDialog.decisionAllowHostTerminal": "Always allow this command in this folder",
+  "toolApprovalDialog.hostTerminalRuleScope": "In your own terminal, a lasting allow names this exact command and folder for this shell, and is kept until you remove it."
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
@@ -280,4 +285,9 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.networkScopeNotOffered": "이 연결에는 그 기간의 허용을 제공하지 않습니다.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "로컬 또는 확인되지 않은 대상은 영구히 허용할 수 없습니다.",
   "toolApprovalDialog.pathGrantOnlyFolder": "폴더는 한 번만 또는 영구히 허용합니다.",
+  "toolApprovalDialog.hostTerminalTarget": "`{command}` 를 내 터미널 {terminal} ({shell}) 에 입력해 {cwd} 에서 실행합니다. 언제든 제어를 가져올 수 있습니다.",
+  "toolApprovalDialog.hostTerminalWarning": "샌드박스 없이 내 권한으로 실행되는 실제 셸입니다. 명령의 출력은 모델에 전달되며 이 컴퓨터의 비밀 정보가 포함될 수 있습니다.",
+  "toolApprovalDialog.hostTerminalOutsideAllowed": "{cwd} 는 허용된 폴더 밖입니다. 명령은 그곳에서 내 셸로 실행됩니다.",
+  "toolApprovalDialog.decisionAllowHostTerminal": "이 폴더에서 이 명령 항상 허용",
+  "toolApprovalDialog.hostTerminalRuleScope": "내 터미널에서는 이 셸, 이 폴더, 이 명령만 지정하는 항상 허용 규칙만 저장할 수 있으며, 직접 삭제할 때까지 유지됩니다."
 };

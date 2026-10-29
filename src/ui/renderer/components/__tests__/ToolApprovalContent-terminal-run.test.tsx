@@ -7,6 +7,8 @@ import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
+import { t } from "../../../../i18n/index.js";
+import { shellDecisionModel } from "../permissions/approval-decision.js";
 
 /** A `terminal_run` card shows the exact command and the terminal it will be typed into; the target the host
  * sealed before the card was shown; and remembers the command in that directory for this app session only. */
@@ -124,5 +126,53 @@ describe("ToolApprovalContent terminal_run card", () => {
     fireEvent.click(remember);
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
+  });
+});
+
+describe("ToolApprovalContent host terminal card", () => {
+  const rule = 'HostTerminal(zsh "/Users/me/repo" npm test)';
+  const shellRule = {
+    dialect: "bash" as const, exactRule: rule, denyRule: "Bash(npm test)", denyAllowed: true, projectCwd: "/Users/me/repo", projectRoot: "/Users/me/repo",
+    sessionAllowed: false, persistentAllowed: true, hostTerminal: { shell: "zsh" as const, cwd: "/Users/me/repo" },
+  };
+  const hostRequest = (allowedDirectories: string[]): ApprovalRequest => terminalRunRequest({
+    args: { command: "npm test" },
+    persistentAllowAllowed: false,
+    persistentApprovalCwd: undefined,
+    requireExplicit: true,
+    shellRule,
+    evaluationContext: evaluationContext(allowedDirectories),
+    approvalMemory: {
+      kind: "key",
+      key: "terminal_run:host",
+      scope: {
+        kind: "terminal-command", lane: "manual", commandSha256: "b".repeat(64), tabId: "terminal:0000c0de-1", terminalSessionId: "host",
+        sessionId: "11111111-1111-4111-8111-111111111111", shell: "zsh", cwd: "/Users/me/repo", physicalCwd: "/Users/me/repo",
+        cwdDevice: "1", cwdInode: "2", controlGeneration: 3, cwdForMatch: "/users/me/repo",
+      },
+    },
+  });
+  afterEach(() => { vi.unstubAllGlobals(); clearActiveSurface(); });
+
+  it("names the user's own shell and warns that the output returns to the model, without a sandbox claim", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    showActiveSurface({ kind: "terminal", tabId: "terminal:0000c0de-1", label: "Terminal 4", cwd: "/Users/me/repo" });
+    renderApproval(hostRequest(["/elsewhere"]), vi.fn());
+    expect(screen.getByTestId("approval-terminal-target")).toHaveTextContent(
+      t("toolApprovalDialog.hostTerminalTarget", { command: "npm test", terminal: "Terminal 4", shell: "zsh", cwd: "/Users/me/repo" }));
+    const notes = screen.getAllByTestId("approval-terminal-note").map((note) => note.textContent);
+    expect(notes).toContain(t("toolApprovalDialog.hostTerminalWarning"));
+    expect(notes).toContain(t("toolApprovalDialog.hostTerminalOutsideAllowed", { cwd: "/Users/me/repo" }));
+    expect(notes).not.toContain(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: "/Users/me/repo" }));
+    expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "shell");
+  });
+
+  it("offers only the exact host rule as a lasting allow, not editable, with no session or project allow", () => {
+    const model = shellDecisionModel(shellRule);
+    expect(model.options["allow-session"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.hostTerminalRuleScope" });
+    expect(model.options["allow-project"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.hostTerminalRuleScope" });
+    expect(model.options["allow-everywhere"]).toMatchObject({ offered: true, rule, editing: null, labelKey: "toolApprovalDialog.decisionAllowHostTerminal" });
+    expect(model.options["deny-always"]).toMatchObject({ offered: true, rule: "Bash(npm test)" });
+    expect(model.warnsOnWildcardAllow).toBe(false);
   });
 });

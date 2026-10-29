@@ -69,6 +69,9 @@ export interface ShellRuleApproval {
   sessionAllowed: boolean;
   /** "Always allow in this project" and "Always allow everywhere" are offered. */
   persistentAllowed: boolean;
+  /** A command for the user's own host terminal: its allow saves only `exactRule` (a `HostTerminal(...)` rule for this shell and physical
+   * directory) as "Always allow"; there is no session or project allow. */
+  hostTerminal?: { readonly shell: "zsh" | "bash"; readonly cwd: string };
 }
 
 /** Exact-tuple decision stored for a user-reviewed tool invocation. Legacy entries pre-date this field and therefore normalize to `"allow"`.
@@ -111,6 +114,28 @@ export type ApprovalMemoryScope =
       readonly terminalSessionId: string;
       readonly sandboxGeneration: string;
       readonly cwd: string;
+      readonly cwdForMatch: string;
+    }
+  // One exact command typed into the user's own host terminal by that tab's pane chat. Never remembered: each command is the person's
+  // decision unless an exact `HostTerminal(...)` rule names this shell, physical directory and command. Every field is sealed before the card
+  // and rechecked immediately before the first byte is typed.
+  | {
+      readonly kind: "terminal-command";
+      readonly lane: "manual";
+      readonly commandSha256: string;
+      readonly tabId: string;
+      readonly terminalSessionId: string;
+      /** The pane chat conversation that asked: only it may consume this approval and read the command's output. */
+      readonly sessionId: string;
+      readonly shell: "zsh" | "bash";
+      /** The directory the shell's markers reported, and the same directory as the operating system resolves it. */
+      readonly cwd: string;
+      readonly physicalCwd: string;
+      /** Device and inode of `physicalCwd`, decimal; a replaced directory at the same path is a different target. */
+      readonly cwdDevice: string;
+      readonly cwdInode: string;
+      /** The terminal's control generation when the card was built: a take-over or hand-back since then voids the approval. */
+      readonly controlGeneration: number;
       readonly cwdForMatch: string;
     };
 

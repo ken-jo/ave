@@ -16,6 +16,7 @@ const deps: TerminalReadToolDeps = {
   windowIdForHostedSession: (sessionId) => (sessionId === "main" ? WINDOW : null),
   conversationTerminalRef: (sessionId) => owned.get(sessionId),
   liveOriginSessionId: (sessionId) => ({ child: "main", grandchild: "child" } as Record<string, string>)[sessionId],
+  hostDisclosure: () => undefined,
 };
 const ctxFor = (sessionId?: string) =>
   ({ metadata: sessionId === undefined ? {} : { sessionId } }) as unknown as ToolExecutionContext;
@@ -254,4 +255,29 @@ it("refuses host output and stale incarnations, including continuation-shaped re
   const read = bodyOf(isolated.output as string, false);
   expect(read).toMatchObject({ tabId: "terminal:1", terminalSessionId: "terminal:1/agent", block: { command: "agent", output: "ISOLATED" } });
   expect(read).not.toHaveProperty("lane");
+});
+
+it("serves a host command's continuation only as its own span, only to the conversation that ran it", async () => {
+  const manual = trackerWith([{ command: "human", output: "HOST-SECRET", exit: 0 }]);
+  registerTerminalBlockTracker(terminalSessionFixture("terminal:9", "manual"), manual, WINDOW);
+  const span = { requestingSessionId: "main", command: "npm test", cwd: "/repo", blockId: 4, state: "running" as const, exitCode: null, output: "approved output", truncated: false };
+  const hostDisclosure = vi.fn((ref: { lane: string }, _windowId: number, sessionId: string, blockId: number) =>
+    ref.lane === "manual" && sessionId === "main" && blockId === 4 ? span : undefined);
+  const tool = createTerminalReadTool({ ...deps, hostDisclosure });
+  const read = await tool.execute({ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 4 }, ctx);
+  expect(read.isError).toBeFalsy();
+  expect(bodyOf(read.output as string, false)).toMatchObject({ terminal: "host", finished: false, block: { id: 4, output: "approved output" }, continuation: { blockId: 4 } });
+  expect(read.output).not.toContain("HOST-SECRET");
+  expect(read.output).not.toContain("exitCode");
+  // A sub-agent of that conversation, another block, or a listing never reads it.
+  for (const [input, context] of [
+    [{ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 4 }, ctxFor("child")],
+    [{ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 1 }, ctx],
+    [{ tabId: "terminal:9", terminalSessionId: "terminal:9/manual" }, ctx],
+  ] as const) {
+    const result = await tool.execute(input, context);
+    expect(result.isError, JSON.stringify(input)).toBe(true);
+    expect(result.output).not.toContain("approved output");
+  }
+  expect(hostDisclosure).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:9", lane: "manual" }), WINDOW, "child", 4);
 });

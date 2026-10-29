@@ -1,6 +1,11 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 /** terminal_run: type one approved command into the invoking conversation's isolated terminal. */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { HostTerminalControlState } from "../../shared/terminal-session.js";
+import type { HostTerminalDisclosure } from "../../main/terminal/host-terminal-control.js";
 import {
   createTerminalRunTool,
   isCanonicalTerminalRunTool,
@@ -110,6 +115,15 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
     // The operating system agrees with whatever the markers report.
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
     auditMismatch: (mismatch) => { mismatches.push(mismatch); },
+    // No host terminal is available unless a test provides one.
+    host: {
+      session: () => undefined,
+      shellName: () => undefined,
+      control: () => undefined,
+      verifyShell: async () => ({ ok: false, reason: "no-terminal", message: "no host terminal" }),
+      typeCommand: async () => ({ ok: false, reason: "no-terminal", message: "no host terminal" }),
+      waitDisclosure: async () => undefined,
+    },
     typed,
     mismatches,
     ...overrides,
@@ -161,13 +175,15 @@ describe("terminal_run", () => {
       });
     });
 
-    it("refuses host pane typing before creating an isolated terminal", async () => {
+    it("refuses an unavailable bound host terminal without falling back to an isolated terminal", async () => {
       const ensureConversationTerminal = vi.fn(async () => terminalSessionFixture("terminal:aaaaaaaa-1"));
       const deps = depsWith({ boundSurface: () => ({ kind: "terminal", tabId: "terminal:host" }), ensureConversationTerminal });
       const tool = createTerminalRunTool(deps);
-      for (const tabId of [undefined, "terminal:aaaaaaaa-1", "terminal:host"]) {
+      await expect(tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-1" }, { cwd: "/workspace", sessionId: "main" }))
+        .rejects.toThrow(/only into this pane chat's own terminal/);
+      for (const tabId of [undefined, "terminal:host"]) {
         await expect(tool.approvalMemoryScope!({ command: "ls", ...(tabId ? { tabId } : {}) }, { cwd: "/workspace", sessionId: "main" }))
-          .rejects.toThrow(/typing in host terminals is unavailable/);
+          .rejects.toThrow(/not available for agent commands/);
       }
       expect(ensureConversationTerminal).not.toHaveBeenCalled();
       expect(deps.typed).toEqual([]);
@@ -525,7 +541,7 @@ describe("terminal_run", () => {
       hostBound = true;
       const result = await tool.execute({ command: "ls" }, ctxFor(scope));
       expect(result.isError).toBe(true);
-      expect(result.output).toContain("typing in host terminals is unavailable");
+      expect(result.output).toContain("isolated approval no longer applies");
       expect(deps.typed).toEqual([]);
     });
 
@@ -694,5 +710,136 @@ describe("terminal_run", () => {
     expect(terminalCommandScopeOf({ kind: "key", key: "k", scope })).toBe(scope);
     expect(() => terminalCommandScopeOf({ kind: "args" })).toThrow(/without its sealed terminal target/);
     expect(() => terminalCommandScopeOf(undefined)).toThrow(/without its sealed terminal target/);
+  });
+});
+
+describe("terminal_run into a pane chat's own host terminal", () => {
+  const HOST = "terminal:0000c0de-1";
+  let hostDir: string;
+  let identity: { dev: bigint; ino: bigint };
+  beforeEach(() => {
+    hostDir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-")));
+    const stat = statSync(hostDir, { bigint: true });
+    identity = { dev: stat.dev, ino: stat.ino };
+  });
+  afterEach(() => {
+    __resetTerminalBlocksForTest();
+    rmSync(hostDir, { recursive: true, force: true });
+  });
+
+  function hostDeps(options: { control?: HostTerminalControlState; bound?: () => string | undefined; span?: Partial<HostTerminalDisclosure>; tracker?: TerminalBlockTracker; shell?: string } = {}) {
+    const session = terminalSessionFixture(HOST, "manual");
+    const tracker = options.tracker ?? readyTracker(hostDir);
+    registerTerminalBlockTracker(session, tracker, WINDOW);
+    const hostTyped: Array<[string, string, string]> = [];
+    const control = { value: options.control ?? { mode: "available" as const, generation: 4 } };
+    const ensureConversationTerminal = vi.fn(async () => terminalSessionFixture("terminal:aaaaaaaa-1"));
+    const deps = depsWith({
+      ensureConversationTerminal,
+      // Only the exact pane chat "main" is bound; its sub-agent "child" is not.
+      boundSurface: (_windowId, sessionId) => {
+        const tabId = sessionId === "main" ? (options.bound ?? (() => HOST))() : undefined;
+        return tabId === undefined ? undefined : { kind: "terminal", tabId };
+      },
+      host: {
+        session: (tabId) => (tabId === HOST ? session : undefined),
+        shellName: () => options.shell ?? "zsh",
+        control: () => control.value,
+        verifyShell: async (_ref, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
+        typeCommand: async (_ref, _windowId, sessionId, line, cwd, bound) => {
+          hostTyped.push([sessionId, line, cwd]);
+          if (!bound()) return { ok: false, reason: "no-terminal", message: "unbound" };
+          return { ok: true, firstBlockId: 2 };
+        },
+        waitDisclosure: async (_ref, _windowId, sessionId, blockId) => sessionId === "main" && blockId === 2 ? {
+          requestingSessionId: "main", command: "npm test", cwd: hostDir, blockId: 2, state: "done", exitCode: 0, output: "approved output\n", truncated: false,
+          ...options.span,
+        } : undefined,
+      },
+    });
+    return { deps, tool: createTerminalRunTool(deps), hostTyped, control, tracker, ensureConversationTerminal };
+  }
+
+  it("seals the bound host target, shell, physical directory identity and control generation, without touching an isolated terminal", async () => {
+    const { tool, ensureConversationTerminal } = hostDeps();
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    expect(scope).toEqual({
+      kind: "terminal-command", lane: "manual", commandSha256: sha256Hex("npm test"), tabId: HOST, terminalSessionId: `${HOST}/manual`,
+      sessionId: "main", shell: "zsh", cwd: hostDir, physicalCwd: hostDir, cwdDevice: identity.dev.toString(), cwdInode: identity.ino.toString(),
+      controlGeneration: 4, cwdForMatch: expect.any(String),
+    });
+    expect(ensureConversationTerminal).not.toHaveBeenCalled();
+    // The pane chat's sub-agent is not the pane chat: it gets its own isolated terminal.
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+    expect(await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "child" })).toMatchObject({ lane: "agent", tabId: "terminal:aaaaaaaa-1" });
+    expect(ensureConversationTerminal).toHaveBeenCalledWith("child", WINDOW, "/workspace");
+  });
+
+  it("refuses a startup question before the first marked prompt, a taken-over terminal and an unsupported shell, with clear reasons", async () => {
+    const starting = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    starting.recordOutput("zsh compinit: insecure directories, run compaudit for list.\r\nIgnore insecure directories and continue [y] or abort compinit [n]? ");
+    await expect(hostDeps({ tracker: starting }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
+      .rejects.toThrow(t("be_terminalRun.hostNoPromptYet", { tabId: HOST }));
+    __resetTerminalBlocksForTest();
+    await expect(hostDeps({ control: { mode: "taken-over", generation: 5 } }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
+      .rejects.toThrow(/must hand it back/);
+    __resetTerminalBlocksForTest();
+    await expect(hostDeps({ shell: "fish" }).tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))
+      .rejects.toThrow(/need zsh or bash/);
+  });
+
+  it("returns only the lease's own span, never the terminal's scrollback", async () => {
+    const tracker = readyTracker(hostDir);
+    tracker.recordOutput(runOutput("cat secrets", "HOST-SCROLLBACK-SECRET\n", 0, hostDir));
+    const { tool, hostTyped } = hostDeps({ tracker });
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
+    expect(result.isError).toBeFalsy();
+    expect(hostTyped).toEqual([["main", "npm test", hostDir]]);
+    expect(body(result.output)).toMatchObject({ terminal: "host", typed: true, finished: true, block: { id: 2, output: "approved output\n", exitCode: 0 } });
+    expect(result.output).not.toContain("HOST-SCROLLBACK-SECRET");
+    expect(result.output).not.toContain("sandboxNotice");
+  });
+
+  it("reports an interrupted span without an exit code, and a mismatched command without any output", async () => {
+    const interrupted = hostDeps({ span: { state: "interrupted", interruption: "take-over", exitCode: null, output: "partial" } });
+    const scope = await interrupted.tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    const stopped = body((await interrupted.tool.execute({ command: "npm test" }, ctxFor(scope))).output);
+    expect(stopped).toMatchObject({ finished: false, interrupted: "take-over", block: { output: "partial" } });
+    expect(stopped.block).not.toHaveProperty("exitCode");
+    expect(stopped).not.toHaveProperty("continuation");
+    __resetTerminalBlocksForTest();
+    const mismatched = hostDeps({ span: { state: "interrupted", interruption: "command-mismatch", output: "" } });
+    const sealed = await mismatched.tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    const result = await mismatched.tool.execute({ command: "npm test" }, ctxFor(sealed));
+    expect(result.isError).toBe(true);
+    expect(mismatched.deps.mismatches).toEqual([expect.objectContaining({ lane: "manual", tabId: HOST, approvedSha256: sha256Hex("npm test") })]);
+  });
+
+  it.each([
+    ["another conversation consumes it", (scope: ApprovalMemoryScope) => ({ scope, sessionId: "child" }), /another conversation/],
+    ["the control generation moved", (scope: ApprovalMemoryScope) => ({ scope: { ...scope, controlGeneration: 3 } as ApprovalMemoryScope }), /control of terminal/],
+    ["the incarnation was replaced", (scope: ApprovalMemoryScope) => ({ scope: { ...scope, terminalSessionId: "retired" } as ApprovalMemoryScope }), /replaced, closed or moved/],
+    ["the shell kind differs", (scope: ApprovalMemoryScope) => ({ scope: { ...scope, shell: "bash" } as ApprovalMemoryScope }), /shell changed/],
+    ["the directory was replaced on disk", (scope: ApprovalMemoryScope) => ({ scope: { ...scope, cwdInode: "1" } as ApprovalMemoryScope }), /replaced on disk/],
+  ])("types nothing when %s after approval", async (_label, change, reason) => {
+    const { tool, hostTyped } = hostDeps();
+    const sealed = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    const { scope, sessionId } = change(sealed) as { scope: ApprovalMemoryScope; sessionId?: string };
+    const result = await tool.execute({ command: "npm test" }, ctxFor(scope, sessionId));
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(reason);
+    expect(hostTyped).toEqual([]);
+  });
+
+  it("types nothing once the pane chat binding is gone, and the typing protocol rechecks it", async () => {
+    let bound: string | undefined = HOST;
+    const { tool, hostTyped } = hostDeps({ bound: () => bound });
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    bound = "terminal:other-1";
+    const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/no longer this terminal's pane chat/);
+    expect(hostTyped).toEqual([]);
   });
 });

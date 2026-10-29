@@ -564,7 +564,9 @@ function terminalTargetText(
   if (typeof command !== "string") return null;
   const active = getActiveSurface();
   const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
-  return t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
+  return memory.scope.lane === "manual"
+    ? t("toolApprovalDialog.hostTerminalTarget", { command, terminal, shell: memory.scope.shell, cwd: memory.scope.physicalCwd })
+    : t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
 }
 
 /** Facts about a `terminal_run` command a reader could miss in its text: each character that could pass for another, by code point (a look-alike reads as the letter it imitates; words in one
@@ -576,6 +578,8 @@ function terminalCommandNotes(
   const memory = request.approvalMemory;
   if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return [];
   const notes: string[] = [];
+  // The user's own shell: no sandbox, and the approved command's output goes back to the model.
+  if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
     const lookalikes = terminalCommandLookalikes(command);
@@ -596,7 +600,11 @@ function terminalCommandNotes(
       const root = dir.endsWith("/") ? dir.slice(0, -1) : dir;
       return target === root || target.startsWith(`${root}/`);
     });
-    if (!inside) notes.push(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: memory.scope.cwd }));
+    if (!inside) {
+      notes.push(memory.scope.lane === "manual"
+        ? t("toolApprovalDialog.hostTerminalOutsideAllowed", { cwd: memory.scope.physicalCwd })
+        : t("toolApprovalDialog.terminalOutsideAllowed", { cwd: memory.scope.cwd }));
+    }
   }
   return notes;
 }

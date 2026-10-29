@@ -11,7 +11,7 @@ interface VersionedRule extends ShellRuleVersion {
 }
 
 function isShellRulePattern(pattern: string): boolean {
-  return /^(?:Bash|PowerShell)\(/.test(pattern);
+  return /^(?:Bash|PowerShell|HostTerminal)\(/.test(pattern);
 }
 
 // Restrictions keep narrowing independently of the format that originally wrote them.

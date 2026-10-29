@@ -51,6 +51,9 @@ export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> =
   "allow-once": "toolApprovalDialog.allowOnce",
 };
 
+/** A host terminal card's lasting allow names one command in one folder of one shell, not "everywhere". */
+export const HOST_TERMINAL_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowHostTerminal";
+
 /** A folder card's lasting allow is "Always allow this folder", not "everywhere": it grants the folder, not the tool. */
 export const FOLDER_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowFolder";
 
@@ -67,6 +70,24 @@ const label = (choice: RememberingChoice): string => DECISION_LABEL_KEYS[choice]
 /** A bash or PowerShell card: every remembering choice saves a `Bash(...)` / `PowerShell(...)` rule, editable in the card. Always deny saves the command's literal argv, or a rule the person writes when there is none. */
 export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionModel {
   const exact = rule.exactRule;
+  if (rule.hostTerminal !== undefined) {
+    // The user's own host terminal: the only lasting allow is the exact `HostTerminal(...)` rule (this shell, this folder, this command),
+    // saved as written by the host; no session or project allow, and the rule is not editable into anything broader.
+    return {
+      variant: "shell",
+      options: {
+        "deny-always": rule.denyAllowed
+          ? offered(rule.denyRule, "inline", label("deny-always"), rule.denyRule === null)
+          : refused("toolApprovalDialog.persistentUnavailableOneShot", label("deny-always")),
+        "allow-session": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-session")),
+        "allow-project": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-project")),
+        "allow-everywhere": exact === null
+          ? refused("toolApprovalDialog.shellExactRuleUnavailable", HOST_TERMINAL_ALLOW_LABEL_KEY)
+          : offered(exact, null, HOST_TERMINAL_ALLOW_LABEL_KEY),
+      },
+      warnsOnWildcardAllow: false,
+    };
+  }
   const allow = (choice: RememberingChoice, allowed: boolean): DecisionOption =>
     exact === null
       ? refused("toolApprovalDialog.shellExactRuleUnavailable", label(choice))

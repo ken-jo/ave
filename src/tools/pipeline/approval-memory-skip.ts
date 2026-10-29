@@ -103,6 +103,8 @@ export async function tryUserApprovalMemorySkip(
   const canonicalArgs = canonicalStringify(finalInput);
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
   if (hostShellExecutionPlan?.mode === "plain") return null;
+  // A command for the user's own host terminal is the person's decision each time: no remembered approval ever stands in for it.
+  if (context.approvalMemory?.kind === "key" && context.approvalMemory.scope.kind === "terminal-command" && context.approvalMemory.scope.lane === "manual") return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,

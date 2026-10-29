@@ -26,7 +26,11 @@ import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
-import { conversationTerminalRef, ensureConversationTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
+import {
+  conversationTerminalRef, ensureConversationTerminal, hostTerminalControlState, hostTerminalDisclosure, hostTerminalSession, hostTerminalShellName,
+  revokeUnboundHostTerminalLeases, typeAgentTerminalCommand, typeHostTerminalCommand, verifyAgentTerminalShell, verifyHostTerminalShell,
+  waitForHostTerminalDisclosure,
+} from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
 import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
@@ -160,11 +164,17 @@ export async function setupWorkflowStores(
         };
         const liveOriginSessionId = (sessionId: string): string | undefined =>
           subAgentRunnerRef.fn?.liveOriginSessionId(sessionId);
+        // A host terminal lease is authority for one pane chat: any binding change in the window ends leases whose conversation lost it.
+        browserTabRegistry.onBindingsChanged((windowId) => revokeUnboundHostTerminalLeases(windowId, (tabId, sessionId) => {
+          const surface = browserTabRegistry.conversationSurface(windowId, sessionId);
+          return surface?.kind === "terminal" && surface.tabId === tabId;
+        }));
         return {
           terminalRead: {
             windowIdForHostedSession,
             liveOriginSessionId,
             conversationTerminalRef,
+            hostDisclosure: hostTerminalDisclosure,
           },
           terminalRun: {
             windowIdForHostedSession,
@@ -174,6 +184,14 @@ export async function setupWorkflowStores(
             ensureConversationTerminal,
             typeCommand: typeAgentTerminalCommand,
             verifyShell: verifyAgentTerminalShell,
+            host: {
+              session: hostTerminalSession,
+              shellName: hostTerminalShellName,
+              control: hostTerminalControlState,
+              verifyShell: verifyHostTerminalShell,
+              typeCommand: typeHostTerminalCommand,
+              waitDisclosure: waitForHostTerminalDisclosure,
+            },
             auditMismatch: (mismatch) => {
               ctx.bootAuditLogger.log({
                 timestamp: new Date().toISOString(),

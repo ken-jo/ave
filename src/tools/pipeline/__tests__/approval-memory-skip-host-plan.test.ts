@@ -98,4 +98,31 @@ describe("foreground approval memory — sealed host shell plan", () => {
       }),
     }));
   });
+
+  it("never lets a remembered approval stand in for a command typed into the user's host terminal", async () => {
+    const finalInput = { command: "npm test", waitSeconds: 0 };
+    const scope = {
+      kind: "terminal-command" as const, lane: "manual" as const, commandSha256: "0".repeat(64), tabId: "terminal:0000c0de-1",
+      terminalSessionId: "host", sessionId: "11111111-1111-4111-8111-111111111111", shell: "zsh" as const, cwd: process.cwd(),
+      physicalCwd: process.cwd(), cwdDevice: "1", cwdInode: "2", controlGeneration: 0, cwdForMatch: process.cwd(),
+    };
+    const approvalMemory = { kind: "key" as const, key: "terminal_run:host", scope };
+    const approvalCacheKey = "terminal_run:host-command";
+    // Even a matching record (which no host card can create) is never consulted.
+    await recordApproval("terminal_run", canonicalStringify(finalInput), "builtin", {
+      scope: "session",
+      sessionId: scope.sessionId,
+      verdictAtApproval: "high",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, approvalMemory),
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(process.cwd()).identity,
+    });
+    const result = await tryUserApprovalMemorySkip(
+      "terminal_run", "builtin", "shell", [], finalInput, process.cwd(), [], [],
+      { trustOrigin: "user-keyboard", approvalMemory }, approvalCacheKey, {}, randomUUID(),
+      undefined, undefined, undefined, undefined, undefined, scope.sessionId,
+    );
+    expect(result).toBeNull();
+  });
 });

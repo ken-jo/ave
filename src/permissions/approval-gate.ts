@@ -42,7 +42,7 @@ import type {
 } from "../shared/parent-escalation-notice.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { resolveUserApprovalVerdict, type ApprovalMemory } from "../shared/permissions-events.js";
-import { buildShellRuleApproval } from "./rules/shell-rule-approval.js";
+import { buildHostTerminalRuleApproval, buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import type {
@@ -300,6 +300,10 @@ export type ApprovalRequestInput = Omit<
   readonly durableApprovalRecordAllowed?: boolean;
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
+  // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
+  // parked observer or away answer), it is never remembered, and its saves store only the exact `HostTerminal(...)` rule. Set by the
+  // executor from the sealed terminal target, never by a renderer.
+  readonly hostTerminal?: HostTerminalApprovalBinding;
   // Derive remote origin only from host-owned controller authority, never reason text or renderer input. Keep it off ApprovalRequest and all renderer payloads; absence means no host-observed remote controller.
   readonly remoteControllerOrigin?: RemoteControllerOrigin;
   // Host-only: the live authority object the marker above was projected from. The marker records what was true when the request was built; this is the thing that can still be asked. AwayAuthority re-checks it at the moment it answers, so a share revoked while the turn was in flight is not answered by a grant that was valid when the turn started. Nothing else in the gate reads it, and like the marker it never reaches the renderer, the audit payload, or pending state.
@@ -665,6 +669,7 @@ interface PendingEntry {
   riskCeilingAtApproval?: RiskLevel;
   executionPlan?: HostShellExecutionPlanAuditProjection;
   hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
+  hostTerminal?: HostTerminalApprovalBinding;
   // Confused-deputy nonce issued for this request (echoed back verbatim)
   nonce: string;
   // Expected HMAC for this request (confused-deputy defense)
@@ -1489,6 +1494,7 @@ export class ApprovalGate {
       forceExplicit = false,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
+      hostTerminal,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
@@ -1574,8 +1580,12 @@ export class ApprovalGate {
       forceExplicit === true &&
       hasOneShotApprovalChoiceContract;
     // A regular builtin command dock may save an escape rule and then answer allow-once. Its native action still uses the same authenticated receipt.
+    if (hostTerminal !== undefined && (req.toolName !== "terminal_run" || req.source !== "builtin" || req.toolCategory !== "shell"
+      || requestedDurableApprovalRecordAllowed !== false || req.sessionId !== hostTerminal.sessionId)) {
+      throw new Error("approval: host terminal binding does not describe this request");
+    }
     const hasShellRuleApprovalContract = !forceExplicit && requestedChoices === undefined &&
-      req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
+      req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell" || hostTerminal !== undefined) && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool");
     const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
     if (
@@ -1677,7 +1687,12 @@ export class ApprovalGate {
     const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract && !highRiskOneShot &&
       req.mode !== "ask_all" && remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
-    const shellRule = req.source === "builtin" && shellRuleDialect !== undefined &&
+    const shellRule = hostTerminal !== undefined
+      // The person's own host terminal: an exact HostTerminal(...) allow, always user-global, never a session rule; a Bash deny still narrows.
+      ? typeof rawShellArgs?.command === "string" && rawShellArgs.command === hostTerminal.command
+        ? buildHostTerminalRuleApproval(hostTerminal, { allow: shellRuleSaveAllowed, deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined })
+        : (() => { throw new Error("approval: host terminal command does not match the request"); })()
+      : req.source === "builtin" && shellRuleDialect !== undefined &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       typeof rawShellArgs?.command === "string" && shellRuleCwd
       ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
@@ -1719,7 +1734,7 @@ export class ApprovalGate {
         req.kind === "rationale"
           ? true
           // Only an explicit false relaxes it: a policy object that lost the field stays explicit.
-          : oneShotPermitBinding !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
+          : oneShotPermitBinding !== undefined || hostTerminal !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
     };
 
     // Sensitive paths hard-block before all approval/mode/admin paths; canonicalize before matching so traversal, Unicode, spaces, case and slash variants cannot bypass it.
@@ -1830,6 +1845,7 @@ export class ApprovalGate {
         durableApprovalRecordAllowed,
         hostShellExecutionPermitBound:
           hostShellExecutionPermitBinding !== undefined,
+        hostTerminalBound: hostTerminal !== undefined,
         // The full set, not `target.filePath` — that is the display value and is only the first extracted path.
         targetFilePaths: scopeTargetFilePaths ?? [],
       } satisfies AwayAuthorityCandidate,
@@ -2073,12 +2089,14 @@ export class ApprovalGate {
         ...(oneShotPermitBinding !== undefined
           ? { hostShellExecutionPermitBinding: oneShotPermitBinding }
           : {}),
+        ...(hostTerminal === undefined ? {} : { hostTerminal }),
         nonce,
         expectedHmac,
       });
 
       // Announce the parked request to host-internal observers. Positioned after `pending.set` so an observer's answer through `resolve` finds the entry, and below every host-only short circuit above (which all returned before a pending entry existed).
-      if (oneShotPermitBinding?.executionMode !== "host") this.notifyPendingParked({
+      // Desktop-only requests are never announced to host-internal observers (Telegram and other remote surfaces answer through them).
+      if (oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
         requestId: fullReq.id,
         toolName: fullReq.toolName,
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
@@ -2246,7 +2264,7 @@ export class ApprovalGate {
       // damage the owner's pending request, even with valid signed contents.
       return null;
     }
-    if (entry.hostShellExecutionPermitBinding?.executionMode === "host" && !nativeRenderer) {
+    if ((entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),

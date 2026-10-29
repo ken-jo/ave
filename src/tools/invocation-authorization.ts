@@ -27,7 +27,7 @@ import {
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
-import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
@@ -228,6 +228,8 @@ export async function authorizeToolInvocation(
   // The PermissionManager's own layer-3 allow-rule decision that authorized an
   // explicit host request, carried by identity to the permit mint.
   let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
+  // The sealed target of a `terminal_run` into the user's host terminal, set where the permission subject is built.
+  let hostTerminalScope: HostTerminalCommandScope | undefined;
 
   const returnAuthorizationRequired = async (
     blockedPermission: PermissionCheckResult,
@@ -449,6 +451,7 @@ export async function authorizeToolInvocation(
     const terminalScope = isCanonicalTerminalRunTool(tool)
       ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
       : undefined;
+    hostTerminalScope = terminalScope?.lane === "manual" ? terminalScope : undefined;
     const shellRuleSubject = shellDialect !== undefined && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
@@ -460,7 +463,11 @@ export async function authorizeToolInvocation(
           ),
         }
       : terminalScope !== undefined && typeof finalInput.command === "string"
-        ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
+        ? terminalScope.lane === "manual"
+          // The user's own host shell: judged in its OS-verified physical directory, and only exact host rules of that shell may allow it.
+          ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.physicalCwd,
+            hostTerminal: { shell: terminalScope.shell, cwd: terminalScope.physicalCwd } }
+          : { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
         : undefined;
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
@@ -603,6 +610,25 @@ export async function authorizeToolInvocation(
               : "an action on a tab the user opened asks every time",
             forceModal: true,
           };
+    }
+
+    // A command typed into the user's own host terminal: only an exact
+    // `HostTerminal(...)` rule (layer 3, the plain-shell rule lane) runs it
+    // unasked. Otherwise the verified person at this desktop decides, every
+    // time, in every mode: no reviewer, judge, away authority, remembered
+    // approval or remote answer (forceModal + the gate's host-terminal marker).
+    // A remote or headless turn has no such person and no pane binding.
+    if (hostTerminalScope !== undefined && permissionResult.decision !== "deny") {
+      if (remoteControllerOrigin !== undefined || requiresRemoteLocalOneShot) {
+        permissionResult = { decision: "deny", reason: "Host terminal typing is unavailable to remote-controller requests", layer: 2 };
+      } else if (invocationPermissionContext.headless === true) {
+        permissionResult = { decision: "deny", reason: "Host terminal typing needs its pane chat and a person at this desktop; it is unavailable here", layer: permissionResult.layer };
+      } else if (permissionResult.decision === "allow" && !isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager)) {
+        throw new Error("Host terminal command was allowed without an exact host terminal rule");
+      } else if (permissionResult.decision === "ask") {
+        const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
+        permissionResult = { ...withoutReviewer, forceModal: true };
+      }
     }
 
     // A pre-issued app mutation grant replaces only the ordinary foreground
@@ -1570,6 +1596,18 @@ export async function authorizeToolInvocation(
               }
             : {}),
           ...(hostShellExecutionPermitBinding === undefined ? {} : { hostShellExecutionPermitBinding }),
+          // The user's own host terminal: desktop-only, never remembered; the card saves only its exact host terminal rule.
+          ...(hostTerminalScope === undefined || typeof finalInput.command !== "string" ? {} : {
+            durableApprovalRecordAllowed: false as const,
+            hostTerminal: {
+              tabId: hostTerminalScope.tabId,
+              terminalSessionId: hostTerminalScope.terminalSessionId,
+              sessionId: hostTerminalScope.sessionId,
+              shell: hostTerminalScope.shell,
+              physicalCwd: hostTerminalScope.physicalCwd,
+              command: finalInput.command,
+            },
+          }),
           // A guest-routed shell shows the substrate the reviewer graded, not
           // the host plan of a child that never spawns.
           ...(hostShellExecutionPlanAudit === undefined

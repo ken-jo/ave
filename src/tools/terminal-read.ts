@@ -1,4 +1,5 @@
-/** Read only the calling conversation's confined terminal; host terminal output requires explicit user attachment.
+/** Read only the calling conversation's confined terminal; host terminal output requires explicit user attachment, except the span an
+ * approved `terminal_run` disclosed to the exact conversation that requested it (its continuation).
  * Frame command/output records as sanitized untrusted data; this ordinary permission-checked read cannot type or spawn. */
 import { createDynamicTool, type Tool } from "./base.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../main/terminal/terminal-blocks.js";
@@ -8,6 +9,7 @@ import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
 import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 import { terminalSandboxWindowNotice } from "../main/terminal/terminal-sandbox-policy.js";
+import type { HostTerminalDisclosure } from "../main/terminal/host-terminal-control.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -20,6 +22,8 @@ const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
   /** Main-owned isolated-terminal identity for the exact invoking session. Never spawns a terminal. */
   conversationTerminalRef: (sessionId: string, windowId: number) => TerminalSessionRef | undefined;
+  /** The span one approved host command disclosed to `sessionId` (pty-manager); undefined for anything else in a host terminal. */
+  hostDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, blockId: number) => HostTerminalDisclosure | undefined;
 }
 
 /** The app window whose terminals `sessionId` may read (session-window-scope.ts): its own window, else its parent's when it is a running sub-agent, else none. */
@@ -157,9 +161,15 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       if (tabId === undefined) {
         return terminalToolFailure("This conversation has no isolated terminal. Host terminal output is private; ask the user to attach a command block explicitly.");
       }
-      // A host tab, or a terminal of another conversation or window, answers exactly like one that does not exist.
+      // A host tab, or a terminal of another conversation or window, answers exactly like one that does not exist — except the exact
+      // continuation of a host command this very conversation ran, which returns that command's own span and nothing else.
       const ref: TerminalSessionRef = { tabId, lane: "agent", terminalSessionId: input.terminalSessionId };
       if (!owned || owned.lane !== "agent" || !sameTerminalSession(owned, ref)) {
+        const span = input.blockId === undefined ? undefined
+          : deps.hostDisclosure({ tabId, lane: "manual", terminalSessionId: input.terminalSessionId }, windowId, sessionId, input.blockId as number);
+        if (span !== undefined) {
+          return fenceTerminalData({ tabId, terminalSessionId: input.terminalSessionId, terminal: "host", ...hostSpanResult(span, tabId, input.terminalSessionId) }, { isolated: false });
+        }
         return terminalToolFailure("No matching isolated terminal belongs to this conversation.");
       }
       const tracker = getWindowTerminalBlockTracker(ref, windowId);
@@ -179,4 +189,23 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       }, { isolated: true });
     },
   });
+}
+
+/** What a host command's own span tells the model: its output only while the lease held, the exit code only when the authenticated exit
+ * marker arrived under it, and why it stopped otherwise. Never the terminal's scrollback or another period. */
+export function hostSpanResult(span: HostTerminalDisclosure, tabId: string, terminalSessionId: string): Record<string, unknown> {
+  const block = {
+    id: span.blockId, command: span.command, cwd: span.cwd, output: span.output,
+    ...(span.truncated ? { truncated: true } : {}),
+    ...(span.state === "done" ? { exitCode: span.exitCode } : {}),
+  };
+  if (span.state === "done") return { finished: true, block };
+  if (span.state === "interrupted") {
+    return { finished: false, block, interrupted: span.interruption, note: t("be_terminalRun.hostInterrupted", { tabId }) };
+  }
+  return {
+    finished: false, block,
+    note: t("be_terminalRun.stillRunning", { tabId, blockId: span.blockId }),
+    continuation: { tabId, terminalSessionId, blockId: span.blockId },
+  };
 }
