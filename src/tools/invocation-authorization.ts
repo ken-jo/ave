@@ -102,6 +102,16 @@ type AuditPermissionAsk = (
  * and is not what makes this value correct.
  */
 
+
+/** What the approval card reports for a command typed into the user's own host terminal: no confinement of any kind. */
+const HOST_TERMINAL_CAPABILITY = Object.freeze({
+  kind: "none" as const,
+  confidence: "verified" as const,
+  platform: process.platform,
+  reason: "typed into the user's own host terminal; runs with the user's permissions and no isolation",
+  confines: Object.freeze({ filesystem: false, process: false, network: false }),
+});
+
 export function deriveApprovalIsReadOnly(opts: {
   invocationCategory: ToolCategory;
   approvalReasonPrefix: string | undefined;
@@ -1728,7 +1738,11 @@ export async function authorizeToolInvocation(
             : {}),
           // Canonical host shells expose only their sealed safe projection;
           // non-host-shell routes retain their existing capability display.
-          ...(hostShellExecutionPlanAudit === undefined
+          // A command typed into the user's own host terminal runs with no
+          // isolation at all, whatever confines the isolated terminals.
+          ...(hostTerminalScope !== undefined
+            ? { sandboxCapability: HOST_TERMINAL_CAPABILITY }
+            : hostShellExecutionPlanAudit === undefined
             ? {
                 sandboxCapability: resolveReviewerSandboxCapability(
                   source,

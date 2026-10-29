@@ -6,6 +6,9 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import {
+  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { formatRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
@@ -24,6 +27,8 @@ let dir: string;
 beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-"))); });
 afterEach(() => {
   __resetTerminalBlocksForTest();
+  __resetActiveSandboxCapabilityForTest();
+  __resetSandboxRequestedAtBootForTest();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -99,6 +104,16 @@ describe("terminal_run host permission", () => {
     const approved = await run("printf ready", { mode, choice: "allow-once" });
     expect(approved.typed).toEqual(["printf ready"]);
     expect(approved.result.is_error).toBeFalsy();
+  });
+
+  it("shows no isolation on the card even while the isolated terminals are confined", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: process.platform, reason: "test confinement",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    const { request } = await run("printf ready");
+    expect(request?.sandboxCapability).toMatchObject({ kind: "none", confines: { filesystem: false, process: false, network: false } });
   });
 
   it("runs an exact HostTerminal(...) rule's command without a card, and no Bash(...) allow does", async () => {

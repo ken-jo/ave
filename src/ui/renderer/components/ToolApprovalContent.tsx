@@ -1514,13 +1514,16 @@ export function ToolApprovalContent({
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
               <div className="space-y-1" data-testid="approval-shell-rule-context">
-                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. */}
-                {request.executionPlan?.sandboxed !== true ? (
+                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. A command for the user's own
+                    terminal has its own warning and a rule scoped to that shell and folder, not to a project. */}
+                {!shellRule.hostTerminal && request.executionPlan?.sandboxed !== true ? (
                   <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
                 ) : null}
-                <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
-                  {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
-                </p>
+                {shellRule.hostTerminal ? null : (
+                  <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
+                    {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
+                  </p>
+                )}
                 {/* An -EncodedCommand payload is shown as the script it runs; the host checked that text, and no rule covers it. */}
                 {shellRule.decodedCommands?.map((decoded, index) => (
                   <div key={index} className="min-w-0 space-y-0.5" data-testid="approval-shell-decoded-command">

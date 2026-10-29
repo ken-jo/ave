@@ -165,6 +165,9 @@ describe("ToolApprovalContent host terminal card", () => {
     expect(notes).toContain(t("toolApprovalDialog.hostTerminalOutsideAllowed", { cwd: "/Users/me/repo" }));
     expect(notes).not.toContain(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: "/Users/me/repo" }));
     expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "shell");
+    // Its own warning replaces the generic sandbox note, and its rule names a shell and folder, not a project.
+    expect(screen.queryByTestId("approval-shell-outside-sandbox")).toBeNull();
+    expect(screen.queryByTestId("approval-shell-rule-scope-target")).toBeNull();
   });
 
   it("offers only the exact host rule as a lasting allow, not editable, with no session or project allow", () => {
