@@ -2165,6 +2165,7 @@ export function Sidebar({
           bare cluster (mt-1.5 gap), so nav stays reachable while the cluster has
           popped out of the floating surface. */}
       <div
+        data-sidebar-preview-boundary
         className={
           collapsed
             ? // Collapsed rail width excludes the sidebar inset and one gutter; it must not inherit the cluster's native-control clearance.

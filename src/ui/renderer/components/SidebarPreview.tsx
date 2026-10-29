@@ -71,7 +71,7 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
     };
   }, [hide]);
   const rect = active?.anchor.getBoundingClientRect();
-  const sidebarRect = active?.anchor.closest("aside")?.getBoundingClientRect();
+  const sidebarRect = active?.anchor.closest("[data-sidebar-preview-boundary]")?.getBoundingClientRect();
   return <PreviewContext.Provider value={{ activeId: active?.id, show, hide }}>
     {children}
     {active && rect && createPortal(<div

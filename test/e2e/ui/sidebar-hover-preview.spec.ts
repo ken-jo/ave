@@ -12,7 +12,7 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
   mkdirSync(dirname(promptConfig), { recursive: true });
   writeFileSync(promptConfig, "[gcloud]\ndisabled = true\n[aws]\ndisabled = true\n[username]\ndisabled = true\n");
   const ctx = await launchSeededElectron({
-    launchEnv: { STARSHIP_CONFIG: promptConfig },
+    launchEnv: { STARSHIP_CONFIG: promptConfig, PS1: "❯ ", PROMPT: "❯ " },
     sessionId,
     sessionTitle: "Build review",
     historyRows: [{ role: "user", content: "Review the build" }, { role: "assistant", content: message }],
@@ -57,6 +57,10 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
     await expect(conversation).toBeVisible();
     await conversation.focus();
     await expect(card).toContainText(message);
+    const collapsedEntryBounds = (await conversation.boundingBox())!;
+    const collapsedCardBounds = (await card.boundingBox())!;
+    expect(collapsedCardBounds.x).toBeGreaterThanOrEqual(collapsedEntryBounds.x + collapsedEntryBounds.width);
+    expect(collapsedCardBounds.x).toBeLessThanOrEqual(collapsedEntryBounds.x + collapsedEntryBounds.width + 30);
     const descriptionId = await card.getAttribute("id");
     await expect(conversation).toHaveAttribute("aria-describedby", descriptionId!);
     await page.screenshot({ path: testInfo.outputPath("collapsed-keyboard-preview.png") });
