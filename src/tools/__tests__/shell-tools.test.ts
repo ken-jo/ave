@@ -8,7 +8,7 @@ import type { PowerShellArgument, PowerShellValueArgument } from "../powershell-
 import { EventEmitter } from "node:events";
 import childProcess, { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -354,13 +354,33 @@ describe("bash tool", () => {
       }
     });
 
+    // Windows hosts usually have no HOME (Git Bash and CI export one), so each case states it.
     it("rejects redirection-attached sensitive operands before spawning the shell", async () => {
-      const result = await new BashTool().execute(
-        { command: "cat<$HOME/.ssh/id_rsa", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
-        ctx(),
-      );
-      expect(result.isError).toBe(true);
-      expect(result.output).toContain("Sensitive path:");
+      vi.stubEnv("HOME", homedir());
+      try {
+        const result = await new BashTool().execute(
+          { command: "cat<$HOME/.ssh/id_rsa", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          ctx(),
+        );
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("Sensitive path:");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("declines a redirect target through an unset HOME before spawning the shell", async () => {
+      vi.stubEnv("HOME", undefined);
+      try {
+        const result = await new BashTool().execute(
+          { command: "cat<$HOME/.ssh/id_rsa", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          ctx(),
+        );
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("unresolved redirect target");
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it("rejects unsupported ~user operands instead of validating a fake cwd-relative path", async () => {
