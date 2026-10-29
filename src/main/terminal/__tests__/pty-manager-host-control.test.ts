@@ -378,6 +378,26 @@ describe.runIf(process.platform !== "win32")("host terminal control periods", ()
     expect(shell.pty.written.slice(before)).toEqual(["\u0003"]);
   });
 
+  it.each([
+    ["a move to the side panel", async () => { await spawnTerminal({ tabId: TAB, lane: "manual", purpose: "side-panel", ownerWindowId: WINDOW }); }],
+    ["a binding change", async () => { revokeUnboundHostTerminalLeases(WINDOW, () => "conversation-b"); }],
+    ["a take-over", async () => { controlTerminal(hostTerminalSession(TAB, WINDOW)!, WINDOW, "take-over"); }],
+    ["the turn's end", async (turn: ReturnType<typeof fakeTurn>) => { turn.end(); }],
+  ] as const)("drops a Stop's deferred interrupt after %s, before the command starts", async (_label, change) => {
+    const shell = await hostShell();
+    // The binding is already known, so the change below is a real binding change, not its first observation.
+    revokeUnboundHostTerminalLeases(WINDOW, () => "conversation-a");
+    const turn = fakeTurn();
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, typing("sleep 30", () => true, { turn }));
+    expect(typed.ok).toBe(true);
+    shell.pty.respond = null;
+    expect(controlTerminal(shell.session, WINDOW, "stop")).toMatchObject({ ok: true });
+    await change(turn);
+    const before = shell.pty.written.length;
+    shell.pty.emitData(shell.run("sleep 30"));
+    expect(shell.pty.written.slice(before)).toEqual([]);
+  });
+
   it("does not interrupt a command that starts after the user acted following a Stop before its start", async () => {
     const shell = await hostShell();
     const typed = await typeHostTerminalCommand(shell.session, WINDOW, typing("sleep 30"));

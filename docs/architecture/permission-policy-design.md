@@ -1882,7 +1882,12 @@ one command into that terminal. Main owns the boundary
   guidance behind it, and never a sub-agent (which runs with the capability
   masked). A routine, plugin or app message, or any other turn, is refused
   before a card. The turn id is sealed into the approval; the authorization
-  step also requires the `user-keyboard` trust origin and that same turn. The
+  step also requires an untainted tool trust origin and that same turn. Any
+  tool result returned to the model (a file, a page, a plugin's or a
+  sub-agent's text, a command's output) taints the rest of the turn as
+  `file-content` ([trust-origin.ts](../../src/engine/turn/trust-origin.ts)),
+  so a host command steered by external content is denied even under an exact
+  rule; the user asks again in a new message. The
   final PTY write, the disclosed span and its `terminal_read` continuation are
   bound to it, and the turn's end ends the lease (`turn-ended`).
 - **Target.** Two records must both say workspace: the mount's declared purpose
@@ -1921,9 +1926,10 @@ one command into that terminal. Main owns the boundary
   `host`, its path-policy relaxations); a host that would now route shell
   effects elsewhere is refused before the card.
 - **Final effect check.** At each check before an agent write (the reset, the
-  paste, Enter), the typing protocol re-proves the sealed directory identity
-  (reported directory, realpath, device and inode) and rebuilds the execution
-  route: a relaxation or route that differs from the decision fails with the
+  paste, Enter), the typing protocol rebuilds the execution route and then,
+  after that await and with nothing asynchronous before the write, re-proves
+  the sealed directory identity (reported directory, realpath, device and
+  inode): a relaxation or route that differs from the decision fails with the
   path-policy mismatch error. Either refusal writes nothing further; after the
   paste it clears the line with one Ctrl-C while the lease holds.
 - **Control lease.** Admission takes one generation-bound agent lease. Every
@@ -1935,8 +1941,10 @@ one command into that terminal. Main owns the boundary
   with no lease, so a card still pending for that terminal types nothing once
   approved. Stop sends one Ctrl-C only for the lease's own block: at once while
   it runs, or, when Enter was pressed but the shell has not started it yet, once
-  when it starts (unless the user acts or a new prompt comes first, within 10
-  seconds). A turn stopped after the paste but before Enter clears the line with
+  when it starts. That deferred interrupt is bound to the Stop's control
+  generation, the incarnation and the lease's turn: user input, a new prompt,
+  any later control change (placement, binding, take-over), the turn's end or
+  10 seconds without a start drop it. A turn stopped after the paste but before Enter clears the line with
   one Ctrl-C while the lease holds. After a take-over the agent cannot type again
   until the user presses **Hand back** at an empty, quiet attested prompt; vi
   mode, a right-hand prompt or a not-found handler do not block it. A refusal

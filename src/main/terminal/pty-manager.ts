@@ -1118,22 +1118,38 @@ function stopHostAgentCommand(session: TerminalSession, control: HostTerminalCon
     return;
   }
   // Enter was pressed but the shell has not started the command yet (no C marker): interrupt it once when it starts, unless the user acts
-  // first, another prompt comes, or it never starts.
-  if (session.blocks.get(typedBlock) !== null) return;
-  const generation = session.blocks.userInputGeneration();
+  // first, another prompt comes, it never starts, or anything else changes control: the deferred Ctrl-C belongs to this Stop's control
+  // generation, this incarnation and the lease's user turn, and any later revocation (placement, binding, take-over, turn end) drops it.
+  const turn = leaseTurns.get(revoked);
+  if (session.blocks.get(typedBlock) !== null || turn === undefined || !turn.isCurrent()) return;
+  const key = terminalLaneKey(session.info);
+  const inputs = session.blocks.userInputGeneration();
   const prompts = session.blocks.promptEndCount();
+  const generation = control.state().generation;
   let done = false;
-  const finish = (): void => { if (done) return; done = true; clearTimeout(timer); unsubscribe(); };
+  const offs: Array<() => void> = [];
+  const finish = (): void => {
+    if (done) return;
+    done = true;
+    for (const off of offs.splice(0)) off();
+  };
   const timer = setTimeout(finish, STOP_START_WAIT_MS);
   timer.unref?.();
-  const unsubscribe = session.blocks.subscribe(() => {
+  offs.push(() => clearTimeout(timer));
+  offs.push(control.onChange(finish));
+  offs.push(turn.onEnd(finish));
+  offs.push(session.blocks.subscribe(() => {
     if (done) return;
-    if (session.exited || session.blocks.userInputGeneration() !== generation || session.blocks.promptEndCount() !== prompts) { finish(); return; }
+    if (sessions.get(key) !== session || session.exited || session.blocks.userInputGeneration() !== inputs
+      || session.blocks.promptEndCount() !== prompts || control.state().generation !== generation || !turn.isCurrent()) { finish(); return; }
     if (session.blocks.get(typedBlock) === null) return;
     if (session.blocks.promptState() === "command-running" && runningLeaseBlock(session) === typedBlock) session.pty.write("\u0003");
     finish();
-  });
+  }));
 }
+
+/** The user turn each live host lease types for, so a deferred Stop interrupt ends with that turn. */
+const leaseTurns = new WeakMap<HostAgentLease, HostTerminalTurn>();
 
 function hostAgentInput(command: string, integrationUnavailable: string | undefined): HostTerminalAgentInput {
   const shell = basename(command).replace(/\.exe$/iu, "").toLowerCase();
@@ -1202,6 +1218,7 @@ export async function typeHostTerminalCommand(
   const admitted = control.admit(requestingSessionId, turn.turnId, line.trim(), canonicalizePathForMatch(expectedCwd));
   if (!admitted.ok) return { ok: false, reason: "pending-input", message: admitted.message };
   const lease = admitted.lease;
+  leaseTurns.set(lease, turn);
   // Nothing is disclosed to a turn that is over: its end ends the lease (the command may keep running in the user's period).
   const offTurn = turn.onEnd(() => control.endTurn(lease));
   lease.signal.addEventListener("abort", offTurn, { once: true });

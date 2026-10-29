@@ -903,7 +903,7 @@ describe("terminal_run into a pane chat's own host terminal", () => {
   it("re-proves the sealed directory identity at the final pre-write check: a directory swapped during preparation types nothing", async () => {
     const { tool, hostTyped, effectChecks } = hostDeps();
     const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
-    // The swap lands while the PTY layer prepares: after its first pre-write check, before the next.
+    // The swap lands while the PTY layer prepares, inside its first pre-write check's route recheck: that same check refuses.
     let swapped = false;
     const result = await tool.execute({ command: "npm test" }, ctxFor(scope, "main", undefined, async () => {
       if (swapped) return;
@@ -912,6 +912,29 @@ describe("terminal_run into a pane chat's own host terminal", () => {
       renameSync(hostDir, `${hostDir}-original`);
       mkdirSync(hostDir);
     }));
+    rmSync(`${hostDir}-original`, { recursive: true, force: true });
+    expect(result.isError).toBe(true);
+    expect(effectChecks).toEqual([{ ok: false, message: expect.stringMatching(/replaced on disk while the command was being prepared/) }]);
+    expect(hostTyped).toEqual([]);
+  });
+
+  it("re-proves the directory after the route recheck's await: a swap while the last recheck is pending types nothing", async () => {
+    const { tool, hostTyped, effectChecks } = hostDeps();
+    const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+    let rechecks = 0;
+    let entered: () => void = () => {};
+    const enteredLast = new Promise<void>((resolve) => { entered = resolve; });
+    let resume: () => void = () => {};
+    const executing = tool.execute({ command: "npm test" }, ctxFor(scope, "main", undefined, async () => {
+      if (++rechecks < 2) return;
+      entered();
+      await new Promise<void>((resolve) => { resume = resolve; });
+    }));
+    await enteredLast;
+    renameSync(hostDir, `${hostDir}-original`);
+    mkdirSync(hostDir);
+    resume();
+    const result = await executing;
     rmSync(`${hostDir}-original`, { recursive: true, force: true });
     expect(result.isError).toBe(true);
     expect(effectChecks).toEqual([{ ok: true }, { ok: false, message: expect.stringMatching(/replaced on disk while the command was being prepared/) }]);

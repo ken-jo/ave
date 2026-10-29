@@ -10,11 +10,6 @@ import type { ToolResult, ToolUseBlock } from "../../tools/executor.js";
 // Otherwise server-authored content enters the untainted reviewer and cache partition.
 const INLINE_PASTED_TEXT_RE = /(^|\n)-{5} Pasted text #\d+ \(\d+ lines\) -{5}\n/;
 
-const FILE_CONTENT_RESULT_TOOLS = new Set([
-  "read_file",
-  "grep_files",
-]);
-
 export function initialToolTrustOrigin(inputOrigin: ChatInputOrigin, turnInput: string): ToolTrustOrigin {
   if (
     inputOrigin === "file-content"
@@ -61,18 +56,16 @@ export function summarizePermissionUserIntent(
   return cleaned.length > 500 ? `${cleaned.slice(0, 499)}…` : cleaned;
 }
 
+/** The trust origin for the rest of the turn once `toolResults` return to the model. Every tool result can carry content the user did
+ * not type (a file, a page, a plugin's or a sub-agent's text, a command's output, an error quoting any of these), so any result taints the
+ * turn as `file-content` from then on; a turn already tainted keeps its stricter origin. Authority that needs the user's own words (a
+ * command for the user's host terminal) ends with it. */
 export function nextToolTrustOrigin(
   current: ToolTrustOrigin,
   toolUses: readonly ToolUseBlock[],
   toolResults: readonly ToolResult[],
 ): ToolTrustOrigin {
-  if (current === "file-content" || current === "agent-message") return current;
-  const successful = new Set(
-    toolResults
-      .filter((result) => !result.is_error)
-      .map((result) => result.tool_use_id),
-  );
-  return toolUses.some((toolUse) => successful.has(toolUse.id) && FILE_CONTENT_RESULT_TOOLS.has(toolUse.name))
-    ? "file-content"
-    : current;
+  if (!isUntaintedToolTrustOrigin(current)) return current;
+  const issued = new Set(toolUses.map((toolUse) => toolUse.id));
+  return toolResults.some((result) => issued.has(result.tool_use_id)) ? "file-content" : current;
 }

@@ -399,11 +399,12 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     };
     const before = directoryChanged();
     if (before !== undefined || !tracker) return changed(before ?? `terminal ${scope.tabId} moved to another directory`);
+    // The directory proof is the last step, after the route recheck's await: nothing asynchronous lies between it and the write it guards.
     const effectCheck = async (): Promise<{ ok: true } | { ok: false; message: string }> => {
-      const moved = directoryChanged();
-      if (moved !== undefined) return { ok: false, message: `${moved} while the command was being prepared` };
       try { await route.recheck(); }
       catch (error) { return { ok: false, message: errorMessage(error) }; }
+      const moved = directoryChanged();
+      if (moved !== undefined) return { ok: false, message: `${moved} while the command was being prepared` };
       return { ok: true };
     };
     ctx.abortSignal?.throwIfAborted();
