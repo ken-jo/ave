@@ -1387,7 +1387,7 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
     if (ctx.category !== "shell" || ctx.source !== "builtin"
       || (ctx.toolName !== "bash" && ctx.toolName !== "powershell")) return null;
     const commands = extractShellCommands(ctx.finalInput);
-    const destructive = commands.some((command) => isDestructiveShellText(command)) || ctx.toolName === "bash" && commands.some((command) =>
+    const destructive = ctx.toolName === "bash" && commands.some((command) =>
       tokenizeShell(command).leaves.some((leaf) => isDestructiveShellArgv(leaf.argv) || noReusableRuleReason(leaf.argv) !== null));
     const inspect = ctx.toolName === "powershell" ? inspectPowerShellCommand : inspectShellCommand;
     const unproven = commands.some((command) => inspect(command, shellInvocationCwd(ctx)).outcome === "unproven");

@@ -1,3 +1,4 @@
+import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { isConfinedHostShellExecution } from "./host-shell-execution-plan.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
@@ -1377,7 +1378,13 @@ export class PermissionManager {
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
       (shellFloorSignals?.exactLiteralEvaluation !== true && (floorInput?.destructive ?? isDestructiveShellText(ruleSubject.command))) ||
-      (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
+      (shellShape?.ok && shellShape.commands.some((cmd) => {
+        const wrapped = wrapperCommand(cmd.argv);
+        const argv = wrapped.ordinaryAsk === undefined && wrapped.code === undefined
+          && wrapped.candidateRange === undefined && !wrapped.runtimeArgv && !wrapped.nestedDialect
+          ? cmd.argv.slice(wrapped.index) : cmd.argv;
+        return isDestructiveShellArgv(argv) || noReusableRuleReason(argv.map((word) => word ?? "")) !== null;
+      }))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in any mode, for every host shell (rules/shell-exfiltration.ts, rules/powershell-exfiltration.ts).

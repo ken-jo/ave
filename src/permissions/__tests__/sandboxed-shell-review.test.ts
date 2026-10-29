@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { DisabledRiskClassifier, RuleBasedRiskClassifier, _internal } from "../reviewer/risk-classifier.js";
+import { DisabledRiskClassifier, RuleBasedRiskClassifier, _internal, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 
 const resources = new PermissionTestResources();
 const plan = buildHostShellExecutionPlan({ platform: "darwin", requestedSandbox: true,
@@ -138,19 +138,32 @@ describe("shell floor judgment boundaries", () => {
     const context = { toolName: "bash", source: "builtin" as const, category: "shell" as const, pathFields: [],
       trustOrigin: "user-keyboard" as const, finalInput: { command }, executionCwd: cwd, allowedDirectories: [cwd],
       sensitivePathsAdjacent: [], sandboxCapability: plan.capability };
-    expect(new RuleBasedRiskClassifier().classify(context).level).not.toBe("low");
+    expect(new RuleBasedRiskClassifier().classify(context)).toMatchObject({ level: "medium", reason: expect.stringContaining("destructive") });
   });
-  it("includes the destructive reason for the other shell dialect", () => {
-    const context = { toolName: "powershell", source: "builtin" as const, category: "shell" as const, pathFields: [],
-      trustOrigin: "user-keyboard" as const, finalInput: { command: "Remove-Item -Recurse ./build" },
-      executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [], sandboxCapability: plan.capability };
-    const permissionReason = manager.checkDetailed("powershell", "builtin", "shell", null, {
-      ruleSubject: { kind: "shell", dialect: "powershell", command: context.finalInput.command, cwd },
+  it("routes a destructive floor in the other shell dialect and forwards its reason to the prompt", async () => {
+    let prompt: string | undefined;
+    const classify = vi.fn((context: ToolInvocationContext) => {
+      prompt = _internal.buildUserPrompt(context);
+      return new RuleBasedRiskClassifier().classify(context);
+    });
+    setReviewerForTest(manager, { classifier: { classify },
+      cache: resources.makeVerdictCache(join(cwd, "powershell-cache.jsonl")),
+      deferredQueue: new DeferredQueue(join(cwd, "powershell-queue.jsonl")) });
+    const command = "Remove-Item -Force ./build.txt";
+    const permissionDecision = manager.checkDetailed("powershell", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "powershell", command, cwd },
       shellExecution: { runsSandboxed: true }, hostShellExecutionPlan: plan,
-    }).reason;
-    const verdict = new RuleBasedRiskClassifier().classify({ ...context, permissionReason });
-    expect(verdict.reason).toBe(permissionReason);
-    expect(_internal.buildUserPrompt(context, verdict)).toContain(verdict.reason);
+    });
+    expect(permissionDecision).toMatchObject({ decision: "ask", layer: 2,
+      reviewer: { route: "foreground-auto" }, reason: t("be_permissionManager.shellDestructiveFloorReason") });
+    expect(permissionDecision.forceModal).toBeUndefined();
+    await manager.dispatchReviewer("powershell", {
+      invocationId: "powershell-floor", sessionId: "shell-review-session", source: "builtin", category: "shell",
+      pathFields: [], finalInput: { command }, executionCwd: cwd, allowedDirectories: [cwd],
+      sensitivePathsAdjacent: [], trustOrigin: "user-keyboard", hostShellExecutionPlan: plan, permissionDecision,
+    }, undefined, { defer: "none" });
+    expect(classify).toHaveBeenCalledOnce();
+    expect(prompt).toContain(permissionDecision.reason);
   });
 });
 
@@ -168,5 +181,34 @@ describe("original shell floor dispatch authority", () => {
       hostShellExecutionPlan: plan, permissionDecision,
       ...(change === "guest" ? { disposableSubstrate: { authority: "workload-broker" as const, id: "guest" } } : {}),
     }, undefined, { defer: "none" })).rejects.toThrow("Shell floor review requires confined execution and enabled judgment");
+  });
+});
+
+describe("wrapped shell destructive floors", () => {
+  it.each(["env", "env FLAG=on", "command", "nice -n 5", "timeout 2", "nohup env"])("recognizes the shared argv boundary behind %s without widening review eligibility", (wrapper) => {
+    const command = wrapper + " git reset --hard";
+    expect(check(command)).toMatchObject({ decision: "ask", layer: 2,
+      reason: t("be_permissionManager.shellDestructiveFloorReason"), reviewer: { route: "foreground-auto" } });
+    for (const mode of ["default", "strict", "allow"] as const) {
+      manager.setMode(mode);
+      expect(check(command)).toMatchObject({ decision: "ask", forceModal: true });
+      expect(check(command).reviewer).toBeUndefined();
+    }
+    manager.setMode("auto");
+    manager.setInteractiveAutoApprove("off");
+    expect(check(command)).toMatchObject({ decision: "ask", forceModal: true });
+    manager.setInteractiveAutoApprove("medium");
+    expect(check(command, false)).toMatchObject({ decision: "ask", forceModal: true });
+    expect(check(command, true, true).decision).toBe("deny");
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, shellExecution: { runsSandboxed: true },
+      hostShellExecutionPlan: plan, disposableSubstrate: { authority: "workload-broker", id: "guest" },
+    })).toMatchObject({ decision: "ask", forceModal: true });
+  });
+  it("keeps destructive text on the earlier high-risk rule", () => {
+    const context: ToolInvocationContext = { toolName: "bash", source: "builtin", category: "shell", pathFields: [],
+      trustOrigin: "user-keyboard", finalInput: { command: "rm -rf ./build" }, executionCwd: cwd,
+      allowedDirectories: [cwd], sensitivePathsAdjacent: [], sandboxCapability: plan.capability };
+    expect(new RuleBasedRiskClassifier().classify(context)).toEqual({ level: "high", reason: "shell destructive verb" });
   });
 });
