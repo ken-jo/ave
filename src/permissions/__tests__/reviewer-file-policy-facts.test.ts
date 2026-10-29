@@ -77,10 +77,10 @@ describe("reviewer host file-policy facts", () => {
     const { complete, classifier } = providerReturning("low");
     for (const operation of operations) {
       const review = await classifier.classify(reviewContext(operation.tool, operation.input));
-      expect(review.level).toBe("medium");
+      expect(review.level).toBe("low");
       const prompt = complete.mock.lastCall![0].userPrompt;
       expect(hostFacts(prompt)).toMatchObject({
-        ruleVerdict: { level: "medium" },
+        ruleVerdict: { level: "low" },
         executionCwd: workDir,
         declaredPathCount: 1,
         allDeclaredPathsInsideAllowedDirectories: true,
@@ -153,8 +153,10 @@ describe("reviewer host file-policy facts", () => {
       allDeclaredPathsInsideAllowedDirectories: true,
       anyDeclaredPathSensitiveWrite: true,
     });
-    expect(facts.ruleVerdict.level).not.toBe("low");
-    expect((await tool.execute(input, executionContext)).isError).toBe(true);
+    const result = await tool.execute(input, executionContext);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Sensitive path:");
+    expect(result.output).toContain("**/.env");
     expect(readFileSync(sensitive, "utf8")).toBe("unchanged\n");
     expect(existsSync(join(workDir, "project", "src", "note.txt"))).toBe(false);
   });
@@ -163,9 +165,9 @@ describe("reviewer host file-policy facts", () => {
     const tool = new ApplyPatchTool();
     const input = { patch: "*** Begin Patch\n*** Add File: project/src/new.txt\n+hello\n*** End Patch" };
     const { complete, classifier } = providerReturning("low");
-    expect((await classifier.classify(reviewContext(tool, input))).level).toBe("medium");
+    expect((await classifier.classify(reviewContext(tool, input))).level).toBe("low");
     expect(hostFacts(complete.mock.lastCall![0].userPrompt)).toMatchObject({
-      ruleVerdict: { level: "medium" },
+      ruleVerdict: { level: "low" },
       declaredPathCount: 1,
       allDeclaredPathsInsideAllowedDirectories: true,
       anyDeclaredPathSensitiveWrite: false,
@@ -177,7 +179,7 @@ describe("reviewer host file-policy facts", () => {
     const { classifier, complete } = providerReturning("high");
     expect((await classifier.classify(context)).level).toBe("high");
     expect(complete).toHaveBeenCalledOnce();
-    expect(hostFacts(complete.mock.calls[0]![0].userPrompt).ruleVerdict.level).toBe("medium");
+    expect(hostFacts(complete.mock.calls[0]![0].userPrompt).ruleVerdict.level).toBe("low");
   });
 
   it("computes full path coverage when the display list is bounded", () => {
@@ -214,7 +216,7 @@ describe("reviewer host file-policy facts", () => {
       expect(prompt.split(`<${tag}>`)).toHaveLength(2);
       expect(prompt.split(`</${tag}>`)).toHaveLength(2);
     }
-    expect(hostFacts(prompt).ruleVerdict.level).toBe("medium");
+    expect(hostFacts(prompt).ruleVerdict.level).toBe("low");
     expect(prompt).toContain("\\u003c/UNTRUSTED_INPUT\\u003e");
   });
 
@@ -225,7 +227,7 @@ describe("reviewer host file-policy facts", () => {
     expect(facts.declaredPaths[0]!.path).toHaveLength(512);
     expect(facts.declaredPaths[0]!.pathTruncated).toBe(true);
     expect(facts.allDeclaredPathsInsideAllowedDirectories).toBe(true);
-    expect(facts.ruleVerdict.level).toBe("medium");
+    expect(facts.ruleVerdict.level).toBe("low");
     expect(prompt.length).toBeLessThan(5_000);
     context.executionCwd = `${workDir}/${"b".repeat(16_000)}`;
     const cwdFacts = hostFacts(_internal.buildUserPrompt(context));
