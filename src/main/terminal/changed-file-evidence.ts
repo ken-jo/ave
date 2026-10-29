@@ -1,5 +1,5 @@
-import { constants } from "node:fs";
-import { lstat, open, realpath, stat } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { lstat, open, realpath, stat, type FileHandle } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 import type { TerminalFileReviewSnapshot, TerminalExecutionWarning, TerminalReviewFile } from "../../shared/terminal-file-review.js";
@@ -13,17 +13,65 @@ const MAKE_NON_EXECUTING = /^(?:-[a-zA-Z]*[nqt][a-zA-Z]*|--(?:dry-run|just-print
 /** make options that change how recipes run but still run them. */
 const MAKE_EXECUTING_OPTION = /^(?:-[sSkKiBwWeE]+|-j\d*|-l[\d.]*|--(?:silent|quiet|keep-going|ignore-errors|always-make|print-directory|no-print-directory|environment-overrides)|--jobs(?:=\d+)?|--load-average(?:=[\d.]+)?)$/;
 
-/** Interpreter options under which the operand never runs: version or help output, a syntax check, a shell no-exec. */
-function interpreterRunsNothing(verb: string, option: string): boolean {
-  if (["sh", "bash", "zsh"].includes(verb)) return /^-[a-zA-Z]*n[a-zA-Z]*$/.test(option) || option === "--version" || option === "--help";
-  if (verb === "node") return ["-v", "-h", "--version", "--help", "--check"].includes(option);
-  if (verb === "python" || verb === "python3") return ["-V", "-h", "--version", "--help"].includes(option);
-  if (verb === "ruby") return ["-h", "-c", "-y", "--version", "--help"].includes(option);
-  if (verb === "perl") return ["-v", "-h", "-c"].includes(option);
-  return false;
+/**
+ * How an interpreter option affects its operand. Each interpreter's options are an explicit allowlist: an option not
+ * classified here is `uncertain`, so the command is never a positive match.
+ * - `nothing`: version, help or syntax-check output; the operand never runs.
+ * - `source`: the code comes from the command line or a module, not the operand.
+ * - `value`: an option that runs the operand and consumes the next word.
+ * - `preload`: a required file, followed as a script when it is a path.
+ * - `runs`: an option that still runs the operand.
+ */
+type InterpreterOption = "nothing" | "source" | "value" | "preload" | "runs" | "uncertain";
+const SHELL_INTERPRETERS = ["sh", "bash", "zsh"];
+function interpreterOption(verb: string, option: string): InterpreterOption {
+  if (SHELL_INTERPRETERS.includes(verb)) {
+    if (/^-[a-zA-Z]*n[a-zA-Z]*$/.test(option) || option === "--version" || option === "--help") return "nothing";
+    if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(option)) return "source";
+    if (["-o", "+o", "-O", "+O", "--rcfile", "--init-file"].includes(option)) return "value";
+    if (/^-[aefuvxCl]+$/.test(option) || ["--noprofile", "--norc", "--posix", "--login"].includes(option)) return "runs";
+    return "uncertain";
+  }
+  if (verb === "node") {
+    if (["-v", "-h", "-c", "--version", "--help", "--check"].includes(option)) return "nothing";
+    if (["-e", "-p", "--eval", "--print"].includes(option)) return "source";
+    if (["-r", "--require", "--import"].includes(option)) return "preload";
+    if (["--no-warnings", "--trace-warnings", "--no-deprecation", "--trace-deprecation", "--throw-deprecation",
+      "--enable-source-maps", "--trace-uncaught"].includes(option)) return "runs";
+    return "uncertain";
+  }
+  if (verb === "python" || verb === "python3") {
+    if (/^-V+$/.test(option) || ["-h", "-?", "--version", "--help"].includes(option)) return "nothing";
+    if (["-c", "-m"].includes(option)) return "source";
+    if (["-W", "-X"].includes(option)) return "value";
+    if (/^-[BEIOqsui]+$/.test(option)) return "runs";
+    return "uncertain";
+  }
+  if (verb === "ruby") {
+    if (["-h", "-c", "-y", "--version", "--help"].includes(option)) return "nothing";
+    if (option === "-e") return "source";
+    if (["-r", "-I"].includes(option)) return option === "-r" ? "preload" : "value";
+    if (/^-[wd]+$/.test(option) || /^-W[0-2]?$/.test(option)) return "runs";
+    return "uncertain";
+  }
+  if (verb === "perl") {
+    if (["-v", "-V", "-h", "-c"].includes(option)) return "nothing";
+    if (["-e", "-E"].includes(option)) return "source";
+    if (option === "-I") return "value";
+    if (/^-[wWXTt]+$/.test(option)) return "runs";
+    return "uncertain";
+  }
+  // `.` and `source` take no options this classifies.
+  return "uncertain";
 }
+/** npx options that leave which local bin runs unchanged. */
+const NPX_RUNS_LOCAL_BIN = ["--no-install", "--yes", "-y", "--no", "--quiet", "-q"];
+/** The file an agent write left at a path: the diff reads only this file, whatever the path names later. */
+interface FileIdentity { readonly dev: bigint; readonly ino: bigint; readonly birthtimeNs: bigint }
 interface ChangedFile {
   readonly path: string;
+  /** Identity right after the latest attributed write; undefined when it was not a readable regular file. */
+  identity: FileIdentity | undefined;
   readonly sessionIds: Set<string>;
   readonly recordedAt: number;
   before?: string | null;
@@ -57,38 +105,80 @@ async function stillPhysical(path: string): Promise<boolean> {
   }
 }
 
+/** Opens without following a final link; `null` for an absent file, `undefined` for one that cannot be read. */
+async function openNoFollow(path: string): Promise<FileHandle | null | undefined> {
+  return open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
+    .catch((error: unknown) => { if (missing(error)) return null; if (isTerminalReviewUnavailable(error)) return undefined; throw error; });
+}
+
+/** Bounded text of an already opened regular file, refused when it changes while being read. */
+async function readOpenedText(handle: FileHandle, opened: BigIntStats): Promise<string | undefined> {
+  if (!opened.isFile() || opened.size > BigInt(MAX_INFERENCE_BYTES)) return undefined;
+  const bytes = Buffer.alloc(MAX_INFERENCE_BYTES + 1);
+  let size = 0;
+  for (;;) {
+    const { bytesRead } = await handle.read(bytes, size, bytes.length - size, null);
+    size += bytesRead;
+    if (!bytesRead || size === bytes.length) break;
+  }
+  const after = await handle.stat({ bigint: true });
+  if (size > MAX_INFERENCE_BYTES || opened.size !== after.size || opened.mtimeNs !== after.mtimeNs
+    || opened.ctimeNs !== after.ctimeNs || BigInt(size) !== after.size) return undefined;
+  return textBytes(bytes.subarray(0, size));
+}
+
 /**
- * Bounded native text capture of a physical path, used at the successful mutation boundary and for diffs.
+ * Bounded native text capture of a physical path, used at the successful mutation boundary and for command inference.
  * O_NOFOLLOW guards only the last component, so the path must also resolve to itself before the open and after it,
- * with the opened file the one the path names: a parent swapped for a link never lets this read another file.
+ * with the opened file the one the path names. Diffs never use this: they read only the recorded file identity.
  */
 export async function readTerminalReviewText(path: string): Promise<string | null | undefined> {
-  const info = await lstat(path).catch((error: unknown) => { if (missing(error)) return null; if (isTerminalReviewUnavailable(error)) return undefined; throw error; });
+  const info = await lstat(path, { bigint: true }).catch((error: unknown) => { if (missing(error)) return null; if (isTerminalReviewUnavailable(error)) return undefined; throw error; });
   if (info === null) return null;
   if (info === undefined) return undefined;
-  if (!info.isFile() || info.size > MAX_INFERENCE_BYTES) return undefined;
+  if (!info.isFile() || info.size > BigInt(MAX_INFERENCE_BYTES)) return undefined;
   if (!await stillPhysical(path)) return undefined;
-  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
-    .catch((error: unknown) => { if (missing(error)) return null; if (isTerminalReviewUnavailable(error)) return undefined; throw error; });
+  const handle = await openNoFollow(path);
   if (handle === null) return null;
   if (handle === undefined) return undefined;
   try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) return undefined;
+    const opened = await handle.stat({ bigint: true });
+    if (opened.dev !== info.dev || opened.ino !== info.ino) return undefined;
     if (!await stillPhysical(path)) return undefined;
-    const named = await lstat(path).catch((error: unknown) => { if (missing(error) || isTerminalReviewUnavailable(error)) return null; throw error; });
+    const named = await lstat(path, { bigint: true }).catch((error: unknown) => { if (missing(error) || isTerminalReviewUnavailable(error)) return null; throw error; });
     if (!named || named.dev !== opened.dev || named.ino !== opened.ino) return undefined;
-    const bytes = Buffer.alloc(MAX_INFERENCE_BYTES + 1);
-    let size = 0;
-    for (;;) {
-      const { bytesRead } = await handle.read(bytes, size, bytes.length - size, null);
-      size += bytesRead;
-      if (!bytesRead || size === bytes.length) break;
-    }
-    const after = await handle.stat();
-    if (size > MAX_INFERENCE_BYTES || opened.size !== after.size || opened.mtimeMs !== after.mtimeMs
-      || opened.ctimeMs !== after.ctimeMs || size !== after.size) return undefined;
-    return textBytes(bytes.subarray(0, size));
+    return await readOpenedText(handle, opened);
+  } catch (error) {
+    if (isTerminalReviewUnavailable(error)) return undefined;
+    throw error;
+  } finally { await handle.close(); }
+}
+
+/** The regular file `path` names now, as identified by its open descriptor. */
+async function fileIdentity(path: string): Promise<FileIdentity | undefined> {
+  const handle = await openNoFollow(path);
+  if (!handle) return undefined;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    return opened.isFile() ? { dev: opened.dev, ino: opened.ino, birthtimeNs: opened.birthtimeNs } : undefined;
+  } catch (error) {
+    if (isTerminalReviewUnavailable(error)) return undefined;
+    throw error;
+  } finally { await handle.close(); }
+}
+
+/**
+ * Current text of the recorded file, for its diff. Whatever the path's components resolve to at the open, the
+ * descriptor must be the file the agent write left (same device, inode and birth time); any other file, including
+ * one reached through a swapped parent or a save that replaced the inode, has no diff. Path checks cannot race this.
+ */
+async function readRecordedText(path: string, identity: FileIdentity): Promise<string | undefined> {
+  const handle = await openNoFollow(path);
+  if (!handle) return undefined;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (opened.dev !== identity.dev || opened.ino !== identity.ino || opened.birthtimeNs !== identity.birthtimeNs) return undefined;
+    return await readOpenedText(handle, opened);
   } catch (error) {
     if (isTerminalReviewUnavailable(error)) return undefined;
     throw error;
@@ -229,25 +319,20 @@ async function command(source: string, cwd: string, evidence: ExecutionEvidence,
       while (args[index]?.startsWith("-") || args[index]?.startsWith("+")) {
         const option = args[index]!;
         if (option === "--") { index++; break; }
-        if (interpreterRunsNothing(verb, option)) { runsNothing = true; break; }
-        const shellInterpreter = ["sh", "bash", "zsh"].includes(verb);
-        const evaluatesSource = shellInterpreter ? /^-[a-zA-Z]*c/.test(option)
-          : ["-c", "-e", "-E", "-m", "-p", "--eval", "--print"].includes(option);
-        if (evaluatesSource || ["--eval", "--command", "--print"].includes(option)) {
-          evidence.unresolved = true; break;
-        }
-        if (["-o", "+o", "-O", "+O", "--rcfile", "--init-file", "-W", "-X"].includes(option)) {
-          if (args[index + 1] === undefined) { evidence.unresolved = true; break; }
+        const kind = interpreterOption(verb, option);
+        if (kind === "nothing") { runsNothing = true; break; }
+        if (kind === "source" || kind === "uncertain") { evidence.unresolved = true; runsNothing = true; break; }
+        if (kind === "value") {
+          if (args[index + 1] === undefined) { evidence.unresolved = true; runsNothing = true; break; }
           index += 2; continue;
         }
-        if (["-r", "--require", "--import"].includes(option)) {
+        if (kind === "preload") {
           const preload = args[index + 1];
           if (preload?.startsWith(".") || preload && isAbsolute(preload)) await script(resolve(cwd, preload), cwd, evidence, localBins);
           else evidence.unresolved = true;
           index += 2; continue;
         }
-        if (/^-[a-zA-Z]+$/.test(option) || ["--noprofile", "--norc", "--no-warnings", "--trace-warnings"].includes(option)) { index++; continue; }
-        evidence.unresolved = true; break;
+        index++;
       }
       if (runsNothing) continue;
       const operand = args[index];
@@ -277,8 +362,11 @@ async function command(source: string, cwd: string, evidence: ExecutionEvidence,
         evidence.unresolved = true;
       }
     } else if (verb === "npx") {
-      const bin = args.find(arg => !arg.startsWith("-"));
-      if (bin) await script(join(cwd, "node_modules", ".bin", bin), cwd, evidence);
+      let index = 0;
+      while (NPX_RUNS_LOCAL_BIN.includes(args[index] ?? "")) index++;
+      const bin = args[index];
+      // `--version`, `--package` and any other option this cannot classify: which bin runs, if any, is unknown.
+      if (bin && !bin.startsWith("-")) await script(join(cwd, "node_modules", ".bin", bin), cwd, evidence);
       evidence.unresolved = true;
     } else if (["eval", "exec", "sudo", "xargs"].includes(verb)) evidence.unresolved = true;
   }
@@ -313,9 +401,11 @@ export class TerminalFileEvidence {
       if (!isTerminalReviewUnavailable(error)) throw error;
       return;
     }
+    // Identified right after the write succeeded; a later attributed write to the path re-records it.
+    const identity = await fileIdentity(physical);
     const existing = this.files.get(physical);
-    if (existing) existing.sessionIds.add(sessionId);
-    else this.files.set(physical, { path: physical, sessionIds: new Set([sessionId]),
+    if (existing) { existing.sessionIds.add(sessionId); existing.identity = identity; }
+    else this.files.set(physical, { path: physical, identity, sessionIds: new Set([sessionId]),
       before: before === null || before !== undefined && Buffer.byteLength(before, "utf8") <= MAX_INFERENCE_BYTES && !before.includes("\0") ? before : undefined, lastUsed: null, recordedAt: Date.now() });
   }
 
@@ -345,7 +435,7 @@ export class TerminalFileEvidence {
     for (const file of this.files.values()) {
       if (!within(physicalCwd, file.path) && !relevant.has(file.path)) continue;
       // Current text for the diff only; absent, oversized, binary or unreadable content has no text diff.
-      const after = file.before === undefined ? undefined : await readTerminalReviewText(file.path);
+      const after = file.before === undefined || !file.identity ? undefined : await readRecordedText(file.path, file.identity);
       files.push({ path: file.path, sessionIds: [...file.sessionIds], lastUsed: file.lastUsed,
         ...(file.before !== undefined && typeof after === "string" ? { diff: { before: file.before ?? "", after } } : {}) });
     }

@@ -425,4 +425,65 @@ describe("PtyTerminalView keyboard focus", () => {
       expect(document.activeElement).toBe(composer);
     } finally { composer.remove(); }
   });
+
+  it("leaves focus on an approval card's button on open and on activation", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const card = document.createElement("div");
+    card.setAttribute("data-approval-scope", "");
+    const allow = document.createElement("button");
+    allow.textContent = "Allow once";
+    card.appendChild(allow);
+    document.body.appendChild(card);
+    allow.focus();
+    try {
+      const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      await act(async () => {});
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(0);
+      expect(document.activeElement).toBe(allow);
+    } finally { card.remove(); }
+  });
+
+  it("takes focus from the tab the user selected to show it, and from its own controls", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const tab = document.createElement("button");
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", "true");
+    document.body.appendChild(tab);
+    tab.focus();
+    try {
+      const view = render(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(1);
+      tab.setAttribute("aria-selected", "false");
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(1);
+      const own = view.getByTestId("terminal-host-identity");
+      own.tabIndex = -1;
+      own.focus();
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(2);
+    } finally { tab.remove(); }
+  });
+
+  it("writes nothing to the PTY when it opens or is activated", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    await act(async () => {});
+    view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" attended={false} />);
+    view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" attended />);
+    await act(async () => {});
+    expect(terminals[0]!.focusCount).toBe(2);
+    expect(terminal.input).not.toHaveBeenCalled();
+  });
 });

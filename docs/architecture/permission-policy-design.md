@@ -1905,9 +1905,10 @@ an advisory inline warning when a command uses a file with concrete successful
 agent-write evidence from this application session. Direct scripts and sourced
 files, target recipes in makefiles, package scripts and their referenced scripts,
 and physical local-bin entry points (only where a package runner puts them on
-PATH) are matched conservatively. Options under which nothing runs (a dry run,
-version or help output, a syntax check) and options or executables this cannot
-classify are never a positive match. The command
+PATH) are matched conservatively. Interpreter, `make` and `npx` options are an
+explicit per-tool allowlist: options under which nothing runs (a dry run,
+version or help output, a syntax check) and any option or executable not
+classified as running the operand are never a positive match. The command
 continues without a confirmation dialog. Only a positive match to at least one
 agent-changed file warns: commands with no file reference, shell-integration and
 prompt internals, and unresolved dynamic indirection never do. The warning is
@@ -1932,9 +1933,12 @@ known command use or that no execution use was observed, and opens a diff
 against the recorded baseline. There is no review or acknowledgement state:
 the change has already happened, so the count follows the set of changed files
 and never drops on a user action. Canonical physical paths retain session
-attribution across symlink aliases and delete/restore, and a re-read refuses a
-path whose components no longer resolve to that physical path (a parent swapped
-for a link included); deleting a file does not
+attribution across symlink aliases and delete/restore. Each attributed write
+records the identity (device, inode, birth time) of the file it left, and the
+diff reads only through a non-following open whose descriptor has that
+identity; it never relies on repeated path checks, so a parent swapped for a
+link at any point, or a save that replaced the inode, shows no diff until the
+agent writes the path again. Deleting a file does not
 erase its historical evidence. Evidence lives only in memory for the running
 application; restarting clears it. Command use is inferred from command blocks and static
 file contents, rather than proof of operating-system file opens.

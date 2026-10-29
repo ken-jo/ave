@@ -1,9 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TerminalFileEvidence, inferExecutedPaths, readTerminalReviewText } from "../changed-file-evidence.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
+
+// Pass-through fs, with a hook that runs before each path call, to replay filesystem races deterministically.
+type HookedCall = "lstat" | "open" | "realpath";
+const fsHooks = vi.hoisted(() => ({ before: null as null | ((call: HookedCall, path: string) => Promise<void>) }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const hooked = (name: HookedCall) => async (path: unknown, ...rest: unknown[]) => {
+    if (fsHooks.before && typeof path === "string") await fsHooks.before(name, path);
+    return (actual[name] as (...args: unknown[]) => Promise<unknown>)(path, ...rest);
+  };
+  return { ...actual, lstat: hooked("lstat"), open: hooked("open"), realpath: hooked("realpath") };
+});
 
 let directory: string;
 let evidence: TerminalFileEvidence;
@@ -26,7 +38,7 @@ beforeEach(async () => {
   directory = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-")));
   evidence = new TerminalFileEvidence();
 });
-afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { fsHooks.before = null; await rm(directory, { recursive: true, force: true }); });
 
 describe("host execution provenance", () => {
   it.each(["./run.sh", "bash ./run.sh", "bash -o errexit ./run.sh", "bash -e ./run.sh", "source ./run.sh", ". ./run.sh"])("identifies a literal executable or sourced path: %s", async (command) => {
@@ -243,13 +255,29 @@ describe("host execution provenance", () => {
 
   it.each(["npm --version run build", "npm --help run build", "pnpm --version build", "make -n build", "make --dry-run build", "make -q build",
     "make -t build", "make -sn build", "make --version", "bash -n ./run.sh", "sh --version ./run.sh", "node --check ./run.js", "node -v ./run.js",
-    "python3 -V ./run.py"])("never calls a command that runs nothing a match: %s", async (command) => {
+    "python3 -V ./run.py", "python3 -VV ./run.py", "bash -Z ./run.sh", "bash -s ./run.sh", "node --inspect-brk=0 ./run.js", "python3 -X ./run.py",
+    "ruby -v ./run.sh", "perl -M strict ./run.sh"])("never calls a command that runs nothing, or an unclassified option, a match: %s", async (command) => {
     await changed("package.json", JSON.stringify({ scripts: { build: "node run.js" } }));
     await changed("Makefile", "build:\n\tnode run.js\n");
     await changed("run.sh");
     await changed("run.js", "console.log('x');\n");
     await changed("run.py", "print('x')\n");
     expect((await evidence.snapshot(directory, [block(command)])).warnings).toEqual([]);
+  });
+
+  it.each(["bash -ex ./run.sh", "bash --norc -o errexit ./run.sh", "python3 -u ./run.py", "python3 -W ignore ./run.py", "node --no-warnings ./run.js"])("still matches allowlisted interpreter options that run the operand: %s", async (command) => {
+    const run = command.includes("python3") ? await changed("run.py", "print('x')\n") : command.includes("node") ? await changed("run.js", "console.log('x');\n") : await changed("run.sh");
+    expect((await evidence.snapshot(directory, [block(command)])).warnings[0]?.files).toEqual([run]);
+  });
+
+  it("matches a local bin through plain npx, but not when an npx option may mean no bin runs", async () => {
+    const entry = await changed("node_modules/tool/run.js", "console.log('x');\n");
+    await mkdir(join(directory, "node_modules/.bin"), { recursive: true });
+    await symlink(entry, join(directory, "node_modules/.bin/tool"));
+    expect((await evidence.snapshot(directory, [block("npx tool", 1)])).warnings[0]?.files).toEqual([entry]);
+    for (const [index, command] of ["npx --version tool", "npx --help tool", "npx -p other tool", "npx --package=other tool"].entries()) {
+      expect((await evidence.snapshot(directory, [block(command, index + 2)])).warnings).toEqual([]);
+    }
   });
 
   it.each(["make -j4 build", "make -j 4 build", "make -s build", "make --no-print-directory build"])("still matches make options that run recipes: %s", async (command) => {
@@ -283,6 +311,48 @@ describe("host execution provenance", () => {
       expect(JSON.stringify(swapped)).not.toContain("host secret");
       expect(await readTerminalReviewText(recorded)).toBeUndefined();
     } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+
+  it("never diffs another file when the parent is swapped between path checks, the open and the inode compares", async () => {
+    const recorded = await file("scripts/run.sh", "agent\n");
+    await evidence.recordWrite("session-a", recorded, "before\n");
+    const outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
+    const parent = join(directory, "scripts");
+    const moved = join(directory, "scripts.real");
+    let swapped = false;
+    const swap = async (toLink: boolean): Promise<void> => {
+      if (toLink === swapped) return;
+      if (toLink) { await rename(parent, moved); await symlink(outside, parent); }
+      else { await unlink(parent); await rename(moved, parent); }
+      swapped = toLink;
+    };
+    try {
+      await writeFile(join(outside, "run.sh"), "host secret\n");
+      // Replays the race: every path check (realpath) sees the original directory, while each lstat and the open
+      // see the external link, so string and lstat comparisons alone would all agree on the external file.
+      fsHooks.before = async (call, path) => { if (path === recorded) await swap(call !== "realpath"); };
+      const raced = await evidence.snapshot(directory, []);
+      expect(raced.files.map(item => item.path)).toEqual([recorded]);
+      expect(raced.files[0]?.diff).toBeUndefined();
+      expect(JSON.stringify(raced)).not.toContain("host secret");
+    } finally {
+      fsHooks.before = null;
+      await swap(false);
+      await rm(outside, { recursive: true, force: true });
+    }
+    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toEqual({ before: "before\n", after: "agent\n" });
+  });
+
+  it("shows no diff once a save replaces the recorded inode, until the agent writes the path again", async () => {
+    const path = await file("run.sh", "agent\n");
+    await evidence.recordWrite("session-a", path, "before\n");
+    const replacement = join(directory, "run.sh.tmp");
+    await writeFile(replacement, "saved elsewhere\n");
+    await rename(replacement, path);
+    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toBeUndefined();
+    await writeFile(path, "agent again\n");
+    await evidence.recordWrite("session-a", path);
+    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toEqual({ before: "before\n", after: "agent again\n" });
   });
 
   it("caps text reads and distinguishes absent files from unavailable text", async () => {

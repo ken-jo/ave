@@ -1452,8 +1452,11 @@ files with a non-blocking inline warning on its own row (a renderer decoration,
 never PTY input or buffer text), and show an agent-changed file count on the
 header badge that opens a side panel with each file's use and diff. The side-work-panel
 host terminal has the same advisory changed-file UI while retaining no agent access.
-Successful write provenance uses canonical physical paths; it is never permission
-authority. Dynamic indirection and subprocess writes without concrete path evidence
+Successful write provenance uses canonical physical paths and the identity of the
+written file, which alone the diff may read; it is never permission authority.
+An attended host terminal takes keyboard focus when it opens or is activated only
+if nothing holds focus, focus is already inside it, or focus is on the selected tab
+that showed it, so a composer or approval card keeps focus. Dynamic indirection and subprocess writes without concrete path evidence
 remain explicitly outside complete coverage. The
 [changed-file review policy](permission-policy-design.md#agent-changed-file-review)
 defines the evidence lifetime and the separate isolated loader write-deny floor.

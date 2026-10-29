@@ -80,8 +80,13 @@ describe("successful native mutation provenance", () => {
     const removed = (await snapshot()).files.find(file => file.path === path);
     expect(removed?.sessionIds).toHaveLength(1);
     expect(removed?.diff).toBeUndefined();
+    // A file recreated outside the agent is not the file its write left: still listed, never diffed.
     await writeFile(path, "restored\n");
-    expect((await snapshot()).files.find(file => file.path === path)?.diff).toEqual({ before: "", after: "restored\n" });
+    const restored = (await snapshot()).files.find(file => file.path === path);
+    expect(restored?.sessionIds).toHaveLength(1);
+    expect(restored?.diff).toBeUndefined();
+    await turn(() => checkpointFileMutation([{ path, content: "agent again\n" }], () => writeFile(path, "agent again\n")));
+    expect((await snapshot()).files.find(file => file.path === path)?.diff).toEqual({ before: "", after: "agent again\n" });
   });
 
   it("attributes each successful owned transfer file without inferring directory descendants", async () => {
