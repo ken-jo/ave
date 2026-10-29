@@ -779,7 +779,7 @@ function ProjectRootsBrowser({
 
 export function FileBrowserWorkspace({
   api, sessionId, visible, files, targetById, selectedId, onSelect,
-  changes: providedChanges, revealRequest, onReference, onFileReference, defaultFilter = "all", emptyDetail,
+  changes: providedChanges, revealRequest, onReference, onFileReference, defaultFilter = "all", emptyDetail, revealOpensDetail = false,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -797,6 +797,8 @@ export function FileBrowserWorkspace({
   /** Shown instead of any file preview when a selection has no reviewable change: a view whose files may only be read
    * through its own change review (a terminal's agent-changed files) never falls back to reading the file. */
   emptyDetail?: string;
+  /** A reveal opens the file's detail, even where the tree and the detail take turns (a narrow panel). */
+  revealOpensDetail?: boolean;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -859,8 +861,8 @@ export function FileBrowserWorkspace({
     setFsPath(revealed?.path ?? revealRequest.path);
     setFsRoot(changes.review?.workspaceRoot ?? null);
     if (revealed?.file?.previewTargetId) onSelect(revealed.file.previewTargetId);
-    setDetailVisible(false);
-  }, [revealRequest, changes.changedFiles, changes.onRefresh, onSelect]);
+    setDetailVisible(revealOpensDetail);
+  }, [revealRequest, changes.changedFiles, changes.onRefresh, onSelect, revealOpensDetail]);
   const goBack = () => { setDetailVisible(false); setFocusSelectedToken((token) => token + 1); };
   const focusTree = () => {
     const row = treeRef.current?.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]') ?? treeRef.current?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');

@@ -272,6 +272,18 @@ describe("TerminalChangesView", () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  it("opens straight to the clicked file's diff in a narrow work panel, where the tree and the diff take turns", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(320);
+    render(<TooltipProvider>{view(reviewApi(), 0, fakeAnchors())}<TerminalChangesView api={changesApi()} tabId={session.tabId} visible /></TooltipProvider>);
+    await waitFor(() => expect(annotationFor(1)).not.toBeNull());
+    const changes = screen.getByTestId("terminal-changes-view");
+    expect(within(changes).getByTestId("chat-side-panel-file-browser")).toHaveAttribute("data-file-layout", "single");
+    fireEvent.click(within(annotationFor(1)!).getByRole("button", { name: "[변경 보기]" }));
+    await waitFor(() => expect(within(changes).getByTestId("chat-side-panel-file-detail")).not.toHaveClass("hidden"));
+    expect(within(changes).getByTestId("chat-side-panel-file-tree")).toHaveClass("hidden");
+    expect(within(changes).getByTestId("turn-change-detail")).toHaveTextContent("echo after");
+  });
+
   it("never reads a file whose change has no review: it says the diff is unavailable", async () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     const readFile = vi.fn();
