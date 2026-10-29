@@ -15,16 +15,10 @@ import {
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../shared/permission-reviewer-framework.js";
 import { disposableContainerCapability } from "../sandbox-capability.js";
 import { foldPathForMatch, makeRiskClassifierContext as ctx } from "./test-helpers.js";
-import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 import { createSkillLoadTool } from "../../tools/skill-load.js";
 import { PermissionManager } from "../permission-manager.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-
-// The scratch directory is a boot-time artifact; absent unless a case says so.
-vi.mock("../../shared/ave-scratch.js", () => ({
-  verifyAveScratchDir: vi.fn(() => ({ ok: false, path: "", reason: "absent in test" })),
-}));
 
 describe("unconfigured reviewer model", () => {
   it.each([undefined, "", "   "])("requires a selected model before constructing the classifier: %j", (model) => {
@@ -44,43 +38,15 @@ describe("DisabledRiskClassifier", () => {
   });
 });
 
-describe("RuleBasedRiskClassifier — application scratch directory", () => {
+describe("RuleBasedRiskClassifier — path depth", () => {
   const rb = new RuleBasedRiskClassifier();
-  const scratch = "/users/example/scratch";
-  const project = "/users/example/work";
-  // Allowed dirs reach the classifier canonicalized at settings load, which on Win32 resolves a rooted path onto the current drive.
-  const allowed = [project, scratch].map(foldPathForMatch);
-
-  it("does not read depth below the verified scratch root as a signal, while other deep writes stay MEDIUM", () => {
-    vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: true, path: scratch });
-    try {
-      const deepScratch = rb.classify(ctx({
-        category: "write",
-        finalInput: { path: `${scratch}/repo/dist/bundle.js` },
-        allowedDirectories: allowed,
-      }));
-      expect(deepScratch.level).toBe("low");
-      expect(deepScratch.reason).toBe("write at allowed-dir leaf");
-      const deepProject = rb.classify(ctx({
-        category: "write",
-        finalInput: { path: `${project}/repo/dist/bundle.js` },
-        allowedDirectories: allowed,
-      }));
-      expect(deepProject.level).toBe("medium");
-      expect(deepProject.reason).toBe("write deep inside allowed");
-    } finally {
-      vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: false, path: scratch, reason: "absent in test" });
-    }
-  });
-
-  it("keeps the depth heuristic for the same path once the scratch root no longer verifies", () => {
-    const v = rb.classify(ctx({
+  it.each(["note.txt", "repo/dist/bundle.js", "a/b/c/d/e/f/g/output.txt"])("keeps allowed writes LOW at any depth: %s", (tail) => {
+    const root = "/users/example/work";
+    expect(rb.classify(ctx({
       category: "write",
-      finalInput: { path: `${scratch}/repo/dist/bundle.js` },
-      allowedDirectories: allowed,
-    }));
-    expect(v.level).toBe("medium");
-    expect(v.reason).toBe("write deep inside allowed");
+      finalInput: { path: `${root}/${tail}` },
+      allowedDirectories: [foldPathForMatch(root)],
+    })).level).toBe("low");
   });
 });
 
@@ -847,9 +813,9 @@ describe("RuleBasedRiskClassifier", () => {
     expect(v.level).toBe("low");
   });
 
-  it("write deep inside allowed dir → MEDIUM", () => {
+  it("write deep inside allowed dir → LOW", () => {
     const v = rb.classify(ctx({ category: "write", finalInput: { path: "/Users/example/work/a/b/c/d.md" } }));
-    expect(v.level).toBe("medium");
+    expect(v.level).toBe("low");
   });
 
   it("write dotted pathField outside allowed dirs → HIGH", () => {

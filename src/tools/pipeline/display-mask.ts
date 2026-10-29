@@ -6,6 +6,7 @@ import {
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
 import type { ApprovalMemory } from "../../shared/permissions-events.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
+import { parsePatchEnvelope } from "../../shared/patch-envelope.js";
 import type { Tool } from "../base.js";
 import type {
   ToolCallMeta,
@@ -91,9 +92,15 @@ async function approvalMemoryFor(
         controlGeneration: scope.controlGeneration,
       }
         : scope;
+  const patch = tool.source === "builtin" && tool.name === "apply_patch" && typeof input.patch === "string"
+    ? parsePatchEnvelope(input.patch) : undefined;
+  const deletesFile = patch?.ok === true && patch.operations.some((operation) => operation.kind === "delete");
+  const memoryTool = deletesFile ? "apply_patch-delete" : tool.name;
   return Object.freeze({
     kind: "key",
-    key: `${tool.name}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
+    key: `${tool.source === "builtin" && scope.kind === "path" && executionPlan === null
+      && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(tool.name)
+      ? "file-write-path" : memoryTool}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
     scope: Object.freeze({ ...scope }),
   });
 }

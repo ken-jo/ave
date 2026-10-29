@@ -2540,7 +2540,7 @@ graph TB
 
 | 카테고리 | 빌트인 도구 | 설명 | Permission 기본값 |
 | -------------------- | ---------------------------------------------- | ------------------------- | ------------------------------------------ |
-| **File Operations** | FileRead, FileWrite, FileSearch, FileGrep | 로컬 파일 CRUD + 검색 | FileRead: allow / FileWrite: ask |
+| **File Operations** | FileRead, FileWrite, FileSearch, FileGrep | 로컬 파일 CRUD + 검색 | FileRead: allow / FileWrite: 복구 가능한 프로젝트 변경 allow, 그 외 ask |
 | **Search & Index** | TreeSearch, KeywordSearch, HybridSearch | PageIndex + FTS5 검색 | allow (읽기 전용) |
 | **Agent & Comm** | AgentMessage, AgentQuery, HubPost | Agent Hub 통신 | AgentQuery: allow / HubPost: ask (§8 승인) |
 | **Execution** | Bash, PythonExec, APICall | 명령·스크립트·API 실행 | Bash: ask / APICall: ask |
@@ -2555,7 +2555,7 @@ graph TB
 | Category | 의미 | 의사결정 (default mode) | 헤들리스 (routine) | 비고 |
 | --------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------------------------------ |
 | `read` | 조회/검색 (자료를 변경하지 않음) | builtin: allow / plugin: scope-checked | allow | strict mode → ask |
-| `write` | 사용자 데이터 변경 | ask (auto → reviewer LOW allow + audit / MED-HIGH approval dock, allow → allow + audit) | reviewer agent unless allow mode | reviewer 미배치 시 fail-closed or user ask |
+| `write` | 사용자 데이터 변경 | 복구 가능한 프로젝트 파일 변경 allow, 그 외 ask (auto → 나머지 검증 대상에 reviewer 임계값 적용, allow → allow + audit) | 기존 reviewer 경로 유지 | 보호 경로·탈출·ask/deny·출처·규칙 오류 우선, 체크포인트 불가 시 ask |
 | `shell` | 셸 명령 실행 (Bash 등) | ask + Bash AST 검증 (auto → reviewer LOW allow + AST + audit / MED-HIGH approval dock, allow → allow + AST) | reviewer unless allow mode | AST 검증은 executor-owned gate |
 | `network` | 외부 네트워크 호출 | ask + endpoint surface (auto → reviewer LOW allow + audit / MED-HIGH approval dock, allow → allow + audit) | reviewer unless allow mode | endpoint 추출은 executor-owned surface |
 | `meta` | 제어 흐름 / UI 프리미티브 | `decisionOverride` 따름 | 동일 | host builtin 전용; plugin 사용 금지 |

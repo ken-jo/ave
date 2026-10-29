@@ -1571,6 +1571,7 @@ export async function queryLoop(
               : { headless: self.deps.headless }),
             approvalSurface: self.deps.approvalSurface,
             allowedPluginIds: new Set(scope.activePluginIds),
+            projectDirectories: self.deps.getAdditionalDirectories?.() ?? self.deps.additionalDirectories ?? [],
             additionalDirectories: self.getTurnAdditionalDirectories(),
             getAdditionalDirectories: () => self.getTurnAdditionalDirectories(),
             trustOrigin: toolTrustOrigin,

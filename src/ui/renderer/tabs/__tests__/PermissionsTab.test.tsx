@@ -367,12 +367,12 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     await renderPermissionsTab();
 
-    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("쓰기 확인");
-    expect(screen.getByText(/읽기 도구는 허용/)).toBeTruthy();
+    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("프로젝트 밖 쓰기 확인");
+    expect(screen.getByText(/읽기와 복구 가능한 프로젝트 파일 변경은 허용/)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("전체 확인");
     expect(screen.getByText(/읽기까지 포함해 모든 도구/)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("자동 검증");
-    expect(screen.getByText(/대화형 저위험·중위험 판정/)).toBeTruthy();
+    expect(screen.getByText(/나머지 대화형 검증 대상은 리뷰어 임계값/)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("모두 허용");
   });
 

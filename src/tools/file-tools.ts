@@ -1,9 +1,11 @@
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
+  lstat,
   mkdir,
   open,
   readdir,
@@ -24,6 +26,8 @@ import {
 import { z } from "zod";
 
 import type { PathEffect } from "../permissions/allowed-directories.js";
+import { isPathAllowed } from "../permissions/allowed-directories.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
 import {
@@ -64,6 +68,7 @@ import {
   ImagePreparationOptionsSchema,
 } from "../shared/image-preparation-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 import { ReadDocumentInputSchema, OpenDocumentInputSchema, type ReadDocumentInput } from "./document-tool-input.js";
 import { requestDocumentPanel } from "./document-panel-access.js";
 import { documentToolFailure, formatDocumentToolOutput } from "./document-tool-output.js";
@@ -129,6 +134,36 @@ const DEFAULT_SKIP_DIRS = new Set([
 
 // Match builtin file tools by object identity; copied names and schemas cannot enter this set.
 const canonicalFileTools = new WeakSet<object>();
+
+const projectWriteRoots = new AsyncLocalStorage<readonly string[]>();
+
+/** Retain the decision's canonical roots while checking live paths at execution. */
+export function withProjectWriteRoots<T>(roots: readonly string[], run: () => Promise<T>): Promise<T> {
+  return projectWriteRoots.run(Object.freeze([...roots]), run);
+}
+
+/** Tree transfers need directory ownership recovery, which file checkpoints do not represent. */
+export async function isFileCopyCheckpointSupported(sourcePath: string, cwd: string): Promise<boolean> {
+  const source = pathResolve(cwd, expandLeadingTilde(sourcePath));
+  try {
+    const info = await lstat(source);
+    return info.isFile() && info.nlink === 1 && info.size <= CODE_CHECKPOINT_POLICY.maxFileBytes;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function projectWriteFailure(path: string): ToolErrorResult | null {
+  const roots = projectWriteRoots.getStore();
+  if (roots === undefined || isPathAllowed(caseFoldForMatch(canonicalizePathForMatch(path)), { directories: roots })) return null;
+  return { output: `Automatic file write escaped project roots: ${path}`, isError: true };
+}
+
+function assertProjectWritePath(path: string): void {
+  const blocked = projectWriteFailure(path);
+  if (blocked) throw new Error(blocked.output);
+}
 
 // Pass the invocation's host-owned deadline to every broker request so transport defaults cannot shorten it.
 function brokerFilePayload<T extends object>(payload: T): T & { readonly timeoutMs: number } {
@@ -292,11 +327,14 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     transport: Exclude<FileExecutionTransport, { readonly kind: "failure" }>,
   ): Result<string> {
     try {
+      const value = transport.kind === "broker"
+        ? transport.runtime.resolveBrokeredWorkloadPath(transport.capability, inputPath)
+        : this.resolvePath(inputPath, ctx);
+      const blocked = projectWriteFailure(value);
+      if (blocked) return { ok: false, error: blocked };
       return {
         ok: true,
-        value: transport.kind === "broker"
-          ? transport.runtime.resolveBrokeredWorkloadPath(transport.capability, inputPath)
-          : this.resolvePath(inputPath, ctx),
+        value,
       };
     } catch (error) {
       return {
@@ -313,6 +351,10 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     ctx: ToolExecutionContext,
     effect: PathEffect,
   ): ToolExecutionResult | null {
+    if (effect === "write") {
+      const blocked = projectWriteFailure(path);
+      if (blocked) return blocked;
+    }
     return ensureFileAccess(path, ctx, effect);
   }
 
@@ -1061,6 +1103,7 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     }
     const after = input.content;
 
+    assertProjectWritePath(target);
     await mkdir(dirname(target), { recursive: true });
     const written = await atomicTextWrite(target, after);
     if (readSession !== undefined) await recordOwnWrite(readSession, target, after, skipSidecar ? undefined : existing.value === null ? null : before, written);
@@ -1303,6 +1346,16 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     return JSON.stringify({ operation: this.name, paths });
   }
 
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    const operations = this.parseOrThrow(this.requireStringField(input, "patch"));
+    const paths = [...new Set(patchOperationPaths(operations)
+      .map((path) => this.resolveApprovalPath(path, ctx)))].sort();
+    if (paths.length === 1 && operations.every((operation) => operation.kind !== "delete")) {
+      return { kind: "path", path: paths[0]! };
+    }
+    return { kind: "paths", paths };
+  }
+
   private parseOrThrow(patch: string): readonly PatchFileOperation[] {
     const parsed = parsePatchEnvelope(patch);
     if (!parsed.ok) throw new Error(`apply_patch: invalid patch: ${parsed.error}`);
@@ -1401,16 +1454,17 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     for (const change of planned) {
       if (change.kind === "delete") {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await checkpointFileMutation([{ path: change.path, content: null }], () => unlink(change.path));
+        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path));
         summary.push(`${PATCH_CHANGE_LETTER.delete} ${change.path}`);
         continue;
       }
       const written = change.kind === "add" ? change.path : change.destination;
+      assertProjectWritePath(written);
       await mkdir(dirname(written), { recursive: true });
       const identity = await atomicTextWrite(written, change.content);
       if (change.kind === "update" && change.destination !== change.path) {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await checkpointFileMutation([{ path: change.path, content: null }], () => unlink(change.path));
+        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path));
       }
       if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content, undefined, identity);
       summary.push(
@@ -1494,6 +1548,8 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
       { path: source, content: null },
       { path: destination, copyFrom: source },
     ], async () => {
+      assertProjectWritePath(source);
+      assertProjectWritePath(destination);
       await mkdir(dirname(destination), { recursive: true });
       if (input.overwrite) {
         const destinationStat = await statExistingPath(destination);
@@ -1576,11 +1632,22 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
         ctx.abortSignal,
       );
     }
+    const checkpointSupported = await isFileCopyCheckpointSupported(sourcePath, ctx.cwd);
+    const expectedSource = checkpointSupported ? await lstat(sourcePath, { bigint: true }) : undefined;
+    const transfer = async () => {
+      assertProjectWritePath(sourcePath);
+      assertProjectWritePath(destinationPath);
+      return fileTransferExecutionResult(await copyPath({ sourcePath, destinationPath }, ctx, {
+        requireRegularSource: checkpointSupported,
+        expectedSource,
+        assertPath: assertProjectWritePath,
+      }));
+    };
+    if (checkpointSupported) {
+      return checkpointFileMutation([{ path: destinationPath, copyFrom: sourcePath }], transfer);
+    }
     await markCodeCheckpointUnavailable();
-    return fileTransferExecutionResult(await copyPath({
-      sourcePath,
-      destinationPath,
-    }, ctx));
+    return transfer();
   }
 }
 
@@ -1709,7 +1776,7 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
     if (!fileStat.value.isFile()) {
       return toolError(`delete_file requires a regular file: ${target}`);
     }
-    await checkpointFileMutation([{ path: target, content: null }], () => unlink(target));
+    await checkpointFileMutation([{ path: target, content: null }], () => unlinkProjectFile(target));
     return {
       output: JSON.stringify({ path: target, deleted: true }),
       isError: false,
@@ -1944,7 +2011,15 @@ function temporaryWritePath(target: string): string {
 
 /** Writes `content` to `target` through a temporary file, returning the identity its own descriptor saw. */
 async function atomicTextWrite(target: string, content: string): Promise<WrittenFileIdentity | undefined> {
-  return checkpointFileMutation([{ path: target, content }], () => writeTextAtomically(target, content));
+  return checkpointFileMutation([{ path: target, content }], () => {
+    assertProjectWritePath(target);
+    return writeTextAtomically(target, content);
+  });
+}
+
+function unlinkProjectFile(target: string): Promise<void> {
+  assertProjectWritePath(target);
+  return unlink(target);
 }
 
 async function writeTextAtomically(target: string, content: string): Promise<WrittenFileIdentity | undefined> {

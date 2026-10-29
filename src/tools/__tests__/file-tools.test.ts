@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   statSync,
   symlinkSync,
   truncateSync,
@@ -42,7 +43,10 @@ import {
   ReadFileTool,
   ViewImageTool,
   WriteFileTool,
+  withProjectWriteRoots,
+  isFileCopyCheckpointSupported,
 } from "../file-tools.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
 import type { ToolExecutionContext } from "../base.js";
 import {
   dispatchPermissionDirCommand,
@@ -143,6 +147,30 @@ describe("view_image tool", () => {
 });
 
 describe("file native tools", () => {
+  it("rejects an automatic write after an admitted parent is replaced with an external symlink", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "ave-file-outside-"));
+    try {
+      const roots = [caseFoldForMatch(canonicalizePathForMatch(workDir))];
+      renameSync(join(workDir, "src"), join(workDir, "original-src"));
+      symlinkSync(outside, join(workDir, "src"), "junction");
+      const result = await withProjectWriteRoots(roots, () => new WriteFileTool().execute(
+        { path: "src/escaped.txt", content: "must not escape" },
+        { ...ctx(), extraAllowedDirectories: [outside] },
+      ));
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("escaped project roots");
+      expect(existsSync(join(outside, "escaped.txt"))).toBe(false);
+    } finally {
+      await cleanupTmpDir(outside);
+    }
+  });
+
+  it("admits only bounded regular files for recoverable copy operations", async () => {
+    expect(await isFileCopyCheckpointSupported("README.md", workDir)).toBe(true);
+    expect(await isFileCopyCheckpointSupported("src", workDir)).toBe(false);
+    expect(await isFileCopyCheckpointSupported("missing.txt", workDir)).toBe(false);
+  });
+
   describe.each([
     ["edit_file", EditFileTool],
     ["multi_edit", MultiEditTool],
@@ -299,6 +327,7 @@ describe("file native tools", () => {
       const result = await new ToolClass().execute({ path, ...change }, ctx());
       expect(result.isError).toBe(true);
       expect(result.output).toContain("changed after it was read");
+      expect(result.output).toContain("Read it again with read_file before changing it.");
       expect(readFileSync(path, "utf8")).toBe("alpha changed elsewhere\n");
     });
 
@@ -545,6 +574,27 @@ describe("file native tools", () => {
       { sourcePath: "README.md", destinationPath: "docs/README.md" },
       { cwd: workDir },
     )).toBe(`source:${join(workDir, "README.md")}:destination:${join(workDir, "docs", "README.md")}`);
+  });
+
+  it("single-file patches share a path scope while preserving the patch policy key", () => {
+    const input = { patch: "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-alpha\n+ALPHA\n*** End Patch" };
+    const tool = new ApplyPatchTool();
+    const scope = { kind: "path", path: join(workDir, "src", "a.ts") };
+    expect(tool.approvalCacheKey(input, { cwd: workDir })).toBe(JSON.stringify({ operation: "apply_patch", paths: [scope.path] }));
+    expect(tool.approvalMemoryScope(input, { cwd: workDir })).toEqual(scope);
+    for (const editTool of [new WriteFileTool(), new EditFileTool(), new MultiEditTool()]) {
+      expect(tool.approvalMemoryScope(input, { cwd: workDir })).toEqual(editTool.approvalMemoryScope({ path: "src/a.ts" }, { cwd: workDir }));
+    }
+  });
+
+  it("multi-file patch scopes include every source and move destination exactly once", () => {
+    const patch = "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/z.ts\n@@\n-alpha\n+ALPHA\n*** Add File: added.md\n+new\n*** End Patch";
+    expect(new ApplyPatchTool().approvalMemoryScope({ patch }, { cwd: workDir })).toEqual({
+      kind: "paths",
+      paths: [join(workDir, "src", "a.ts"), join(workDir, "src", "z.ts"), join(workDir, "added.md")].sort(),
+    });
+    expect(() => new ApplyPatchTool().approvalMemoryScope({ patch: "invalid" }, { cwd: workDir })).toThrow("invalid patch");
+    expect(() => new ApplyPatchTool().approvalMemoryScope({ patch: "*** Begin Patch\n*** End Patch" }, { cwd: workDir })).toThrow("the patch names no files");
   });
 
   it("write-capable approval cache keys require explicit cwd", () => {
