@@ -1,6 +1,8 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "sidebarPreview.localFile": "Local file",
+  "sidebarPreview.running": "Agent responding",
   "ptyTerminal.hostChipApproval": "Host · commands need approval",
   "ptyTerminal.hostChipNoAgentInput": "Host · no agent input",
   "ptyTerminal.hostChipAgentless": "Host · no agent access",
@@ -151,7 +153,7 @@ export const en = {
   "oauthWindow.insecure": "Not encrypted (HTTP / loopback)",
   "oauthWindow.certificateError": "Certificate error",
   "oauthWindow.loadError": "Page could not be loaded",
-  "mainToolbar.hideSidebar": "Hide sidebar",
+  "mainToolbar.toggleSidebar": "Toggle Sidebar Visibility",
   "mainToolbar.showSidebar": "Show sidebar",
   "sidebar.generalLabel": "General",
   "shellTasks.title": "Commands",

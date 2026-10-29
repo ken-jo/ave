@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "sidebarPreview.localFile": "로컬 파일",
+  "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChipApproval": "호스트 · 명령 승인 필요",
   "ptyTerminal.hostChipNoAgentInput": "호스트 · 에이전트 입력 없음",
   "ptyTerminal.hostChipAgentless": "호스트 · 에이전트 접근 없음",
@@ -153,7 +155,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "oauthWindow.insecure": "암호화되지 않은 연결 (HTTP / 루프백)",
   "oauthWindow.certificateError": "인증서 오류",
   "oauthWindow.loadError": "페이지를 불러올 수 없습니다",
-  "mainToolbar.hideSidebar": "사이드바 숨기기",
+  "mainToolbar.toggleSidebar": "사이드바 숨김/표시",
   "mainToolbar.showSidebar": "사이드바 표시",
   "sidebar.generalLabel": "일반",
   "shellTasks.title": "실행 명령",

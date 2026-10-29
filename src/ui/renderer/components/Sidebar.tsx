@@ -1,3 +1,5 @@
+import { SidebarPreviewProvider, SidebarPreviewTrigger, type SidebarPreviewData } from "./SidebarPreview.js";
+import { loadSidebarSurfacePreview } from "../utils/sidebar-preview-data.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
@@ -132,8 +134,6 @@ export interface SidebarProps {
   overlay?: boolean;
   /** Toggle the rail — the leading cluster button next to the traffic lights. */
   onToggleCollapse: () => void;
-  /** Hide the entire sidebar; the shell retains a title-bar reopen control. */
-  onHide?: () => void;
   /** Expanded card width (px). Ignored while collapsed (fixed icon rail). */
   width?: number;
   /** Available card width from the shell observer; caps rendering without changing the saved preference. */
@@ -247,6 +247,8 @@ const NAV_TONE: Record<NavTone, { hover: string; active: string; bar: string }> 
 };
 
 interface NavItemProps {
+  preview?: SidebarPreviewData;
+  loadPreview?: () => Promise<SidebarPreviewData>;
   viewKey: string;
   label: string;
   icon: React.ReactNode;
@@ -273,6 +275,8 @@ interface NavItemProps {
 }
 
 function NavItem({
+  preview,
+  loadPreview,
   viewKey: _viewKey,
   label,
   icon,
@@ -353,6 +357,8 @@ function NavItem({
     </button>
   );
 
+  if (preview) return <SidebarPreviewTrigger preview={preview} loadPreview={loadPreview}>{btn}</SidebarPreviewTrigger>;
+
   if (collapsed) {
     return (
       <Tooltip>
@@ -384,6 +390,8 @@ function SidebarSurfaceRow({ surface, visible, onOpen }: {
   const Icon = tabIcon(surface.kind);
   return (
     <NavItem
+      preview={{ kind: surface.kind, title: label, ...(surface.url ? { url: surface.url } : {}) }}
+      loadPreview={() => loadSidebarSurfacePreview(surface, label)}
       viewKey={surface.tabId}
       label={label}
       title={label}
@@ -1043,6 +1051,7 @@ function SessionRow({
           />
         </div>
       ) : (
+        <SidebarPreviewTrigger preview={{ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding }}>
         <button
           type="button"
           aria-current={active ? "page" : undefined}
@@ -1093,6 +1102,7 @@ function SessionRow({
             <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
           ) : null}
         </button>
+        </SidebarPreviewTrigger>
       )}
       {time ? (
         <span className="shrink-0 pr-1 text-[10px] text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
@@ -1827,7 +1837,6 @@ export function Sidebar({
   collapsed,
   overlay = false,
   onToggleCollapse,
-  onHide,
   width = SIDEBAR_DEFAULT_WIDTH,
   maxWidth,
   onWidthChange,
@@ -1861,6 +1870,17 @@ export function Sidebar({
   const { t } = useTranslation();
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
+  const surfacePreview = (kind: "browser" | "terminal") => {
+    const surface = surfaces.find((entry) => entry.kind === kind && isSurfaceVisible?.(entry.tabId))
+      ?? surfaces.find((entry) => entry.kind === kind);
+    if (!surface) return undefined;
+    const title = surface.title || surface.url ||
+      `${t(BUILTIN_LABEL_KEYS[kind === "terminal" ? "terminal" : "web"])} ${surface.ordinal}`;
+    return { preview: { kind, title, ...(surface.url ? { url: surface.url } : {}) } as SidebarPreviewData,
+      loadPreview: () => loadSidebarSurfacePreview(surface, title) };
+  };
+  const terminalPreview = surfacePreview("terminal");
+  const browserPreview = surfacePreview("browser");
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
   // Card element ref — EdgeResizeBar applies the live drag width directly to this node's style (rAF-coalesced) so dragging
   // never re-renders the whole Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
@@ -2031,6 +2051,7 @@ export function Sidebar({
   return (
     // Keep the cluster fixed on the native-control centerline while the card surface retracts; pixel chrome geometry must not
     // scale with text.
+    <SidebarPreviewProvider>
     <aside
       ref={asideRef}
       data-testid="primary-sidebar"
@@ -2134,6 +2155,7 @@ export function Sidebar({
           bare cluster (mt-1.5 gap), so nav stays reachable while the cluster has
           popped out of the floating surface. */}
       <div
+        data-sidebar-preview-boundary
         className={
           collapsed
             ? // Collapsed rail width excludes the sidebar inset and one gutter; it must not inherit the cluster's native-control clearance.
@@ -2228,6 +2250,8 @@ export function Sidebar({
                     conversations — the same surfaces the work panel's tabs
                     hold, in the main area. */}
                 <NavItem
+                  preview={terminalPreview?.preview}
+                  loadPreview={terminalPreview?.loadPreview}
                   viewKey="terminal"
                   label={t(BUILTIN_LABEL_KEYS.terminal)}
                   icon={<TerminalViewIcon className="h-4 w-4" />}
@@ -2238,6 +2262,8 @@ export function Sidebar({
                   data-testid="sidebar-terminal"
                 />
                 <NavItem
+                  preview={browserPreview?.preview}
+                  loadPreview={browserPreview?.loadPreview}
                   viewKey="web"
                   label={t(BUILTIN_LABEL_KEYS.web)}
                   icon={<WebViewIcon className="h-4 w-4" />}
@@ -2408,22 +2434,10 @@ export function Sidebar({
             ) : undefined
           }
         />
-        {onHide && (
-          <Button
-            data-testid="sidebar-hide"
-            variant="ghost"
-            className={compact ? `${RAIL_CONTROL_SIZE_CLASS} shrink-0 p-0` : "h-8 w-full justify-start gap-2 px-2 text-xs"}
-            title={t("mainToolbar.hideSidebar")}
-            aria-label={t("mainToolbar.hideSidebar")}
-            onClick={onHide}
-          >
-            <PanelLeftClose className="h-4 w-4 shrink-0" />
-            {!compact && <span>{t("mainToolbar.hideSidebar")}</span>}
-          </Button>
-        )}
       </div>
       </div>
       </div>
     </aside>
+    </SidebarPreviewProvider>
   );
 }

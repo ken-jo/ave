@@ -72,6 +72,8 @@ export interface TerminalApi {
   resize(ref: TerminalSessionRef, cols: number, rows: number): Promise<TerminalMutationResult>;
   /** Trusted tab closure cancels and terminates only the host terminal. */
   kill(tabId: string): Promise<TerminalMutationResult>;
+  /** User display only; never grants model access to host terminal commands. */
+  preview(tabId: string): Promise<{ readonly ok: true; readonly command: string | null } | { readonly ok: false; readonly error: string }>;
   listBlocks(ref: TerminalSessionRef): Promise<
     | { readonly ok: true; readonly session: TerminalSessionInfo; readonly integrated: boolean; readonly blocks: TerminalBlockSummary[] }
     | { readonly ok: false; readonly error: string }

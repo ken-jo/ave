@@ -625,6 +625,7 @@ async function workBoardRunRows(
       id: run.id,
       modifiedAt: run.modifiedAt.toISOString(),
       title: item.title,
+      ...(run.preview ? { preview: run.preview.slice(0, 200) } : {}),
       sessionKind: run.sessionKind,
       family,
       workBoardItemId: itemId,

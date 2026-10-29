@@ -8,6 +8,7 @@ export function buildTerminalApiSurface(): TerminalApi {
     input: (ref, data) => ipcRenderer.invoke(CHANNELS.terminal.input, { ...ref, data }),
     resize: (ref, cols, rows) => ipcRenderer.invoke(CHANNELS.terminal.resize, { ...ref, cols, rows }),
     kill: (tabId) => ipcRenderer.invoke(CHANNELS.terminal.kill, { tabId }),
+    preview: (tabId) => ipcRenderer.invoke(CHANNELS.terminal.preview, { tabId }),
     listBlocks: (ref) => ipcRenderer.invoke(CHANNELS.terminal.blocks, ref),
     getBlock: (ref, blockId) => ipcRenderer.invoke(CHANNELS.terminal.block, { ...ref, blockId }),
     control: (ref, action) => ipcRenderer.invoke(CHANNELS.terminal.control, { ...ref, action }),

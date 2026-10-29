@@ -215,6 +215,7 @@ export function App() {
   const sidebarHidden = sidebarState === "hidden";
   const sidebarOverlay = sidebarNarrow && sidebarState === "expanded";
   const sidebarFocusPending = useRef(false);
+  const sidebarRestoreStateRef = useRef<"expanded" | "rail">("expanded");
   useEffect(() => {
     if (!sidebarFocusPending.current) return;
     sidebarFocusPending.current = false;
@@ -222,13 +223,9 @@ export function App() {
       ? '[data-testid="sidebar-show"]'
       : '[data-testid="sidebar-collapse-toggle"]')?.focus({ preventScroll: true });
   }, [sidebarHidden, shellElement]);
-  const hideSidebar = useCallback(() => {
-    sidebarFocusPending.current = true;
-    setSidebarState("hidden");
-  }, [setSidebarState]);
   const showSidebar = useCallback(() => {
     sidebarFocusPending.current = true;
-    setSidebarState("expanded");
+    setSidebarState(sidebarRestoreStateRef.current);
   }, [setSidebarState]);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
@@ -649,6 +646,15 @@ export function App() {
   const runPanelCommand = useCallback((id: PanelCommandId) => {
     const focused = chatGroups.focusedId;
     switch (id) {
+      case "sidebar.toggleVisibility":
+        sidebarFocusPending.current = true;
+        if (sidebarHidden) {
+          showSidebar();
+        } else {
+          sidebarRestoreStateRef.current = sidebarState;
+          setSidebarState("hidden");
+        }
+        return;
       case "pane.moveLeft":
       case "pane.moveRight":
       case "pane.moveUp":
@@ -669,7 +675,7 @@ export function App() {
         jumpToUnreadTerminal();
         return;
     }
-  }, [chatGroups, reopenClosedSurface, jumpToUnreadTerminal]);
+  }, [chatGroups, reopenClosedSurface, jumpToUnreadTerminal, sidebarHidden, sidebarState, showSidebar, setSidebarState]);
 
   // Capture panel chords before terminal textareas can swallow them.
   const runPanelCommandRef = useRef(runPanelCommand);
@@ -1952,7 +1958,6 @@ export function App() {
                 collapsed={sidebarCollapsed}
                 overlay={sidebarOverlay}
                 onToggleCollapse={() => setSidebarState(sidebarCollapsed ? "expanded" : "rail")}
-                onHide={hideSidebar}
                 width={sidebarWidth}
                 maxWidth={sidebarOverlay ? Math.max(0, shellWidth - SHELL_GUTTER * 2) : undefined}
                 onWidthChange={setSidebarWidth}

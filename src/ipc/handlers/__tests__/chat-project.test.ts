@@ -308,12 +308,14 @@ describe("handleChatSessions federated families", () => {
     id: "session-main",
     modifiedAt: new Date("2026-09-03T10:00:00Z"),
     title: "main chat",
+    preview: "Main reply",
     sessionKind: "main",
   };
   const routine = {
     id: "session-routine",
     modifiedAt: new Date("2026-09-03T07:00:00Z"),
     title: "아침 브리핑",
+    preview: "Routine reply",
     sessionKind: "routine",
     routineId: "rt-1",
     routineTitle: "아침 브리핑",
@@ -324,12 +326,13 @@ describe("handleChatSessions federated families", () => {
       id: "side-1",
       modifiedAt: new Date("2026-09-03T10:30:00Z"),
       title: "환경 변수 확인",
+      preview: "Side reply",
       sessionKind: "main",
       originSessionId: "session-main",
     },
   ];
   const runs = [
-    { id: "sub-a1", modifiedAt: new Date("2026-09-03T11:00:00Z"), title: "Execute: 월간 보고서", sessionKind: "subagent", workBoardItemId: 7 },
+    { id: "sub-a1", modifiedAt: new Date("2026-09-03T11:00:00Z"), title: "Execute: 월간 보고서", preview: "마지막 실행 결과", sessionKind: "subagent", workBoardItemId: 7 },
     { id: "sub-a0", modifiedAt: new Date("2026-09-03T09:00:00Z"), title: "Plan: 월간 보고서", sessionKind: "subagent", workBoardItemId: 7 },
     { id: "sub-gone", modifiedAt: new Date("2026-09-03T08:00:00Z"), title: "Execute: deleted", sessionKind: "subagent", workBoardItemId: 9 },
     { id: "sub-plain", modifiedAt: new Date("2026-09-03T12:00:00Z"), title: "a spawned agent", sessionKind: "subagent" },
@@ -365,6 +368,17 @@ describe("handleChatSessions federated families", () => {
     ]);
   });
 
+  it("retains summaries for every conversation family without loading a transcript", async () => {
+    const { deps } = makeDeps();
+    const { sessions } = await handleChatSessions(deps, { families: [...ALL_FAMILIES] });
+    expect(sessions.map((session) => [session.family, session.preview])).toEqual([
+      ["work-board", "마지막 실행 결과"],
+      ["side-chat", "Side reply"],
+      ["main", "Main reply"],
+      ["routine", "Routine reply"],
+    ]);
+  });
+
   it("carries the item's title and project on a work-board row, one row per item", async () => {
     const { deps } = makeDeps();
     const { sessions } = await handleChatSessions(deps, { families: [...ALL_FAMILIES] });
@@ -372,6 +386,7 @@ describe("handleChatSessions federated families", () => {
       id: "sub-a1",
       family: "work-board",
       title: "월간 보고서 초안",
+      preview: "마지막 실행 결과",
       sessionKind: "subagent",
       workBoardItemId: 7,
       projectRoot: "C:\\ws\\alpha",
