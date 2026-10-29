@@ -115,7 +115,7 @@ describe("EgressGrantsList", () => {
     }
   });
 
-  it("lists a terminal tab grant and revokes it by its tab", async () => {
+  it("lists an isolated conversation shell grant and revokes it by its shell identity", async () => {
     const tabGrant: TabEgressGrant = {
       scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "code.example.test", port: 443, grantedAt: "2026-10-20T03:00:00.000Z",
     };
@@ -127,8 +127,8 @@ describe("EgressGrantsList", () => {
       render(<EgressGrantsList />);
       const row = await screen.findByTestId("egress-grant-row");
       expect(row.textContent).toContain("code.example.test:443");
-      // A tab this window never showed is named as elsewhere, never by its raw id.
-      expect(row.textContent).toContain("Terminal tab in another window · until its shell exits");
+      // A conversation's isolated shell is named by what it is, never by its opaque id.
+      expect(row.textContent).toContain("Isolated conversation shell · until it exits");
       expect(row.textContent).not.toContain("terminal:0a1b2c3d-1");
       fireEvent.click(screen.getByTestId("egress-grant-revoke"));
       await screen.findByTestId("egress-grants-empty");
