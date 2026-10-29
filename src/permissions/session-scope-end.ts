@@ -5,9 +5,12 @@ import { approvalConversationRoot, dropSessionApprovals } from "./user-approval-
 import { releaseEgressSessions } from "./egress-runtime.js";
 import { releaseAgentTerminalObservationSessions } from "../tools/agent-terminal-observation.js";
 import { endAgentBrowserObservationSessions } from "../tools/agent-browser-observation.js";
+import { releaseConversationTerminals } from "../main/terminal/pty-manager.js";
 
 export function endSessionScopedPermissions(sessionId: string, permissionManager: PermissionManager | undefined): void {
   const root = approvalConversationRoot(sessionId);
+  releaseConversationTerminals((held) => held === sessionId
+    || (root === sessionId && approvalConversationRoot(held) === root));
   endAgentBrowserObservationSessions((held) => held === sessionId
     || (root === sessionId && approvalConversationRoot(held) === root));
   if (root !== sessionId) {

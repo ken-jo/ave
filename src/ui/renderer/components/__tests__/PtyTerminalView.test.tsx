@@ -149,11 +149,15 @@ describe("PtyTerminalView command blocks", () => {
   it("attaches the latest block to chat as a fenced block naming the tab", async () => {
     const onAttachText = vi.fn(() => true);
     const terminal = renderView(onAttachText);
-    fireEvent.click(await screen.findByTestId("terminal-blocks-attach-last"));
+    const attach = await screen.findByTestId("terminal-blocks-attach-last");
+    expect(onAttachText).not.toHaveBeenCalled();
+    expect(terminal.getBlock).not.toHaveBeenCalled();
+    fireEvent.click(attach);
     await waitFor(() => expect(onAttachText).toHaveBeenCalledTimes(1));
     expect(terminal.getBlock).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:1", lane: "manual", terminalSessionId: "terminal:1/manual" }), 2);
     const text = (onAttachText.mock.calls[0] as unknown as [string])[0];
-    expect(text).toContain("Terminal 1 · manual · terminal:1/manual · terminal:1 · #2");
+    expect(text).toContain("Terminal 1 · terminal:1/manual · terminal:1 · #2");
+    expect(text).toContain("신뢰할 수 없는 내용");
     expect(text).toContain("$ npm test\nout");
     expect(text.split("\n")[1]).toBe("```console");
   });
@@ -234,7 +238,7 @@ describe("PtyTerminalView tab identity across groups", () => {
 });
 
 describe("PtyTerminalView environment and session boundaries", () => {
-  it("labels Manual's launch directory without claiming it is current or saving it", async () => {
+  it("labels the host launch directory without claiming it is current or saving it", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:11" tabLabel="Terminal 11" initialCwd="/repo/app" />);
@@ -281,16 +285,30 @@ describe("PtyTerminalView environment and session boundaries", () => {
     expect(terminal.input).toHaveBeenCalledWith(manual, "user");
   });
 
-  it("switches to an independent agent screen and keeps the tab's PTYs alive on unmount", async () => {
+  it("explains unavailable integration without blocking the native host shell", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const session = { ...terminalSessionFixture("terminal:16", "manual"), shellIntegration: false, integrationUnavailableReason: "unsupported-shell" as const };
+    terminal.spawn.mockResolvedValue({ ok: true, tabId: session.tabId, replayed: false, session });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={session.tabId} tabLabel="Terminal 16" />);
+    expect(await screen.findByTestId("terminal-integration-unavailable")).toHaveTextContent(t("ptyTerminal.integrationUnsupportedShell"));
+    act(() => terminals[0]!.dataHandler!("user-command\r"));
+    expect(terminal.input).toHaveBeenCalledWith(session, "user-command\r");
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers one private host shell without a lane switch and keeps it alive on unmount", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
     const tabId = "terminal:15";
     const view = render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 15" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByTestId("terminal-lane-agent"));
-    await waitFor(() => expect(terminal.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ lane: "agent" })));
-    expect(screen.getByTestId("terminal-lane-agent").getAttribute("aria-pressed")).toBe("true");
-    expect(terminals).toHaveLength(2);
+    expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual" }));
+    expect(screen.queryByTestId("terminal-lane-agent")).toBeNull();
+    expect(screen.queryByTestId("terminal-lane-manual")).toBeNull();
+    expect(screen.getByTestId("terminal-host-identity").textContent).toContain(t("ptyTerminal.hostLabel"));
+    expect(screen.getByTestId("terminal-host-identity").textContent).toContain(t("ptyTerminal.noAgentAccess"));
+    expect(terminals).toHaveLength(1);
     view.unmount();
     expect(terminal.kill).not.toHaveBeenCalled();
   });

@@ -164,7 +164,6 @@ import { ko as ko_summaryToast } from "../generated/summaryToast.js";
 import { ko as ko_tailnetAccessTab } from "../generated/tailnetAccessTab.js";
 import { ko as ko_telegramConnection } from "../generated/telegramConnection.js";
 import { ko as ko_terminalBlocks } from "../generated/terminalBlocks.js";
-import { ko as ko_terminalEgressBanner } from "../generated/terminalEgressBanner.js";
 import { ko as ko_tokenCostBadge } from "../generated/tokenCostBadge.js";
 import { ko as ko_tokenProgressRing } from "../generated/tokenProgressRing.js";
 import { ko as ko_toolActivity } from "../generated/toolActivity.js";
@@ -356,7 +355,6 @@ export const koMessages: Record<string, string> = {
   ...ko_tailnetAccessTab,
   ...ko_telegramConnection,
   ...ko_terminalBlocks,
-  ...ko_terminalEgressBanner,
   ...ko_tokenCostBadge,
   ...ko_tokenProgressRing,
   ...ko_toolActivity,

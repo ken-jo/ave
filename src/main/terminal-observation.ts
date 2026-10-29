@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { IpcDeps } from "../ipc/types.js";
 import { validateAppWindowMainFrameSender } from "../ipc/app-window-sender.js";
 import { CHANNELS } from "../contract/app-contract.js";
-import { findSessionMainWindowContents } from "./app-state.js";
+import { findSessionMainWindowContents, sideChatOwnerWindow } from "./app-state.js";
 import { TerminalObservationAdapter } from "../observation/terminal-adapter.js";
 import type { ObservationDaemon } from "../observation/daemon.js";
 import { isObservationAck, isTerminalObservationSubscription, type ObservationResponse } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { setAgentTerminalObservationSink } from "../tools/agent-terminal-observation.js";
+import { resolveSessionWindow } from "../tools/session-window-scope.js";
 
 interface TerminalViewOwner {
   event: IpcMainInvokeEvent;
@@ -35,8 +36,20 @@ export class TerminalObservationRuntime {
   }
 
   private isCurrent(view: Pick<TerminalViewOwner, "event" | "sessionId">): boolean {
-    return !this.disposed && validateAppWindowMainFrameSender(view.event, this.deps)
-      && findSessionMainWindowContents(view.sessionId) === view.event.sender;
+    if (this.disposed || !validateAppWindowMainFrameSender(view.event, this.deps)) return false;
+    const windows = this.deps.getAppWindows?.() ?? [this.deps.getMainWindow()];
+    const host = resolveSessionWindow(view.sessionId, {
+      windowIdForHostedSession: (sessionId) => {
+        const holder = findSessionMainWindowContents(sessionId);
+        const pane = this.deps.paneChatLoops?.holding(sessionId);
+        const rail = this.deps.sideChatConversationLoop?.getSessionId() === sessionId ? sideChatOwnerWindow() : null;
+        return windows.find((window) => window && !window.isDestroyed()
+          && (window.webContents === holder || window.id === pane?.windowId || window.webContents === rail?.webContents))?.id ?? null;
+      },
+      liveOriginSessionId: (sessionId) => this.deps.getSubAgentRunner?.()?.liveOriginSessionId(sessionId),
+    });
+    return host !== null && windows.some((window) => window && !window.isDestroyed()
+      && window.id === host.windowId && window.webContents === view.event.sender);
   }
 
   acknowledge(event: IpcMainInvokeEvent, raw: unknown): ObservationResponse | undefined {

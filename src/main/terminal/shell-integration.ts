@@ -279,3 +279,32 @@ export function installShellIntegration(
       return { shell: null, env: {} };
   }
 }
+
+// Host wrappers retain user callbacks while capturing command status before those callbacks run.
+export function generateHostShellHooks(shell: "zsh" | "bash", noncePath: string): string {
+  const hooks = (shell === "zsh" ? ZSH_RC(noncePath) : BASH_PROFILE(noncePath))
+    .replace(HEADER, "# Generated authenticated terminal hooks.")
+    .replace("local ave_status=$?", 'local ave_status="$__ave_command_status"');
+  if (shell === "zsh") {
+    return hooks.replace("add-zsh-hook precmd __ave_precmd", [
+      "__ave_command_status=0",
+      // The single precmd function runs before precmd_functions, so capture at that boundary.
+      'if (( ${+functions[precmd]} )); then functions[__ave_user_precmd]="$functions[precmd]"; fi',
+      '__ave_return_status() { return "$__ave_command_status"; }',
+      "precmd() {",
+      "  __ave_command_status=$?",
+      '  if (( ${+functions[__ave_user_precmd]} )); then __ave_return_status; __ave_user_precmd "$@"; else return "$__ave_command_status"; fi',
+      "}",
+      "add-zsh-hook precmd __ave_precmd",
+    ].join("\n"));
+  }
+  return hooks
+    .replace('PROMPT_COMMAND="__ave_precmd"', [
+      "__ave_command_status=0",
+      '__ave_capture_status() { __ave_command_status=$?; return "$__ave_command_status"; }',
+      'PROMPT_COMMAND=(__ave_capture_status "${PROMPT_COMMAND[@]}" __ave_precmd)',
+    ].join("\n"))
+    .replace("PS0='$(__ave_preexec)'", "PS0=\"${PS0-}\"'$(__ave_preexec)'")
+    // Older interpreters retain the user's DEBUG trap and have no authenticated command-start claim.
+    .replace("  trap '__ave_preexec' DEBUG", "  :");
+}

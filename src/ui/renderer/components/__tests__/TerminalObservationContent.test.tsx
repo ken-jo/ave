@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "../../../../../test/renderer/setup.js";
+import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { TranscriptRenderer } from "../TranscriptRenderer.js";
+import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 import { TerminalObservationContent } from "../TerminalObservationContent.js";
 import { OBSERVATION_LIMITS, type AgentObservationEvent, type TerminalObservedCommand, type ObservationResponse } from "../../../../shared/agent-observation.js";
 import { en } from "../../../../i18n/messages/en.js";
@@ -224,5 +228,44 @@ describe("agent terminal observation view", () => {
     expect(ko["terminalObservation.running"]).toBe("에이전트 실행 중");
     expect(en["terminalObservation.completed"]).toBe("Agent execution finished");
     expect(ko["terminalObservation.completed"]).toBe("에이전트 실행 완료");
+  });
+});
+
+
+describe("conversation-owned inline terminal commands", () => {
+  const entries: ChatEntry[] = [
+    { kind: "user", text: "first turn" },
+    { kind: "tool_group", groupId: "first-group", groupIds: ["first-group"], status: "done", tools: [{ toolUseId: "tool-one", name: "bash", displayOrder: 0, status: "done" }] },
+    { kind: "assistant", text: "first answer", phase: "final" },
+    { kind: "user", text: "second turn" },
+    { kind: "tool_group", groupId: "second-group", groupIds: ["second-group"], status: "done", tools: [{ toolUseId: "tool-two", name: "bash", displayOrder: 0, status: "done" }] },
+    { kind: "assistant", text: "second answer", phase: "final" },
+  ];
+  it("places each command beside its own turn and shares one authenticated subscription", async () => {
+    render(<TooltipProvider><TranscriptRenderer entries={entries} streaming={false} currentSessionId={SESSION} observeTerminal /></TooltipProvider>);
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "subscribe-terminal", sessionId: SESSION }));
+    await emit(snapshot(1, [
+      command({ command: "first-command", status: "completed", exitCode: 0 }),
+      command({ id: "second", toolUseId: "tool-two", turnId: "turn-two", command: "second-command", status: "failed", exitCode: 7 }),
+      command({ id: "foreign", toolUseId: "not-in-transcript", command: "foreign-command" }),
+    ]));
+    const rows = screen.getAllByTestId("terminal-observation-command-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("first-command");
+    expect(rows[1]!.textContent).toContain("second-command");
+    expect(rows[0]!.compareDocumentPosition(screen.getByText("second turn")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("foreign-command")).toBeNull();
+    expect(acknowledge.mock.calls.filter(([request]) => request.action === "subscribe-terminal")).toHaveLength(1);
+    expect(rows[1]!.querySelector("summary")!.textContent).toContain("7");
+    expect(rows[1]!.querySelector("summary")!.textContent).toContain("/workspace/project");
+  });
+
+  it("labels confined and explicitly approved host commands with their actual execution domain", async () => {
+    await open();
+    await emit(snapshot(1, [command(), command({ id: "host", toolUseId: "host-tool", command: "approved-host-command", sandbox: { mode: "unconfined", detail: "approved host execution" } })]));
+    expect(screen.getByTestId("terminal-isolated-identity").textContent).toBe(ko["terminalObservation.isolatedLabel"]);
+    expect(screen.getByTestId("terminal-approved-host-identity").textContent).toBe(ko["terminalObservation.approvedHostLabel"]);
+    expect(screen.getByTestId("terminal-isolated-identity").closest("li")!.className).toContain("border-l-agent");
+    expect(screen.getByTestId("terminal-approved-host-identity").closest("li")!.className).toContain("border-l-primary");
   });
 });

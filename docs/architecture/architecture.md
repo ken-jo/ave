@@ -334,12 +334,12 @@ observations stay only in memory; they are not persisted with ordinary browser
 bookmarks or history.
 
 The terminal adapter admits shell-tool runs and individual commands in the
-Agent terminal lane only from the host's authorized model-turn invocation
-context. Tool arguments, renderer metadata, terminal lane and shell markers
+conversation-owned isolated PTY only from the host's authorized model-turn invocation
+context. Tool arguments, renderer metadata, internal terminal identity and shell markers
 cannot create that authority. Terminal admission binds the approved command,
 verified directory, session incarnation and exact authenticated command block
 immediately before the host presses Enter. Startup, prompts and user commands
-are never observed, including commands a user types into the Agent lane. Any
+are never observed, including commands a user types into an isolated PTY. Any
 accepted user input revokes that command's capture and egress binding before
 the bytes reach the shell; pending output is discarded. A mismatched command
 or directory is a contract error, not a reason to observe another block.
@@ -371,7 +371,7 @@ sends each reply separately). At most 16 queries are outstanding. A reply shape
 alone proves nothing, because the user can type or paste one, and the line
 editor runs any keys inside it; a late, unsolicited or batched reply therefore
 counts as user input.
-Second, once the user has typed into an Agent-lane terminal incarnation, a
+Second, once the user has typed into an isolated terminal incarnation, a
 process they started may have left the terminal while keeping its egress
 credentials, or may later reopen the terminal by path; no process-table
 reading can rule that out. Later agent commands in that incarnation are
@@ -385,7 +385,8 @@ replaces the session's bounded `commands` list; `status` carries
 identity, turn/tool identity, command line, directory, start time, duration,
 running/completed/failed/cancelled/interrupted state, known exit code or `null`,
 bounded output tail and truncation flag, chosen sandbox mode and egress
-decisions. Terminal commands also name their tab and session incarnation.
+decisions. Terminal commands also carry an internal terminal identity and session incarnation;
+for isolated PTYs this identity is not a workspace tab binding.
 Commands, directories, output and decision details pass through the existing
 credential-redaction rules before retention or delivery. Split output cannot
 bypass masking; raw pending fragments are bounded independently of the
@@ -405,8 +406,8 @@ Completed history is evicted before active work; exhausted active capacity
 fails explicitly. A lease may follow its already admitted child or terminal
 block beyond the initial tool wait or turn, but cannot admit another command.
 Completion follows the actual process or authenticated block exit, not the
-tool's foreground-to-background handoff. Closing/replacing a terminal,
-deleting its conversation or shutting down releases the corresponding leases
+tool's foreground-to-background handoff. Replacing an isolated terminal,
+ending its owning conversation or shutting down releases the corresponding leases
 and buffers. There is no persisted terminal observation history.
 Releasing a panel revokes delivery and its queued snapshots; bounded same-session
 command history remains available on reopening until eviction or conversation
@@ -474,17 +475,17 @@ remains transparent until authenticated activity or errors render the strip.
 Control changes and the first observation keep the guest viewport in place
 during native input; user-only previews show no agent label or stripe.
 
-The side panel's terminal observation strip uses the same agent theme color
-and shows the current command with elapsed time. A compact read-only command
-list exposes directory, output tail, exit state, duration, sandbox mode and
-the scope of egress decisions. An empty user-only session shows neither strip
-nor command list. Session changes, panel unmount, and closing or hiding a
-panel that stays mounted (a retained side-chat or browser tab) release the
-subscription. A hidden strip stays mounted, so expanded rows and list scroll
-survive; showing the panel again subscribes afresh and the next snapshot
-replaces the list. The renderer accepts only its current target/session and acknowledges a
-snapshot after rendering it. Stale or other-source events cannot enter that
-list, and localized observation errors occupy the same strip.
+Conversation-owned isolated commands render inline with command, directory,
+status, known exit code and collapsible bounded output, using an isolated badge
+and color band. They reuse the existing authenticated session observation
+subscription and rendering contract; there is no separate isolated side-work
+surface. Hidden/unmounted conversation views release their subscriptions without
+ending the conversation's PTY. Reopening subscribes afresh to bounded same-session
+history. Current target/session and sequence checks reject stale events;
+observation errors remain visible. Host shells are excluded from this subscription,
+including startup, user commands and scrollback. Explicit user-selected host block
+attachments are a separate untrusted-context path defined by the
+[terminal policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal).
 
 The default-application icon reuses the existing attachment opener. Successful
 preview reads supply bounded, frame-bound read receipts instead of adding paths
@@ -1238,23 +1239,23 @@ authorized `browser_tab_close` destroys an agent-owned pane's page, its turn
 runs to its end before its pane chat ends. Releasing a borrowed user tab keeps
 the page alive.
 
-The browser tools and `terminal_read` called without a tab id act on the bound
+Browser tools called without a tab id act on the bound browser
 tab, and sub-agents inherit it through their hosting session; a bound tab that
 is gone, or of the other kind, is an error, never another tab. A click uses
 touch input, which the window routes through its one touch sequence
 even when sent through the page's own protocol session; so each press runs
 alone in its window, a started press always ends, and a press counts only when
 its own page reports it and no other page of the window took a touch. A conversation
-that is not a pane's acts on the window's active surface, which the side
-panel's chat shows as its target chip; its × drops the target until another
-terminal or page is shown. The pane chat claims its session's approval cards,
+that is not a pane's uses the active browser for browser tools. Terminal
+read/run authority instead belongs to the invoking conversation's isolated PTY;
+a terminal-bound pane turn cannot type into its host shell in this delivery. The pane chat claims its session's approval cards,
 so the window's lane does not draw them again.
 
 ## Browser And Terminal Workspace
 
 Chat, browser, and terminal remain simultaneous workspace surfaces. Side/main
 placement is presentation state: moving a pane preserves its live browser guest
-and both terminal lanes. The [workspace guide](../guides/browser-terminal-workspace.md)
+and its one host shell. The [workspace guide](../guides/browser-terminal-workspace.md)
 explains the user workflow; [permission policy](permission-policy-design.md#shared-browser-control-and-effects)
 owns consent and effect checks. These contracts describe code behavior; native
 interaction and provider-authentication validation remain separate evidence.
@@ -1397,55 +1398,50 @@ a tab, or retains a closed guest. Hidden/visible capture counts and actual guest
 behavior require runtime validation; this contract is not a measured resource
 improvement.
 
-### Separate terminal lanes
+<a id="separate-terminal-lanes"></a>
 
-`src/shared/terminal-session.ts` identifies each PTY by `tabId`, required
-`lane: "manual" | "agent"`, and a host-issued `terminalSessionId`. Input,
-resize, output, exit, and block reads carry the same incarnation. A pane unmount
-kills neither lane; closing the tab kills both, and the live-PTY cap counts both.
+### Host terminals and conversation shells
 
-**Manual · host** runs the native host shell with the user's real HOME/profile
-and validated initial directory. It neither wraps the shell in the agent
-sandbox nor writes integration startup files into the real HOME. Without shell
-integration, current directory and command exit status remain unknown rather
-than inferred from the initial directory or terminal output.
+Each visible terminal tab owns one
+native host shell, with a host badge/color band and **No agent access** label.
+Its real HOME and configured profile remain intact. Supported versions use
+nonce-authenticated integration from a per-PTY temporary startup directory;
+unsupported shells or failed integration retain the user's native shell without
+claiming current-directory, exit-status or agent-control capabilities that have
+not been attested. Host integration never installs the disposable-HOME startup
+files into the user's real HOME.
 
-**Agent · isolated** is a distinct companion PTY with a disposable HOME,
-authenticated shell integration, and active filesystem/process confinement.
-Its initial write-jail directory may be within the default workspace or a
-user-approved additional project, as resolved by the host's project authority.
-Its domain allowlist starts empty; the live egress proxy obtains attributed
-destination approvals for foreground and background descendants. Plugin and
-model endpoint grants remain worker-only. Approval scopes, revocation and tab
-lifecycle follow the [terminal policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal).
-Canonical, segment-aligned containment rejects paths resolving outside those
-projects at admission; a renderer cwd does not add a grant. This path check is
-separate from the sandbox's actual access enforcement and does not alone prove
-safety against later path changes. The whole user HOME remains an invalid jail anchor even
-when selected as a project. These Agent restrictions do not redefine Manual's
-ordinary host cwd behavior.
-`terminal_run` always targets this lane. Approval seals its session incarnation,
-directory, exact command, and containment identity; execution rechecks them
-before typing. No agent bytes, cancellation, or output can redirect to Manual
-or another tab; agent output does not take Manual's focus. A wait timeout means
-the command can still be running, and cancellation of a waiter does not prove
-process cleanup.
+A main-owned registry separately maps each conversation to its confined
+persistent PTY. The existing `TerminalSessionRef` fields (internal `tabId`,
+`lane` and host-issued `terminalSessionId`) may identify confinement,
+egress and authenticated block state; an isolated PTY's opaque terminal identity
+is never a workspace-tab or renderer authority. No tab-to-agent-companion binding
+remains. Host UI/IPC operates only on host refs; conversation PTYs use main-only
+lifecycle operations and authenticated observation rather than raw renderer output.
 
-On Linux, an Agent terminal keeps its initial mount namespace until it exits.
-Before typing an agent command, the host re-scans against that initial policy
-and refuses newly required denies, withdrawn grants or scan failures until the
-terminal is reopened. Metadata appearing after that check can still be used
-until shell exit, with no time limit. Startup/replay output and terminal tool
-results disclose this limitation. Foreground and background work can use new
-metadata before the next check; raw input does not run the check. A project
-outside the original grant stays unwritable. The [sandbox policy](permission-policy-design.md#preparation-and-native-validation)
-explains why prompt markers cannot provide a reliable post-block boundary.
+Isolated commands appear inline in their owning conversation, with command,
+directory, running/final status, known exit code and collapsible bounded output.
+Conversation teardown awaits isolated-PTY exit and cleanup, including pending
+spawn and block registrations. Permission-scope release revokes its egress and
+execution authority earlier; a retained retiring completion lets teardown await
+the same exit/cleanup even after registry removal. Pane hiding/remount and host-tab close alone do not end
+it. If closing a pane also ends its conversation under existing lifecycle policy,
+that teardown releases the isolated PTY. Host-tab close always ends its own shell.
 
-An unavailable confined backend leaves Manual usable and Agent explicitly
-unavailable. The current Windows interactive Agent backend cannot attest this
-contract and is unavailable; it never falls back to a host PTY. General sandbox
-availability and unrelated native backend work are not proof of this lane's
-capability.
+Existing one-shot shell tools retain their explicit approved host/outside-sandbox
+execution route. Their inline badge reflects the actual execution mode: an
+unconfined command shows host execution rather than claiming isolation. Every
+persistent conversation PTY remains confined; approving a one-shot host command
+does not permit typing into a user's host terminal.
+
+The [terminal permission policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal)
+is canonical for exact command approval, authorized-project containment,
+confinement, TTY/nonce readiness, egress and cancellation checks. These isolated
+checks remain in force, including the Linux initial-namespace revalidation limit
+and fail-closed behavior when the backend is unavailable. Host startup/user output
+is private; only explicit user-selected block attachments share host context.
+Side-work-panel host terminals have no agent read/write access. Host command
+approval and takeover are pending; this delivery enables no agent host typing.
 
 ## Extension Runtime
 
@@ -2350,7 +2346,7 @@ the known-safe pre-exec ask path.
 
 Every ASRT wrap carries an egress token as its `commandId`
 (`src/permissions/egress-invocations.ts`): one per Bash or PowerShell tool
-call, one per workspace terminal shell (for the life of its tab's shell), and
+call, one per isolated conversation shell (for that PTY's lifetime), and
 one per confined plugin process — plugin child, worker, bundled hook, bundled
 MCP stdio server. The token is 16 random bytes, maps to its owner only while
 the process lives, and is never written down. ASRT records each proxy refusal
@@ -2392,7 +2388,7 @@ decides (unattributed, a worker off its list, asks off, nobody to ask, a
 reserved literal) costs no DNS query and no proxy lookup: the
 proxy's lookup is the sandbox's only resolver, and a refused
 `<data>.attacker.example` must not reach the zone's server. An interactive
-card (or a terminal tab's banner) is shown by name, using the class implied by
+approval card is shown by name, using the class implied by
 the literal address or local-network name, otherwise provisionally `public`.
 Its answer is held, not granted; grants are matched by origin and network class
 in both phases. Only after that provisional allow is the destination name
@@ -2518,12 +2514,12 @@ connection only for a lifetime that request offers (a user rule where Always
 is offered, a project rule where This project is, a session rule where This
 session is), so a shared or session-strength connection identity is never
 admitted by a persistent rule; deny and ask rules apply everywhere. Host rules
-are shell-origin: a terminal tab's connection never consults them and its
+are shell-origin: an isolated terminal's connection never consults them and its
 banner offers none. An address literal has no host rule, and a
 `Network(...)` rule naming one is refused when it is parsed. An edited
 wildcard host allow is saved with the same `wildcard-allow-sandboxed-only`
 warning as a wildcard shell allow. The scope values on the wire and on disk are
-`once`, `session`, `tab` (a terminal tab's only), `project` and `always`; the earlier `conversation` and
+`once`, `session`, `tab` (the retained internal terminal-lifetime scope), `project` and `always`; the earlier `conversation` and
 `workspace` names are refused everywhere, except that a version-1 grant file's
 `workspace` grants are migrated once: a grant made at its project root becomes
 the `project` grant for that root, and one made in a subdirectory of a
@@ -2533,17 +2529,14 @@ file is written back as version 2 on the next change. "This session" choices
 (network hosts, `Bash(<command>)` rules, exact approvals) end when the
 conversation is deleted: deleting a root conversation ends them for it and its
 sub-agents, and deleting a sub-agent session ends only that session's own
-network hosts, since its rules and approvals belong to the root. A workspace terminal tab (always in
-the foreground) reaches a host a grant covers, and otherwise the person is
-asked in a banner in that tab, drawn only in, fetched by and answered from
-the window that owns the tab, with the same shared decision row (Deny, Allow
-once, Allow for this tab, Always allow everywhere; Always deny is shown
-disabled, since host rules are shell-origin: a
-terminal's Allow once lets that one connection through and is never held;
-"This tab" takes the place of "This session" and lasts until the tab's
-shell exits, including an exit followed by a respawn; terminals have no
-This project, since every tab runs in the app's one default workspace,
-which agent shell calls share). Every grant is bound to its origin (`shell` or
+network hosts, since its rules and approvals belong to the root. A conversation's
+isolated persistent PTY retains the terminal-origin egress approval path and
+terminal-lifetime grants, keyed by its internal terminal identity rather than a
+workspace host tab. Existing destination eligibility, one-connection allow-once
+semantics and revocation apply. The legacy serialized `tab` scope ends with
+that isolated shell; it is not host-tab read/write authority. The
+[terminal policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal)
+owns the conversation lifecycle and private-host boundary. Every grant is bound to its origin (`shell` or
 `terminal`) and destination network class (`public`, `local` or `unverified`),
 for Allow once, session, tab, project and Always scopes. Matching,
 listing, use tracking and revocation preserve both fields, so neither another
@@ -2551,11 +2544,13 @@ origin nor another class can reuse it. Settings shows the origin and preserves
 the class when revoking. A replan to a
 different class requires a fresh warning and decision before connecting.
 Project roots are compared after `canonicalizePathForMatch`. The
-connection is held while the banner is up and denied after 120 s without an
-answer, or at once when the tab closes; connections from one tab to one
-destination share one banner row. While no view of the tab is mounted the
-ask is drawn on the focused pane's lane instead
-(`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
+connection is held while its approval card is pending and denied after 120 s
+without an answer, or at once when the isolated PTY is released. Requests from
+one internal terminal to one destination share the existing approval entry.
+A main-owned terminal-to-conversation alias routes confined conversation egress
+to the existing approval cards and follows that session's current attachment;
+there is no separate host-terminal banner or dock filtering. The user's native
+host shell gains no egress interception from this route.
 `src/permissions/egress-grants.ts` holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
 Permissions → Network. Stored grants without `network` match only
@@ -2653,8 +2648,8 @@ in its directory.
   allowed host through its listener and the proxy, and a refused host is
   recorded under that invocation's token only. Without MXC, shells keep the
   approved host route. Without either, the gate degrades as before. The
-  workspace terminal never runs in MXC (it is the user's surface, and MXC ends
-  background descendants with the command), and reads only the process-wide
+  persistent conversation PTY never runs in MXC (its background descendants
+  outlive individual commands), and reads only the process-wide
   capability.
 - **Filesystem.** The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a

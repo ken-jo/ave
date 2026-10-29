@@ -1,4 +1,4 @@
-/** Separate host-user and confined-agent PTYs, owned by one logical tab. */
+/** Host terminals belong to visible tabs; confined terminals belong to conversations. */
 import { randomBytes } from "node:crypto";
 import { beginAgentTerminalObservation, type AgentTerminalObservationLease } from "../../tools/agent-terminal-observation.js";
 import { accessSync, constants, mkdirSync, realpathSync, statSync } from "node:fs";
@@ -49,6 +49,7 @@ import {
 import { isTerminalTabId } from "../../shared/tab-id.js";
 import { hasOnlyTypeableCharacters, MAX_TERMINAL_COMMAND_CHARS } from "../../shared/terminal-command-text.js";
 
+import { prepareHostShellIntegration } from "./host-shell-integration.js";
 import { resolveManualShell } from "./manual-shell.js";
 import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
 import { t } from "../../i18n/index.js";
@@ -83,6 +84,11 @@ export type TerminalEmit = (
 ) => void;
 
 let _emit: TerminalEmit = () => {};
+let terminalInspectionForTest: TerminalEmit | undefined;
+/** Test-only main-process inspection for native confinement acceptance fixtures. */
+export function _setTerminalInspectionForTest(inspect: TerminalEmit): void {
+  terminalInspectionForTest = inspect;
+}
 
 /** Register the main→renderer output sink (called once at IPC registration). */
 export function setTerminalEmitter(fn: TerminalEmit): void {
@@ -118,6 +124,7 @@ interface TerminalSession {
   egressToken?: string;
   observation?: TerminalCommandObservation;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
+  cleanupIntegration?: () => void;
   closing: boolean;
   exited: boolean;
   /** Settles when the shell has exited and the session is dropped. */
@@ -194,9 +201,32 @@ function cancelInFlightSpawn(owner: TerminalSpawnInFlight): void {
 
 interface LogicalTerminalTab { ownerWindowId: number | null; initialCwd?: string }
 const logicalTabs = new Map<string, LogicalTerminalTab>();
+interface ConversationTerminal { readonly tabId: string; readonly ownerWindowId: number | null; readonly initialCwd?: string }
+/** Main-only ownership. Internal terminal ids never identify workspace tabs. */
+const conversationTerminals = new Map<string, ConversationTerminal>();
+const retiringConversationTerminals = new Map<string, Set<Promise<unknown>>>();
+function conversationForTerminal(tabId: string): ConversationTerminal | undefined {
+  return [...conversationTerminals.values()].find((owner) => owner.tabId === tabId);
+}
+function isConversationTerminalId(tabId: string): boolean {
+  const key = terminalLaneKey({ tabId, lane: "agent" });
+  return conversationForTerminal(tabId) !== undefined || sessions.has(key) || terminalSpawnsInFlight.has(key);
+}
+function allocateConversationTerminalId(): string {
+  let tabId: string;
+  do { tabId = `terminal:${randomBytes(4).toString("hex")}-1`; }
+  while (logicalTabs.has(tabId) || isConversationTerminalId(tabId));
+  return tabId;
+}
+
+/** Only host output is delivered over the terminal renderer bridge. */
+function emitTerminal(event: "data" | "exit", payload: TerminalDataEvent | TerminalExitEvent, ownerWindowId: number | null): void {
+  terminalInspectionForTest?.(event, payload, ownerWindowId);
+  if (payload.lane === "manual") _emit(event, payload, ownerWindowId);
+}
 const sessions = new Map<string, TerminalSession>();
 function sessionInfo(session: TerminalSession): TerminalSessionInfo {
-  const integrated = session.info.lane === "agent" && session.blocks.isIntegrated();
+  const integrated = session.blocks.isIntegrated();
   const cwd = integrated ? session.blocks.currentCwd() : null;
   return { ...session.info, currentCwd: cwd, cwdSource: cwd === null ? "unavailable" : "shell-marker", shellIntegration: integrated };
 }
@@ -309,11 +339,12 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
   }
   if (!isTerminalLane(options.lane)) return Promise.resolve({ ok: false, reason: "bad-request", message: "invalid terminal lane" });
   const key = terminalLaneKey(options);
-  const record = logicalTabs.get(tabId);
-  if (options.lane === "agent" && !record) return Promise.resolve({ ok: false, reason: "no-terminal", message: "terminal tab has not been opened by the user" });
+  const record = options.lane === "agent" ? conversationForTerminal(tabId) : logicalTabs.get(tabId);
+  if (options.lane === "agent" && !record) return Promise.resolve({ ok: false, reason: "no-terminal", message: "terminal has no owning conversation" });
+  if (options.lane === "manual" && isConversationTerminalId(tabId)) return Promise.resolve({ ok: false, reason: "bad-request", message: "terminal identity is reserved for a conversation" });
   // A tab another window owns is not this window's to attach to: tab ids are unique per window by construction, so a clash is a contract violation.
   const ownerWindowId = options.ownerWindowId ?? null;
-  if (!terminalOwnedBy(tabId, ownerWindowId)) {
+  if (record && record.ownerWindowId !== ownerWindowId) {
     log.warn({ tabId }, "terminal: refused a spawn for a tab another window owns");
     return Promise.resolve({ ok: false, reason: "bad-request", message: "terminal tab belongs to another window" });
   }
@@ -327,7 +358,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
 
   // Only an authenticated manual spawn can reserve a logical tab, before any await.
   if (!record) {
-    if (logicalTabs.size >= MAX_TERMINALS) return Promise.resolve({ ok: false, reason: "too-many-terminals", message: "too many terminal tabs" });
+    if (logicalTabs.size + conversationTerminals.size >= MAX_TERMINALS) return Promise.resolve({ ok: false, reason: "too-many-terminals", message: "too many terminal tabs" });
     logicalTabs.set(tabId, { ownerWindowId, ...(options.cwd !== undefined ? { initialCwd: options.cwd } : {}) });
   }
 
@@ -356,7 +387,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
       return Promise.resolve({ ok: false, reason: "not-shell-contained", message: "agent terminal containment changed; close and reopen the tab" });
     }
     if (existing.ring.length > 0 || existing.hostNotices.length > 0) {
-      _emit("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${existing.ring.join("")}` }, existing.ownerWindowId);
+      emitTerminal("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${existing.ring.join("")}` }, existing.ownerWindowId);
     }
     return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing) });
   }
@@ -661,7 +692,7 @@ async function spawnNewTerminal(
       pushRing(session, display);
       // Initialization can outlive a renderer mount. Publish its accumulated output only at registration, so
       // an in-flight join misses no prefix and receives no duplicate replay of data already delivered to it.
-      if (sessions.get(key) === session) _emit("data", { ...session.info, chunk: display }, session.ownerWindowId);
+      if (sessions.get(key) === session) emitTerminal("data", { ...session.info, chunk: display }, session.ownerWindowId);
     });
     session.disposeData = addCleanup(() => dataSub.dispose());
 
@@ -679,13 +710,13 @@ async function spawnNewTerminal(
           session.hostNotices = [...session.hostNotices, notice];
           const display = session.blocks.recordOutput(`\r\n${notice}\r\n`);
           pushRing(session, display);
-          _emit("data", { ...session.info, chunk: display }, session.ownerWindowId);
+          emitTerminal("data", { ...session.info, chunk: display }, session.ownerWindowId);
         }
         // Keep a final cleanup notice in the open block before readers see exit.
         session.blocks.recordExit();
         refreshTerminalObservation(session);
         stopTerminalObservation(session);
-        _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
+        emitTerminal("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
         cleanupSandboxHome();
         session.disposeData();
         session.disposeExit();
@@ -724,7 +755,7 @@ async function spawnNewTerminal(
     if (sandboxGeneration !== getSandboxGeneration() || !isShellSandboxActive() || !isActiveSandboxShellContained()) throw new Error("terminal sandbox changed during launch");
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, options.ownerWindowId ?? null);
-    if (session.ring.length > 0 || session.hostNotices.length > 0) _emit("data", { ...session.info, chunk: `${session.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${session.ring.join("")}` }, session.ownerWindowId);
+    if (session.ring.length > 0 || session.hostNotices.length > 0) emitTerminal("data", { ...session.info, chunk: `${session.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${session.ring.join("")}` }, session.ownerWindowId);
     // The session now owns its wrap, HOME and subscriptions until exit.
     owner.cleanupResources = undefined;
     cleanups.length = 0;
@@ -757,7 +788,7 @@ async function spawnNewTerminal(
   }
 }
 
-/** A manual shell uses the real host profile and receives no installed integration. */
+/** A host shell preserves the real profile and owns its temporary integration files. */
 async function spawnManualTerminal(options: SpawnTerminalOptions, owner: TerminalSpawnInFlight): Promise<SpawnTerminalResult> {
   const { tabId } = options;
   const key = terminalLaneKey(options);
@@ -765,11 +796,12 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
   let disposeData: (() => void) | undefined;
   let disposeExit: (() => void) | undefined;
   let registered = false;
+  let integration: ReturnType<typeof prepareHostShellIntegration> | undefined;
   const cleanup = (): void => {
     if (registered) return;
     disposeData?.();
     disposeExit?.();
-    pty?.kill("SIGKILL");
+    try { pty?.kill("SIGKILL"); } finally { integration?.cleanup(); }
   };
   owner.cleanupResources = cleanup;
   try {
@@ -779,36 +811,39 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     const launch = resolveManualShell();
     if (!statSync(launch.command).isFile()) throw new Error("terminal interpreter is not a file");
     accessSync(launch.command, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+    integration = prepareHostShellIntegration(launch, buildHostShellChildEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }));
     const native = await loadPty();
     owner.abort.signal.throwIfAborted();
-    pty = native.spawn(launch.command, launch.args, {
+    pty = native.spawn(integration.command, integration.args, {
       name: "xterm-256color", cwd,
       cols: clampDim(options.cols, 80, MAX_COLS), rows: clampDim(options.rows, 24, MAX_ROWS),
-      env: buildHostShellChildEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }),
+      env: integration.env,
     });
     let markGone!: () => void;
     const gone = new Promise<void>((resolve) => { markGone = resolve; });
     const session: TerminalSession = {
-      info: { tabId, lane: "manual", terminalSessionId: randomBytes(16).toString("hex"), substrate: "host", initialCwd: cwd, currentCwd: null, cwdSource: "unavailable", shellIntegration: false },
+      info: { tabId, lane: "manual", terminalSessionId: randomBytes(16).toString("hex"), substrate: "host", initialCwd: cwd, currentCwd: null, cwdSource: "unavailable", shellIntegration: false, ...(integration.integrationUnavailableReason === undefined ? {} : { integrationUnavailableReason: integration.integrationUnavailableReason }) },
       pty, ownerWindowId: options.ownerWindowId ?? null,
-      blocks: new TerminalBlockTracker({ nonce: randomBytes(16).toString("hex"), marksPromptEnd: false }),
+      blocks: new TerminalBlockTracker({ nonce: integration.nonce, marksPromptEnd: integration.marksPromptEnd }),
       shellName: basename(launch.command), innerPty: false,
       resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, hostNotices: [],
       disposeData: () => {}, disposeExit: () => {},
+      cleanupIntegration: integration.cleanup,
       forceKillTimer: null, closing: false, exited: false, gone, markGone,
     };
     const dataSub = pty.onData((chunk) => {
       const display = session.blocks.recordOutput(chunk);
       if (!display) return;
       pushRing(session, display);
-      if (sessions.get(key) === session) _emit("data", { ...session.info, chunk: display }, session.ownerWindowId);
+      if (sessions.get(key) === session) emitTerminal("data", { ...session.info, chunk: display }, session.ownerWindowId);
     });
     disposeData = session.disposeData = () => dataSub.dispose();
     const exitSub = pty.onExit(({ exitCode, signal }) => {
       session.exited = true;
       session.blocks.recordExit();
+      integration?.cleanup();
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
-      _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
+      emitTerminal("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
       session.disposeData();
       session.disposeExit();
       if (sessions.get(key) === session) sessions.delete(key);
@@ -818,7 +853,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     owner.abort.signal.throwIfAborted();
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, session.ownerWindowId);
-    if (session.ring.length > 0) _emit("data", { ...session.info, chunk: session.ring.join("") }, session.ownerWindowId);
+    if (session.ring.length > 0) emitTerminal("data", { ...session.info, chunk: session.ring.join("") }, session.ownerWindowId);
     const logical = logicalTabs.get(tabId);
     if (logical && logical.ownerWindowId === session.ownerWindowId) logical.initialCwd = cwd;
     registered = true;
@@ -830,25 +865,39 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
   }
 }
 
-/** The agent may attach only to a logical tab already reserved by trusted Manual UI. */
-export async function ensureAgentTerminal(tabId: string, ownerWindowId: number, signal?: AbortSignal): Promise<TerminalSessionInfo> {
+/** Resolve only the invoking conversation's own confined terminal. Main supplies its directory. */
+export async function ensureConversationTerminal(sessionId: string, ownerWindowId: number, cwd?: string, signal?: AbortSignal): Promise<TerminalSessionInfo> {
   signal?.throwIfAborted();
-  const logical = logicalTabs.get(tabId);
-  if (!logical || logical.ownerWindowId !== ownerWindowId) throw new Error("no terminal tab in this window");
-  const key = terminalLaneKey({ tabId, lane: "agent" });
+  if (!sessionId) throw new Error("conversation session id is required");
+  let ownership = conversationTerminals.get(sessionId);
+  if (ownership && ownership.ownerWindowId !== ownerWindowId) throw new Error("conversation terminal belongs to another window");
+  if (!ownership) {
+    if (conversationTerminals.size + logicalTabs.size >= MAX_TERMINALS) throw new Error("too many terminals");
+    ownership = { tabId: allocateConversationTerminalId(), ownerWindowId, ...(cwd === undefined ? {} : { initialCwd: cwd }) };
+    conversationTerminals.set(sessionId, ownership);
+    updateApprovalSurface({ kind: "bind-terminal-session", tabId: ownership.tabId, sessionId });
+  }
+  const owner = ownership;
+  const key = terminalLaneKey({ tabId: owner.tabId, lane: "agent" });
   const existing = sessions.get(key);
   let info: TerminalSessionInfo;
   if (existing && !existing.closing && !existing.exited) {
-    if (!agentSession(existing.info, ownerWindowId)) throw new Error("agent terminal confinement changed; close and reopen the terminal tab");
+    if (!agentSession(existing.info, ownerWindowId)) throw new Error("conversation terminal confinement changed");
     info = sessionInfo(existing);
   } else {
-    // Cancelling a tool waiter does not close a shell the tab now owns. No requested command is typed by initialization, including after this wait aborts.
-    const result = await waitForTerminalSpawn(
-      spawnTerminal({ tabId, lane: "agent", ownerWindowId, ...(logical.initialCwd !== undefined ? { cwd: logical.initialCwd } : {}) }),
-      signal,
-    );
+    const spawning = spawnTerminal({ tabId: owner.tabId, lane: "agent", ownerWindowId, ...(owner.initialCwd === undefined ? {} : { cwd: owner.initialCwd }) });
+    // A caller abort ends only its wait. Release failed setup at the shared spawn's
+    // completion, so an aborted waiter cannot strand a reservation or close a live shell.
+    const releaseFailedReservation = (): void => {
+      if (conversationTerminals.get(sessionId) === owner && !sessions.has(key) && !terminalSpawnsInFlight.has(key)) {
+        conversationTerminals.delete(sessionId);
+      }
+    };
+    void spawning.then(result => { if (!result.ok) releaseFailedReservation(); }, releaseFailedReservation);
+    const result = await waitForTerminalSpawn(spawning, signal);
     signal?.throwIfAborted();
     if (!result.ok) throw new Error(result.message);
+    if (conversationTerminals.get(sessionId) !== owner) throw new Error("conversation terminal was released during initialization");
     info = result.session;
   }
   const session = agentSession(info, ownerWindowId);
@@ -872,8 +921,45 @@ export async function ensureAgentTerminal(tabId: string, ownerWindowId: number, 
     });
   }
   signal?.throwIfAborted();
-  if (agentSession(info, ownerWindowId) !== session) throw new Error("agent terminal changed during initialization");
+  if (conversationTerminals.get(sessionId) !== owner || agentSession(info, ownerWindowId) !== session) throw new Error("conversation terminal changed during initialization");
   return sessionInfo(session);
+}
+
+/** Main-only reference lookup; renderer terminal ids confer no conversation authority. */
+export function conversationTerminalRef(sessionId: string, ownerWindowId: number): TerminalSessionRef | undefined {
+  const owner = conversationTerminals.get(sessionId);
+  if (!owner || owner.ownerWindowId !== ownerWindowId) return undefined;
+  const session = sessions.get(terminalLaneKey({ tabId: owner.tabId, lane: "agent" }));
+  return session && agentSession(session.info, ownerWindowId) ? { tabId: session.info.tabId, lane: "agent", terminalSessionId: session.info.terminalSessionId } : undefined;
+}
+
+/** Main conversation teardown also cancels reservations that have not completed spawning. */
+export function releaseConversationTerminals(ended: (sessionId: string) => boolean): void {
+  for (const [sessionId, owner] of conversationTerminals) {
+    if (!ended(sessionId)) continue;
+    const key = terminalLaneKey({ tabId: owner.tabId, lane: "agent" });
+    const pending = retiringConversationTerminals.get(sessionId) ?? new Set<Promise<unknown>>();
+    for (const completion of [sessions.get(key)?.gone, terminalSpawnsInFlight.get(key)?.promise]) {
+      if (!completion) continue;
+      pending.add(completion);
+      const finished = (): void => {
+        pending.delete(completion);
+        if (pending.size === 0 && retiringConversationTerminals.get(sessionId) === pending) retiringConversationTerminals.delete(sessionId);
+      };
+      void completion.then(finished, finished);
+    }
+    if (pending.size > 0) retiringConversationTerminals.set(sessionId, pending);
+    conversationTerminals.delete(sessionId);
+    unregisterTerminalBlockTracker({ tabId: owner.tabId, lane: "agent" });
+    updateApprovalSurface({ kind: "release-terminal", tabId: owner.tabId });
+    killTerminalLane(terminalLaneKey({ tabId: owner.tabId, lane: "agent" }));
+  }
+}
+
+/** Actual conversation teardown waits for the confined shell's existing exit/cleanup boundary. */
+export async function endConversationTerminalSession(sessionId: string): Promise<void> {
+  releaseConversationTerminals((held) => held === sessionId);
+  await Promise.all(retiringConversationTerminals.get(sessionId) ?? []);
 }
 
 function waitForTerminalSpawn(promise: Promise<SpawnTerminalResult>, signal?: AbortSignal): Promise<SpawnTerminalResult> {
@@ -903,6 +989,7 @@ export function terminalOwnerWindowId(tabId: string): number | null | undefined 
 }
 
 export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): boolean {
+  if (isConversationTerminalId(tabId)) return false;
   const tab = logicalTabs.get(tabId);
   return tab === undefined || tab.ownerWindowId === ownerWindowId;
 }
@@ -1429,17 +1516,18 @@ function waitOutClosing(
 export function killTerminalsOwnedBy(ownerWindowId: number): number {
   const ids = [...logicalTabs.entries()].filter(([, tab]) => tab.ownerWindowId === ownerWindowId).map(([id]) => id);
   for (const id of ids) killTerminal(id);
-  return ids.length;
+  const conversations = [...conversationTerminals.entries()].filter(([, owner]) => owner.ownerWindowId === ownerWindowId).map(([id]) => id);
+  releaseConversationTerminals((id) => conversations.includes(id));
+  return ids.length + conversations.length;
 }
 
-/** Tab close releases logical ownership and terminates/cancels both lanes. */
+/** Closing a visible host tab cannot close a conversation terminal. */
 export function killTerminal(tabId: string): void {
+  if (!logicalTabs.has(tabId)) return;
   updateApprovalSurface({ kind: "release-terminal", tabId });
   logicalTabs.delete(tabId);
-  for (const lane of ["manual", "agent"] as const) {
-    unregisterTerminalBlockTracker({ tabId, lane });
-    killTerminalLane(terminalLaneKey({ tabId, lane }));
-  }
+  unregisterTerminalBlockTracker({ tabId, lane: "manual" });
+  killTerminalLane(terminalLaneKey({ tabId, lane: "manual" }));
 }
 
 /** Kill + tear down one terminal (tab close / teardown). Idempotent. */
@@ -1481,6 +1569,7 @@ function killTerminalLane(key: string): void {
 export function killAllTerminals(): number {
   const count = [...sessions.values()].filter((session) => !session.closing).length;
   for (const id of [...logicalTabs.keys()]) killTerminal(id);
+  releaseConversationTerminals(() => true);
   return count;
 }
 
@@ -1489,6 +1578,8 @@ export function killAllTerminals(): number {
 export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promise<number> {
   terminalShutdownStarted = true;
   logicalTabs.clear();
+  conversationTerminals.clear();
+  retiringConversationTerminals.clear();
   for (const waiters of terminalSpawnWaiters.values()) for (const waiter of waiters) waiter.cancel();
   const startedAt = Date.now();
   const inFlight = [...terminalSpawnsInFlight.values()];
@@ -1499,6 +1590,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
   const sessionsToKill = [...sessions.entries()].filter(([, session]) => !session.exited);
   for (const [tabId, session] of sessionsToKill) {
     session.closing = true;
+    unregisterTerminalBlockTracker(session.info);
     stopTerminalObservation(session);
     session.egressAbort?.abort();
     session.disposeData();
@@ -1561,14 +1653,20 @@ export function __terminalSessionCountForTest(): number {
   return sessions.size;
 }
 
-/** Test-only: establish the trusted logical tab without launching its host shell. */
-export function __reserveTerminalTabForTest(tabId: string, ownerWindowId: number | null, initialCwd?: string): void {
-  if (!logicalTabs.has(tabId)) logicalTabs.set(tabId, { ownerWindowId, ...(initialCwd !== undefined ? { initialCwd } : {}) });
+/** Test-only: inspect ownership without granting renderer access. */
+export function _conversationTerminalOwnerForTest(sessionId: string): number | null | undefined {
+  return conversationTerminals.get(sessionId)?.ownerWindowId;
+}
+
+/** Test-only: deterministic conversation identity for low-level confinement tests. */
+export function _reserveConversationTerminalForTest(sessionId: string, tabId: string, ownerWindowId: number | null, initialCwd?: string): void {
+  if (!conversationTerminals.has(sessionId)) conversationTerminals.set(sessionId, { tabId, ownerWindowId, ...(initialCwd !== undefined ? { initialCwd } : {}) });
 }
 
 /** Test-only: reset module state between tests. */
 export function __resetTerminalsForTest(): void {
   for (const session of sessions.values()) {
+    session.cleanupIntegration?.();
     stopTerminalObservation(session);
     if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
     session.disposeData();
@@ -1576,6 +1674,8 @@ export function __resetTerminalsForTest(): void {
   }
   sessions.clear();
   logicalTabs.clear();
+  conversationTerminals.clear();
+  retiringConversationTerminals.clear();
   for (const owner of terminalSpawnsInFlight.values()) {
     owner.cancelled = true;
     owner.abort.abort();
@@ -1586,4 +1686,5 @@ export function __resetTerminalsForTest(): void {
   terminalShutdownStarted = false;
   __resetTerminalBlocksForTest();
   _emit = () => {};
+  terminalInspectionForTest = undefined;
 }

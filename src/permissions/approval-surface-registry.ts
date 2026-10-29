@@ -20,6 +20,7 @@ function requireSurface(owner: WebContents | null): void {
 export class ApprovalSurfaceRegistry {
   private readonly sessions = new Map<string, ApprovalOwner>();
   private readonly terminals = new Map<string, WebContents | null>();
+  private readonly terminalSessions = new Map<string, string>();
   private unattributed: WebContents | null = null;
 
   register(sessionId: string, owner: WebContents | null): void {
@@ -68,12 +69,22 @@ export class ApprovalSurfaceRegistry {
   registerTerminal(tabId: string, owner: WebContents | null): void {
     requireIdentity(tabId);
     requireSurface(owner);
+    this.terminalSessions.delete(tabId);
     this.terminals.set(tabId, owner);
+  }
+
+  /** Confined terminal delivery follows its conversation's live host attachment. */
+  bindTerminalSession(tabId: string, sessionId: string): void {
+    requireIdentity(tabId);
+    requireIdentity(sessionId);
+    this.terminals.delete(tabId);
+    this.terminalSessions.set(tabId, sessionId);
   }
 
   releaseTerminal(tabId: string): void {
     requireIdentity(tabId);
     this.terminals.delete(tabId);
+    this.terminalSessions.delete(tabId);
   }
 
   registerUnattributed(owner: WebContents | null): void {
@@ -98,6 +109,8 @@ export class ApprovalSurfaceRegistry {
     let surface: WebContents | null;
     if (terminalTabId !== undefined) {
       requireIdentity(terminalTabId);
+      const terminalSessionId = this.terminalSessions.get(terminalTabId);
+      if (terminalSessionId !== undefined) return this.resolve(terminalSessionId);
       surface = this.terminals.get(terminalTabId) ?? null;
     } else if (sessionId === undefined) {
       surface = this.unattributed;
@@ -127,6 +140,7 @@ export type ApprovalSurfaceUpdate =
   | { kind: "move"; previousSessionId: string; sessionId: string }
   | { kind: "release"; sessionId: string }
   | { kind: "attach-terminal"; tabId: string; surface: WebContents | null }
+  | { kind: "bind-terminal-session"; tabId: string; sessionId: string }
   | { kind: "release-terminal"; tabId: string }
   | { kind: "attach-unattributed"; surface: WebContents | null }
   | { kind: "release-owner"; surface: WebContents };
@@ -162,6 +176,8 @@ export function updateApprovalSurface(update: ApprovalSurfaceUpdate): void {
       return registeredApprovalSurfaces.release(update.sessionId);
     case "attach-terminal":
       return registeredApprovalSurfaces.registerTerminal(update.tabId, update.surface);
+    case "bind-terminal-session":
+      return registeredApprovalSurfaces.bindTerminalSession(update.tabId, update.sessionId);
     case "release-terminal":
       return registeredApprovalSurfaces.releaseTerminal(update.tabId);
     case "attach-unattributed":

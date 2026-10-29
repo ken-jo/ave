@@ -507,6 +507,7 @@ function SideChatSession({
           </div>
         ) : (
           <TranscriptRenderer
+            observeTerminal={shown && !tileHidden && sessionOwned}
             entries={entries}
             streaming={isStreaming}
             currentSessionId={sessionId ?? "side-chat"}

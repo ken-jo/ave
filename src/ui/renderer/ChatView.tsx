@@ -742,6 +742,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
 
   const transcriptEntries = (
     <TranscriptRenderer
+      observeTerminal={!hidden}
       entries={visibleEntries}
       streaming={streaming}
       currentSessionId={currentSessionId}

@@ -26,7 +26,7 @@ import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
-import { ensureAgentTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
+import { conversationTerminalRef, ensureConversationTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
 import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
@@ -164,17 +164,14 @@ export async function setupWorkflowStores(
           terminalRead: {
             windowIdForHostedSession,
             liveOriginSessionId,
-            defaultTerminalTabId: (windowId: number, sessionId: string): string | undefined =>
-              browserTabRegistry.defaultTerminalTabId(windowId, sessionId),
+            conversationTerminalRef,
           },
           terminalRun: {
             windowIdForHostedSession,
             liveOriginSessionId,
-            activeTerminalTabId: (windowId: number): string | undefined =>
-              browserTabRegistry.activeTerminalTabId(windowId),
             boundSurface: (windowId: number, hostSessionId: string) =>
               browserTabRegistry.conversationSurface(windowId, hostSessionId),
-            ensureAgentTerminal,
+            ensureConversationTerminal,
             typeCommand: typeAgentTerminalCommand,
             verifyShell: verifyAgentTerminalShell,
             auditMismatch: (mismatch) => {

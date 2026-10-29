@@ -66,14 +66,15 @@ describe("private browser and terminal preload boundaries", () => {
 
   it("preserves lane and incarnation on writes and rejects unaddressed stream bytes", async () => {
     const api = buildTerminalApiSurface();
-    const ref = { tabId: "terminal:1", lane: "agent" as const, terminalSessionId: "incarnation-2" };
+    const ref = { tabId: "terminal:1", lane: "manual" as const, terminalSessionId: "incarnation-2" };
     await api.input(ref, "echo hello\r");
     expect(invoke).toHaveBeenCalledWith(CHANNELS.terminal.input, { ...ref, data: "echo hello\r" });
     const receive = vi.fn();
     const off = api.onData(receive);
     listeners.get(CHANNELS.terminal.data)!(undefined, { ...ref, chunk: "hello" });
     expect(receive).toHaveBeenCalledWith({ ...ref, chunk: "hello" });
-    expect(() => listeners.get(CHANNELS.terminal.data)!(undefined, { tabId: ref.tabId, chunk: "wrong shell" })).toThrow();
+    expect(() => listeners.get(CHANNELS.terminal.data)!(undefined, { ...ref, chunk: 1 })).toThrow("invalid-terminal-data-event");
+    expect(() => listeners.get(CHANNELS.terminal.data)!(undefined, { ...ref, lane: "agent", chunk: "private" })).toThrow("invalid-terminal-data-event");
     expect(receive).toHaveBeenCalledOnce();
     off();
     expect(listeners.has(CHANNELS.terminal.data)).toBe(false);
@@ -84,6 +85,9 @@ describe("private browser and terminal preload boundaries", () => {
     buildTerminalApiSurface().onExit(receive);
     expect(() => listeners.get(CHANNELS.terminal.exit)!(undefined, {
       tabId: "terminal:1", lane: "manual", terminalSessionId: "a", exitCode: 0.5,
+    })).toThrow("invalid-terminal-exit-event");
+    expect(() => listeners.get(CHANNELS.terminal.exit)!(undefined, {
+      tabId: "terminal:1", lane: "agent", terminalSessionId: "a", exitCode: 0,
     })).toThrow("invalid-terminal-exit-event");
     const api = buildBrowserWorkspaceApiSurface();
     invoke.mockResolvedValueOnce({ ok: false, error: "stale-document" })

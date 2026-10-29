@@ -1,5 +1,5 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalReadTool, resolveTerminalWindowId, type TerminalReadToolDeps } from "../terminal-read.js";
 import {
   TerminalBlockTracker,
@@ -9,17 +9,22 @@ import {
 import type { ToolExecutionContext } from "../types.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
-// main owns window 1; child is its running sub-agent.
+// Sessions share a window without sharing isolated terminal ownership.
 const WINDOW = 1;
+const owned = new Map<string, ReturnType<typeof terminalSessionFixture>>();
 const deps: TerminalReadToolDeps = {
   windowIdForHostedSession: (sessionId) => (sessionId === "main" ? WINDOW : null),
+  conversationTerminalRef: (sessionId) => owned.get(sessionId),
   liveOriginSessionId: (sessionId) => ({ child: "main", grandchild: "child" } as Record<string, string>)[sessionId],
 };
 const ctxFor = (sessionId?: string) =>
   ({ metadata: sessionId === undefined ? {} : { sessionId } }) as unknown as ToolExecutionContext;
 const ctx = ctxFor("main");
-const register = (tabId: string, tracker: TerminalBlockTracker, windowId: number | null = WINDOW) =>
-  registerTerminalBlockTracker(terminalSessionFixture(tabId), tracker, windowId);
+const register = (tabId: string, tracker: TerminalBlockTracker, windowId: number | null = WINDOW, sessionId = "main") => {
+  const ref = terminalSessionFixture(tabId);
+  owned.set(sessionId, ref);
+  registerTerminalBlockTracker(ref, tracker, windowId);
+};
 const NONCE = TERMINAL_TEST_NONCE;
 const mark = terminalMarker;
 
@@ -49,7 +54,7 @@ async function call(input: unknown) {
   return { isError: result.isError, body: bodyOf(result.output as string, result.isError) };
 }
 
-afterEach(() => __resetTerminalBlocksForTest());
+afterEach(() => { __resetTerminalBlocksForTest(); owned.clear(); });
 
 describe("terminal_read", () => {
   it("is a read-only builtin in the read category", () => {
@@ -131,20 +136,43 @@ describe("terminal_read", () => {
     }
   });
 
-  it("shows a session only its own window's terminals; sub-agents inherit the parent's", async () => {
-    register("terminal:1", trackerWith([{ command: "mine", output: "", exit: 0 }]));
-    register("terminal:2", trackerWith([{ command: "theirs", output: "", exit: 0 }]), 2);
-    register("terminal:3", trackerWith([{ command: "unowned", output: "", exit: 0 }]), null);
+  it("lists and reads only the exact session's isolated terminal, even for relatives in one window", async () => {
     for (const sessionId of ["main", "child", "grandchild"]) {
-      const result = await createTerminalReadTool(deps).execute({}, ctxFor(sessionId));
-      const body = bodyOf(result.output as string, result.isError);
-      expect((body.terminals as Array<{ tabId: string }>).map((terminal) => terminal.tabId), sessionId)
-        .toEqual(["terminal:1"]);
-      // Cross-window tabs must be indistinguishable from nonexistent tabs.
-      const other = await createTerminalReadTool(deps).execute(target({ tabId: "terminal:2" }), ctxFor(sessionId));
-      expect(other.isError).toBe(true);
-      expect(other.output).toContain("no terminal with tabId");
+      register(`terminal:${sessionId}`, trackerWith([{ command: sessionId, output: `private-${sessionId}`, exit: 0 }]), WINDOW, sessionId);
     }
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:host", "manual"), trackerWith([{ command: "host-secret", output: "HOST-PRIVATE", exit: 0 }]), WINDOW);
+    const lookup = vi.fn(deps.conversationTerminalRef);
+    const tool = createTerminalReadTool({ ...deps, conversationTerminalRef: lookup });
+    for (const sessionId of ["main", "child", "grandchild"]) {
+      const listing = await tool.execute({}, ctxFor(sessionId));
+      expect((bodyOf(listing.output as string, false).terminals as Array<{ tabId: string }>).map(ref => ref.tabId)).toEqual([`terminal:${sessionId}`]);
+      expect(lookup).toHaveBeenCalledWith(sessionId, WINDOW);
+      for (const other of ["main", "child", "grandchild"].filter(id => id !== sessionId)) {
+        const result = await tool.execute(target({ tabId: `terminal:${other}`, blockId: 1 }), ctxFor(sessionId));
+        expect(result.isError).toBe(true);
+        expect(result.output).not.toContain(`private-${other}`);
+      }
+      expect(listing.output).not.toContain("host-secret");
+      expect(listing.output).not.toContain("HOST-PRIVATE");
+    }
+  });
+
+  it("fails closed when the ownership lookup returns a host terminal", async () => {
+    const host = terminalSessionFixture("terminal:host", "manual");
+    registerTerminalBlockTracker(host, trackerWith([{ command: "host-private", output: "HOST-SECRET", exit: 0 }]), WINDOW);
+    const tool = createTerminalReadTool({ ...deps, conversationTerminalRef: () => host });
+    const listing = await tool.execute({}, ctx);
+    expect(bodyOf(listing.output as string, false).terminals).toEqual([]);
+    const read = await tool.execute({ tabId: host.tabId, lane: "agent", terminalSessionId: host.terminalSessionId, blockId: 1 }, ctx);
+    expect(read.isError).toBe(true);
+    expect(read.output).not.toContain("HOST-SECRET");
+  });
+
+  it("does not borrow a parent's terminal when the child has none", async () => {
+    register("terminal:parent", trackerWith([{ command: "parent-secret", output: "PRIVATE", exit: 0 }]));
+    const result = await createTerminalReadTool(deps).execute({}, ctxFor("child"));
+    expect(bodyOf(result.output as string, false).terminals).toEqual([]);
+    expect(result.output).not.toContain("parent-secret");
   });
 
   it("gives a routine, a headless run or an unattributed call no terminals", async () => {
@@ -165,7 +193,7 @@ describe("terminal_read", () => {
       liveOriginSessionId: (id) => (id === "a" ? "b" : "a"),
     })).toBeNull();
     const chain = Array.from({ length: 20 }, (_, i) => `s${i}`);
-    const deepDeps: TerminalReadToolDeps = {
+    const deepDeps: Parameters<typeof resolveTerminalWindowId>[1] = {
       windowIdForHostedSession: (id) => (id === "s19" ? 7 : null),
       liveOriginSessionId: (id) => chain[chain.indexOf(id) + 1],
     };
@@ -173,24 +201,11 @@ describe("terminal_read", () => {
     expect(resolveTerminalWindowId("s12", deepDeps)).toBe(7);
   });
 
-  it("defaults blockId/limit to the active terminal, marks it in the listing, and lets tabId win", async () => {
+  it("defaults an authenticated continuation to its own isolated terminal", async () => {
     register("terminal:1", trackerWith([{ command: "echo one", output: "one\n", exit: 0 }]));
-    register("terminal:2", trackerWith([{ command: "echo two", output: "two\n", exit: 0 }]));
-    const withActive: TerminalReadToolDeps = {
-      ...deps,
-      defaultTerminalTabId: (windowId, sessionId) => (windowId === WINDOW && sessionId === "main" ? "terminal:2" : undefined),
-    };
-    const run = async (input: unknown) => {
-      const result = await createTerminalReadTool(withActive).execute(target(input as Record<string, unknown>, "terminal:2"), ctx);
-      return bodyOf(result.output as string, result.isError);
-    };
-    const listing = await run({}) as { terminals: Array<{ tabId: string; active?: boolean }> };
-    expect(listing.terminals.map((terminal) => [terminal.tabId, terminal.active === true])).toEqual([
-      ["terminal:1", false],
-      ["terminal:2", true],
-    ]);
-    expect(await run({ limit: 1 })).toMatchObject({ tabId: "terminal:2" });
-    expect(await run({ tabId: "terminal:1", limit: 1 })).toMatchObject({ tabId: "terminal:1" });
+    const result = await createTerminalReadTool(deps).execute({ lane: "agent", terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
+    expect(result.isError).toBe(false);
+    expect(bodyOf(result.output as string, false)).toMatchObject({ tabId: "terminal:1", block: { output: "one\n" } });
   });
 
   it("rejects malformed input and unknown tabs or blocks", async () => {
@@ -199,7 +214,6 @@ describe("terminal_read", () => {
       { tabId: 7 },
       { tabId: "terminal:1", blockId: 0 },
       { tabId: "terminal:1", limit: 21 },
-      { blockId: 1 },
       { tabId: "terminal:9" },
       { tabId: "terminal:1", blockId: 5 },
     ]) {
@@ -209,20 +223,27 @@ describe("terminal_read", () => {
 });
 
 
-it("requires explicit lane and incarnation and never confuses reused block IDs", async () => {
-  const manual = trackerWith([{ command: "human", output: "HOST", exit: 0 }]);
+it("refuses host output and stale incarnations, including continuation-shaped requests", async () => {
+  const manual = trackerWith([{ command: "human", output: "HOST-SECRET", exit: 0 }]);
   const agent = trackerWith([{ command: "agent", output: "ISOLATED", exit: 0 }]);
   registerTerminalBlockTracker(terminalSessionFixture("terminal:1", "manual"), manual, WINDOW);
-  registerTerminalBlockTracker(terminalSessionFixture("terminal:1", "agent"), agent, WINDOW);
+  register("terminal:1", agent);
   const tool = createTerminalReadTool(deps);
-  for (const invalid of [{ tabId: "terminal:1" }, { blockId: 1 }, { lane: "agent" }, { terminalSessionId: "terminal:1/agent" }, { lane: "host", terminalSessionId: "x" }, []]) {
-    expect((await tool.execute(invalid, ctx)).isError).toBe(true);
+  for (const invalid of [
+    { tabId: "terminal:1" }, { blockId: 1 }, { lane: "agent" },
+    { terminalSessionId: "terminal:1/agent" }, { lane: "host", terminalSessionId: "x" }, [],
+    { tabId: "terminal:1", lane: "manual", terminalSessionId: "terminal:1/manual", blockId: 1 },
+    { lane: "manual", terminalSessionId: "terminal:1/manual", blockId: 1 },
+    { tabId: "terminal:1", lane: "agent", terminalSessionId: "terminal:1/manual", blockId: 1 },
+    { tabId: "terminal:1", lane: "agent", terminalSessionId: "retired", blockId: 1 },
+  ]) {
+    const result = await tool.execute(invalid, ctx);
+    expect(result.isError, JSON.stringify(invalid)).toBe(true);
+    expect(result.output).not.toContain("HOST-SECRET");
   }
   const listing = await tool.execute({}, ctx);
-  expect((bodyOf(listing.output as string, false).terminals as unknown[])).toHaveLength(2);
-  for (const lane of ["manual", "agent"] as const) {
-    const result = await tool.execute({ tabId: "terminal:1", lane, terminalSessionId: `terminal:1/${lane}`, blockId: 1 }, ctx);
-    expect(bodyOf(result.output as string, false)).toMatchObject({ lane, block: { command: lane === "manual" ? "human" : "agent" } });
-  }
-  expect((await tool.execute({ tabId: "terminal:1", lane: "agent", terminalSessionId: "retired", blockId: 1 }, ctx)).isError).toBe(true);
+  expect((bodyOf(listing.output as string, false).terminals as unknown[])).toHaveLength(1);
+  expect(listing.output).not.toContain("human");
+  const isolated = await tool.execute({ tabId: "terminal:1", lane: "agent", terminalSessionId: "terminal:1/agent", blockId: 1 }, ctx);
+  expect(bodyOf(isolated.output as string, false)).toMatchObject({ lane: "agent", block: { command: "agent", output: "ISOLATED" } });
 });

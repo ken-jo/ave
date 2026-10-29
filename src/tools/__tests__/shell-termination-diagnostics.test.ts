@@ -9,6 +9,8 @@ import { t } from "../../i18n/index.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const HOST_PLATFORM = process.platform;
+const endConversationTerminalSession = vi.hoisted(() => vi.fn(async (_sessionId: string) => {}));
+vi.mock("../../main/terminal/pty-manager.js", () => ({ endConversationTerminalSession }));
 
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(), spawn: vi.fn(),
@@ -48,6 +50,19 @@ beforeEach(() => {
 afterEach(() => {
   manager._resetForTest(); __resetActiveSandboxCapabilityForTest(); vi.useRealTimers();
   setProcessPlatform(HOST_PLATFORM);
+});
+
+it("waits for the conversation terminal teardown before reporting session cleanup", async () => {
+  let release!: () => void;
+  endConversationTerminalSession.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+  let settled = false;
+  const ending = endShellSession("isolated-owner").then(() => { settled = true; });
+  expect(endConversationTerminalSession).toHaveBeenCalledWith("isolated-owner");
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  release();
+  await ending;
+  expect(settled).toBe(true);
 });
 
 describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {

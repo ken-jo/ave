@@ -1,8 +1,8 @@
-/** Read host-issued terminal sessions and their lane-bound blocks only in the calling conversation's window; child sessions inherit scope and windowless runs are refused.
+/** Read only the calling conversation's confined terminal; host terminal output requires explicit user attachment.
  * Frame command/output records as sanitized untrusted data; this ordinary permission-checked read cannot type or spawn. */
 import { createDynamicTool, type Tool } from "./base.js";
-import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../main/terminal/terminal-blocks.js";
-import { isTerminalLane, type TerminalSessionRef } from "../shared/terminal-session.js";
+import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../main/terminal/terminal-blocks.js";
+import { sameTerminalSession, type TerminalSessionRef } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
@@ -18,9 +18,8 @@ const SUMMARIES_PER_TAB = 10;
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
-  /** The terminal a conversation reads when a call names none: the terminal its pane chat is bound to, else the one
-   * the user is looking at in the window. `sessionId` is the conversation the window hosts (a sub-agent's parent). */
-  defaultTerminalTabId?: (windowId: number, sessionId: string) => string | undefined;
+  /** Main-owned isolated-terminal identity for the exact invoking session. Never spawns a terminal. */
+  conversationTerminalRef: (sessionId: string, windowId: number) => TerminalSessionRef | undefined;
 }
 
 /** The app window whose terminals `sessionId` may read (session-window-scope.ts): its own window, else its parent's when it is a running sub-agent, else none. */
@@ -94,7 +93,7 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     jsonSchema: {
       type: "object",
       properties: {
-        lane: { type: "string", enum: ["manual", "agent"], description: t("be_terminalRead.laneDescription") },
+        lane: { type: "string", enum: ["agent"], description: t("be_terminalRead.laneDescription") },
         terminalSessionId: { type: "string", description: t("be_terminalRead.sessionDescription") },
         tabId: { type: "string", description: t("be_terminalRead.tabIdDescription") },
         blockId: { type: "integer", minimum: 1, description: t("be_terminalRead.blockIdDescription") },
@@ -125,36 +124,38 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       }
       const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
       const scope = resolveSessionWindow(sessionId, deps);
-      if (scope === null) {
+      if (scope === null || sessionId === undefined) {
         return terminalToolFailure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
       }
       const { windowId } = scope;
-      const activeTabId = deps.defaultTerminalTabId?.(windowId, scope.hostSessionId);
+      const owned = deps.conversationTerminalRef(sessionId, windowId);
 
       if (Object.keys(input).length === 0) {
-        const terminals = listTerminalBlockTabs(windowId).map(({ tabId, session, tracker }) => ({
-          ...session,
-          ...(tabId === activeTabId ? { active: true } : {}),
-          exited: tracker.hasExited(),
-          recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
-        }));
+        const tracker = owned?.lane === "agent" ? getWindowTerminalBlockTracker(owned, windowId) : undefined;
+        const session = owned?.lane === "agent" ? getWindowTerminalBlockSession(owned, windowId) : undefined;
+        const terminals = tracker && session?.lane === "agent" ? [{
+          ...session, exited: tracker.hasExited(), recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
+        }] : [];
         return fenceTerminalData({
           terminals,
           ...(terminals.length === 0 ? { note: t("be_terminalRead.noTerminals") } : {}),
         });
       }
 
-      if (!isTerminalLane(input.lane) || typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
+      if (input.lane !== "agent") return terminalToolFailure("Host terminal output is private; ask the user to attach a command block explicitly.");
+      if (typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
         return terminalToolFailure("targeted terminal_read requires lane and terminalSessionId; call terminal_read with no arguments to list sessions");
       }
 
-      // An explicit tabId wins; without one, blockId/limit read the terminal the user is looking at, when there is one.
-      const tabId = (input.tabId as string | undefined) ?? activeTabId;
+      const tabId = (input.tabId as string | undefined) ?? owned?.tabId;
       if (tabId === undefined) {
         return terminalToolFailure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
       }
       // A tab of another window answers exactly like a tab that does not exist.
       const ref: TerminalSessionRef = { tabId, lane: input.lane, terminalSessionId: input.terminalSessionId };
+      if (!owned || owned.lane !== "agent" || !sameTerminalSession(owned, ref)) {
+        return terminalToolFailure("No matching isolated terminal belongs to this conversation.");
+      }
       const tracker = getWindowTerminalBlockTracker(ref, windowId);
       const session = getWindowTerminalBlockSession(ref, windowId);
       if (!tracker || !session) {

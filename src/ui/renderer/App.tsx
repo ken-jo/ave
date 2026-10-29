@@ -35,8 +35,6 @@ import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces, type MainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
-import { surfaceMountLocation, useSurfaceMountRevision } from "./preview/surface-mounts.js";
-import { approvalsForDocks } from "./components/permissions/TerminalEgressBanner.js";
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { connectBrowserObservations } from "./preview/browser-observation-bridge.js";
@@ -672,24 +670,16 @@ export function App() {
   // both cards and attention dots.
   const deferredSessionIds = useDeferredSessionIds(api.permission);
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
-  // Terminal egress asks use the tab banner while mounted, otherwise the pane lane, so hidden tabs can still be answered.
-  const surfaceMountRevision = useSurfaceMountRevision();
-  const dockApprovals = useMemo(
-    () => approvalsForDocks(approvalQueue, (tabId) => surfaceMountLocation(tabId) !== null),
-    // The revision is what makes `surfaceMountLocation` worth re-reading.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [approvalQueue, surfaceMountRevision],
-  );
   // The pane-chat claim identifies card ownership for chats outside the tile registry.
   const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
-    approvals: dockApprovals,
+    approvals: approvalQueue,
     tiles: tileSessions,
     deferredSessionIds,
     overlayCards: overlayQueue,
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
-  }), [dockApprovals, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,

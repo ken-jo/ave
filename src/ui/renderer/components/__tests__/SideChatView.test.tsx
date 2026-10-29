@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, act, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { SideChatView } from "../SideChatView.js";
 import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
@@ -9,9 +9,13 @@ import type { AveApi } from "../../types.js";
 import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalRequest, approvalSurfaceStub, deferred } from "../../../../../test/renderer/helpers.js";
+import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getUsableContext } from "../../../../shared/context-budget.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
+
+beforeEach(() => { vi.stubGlobal("ave", makeMockAveNamespace().ns); });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 function makeApi() {
   // Two subscribers share the side stream — the transcript reducer and the message queue's drain — so the seam fans every

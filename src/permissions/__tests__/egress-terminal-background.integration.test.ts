@@ -1,3 +1,4 @@
+import { killTerminal } from "../../__tests__/support/terminal-agent-fixture.js";
 import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -8,7 +9,7 @@ import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { getTerminalBlockTracker, spawnTerminal, writeTerminal } from "../../__tests__/support/terminal-agent-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { __resetTerminalsForTest, __terminalSessionCountForTest, forceKillAllTerminalsForShutdown, killTerminal, setTerminalEmitter } from "../../main/terminal/pty-manager.js";
+import { __resetTerminalsForTest, __terminalSessionCountForTest, forceKillAllTerminalsForShutdown, _setTerminalInspectionForTest } from "../../main/terminal/pty-manager.js";
 import type { TerminalBlockTracker } from "../../main/terminal/terminal-blocks.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
@@ -56,7 +57,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
     vi.stubEnv("EGRESS_TEST_API_KEY", "host-secret-must-not-reach-terminal");
     vi.stubEnv("CLAUDE_CODE_TMPDIR", process.env.CLAUDE_CODE_TMPDIR);
     vi.stubEnv("CLAUDE_TMPDIR", process.env.CLAUDE_TMPDIR);
-    setTerminalEmitter((event, payload) => {
+    _setTerminalInspectionForTest((event, payload) => {
       if (event === "data") shown += (payload as { chunk: string }).chunk;
     });
     // Even a host present in both worker sources must still ask in the terminal.

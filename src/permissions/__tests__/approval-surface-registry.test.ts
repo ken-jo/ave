@@ -7,6 +7,24 @@ function surface() {
 }
 
 describe("approval surface registrations", () => {
+  it("routes a conversation terminal through its live session attachment and revokes the link on release", () => {
+    const registry = new ApprovalSurfaceRegistry();
+    const first = surface();
+    const second = surface();
+    registry.bindTerminalSession("internal-terminal", "child");
+    expect(registry.resolve(undefined, "internal-terminal")).toBeNull();
+    registry.register("root", first);
+    registry.inherit("child", "root");
+    expect(registry.resolve(undefined, "internal-terminal")).toBe(first);
+    registry.register("root", second);
+    expect(registry.resolve(undefined, "internal-terminal")).toBe(second);
+    registry.releaseOwner(second);
+    expect(registry.resolve(undefined, "internal-terminal")).toBeNull();
+    registry.register("root", first);
+    registry.releaseTerminal("internal-terminal");
+    expect(registry.resolve(undefined, "internal-terminal")).toBeNull();
+    expect(() => registry.bindTerminalSession("internal-terminal", "")).toThrow("empty identity");
+  });
   it("routes attachment, inheritance and lifecycle changes through the common update function", () => {
     const first = surface();
     const second = surface();

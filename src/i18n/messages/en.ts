@@ -25,6 +25,8 @@ export const en = {
   "terminalObservation.scope.project": "this project",
   "terminalObservation.scope.always": "always",
   "terminalObservation.scope.none": "no permission grant",
+  "terminalObservation.approvedHostLabel": "Agent (approved host command)",
+  "terminalObservation.isolatedLabel": "Agent (isolated)",
   "terminalObservation.title": "Agent terminal activity",
   "terminalObservation.running": "Agent running",
   "terminalObservation.completed": "Agent execution finished",

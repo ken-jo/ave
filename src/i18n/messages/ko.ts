@@ -27,6 +27,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "terminalObservation.scope.project": "이 프로젝트",
   "terminalObservation.scope.always": "항상",
   "terminalObservation.scope.none": "허용 없음",
+  "terminalObservation.approvedHostLabel": "에이전트 (승인된 호스트 명령)",
+  "terminalObservation.isolatedLabel": "에이전트 (격리)",
   "terminalObservation.title": "에이전트 터미널 활동",
   "terminalObservation.running": "에이전트 실행 중",
   "terminalObservation.completed": "에이전트 실행 완료",

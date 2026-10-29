@@ -7,16 +7,22 @@ import type { TerminalObservationEvent, ObservationBinding } from "../../shared/
 import { beginAgentTerminalObservation, releaseAgentTerminalObservationSessions } from "../../tools/agent-terminal-observation.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 
-const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, registered: true }));
+const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, registered: true,
+  paneWindowId: null as number | null, railSessionId: undefined as string | undefined, railOwner: null as unknown,
+  childParent: undefined as string | undefined }));
 vi.mock("electron", () => ({ session: { defaultSession: state.defaultSession } }));
-vi.mock("../app-state.js", () => ({ findSessionMainWindowContents: (id: string) => id === "session-one" ? state.holder : null }));
+vi.mock("../app-state.js", () => ({ findSessionMainWindowContents: (id: string) => id === "session-one" ? state.holder : null,
+  sideChatOwnerWindow: () => state.railOwner }));
 import { TerminalObservationRuntime } from "../terminal-observation.js";
 
 const frame = { url: "file:///app/index.html", detached: false, isDestroyed: () => false };
 const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, isDestroyed: () => false,
   getType: () => "window", session: state.defaultSession, send: vi.fn() });
 const event = { sender, senderFrame: frame } as unknown as IpcMainInvokeEvent;
-const deps = { getAppWindows: () => state.registered ? [{ isDestroyed: () => false, webContents: sender }] : [], getMainWindow: () => null } as never;
+const deps = { getAppWindows: () => state.registered ? [{ id: 1, isDestroyed: () => false, webContents: sender }] : [], getMainWindow: () => null,
+  paneChatLoops: { holding: (id: string) => id === "session-one" && state.paneWindowId !== null ? { windowId: state.paneWindowId } : undefined },
+  sideChatConversationLoop: { getSessionId: () => state.railSessionId },
+  getSubAgentRunner: () => ({ liveOriginSessionId: (id: string) => id === "child-session" ? state.childParent : undefined }) } as never;
 const identity = { sessionId: "session-one", turnId: "turn-one", toolUseId: "tool-one" };
 const input = { kind: "shell" as const, command: "bun test", cwd: "/workspace", sandbox: { mode: "isolated" as const, detail: "filesystem/process confinement" } };
 let daemon: ObservationDaemon;
@@ -34,6 +40,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   state.holder = sender;
   state.registered = true;
+  state.paneWindowId = null;
+  state.railSessionId = undefined;
+  state.railOwner = null;
+  state.childParent = undefined;
   sender.session = state.defaultSession;
   frame.detached = false;
   sender.send.mockClear();
@@ -43,6 +53,39 @@ beforeEach(() => {
 afterEach(() => { runtime.dispose(); daemon.dispose(); vi.useRealTimers(); });
 
 describe("terminal observation desktop binding", () => {
+  it("admits a live child in its parent's window without borrowing another session's commands", async () => {
+    const request = { action: "subscribe-terminal", sessionId: "child-session" };
+    expect(runtime.acknowledge(event, request)).toEqual({ ok: false, error: "unauthorized" });
+    state.childParent = identity.sessionId;
+    const result = runtime.acknowledge(event, request);
+    expect(result?.ok).toBe(true);
+    const lease = await start();
+    lease.write("parent-only-output");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(events().at(-1)?.after).toMatchObject({ commands: [] });
+    expect(JSON.stringify(events())).not.toContain("parent-only-output");
+    state.childParent = undefined;
+    expect(runtime.acknowledge(event, { action: "rendered", ...result!.observation!, seq: 0 })).toEqual({ ok: false, error: "unauthorized" });
+  });
+  it("admits a pane conversation only in the main-owned pane window", () => {
+    state.holder = null;
+    state.paneWindowId = 2;
+    expect(runtime.acknowledge(event, { action: "subscribe-terminal", sessionId: identity.sessionId })).toEqual({ ok: false, error: "unauthorized" });
+    state.paneWindowId = 1;
+    const binding = subscribe();
+    state.paneWindowId = null;
+    expect(runtime.acknowledge(event, { action: "rendered", ...binding, seq: 0 })).toEqual({ ok: false, error: "unauthorized" });
+  });
+
+  it("admits the rail conversation only while its exact loop and owner still match", () => {
+    state.holder = null;
+    state.railSessionId = identity.sessionId;
+    expect(runtime.acknowledge(event, { action: "subscribe-terminal", sessionId: identity.sessionId })).toEqual({ ok: false, error: "unauthorized" });
+    state.railOwner = { webContents: sender };
+    const binding = subscribe();
+    state.railSessionId = "replacement";
+    expect(runtime.acknowledge(event, { action: "rendered", ...binding, seq: 0 })).toEqual({ ok: false, error: "unauthorized" });
+  });
   it("uses the existing private observation push and acknowledgement channel", async () => {
     const binding = subscribe();
     await vi.advanceTimersByTimeAsync(1);

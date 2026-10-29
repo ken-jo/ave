@@ -1,5 +1,5 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
-/** terminal_run: type one approved command into a terminal the user can see. */
+/** terminal_run: type one approved command into the invoking conversation's isolated terminal. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createTerminalRunTool,
@@ -104,9 +104,8 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
   return {
     windowIdForHostedSession: (sessionId) => (sessionId === "main" ? WINDOW : null),
     liveOriginSessionId: (sessionId) => (sessionId === "child" ? "main" : undefined),
-    activeTerminalTabId: () => "terminal:aaaaaaaa-1",
     boundSurface: () => undefined,
-    ensureAgentTerminal: async (tabId) => terminalSessionFixture(tabId),
+    ensureConversationTerminal: async (sessionId) => terminalSessionFixture(sessionId === "child" ? "terminal:child" : "terminal:aaaaaaaa-1"),
     typeCommand,
     // The operating system agrees with whatever the markers report.
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
@@ -149,7 +148,7 @@ describe("terminal_run", () => {
   });
 
   describe("target, sealed before approval", () => {
-    it("defaults to the window's active terminal and seals its id and directory", async () => {
+    it("resolves the conversation terminal and seals its id and directory", async () => {
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker("/repo/app"), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve(tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))).resolves.toEqual({
@@ -162,71 +161,55 @@ describe("terminal_run", () => {
       });
     });
 
-    it("prefers an explicit tabId, then the conversation's bound terminal, over the active one", async () => {
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-2"), readyTracker("/two"), WINDOW);
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-3"), readyTracker("/three"), WINDOW);
-      const asked: Array<[number, string]> = [];
-      const tool = createTerminalRunTool(depsWith({
-        boundSurface: (windowId, hostSessionId) => {
-          asked.push([windowId, hostSessionId]);
-          return { kind: "terminal", tabId: "terminal:aaaaaaaa-2" };
-        },
-      }));
-      expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).toMatchObject({ tabId: "terminal:aaaaaaaa-2", cwd: "/two" });
-      expect(await tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-3" }, { cwd: "/workspace", sessionId: "main" }))
-        .toMatchObject({ tabId: "terminal:aaaaaaaa-3", cwd: "/three" });
-      // A sub-agent of the pane chat types into the same bound terminal: the binding is its host's.
-      expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "child" })).toMatchObject({ tabId: "terminal:aaaaaaaa-2" });
-      expect(asked).toEqual([[WINDOW, "main"], [WINDOW, "main"]]);
-    });
-
-    it("refuses a chat bound to a page instead of typing into the active terminal", async () => {
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
-      const deps = depsWith({ boundSurface: () => ({ kind: "browser", tabId: "browser:aaaaaaaa-4" }) });
+    it("refuses host pane typing before creating an isolated terminal", async () => {
+      const ensureConversationTerminal = vi.fn(async () => terminalSessionFixture("terminal:aaaaaaaa-1"));
+      const deps = depsWith({ boundSurface: () => ({ kind: "terminal", tabId: "terminal:host" }), ensureConversationTerminal });
       const tool = createTerminalRunTool(deps);
-      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
-        .rejects.toThrow(/bound to a page, not a terminal; pass tabId/);
-      // A terminal it names explicitly is still reachable.
-      expect(await tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-1" }, { cwd: "/workspace", sessionId: "main" }))
-        .toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
+      for (const tabId of [undefined, "terminal:aaaaaaaa-1", "terminal:host"]) {
+        await expect(tool.approvalMemoryScope!({ command: "ls", ...(tabId ? { tabId } : {}) }, { cwd: "/workspace", sessionId: "main" }))
+          .rejects.toThrow(/typing in host terminals is unavailable/);
+      }
+      expect(ensureConversationTerminal).not.toHaveBeenCalled();
       expect(deps.typed).toEqual([]);
     });
 
-    it("fails a chat whose bound terminal is gone, never falling back to the active one", async () => {
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
-      const tool = createTerminalRunTool(depsWith({ boundSurface: () => ({ kind: "terminal", tabId: "terminal:aaaaaaaa-9" }) }));
-      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
-        .rejects.toThrow(/no terminal with tabId "terminal:aaaaaaaa-9"/);
+    it("refuses a host session returned by the conversation backend", async () => {
+      const deps = depsWith({ ensureConversationTerminal: async () => terminalSessionFixture("terminal:host", "manual") });
+      const tool = createTerminalRunTool(deps);
+      await expect(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).rejects.toThrow(/requires an isolated agent terminal/);
+      expect(deps.typed).toEqual([]);
     });
 
-    it("types into the window's active terminal from a chat bound to nothing", async () => {
+    it("uses the isolated conversation terminal for a browser pane", async () => {
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
-      const tool = createTerminalRunTool(depsWith({ boundSurface: () => undefined }));
+      const tool = createTerminalRunTool(depsWith({ boundSurface: () => ({ kind: "browser", tabId: "browser:page" }) }));
       expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
     });
 
-    it("a sub-agent reaches its parent's window", async () => {
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
-      const tool = createTerminalRunTool(depsWith());
-      expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "child" })).toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
+    it("passes the actual child session and main-derived cwd without borrowing its parent's terminal or pane", async () => {
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:child"), readyTracker("/child"), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker("/parent"), WINDOW);
+      const ensureConversationTerminal = vi.fn(async (sessionId: string) => terminalSessionFixture(sessionId === "child" ? "terminal:child" : "terminal:aaaaaaaa-1"));
+      const boundSurface = vi.fn((_windowId: number, sessionId: string) => sessionId === "main" ? { kind: "terminal" as const, tabId: "terminal:host" } : undefined);
+      const tool = createTerminalRunTool(depsWith({ ensureConversationTerminal, boundSurface }));
+      expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace/child", sessionId: "child" })).toMatchObject({ tabId: "terminal:child", cwd: "/child" });
+      expect(boundSurface).toHaveBeenCalledWith(WINDOW, "child");
+      expect(ensureConversationTerminal).toHaveBeenCalledWith("child", WINDOW, "/workspace/child");
+      await expect(tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-1" }, { cwd: "/workspace", sessionId: "child" })).rejects.toThrow(/cannot target a host terminal or another conversation/);
     });
 
-    it("fails clearly when there is no terminal to name, and never picks one itself", async () => {
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
-      const tool = createTerminalRunTool(depsWith({ activeTerminalTabId: () => undefined }));
-      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
-        .rejects.toThrow(/no terminal is bound to this conversation or shown in its window; pass tabId/);
+    it("refuses host and foreign terminal IDs even in the same window, and sessions without a window", async () => {
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:host", "manual"), readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:foreign"), readyTracker(), WINDOW);
+      const deps = depsWith();
+      const tool = createTerminalRunTool(deps);
+      for (const tabId of ["terminal:host", "terminal:foreign", "terminal:missing"]) {
+        await expect(tool.approvalMemoryScope!({ command: "ls", tabId }, { cwd: "/workspace", sessionId: "main" })).rejects.toThrow(/cannot target a host terminal or another conversation/);
+      }
+      await expect(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "routine" })).rejects.toThrow(/this session has no terminals/);
+      expect(deps.typed).toEqual([]);
     });
 
-    it("refuses another window's terminal exactly like a missing one, and a session with no window", async () => {
-      registerTerminalBlockTracker(terminalSessionFixture("terminal:bbbbbbbb-1"), readyTracker(), 2);
-      const tool = createTerminalRunTool(depsWith());
-      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:bbbbbbbb-1" }, { cwd: "/workspace", sessionId: "main" })))
-        .rejects.toThrow(/no terminal with tabId "terminal:bbbbbbbb-1"/);
-      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "routine" })))
-        .rejects.toThrow(/this session has no terminals/);
-    });
   });
 
   describe("busy terminal", () => {
@@ -524,15 +507,38 @@ describe("terminal_run", () => {
       vi.useFakeTimers();
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-2"), readyTracker(), WINDOW);
-      let active = "terminal:aaaaaaaa-1";
-      const deps = depsWith({ activeTerminalTabId: () => active });
+      const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
-      active = "terminal:aaaaaaaa-2";
       const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
       await vi.runAllTimersAsync();
       await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
+    });
+
+    it("refuses an approved isolated command if the actual conversation becomes host-bound", async () => {
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+      let hostBound = false;
+      const deps = depsWith({ boundSurface: () => hostBound ? { kind: "terminal", tabId: "terminal:host" } : undefined });
+      const tool = createTerminalRunTool(deps);
+      const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
+      hostBound = true;
+      const result = await tool.execute({ command: "ls" }, ctxFor(scope));
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("typing in host terminals is unavailable");
+      expect(deps.typed).toEqual([]);
+    });
+
+    it("rejects a parent's sealed command when invoked by its child", async () => {
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:child"), readyTracker(), WINDOW);
+      const deps = depsWith();
+      const tool = createTerminalRunTool(deps);
+      const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
+      const result = await tool.execute({ command: "ls" }, ctxFor(scope, "child"));
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("approved agent terminal changed");
+      expect(deps.typed).toEqual([]);
     });
 
     it("fails as not verified when the shell never reports starting the typed command", async () => {
@@ -620,7 +626,7 @@ describe("terminal_run", () => {
         const tracker = readyTracker("/repo");
         registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
         let info = terminalSessionFixture("terminal:aaaaaaaa-1");
-        const deps = depsWith({ ensureAgentTerminal: async () => info });
+        const deps = depsWith({ ensureConversationTerminal: async () => info });
         const tool = createTerminalRunTool(deps);
         const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
         info = { ...info, ...changed };
