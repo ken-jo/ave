@@ -91,8 +91,17 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
 
 ## Resolved conflicts with existing invariants (lead decision 2026-10-30, from INVENTORY review)
 1. A corrupt or unreadable policy store means the stage-1 deny. It fails closed, because unread deny rules must not be bypassed by the reviewer or the allow mode.
-2. Actions in a user-owned (logged-in) browser tab keep a per-action human approval. They count as an other-principal surface under 질문†, never as an ordinary read or network action.
+2. Actions in a user-owned (logged-in) browser tab are their own surface. They are NOT 질문† and not an ordinary read or network. (Owner decision 2026-10-30.) On the first agent action in a user-owned tab in a session, a card offers three choices, which last for that session:
+   - **이 세션 모두 허용 / Allow all this session**: later actions in user-owned tabs run without asking.
+   - **오토 / Auto**: each action goes to the reviewer, which performs only a LOGICAL check. Does this action follow from the user's request and the current task step? Is the target the tab and page the task is about? Is it free of steps the user did not ask for? The reviewer does not judge general risk. Fail or uncertain means a normal card.
+   - **모두 질문 / Ask every time**: every action asks. This is the default, and it is the behaviour when the card is dismissed.
+   deny rules, admission, credential entry and payment/irreversible-submit protections still apply in every choice. Headless means deny. The choice is per session and is never remembered across sessions.
 3. Plugin effects are evaluated per actual effect through this same pipeline. An approval binds to that exact effect; a tool-level reviewer allow never opens every effect. Headless effects follow the headless rule.
 4. A user-configured read boundary (an outside-path read restriction) is an explicit rule. It is evaluated in stage 1/3 before modes, and it is preserved.
 5. When a command is both "known-safe read-only" and "host/escalation" (e.g. `git status` with the sandbox off), the host/escalation row wins.
 6. Headless in auto mode: the reviewer decides first. Only a fallback to ask becomes a deny with "do not retry". This supersedes INVENTORY's "immediate deny" reading.
+7. The host terminal tab (the user's own shell, which the agent may drive per #308) uses the SAME three-way per-session choice as user-owned browser tabs. (Owner decision 2026-10-30.)
+   - 이 세션 모두 허용: agent commands run in that tab without asking.
+   - 오토: the reviewer does a logical consistency check only. Does the command follow from the user's request and task step, in the tab the task is about?
+   - 모두 질문: every command asks. This is the default, and it is the behaviour when the card is dismissed.
+   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. Deny rules, exfil 질문† and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
