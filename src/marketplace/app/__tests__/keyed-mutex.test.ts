@@ -15,6 +15,12 @@ function gate() {
   return { open, inside, hold: async () => { entered(); await opened; } };
 }
 
+function heldMutex(keys: string[]) {
+  const mutex = new KeyedMutex();
+  const holder = gate();
+  return { mutex, holder, held: mutex.run(keys, holder.hold) };
+}
+
 async function bounded<T>(work: Promise<T>): Promise<T | "stuck"> {
   return Promise.race([work, new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 1_000))]);
 }
@@ -36,9 +42,7 @@ describe("KeyedMutex", () => {
   });
 
   it("takes every key of a request as one: it holds none while it waits for one of them", async () => {
-    const mutex = new KeyedMutex();
-    const holder = gate();
-    const held = mutex.run(["b"], holder.hold);
+    const { mutex, holder, held } = heldMutex(["b"]);
     await holder.inside;
     let bothRan = false;
     const both = mutex.run(["b", "a"], async (lease) => { bothRan = true; return lease.keys; });
@@ -56,9 +60,7 @@ describe("KeyedMutex", () => {
   });
 
   it("cannot wait in a cycle: two requests for the same keys in opposite order both finish", async () => {
-    const mutex = new KeyedMutex();
-    const holder = gate();
-    const held = mutex.run(["a", "b"], holder.hold);
+    const { mutex, holder, held } = heldMutex(["a", "b"]);
     await holder.inside;
     const forward = mutex.run(["a", "b"], async () => "forward");
     const backward = mutex.run(["b", "a"], async () => "backward");
@@ -68,9 +70,7 @@ describe("KeyedMutex", () => {
   });
 
   it("removes only the cancelled request, from every queue: the holder keeps its key and a later caller still waits", async () => {
-    const mutex = new KeyedMutex();
-    const holder = gate();
-    const held = mutex.run(["p"], holder.hold);
+    const { mutex, holder, held } = heldMutex(["p"]);
     await holder.inside;
     const abort = new AbortController();
     let cancelledRan = false;
@@ -91,9 +91,7 @@ describe("KeyedMutex", () => {
   });
 
   it("ends a multi-key wait at once when cancelled, whichever key it waits for", async () => {
-    const mutex = new KeyedMutex();
-    const holder = gate();
-    const held = mutex.run(["b"], holder.hold);
+    const { mutex, holder, held } = heldMutex(["b"]);
     await holder.inside;
     const abort = new AbortController();
     const both = mutex.run(["a", "b"], async () => "ran", { signal: abort.signal }).catch((error: unknown) => error);
@@ -106,9 +104,7 @@ describe("KeyedMutex", () => {
   });
 
   it("lets a waiter behind a cancelled request run once it heads all its queues", async () => {
-    const mutex = new KeyedMutex();
-    const holder = gate();
-    const held = mutex.run(["a"], holder.hold);
+    const { mutex, holder, held } = heldMutex(["a"]);
     await holder.inside;
     const abort = new AbortController();
     const blocked = mutex.run(["a", "b"], async () => "ran", { signal: abort.signal }).catch((error: unknown) => error);
