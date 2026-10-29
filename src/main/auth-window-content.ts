@@ -23,7 +23,7 @@ function getErudaSource(): string | null {
   }
 }
 
-export const AUTH_TITLEBAR_HEIGHT = 36;
+const AUTH_TITLEBAR_HEIGHT = 36;
 
 type AuthWindowChromeOptions = Pick<Electron.BrowserWindowConstructorOptions,
   "frame" | "minWidth" | "titleBarStyle" | "trafficLightPosition" | "titleBarOverlay">;
@@ -54,7 +54,7 @@ export function wireAuthWindowTheme(window: BrowserWindow, platform: NodeJS.Plat
 // The installed parser includes the maintained public suffix list, including private suffixes.
 let cachedDomainParserSource: string | undefined;
 function getDomainParserSource(): string {
-  return cachedDomainParserSource ??= readFileSync(requireFromHere.resolve("tldts/dist/index.umd.min.js"), "utf8");
+  return cachedDomainParserSource ??= readFileSync(new URL(import.meta.resolve("tldts/dist/index.umd.min.js")), "utf8");
 }
 
 type AuthDocumentError = "" | "certificate-error" | "load-error";
