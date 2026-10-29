@@ -518,17 +518,24 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
  * request; never inferred from args; so the copy cannot promise a narrower scope than the store will apply. */
 function rememberScopeText(
   t: (key: string, params?: Record<string, string>) => string,
-  request: Pick<ApprovalRequest, "toolName" | "approvalMemory">,
+  request: Pick<ApprovalRequest, "toolName" | "source" | "approvalMemory">,
   path: string,
 ): string {
   const memory = request.approvalMemory;
   if (memory?.kind !== "key") return t("toolApprovalDialog.exactPersistentScope", { path });
   const toolName = request.toolName;
+  const pathToolName = memory.scope.kind === "path" && request.source === "builtin"
+    && memory.key.startsWith("file-write-path:")
+    && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(toolName)
+    ? "write_file, edit_file, multi_edit, apply_patch"
+    : toolName;
   switch (memory.scope.kind) {
     case "origin":
       return t("toolApprovalDialog.rememberScopeOrigin", { toolName, origin: memory.scope.origin, path });
     case "path":
-      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.path, path });
+      return t("toolApprovalDialog.rememberScopePath", { toolName: pathToolName, target: memory.scope.path, path });
+    case "paths":
+      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.paths.map((target) => JSON.stringify(target)).join(", "), path });
     case "transfer":
       return t(
         memory.scope.overwrite
@@ -1321,9 +1328,14 @@ export function ToolApprovalContent({
                       <code className="break-all font-mono">{outOfDirCandidatePath}</code>
                     </ReviewRow>
                     {outOfDirSuggestedParent ? (
-                      <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
-                        <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
-                      </ReviewRow>
+                      <>
+                        <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
+                          <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
+                        </ReviewRow>
+                        <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
+                          {tHook("toolApprovalDialog.folderAddsProject")}
+                        </p>
+                      </>
                     ) : null}
                     {decisionIndex === 1 && (outOfDir?.adjacencyWarnings.length ?? 0) > 0 ? (
                       <p

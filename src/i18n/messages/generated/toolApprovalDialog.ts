@@ -47,7 +47,7 @@ export const en = {
   "toolApprovalDialog.exactDecisionSaveFailed": "Could not save the exact permission decision.",
   "toolApprovalDialog.exactPersistentScope": "Remember only this tool and these exact arguments in this working directory: {path}",
   "toolApprovalDialog.rememberScopeOrigin": "Remember for {toolName} requests to {origin} in this working directory: {path}. A new path or query is risk-checked first and asks again if it looks riskier.",
-  "toolApprovalDialog.rememberScopePath": "Remember {toolName} on {target} in this working directory: {path}. Different content is risk-checked first and asks again if it looks riskier.",
+  "toolApprovalDialog.rememberScopePath": "Remember {toolName} operations on {target} in this working directory: {path}. Different content is risk-checked first and asks again if it looks riskier.",
   "toolApprovalDialog.rememberScopeTransfer": "Remember {toolName} from {source} to {destination}, without overwriting, in this working directory: {path}",
   "toolApprovalDialog.rememberScopeTransferOverwrite": "Remember {toolName} from {source} to {destination}, overwriting the destination, in this working directory: {path}",
   "toolApprovalDialog.rememberScopeCommand": "Remember this exact command in this sandbox, with any timeout, in this working directory: {path}",
@@ -139,6 +139,7 @@ export const en = {
   "toolApprovalDialog.networkScopeNotOffered": "This connection is not offered for that lifetime.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "A local or unverified destination cannot be allowed for good.",
   "toolApprovalDialog.pathGrantOnlyFolder": "A folder is allowed once or for good.",
+  "toolApprovalDialog.folderAddsProject": "Always allow adds this folder to the project. Eligible later file writes there run without asking in default and auto-review modes; protected paths and other mandatory checks still apply.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
@@ -188,7 +189,7 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.exactDecisionSaveFailed": "정확 일치 권한 결정을 저장하지 못했습니다.",
   "toolApprovalDialog.exactPersistentScope": "이 도구와 동일한 인자만 다음 작업 경로에서 기억합니다: {path}",
   "toolApprovalDialog.rememberScopeOrigin": "{origin}에 대한 {toolName} 요청을 다음 작업 경로에서 기억합니다: {path}. 새 경로나 쿼리는 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다.",
-  "toolApprovalDialog.rememberScopePath": "{target}에 대한 {toolName}을(를) 다음 작업 경로에서 기억합니다: {path}. 내용이 다르면 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다.",
+  "toolApprovalDialog.rememberScopePath": "{target}에 대한 {toolName} 작업을 다음 작업 경로에서 기억합니다: {path}. 내용이 다르면 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다.",
   "toolApprovalDialog.rememberScopeTransfer": "{source}에서 {destination}(으)로의 {toolName}을(를) 덮어쓰기 없이 다음 작업 경로에서 기억합니다: {path}",
   "toolApprovalDialog.rememberScopeTransferOverwrite": "{source}에서 {destination}(으)로의 {toolName}을(를) 대상 덮어쓰기와 함께 다음 작업 경로에서 기억합니다: {path}",
   "toolApprovalDialog.rememberScopeCommand": "이 샌드박스에서 실행하는 이 명령 그대로를 타임아웃과 관계없이 다음 작업 경로에서 기억합니다: {path}",
@@ -280,4 +281,5 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.networkScopeNotOffered": "이 연결에는 그 기간의 허용을 제공하지 않습니다.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "로컬 또는 확인되지 않은 대상은 영구히 허용할 수 없습니다.",
   "toolApprovalDialog.pathGrantOnlyFolder": "폴더는 한 번만 또는 영구히 허용합니다.",
+  "toolApprovalDialog.folderAddsProject": "항상 허용하면 이 폴더가 프로젝트에 추가됩니다. 기본·자동 검토 모드에서는 이후 조건을 충족하는 파일 쓰기를 다시 묻지 않습니다. 보호 경로와 필수 검사는 계속 적용됩니다.",
 };

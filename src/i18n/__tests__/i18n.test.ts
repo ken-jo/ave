@@ -211,6 +211,17 @@ describe("translate", () => {
     expect(translate("ko", "totally.unknown.key")).toBe("totally.unknown.key");
   });
 
+  it.each([
+    ["en", "Confirm writes outside the project"],
+    ["ko", "프로젝트 밖 쓰기 확인"],
+  ] as const)("keeps the %s default policy label consistent across settings and the badge", async (locale, label) => {
+    await loadLocaleMessages(locale);
+    expect(translate(locale, "constants.execModeDefaultLabel")).toBe(label);
+    expect(translate(locale, "permissionModeBadge.labelDefault")).toBe(label);
+    expect(translate(locale, "permissionModeBadge.descDefault"))
+      .toBe(translate(locale, "constants.execModeDefaultDesc"));
+  });
+
   it("ships complete catalogs for every supported locale", async () => {
     const catalogs = await loadAllLocaleMessages();
     const englishKeys = Object.keys(catalogs.en).sort();

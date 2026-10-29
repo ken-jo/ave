@@ -439,8 +439,8 @@ describe("target-wide memory key as the remembered identity", () => {
     __resetSessionStoreForTest();
     const same = await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION);
     const other = await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION);
-    expect(same && isExactArgsDecision(same, urlArgs("https://a.example/x"))).toBe(true);
-    expect(other && isExactArgsDecision(other, urlArgs("https://a.example/y"))).toBe(false);
+    expect(same && isExactArgsDecision(same, urlArgs("https://a.example/x"), "web_fetch")).toBe(true);
+    expect(other && isExactArgsDecision(other, urlArgs("https://a.example/y"), "web_fetch")).toBe(false);
     expect(await lookupApproval("web_fetch", urlArgs("http://a.example/x"), "builtin", "user-keyboard", atOrigin("http://a.example:80"), undefined, SESSION)).toBeNull();
     expect(await lookupApproval("web_fetch", urlArgs("https://a.example:8443/x"), "builtin", "user-keyboard", atOrigin("https://a.example:8443"), undefined, SESSION)).toBeNull();
     const rows = Object.values((await readApprovals()).approvals);
@@ -567,5 +567,96 @@ describe("global scope", () => {
     await expect(recordApproval("read_file", ARGS, "builtin", {
       scope: "global", verdictAtApproval: "medium", nlJustification: null, projectCwd: a,
     })).rejects.toThrow("A global approval names no project");
+  });
+});
+
+describe("shared builtin file-write path memory", () => {
+  const pathMemory = (path: string, prefix = "file-write-path") => approvalCacheKeyIdentity(undefined, {
+    kind: "key", key: `${prefix}:${canonicalStringify({ scope: { kind: "path", path }, executionPlan: null })}`,
+    scope: { kind: "path", path },
+  })!;
+  const allow = {
+    scope: "session" as const, sessionId: SESSION, verdictAtApproval: "low" as const,
+    nlJustification: null, trustOrigin: "user-keyboard",
+  };
+
+  it.each(["write_file", "edit_file", "multi_edit", "apply_patch"])("reuses a path decision for %s with a different input", async (toolName) => {
+    const memory = pathMemory(join(TEST_HOME, "target.txt"));
+    await recordApproval("write_file", '{"content":"first"}', "builtin", { ...allow, approvalCacheKey: memory });
+    const hit = await lookupApproval(toolName, '{"content":"next"}', "builtin", "user-keyboard", memory, undefined, SESSION);
+    expect(hit).not.toBeNull();
+    expect(isExactArgsDecision(hit!, '{"content":"next"}', toolName)).toBe(false);
+  });
+
+  it("keeps target, source, trust, conversation and unrelated tools separate", async () => {
+    const memory = pathMemory(join(TEST_HOME, "target.txt"));
+    await recordApproval("write_file", '{}', "builtin", { ...allow, approvalCacheKey: memory });
+    expect(await lookupApproval("edit_file", '{}', "builtin", "user-keyboard", pathMemory(join(TEST_HOME, "other.txt")), undefined, SESSION)).toBeNull();
+    expect(await lookupApproval("edit_file", '{}', "plugin", "user-keyboard", memory, undefined, SESSION)).toBeNull();
+    expect(await lookupApproval("edit_file", '{}', "builtin", "llm-tool-arg", memory, undefined, SESSION)).toBeNull();
+    expect(await lookupApproval("edit_file", '{}', "builtin", "user-keyboard", memory, undefined, "other-conversation")).toBeNull();
+    expect(await lookupApproval("delete_file", '{}', "builtin", "user-keyboard", memory, undefined, SESSION)).toBeNull();
+  });
+
+  it("identical raw arguments across tools still require fresh risk review", async () => {
+    const memory = pathMemory(join(TEST_HOME, "target.txt"));
+    const args = '{"content":"next","oldText":"old","newText":"next"}';
+    await recordApproval("write_file", args, "builtin", { ...allow, approvalCacheKey: memory });
+    const hit = await lookupApproval("edit_file", args, "builtin", "user-keyboard", memory, undefined, SESSION);
+    expect(hit).not.toBeNull();
+    expect(isExactArgsDecision(hit!, args, "write_file")).toBe(true);
+    expect(isExactArgsDecision(hit!, args, "edit_file")).toBe(false);
+    const unnamed = { ...hit! };
+    delete unnamed.toolName;
+    expect(isExactArgsDecision(unnamed, args, "write_file")).toBe(false);
+  });
+
+  it("keeps per-project path decisions bound to their working directory", async () => {
+    const first = join(TEST_HOME, "first");
+    const second = join(TEST_HOME, "second");
+    await mkdir(first);
+    await mkdir(second);
+    const memory = pathMemory(join(TEST_HOME, "target.txt"));
+    await recordApproval("write_file", '{}', "builtin", {
+      ...allow, approvalCacheKey: memory, workingDirectoryIdentity: captureApprovalWorkingDirectory(first).identity,
+    });
+    expect(await lookupApproval("apply_patch", '{}', "builtin", "user-keyboard", memory, first, SESSION)).not.toBeNull();
+    expect(await lookupApproval("apply_patch", '{}', "builtin", "user-keyboard", memory, second, SESSION)).toBeNull();
+  });
+
+  it.each(["session", "persistent", "global"] as const)("preserves old per-tool path denies at %s scope", async (scope) => {
+    const path = join(TEST_HOME, "target.txt");
+    await recordApproval("edit_file", '{}', "builtin", {
+      ...allow, scope, ...(scope === "session" ? { sessionId: SESSION } : { sessionId: undefined }),
+      decision: "deny", approvalCacheKey: pathMemory(path, "edit_file"),
+    });
+    await recordApproval("write_file", '{}', "builtin", { ...allow, approvalCacheKey: pathMemory(path) });
+    expect(await lookupUserDecision("edit_file", '{}', "builtin", "user-keyboard", pathMemory(path), undefined, SESSION)).toMatchObject({ decision: "deny" });
+    expect(await lookupApproval("edit_file", '{}', "builtin", "user-keyboard", pathMemory(path), undefined, SESSION)).toBeNull();
+  });
+
+  it("does not widen an old per-tool path allow", async () => {
+    const path = join(TEST_HOME, "target.txt");
+    await recordApproval("write_file", '{}', "builtin", { ...allow, approvalCacheKey: pathMemory(path, "write_file") });
+    expect(await lookupApproval("edit_file", '{}', "builtin", "user-keyboard", pathMemory(path), undefined, SESSION)).toBeNull();
+  });
+
+  it.each([
+    ["session", "deny"], ["persistent", "deny"], ["global", "deny"],
+    ["session", "allow"], ["persistent", "allow"], ["global", "allow"],
+  ] as const)("preserves restrictive legacy patch args decisions at %s scope (%s)", async (scope, decision) => {
+    const path = join(TEST_HOME, "target.txt");
+    const args = canonicalStringify({ patch: `*** Begin Patch\n*** Add File: ${path}\n+next\n*** End Patch` });
+    const policyKey = `apply_patch:${JSON.stringify({ operation: "apply_patch", paths: [path] })}`;
+    await recordApproval("apply_patch", args, "builtin", {
+      scope, decision, verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
+      ...(scope === "session" ? { sessionId: SESSION } : {}),
+      ...(scope === "global" ? {} : { workingDirectoryIdentity: captureApprovalWorkingDirectory(TEST_HOME).identity }),
+      approvalCacheKey: argsKey(policyKey),
+    });
+    const currentIdentity = { ...pathMemory(path), key: policyKey };
+    const hit = await lookupUserDecision("apply_patch", args, "builtin", "user-keyboard", currentIdentity, TEST_HOME, SESSION);
+    if (decision === "deny") expect(hit).toMatchObject({ decision: "deny" });
+    else expect(hit).toBeNull();
   });
 });

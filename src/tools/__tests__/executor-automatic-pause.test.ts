@@ -647,37 +647,46 @@ describe("executor automated approval pause", () => {
   });
 
   it("counts one invocation once when a remembered medium path grant needs a high scope review and ordinary cached review", async () => {
-    const current = await subject();
-    const tool = new WriteFileTool();
-    const execute = vi.spyOn(tool, "execute");
-    const input = { path: join(current.root, "remembered.txt"), content: "approved" };
-    const identity = await approvalIdentityFor(tool, input, current.root);
-    expect(identity.approvalMemory).toMatchObject({ kind: "key", scope: { kind: "path", path: input.path } });
-    await approvals.recordApproval(tool.name, approvals.canonicalStringify(input), "builtin", {
-      scope: "session", sessionId: SESSION_ID, verdictAtApproval: "medium", riskCeilingAtApproval: "medium", nlJustification: null,
-      trustOrigin: "user-keyboard", workingDirectoryIdentity: approvals.captureApprovalWorkingDirectory(current.root).identity,
-      approvalCacheKey: approvals.approvalCacheKeyIdentity(identity.approvalCacheKey, identity.approvalMemory),
-    });
-    current.setLevel("high");
-    const dispatch = vi.spyOn(current.manager, "dispatchReviewer");
-    const registry = new ToolRegistry();
-    registry.register(tool);
-    const { gate, cards } = denyingGate();
-    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, undefined, current.audit);
-    const [result] = await executor.executeAll([{ id: "changed-remembered-write", name: tool.name, input: { ...input, content: "changed" } }], {
-      sessionId: SESSION_ID, executionCwd: current.root,
-      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
-    });
-    expect(result.is_error).toBe(true);
-    expect(current.complete).toHaveBeenCalledOnce();
-    expect(cards).toHaveLength(1);
-    expect(execute).not.toHaveBeenCalled();
-    expect(dispatch).toHaveBeenCalledTimes(2);
-    expect(dispatch.mock.calls[0][3]).toMatchObject({ purpose: "approval-scope" });
-    expect(dispatch.mock.calls[1][1].invocationId).toBe(dispatch.mock.calls[0][1].invocationId);
-    const assessments = await Promise.all(dispatch.mock.results.map((result) => result.value));
-    expect(assessments.map((assessment) => assessment.outcome)).toEqual(["fresh", "cache"]);
-    expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 1, total: 1, open: false });
+    const previousHome = process.env.AVE_HOME;
+    const isolatedHome = resources.makeTmpDir("ave-pause-state-");
+    process.env.AVE_HOME = isolatedHome;
+    try {
+      const current = await subject();
+      const tool = new WriteFileTool();
+      const execute = vi.spyOn(tool, "execute");
+      // The app-data leaf is admitted outside the project, where ordinary reviewer routing still applies.
+      const input = { path: join(isolatedHome, "remembered.txt"), content: "approved" };
+      const identity = await approvalIdentityFor(tool, input, current.root);
+      expect(identity.approvalMemory).toMatchObject({ kind: "key", scope: { kind: "path", path: input.path } });
+      await approvals.recordApproval(tool.name, approvals.canonicalStringify(input), "builtin", {
+        scope: "session", sessionId: SESSION_ID, verdictAtApproval: "medium", riskCeilingAtApproval: "medium", nlJustification: null,
+        trustOrigin: "user-keyboard", workingDirectoryIdentity: approvals.captureApprovalWorkingDirectory(current.root).identity,
+        approvalCacheKey: approvals.approvalCacheKeyIdentity(identity.approvalCacheKey, identity.approvalMemory),
+      });
+      current.setLevel("high");
+      const dispatch = vi.spyOn(current.manager, "dispatchReviewer");
+      const registry = new ToolRegistry();
+      registry.register(tool);
+      const { gate, cards } = denyingGate();
+      const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, undefined, current.audit);
+      const [result] = await executor.executeAll([{ id: "changed-remembered-write", name: tool.name, input: { ...input, content: "changed" } }], {
+        sessionId: SESSION_ID, executionCwd: current.root,
+        permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+      });
+      expect(result.is_error).toBe(true);
+      expect(current.complete).toHaveBeenCalledOnce();
+      expect(cards).toHaveLength(1);
+      expect(execute).not.toHaveBeenCalled();
+      expect(dispatch).toHaveBeenCalledTimes(2);
+      expect(dispatch.mock.calls[0][3]).toMatchObject({ purpose: "approval-scope" });
+      expect(dispatch.mock.calls[1][1].invocationId).toBe(dispatch.mock.calls[0][1].invocationId);
+      const assessments = await Promise.all(dispatch.mock.results.map((result) => result.value));
+      expect(assessments.map((assessment) => assessment.outcome)).toEqual(["fresh", "cache"]);
+      expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 1, total: 1, open: false });
+    } finally {
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+    }
   });
 
   it.each(["before lookup", "during lookup"] as const)("requires the user card despite exact approval memory when paused %s", async (timing) => {

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { checkpointFileMutation, restoreCodeCheckpoint, trackCodeCheckpointChild, withCodeCheckpoint } from "../code-checkpoints.js";
+import { checkpointFileMutation, isCodeCheckpointAvailable, restoreCodeCheckpoint, trackCodeCheckpointChild, withCodeCheckpoint } from "../code-checkpoints.js";
 
 let root: string;
 let file: string;
@@ -65,10 +65,16 @@ describe("checkpoint origin child count", () => {
 
   it("downgrades a parent already in flight when a child starts", async () => {
     await withCodeCheckpoint({ sessionId, messageId: "active" }, async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(true);
       await checkpointFileMutation([{ path: file, content: "agent" }], () => writeFile(file, "agent"));
       const release = await trackCodeCheckpointChild(sessionId);
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
       release();
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
     });
     expect(await restore("active")).toEqual(unavailable);
+    await withCodeCheckpoint({ sessionId, messageId: "after-child" }, async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(true);
+    });
   });
 });

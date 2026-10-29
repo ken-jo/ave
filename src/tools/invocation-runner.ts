@@ -1,3 +1,6 @@
+import { isCodeCheckpointAvailable, withRequiredCodeCheckpoint } from "../memory/code-checkpoints.js";
+import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js";
+import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
@@ -19,6 +22,8 @@ import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-r
 import {
   isCanonicalFileTool,
   normalizeCanonicalFileToolInput,
+  withProjectWriteRoots,
+  isFileCopyCheckpointSupported,
 } from "./file-tools.js";
 import { extractShellCommands } from "../shared/shell-command-fields.js";
 import type { ShellPathPolicyViolation } from "./shell-path-policy.js";
@@ -49,6 +54,7 @@ import {
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
+  sanitizeAllowedDirectories,
   buildAllowedScope,
   buildRuntimeAllowedDirectories,
   isFilesystemRootPath,
@@ -2107,6 +2113,21 @@ export async function runToolInvocation(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
+    // Project roots deliberately exclude the broader Layer 1 defaults and per-turn temp grants.
+    const rawProjectRoots = [executionCwd, ...(permissionContext.projectDirectories ?? [])];
+    const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
+    const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
+    const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
+    const insideProject = nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets, lexicalProjectRoots, projectRoots,
+      unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
+    // Outside project roots, preserve the existing reviewer lane for supported host edits.
+    const unsupportedTransfer = nativeFileWrite && insideProject && (tool.name === "extract_archive" || (tool.name === "copy_path"
+      && !(typeof finalInput.sourcePath === "string" && await isFileCopyCheckpointSupported(finalInput.sourcePath, executionCwd))));
+    const checkpointAvailable = !nativeFileWrite || unsupportedTransfer
+      ? false
+      : insideProject ? await isCodeCheckpointAvailable(canonicalTargets.map((target) => target.runtimePath)) : undefined;
+    const fileWritePolicy = isCanonicalFileTool(tool) && invocationCategory === "write" ? { insideProject, checkpointAvailable, directoryApproved: false } : undefined;
+
     // A saved Edit scope grants only the sealed file targets of this call.
     // It never becomes a session directory grant or widens a plugin's scope.
     const editSubject = unsealedRuleSubject?.kind === "edit" ? { ...unsealedRuleSubject, targets: canonicalTargets } : undefined;
@@ -2190,6 +2211,7 @@ export async function runToolInvocation(
         if (resolution.permissionResult) permissionResult = resolution.permissionResult;
         applyApprovedDirectory(resolution.approvedDirectory);
         propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+        if (fileWritePolicy && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
         // allow-once / allow-session / allow-always — fall through to Step 3
         // (full Layer 3 check still runs; Layer 1 is necessary, not
         // sufficient).
@@ -2216,6 +2238,7 @@ export async function runToolInvocation(
     });
 
     const authorization = await authorizeToolInvocation({
+      fileWritePolicy,
       services,
       tool,
       toolUse,
@@ -2333,7 +2356,7 @@ export async function runToolInvocation(
       };
     }
 
-    return await executeAuthorizedToolInvocation({
+    const executeAuthorized = () => executeAuthorizedToolInvocation({
       services,
       tool,
       toolUse,
@@ -2381,6 +2404,9 @@ export async function runToolInvocation(
       pluginOperationPrincipal,
       pluginAuthLifecycle,
     });
+    return permissionResult?.requiresCodeCheckpoint === true
+      ? await withProjectWriteRoots(projectRoots, () => withRequiredCodeCheckpoint(executeAuthorized))
+      : await executeAuthorized();
     };
     try {
       return generationAccess && generationLease

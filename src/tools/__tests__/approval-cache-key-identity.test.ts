@@ -23,7 +23,7 @@ import type { ToolTrustOrigin } from "../types.js";
 import type { Tool } from "../base.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
-import { DeleteFileTool, MoveFileTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { ApplyPatchTool, DeleteFileTool, EditFileTool, MoveFileTool, MultiEditTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
 import { createRoutineScheduleTool } from "../routine-schedule.js";
@@ -140,7 +140,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       return result;
     };
     const reviewedUrls = () => classify.mock.calls.map(([ctx]) => (ctx.finalInput as { url?: string }).url);
-    return { cards, run, reviewedUrls };
+    const reviewedTools = () => classify.mock.calls.map(([ctx]) => ctx.toolName);
+    return { cards, run, reviewedUrls, reviewedTools };
   }
 
   /** The real web_fetch identity (keys + schema), with the network stubbed out. */
@@ -148,6 +149,77 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const real = createWebFetchTool(vi.fn() as unknown as typeof fetch);
     return { tool: { ...real, execute } as Tool, execute };
   }
+
+  it("shares one path memory identity across native text write tools", async () => {
+    const path = join(dir, "shared.txt");
+    const calls: Array<[Tool, Record<string, unknown>]> = [
+      [new WriteFileTool(), { path, content: "next" }],
+      [new EditFileTool(), { path, oldText: "old", newText: "next" }],
+      [new MultiEditTool(), { path, replacements: [{ oldText: "old", newText: "next" }] }],
+      [new ApplyPatchTool(), { patch: `*** Begin Patch\n*** Add File: ${path}\n+next\n*** End Patch` }],
+    ];
+    const identities = await Promise.all(calls.map(([tool, input]) => approvalIdentityFor(tool, input, dir)));
+    expect(identities[0].approvalMemory.kind).toBe("key");
+    for (const identity of identities) expect(identity.approvalMemory).toEqual(identities[0].approvalMemory);
+    const other = await approvalIdentityFor(new WriteFileTool(), { path: join(dir, "other.txt"), content: "next" }, dir);
+    expect(other.approvalMemory).not.toEqual(identities[0].approvalMemory);
+  });
+
+  it("uses a session path approval across native text write tools after fresh risk review", async () => {
+    const tools = [new WriteFileTool(), new EditFileTool(), new MultiEditTool(), new ApplyPatchTool()];
+    const executed = tools.map((tool) => vi.spyOn(tool, "execute").mockResolvedValue({ output: "ok", isError: false }));
+    const { cards, run } = harness(tools);
+    const path = join(dir, "shared.txt");
+    await run("write_file", { path, content: "first" });
+    expect(cards).toHaveLength(1);
+    expect(cards[0].approvalMemory).toMatchObject({ kind: "key", scope: { kind: "path" } });
+    expect((await run("edit_file", { path, oldText: "first", newText: "second" })).is_error).toBeUndefined();
+    expect((await run("multi_edit", { path, replacements: [{ oldText: "second", newText: "third" }] })).is_error).toBeUndefined();
+    expect((await run("apply_patch", { patch: `*** Begin Patch\n*** Add File: ${path}\n+fourth\n*** End Patch` })).is_error).toBeUndefined();
+    expect(cards).toHaveLength(1);
+    for (const execute of executed) expect(execute).toHaveBeenCalledTimes(1);
+    await run("apply_patch", { patch: `*** Begin Patch\n*** Add File: ${path}\n+fifth\n*** End Patch` });
+    expect(cards).toHaveLength(1);
+    await run("write_file", { path: join(dir, "other.txt"), content: "other" });
+    expect(cards).toHaveLength(2);
+  });
+
+  it("freshly reviews a different text write tool even when its raw arguments are identical", async () => {
+    const write = new WriteFileTool();
+    const edit = new EditFileTool();
+    vi.spyOn(write, "execute").mockResolvedValue({ output: "ok", isError: false });
+    const edited = vi.spyOn(edit, "execute").mockResolvedValue({ output: "ok", isError: false });
+    const { cards, run, reviewedTools } = harness([write, edit]);
+    const input = { path: join(dir, "shared.txt"), content: "first", oldText: "first", newText: "second" };
+    await run("write_file", input);
+    expect(cards).toHaveLength(1);
+    await run("edit_file", input);
+    expect(cards).toHaveLength(1);
+    expect(edited).toHaveBeenCalledTimes(1);
+    expect(reviewedTools()).toContain("edit_file");
+  });
+
+  it("does not reuse a session edit approval for a delete patch of the same home file", async () => {
+    const edit = new EditFileTool();
+    const patch = new ApplyPatchTool();
+    vi.spyOn(edit, "execute").mockResolvedValue({ output: "ok", isError: false });
+    vi.spyOn(patch, "execute").mockResolvedValue({ output: "ok", isError: false });
+    const { cards, run } = harness([edit, patch]);
+    await run("edit_file", { path: "~/notes.txt", oldText: "old", newText: "next" });
+    expect(cards).toHaveLength(1);
+    await run("apply_patch", { patch: "*** Begin Patch\n*** Delete File: ~/notes.txt\n*** End Patch" });
+    expect(cards).toHaveLength(2);
+    expect(cards[1].approvalMemory).toMatchObject({ kind: "key", scope: { kind: "paths" } });
+  });
+
+  it("partitions delete patches from update patches with the same touched path set", async () => {
+    const tool = new ApplyPatchTool();
+    const update = "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch";
+    const deletion = "*** Begin Patch\n*** Delete File: a.txt\n*** Delete File: b.txt\n*** End Patch";
+    const editIdentity = await approvalIdentityFor(tool, { patch: update }, dir);
+    const deleteIdentity = await approvalIdentityFor(tool, { patch: deletion }, dir);
+    expect(deleteIdentity.approvalMemory).not.toEqual(editIdentity.approvalMemory);
+  });
 
   it("remembers a browser origin independently of the invocation's concrete tab and document", async () => {
     let tabId = "tab-1";

@@ -85,7 +85,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       const broadcast = vi.fn();
       pm.setBroadcastUserApprovalHit(broadcast);
       const finalInput = {
-        path: ceiling === "low" ? join(cwd, "note.md") : join(cwd, "deep", "nested", "note.md"),
+        path: join(cwd, "note.md"),
       };
       const approvalCacheKey = `write_file:path:${finalInput.path}`;
       await recordApproval("write_file", canonicalStringify(finalInput), "builtin", {
@@ -120,7 +120,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       });
       expect((emitSandboxAuditMock.mock.calls as unknown as [unknown][]).at(-1)?.[0]).toMatchObject({
         reviewer: {
-          ruleVerdict: ceiling,
+          ruleVerdict: "low",
           finalVerdict: ceiling,
           llmVerdict: null,
           userApprovalUsed: { memoryHit: true, verdictAtApproval: "high" },
@@ -289,6 +289,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
     // Legacy entry — verdictAtApproval is null (the field was absent at the time of recording, so the store returns null for pre-existing entries).
     mockLookupResult = {
+      toolName: "fs_write",
       scope: "persistent",
       verdictAtApproval: null,
       nlJustification: null,
@@ -335,6 +336,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     pm.setBroadcastUserApprovalHit(broadcast);
 
     mockLookupResult = {
+      toolName: "fs_write",
       scope: "persistent",
       verdictAtApproval: "low",
       nlJustification: null,
