@@ -9,6 +9,7 @@ import { createLogger } from "../lib/logger.js";
 import { beginAgentTerminalObservation, type AgentTerminalObservationInput, type AgentTerminalObservationLease } from "./agent-terminal-observation.js";
 import { errorMessage } from "../shared/error-message.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
+import { endConversationTerminalSession } from "../main/terminal/pty-manager.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 /**
  * Host shell tool family: the `bash` and `powershell` execution tools, the
@@ -1464,8 +1465,9 @@ export function controlShellTask(sessionId: string, action: ShellTaskAction, she
  * brokered cleanup. The caller decides what an unproven cleanup means.
  */
 export async function endShellSession(sessionId: string): Promise<BrokerSessionCleanupReport | undefined> {
+  const terminalCleanup = endConversationTerminalSession(sessionId);
   backgroundShellManager.disposeSession(sessionId);
-  await backgroundShellManager.waitForLocalCleanup(sessionId);
+  await Promise.all([terminalCleanup, backgroundShellManager.waitForLocalCleanup(sessionId)]);
   clearShellSessionCwd(sessionId);
   return await backgroundShellManager.settleSessionCleanup(sessionId);
 }

@@ -208,9 +208,10 @@ describe("egress-host approval requests", () => {
     await expect(gate.requestAndWait({
       ...base, egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "public", terminalTabId: "browser:0a1b2c3d-1" },
     })).rejects.toThrow(/not a terminal tab id/u);
+    // A terminal ask may name only the conversation main bound to that terminal; this tab has no binding.
     await expect(gate.requestAndWait({
       ...base, sessionId: "session-1", egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "public", terminalTabId: TAB },
-    })).rejects.toThrow(/names no conversation/u);
+    })).rejects.toThrow(/conversation binding mismatch/u);
   });
 });
 

@@ -7,7 +7,6 @@ import type { ListedEgressGrant, RevocableEgressGrant } from "../../../../shared
 import { formatDateTime } from "../../../../shared/format-time.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { isIpcErrorResult } from "../../types.js";
-import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 
 interface EgressGrantsListProps {
   /** Override fetcher for tests. Defaults to window.ave.permission.egressGrantsList. */
@@ -149,10 +148,7 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                           time: formatDateTime(grant.grantedAt),
                         })
                       : grant.scope === "tab"
-                        ? translate("permissionsTab.networkGrantScopeTab", {
-                            tab: terminalTabLabel(grant.tabId) ?? translate("permissionsTab.networkGrantTabElsewhere"),
-                            time: formatDateTime(grant.grantedAt),
-                          })
+                        ? translate("permissionsTab.networkGrantScopeShell", { time: formatDateTime(grant.grantedAt) })
                         : translate("permissionsTab.networkGrantScopeProject", {
                             origin: translate(ORIGIN_LABEL_KEYS[grant.origin]),
                             project: grant.projectRoot ?? "",

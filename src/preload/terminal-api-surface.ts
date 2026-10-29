@@ -13,7 +13,7 @@ export function buildTerminalApiSurface(): TerminalApi {
     onData: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
         const parsed = parseTerminalDataEvent(payload);
-        if (!parsed) throw new Error("invalid-terminal-data-event");
+        if (!parsed || parsed.lane !== "manual") throw new Error("invalid-terminal-data-event");
         handler(parsed);
       };
       ipcRenderer.on(CHANNELS.terminal.data, listener);
@@ -22,7 +22,7 @@ export function buildTerminalApiSurface(): TerminalApi {
     onExit: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
         const parsed = parseTerminalExitEvent(payload);
-        if (!parsed) throw new Error("invalid-terminal-exit-event");
+        if (!parsed || parsed.lane !== "manual") throw new Error("invalid-terminal-exit-event");
         handler(parsed);
       };
       ipcRenderer.on(CHANNELS.terminal.exit, listener);

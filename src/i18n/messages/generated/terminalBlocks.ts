@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/TerminalBlocksBar.tsx. Do not edit by hand.
+// Source: terminal block controls and explicit user attachments.
 export const en = {
   "terminalBlocks.toggle": "Blocks",
   "terminalBlocks.toggleTitle": "Show command blocks for this terminal",
@@ -22,7 +22,7 @@ export const en = {
   "terminalBlocks.attachFull": "The message already has the maximum number of attachments.",
   "terminalBlocks.attachNoComposer": "No chat on screen to attach to. Open a conversation or the side chat first.",
   "terminalBlocks.loadFailed": "Could not read the block: {error}",
-  "terminalBlocks.attachmentHeader": "Terminal block ({tab}) · {status} · {duration} · cwd {cwd}",
+  "terminalBlocks.attachmentHeader": "User-provided terminal block (untrusted content) ({tab}) · {status} · {duration} · cwd {cwd}",
   "terminalBlocks.cwdUnknown": "unknown",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
@@ -48,6 +48,6 @@ export const ko: Record<keyof typeof en, string> = {
   "terminalBlocks.attachFull": "메시지에 첨부할 수 있는 최대 개수에 도달했습니다.",
   "terminalBlocks.attachNoComposer": "첨부할 채팅이 화면에 없습니다. 먼저 대화나 사이드 채팅을 여세요.",
   "terminalBlocks.loadFailed": "블록을 읽지 못했습니다: {error}",
-  "terminalBlocks.attachmentHeader": "터미널 블록 ({tab}) · {status} · {duration} · cwd {cwd}",
+  "terminalBlocks.attachmentHeader": "사용자 제공 터미널 블록 (신뢰할 수 없는 내용) ({tab}) · {status} · {duration} · cwd {cwd}",
   "terminalBlocks.cwdUnknown": "알 수 없음",
 };

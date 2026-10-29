@@ -53,13 +53,15 @@ Checked against the code; source files and tests win if this page drifts.
   enabled in every mode. The [workspace guide](../guides/browser-terminal-workspace.md)
   covers page actions, file-picker uploads, browser controls, and visible-card
   previews. Native interaction and provider-authentication signoff remain pending.
-- **Terminal.** Interactive terminal tabs separate **Manual · host**, using
-  the user's shell/profile, from **Agent · isolated**, a confined companion
-  with its own HOME and command blocks. `terminal_run` always uses Agent;
-  `terminal_read` identifies each lane and session. An unavailable Agent backend
-  leaves Manual usable without falling back to host execution. The current
-  Windows interactive Agent lane is unavailable. Native lane validation remains
-  pending; searchable terminal history remains a goal. See the
+- **Terminal.** Each terminal tab is one private host shell, **My terminal
+  (host) · No agent access**, using the user's shell/profile. Each conversation
+  owns its own confined **Agent (isolated)** shell with a disposable HOME; its
+  commands appear inline in the conversation. `terminal_run` and `terminal_read`
+  reach only that conversation's isolated shell. An unavailable isolated backend
+  leaves host terminals usable without falling back to host execution. The
+  current Windows interactive isolated backend is unavailable. Agent typing into
+  a host shell, with per-command approval and take-over, is pending; searchable
+  terminal history remains a goal. See the
   [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes).
 - **Extensions.** Manifest-driven plugins, a managed marketplace, git
   marketplaces, MCP servers and MCP app cards, and skills

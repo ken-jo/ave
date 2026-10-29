@@ -1,8 +1,8 @@
-/** Read host-issued terminal sessions and their lane-bound blocks only in the calling conversation's window; child sessions inherit scope and windowless runs are refused.
+/** Read only the calling conversation's confined terminal; host terminal output requires explicit user attachment.
  * Frame command/output records as sanitized untrusted data; this ordinary permission-checked read cannot type or spawn. */
 import { createDynamicTool, type Tool } from "./base.js";
-import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../main/terminal/terminal-blocks.js";
-import { isTerminalLane, type TerminalSessionRef } from "../shared/terminal-session.js";
+import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../main/terminal/terminal-blocks.js";
+import { sameTerminalSession, type TerminalSessionInfo, type TerminalSessionRef } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
@@ -18,9 +18,8 @@ const SUMMARIES_PER_TAB = 10;
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
-  /** The terminal a conversation reads when a call names none: the terminal its pane chat is bound to, else the one
-   * the user is looking at in the window. `sessionId` is the conversation the window hosts (a sub-agent's parent). */
-  defaultTerminalTabId?: (windowId: number, sessionId: string) => string | undefined;
+  /** Main-owned isolated-terminal identity for the exact invoking session. Never spawns a terminal. */
+  conversationTerminalRef: (sessionId: string, windowId: number) => TerminalSessionRef | undefined;
 }
 
 /** The app window whose terminals `sessionId` may read (session-window-scope.ts): its own window, else its parent's when it is a running sub-agent, else none. */
@@ -41,11 +40,12 @@ const TERMINAL_OUTPUT_FENCE_OPEN = '<terminal-output trust="untrusted-terminal-d
 
 /** Frame a result as untrusted terminal data. Everything in it; command text, output, directories; is whatever programs printed, so no field may close the frame: a
  * forged `</terminal-output>` is neutralized in every string before the JSON is built (afterwards, the inserted backslash could form an invalid JSON escape such as `\ `). */
-export function fenceTerminalData(payload: unknown) {
+export function fenceTerminalData(payload: unknown, options: { isolated?: boolean } = {}) {
   const notice = terminalSandboxWindowNotice();
   const record = payload !== null && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
-  const agentSession = record?.lane === "agent" || (Array.isArray(record?.terminals)
-    && record.terminals.some(session => session !== null && typeof session === "object" && session.lane === "agent"));
+  // Model-facing terminal tool results name no lane; their callers say when the data comes from an isolated shell.
+  const agentSession = options.isolated ?? (record?.lane === "agent" || (Array.isArray(record?.terminals)
+    && record.terminals.some(session => session !== null && typeof session === "object" && session.lane === "agent")));
   const annotated = notice !== undefined && agentSession ? { ...record, sandboxNotice: notice } : payload;
   return {
     output: [
@@ -65,6 +65,12 @@ function neutralizeStrings(value: unknown): unknown {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, neutralizeStrings(entry)]));
   }
   return value;
+}
+
+/** The session as the model sees it: no `lane`, which terminal_read does not accept, so a copied identity stays a valid input. */
+function readableSession(session: TerminalSessionInfo): Omit<TerminalSessionInfo, "lane"> {
+  const { lane: _lane, ...rest } = session;
+  return rest;
 }
 
 export function withOutputBudget(blocks: readonly TerminalBlock[]) {
@@ -94,7 +100,6 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     jsonSchema: {
       type: "object",
       properties: {
-        lane: { type: "string", enum: ["manual", "agent"], description: t("be_terminalRead.laneDescription") },
         terminalSessionId: { type: "string", description: t("be_terminalRead.sessionDescription") },
         tabId: { type: "string", description: t("be_terminalRead.tabIdDescription") },
         blockId: { type: "integer", minimum: 1, description: t("be_terminalRead.blockIdDescription") },
@@ -109,8 +114,9 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     },
     execute: async (rawInput, ctx) => {
       if (rawInput !== undefined && (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput))) return terminalToolFailure("terminal_read expects an object");
-      const input = (rawInput ?? {}) as { tabId?: unknown; lane?: unknown; terminalSessionId?: unknown; blockId?: unknown; limit?: unknown };
-      if (Object.keys(input).some((key) => !["tabId", "lane", "terminalSessionId", "blockId", "limit"].includes(key))) return terminalToolFailure("unknown terminal_read argument");
+      const input = (rawInput ?? {}) as { tabId?: unknown; terminalSessionId?: unknown; blockId?: unknown; limit?: unknown };
+      // Only a conversation's isolated shell is readable, so there is no lane to choose; a `lane` argument is unknown.
+      if (Object.keys(input).some((key) => !["tabId", "terminalSessionId", "blockId", "limit"].includes(key))) return terminalToolFailure("unknown terminal_read argument");
       if (input.tabId !== undefined && typeof input.tabId !== "string") {
         return terminalToolFailure("tabId must be a string");
       }
@@ -125,36 +131,37 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       }
       const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
       const scope = resolveSessionWindow(sessionId, deps);
-      if (scope === null) {
+      if (scope === null || sessionId === undefined) {
         return terminalToolFailure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
       }
       const { windowId } = scope;
-      const activeTabId = deps.defaultTerminalTabId?.(windowId, scope.hostSessionId);
+      const owned = deps.conversationTerminalRef(sessionId, windowId);
 
       if (Object.keys(input).length === 0) {
-        const terminals = listTerminalBlockTabs(windowId).map(({ tabId, session, tracker }) => ({
-          ...session,
-          ...(tabId === activeTabId ? { active: true } : {}),
-          exited: tracker.hasExited(),
-          recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
-        }));
+        const tracker = owned?.lane === "agent" ? getWindowTerminalBlockTracker(owned, windowId) : undefined;
+        const session = owned?.lane === "agent" ? getWindowTerminalBlockSession(owned, windowId) : undefined;
+        const terminals = tracker && session?.lane === "agent" ? [{
+          ...readableSession(session), exited: tracker.hasExited(), recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
+        }] : [];
         return fenceTerminalData({
           terminals,
           ...(terminals.length === 0 ? { note: t("be_terminalRead.noTerminals") } : {}),
-        });
+        }, { isolated: terminals.length > 0 });
       }
 
-      if (!isTerminalLane(input.lane) || typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
-        return terminalToolFailure("targeted terminal_read requires lane and terminalSessionId; call terminal_read with no arguments to list sessions");
+      if (typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
+        return terminalToolFailure("targeted terminal_read requires terminalSessionId; call terminal_read with no arguments to list this conversation's isolated terminal");
       }
 
-      // An explicit tabId wins; without one, blockId/limit read the terminal the user is looking at, when there is one.
-      const tabId = (input.tabId as string | undefined) ?? activeTabId;
+      const tabId = (input.tabId as string | undefined) ?? owned?.tabId;
       if (tabId === undefined) {
-        return terminalToolFailure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
+        return terminalToolFailure("This conversation has no isolated terminal. Host terminal output is private; ask the user to attach a command block explicitly.");
       }
-      // A tab of another window answers exactly like a tab that does not exist.
-      const ref: TerminalSessionRef = { tabId, lane: input.lane, terminalSessionId: input.terminalSessionId };
+      // A host tab, or a terminal of another conversation or window, answers exactly like one that does not exist.
+      const ref: TerminalSessionRef = { tabId, lane: "agent", terminalSessionId: input.terminalSessionId };
+      if (!owned || owned.lane !== "agent" || !sameTerminalSession(owned, ref)) {
+        return terminalToolFailure("No matching isolated terminal belongs to this conversation.");
+      }
       const tracker = getWindowTerminalBlockTracker(ref, windowId);
       const session = getWindowTerminalBlockSession(ref, windowId);
       if (!tracker || !session) {
@@ -163,13 +170,13 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
         if (!block) return terminalToolFailure(`no block ${String(input.blockId)} in terminal ${tabId}`, ref.lane);
-        return fenceTerminalData({ ...session, block: withOutputBudget([block])[0] });
+        return fenceTerminalData({ ...readableSession(session), block: withOutputBudget([block])[0] }, { isolated: true });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
       return fenceTerminalData({
-        ...session,
+        ...readableSession(session),
         blocks: withOutputBudget(tracker.recent(limit)),
-      });
+      }, { isolated: true });
     },
   });
 }

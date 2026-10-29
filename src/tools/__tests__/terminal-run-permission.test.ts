@@ -62,9 +62,8 @@ async function run(
   registry.register(createTerminalRunTool({
     windowIdForHostedSession: (sessionId) => (sessionId === "chat" ? WINDOW : null),
     liveOriginSessionId: () => undefined,
-    activeTerminalTabId: () => TAB,
     boundSurface: () => undefined,
-    ensureAgentTerminal: async (tabId) => terminalSessionFixture(tabId),
+    ensureConversationTerminal: async () => terminalSessionFixture(TAB),
     typeCommand,
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
     auditMismatch: () => {},

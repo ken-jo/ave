@@ -31,7 +31,6 @@ import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-ta
 import type { WorkspaceChanges, FileWorkspaceReveal } from "../preview/workspace-changes.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
-import { TerminalObservationContent } from "./TerminalObservationContent.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
 import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
@@ -186,6 +185,7 @@ type TranscriptHydration =
 
 function SubAgentTranscriptDetail({
   api,
+  visible,
   parentSessionId: panelSessionId,
   sideChatSessionId,
   spawn,
@@ -194,6 +194,7 @@ function SubAgentTranscriptDetail({
   parentSessionId?: string;
   sideChatSessionId: string | null;
   spawn: SubAgentSpawn;
+  visible: boolean;
 }) {
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
@@ -262,6 +263,7 @@ function SubAgentTranscriptDetail({
       ) : null}
       {entries.length > 0 ? (
         <TranscriptRenderer
+          observeTerminal={visible && Boolean(spawn.childSessionId)}
           entries={entries}
           streaming={spawn.status === "running"}
           currentSessionId={sessionId}
@@ -297,6 +299,7 @@ function SubAgentTranscriptDetail({
  */
 function SubAgentViewer({
   api,
+  visible,
   parentSessionId,
   sideChatSessionId,
   subAgentSpawns,
@@ -305,6 +308,7 @@ function SubAgentViewer({
   parentSessionId?: string;
   sideChatSessionId: string | null;
   subAgentSpawns: SubAgentSpawn[];
+  visible: boolean;
 }) {
   const { t } = useTranslation();
   const { topPercent, setTopPercent, commitTopPercent } = useVerticalSplit(api, "sidePanelSplitSubagentPercent");
@@ -385,6 +389,7 @@ function SubAgentViewer({
             {selectedSpawn ? (
               <SubAgentTranscriptDetail
                 api={api}
+                visible={visible}
                 {...(parentSessionId ? { parentSessionId } : {})}
                 sideChatSessionId={sideChatSessionId}
                 spawn={selectedSpawn}
@@ -1234,7 +1239,6 @@ export function ChatSidePanel({
         className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
       >
         {tabStripContent}
-        <TerminalObservationContent sessionId={sessionId} observe={visible} />
 
         <div className="relative min-h-0 flex-1 overflow-hidden" data-active-tab-kind={activeTab?.kind} data-active-tab-mode={activeTab?.mode}>
           {activeTab == null ? (
@@ -1297,6 +1301,7 @@ export function ChatSidePanel({
           ) : activeTab.kind === "subagent" ? (
             <SubAgentViewer
               api={api}
+              visible={visible}
               {...(sessionId ? { parentSessionId: sessionId } : {})}
               sideChatSessionId={sideChatSessionId}
               subAgentSpawns={panelSubAgentSpawns}

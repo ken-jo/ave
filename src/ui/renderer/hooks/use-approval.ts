@@ -286,12 +286,6 @@ const ApprovalSurfaceContext = createContext<ApprovalSurfaceContextValue | null>
 
 export const ApprovalSurfaceProvider = ApprovalSurfaceContext.Provider;
 
-/** The approval surface when one is provided, else null. For a view that also renders outside the app
- * shell (a terminal tab in a test fixture): it draws no approval UI there, since nothing could answer it. */
-export function useOptionalApprovalSurface(): ApprovalSurfaceContextValue | null {
-  return useContext(ApprovalSurfaceContext);
-}
-
 export function useApprovalSurface(): ApprovalSurfaceContextValue {
   const value = useContext(ApprovalSurfaceContext);
   if (value === null) {

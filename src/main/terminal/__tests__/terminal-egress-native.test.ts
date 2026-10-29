@@ -1,3 +1,4 @@
+import { killTerminal } from "../../../__tests__/support/terminal-agent-fixture.js";
 // Exercise the real proxy, grant store, terminal spawn, and CONNECT traffic. A public address is routed to a local fixture by the trusted upstream;
 // the sandbox still enforces its normal listener, identity, destination-class, and approval checks.
 import { afterEach, beforeEach, describe, expect, it, type TestContext } from "vitest";
@@ -35,8 +36,7 @@ import { requireSandboxCases, sandboxCasesRequired } from "../../../plugins/isol
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import {
   __resetTerminalsForTest,
-  killTerminal,
-  setTerminalEmitter,
+  _setTerminalInspectionForTest,
 } from "../pty-manager.js";
 import { spawnTerminal, writeTerminal } from "../../../__tests__/support/terminal-agent-fixture.js";
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
@@ -147,7 +147,7 @@ afterEach(async () => {
   SandboxManager.setParentProxyRouter(undefined);
   killTerminal(TAB);
   __resetTerminalsForTest();
-  setTerminalEmitter(() => {});
+  _setTerminalInspectionForTest(() => {});
   stopMonitor?.();
   stopMonitor = undefined;
   stopReleaseListener?.();
@@ -226,7 +226,7 @@ async function startSandbox(
 }
 
 async function openTab(tabId = TAB): Promise<void> {
-  setTerminalEmitter((event, payload) => {
+  _setTerminalInspectionForTest((event, payload) => {
     if (event === "data" && "chunk" in payload) outputs.set(payload.tabId, (outputs.get(payload.tabId) ?? "") + payload.chunk);
   });
   const result = await spawnTerminal({ tabId, cols: 160, rows: 40, ownerWindowId: null });

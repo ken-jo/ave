@@ -5,7 +5,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js";
 import { EgressGrantsList } from "../permissions/EgressGrantsList.js";
-import { noteTerminalTabLabel } from "../../preview/terminal-tab-labels.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { openDecisionMenu, selectDecision } from "./support/decision-bar.js";
@@ -231,8 +230,8 @@ describe("EgressGrantsList", () => {
       render(<EgressGrantsList />);
       const row = await screen.findByTestId("egress-grant-row");
       expect(row.textContent).toContain("github.com:443");
-      // A tab this window never showed is named as elsewhere, never by its raw id.
-      expect(row.textContent).toContain("Terminal tab in another window · until its shell exits");
+      // A conversation's isolated shell is named by what it is, never by its opaque id.
+      expect(row.textContent).toContain("Isolated conversation shell · until it exits");
       expect(row.textContent).not.toContain("terminal:0a1b2c3d-1");
       fireEvent.click(screen.getByTestId("egress-grant-revoke"));
       await screen.findByTestId("egress-grants-empty");
@@ -242,14 +241,14 @@ describe("EgressGrantsList", () => {
     }
   });
 
-  it("names a tab this window shows by its visible name", async () => {
-    noteTerminalTabLabel("terminal:0a1b2c3d-4", "Terminal 2");
+  it("describes a shell-lifetime grant without workspace-tab wording", async () => {
     const tabGrant: TabEgressGrant = {
       scope: "tab", tabId: "terminal:0a1b2c3d-4", host: "github.com", port: 443, grantedAt: "2026-10-20T03:00:00.000Z",
     };
     render(<EgressGrantsList fetcher={async () => ({ ok: true, grants: [tabGrant] })} />);
     const row = await screen.findByTestId("egress-grant-row");
-    expect(row.textContent).toContain("Terminal tab Terminal 2 · until its shell exits");
+    expect(row.textContent).toContain("Isolated conversation shell · until it exits");
+    expect(row.textContent).not.toMatch(/Terminal tab|another window/u);
   });
 
   it("says when nothing is granted", async () => {

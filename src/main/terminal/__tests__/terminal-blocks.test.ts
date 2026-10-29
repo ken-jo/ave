@@ -7,6 +7,7 @@ import {
   decodePercentEncoded,
   getTerminalBlockTracker,
   getWindowTerminalBlockTracker,
+  getWindowTerminalBlockSession,
   listTerminalBlockTabs,
   registerTerminalBlockTracker,
   unregisterTerminalBlockTracker,
@@ -971,5 +972,19 @@ describe("TerminalBlockTracker control-string boundaries", () => {
     expect(tracker.get(1)!.output).toBe("visible\n");
     expect(seen.join("")).toBe("visible\n");
     subscription.dispose();
+  });
+});
+
+
+describe("host shell integration metadata", () => {
+  it("recognizes authenticated host cwd markers without granting agent typing", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const session = terminalSessionFixture("terminal:0000000a-1", "manual");
+    registerTerminalBlockTracker(session, tracker, 7);
+    try {
+      tracker.recordOutput(mark("P;Cwd=/workspace;Keys=emacs;Paste=1"));
+      expect(getWindowTerminalBlockSession(session, 7)).toMatchObject({ lane: "manual", substrate: "host", shellIntegration: true, currentCwd: "/workspace", cwdSource: "shell-marker" });
+      expect(getWindowTerminalBlockSession(session, 8)).toBeUndefined();
+    } finally { unregisterTerminalBlockTracker(session); }
   });
 });

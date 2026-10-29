@@ -28,7 +28,7 @@ function fenceFor(body: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/** The composer form: a one-line header naming the terminal tab (its label and the id `terminal_read` uses), the status,
+/** The composer form: a one-line header labeling user-provided untrusted content, the terminal tab, status,
  * duration and directory, then the command and output in a fence that the output cannot close. */
 export function formatBlockForChat(
   block: TerminalBlock,

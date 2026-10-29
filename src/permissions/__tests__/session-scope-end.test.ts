@@ -8,6 +8,9 @@ vi.mock("../egress-runtime.js", () => ({ releaseEgressSessions }));
 const endAgentBrowserObservationSessions = vi.fn<(ended: (sessionId: string) => boolean) => void>();
 vi.mock("../../tools/agent-browser-observation.js", () => ({ endAgentBrowserObservationSessions }));
 
+const releaseConversationTerminals = vi.fn<(ended: (sessionId: string) => boolean) => void>();
+vi.mock("../../main/terminal/pty-manager.js", () => ({ releaseConversationTerminals }));
+
 const { PermissionManager } = await import("../permission-manager.js");
 const { endSessionScopedPermissions } = await import("../session-scope-end.js");
 const { dropSessionApprovals, listSessionApprovals, recordApproval, setApprovalConversationRootResolver, __resetSessionStoreForTest } = await import("../user-approval-store.js");
@@ -18,6 +21,8 @@ function releasedAmong(...sessionIds: string[]): string[] {
   const ended = releaseEgressSessions.mock.calls[0]![0];
   expect(endAgentBrowserObservationSessions).toHaveBeenCalledTimes(1);
   expect(sessionIds.filter(endAgentBrowserObservationSessions.mock.calls[0]![0])).toEqual(sessionIds.filter(ended));
+  expect(releaseConversationTerminals).toHaveBeenCalledTimes(1);
+  expect(sessionIds.filter(releaseConversationTerminals.mock.calls[0]![0])).toEqual(sessionIds.filter(ended));
   return sessionIds.filter((sessionId) => ended(sessionId));
 }
 
@@ -27,6 +32,7 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", join(dir, "state"));
   __resetSessionStoreForTest();
   releaseEgressSessions.mockClear();
+  releaseConversationTerminals.mockClear();
   endAgentBrowserObservationSessions.mockClear();
 });
 afterEach(() => {

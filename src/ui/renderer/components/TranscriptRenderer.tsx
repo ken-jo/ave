@@ -19,6 +19,7 @@ import { trustOriginLabel } from "../utils/trust-origin-label.js";
 import { classifyTurnEntries, isTurnStartEntry } from "../utils/classify-turn-entries.js";
 import { formatHhMm } from "../../../shared/format-time.js";
 import { entryRenderRevision } from "../utils/chat-entry-revision.js";
+import { TerminalObservationCommands, useTerminalObservation } from "./TerminalObservationContent.js";
 import { AssistantCard } from "./AssistantCard.js";
 import { UserMessageEditor } from "./UserMessageEditor.js";
 import { ToolGroupCard } from "./ToolGroupCard.js";
@@ -101,6 +102,7 @@ interface TranscriptActionProps {
 export interface SharedTranscriptProps {
   entries: ChatEntry[];
   streaming: boolean;
+  observeTerminal?: boolean;
   currentSessionId: string;
 
   // Optional capability clusters suppress features when absent.
@@ -138,6 +140,7 @@ const NO_STAR: () => string | null = () => null;
 export function TranscriptRenderer({
   entries,
   streaming,
+  observeTerminal = false,
   currentSessionId,
   turnSummaryByTurnStart,
   edit,
@@ -152,6 +155,7 @@ export function TranscriptRenderer({
   onPreviewTarget,
 }: SharedTranscriptProps): React.ReactElement {
   const { t } = useTranslation();
+  const terminalObservation = useTerminalObservation(currentSessionId, observeTerminal);
   const openNativeContextMenu = useNativeContextMenu();
   const pricingOverrides = usePricingOverrides();
 
@@ -214,6 +218,11 @@ export function TranscriptRenderer({
   }
 
   const rendered: React.ReactNode[] = [];
+  const pushTerminalCommands = (groups: ChatEntry[], key: string): void => {
+    const toolIds = new Set(groups.flatMap((entry) => entry.kind === "tool_group" ? entry.tools.flatMap((tool) => tool.toolUseId ? [tool.toolUseId] : []) : []));
+    const commands = terminalObservation.commands.filter((command) => toolIds.has(command.toolUseId));
+    if (commands.length > 0) rendered.push(<TerminalObservationCommands key={key} observation={terminalObservation} commands={commands} />);
+  };
   // Reasoning, permission-review and tool-group rows draw the same whether the entry is the live tail of a turn or an
   // unclassified straggler.
   const pushSideEntry = (
@@ -250,6 +259,7 @@ export function TranscriptRenderer({
           permissionReviews={permissionReviewsByToolUseId}
         />,
       );
+      pushTerminalCommands([entry], `terminal-${entry.groupId}`);
       return true;
     }
     return false;
@@ -717,6 +727,7 @@ export function TranscriptRenderer({
           </WorkGroup>
         );
       }
+      pushTerminalCommands(activeEntries.slice(groupStart, i), `terminal-${groupStart}`);
       continue;
     }
 
@@ -827,9 +838,10 @@ export function TranscriptRenderer({
     processingDisplayLevel,
     entries,
     pricingOverrides,
+    terminalObservation,
   ]);
 
-  return <>{rendered}</>;
+  return <>{rendered}{terminalObservation.error ? <TerminalObservationCommands observation={terminalObservation} /> : null}</>;
 }
 
 function renderUserMessageText(text: string, searchHighlight: string, onPreviewTarget?: (target: ChatPreviewTarget) => void): React.ReactNode {

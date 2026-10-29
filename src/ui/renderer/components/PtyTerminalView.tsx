@@ -1,23 +1,26 @@
-/** One selected execution lane per tab. Unmount detaches the view; tab close owns both PTYs. */
+/** One host shell per tab. Unmount detaches the view; tab close owns the PTY. */
 import { useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
-import { TerminalEgressBanner } from "./permissions/TerminalEgressBanner.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
-import { noteTerminalTabLabel } from "../preview/terminal-tab-labels.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
-import { sameTerminalSession, type TerminalLane, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
+import { sameTerminalSession, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
 const ENTER_RELIST_DELAY_MS = 150;
 const PENDING_OUTPUT_BYTES = 256 * 1024;
-const selectedLanes = new Map<string, TerminalLane>();
+const INTEGRATION_UNAVAILABLE_KEYS = {
+  "unsupported-shell": "ptyTerminal.integrationUnsupportedShell",
+  "missing-home": "ptyTerminal.integrationMissingHome",
+  "custom-launch": "ptyTerminal.integrationCustomLaunch",
+  "setup-failed": "ptyTerminal.integrationSetupFailed",
+} as const;
 
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
 function diagnostic(text: string): string {
@@ -68,8 +71,6 @@ export function PtyTerminalView({
 }) {
   const { t } = useTranslation();
   const mount = useSurfaceMount(props.tabId, location);
-  // The name its egress card in the approval lane and Settings use for it.
-  useEffect(() => noteTerminalTabLabel(props.tabId, props.tabLabel), [props.tabId, props.tabLabel]);
   if (!mount.owned) {
     return (
       <div
@@ -86,16 +87,7 @@ export function PtyTerminalView({
 
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true }: PtyTerminalViewProps) {
   const { t } = useTranslation();
-  const [lane, setLane] = useState<TerminalLane>(() => selectedLanes.get(tabId) ?? "manual");
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
-  const selectLane = (next: TerminalLane): void => {
-    if (next === lane) return;
-    selectedLanes.delete(tabId);
-    selectedLanes.set(tabId, next);
-    if (selectedLanes.size > 16) selectedLanes.delete(selectedLanes.keys().next().value!);
-    setSession(null);
-    setLane(next);
-  };
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
   const initialCwdRef = useRef(initialCwd ?? null);
@@ -177,7 +169,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       else { term.write(diagnostic(t("ptyTerminal.exited", { code: event.exitCode }))); bumpBlocks(); }
     };
     const acceptEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
-      if (disposed || event.tabId !== tabId || event.lane !== lane) return;
+      if (disposed || event.tabId !== tabId || event.lane !== "manual") return;
       if (liveRef) {
         if (sameTerminalSession(liveRef, event)) renderEvent(event);
         return;
@@ -199,21 +191,18 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const restored = takeRestoredTerminal(tabId);
     if (restored) term.write(diagnostic(t("ptyTerminal.restored")));
     const startCwd = restored ? restored.cwd : initialCwdRef.current;
-    const spawnAt = (targetLane: TerminalLane, cwd: string | null) =>
-      terminalApi.spawn({ tabId, lane: targetLane, cols, rows, ...(cwd ? { cwd } : {}) });
+    const spawnAt = (cwd: string | null) =>
+      terminalApi.spawn({ tabId, lane: "manual", cols, rows, ...(cwd ? { cwd } : {}) });
     const start = async () => {
-      // Manual establishes trusted logical ownership even if its interpreter fails.
-      let manual = await spawnAt("manual", startCwd);
-      if (!manual.ok && restored && startCwd && !disposed && (manual.reason === "bad-request" || manual.reason === "spawn-failed")) {
+      let result = await spawnAt(startCwd);
+      if (!result.ok && restored && startCwd && !disposed && (result.reason === "bad-request" || result.reason === "spawn-failed")) {
         term.write(diagnostic(t("ptyTerminal.restoredRoot")));
-        manual = await spawnAt("manual", null);
+        result = await spawnAt(null);
       }
-      if (disposed) return;
-      const result = lane === "manual" ? manual : await spawnAt("agent", startCwd);
       if (disposed) return;
       if (!result.ok) {
         pending = [];
-        term.write(diagnostic(t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : lane === "agent" ? "ptyTerminal.agentUnavailable" : "ptyTerminal.manualUnavailable")));
+        term.write(diagnostic(t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
         return;
       }
       liveRef = result.session;
@@ -257,7 +246,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       // NOTE: PTY is intentionally NOT killed here — it survives unmount and is torn down on tab close (closeWorkspaceTab →
       // terminal.kill).
     };
-  }, [api, tabId, lane]);
+  }, [api, tabId]);
 
   // Focus moving to or from this terminal's pane.
   useEffect(() => {
@@ -278,30 +267,24 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
-      {/* A connection this tab's shell opened to a host no grant covers waits here for an answer. */}
-      <TerminalEgressBanner tabId={tabId} />
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1 text-xs">
-        <div role="group" aria-label={t("ptyTerminal.laneLabel")} className="flex gap-1">
-          {(["manual", "agent"] as const).map((choice) => (
-            <button key={choice} type="button" className="rounded px-2 py-1 aria-pressed:bg-accent" aria-pressed={lane === choice}
-              onClick={() => selectLane(choice)} data-testid={`terminal-lane-${choice}`}>
-              {t(choice === "manual" ? "ptyTerminal.manualLane" : "ptyTerminal.agentLane")}
-            </button>
-          ))}
-        </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
+        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t("ptyTerminal.hostBadge")}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
           {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
         </span>
       </div>
       <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-        {t(lane === "manual" ? "ptyTerminal.manualEnvironment" : "ptyTerminal.agentEnvironment")}
+        {t("ptyTerminal.manualEnvironment")}
       </p>
+      {session?.integrationUnavailableReason ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-integration-unavailable">
+        {t(INTEGRATION_UNAVAILABLE_KEYS[session.integrationUnavailableReason])}
+      </p> : null}
       {api.terminal && session ? (
         <TerminalBlocksBar
           terminalApi={api.terminal}
           key={`${session.lane}/${session.terminalSessionId}`}
           session={session}
-          tabLabel={`${tabLabel} · ${lane} · ${session.terminalSessionId}`}
+          tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
           revision={blockRevision}
           {...(onAttachText ? { onAttachText } : {})}
           onSession={setSession}

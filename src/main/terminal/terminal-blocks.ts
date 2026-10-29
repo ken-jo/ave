@@ -860,7 +860,7 @@ export function getWindowTerminalBlockTracker(ref: TerminalSessionRef, windowId:
   return entry && entry.ownerWindowId === windowId && sameTerminalSession(entry.session, ref) ? entry.tracker : undefined;
 }
 function trackerInfo(entry: RegisteredTracker): TerminalSessionInfo {
-  const integrated = entry.session.lane === "agent" && entry.tracker.isIntegrated();
+  const integrated = entry.tracker.isIntegrated();
   const currentCwd = integrated ? entry.tracker.currentCwd() : null;
   return { ...entry.session, shellIntegration: integrated, currentCwd, cwdSource: currentCwd === null ? "unavailable" : "shell-marker" };
 }

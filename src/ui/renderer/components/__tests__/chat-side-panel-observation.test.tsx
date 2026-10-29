@@ -85,7 +85,7 @@ describe("retained panel document observation", () => {
       handlers.add(handler);
       return () => { handlers.delete(handler); };
     });
-    // The panel's terminal strip subscribes alongside the document view while the panel is visible.
+    // Isolated command observation renders inline in the conversation, so the panel never subscribes to terminals.
     const terminalBinding = { targetId: TERMINAL_TARGET, sessionId: SESSION, seq: 0 };
     const acknowledgeObservation = vi.fn(async (request: ObservationRequest) =>
       request.action === "subscribe-terminal" ? { ok: true, observation: terminalBinding } : { ok: true });
@@ -109,9 +109,9 @@ describe("retained panel document observation", () => {
     await screen.findByText("Initial disk value");
     await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: FIRST_TARGET, sessionId: SESSION, seq: 0 }));
-    // One document view subscriber and one terminal strip subscriber.
-    expect(handlers.size).toBe(2);
-    expect(terminalSubscriptions()).toBe(1);
+    // Only the document view subscribes; the side panel has no terminal observation strip.
+    expect(handlers.size).toBe(1);
+    expect(terminalSubscriptions()).toBe(0);
     const event = (seq: number, after: string): DocumentObservationEvent => ({ source: "document", actor: "agent", sessionId: SESSION,
       target: { id: FIRST_TARGET, path }, kind: "element", seq, ts: 1_700_000_000_000,
       element: format === "xlsx" ? { kind: "cell", sheet: "Sheet1", row: 0, column: 0 } : { kind: "line", line: 1 },
@@ -121,7 +121,7 @@ describe("retained panel document observation", () => {
     const body = screen.getByTestId(format === "xlsx" ? "chat-side-panel-table-preview" : "chat-side-panel-file-preview");
     fireEvent.click(screen.getByTestId("chat-side-panel-close"));
     expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release", targetId: FIRST_TARGET, sessionId: SESSION, seq: 1 });
-    expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "release", ...terminalBinding });
+    expect(acknowledgeObservation).not.toHaveBeenCalledWith({ action: "release", ...terminalBinding });
     expect(handlers.size).toBe(0);
     expect(retained?.isConnected).toBe(true);
     // The hidden body stays mounted (sheet, scroll and page position survive) without agent overlays.
@@ -137,9 +137,9 @@ describe("retained panel document observation", () => {
     await screen.findByText("Fresh disk value");
     expect(body.isConnected).toBe(true);
     expect(read).toHaveBeenCalledTimes(2);
-    expect(onAgentObservation).toHaveBeenCalledTimes(4);
-    expect(handlers.size).toBe(2);
-    expect(terminalSubscriptions()).toBe(2);
+    expect(onAgentObservation).toHaveBeenCalledTimes(2);
+    expect(handlers.size).toBe(1);
+    expect(terminalSubscriptions()).toBe(0);
     expect(retained?.isConnected).toBe(true);
     await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: FRESH_TARGET, sessionId: SESSION, seq: 0 }));

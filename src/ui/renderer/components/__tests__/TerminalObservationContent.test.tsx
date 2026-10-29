@@ -1,12 +1,21 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalObservationContent } from "../TerminalObservationContent.js";
+import "../../../../../test/renderer/setup.js";
+import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { TranscriptRenderer } from "../TranscriptRenderer.js";
+import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
+import { TerminalObservationCommands, useTerminalObservation } from "../TerminalObservationContent.js";
 import { OBSERVATION_LIMITS, type AgentObservationEvent, type TerminalObservedCommand, type ObservationResponse } from "../../../../shared/agent-observation.js";
 import { en } from "../../../../i18n/messages/en.js";
 import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js";
 import type { EgressDecisionBasis } from "../../../../audit/sandbox-audit.js";
 import { ko } from "../../../../i18n/messages/ko.js";
+
+function TerminalObservationHarness({ sessionId, observe }: { sessionId?: string; observe: boolean }) {
+  const observation = useTerminalObservation(sessionId, observe);
+  return <TerminalObservationCommands observation={observation} />;
+}
 
 const SESSION = "terminal-agent-session";
 const TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -29,7 +38,7 @@ async function emit(...events: AgentObservationEvent[]) {
   await act(async () => { listeners.forEach((listener) => listener(events)); });
 }
 async function open() {
-  const result = render(<TerminalObservationContent sessionId={SESSION} observe />);
+  const result = render(<TerminalObservationHarness sessionId={SESSION} observe />);
   await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "subscribe-terminal", sessionId: SESSION }));
   return result;
 }
@@ -57,7 +66,7 @@ describe("agent terminal observation view", () => {
   });
 
   it("does not subscribe without a conversation", () => {
-    render(<TerminalObservationContent observe />);
+    render(<TerminalObservationHarness observe />);
     expect(acknowledge).not.toHaveBeenCalled();
     expect(listeners.size).toBe(0);
   });
@@ -66,7 +75,7 @@ describe("agent terminal observation view", () => {
     let finish: (response: ObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
     acknowledge.mockImplementation((request: { action: string }) => request.action === "subscribe-terminal"
       ? new Promise<ObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
-    render(<TerminalObservationContent sessionId={SESSION} observe />);
+    render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await emit(snapshot(1));
     expect(screen.queryByTestId("terminal-observation-live-strip")).toBeNull();
     await act(async () => { finish({ ok: true, observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }); });
@@ -110,7 +119,7 @@ describe("agent terminal observation view", () => {
   it.each<{ scope: EgressGrantScope; label: string }>([
     { scope: "once", label: "한 번" },
     { scope: "session", label: "이 대화" },
-    { scope: "tab", label: "이 터미널 탭" },
+    { scope: "tab", label: "이 격리 셸" },
     { scope: "project", label: "이 프로젝트" },
     { scope: "always", label: "항상" },
   ])("shows the actual $scope permission separately from command correlation", async ({ scope, label }) => {
@@ -153,7 +162,7 @@ describe("agent terminal observation view", () => {
   it("ticks a running duration and pins the final exit code and duration", async () => {
     vi.useFakeTimers();
     const start = Date.now() - 12_000;
-    render(<TerminalObservationContent sessionId={SESSION} observe />);
+    render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await act(async () => {});
     await emit(snapshot(1, [command({ startedAt: start })]));
     expect(screen.getByTestId("terminal-observation-duration").textContent).toBe("· 12s");
@@ -169,7 +178,7 @@ describe("agent terminal observation view", () => {
   it("releases and immediately hides the previous conversation when the session changes", async () => {
     const result = await open();
     await emit(snapshot(1));
-    result.rerender(<TerminalObservationContent sessionId="new-session" observe />);
+    result.rerender(<TerminalObservationHarness sessionId="new-session" observe />);
     expect(screen.queryByTestId("terminal-observation-live-strip")).toBeNull();
     expect(acknowledge).toHaveBeenCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 });
     await emit(snapshot(2));
@@ -182,7 +191,7 @@ describe("agent terminal observation view", () => {
     let finish: (response: ObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
     acknowledge.mockImplementation((request: { action: string }) => request.action === "subscribe-terminal"
       ? new Promise<ObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
-    const result = render(<TerminalObservationContent sessionId={SESSION} observe />);
+    const result = render(<TerminalObservationHarness sessionId={SESSION} observe />);
     result.unmount();
     await act(async () => { finish({ ok: true, observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }); });
     expect(acknowledge).toHaveBeenLastCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 });
@@ -191,7 +200,7 @@ describe("agent terminal observation view", () => {
 
   it("shows localized subscription, host status and render acknowledgement failures in the same slot", async () => {
     acknowledge.mockResolvedValueOnce({ ok: false, error: "unauthorized" });
-    const failed = render(<TerminalObservationContent sessionId={SESSION} observe />);
+    const failed = render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await screen.findByRole("alert");
     expect(screen.getByRole("alert").textContent).toBe("에이전트 터미널 활동을 표시하지 못했습니다");
     failed.unmount();
@@ -208,7 +217,7 @@ describe("agent terminal observation view", () => {
 
   it("bounds snapshots waiting for the subscription reply and reports overload", async () => {
     acknowledge.mockImplementation(() => new Promise<ObservationResponse>(() => {}));
-    render(<TerminalObservationContent sessionId={SESSION} observe />);
+    render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await emit(...Array.from({ length: OBSERVATION_LIMITS.maxViews + 1 }, (_, index) => snapshot(index + 1, [command()], { target: { id: `pending-${index}`, path: "agent-terminal" } })));
     expect(screen.getByRole("alert").textContent).toBe("에이전트 터미널 활동을 다시 연결해야 합니다");
   });
@@ -224,5 +233,65 @@ describe("agent terminal observation view", () => {
     expect(ko["terminalObservation.running"]).toBe("에이전트 실행 중");
     expect(en["terminalObservation.completed"]).toBe("Agent execution finished");
     expect(ko["terminalObservation.completed"]).toBe("에이전트 실행 완료");
+  });
+});
+
+
+describe("conversation-owned inline terminal commands", () => {
+  const entries: ChatEntry[] = [
+    { kind: "user", text: "first turn" },
+    { kind: "tool_group", groupId: "first-group", groupIds: ["first-group"], status: "done", tools: [{ toolUseId: "tool-one", name: "bash", displayOrder: 0, status: "done" }] },
+    { kind: "assistant", text: "first answer", phase: "final" },
+    { kind: "user", text: "second turn" },
+    { kind: "tool_group", groupId: "second-group", groupIds: ["second-group"], status: "done", tools: [{ toolUseId: "tool-two", name: "bash", displayOrder: 0, status: "done" }] },
+    { kind: "assistant", text: "second answer", phase: "final" },
+  ];
+  it("places each command beside its own turn and shares one authenticated subscription", async () => {
+    render(<TooltipProvider><TranscriptRenderer entries={entries} streaming={false} currentSessionId={SESSION} observeTerminal /></TooltipProvider>);
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "subscribe-terminal", sessionId: SESSION }));
+    await emit(snapshot(1, [
+      command({ command: "first-command", status: "completed", exitCode: 0 }),
+      command({ id: "second", toolUseId: "tool-two", turnId: "turn-two", command: "second-command", status: "failed", exitCode: 7 }),
+      command({ id: "foreign", toolUseId: "not-in-transcript", command: "foreign-command" }),
+    ]));
+    const rows = screen.getAllByTestId("terminal-observation-command-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("first-command");
+    expect(rows[1]!.textContent).toContain("second-command");
+    expect(rows[0]!.compareDocumentPosition(screen.getByText("second turn")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("foreign-command")).toBeNull();
+    expect(acknowledge.mock.calls.filter(([request]) => request.action === "subscribe-terminal")).toHaveLength(1);
+    expect(rows[1]!.querySelector("summary")!.textContent).toContain("7");
+    expect(rows[1]!.querySelector("summary")!.textContent).toContain("/workspace/project");
+  });
+
+  it("releases while hidden, subscribes afresh when shown again and keeps expanded rows", async () => {
+    const view = (observe: boolean) => <TooltipProvider><TranscriptRenderer entries={entries} streaming={false} currentSessionId={SESSION} observeTerminal={observe} /></TooltipProvider>;
+    const subscriptions = () => acknowledge.mock.calls.filter(([request]) => request.action === "subscribe-terminal").length;
+    const { rerender } = render(view(true));
+    await waitFor(() => expect(subscriptions()).toBe(1));
+    await emit(snapshot(1, [command({ command: "first-command", status: "completed", exitCode: 0, outputTail: "kept output\n" })]));
+    const row = screen.getByTestId("terminal-observation-command-row") as HTMLDetailsElement;
+    fireEvent.click(row.querySelector("summary")!);
+    expect(row.open).toBe(true);
+    rerender(view(false));
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 }));
+    expect(listeners.size).toBe(0);
+    rerender(view(true));
+    await waitFor(() => expect(subscriptions()).toBe(2));
+    await emit(snapshot(2, [command({ command: "first-command", status: "completed", exitCode: 0, outputTail: "kept output\n" })]));
+    const shown = screen.getByTestId("terminal-observation-command-row") as HTMLDetailsElement;
+    expect(shown).toBe(row);
+    expect(shown.open).toBe(true);
+    expect(within(shown).getByTestId("terminal-observation-output").textContent).toContain("kept output");
+  });
+
+  it("labels confined and explicitly approved host commands with their actual execution domain", async () => {
+    await open();
+    await emit(snapshot(1, [command(), command({ id: "host", toolUseId: "host-tool", command: "approved-host-command", sandbox: { mode: "unconfined", detail: "approved host execution" } })]));
+    expect(screen.getByTestId("terminal-isolated-identity").textContent).toBe(ko["terminalObservation.isolatedLabel"]);
+    expect(screen.getByTestId("terminal-approved-host-identity").textContent).toBe(ko["terminalObservation.approvedHostLabel"]);
+    expect(screen.getByTestId("terminal-isolated-identity").closest("li")!.className).toContain("border-l-agent");
+    expect(screen.getByTestId("terminal-approved-host-identity").closest("li")!.className).toContain("border-l-primary");
   });
 });

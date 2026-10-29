@@ -4,6 +4,7 @@ import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { EgressGrantStore } from "../egress-grants.js";
 import { openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
+import { updateApprovalSurface } from "../approval-surface-registry.js";
 import {
   createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant, setWorkerEgressAllowlists,
 } from "../egress-runtime.js";
@@ -12,8 +13,9 @@ const TAB = "terminal:0a1b2c3d-1";
 const OTHER_TAB = "terminal:0a1b2c3d-2";
 const invocations: EgressInvocation[] = [];
 
-function terminal(tabId = TAB): EgressInvocation {
-  const invocation = openEgressInvocation({ kind: "terminal", tabId });
+function terminal(tabId = TAB, sessionId?: string): EgressInvocation {
+  if (sessionId !== undefined) updateApprovalSurface({ kind: "bind-terminal-session", tabId, sessionId });
+  const invocation = openEgressInvocation({ kind: "terminal", tabId, ...(sessionId === undefined ? {} : { sessionId }) });
   invocations.push(invocation);
   return invocation;
 }
@@ -47,12 +49,36 @@ async function connect(callback: SandboxAskCallback, token: string, host: string
 }
 
 afterEach(async () => {
-  for (const invocation of invocations.splice(0)) invocation.release();
+  for (const invocation of invocations.splice(0)) {
+    if (invocation.owner.kind === "terminal") updateApprovalSurface({ kind: "release-terminal", tabId: invocation.owner.tabId });
+    invocation.release();
+  }
   for (const grant of await listEgressGrants()) await revokeEgressGrant(grant);
   setWorkerEgressAllowlists({ byExtension: new Map(), modelEndpointHosts: [] });
 });
 
 describe("terminal egress through the production runtime callback and approval gate", () => {
+  it("refuses a terminal card whose main-owned conversation binding changed", async () => {
+    const invocation = terminal(TAB, "conversation-owner");
+    const { callback, cards } = runtime();
+    updateApprovalSurface({ kind: "bind-terminal-session", tabId: TAB, sessionId: "different-conversation" });
+    await expect(connect(callback, invocation.token, "mismatch.example")).resolves.toMatchObject({ allow: false,
+      reason: expect.stringContaining("terminal egress conversation binding mismatch") });
+    expect(cards()).toEqual([]);
+    updateApprovalSurface({ kind: "release-terminal", tabId: TAB });
+  });
+  it("keeps the owning conversation on terminal egress cards without changing grant scopes", async () => {
+    const invocation = terminal(TAB, "conversation-owner");
+    const { callback, cards, answer } = runtime();
+    let settled: unknown;
+    const pending = connect(callback, invocation.token, "conversation.example").then((result) => { settled = result; return result; });
+    await vi.waitFor(() => expect(cards(), JSON.stringify(settled)).toHaveLength(1));
+    const card = cards()[0]!;
+    expect(card).toMatchObject({ sessionId: "conversation-owner", egressHost: { terminalTabId: TAB } });
+    expect(card.egressHost?.scopes).toEqual(process.platform === "win32" ? ["once", "tab"] : ["once", "tab", "always"]);
+    answer(card, "once");
+    await expect(pending).resolves.toBe(true);
+  });
   it.each(["manifest.example", "models.example", "unknown.example"])("asks for %s without inheriting worker domains", async (host) => {
     setWorkerEgressAllowlists({
       byExtension: new Map([["fixture-plugin", ["manifest.example"]]]),

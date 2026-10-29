@@ -1,9 +1,8 @@
-/** The approval dock card for an `egress-host` ask: a sandboxed shell call wants to connect to a host no grant covers. It draws the one decision row every approval card shares (owner 2026-10-25, unified approval card): Deny ▾ | Allow for session ▾ | Allow once. An allow left as it is answers `allow-once` with the grant of that lifetime (This session, This project, Always, from the scopes the host offered); Always deny, and an allow whose rule the person edited, first saves a `Network(...)` host rule and then answers once. The host refuses any scope it did not offer. A workspace terminal tab's ask (`egressHost.terminalTabId`) is drawn in that tab's banner (`TerminalEgressBanner`); this card draws it only when no view of the tab is mounted, and then offers This tab in place of This session, as the host does. */
+/** The approval dock card for an `egress-host` ask: a sandboxed shell call wants to connect to a host no grant covers. It draws the one decision row every approval card shares (owner 2026-10-25, unified approval card): Deny ▾ | Allow for session ▾ | Allow once. An allow left as it is answers `allow-once` with the grant of that lifetime (This session, This project, Always, from the scopes the host offered); Always deny, and an allow whose rule the person edited, first saves a `Network(...)` host rule and then answers once. The host refuses any scope it did not offer. A terminal-scoped ask offers only the scopes authorized by the host. */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
-import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import { resolveUserApprovalVerdict } from "../../../../shared/permissions-events.js";
 import { ApprovalDecisionBar, decisionSlotsDisabled, useApprovalDecisionState } from "./ApprovalDecisionBar.js";
@@ -86,7 +85,7 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
 }
 
 /** The shared decision row for a network ask, with its save error under it. */
-export function NetworkDecisionRow({
+function NetworkDecisionRow({
   request,
   locked,
   decide,
@@ -132,7 +131,7 @@ function InvalidEgressRequest({ request, locked, onDecide }: { request: Approval
 }
 
 /** `host:port`, an IPv6 host bracketed. */
-export function egressTargetLabel(host: string, port: number): string {
+function egressTargetLabel(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
@@ -176,18 +175,16 @@ export function EgressHostApprovalCard({
         </code>
         {payload.network === "local" ? (
           <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-local-warning">
-            {t(terminalTabId === undefined ? "egressApprovalCard.localWarning" : "egressApprovalCard.localWarningTab")}
+            {t(terminalTabId === undefined ? "egressApprovalCard.localWarning" : "egressApprovalCard.localWarningShell")}
           </p>
         ) : null}
         {payload.network === "unverified" ? (
           <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-unverified-warning">
-            {t(terminalTabId === undefined ? "egressApprovalCard.unverifiedWarning" : "egressApprovalCard.unverifiedWarningTab")}
+            {t(terminalTabId === undefined ? "egressApprovalCard.unverifiedWarning" : "egressApprovalCard.unverifiedWarningShell")}
           </p>
         ) : null}
         <p className="min-w-0 break-words text-xs text-muted-foreground">
-          {terminalTabId === undefined
-            ? t("egressApprovalCard.conversation", { conversation: conversationLabel })
-            : t("egressApprovalCard.terminalTab", { tab: terminalTabLabel(terminalTabId) ?? t("egressApprovalCard.terminalTabElsewhere") })}
+          {t("egressApprovalCard.conversation", { conversation: conversationLabel })}
         </p>
       </div>
       <NetworkDecisionRow request={request} locked={interactionLocked} decide={onDecide} />

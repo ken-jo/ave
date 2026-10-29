@@ -63,10 +63,10 @@ test("keeps a requested blank tab mounted through its first navigation", async (
     await expect(workspace.locator("img")).toHaveCount(1, { timeout: 15_000 });
     await ctx.page.getByTestId("browser-workspace-toggle").click();
     await expect(workspace).toHaveCount(0);
-    // Opening the normal host lane retains the browser's actual guest instance.
+    // Opening the host terminal retains the browser's actual guest instance.
     await ctx.page.getByTestId("chat-side-panel-add-tab").click();
     await ctx.page.getByTestId("chat-side-panel-launcher-menu-terminal").click();
-    await expect(ctx.page.getByTestId("terminal-lane-manual")).toHaveAttribute("aria-pressed", "true");
+    await expect(ctx.page.getByTestId("terminal-host-badge")).toHaveText(/^(My terminal \(host\) · No agent access|내 터미널 \(호스트\) · 에이전트 접근 없음)$/u);
     await expect(ctx.page.getByTestId("chat-side-panel-pty-terminal").locator(".xterm")).toBeVisible();
     const terminalTabId = await ctx.page.getByTestId("chat-side-panel-tab-terminal").evaluate((element) => element.closest("[data-tab-id]")?.getAttribute("data-tab-id"));
     if (!terminalTabId) throw new Error("Visible terminal identity unavailable");

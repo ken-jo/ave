@@ -202,9 +202,9 @@ describe("durable session tab bindings", () => {
       { sessionId: MAIN_SESSION, browserTabIds: [BROWSER_TAB], terminalTabIds: [] },
       { sessionId: PANE_SESSION, browserTabIds: [], terminalTabIds: [TERMINAL_TAB] },
     ]);
-    expect(restarted.registry.defaultTerminalTabId(9, PANE_SESSION)).toBe(TERMINAL_TAB);
+    expect(restarted.registry.conversationSurface(9, PANE_SESSION)).toEqual({ kind: "terminal", tabId: TERMINAL_TAB });
     restarted.registry.setActiveSurface(9, { kind: "terminal", tabId: "terminal:0000000a-99" });
-    expect(restarted.registry.defaultTerminalTabId(9, PANE_SESSION)).toBe(TERMINAL_TAB);
+    expect(restarted.registry.conversationSurface(9, PANE_SESSION)).toEqual({ kind: "terminal", tabId: TERMINAL_TAB });
     restarted.registry.guestAttached(guest(52), 9);
     restarted.registry.bindTab(9, { tabId: BROWSER_TAB, webContentsId: 52 });
     expect(restarted.registry.liveTab("tab-1")?.owner).toEqual({ sessionId: MAIN_SESSION });
@@ -338,14 +338,14 @@ describe("durable session tab bindings", () => {
     await registry.flushBindingWrites();
   });
 
-  it("prunes closed tabs from discovery while an ending pane turn keeps its original default", async () => {
+  it("prunes closed tabs from discovery while an ending pane turn keeps its original binding", async () => {
     const { registry } = registryFor();
     registry.bindConversationSurface(PANE_SESSION, { windowId: 1, surface: { kind: "terminal", tabId: TERMINAL_TAB } });
     registry.setActiveSurface(1, { kind: "terminal", tabId: "terminal:0000000a-99" });
     const pruned = registry.prepareLayoutBindings(1, { ...layout(), sideTabs: {} });
     await saveLayout(settings, pruned);
     expect(registry.sessionBindingsState(1).bindings).toEqual([]);
-    expect(registry.defaultTerminalTabId(1, PANE_SESSION)).toBe(TERMINAL_TAB);
+    expect(registry.conversationSurface(1, PANE_SESSION)).toEqual({ kind: "terminal", tabId: TERMINAL_TAB });
     expect(registry.isPaneConversation(PANE_SESSION)).toBe(true);
     registry.releasePaneConversation(1, TERMINAL_TAB, true);
     expect(registry.isPaneConversation(PANE_SESSION)).toBe(false);

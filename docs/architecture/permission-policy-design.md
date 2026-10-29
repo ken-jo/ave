@@ -819,7 +819,7 @@ is a separate contract.
 This policy applies to builtin Bash and PowerShell tool invocations. Workspace
 PTYs retain the [terminal policy](#commands-typed-into-a-workspace-terminal),
 including their own attributed domain approvals and socket policy.
-The user terminal's host shell is a separate lane.
+The user terminal's host shell is a separate surface.
 
 `features.osToolSandbox` defaults to `true` on macOS and Linux. Windows remains
 explicitly default-off until its shell confinement gate is enabled. Loading
@@ -1720,14 +1720,53 @@ in force.
 
 ## Commands Typed Into A Workspace Terminal
 
-Each workspace terminal has separate **Manual · host** and **Agent · isolated**
-PTY lanes. Manual uses the user's real HOME/profile and is available independently
-of the confined backend. Agent uses a disposable HOME, authenticated shell
-integration, and active filesystem/process confinement. None of the integration
-startup files described below are written into Manual's real HOME. Missing
-shell integration leaves Manual's current directory and command exit status
-unknown. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
-explains lane selection and visible behavior.
+Each visible workspace or side-work-panel terminal has one **My terminal
+(host) · No agent access** shell. It uses real HOME, the configured native
+interpreter/profile and a validated initial directory. zsh and bash use a
+per-PTY temporary rc directory and nonce-authenticated hooks, sourcing the actual
+startup files before hooks and restoring the original ZDOTDIR for user startup
+files. This never runs the disposable-HOME installer against real HOME. Unsupported
+interpreters or integration failure preserve the normal user shell and report why
+integration is unavailable; unverified current directory/exit state stays unknown.
+Integration is not authority to type, read host output or claim native support.
+
+The first owned startup step (zsh's temporary `.zshenv`, bash's rcfile) reads
+the nonce into an unexported shell variable and deletes its file before any user
+startup file runs, so a user rc or a loader it starts cannot read the file and
+forge markers. Residual limit: user startup files run in the same shell and can
+still read that variable, and system startup files read before the wrapper
+(such as `/etc/zshenv`) run before the nonce exists. Same-user processes are not
+an isolation boundary.
+
+A system zshrc that runs `compinit` (Ubuntu's `/etc/zsh/zshrc` does) runs while
+ZDOTDIR is the temporary directory, so its completion dump is written there and
+rebuilt for every host terminal, which slows startup; the user's own
+`.zcompdump` is neither read nor changed. Pointing the dump at the real HOME
+would write there, so it is accepted as a startup-cost limit; the dump is
+removed with the temporary directory when the terminal closes. A user who
+calls `compinit` from their own `.zshrc` runs it with their real ZDOTDIR
+restored.
+
+For a bash login launch, the wrapper explicitly sources the system profile and
+first readable user login profile before hooks using an interactive rc launch.
+The shell's read-only `login_shell` flag remains false, and automatic logout-file
+semantics are not emulated. This startup compatibility limit does not grant
+agent access.
+
+There is no agent host typing in this delivery. Tools, ambient context,
+observation snapshots and continuations cannot automatically read host startup,
+user commands or scrollback. Only an explicit user block-attachment action may
+share selected host content as user-provided untrusted context. Side-work-panel
+host terminals have no agent read/write authority. Neither focus nor a pane-chat
+binding creates it. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
+explains the visible host and inline isolated surfaces.
+
+An ordinary conversation instead owns an **Agent (isolated)** persistent PTY,
+with disposable HOME, authenticated integration and existing filesystem/process
+confinement. A main-owned conversation registry controls its lifetime. Internal
+`tabId`/lane/incarnation fields remain opaque confinement, block and egress
+identities, never a workspace tab binding or model-supplied ownership grant.
+The checks below govern isolated commands, not permission to write a host PTY.
 
 Agent spawn resolves its initial write-jail directory through host-owned
 authorized workspace projects, including user-approved external project roots.
@@ -1736,12 +1775,12 @@ paths resolving outside those roots and renderer-supplied authority are refused.
 This admission check is separate from sandbox access enforcement and is not
 by itself proof against subsequent path changes. The user HOME itself is
 never a valid Agent jail anchor, even if it appears as an authorized project.
-Manual's host cwd validation remains separate from this Agent confinement gate.
+Host cwd validation remains separate from this Agent confinement gate.
 
 `terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
-command into the target tab's Agent companion and presses Enter. It cannot type
-into Manual. It remains a builtin in the `shell` category and uses the same
-policy classifier as `bash`; the terminal lane is an execution identity, not a
+command into the invoking conversation's isolated PTY and presses Enter. It
+cannot type into a host shell. It remains a builtin in the `shell` category and uses the same
+policy classifier as `bash`; the isolated terminal ref is an execution identity, not a
 separate permission category. The checks in this section apply to Agent:
 
 - The command is the permission manager's bash rule subject, in the directory
@@ -1756,13 +1795,13 @@ separate permission category. The checks in this section apply to Agent:
   outside them — the user may have moved the shell anywhere its sandbox
   allows — so only the operands are judged.
 - A remembered decision covers the exact command and canonical directory in
-  the sealed tab, `lane: "agent"`, `terminalSessionId`, and host containment
+  the sealed internal terminal identity, `lane: "agent"`, `terminalSessionId`, and host containment
   identity, only for the app session (`terminal-command` scope). A restarted
-  companion is a new identity even when the tab ID is unchanged. Each Agent
+  PTY is a new identity even when its internal terminal ID is unchanged. Each Agent
   jail is fixed when its shell spawns. A bare `terminal_run` allow
   pattern does not cover every command, because the tool keys policy on its
   command as `bash` does.
-- The reviewer sees the Agent companion's active containment. Execution
+- The reviewer sees the isolated PTY's active containment. Execution
   requires filesystem and process confinement for that exact incarnation;
   an unavailable or changed capability fails closed. Its write paths, deny
   floors and initial egress allow-list are fixed at spawn. Egress approvals
@@ -1770,38 +1809,81 @@ separate permission category. The checks in this section apply to Agent:
 
 Agent terminal egress starts with an empty domain allowlist. Plugin manifests
 and model endpoint domains authorize worker traffic only; they do not grant
-terminal access. Unknown destinations use the existing tab banner and approval
-reviewer, with allow once, this tab, always for this destination, or deny where
-the destination is eligible for those scopes. Allow once covers one connection;
+terminal access. Unknown destinations retain the existing attributed terminal egress approval
+path, destination eligibility and allow-once/session-lifetime/persistent scope
+restrictions. Internal terminal grant identity does not give a workspace host
+tab authority over this conversation PTY. Allow once covers one connection;
 tab and persistent grants retain their existing attribution and revocation
 rules. A background descendant keeps its terminal's attributed proxy identity
-and follows the same approval path. Closing the terminal releases its pending
-asks and tab grants. These approvals do not change Manual's host shell.
+and follows the same approval path. Conversation teardown releases the isolated terminal's pending
+asks and terminal-lifetime grants. These approvals do not change the host shell.
 
-The target terminal is resolved once, before any decision, and sealed into the
-approval scope: an explicit `tabId`, then the terminal the conversation's pane
-chat is docked beside (a sub-agent uses its hosting conversation's), then, for
-a conversation bound to no pane, the window's active terminal. A chat docked
-beside a page has no terminal of its own and fails without a `tabId`, and a
-bound terminal that is gone fails the call. With none of them the call fails;
-it never chooses a terminal itself. The host ensures that tab's Agent companion,
-then seals its lane, session incarnation, and containment before approval.
-Execute types only into that sealed companion and refuses when its shell has
-moved to another directory since approval. A pane chat reads the history of,
-or ends its chat with, only a pane tab its own window holds, named by a
-well-formed tab id.
+The target is resolved once from the actual authorized invoking conversation,
+never its parent or an active-tab fallback. Main supplies the initial cwd from
+session context; model arguments cannot select another conversation's terminal,
+a visible host tab or its cwd authority. The registry deduplicates concurrent
+spawn and seals the internal terminal identity, incarnation and containment
+before approval. Execute refuses a changed shell directory or replacement PTY.
+A terminal-bound pane turn refuses host typing explicitly; it does not silently
+fall through to an isolated shell or a different target.
 
-`terminal_read` inventories both lanes; a targeted read and a continuation
-identify the exact lane, session, and block. Input, resize, output, and exit
-also bind the host-issued session identity. An old message or delayed abort
-cannot operate on a replacement session or another command. A wait timeout can
-return a still-running command; cancellation of a waiter is not cleanup proof.
-Unmounting a pane keeps both lanes alive; closing its tab terminates both.
+`terminal_read` inventories and reads only the invoking conversation's existing
+isolated PTY. Targeted reads and continuations retain exact internal identity,
+incarnation and block checks and refuse every host ref or foreign conversation.
+Renderer spawn/input/resize/block/kill operations accept only host refs; they
+cannot control an isolated PTY through its internal identifier. Isolated output
+reaches conversation UI only through authenticated observation, not raw PTY data.
+Each command renders inline with command, cwd, status, known exit code and
+collapsible bounded output, with an isolated badge/color band.
 
-If Agent confinement cannot be established, the call fails without a host or
-other-tab fallback while Manual remains usable. The current Windows interactive
-backend cannot attest this Agent contract and reports it unavailable; unrelated
-sandbox capabilities do not authorize interactive agent typing.
+Pane unmount or host-tab close alone does not destroy the conversation PTY.
+Conversation teardown, including existing descendant cleanup, releases its PTY,
+egress identity, pending spawn and block registration without orphan creation.
+If existing tab lifecycle ends a pane conversation, that teardown also ends its
+PTY. Closing a host tab kills only its host shell. Shutdown/window cleanup
+handles both registries. A wait timeout can return a still-running command;
+cancelling a waiter is not process-cleanup proof.
+
+Unavailable confinement refuses without host/foreign fallback while the host
+shell remains usable. The current Windows isolated interactive backend cannot
+attest this contract. Supported host-shell integration is a separate capability;
+PowerShell (pwsh and Windows PowerShell), cmd, fish and nu have no host
+integration in this delivery and receive no agent-typing claim. pwsh
+integration moves to the host-typing delivery, with native Windows verification.
+
+Existing one-shot shell tools retain their explicit approved host/outside-sandbox
+execution route. Their inline badge reflects the actual execution mode: an
+unconfined command shows host execution rather than claiming isolation. Every
+persistent conversation PTY remains confined; approving a one-shot host command
+does not permit typing into a user's host terminal.
+
+### Pending host command control
+
+Host approval and takeover remain a later delivery from main after the terminal
+ownership foundation and the execution-route transport change are integrated.
+The intended boundary is one exact command at a time from the terminal's own
+user-origin pane-chat turn, verified locally and sealed to command bytes,
+physical cwd, shell kind, PTY incarnation and control generation. It must not
+use similar-command auto-approval, remembered-session grants, full-buffer
+sharing or an active-tab fallback. Take over must revoke queued writes and
+output admission before user input; hand back cannot revive stale approvals or
+partial input. Only the approved command's authenticated control-period output
+may return to its requesting turn. None of this enables host typing now.
+
+The interaction comparison is [Warp's take-over controls and
+optional auto-approval](https://docs.warp.dev/agents/capabilities/agent-profiles-permissions/).
+The useful comparison is visible control transfer. Ave's planned host path
+requires exact command admission and bounded output disclosure; it does not
+adopt auto-approval or full terminal-buffer sharing.
+
+Agent-written-file execution warnings, the inline warning/review panel and
+hash-based file reviews are separately deferred, together with expanded isolated
+loader-file denies for `.envrc`, `.mise.toml`, `.tool-versions` and
+`.npmrc`. That independent follow-up starts from main after the ownership
+foundation and does not depend on host control. Existing deny floors and checks
+below remain unchanged; these warnings are not delivered permission authority.
+
+### Isolated shell readiness and command checks
 
 The directory the shell reports is text on the terminal's output stream, so
 it is checked against the operating system before the rules, the approval
@@ -1827,7 +1909,7 @@ util-linux `script` opens inside the sandbox
 `su --pty` does for the same problem: Ctrl-C, job control and readline
 behave as on any terminal, and a shell on the outer pty (where Ctrl-C killed
 bubblewrap and with it the whole terminal) is never started; a host without
-util-linux `script` gets no Agent companion, with the reason; Manual remains
+util-linux `script` gets no isolated conversation PTY, with the reason; the host shell remains
 available. The check reads `/proc`:
 - the shell is found by walking down from the pty's process along the one
   chain the wrap builds (`bwrap`, `bwrap`, `bash` with the runtime's `socat`

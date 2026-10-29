@@ -1,6 +1,9 @@
 import type { TerminalBlock, TerminalBlockSummary } from "./terminal-blocks.js";
 
+export type TerminalIntegrationUnavailableReason = "unsupported-shell" | "missing-home" | "custom-launch" | "setup-failed";
+
 export type TerminalLane = "manual" | "agent";
+/** Agent tabId is an opaque main-owned identity, never a workspace tab or renderer authority. */
 export interface TerminalRef { readonly tabId: string; readonly lane: TerminalLane }
 export interface TerminalSessionRef extends TerminalRef { readonly terminalSessionId: string }
 
@@ -9,6 +12,7 @@ interface TerminalSessionDetails extends TerminalSessionRef {
   readonly currentCwd: string | null;
   readonly cwdSource: "shell-marker" | "unavailable";
   readonly shellIntegration: boolean;
+  readonly integrationUnavailableReason?: TerminalIntegrationUnavailableReason;
 }
 export type TerminalSessionInfo = TerminalSessionDetails & (
   | { readonly lane: "manual"; readonly substrate: "host" }
@@ -27,12 +31,12 @@ export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };
 
 export interface TerminalApi {
-  /** Existing lane sessions retain cwd and geometry; replay can precede the incarnation reply. Manual reserves ownership, while Agent requires an existing tab. */
+  /** Host sessions retain cwd and geometry; replay can precede the incarnation reply. Renderer requests admit only the manual lane. */
   spawn(request: TerminalSpawnRequest): Promise<TerminalSpawnResult>;
   /** Input, resize and block reads reject a replaced/closed incarnation. */
   input(ref: TerminalSessionRef, data: string): Promise<TerminalMutationResult>;
   resize(ref: TerminalSessionRef, cols: number, rows: number): Promise<TerminalMutationResult>;
-  /** Trusted tab closure cancels pending launches and terminates both lanes by logical tab ID. */
+  /** Trusted tab closure cancels and terminates only the host terminal. */
   kill(tabId: string): Promise<TerminalMutationResult>;
   listBlocks(ref: TerminalSessionRef): Promise<
     | { readonly ok: true; readonly session: TerminalSessionInfo; readonly integrated: boolean; readonly blocks: TerminalBlockSummary[] }

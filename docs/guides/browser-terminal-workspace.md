@@ -1,10 +1,10 @@
 # Browser And Terminal Workspace
 
-This guide describes shared-tab control and the two terminal lanes. The
+This guide describes shared-tab control, private host terminals, and conversation-owned isolated commands. The
 [architecture](../architecture/architecture.md#browser-and-terminal-workspace)
 and [permission policy](../architecture/permission-policy-design.md#shared-browser-control-and-effects)
-define the host contract. The [Korean mirror](../ko/guides/browser-terminal-workspace.md)
-covers the same workflow. Native interaction and provider-authentication
+define the host contract. The [Korean guide](../ko/guides/browser-terminal-workspace.md)
+has not yet been updated for the terminal ownership changes described here. Native interaction and provider-authentication
 validation remain pending; these descriptions do not establish a release or
 measured performance improvement.
 
@@ -12,14 +12,14 @@ measured performance improvement.
 
 Chat, browser, and terminal can stay open together. Use a browser or terminal
 pane's header panel toggle to open its chat. Moving a pane between side and main
-placement keeps its browser page and both terminal lanes alive. Closing a pane's chat and
+placement keeps its browser page and host shell alive. Closing a pane's chat and
 closing its actual tab are different actions.
 
-An explicit tab target takes precedence. A pane chat otherwise targets its own
-bound surface; an unbound conversation uses the active workspace surface of
-the appropriate kind. A missing bound tab fails instead of switching to another
-one. Browser tab discovery within a window does not let one conversation take
-over another conversation's owned tabs.
+For browser tools, an explicit tab target takes precedence. A pane chat otherwise
+targets its bound browser; an unbound conversation uses the active browser. A
+missing bound tab fails instead of switching to another one. Browser discovery
+does not grant another conversation control. Terminal tools follow the
+conversation ownership and privacy rules below.
 
 ## Share a browser tab
 
@@ -164,42 +164,78 @@ state, not preview images. Captures are throttled and bounded per window; previe
 focus, navigate, or remount a tab. Capture counts and native guest behavior need
 runtime evidence before claiming a resource-use improvement.
 
-## Terminal lanes
+<a id="terminal-lanes"></a>
 
-Use the lane buttons above the terminal to switch between two distinct PTYs
-with separate screens and output:
+## Host terminals and isolated conversation shells
 
-| Lane | Environment and use |
-| --- | --- |
-| Manual · host | Your native host shell, real HOME, and profile. Type your own commands here. |
-| Agent · isolated | A confined companion with a disposable HOME and authenticated shell integration. Approved `terminal_run` commands run here. |
+Visible terminals have no lane selector. Each workspace or side-work-panel terminal contains one native
+shell, labeled **My terminal (host) · No agent access**. It uses your real HOME,
+profile and validated initial directory. Moving or hiding the pane preserves its
+shell; closing the terminal tab ends that host shell.
 
-The initial directory, current directory, profile, and authentication state can
-differ between lanes. Without shell integration, Manual reports current
-directory and command exit status as unknown. It does not pretend that the
-initial directory is still current. Agent startup files do not modify your real
-HOME, and agent output does not switch focus away from Manual.
+zsh and bash use authenticated hooks installed through a temporary
+startup directory, without replacing your HOME or modifying your startup files.
+The wrapper sources your actual startup files before installing its hooks and
+preserves their environment semantics, including the original ZDOTDIR. Other
+interpreters (PowerShell, cmd, fish, nu) and integration failures leave the
+configured user shell usable, with integration reported as unavailable. pwsh
+integration is not part of this delivery; it arrives with agent host typing,
+together with native Windows verification.
 
-Agent can start within the default workspace or an additional project you have
-approved. The host resolves project authority and checks canonical containment;
-typing a path does not grant access. The entire user HOME cannot become the
-Agent write-jail anchor. Manual continues to use ordinary host cwd behavior.
+The wrapper's first startup step reads the marker nonce into a shell variable
+and deletes its file before any of your startup files run, so a startup file or
+a loader it starts cannot find the file. Your startup files run in the same
+shell, so they can still read that variable; system-wide startup files that the
+shell reads before the wrapper (for example `/etc/zshenv`) run before the nonce
+exists.
 
-`terminal_run` always uses the target tab's Agent companion. Its approval binds
-the exact command, directory, lane, session incarnation, and containment. A
-restarted companion or a shell directory change invalidates the old approval.
-`terminal_read` without a target lists both lanes. A targeted read requires
-`lane` and `terminalSessionId` from that inventory; continuations also identify
-the exact tab and block.
-The agent never types into Manual or falls back to another tab.
+On systems whose global zshrc runs `compinit` (Ubuntu does), that completion
+setup runs while the temporary directory is active, so its cache is rebuilt
+there for each terminal and discarded when the terminal closes. Startup is
+slower than a native shell; your own `~/.zcompdump` is not changed.
+Unverified current directory or exit status remains unknown. Host integration
+alone never enables agent typing or automatic output access.
 
-If the required confined backend is unavailable, Manual remains usable and Agent
-reports unavailable. The current Windows interactive Agent backend is
-unavailable because it cannot attest the required filesystem/process and shell
-control contract. Other sandbox features do not establish this capability.
+For a bash login launch, the wrapper explicitly sources the system profile and
+first readable user login profile before hooks using an interactive rc launch.
+The shell's read-only `login_shell` flag remains false, and automatic logout-file
+semantics are not emulated. This startup compatibility limit does not grant
+agent access.
 
-A wait timeout can return while a command is still running. Cancelling the
-waiter does not prove the process exited or cleanup completed. Moving or
-unmounting the pane keeps both sessions alive; closing the terminal tab kills
-both. See [terminal permission checks](../architecture/permission-policy-design.md#commands-typed-into-a-workspace-terminal)
-for shell readiness, command text, identity, and cancellation boundaries.
+Host scrollback, startup output and your commands remain private. Only your
+explicit block-attachment action shares a selected host block as user-provided,
+untrusted context. Focus, selection, a pane chat or a tool call does not share
+it. Side-work-panel host terminals have no agent read/write access.
+
+An ordinary conversation owns its own **Agent (isolated)** persistent shell,
+with a disposable HOME and existing filesystem/process confinement. Each
+admitted command appears inline in that conversation with its command,
+directory, status, known exit code and collapsible bounded output, plus an
+isolated badge and color band. There is no separate isolated terminal tab or
+side-work-panel surface. Shell-tool activity uses the same authenticated
+observation path; the display grants no extra execution authority.
+
+`terminal_run` resolves only the invoking conversation's isolated shell.
+`terminal_read` inventories and reads only that conversation's existing isolated
+shell, including continuations. Neither accepts a host or another conversation's
+terminal as a substitute. A terminal-bound pane turn receives an explicit
+host-typing-unavailable refusal in this delivery.
+
+Existing one-shot shell tools retain their explicit approved host/outside-sandbox
+execution route. Their inline badge reflects the actual execution mode: an
+unconfined command shows host execution rather than claiming isolation. Every
+persistent conversation PTY remains confined; approving a one-shot host command
+does not permit typing into a user's host terminal.
+
+The host admits isolated shells only within authorized workspace projects;
+the whole user HOME cannot become the write-jail anchor. Missing confinement
+fails closed while your host shell stays usable. The current Windows isolated
+interactive backend remains unavailable; host integration does not establish
+that capability.
+
+The isolated shell lives until its owning conversation ends. Hiding a pane or
+closing a host tab alone does not end it; if the existing tab lifecycle also ends
+the pane conversation, conversation teardown releases its shell. A wait timeout
+can leave a command running, and cancelling a waiter is not cleanup proof.
+The [terminal permission policy](../architecture/permission-policy-design.md#commands-typed-into-a-workspace-terminal)
+owns readiness, confinement, output privacy and pending host-control requirements.

@@ -21,6 +21,7 @@ vi.mock("../window-fanout.js", () => ({ fanOutToAllWindows: fanOut }));
 
 let emitter: TerminalEmit = () => {};
 const owners = new Map<string, number | null>();
+const internalIds = new Set<string>();
 const writeTerminal = vi.fn(() => ({ ok: true }));
 const killTerminal = vi.fn();
 vi.mock("../../main/terminal/pty-manager.js", () => ({
@@ -29,7 +30,7 @@ vi.mock("../../main/terminal/pty-manager.js", () => ({
   writeTerminal,
   resizeTerminal: vi.fn(() => ({ ok: true })),
   killTerminal,
-  terminalOwnedBy: (tabId: string, ownerWindowId: number | null) => !owners.has(tabId) || owners.get(tabId) === ownerWindowId,
+  terminalOwnedBy: (tabId: string, ownerWindowId: number | null) => !internalIds.has(tabId) && (!owners.has(tabId) || owners.get(tabId) === ownerWindowId),
 }));
 
 const { registerTerminalHandlers } = await import("../domains/terminal.js");
@@ -51,6 +52,7 @@ function from(win: ReturnType<typeof appWindow>): IpcMainInvokeEvent {
 beforeEach(() => {
   handlers.clear();
   owners.clear();
+  internalIds.clear();
   fanOut.mockClear();
   writeTerminal.mockClear();
   killTerminal.mockClear();
@@ -112,5 +114,24 @@ describe("terminal IPC lane validation", () => {
     for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block]) {
       expect(await handlers.get(channel)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toEqual({ ok: false, error: "invalid-params" });
     }
+  });
+});
+
+
+describe("conversation terminal privacy boundary", () => {
+  it("refuses renderer agent requests and never forwards their data or exit", async () => {
+    const ref = terminalSessionFixture("terminal:0000000a-9", "agent");
+    expect(await handlers.get(CHANNELS.terminal.spawn)!(from(windowOne), { tabId: ref.tabId, lane: "agent" })).toMatchObject({ ok: false, reason: "bad-request" });
+    for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block]) {
+      expect(await handlers.get(channel)!(from(windowOne), { ...ref, data: "bad", cols: 80, rows: 24, blockId: 1 })).toEqual({ ok: false, error: "invalid-params" });
+    }
+    expect(await handlers.get(CHANNELS.terminal.kill)!(from(windowOne), ref)).toEqual({ ok: false, error: "invalid-params" });
+    internalIds.add(ref.tabId);
+    expect(await handlers.get(CHANNELS.terminal.kill)!(from(windowOne), { tabId: ref.tabId })).toEqual({ ok: false, error: "not-owner" });
+    emitter("data", { ...ref, chunk: "private" }, 1);
+    emitter("exit", { ...ref, exitCode: 0 }, 1);
+    expect(fanOut).not.toHaveBeenCalled();
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(killTerminal).not.toHaveBeenCalled();
   });
 });

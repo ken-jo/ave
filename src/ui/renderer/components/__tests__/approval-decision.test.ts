@@ -71,7 +71,7 @@ describe("approval decision models", () => {
 
   it("a terminal tab's allow is a tab grant without a rule; an address literal has no rule at all", () => {
     const tab = networkDecisionModel(egress({ terminalTabId: "terminal:0a1b2c3d-1", scopes: ["once", "tab", "always"], projectCwd: undefined }), undefined);
-    expect(tab.options["allow-session"]).toMatchObject({ offered: true, editing: null, labelKey: "toolApprovalDialog.decisionAllowTab" });
+    expect(tab.options["allow-session"]).toMatchObject({ offered: true, editing: null, labelKey: "toolApprovalDialog.decisionAllowShell" });
     expect(tab.options["allow-project"].offered).toBe(false);
     const literal = networkDecisionModel(egress({ host: "203.0.113.7", rule: null }), "conversation-1");
     expect(literal.options["deny-always"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.networkRuleUnavailable" });

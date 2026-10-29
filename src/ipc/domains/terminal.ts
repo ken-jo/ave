@@ -8,7 +8,7 @@ import {
   terminalOwnedBy,
 } from "../../main/terminal/pty-manager.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../../main/terminal/terminal-blocks.js";
-import { isTerminalLane, isTerminalSessionRef } from "../../shared/terminal-session.js";
+import { isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 
@@ -17,6 +17,7 @@ const log = createLogger("terminal-ipc");
 export function registerTerminalHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
   setTerminalEmitter((event, payload, ownerWindowId) => {
+    if (payload.lane !== "manual") return;
     const channel = event === "data" ? CHANNELS.terminal.data : CHANNELS.terminal.exit;
     const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
     const targets = ownerWindowId === null ? windows : windows.filter((win) => win && !win.isDestroyed() && win.id === ownerWindowId);
@@ -34,7 +35,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.terminal.spawn, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.spawn)) return { ok: false, reason: "unauthorized-frame", message: "sender frame is not authorized" };
-    if (!payload || typeof payload.tabId !== "string" || !isTerminalLane(payload.lane)
+    if (!payload || typeof payload.tabId !== "string" || payload.lane !== "manual"
       || (payload.cwd !== undefined && typeof payload.cwd !== "string")
       || (payload.cols !== undefined && (typeof payload.cols !== "number" || !Number.isFinite(payload.cols)))
       || (payload.rows !== undefined && (typeof payload.rows !== "number" || !Number.isFinite(payload.rows)))) {
@@ -60,7 +61,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   for (const operation of ["input", "resize"] as const) {
     ipcMain.handle(CHANNELS.terminal[operation], async (event, payload) => {
       if (!authorized(event, CHANNELS.terminal[operation])) return { ok: false, error: UNAUTHORIZED_FRAME.error };
-      if (!isTerminalSessionRef(payload)) return { ok: false, error: "invalid-params" };
+      if (!isTerminalSessionRef(payload) || payload.lane !== "manual") return { ok: false, error: "invalid-params" };
       if (!terminalOwnedBy(payload.tabId, senderWindowId(event))) return { ok: false, error: "not-owner" };
       if (operation === "input") {
         if (!("data" in payload) || typeof payload.data !== "string") return { ok: false, error: "invalid-params" };
@@ -72,7 +73,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   }
   ipcMain.handle(CHANNELS.terminal.kill, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.kill)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
-    if (!payload || typeof payload.tabId !== "string" || !payload.tabId) return { ok: false, error: "invalid-params" };
+    if (!payload || typeof payload.tabId !== "string" || !payload.tabId || (payload.lane !== undefined && payload.lane !== "manual")) return { ok: false, error: "invalid-params" };
     if (!terminalOwnedBy(payload.tabId, senderWindowId(event))) return { ok: false, error: "not-owner" };
     killTerminal(payload.tabId);
     return { ok: true };
@@ -80,7 +81,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   for (const operation of ["blocks", "block"] as const) {
     ipcMain.handle(CHANNELS.terminal[operation], async (event, payload) => {
       if (!authorized(event, CHANNELS.terminal[operation])) return { ok: false, error: UNAUTHORIZED_FRAME.error };
-      if (!isTerminalSessionRef(payload)) return { ok: false, error: "invalid-params" };
+      if (!isTerminalSessionRef(payload) || payload.lane !== "manual") return { ok: false, error: "invalid-params" };
       const ownerWindowId = senderWindowId(event);
       if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
       const tracker = getWindowTerminalBlockTracker(payload, ownerWindowId);

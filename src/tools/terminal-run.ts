@@ -1,5 +1,5 @@
-/** Type only into the visible isolated Agent companion, never the Manual host terminal.
- * Seal tab and cwd before approval; choose explicit, bound, then active tab without inventing a target, and refuse changed targets at execution.
+/** Type only into the calling conversation's confined shell, never a host terminal.
+ * Seal the conversation terminal and cwd before approval and refuse changed targets at execution.
  * Use ordinary shell rules, containment, and sensitive/exfiltration floors; remembered approval covers this exact command/cwd only for the app session.
  * Require a fresh empty shell prompt before approval and execution; refuse busy, unmarked, edited, or exited terminals.
  * Accept only one plain command line with no control/invisible text, history expansion, comments, dialect-only syntax, or persistent shell-state changes. */
@@ -57,11 +57,8 @@ export interface TerminalCommandMismatch {
 }
 
 export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
-  ensureAgentTerminal: (tabId: string, ownerWindowId: number, signal?: AbortSignal) => Promise<TerminalSessionInfo>;
-  /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
-  activeTerminalTabId: (windowId: number) => string | undefined;
-  /** The pane a conversation is bound to in `windowId` (a chat docked beside a terminal or a page), by the session hosting the call: a sub-agent asks with its parent's. A conversation bound to a terminal
-   * types there (a bound tab that is gone fails the call); one bound to a page has no terminal of its own and never falls back to the active terminal; only an unbound conversation uses the active terminal. */
+  ensureConversationTerminal: (sessionId: string, ownerWindowId: number, cwd?: string, signal?: AbortSignal) => Promise<TerminalSessionInfo>;
+  /** Main-owned pane binding for the actual requesting conversation, without parent substitution. */
   boundSurface: (windowId: number, hostSessionId: string) => { kind: "terminal" | "browser"; tabId: string } | undefined;
   /** Type one line into a terminal and press Enter. */
   typeCommand: TypeTerminalCommand;
@@ -199,7 +196,7 @@ function waitForBlock(
 
 export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
   /** The terminal this call types into and the directory its shell is in. Throws with the reason when there is none to name. */
-  const resolveTarget = async (input: TerminalRunInput, sessionId: string | undefined): Promise<{
+  const resolveTarget = async (input: TerminalRunInput, sessionId: string | undefined, initialCwd?: string): Promise<{
     windowId: number;
     tabId: string;
     tracker: TerminalBlockTracker;
@@ -209,24 +206,16 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     verifiedCwd: string;
   }> => {
     const scope = resolveSessionWindow(sessionId, deps);
-    if (scope === null) {
+    if (scope === null || sessionId === undefined) {
       throw new Error("terminal_run is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
     }
     const { windowId } = scope;
-    // An explicit tabId, else the terminal this chat is docked beside, else (a chat docked beside nothing) the terminal shown in the window.
-    let tabId = input.tabId;
-    if (tabId === undefined) {
-      const bound = deps.boundSurface(windowId, scope.hostSessionId);
-      if (bound?.kind === "browser") {
-        throw new Error("this chat is bound to a page, not a terminal; pass tabId (call terminal_read with no arguments to list terminals)");
-      }
-      tabId = bound?.tabId ?? deps.activeTerminalTabId(windowId);
+    if (deps.boundSurface(windowId, sessionId)?.kind === "terminal") {
+      throw new Error("Agent typing in host terminals is unavailable; run the command yourself or use the conversation's isolated shell tools.");
     }
-    if (tabId === undefined) {
-      throw new Error("no terminal is bound to this conversation or shown in its window; pass tabId (call terminal_read with no arguments to list terminals)");
-    }
-    // A tab of another window answers exactly like a tab that does not exist.
-    const session = await deps.ensureAgentTerminal(tabId, windowId);
+    const session = await deps.ensureConversationTerminal(sessionId, windowId, initialCwd);
+    const tabId = session.tabId;
+    if (input.tabId !== undefined && input.tabId !== tabId) throw new Error("terminal_run cannot target a host terminal or another conversation's terminal");
     if (session.lane !== "agent" || session.substrate !== "asrt") throw new Error("terminal_run requires an isolated agent terminal");
     const tracker = getWindowTerminalBlockTracker(session, windowId);
     if (!tracker) {
@@ -249,7 +238,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
 
   const approvalMemoryScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope> => {
     const input = parseInput(raw);
-    const target = await resolveTarget(input, ctx?.sessionId);
+    const target = await resolveTarget(input, ctx?.sessionId, ctx?.cwd);
     return {
       kind: "terminal-command",
       commandSha256: sha256Hex(input.command),
@@ -284,9 +273,14 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       return fail(`terminal ${scope.tabId} is no longer open; nothing was typed`);
     }
     let live: TerminalSessionInfo;
-    try { live = await deps.ensureAgentTerminal(scope.tabId, windowId, ctx.abortSignal); }
+    try {
+      if (sessionId === undefined || deps.boundSurface(windowId, sessionId)?.kind === "terminal") {
+        return fail("Agent typing in host terminals is unavailable; nothing was typed.");
+      }
+      live = await deps.ensureConversationTerminal(sessionId, windowId, ctx.cwd, ctx.abortSignal);
+    }
     catch (error) { return fail(error instanceof Error ? error.message : "agent terminal unavailable"); }
-    if (live.lane !== "agent" || live.terminalSessionId !== scope.terminalSessionId || live.sandboxGeneration !== scope.sandboxGeneration) {
+    if (live.lane !== "agent" || live.tabId !== scope.tabId || live.terminalSessionId !== scope.terminalSessionId || live.sandboxGeneration !== scope.sandboxGeneration) {
       return fail("the approved agent terminal changed; nothing was typed. Call terminal_run again.");
     }
     if (tracker.currentCwd() !== scope.cwd) {
@@ -304,7 +298,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
     if (block === null) {
       return {
-        ...fenceTerminalData({ tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }),
+        ...fenceTerminalData({ tabId: scope.tabId, terminalSessionId: scope.terminalSessionId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }, { isolated: true }),
         isError: true,
       };
     }
@@ -318,22 +312,22 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       });
       return {
         ...fenceTerminalData({
-          tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
+          tabId: scope.tabId, terminalSessionId: scope.terminalSessionId,
           typed: true,
           error: t("be_terminalRun.ranDifferentCommand", { tabId: scope.tabId }),
           finished,
           block: withOutputBudget([block])[0],
-        }),
+        }, { isolated: true }),
         isError: true,
       };
     }
     return fenceTerminalData({
-      tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
+      tabId: scope.tabId, terminalSessionId: scope.terminalSessionId,
       typed: true,
       finished,
       block: withOutputBudget([block])[0],
-      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }), continuation: { tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId, blockId: block.id } }),
-    });
+      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }), continuation: { tabId: scope.tabId, terminalSessionId: scope.terminalSessionId, blockId: block.id } }),
+    }, { isolated: true });
   };
 
   const tool = createDynamicTool({

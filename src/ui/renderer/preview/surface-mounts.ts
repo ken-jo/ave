@@ -10,11 +10,8 @@ interface MountOwner {
 
 const owners = new Map<string, MountOwner>();
 const listeners = new Set<() => void>();
-/** Changes whenever any tab's mount is claimed, moved or released. */
-let revision = 0;
 
 function emit(): void {
-  revision += 1;
   for (const listener of [...listeners]) listener();
 }
 
@@ -28,12 +25,6 @@ function subscribe(listener: () => void): () => void {
 /** Where the view that owns this tab id is mounted, or null when none is. */
 export function surfaceMountLocation(tabId: string): string | null {
   return owners.get(tabId)?.location ?? null;
-}
-
-/** Re-renders the caller whenever any tab's mount changes, and returns a value that changes with it: for a reader that asks
- * `surfaceMountLocation` about several tabs (which requests a mounted terminal draws itself). */
-export function useSurfaceMountRevision(): number {
-  return useSyncExternalStore(subscribe, () => revision);
 }
 
 export interface SurfaceMountState {
