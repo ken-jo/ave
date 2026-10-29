@@ -83,7 +83,7 @@ const loop = new ConversationLoop({
   memoryManager,
 } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 (loop as unknown as { provider: LLMProvider | null }).provider = new KillTestProvider();
-(loop as unknown as { sessionId: string }).sessionId = sessionId;
+loop.replaceSessionIdentity(sessionId);
 
 await loop.runTurn("kill test question", undefined, undefined, userKeyboardTurn());
 process.stdout.write("TURN_ENDED\n");

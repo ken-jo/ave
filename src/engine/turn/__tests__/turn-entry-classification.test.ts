@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseSourceFiles, parseSourceTexts } from "../../../../scripts/lib/ts7-ast.mjs";
 import { mintUserKeyboardIntent, spendUserKeyboardIntent } from "../../../shared/chat-origin.js";
+import type { ConversationLoop } from "../../conversation-loop.js";
 
 const SRC = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -417,82 +418,92 @@ describe("the turn entry inventory", () => {
   });
 });
 
-// A branch's auto-continue grant is bound to the loop's session epoch, so every change of a loop's session identity must move the epoch
-// in the same block. A new swap path that writes `sessionId` without it would let a grant from before the swap survive it.
-const OWNER_TEXTS: ReadonlySet<string> = new Set(["self", "this", "loop"]);
-const ownerText = (node: Node): string | undefined => {
-  const expression = stripExpression(node);
-  if (ts.isThisExpression(expression)) return "this";
-  return ts.isIdentifier(expression) && OWNER_TEXTS.has(expression.text) ? expression.text : undefined;
-};
-const memberOf = (node: Node, member: string): string | undefined => {
-  const expression = stripExpression(node);
-  if (ts.isPropertyAccessExpression(expression) && nameText(expression.name) === member) return ownerText(expression.expression);
-  if (ts.isElementAccessExpression(expression) && literalText(expression.argumentExpression) === member) return ownerText(expression.expression);
+// A branch's auto-continue grant, a session lease and a pending file-mention read are bound to the loop's session epoch. The loop makes
+// that binding hold by construction: `sessionId` and `sessionEpoch` are getters, and `replaceSessionIdentity` is the only code that
+// changes them, always together. The compiler refuses any assignment to the getters, through any alias, on a main loop or a sub-agent
+// child alike; this check keeps the backing fields private to that one method and keeps engine code from writing the getters at all.
+const SESSION_IDENTITY_MEMBERS: ReadonlySet<string> = new Set(["sessionId", "sessionEpoch"]);
+const SESSION_IDENTITY_FIELDS: ReadonlySet<string> = new Set(["approvalSessionId", "sessionEpochValue"]);
+const SESSION_IDENTITY_WRITER = "replaceSessionIdentity";
+const parentOf = (node: Node): Node | undefined => (node as Node & { parent?: Node }).parent;
+const writtenMember = (target: Node): string | undefined => {
+  const expression = stripExpression(target);
+  if (ts.isPropertyAccessExpression(expression)) return nameText(expression.name);
+  if (ts.isElementAccessExpression(expression)) return literalText(expression.argumentExpression);
   return undefined;
 };
+const insideWriter = (node: Node): boolean => {
+  for (let current = parentOf(node); current !== undefined; current = parentOf(current)) {
+    if (ts.isMethodDeclaration(current)) return nameText(current.name) === SESSION_IDENTITY_WRITER;
+  }
+  return false;
+};
+
+/** Writes of a session identity member, or of its backing fields outside the one writer method, in any form and through any owner. */
+function directSessionIdentityWrites(source: Node): number {
+  let writes = 0;
+  const check = (target: Node, at: Node) => {
+    const member = writtenMember(target);
+    if (member === undefined) return;
+    if (SESSION_IDENTITY_MEMBERS.has(member) || (SESSION_IDENTITY_FIELDS.has(member) && !insideWriter(at))) writes += 1;
+  };
+  const visit = (node: Node) => {
+    if (isAssignment(node)) check(node.left, node);
+    if ((ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node))
+      && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) check(node.operand, node);
+    if (ts.isDeleteExpression(node)) check(node.expression, node);
+    node.forEachChild(visit);
+  };
+  visit(source);
+  return writes;
+}
 const isAssignment = (node: Node): node is ts.BinaryExpression =>
   ts.isBinaryExpression(node)
   && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
 
-/** Writes of `<owner>.sessionId` whose enclosing block does not also advance `<owner>.sessionEpoch` by one. */
-function sessionWritesWithoutEpoch(source: Node): number {
-  let unpaired = 0;
-  const advancesEpoch = (block: Node, owner: string): boolean => {
-    let found = false;
-    const scan = (node: Node) => {
-      if (found) return;
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken
-        && memberOf(node.left, "sessionEpoch") === owner && ts.isNumericLiteral(node.right) && node.right.text === "1") found = true;
-      if ((ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) && node.operator === ts.SyntaxKind.PlusPlusToken
-        && memberOf(node.operand, "sessionEpoch") === owner) found = true;
-      node.forEachChild(scan);
-    };
-    block.forEachChild(scan);
-    return found;
-  };
-  const visit = (node: Node) => {
-    if (isAssignment(node)) {
-      const owner = memberOf(node.left, "sessionId");
-      if (owner !== undefined) {
-        let block: Node | undefined = (node as Node & { parent?: Node }).parent;
-        while (block !== undefined && !ts.isBlock(block) && !ts.isSourceFile(block)) block = (block as Node & { parent?: Node }).parent;
-        if (block === undefined || !advancesEpoch(block, owner)) unpaired += 1;
-      }
-    }
-    node.forEachChild(visit);
-  };
-  visit(source);
-  return unpaired;
-}
-
 describe("conversation session identity", () => {
-  const ENGINE = join(SRC, "engine");
-
-  it("moves the session epoch with every write of a loop's session id", () => {
-    const files = sourceFiles(ENGINE);
+  it("changes only through the loop's one writer: no engine code writes a session identity member or its backing field", () => {
+    const files = sourceFiles(join(SRC, "engine"));
     const parsed = parseSourceFiles(files);
     expect(files.filter((file) => !parsed.has(file))).toEqual([]);
-    const unpaired = files
-      .map((file) => [relative(SRC, file).split(sep).join("/"), sessionWritesWithoutEpoch(parsed.get(file) as unknown as Node)] as const)
+    const writing = files
+      .map((file) => [relative(SRC, file).split(sep).join("/"), directSessionIdentityWrites(parsed.get(file) as unknown as Node)] as const)
       .filter(([, count]) => count > 0);
-    expect(unpaired).toEqual([]);
+    expect(writing).toEqual([]);
   });
 
-  const unpairedIn = (text: string): number => {
+  it("is read-only to the compiler: assigning either getter, through an alias or on a child, does not typecheck", () => {
+    const writes = (loop: ConversationLoop, child: ConversationLoop) => {
+      const alias = loop;
+      // @ts-expect-error sessionId is a getter; replaceSessionIdentity is the only writer.
+      alias.sessionId = "x";
+      // @ts-expect-error sessionEpoch is a getter and moves only with the session identity.
+      loop.sessionEpoch++;
+      // @ts-expect-error a sub-agent child is the same class and has the same one writer.
+      child.sessionId = "y";
+    };
+    expect(typeof writes).toBe("function");
+  });
+
+  const writesIn = (text: string): number => {
     const source = parseSourceTexts(new Map([["fixture.ts", text]])).get("fixture.ts");
     if (source === undefined) throw new Error("fixture did not parse");
-    return sessionWritesWithoutEpoch(source as unknown as Node);
+    return directSessionIdentityWrites(source as unknown as Node);
   };
 
   it.each([
-    ["a swap that forgets the epoch", `declare const self: any; function swap(id: string) { self.sessionId = id; }`, 1],
-    ["a swap through an element key", `declare const self: any; function swap(id: string) { self["sessionId"] = id; }`, 1],
-    ["a swap whose epoch moves another object", `declare const self: any; declare const other: any; function swap(id: string) { self.sessionId = id; other.sessionEpoch += 1; }`, 1],
-    ["a swap that moves its epoch", `declare const self: any; function swap(id: string) { self.sessionId = id; self.sessionEpoch += 1; }`, 0],
-    ["a class swap that moves its epoch", `class L { sessionId = ""; sessionEpoch = 0; swap(id: string) { this.sessionId = id; this.sessionEpoch++; } }`, 0],
-  ] as const)("flags %s", (_label, text, expected) => {
-    expect(unpairedIn(text)).toBe(expected);
+    ["a direct swap", `declare const loop: any; loop.sessionId = "x";`, 1],
+    ["a swap through an alias", `declare const loop: any; const alias = loop; alias.sessionId = "x";`, 1],
+    ["a child's swap", `declare const child: any; child.sessionId = "x";`, 1],
+    ["a swap through an element key", `declare const loop: any; loop["sessionId"] = "x";`, 1],
+    ["an epoch bump under a dead branch", `declare const loop: any; if (false) loop.sessionEpoch++;`, 1],
+    ["an epoch bump in a nested function", `declare const loop: any; loop.sessionId = "x"; (() => { loop.sessionEpoch += 1; })();`, 2],
+    ["a backing-field write outside the writer", `class L { private approvalSessionId = ""; reset() { this.approvalSessionId = "x"; } }`, 1],
+    ["the writer itself", `class L { private approvalSessionId = ""; private sessionEpochValue = 0;
+      replaceSessionIdentity(id: string) { this.approvalSessionId = id; this.sessionEpochValue += 1; } }`, 0],
+    ["a read", `declare const loop: any; const id = loop.sessionId; void id;`, 0],
+  ] as const)("counts %s", (_label, text, expected) => {
+    expect(writesIn(text)).toBe(expected);
   });
 });
 

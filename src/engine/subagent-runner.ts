@@ -2536,7 +2536,7 @@ export class SubAgentRunner {
           );
         }
         // Bind persistence and tracing to the addressable child id before work.
-        child.sessionId = childSessionId;
+        child.replaceSessionIdentity(childSessionId);
         // A live parent link follows a host ownership transfer for already
         // running children; no surface is inferred from persisted ancestry.
         updateApprovalSurface({ kind: "inherit", sessionId: childSessionId, parentSessionId: input.originSessionId });
@@ -3565,7 +3565,7 @@ export class SubAgentRunner {
     });
 
     child = new ConversationLoop(childDeps);
-    child.sessionId = resumeId;
+    child.replaceSessionIdentity(resumeId);
     updateApprovalSurface({ kind: "inherit", sessionId: resumeId, parentSessionId: originSessionId });
     child.sessionKind = "subagent";
     child.rebindTracer();

@@ -121,15 +121,25 @@ export class ConversationLoop {
   readonly auditLogger: AuditLogger;
   provider: LLMProvider | null = null;
   private approvalSessionId = createDlpSafeUuid();
+  private sessionEpochValue = 0;
+  /** Read-only: the session identity changes only through `replaceSessionIdentity`. */
   get sessionId(): string {
     return this.approvalSessionId;
   }
-  set sessionId(sessionId: string) {
+  /** Monotonic host generation; increments on every active-session replacement, and only there. */
+  get sessionEpoch(): number {
+    return this.sessionEpochValue;
+  }
+  /**
+   * The one place a loop's session identity changes, for a main loop or a sub-agent child alike. It moves the approval surface and
+   * advances the epoch together, so nothing that is bound to the epoch (a session lease, a branch's auto-continue grant, a pending
+   * file-mention read) can outlive a swap.
+   */
+  replaceSessionIdentity(sessionId: string): void {
     updateApprovalSurface({ kind: "move", previousSessionId: this.approvalSessionId, sessionId });
     this.approvalSessionId = sessionId;
+    this.sessionEpochValue += 1;
   }
-  /** Monotonic host generation; increments on every active-session replacement. */
-  sessionEpoch = 0;
   sessionKind: SessionKind = "main";
   sessionRoutineId: string | null = null;
   sessionRoutineTitle: string | null = null;

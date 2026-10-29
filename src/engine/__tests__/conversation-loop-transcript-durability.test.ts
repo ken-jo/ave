@@ -46,7 +46,7 @@ function buildLoop(
     memoryManager,
   }));
   (loop as { provider: LLMProvider | null }).provider = provider;
-  (loop as { sessionId: string }).sessionId = SESSION_ID;
+  loop.replaceSessionIdentity(SESSION_ID);
   return loop;
 }
 

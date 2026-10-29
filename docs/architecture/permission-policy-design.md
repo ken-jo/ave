@@ -1937,8 +1937,11 @@ one command into that terminal. Main owns the boundary
   (a new chat, closing the tile, another session, leaving and returning)
   moves the epoch past it. The auto-continue spends the grant. A second use,
   another session or a newer branch refuses it, and an unredeemed grant
-  lapses ten minutes after the fork. A test fails any write of a loop's
-  session id that does not move the epoch.
+  lapses ten minutes after the fork. A loop's `sessionId` and
+  `sessionEpoch` are getters; `replaceSessionIdentity` is their only writer
+  and moves both together, for a main loop and a sub-agent child alike.
+  The compiler rejects any other assignment, and a test keeps the backing
+  fields private to that method.
   The headless `ave exec` prompt is the owner's via its unattended
   authority and never gets the capability. The inventory of entry points and
   their classification is a test over the compiler's syntax tree

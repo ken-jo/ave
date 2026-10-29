@@ -215,8 +215,9 @@ describe("host file mention context", () => {
   it.each(["session", "epoch", "turn", "cwd", "file"] as const)("rechecks %s after asynchronous authorization", async (changed) => {
     const reference = await capture();
     hooks.registerPostHook("change-identity", async () => {
-      if (changed === "epoch") loop.sessionEpoch++;
-      if (changed === "session") loop.sessionId = "replacement-session";
+      // Leaving and returning to the same session id still moves the epoch; a session swap moves both.
+      if (changed === "epoch") loop.replaceSessionIdentity(loop.getSessionId());
+      if (changed === "session") loop.replaceSessionIdentity("replacement-session");
       if (changed === "turn") loop.history.append({ role: "user", content: "new", meta: { messageId: "new" } });
       if (changed === "cwd") loop.sessionProjectRoot = join(root, "elsewhere");
       if (changed === "file") await writeFile(join(root, reference.path), "external\n");

@@ -974,9 +974,9 @@ describe("branch auto-continue grant", () => {
   it.each([
     ["opening another session", async (open: (id: string) => unknown) => { await open(OTHER); }],
     ["starting a new chat", async () => { await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main"); }],
-    ["closing the default tile, then starting a new chat", async () => {
+    // The reported sequence: closing the default tile swaps its session with no other handler in between.
+    ["closing the default tile", async () => {
       await expect(invokeRegisteredHandler(handlers, "ave:chat:group-release", "main")).resolves.toMatchObject({ ok: true, released: true });
-      await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main");
     }],
   ])("refuses the grant after %s and reopening the branch", async (_label, leave) => {
     const { loop, branched, continueWith, open } = await branchClick();

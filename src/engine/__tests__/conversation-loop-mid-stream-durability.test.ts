@@ -105,7 +105,7 @@ function buildLoop(memoryManager: MemoryManager, toolRegistry: ToolRegistry, pro
     memoryManager,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;
-  (loop as { sessionId: string }).sessionId = SESSION_ID;
+  loop.replaceSessionIdentity(SESSION_ID);
   return loop;
 }
 
