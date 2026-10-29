@@ -28,7 +28,7 @@ test("fits a saved wide sidebar inside a narrow window and restores its preferre
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       if (overlay) {
         const first = page.getByTestId("sidebar-resize-handle");
-        const last = page.getByTestId("sidebar-hide");
+        const last = page.getByTestId("sidebar-settings");
         await last.focus();
         await page.keyboard.press("Tab");
         await expect(first).toBeFocused();
@@ -37,6 +37,37 @@ test("fits a saved wide sidebar inside a narrow window and restores its preferre
       }
       await page.screenshot({ path: testInfo.outputPath(`sidebar-wide-preference-${width}.png`) });
     }
+  } finally {
+    await teardownSeededElectron(context, { terminate: true });
+  }
+});
+
+test("restores a saved hidden sidebar and keeps one collapse control", async ({}, testInfo) => {
+  const context = await launchSeededElectron({
+    sessionId: "e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee",
+    historyRows: [],
+    settings: { ...buildLlmSettings(), system: { sidebarState: "hidden" } },
+  });
+  try {
+    const { page } = context;
+    await expect(page.getByTestId("sidebar-show")).toBeVisible();
+    await expect(page.getByTestId("primary-sidebar")).toHaveCount(0);
+    await page.getByTestId("sidebar-show").click();
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveCount(1);
+    await expect(page.getByTestId("sidebar-hide")).toHaveCount(0);
+    await page.getByTestId("sidebar-collapse-toggle").click();
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveAttribute("aria-pressed", "false");
+    const shortcut = process.platform === "darwin" ? "Meta+Shift+B" : "Control+Shift+B";
+    await page.keyboard.press(shortcut);
+    await expect(page.getByTestId("sidebar-show")).toBeVisible();
+    await expect(page.getByTestId("sidebar-show")).toBeFocused();
+    await page.keyboard.press(shortcut);
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toBeFocused();
+    await page.keyboard.press(shortcut);
+    await page.getByTestId("sidebar-show").click();
+    await expect(page.getByTestId("sidebar-collapse-toggle")).toHaveAttribute("aria-pressed", "false");
+    await page.screenshot({ path: testInfo.outputPath("single-sidebar-control.png") });
   } finally {
     await teardownSeededElectron(context, { terminate: true });
   }

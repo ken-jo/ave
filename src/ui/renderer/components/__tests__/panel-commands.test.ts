@@ -14,6 +14,8 @@ describe("panel commands", () => {
     expect(panelCommandFor(key("ArrowLeft", { ctrlKey: true, shiftKey: true, altKey: true }), true)).toBeNull();
     expect(panelCommandFor(key("ArrowLeft", { metaKey: true, ctrlKey: true, shiftKey: true, altKey: true }), true)).toBeNull();
     expect(panelCommandFor(key("T", { metaKey: true, shiftKey: true }), true)).toBe("surface.reopenClosed");
+    expect(panelCommandFor(key("B", { metaKey: true, shiftKey: true }), true)).toBe("sidebar.toggleVisibility");
+    expect(panelCommandFor(key("B", { ctrlKey: true, shiftKey: true }), false)).toBe("sidebar.toggleVisibility");
     expect(panelCommandFor(key("Enter", { metaKey: true, shiftKey: true }), true)).toBe("pane.toggleMaximize");
     expect(panelCommandFor(key("t", { metaKey: true }), true)).toBeNull();
   });
