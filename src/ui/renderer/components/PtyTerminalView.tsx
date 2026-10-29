@@ -307,14 +307,13 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     if (reportedCwd) onCwd?.(reportedCwd);
   }, [reportedCwd, onCwd]);
   const inlineChrome = headerSlot === undefined;
-  const blocksBar = (variant: "bar" | "header") => api.terminal && session ? (
+  const blocks = api.terminal && session ? (
     <TerminalBlocksBar
       terminalApi={api.terminal}
       key={`${session.lane}/${session.terminalSessionId}`}
       session={session}
       tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
       revision={blockRevision}
-      variant={variant}
       {...(onAttachText ? { onAttachText } : {})}
       onSession={setSession}
     />
@@ -326,22 +325,15 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
-      {inlineChrome ? <>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
-        <span className="rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 font-medium text-primary" data-testid="terminal-host-badge">{t("ptyTerminal.hostBadge")}</span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
-          {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
-        </span>
-      </div>
-      <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-        {t("ptyTerminal.manualEnvironment")}
-      </p>
-      </> : headerSlot ? createPortal(<TerminalPaneHeader blocks={blocksBar("header")}
-        cwdNote={session && !session.currentCwd ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : null} />, headerSlot) : null}
+      {inlineChrome || headerSlot ? (() => {
+        const cwdNote = session && !session.currentCwd ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : null;
+        const header = <TerminalPaneHeader blocks={blocks} cwdNote={cwdNote}
+          {...(inlineChrome ? { inline: { cwd: session?.currentCwd ?? null } } : {})} />;
+        return inlineChrome ? header : createPortal(header, headerSlot!);
+      })() : null}
       {session?.integrationUnavailableReason ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-integration-unavailable">
         {t(INTEGRATION_UNAVAILABLE_KEYS[session.integrationUnavailableReason])}
       </p> : null}
-      {inlineChrome ? blocksBar("bar") : null}
       {/* Warnings are xterm decorations on their command's row; only the review side panel overlays this area, so the
           xterm host stays its only in-flow child and no rows are taken. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">

@@ -5,7 +5,11 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@te
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { t } from "../../../../i18n/index.js";
-import { SurfacePane, directoryName, webPanelTitle } from "../MainSurfacePanels.js";
+import { SurfacePane, webPanelTitle } from "../MainSurfacePanels.js";
+import { directoryName } from "../TerminalPaneHeader.js";
+import { chatColumnsLayout } from "../../preview/chat-columns-layout.js";
+import { DOCK_ENTER_WIDTH } from "../../../../shared/shell-geometry.js";
+import { SIDE_PANEL_MIN_RESERVE } from "../../../../shared/side-panel.js";
 import type { SideChatRuntime } from "../SideChatView.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../../shared/processing-display-level.js";
 
@@ -198,6 +202,34 @@ describe("SurfacePane", () => {
     expect(within(body).queryByTestId("terminal-host-identity")).toBeNull();
     expect(within(body).queryByTestId("terminal-blocks-bar")).toBeNull();
     expect(body.textContent).not.toContain(t("ptyTerminal.manualEnvironment"));
+  });
+
+  it("pushes the terminal aside from the chat pane's breakpoint up and overlays it below, as a chat pane's panel does", async () => {
+    const modeAt = async (width: number) => {
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(element: Element) {
+          this.callback([{ target: element, contentRect: { width }, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      const { api } = makeMockAveApi();
+      const view = render(
+        <TooltipProvider>
+          <SurfacePane chatOpen onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal: terminalApi() } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        </TooltipProvider>,
+      );
+      const mode = (await screen.findByTestId("pane-work-panel-motion")).getAttribute("data-panel-mode");
+      view.unmount();
+      vi.unstubAllGlobals();
+      return mode;
+    };
+    // The conversation pane decides with the same tile measurement and the same column layout.
+    expect(chatColumnsLayout(DOCK_ENTER_WIDTH, false, true, SIDE_PANEL_MIN_RESERVE, false).panelLayout.mode).toBe("docked");
+    expect(chatColumnsLayout(DOCK_ENTER_WIDTH - 1, false, true, SIDE_PANEL_MIN_RESERVE, true).panelLayout.mode).toBe("overlay");
+    expect(await modeAt(DOCK_ENTER_WIDTH)).toBe("docked");
+    expect(await modeAt(DOCK_ENTER_WIDTH - 1)).toBe("overlay");
   });
 
   it("opens the terminal's work panel on 변경 파일 from the badge: a docked panel beside the terminal, as a chat pane has", async () => {

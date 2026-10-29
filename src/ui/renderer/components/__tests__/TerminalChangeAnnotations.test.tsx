@@ -268,7 +268,9 @@ describe("TerminalChangesView", () => {
     const detail = await within(changes).findByTestId("turn-change-detail");
     expect(detail).toHaveTextContent("run.sh");
     expect(detail).toHaveTextContent("echo after");
-    expect(within(changes).getByTestId("terminal-changes-advisory")).toHaveTextContent(t("terminalFileReview.advisory"));
+    // The detection limits are an info tooltip beside the caption, not a paragraph under the diff.
+    expect(within(changes).getByTestId("terminal-changes-advisory")).toHaveAccessibleName(t("terminalFileReview.advisory"));
+    expect(changes.textContent).not.toContain(t("terminalFileReview.advisory"));
     expect(readFile).not.toHaveBeenCalled();
   });
 

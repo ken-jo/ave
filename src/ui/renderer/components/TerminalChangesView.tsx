@@ -4,6 +4,8 @@
  * are read only from the files the agent's writes left; the view never reads a file itself.
  */
 import { useMemo } from "react";
+import { Info } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { TerminalFileReviewSnapshot } from "../../../shared/terminal-file-review.js";
 import type { AveApi } from "../types.js";
@@ -45,10 +47,22 @@ export function TerminalChangesView({ api, tabId, visible }: { api: AveApi; tabI
     (found, warning) => !found || warning.blockId > found.blockId ? warning : found, null) ?? null;
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden" data-testid="terminal-changes-view">
-      <p className="shrink-0 truncate border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground" data-testid="terminal-changes-caption">
-        {latest ? t("terminalFileReview.viewCaption", { command: latest.command }) : t("terminalFileReview.viewCaptionNone")}
-        {state?.refreshFailed ? ` · ${t("terminalFileReview.refreshFailed")}` : null}
-      </p>
+      <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+        <p className="min-w-0 flex-1 truncate" data-testid="terminal-changes-caption">
+          {latest ? t("terminalFileReview.viewCaption", { command: latest.command }) : t("terminalFileReview.viewCaptionNone")}
+          {state?.refreshFailed ? ` · ${t("terminalFileReview.refreshFailed")}` : null}
+        </p>
+        {/* How far detection reaches, on demand rather than as a paragraph under the diff. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button" className="shrink-0 rounded p-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label={t("terminalFileReview.advisory")} data-testid="terminal-changes-advisory">
+              <Info className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" align="end" className="max-w-72">{t("terminalFileReview.advisory")}</TooltipContent>
+        </Tooltip>
+      </div>
       <div className="min-h-0 flex-1">
         <FileBrowserWorkspace
           api={api}
@@ -65,7 +79,6 @@ export function TerminalChangesView({ api, tabId, visible }: { api: AveApi; tabI
           emptyDetail={t("terminalFileReview.diffUnavailable")}
         />
       </div>
-      <p className="shrink-0 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground" data-testid="terminal-changes-advisory">{t("terminalFileReview.advisory")}</p>
     </div>
   );
 }

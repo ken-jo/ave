@@ -4,6 +4,7 @@ import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
   "ptyTerminal.hostChip": "호스트",
+  "ptyTerminal.hostChipAgentless": "호스트 · 에이전트 접근 없음",
   "terminalFileReview.changed": "에이전트 변경 {count}",
   "terminalFileReview.annotation": "에이전트가 수정한 파일 사용: {files}",
   "terminalFileReview.viewChanges": "변경 보기",

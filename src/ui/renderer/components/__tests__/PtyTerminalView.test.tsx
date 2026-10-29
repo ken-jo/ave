@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** Retint the existing terminal from root theme values; recreating it would discard screen and scrollback. */
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render as renderUnwrapped, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { TerminalSessionInfo, TerminalSpawnRequest, TerminalDataEvent, TerminalExitEvent } from "../../../../shared/terminal-session.js";
@@ -10,7 +10,7 @@ import { SidePanelTerminal } from "../SidePanelTerminal.js";
 import { forgetTerminalFileReview, requestTerminalFileReview } from "../../preview/terminal-file-review.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
-import { useState } from "react";
+import { useState, type ReactElement } from "react";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
 import { terminalCwd } from "../../preview/main-layout-restore.js";
@@ -19,6 +19,9 @@ import { ThemeProvider } from "../../theme/ThemeProvider.js";
 import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
+
+/** The app renders every terminal under its root TooltipProvider; the terminal's header chip needs one. */
+const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: TooltipProvider });
 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
@@ -281,8 +284,22 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const terminal = terminalApi();
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:11" tabLabel="Terminal 11" initialCwd="/repo/app" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", cwd: "/repo/app" })));
-    expect(await screen.findByText(t("ptyTerminal.initialCwd", { cwd: "/repo/app" }))).toBeTruthy();
+    // The launch directory is the chip's tooltip; the row's directory waits for the shell to report one.
+    await waitFor(() => expect(screen.getByTestId("terminal-pane-host-chip").getAttribute("title")).toContain(t("ptyTerminal.initialCwd", { cwd: "/repo/app" })));
+    expect(screen.getByTestId("terminal-pane-cwd").textContent).toBe("");
     expect(terminalCwd("terminal:11")).toBeNull();
+  });
+
+  it("shows the directory the shell reported as its last segment in the header row, the full path on hover", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listBlocks.mockImplementation(async (session: TerminalSessionInfo) => ({ ok: true as const,
+      session: { ...session, currentCwd: "/repo/app/packages/web", cwdSource: "shell-marker" as const }, integrated: true, blocks: [] }));
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:16" tabLabel="Terminal 16" initialCwd="/repo/app" />);
+    const cwd = screen.getByTestId("terminal-pane-cwd");
+    await waitFor(() => expect(cwd.textContent).toBe("web"));
+    expect(cwd.getAttribute("title")).toBe("/repo/app/packages/web");
+    expect(screen.getByTestId("terminal-pane-host-chip").getAttribute("title")).not.toContain("/repo/app");
   });
 
   it("refuses an invalid explicitly chosen directory without silently changing it", async () => {
@@ -342,7 +359,15 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const view = render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 15" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual" }));
-    expect(screen.getByTestId("terminal-host-badge").textContent).toBe(t("ptyTerminal.hostBadge"));
+    // One row of chrome, as a pane header: the chip carries the identity, its tooltip the explanation.
+    const header = screen.getByTestId("terminal-pane-header");
+    const chip = within(header).getByTestId("terminal-pane-host-chip");
+    expect(chip.textContent).toBe(t("ptyTerminal.hostChipAgentless"));
+    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.hostBadge"));
+    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.manualEnvironment"));
+    await waitFor(() => expect(within(header).getByTestId("terminal-blocks-toggle")).toBeTruthy());
+    expect(screen.queryByTestId("terminal-host-identity")).toBeNull();
+    expect(screen.getByTestId("chat-side-panel-pty-terminal").textContent).not.toContain(t("ptyTerminal.manualEnvironment"));
     expect(screen.queryAllByRole("button", { pressed: true })).toHaveLength(0);
     expect(terminals).toHaveLength(1);
     view.unmount();
@@ -497,7 +522,7 @@ describe("PtyTerminalView keyboard focus", () => {
       view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
       view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
       expect(terminals[0]!.focusCount).toBe(1);
-      const own = view.getByTestId("terminal-host-identity");
+      const own = view.getByTestId("terminal-pane-header");
       own.tabIndex = -1;
       own.focus();
       view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);

@@ -2,6 +2,7 @@
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
   "ptyTerminal.hostChip": "Host",
+  "ptyTerminal.hostChipAgentless": "Host · no agent access",
   "terminalFileReview.changed": "Agent changed {count}",
   "terminalFileReview.annotation": "Uses files the agent changed: {files}",
   "terminalFileReview.viewChanges": "View changes",

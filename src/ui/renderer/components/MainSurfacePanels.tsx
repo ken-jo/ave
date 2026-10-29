@@ -29,6 +29,7 @@ import type { AttachTextResult } from "../preview/composer-targets.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 import { BrowserObservationLiveStrip } from "../preview/BrowserObservationLiveStrip.js";
+import { directoryName } from "./TerminalPaneHeader.js";
 
 /** A web page's name for its pane: its title, else its host, else the kind's label. */
 export function webPanelTitle(navigation: GuestNavigation, fallbackUrl: string | null, kindLabel: string): string {
@@ -148,12 +149,6 @@ export function hostOf(url: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-/** The last segment of a directory path — the header has room for a name, not a path. */
-export function directoryName(path: string): string {
-  const trimmed = path.replace(/\/+$/, "");
-  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
 }
 
 type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "children" | "description" | "asideSlot">;
