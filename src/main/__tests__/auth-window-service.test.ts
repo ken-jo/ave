@@ -299,12 +299,14 @@ describe("buildAuthWindowShellHtml", () => {
     const html = buildAuthWindowShellHtml({ title: "Login <unsafe>", url: "https://sso.example.com/login", partition: "ephemeral-auth-test", platform });
     expect(html).toContain('<title>Login &lt;unsafe&gt;</title>');
     expect(html).toContain('<div id="oauth-location">');
-    expect(html).toContain('<bdi id="oauth-domain" dir="ltr">');
+    expect(html).toContain('<span id="oauth-domain" dir="ltr">');
     expect(html).not.toContain('<input');
     expect(html).not.toContain('window.aveWindow');
     expect(html).toContain('-webkit-app-region: drag');
     expect(html).toContain('-webkit-app-region: no-drag');
-    expect(html).toContain('#oauth-domain { flex: 0 0 auto;');
+    expect(html).toContain('#oauth-domain { display: flex; min-width: 0;');
+    expect(html).toContain('#oauth-suffix { flex: 0 0 auto; }');
+    expect(html).toContain('id="oauth-domain-label-text" dir="ltr"');
     expect(html).toContain('direction: rtl; text-align: left');
     expect(html).toContain('user-select: text');
     expect(html).toContain('aria-live="polite"');

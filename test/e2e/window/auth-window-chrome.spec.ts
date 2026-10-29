@@ -103,6 +103,7 @@ for (const kind of ["oauth", "cookie"] as const) {
             row: rect("oauth-location"), uri: rect("oauth-uri"), domain: rect("oauth-domain"), port: rect("oauth-port"),
             domainText: document.getElementById("oauth-domain")!.textContent,
             subdomainElided: subdomain.scrollWidth > subdomain.clientWidth,
+            domainLabelElided: document.getElementById("oauth-domain-label")!.scrollWidth > document.getElementById("oauth-domain-label")!.clientWidth,
             subdomainDirection: getComputedStyle(subdomain).direction,
             pathElided: path.scrollWidth > path.clientWidth,
             pathDirection: getComputedStyle(path).direction,
@@ -118,12 +119,13 @@ for (const kind of ["oauth", "cookie"] as const) {
         expect(layout.port.right).toBeLessThanOrEqual(layout.row.right - 12);
         expect(layout.domain.x).toBeGreaterThanOrEqual(layout.uri.x);
         expect(layout.subdomainElided).toBe(url.includes(longHost));
+        expect(layout.domainLabelElided).toBe(false);
         expect(layout.subdomainDirection).toBe("rtl");
         expect(layout.pathElided).toBe(true);
         expect(layout.pathDirection).toBe("ltr");
         expect(layout.dragRegion).toBe("no-drag");
         expect(layout.selectable).toBe("text");
-        expect(layout.selected).toContain(layout.domainText);
+        expect(layout.selected.replace(/\s/g, "")).toContain(layout.domainText);
         expect(layout.copied).toBe(url);
         expect(layout.copyHandled).toBe(true);
         await chrome.locator("#oauth-uri").hover();
@@ -131,6 +133,44 @@ for (const kind of ["oauth", "cookie"] as const) {
         const screenshot = testInfo.outputPath(name + ".png");
         await chrome.screenshot({ path: screenshot });
         await testInfo.attach(name, { path: screenshot, contentType: "image/png" });
+      }
+      for (const platform of ["darwin", "win32", "linux"] as const) {
+        const url = "https://" + "a".repeat(63) + ".com:8443/login/" + "long-path/".repeat(40);
+        await app.evaluate(async ({ BrowserWindow }, input) => {
+          const vm = process.getBuiltinModule("node:vm");
+          const service = await vm.runInThisContext(`import(${JSON.stringify(input.moduleUrl)})`, {
+            importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+          });
+          const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().startsWith("data:text/html"));
+          if (!window) throw new Error("Missing authentication window");
+          const html = service.buildAuthWindowShellHtml({ title: "Login", url: input.url, partition: "auth-layout", platform: input.platform, chromeOnly: true });
+          await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+        }, { moduleUrl: pathToFileURL(resolve(chunks, moduleName)).href, platform, url });
+        await expect(chrome.locator("#oauth-uri")).toHaveAttribute("title", url);
+        const layout = await chrome.evaluate(() => {
+          const rect = (id: string) => document.getElementById(id)!.getBoundingClientRect().toJSON();
+          const label = document.getElementById("oauth-domain-label")!;
+          const suffix = document.getElementById("oauth-suffix")!;
+          const range = document.createRange();
+          range.selectNodeContents(suffix);
+          return { row: rect("oauth-location"), uri: rect("oauth-uri"), domain: rect("oauth-domain"), port: rect("oauth-port"),
+            suffix: rect("oauth-suffix"), suffixText: suffix.textContent, suffixInk: range.getBoundingClientRect().toJSON(),
+            labelElided: label.scrollWidth > label.clientWidth, labelDirection: getComputedStyle(label).direction,
+            paddingRight: getComputedStyle(document.getElementById("oauth-location")!).paddingRight };
+        });
+        expect(layout.row.width).toBe(520);
+        expect(layout.paddingRight).toBe(platform === "darwin" ? "12px" : "140px");
+        expect(layout.domain.right).toBeLessThanOrEqual(layout.uri.right);
+        expect(layout.port.right).toBeLessThanOrEqual(layout.uri.right);
+        expect(layout.suffixText).toBe(".com");
+        expect(layout.suffixInk.x).toBeGreaterThanOrEqual(layout.uri.x);
+        expect(layout.suffixInk.right).toBeLessThanOrEqual(layout.uri.right);
+        expect(layout.suffixInk.width).toBeGreaterThan(0);
+        expect(layout.suffixInk.x).toBeGreaterThanOrEqual(layout.suffix.x);
+        expect(layout.suffixInk.right).toBeLessThanOrEqual(layout.suffix.right);
+        expect(layout.labelElided).toBe(true);
+        expect(layout.labelDirection).toBe("rtl");
+        await testInfo.attach(`${kind}-520-long-label-${platform}`, { body: await chrome.screenshot(), contentType: "image/png" });
       }
     } finally {
       await app?.close();

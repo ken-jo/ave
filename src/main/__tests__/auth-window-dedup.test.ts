@@ -324,8 +324,9 @@ describe("host OAuth auth window", () => {
     const uriListeners = new Map<string, (event: Record<string, unknown>) => void>();
     const uri = { title: "", addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => uriListeners.set(name, callback) };
     const parts = {
-      "oauth-subdomain-text": { textContent: "" }, "oauth-domain": { textContent: "" }, "oauth-port": { textContent: "" },
+      "oauth-subdomain-text": { textContent: "" }, "oauth-domain-label-text": { textContent: "" }, "oauth-suffix": { textContent: "" }, "oauth-port": { textContent: "" },
       "oauth-path": { textContent: "" }, "oauth-scheme": { textContent: "" }, "oauth-status": { textContent: "" },
+      "oauth-domain": { get textContent() { return parts["oauth-domain-label-text"].textContent + parts["oauth-suffix"].textContent; } },
       "oauth-host": { get textContent() { return parts["oauth-subdomain-text"].textContent + parts["oauth-domain"].textContent + parts["oauth-port"].textContent; } },
     };
     const security = { title: "", innerHTML: "", setAttribute: vi.fn(), dataset: { security: "" } };
@@ -391,6 +392,7 @@ describe("host OAuth auth window", () => {
 
     it.each([
       ["https://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:8443/path", "accounts.google.com.signin.oauth2.session-verify.", "attacker-example.io", ":8443"],
+      ["https://" + "a".repeat(63) + ".com:8443/path", "", "a".repeat(63) + ".com", ":8443"],
       ["https://signin.accounts.example.co.uk:8443/path", "signin.accounts.", "example.co.uk", ":8443"],
       ["https://signin.accounts.example.co.uk.:8443/path", "signin.accounts.", "example.co.uk.", ":8443"],
       ["https://signin.tenant.github.io/path", "signin.", "tenant.github.io", ""],
@@ -405,6 +407,10 @@ describe("host OAuth auth window", () => {
         expect(uri.title).toBe(url);
         expect(parts["oauth-subdomain-text"].textContent).toBe(subdomain);
         expect(parts["oauth-domain"].textContent).toBe(domain);
+        if (url.includes("a".repeat(63))) {
+          expect(parts["oauth-domain-label-text"].textContent).toBe("a".repeat(63));
+          expect(parts["oauth-suffix"].textContent).toBe(".com");
+        }
         expect(parts["oauth-port"].textContent).toBe(port);
         expect(parts["oauth-status"].textContent).toBe(security.title);
         if (url === "about:blank") expect(parts["oauth-path"].textContent).toBe("about:blank");

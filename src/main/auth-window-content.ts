@@ -88,9 +88,11 @@ export function buildAuthWindowShellHtml(input: {
     #oauth-security svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     #oauth-security[data-security="certificate-error"], #oauth-security[data-security="load-error"] { color: #d33c32; }
     #oauth-uri { display: flex; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12px; direction: ltr; -webkit-app-region: no-drag; user-select: text; }
-    #oauth-host { display: flex; flex: 0 1 auto; min-width: 0; }
+    #oauth-host { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, max-content) max-content; flex: 0 1 auto; min-width: 0; }
     #oauth-subdomain { min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; color: var(--ts-btn); }
-    #oauth-domain { flex: 0 0 auto; font-weight: 650; }
+    #oauth-domain { display: flex; min-width: 0; font-weight: 650; }
+    #oauth-domain-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+    #oauth-suffix { flex: 0 0 auto; }
     #oauth-port { flex: 0 0 auto; }
     #oauth-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     #oauth-security[data-security="http"] { color: #9a6700; }
@@ -101,7 +103,7 @@ export function buildAuthWindowShellHtml(input: {
   </style>
 </head>
 <body>
-  <div id="oauth-location"><span id="oauth-security" role="img"></span><div id="oauth-uri" role="group" tabindex="0" aria-label="${escapeHtml(t("oauthWindow.address"))}"><span id="oauth-scheme"></span><span id="oauth-host"><span id="oauth-subdomain"><bdi id="oauth-subdomain-text" dir="ltr"></bdi></span><bdi id="oauth-domain" dir="ltr"></bdi><span id="oauth-port"></span></span><span id="oauth-path"></span></div><span id="oauth-status" role="status" aria-live="polite" aria-atomic="true"></span></div>
+  <div id="oauth-location"><span id="oauth-security" role="img"></span><div id="oauth-uri" role="group" tabindex="0" aria-label="${escapeHtml(t("oauthWindow.address"))}"><span id="oauth-scheme"></span><span id="oauth-host"><span id="oauth-subdomain"><bdi id="oauth-subdomain-text" dir="ltr"></bdi></span><span id="oauth-domain" dir="ltr"><span id="oauth-domain-label"><bdi id="oauth-domain-label-text" dir="ltr"></bdi></span><bdi id="oauth-suffix" dir="ltr"></bdi></span><span id="oauth-port"></span></span><span id="oauth-path"></span></div><span id="oauth-status" role="status" aria-live="polite" aria-atomic="true"></span></div>
   ${input.chromeOnly ? "" : '<webview id="auth-view" src="" partition="" allowpopups></webview>'}
   <script>
     ${getDomainParserSource()}
@@ -126,20 +128,24 @@ export function buildAuthWindowShellHtml(input: {
       uri.title = committedUrl;
       const scheme = document.getElementById("oauth-scheme");
       const subdomain = document.getElementById("oauth-subdomain-text");
-      const domain = document.getElementById("oauth-domain");
+      const domainLabel = document.getElementById("oauth-domain-label-text");
+      const suffix = document.getElementById("oauth-suffix");
       const port = document.getElementById("oauth-port");
       const path = document.getElementById("oauth-path");
       if (/^https?:/i.test(committedUrl)) {
         const parsed = new URL(committedUrl);
         const hostname = parsed.hostname.endsWith(".") ? parsed.hostname.slice(0, -1) : parsed.hostname;
-        const registrableDomain = tldts.getDomain(hostname, { allowPrivateDomains: true }) ?? hostname;
+        const identity = tldts.parse(hostname, { allowPrivateDomains: true });
+        const registrableDomain = identity.domain ?? hostname;
+        const publicSuffix = identity.domain && identity.publicSuffix ? "." + identity.publicSuffix : "";
         scheme.textContent = parsed.protocol + "//";
         subdomain.textContent = hostname.slice(0, hostname.length - registrableDomain.length);
-        domain.textContent = registrableDomain + (hostname === parsed.hostname ? "" : ".");
+        domainLabel.textContent = registrableDomain.slice(0, registrableDomain.length - publicSuffix.length);
+        suffix.textContent = publicSuffix + (hostname === parsed.hostname ? "" : ".");
         port.textContent = parsed.port ? ":" + parsed.port : "";
         path.textContent = parsed.pathname + parsed.search + parsed.hash;
       } else {
-        scheme.textContent = subdomain.textContent = domain.textContent = port.textContent = "";
+        scheme.textContent = subdomain.textContent = domainLabel.textContent = suffix.textContent = port.textContent = "";
         path.textContent = committedUrl;
       }
       const secure = committedUrl.startsWith("https:") && !errorState;
